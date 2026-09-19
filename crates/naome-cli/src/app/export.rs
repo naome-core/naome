@@ -190,7 +190,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
         "export" if args.len() == 3 => {
             let genesis = config.genesis()?;
-            let status = control::call(&config, Request::Status).await?;
+            let status = control::call(&config, Request::Status {}).await?;
             let height = status["height"]
                 .as_u64()
                 .ok_or("missing finalized height")?;

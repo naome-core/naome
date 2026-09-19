@@ -186,7 +186,7 @@ async fn commit_secret_precedes_transmission_and_missing_action_or_lost_ack_reus
     let status = fixture.status("Commit", 7);
     let server = tokio::spawn(async move {
         let (mut stream, message) = request(&listener).await;
-        assert!(matches!(message, Request::Status));
+        assert!(matches!(message, Request::Status {}));
         respond(&mut stream, status).await;
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
@@ -255,7 +255,7 @@ async fn retained_reveal_after_lost_ack_resends_without_open_phase_or_new_nonce(
     let action = reveal.clone();
     let server = tokio::spawn(async move {
         let (mut stream, message) = request(&listener).await;
-        assert!(matches!(message, Request::Status));
+        assert!(matches!(message, Request::Status {}));
         respond(&mut stream, status).await;
         let (_stream, message) = request(&listener).await;
         let Request::Submit { bytes } = message else {

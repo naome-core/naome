@@ -111,3 +111,29 @@ fn legacy_private_key_format_is_rejected_without_rewriting() {
     assert!(key(&path, 1).is_err());
     assert_eq!(read(&path, 41, true).unwrap(), bytes);
 }
+
+#[test]
+fn fifo_keys_inputs_and_existing_outputs_fail_without_a_writer() {
+    let dir = Directory::new();
+    let path = dir.0.join("fifo");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = key(&path, 2).is_err()
+            && read(&path, 16384, true).is_err()
+            && read(&path, 16384, false).is_err()
+            && create_or_match(&path, b"", true).is_err();
+        sender.send(result).unwrap();
+    });
+    assert!(
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("FIFO input blocked")
+    );
+}

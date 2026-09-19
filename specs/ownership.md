@@ -32,7 +32,7 @@ additional source of authority.
 | Caller-configured timing, raw routing, and bounded publication delivery | `naome-runtime` | [Fixed-Validator Runtime](fixed-validator-runtime-v0.md); consensus, node, and storage retain their existing verification, signing, and finality authority |
 | Bounded volatile proposal/evidence retention | `naome-node` | [Current Inbox](fixed-validator-node-current-round-inbox-v0.md), [Finality Inbox](fixed-validator-node-current-round-finality-inbox-v0.md), [Nil-Precommit Inbox](fixed-validator-node-current-round-nil-precommit-inbox-v0.md), [Higher Inbox](fixed-validator-node-higher-round-inbox-v0.md), [Proposal Buffer](fixed-validator-node-proposal-buffer-v0.md), [Deferral](fixed-validator-node-proposal-deferral-v0.md), [Buffered Precommit](fixed-validator-node-buffered-proposal-precommit-v0.md) |
 | Source parsing, proof lowering, diagnostics, and selected-chain authoring | `naome-authoring` | [Proof Authoring](proof-authoring.md) |
-| Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-cli`, `devnet/qualify.py` | [Validator Process](fixed-validator-process-v0.md), [Verifier Process](fixed-validator-verifier-process-v0.md), [Devnet Operations](../devnet/OPERATIONS.md) |
+| Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-cli`, `devnet/qualify.py` | [Canonical Process Operations](../research/mvp/operations.md), [Devnet Operations](../devnet/OPERATIONS.md) |
 
 The authority boundaries follow the contracts above. Decoding supplies no
 checked proof; an authenticated response supplies no validity or selection;
@@ -59,9 +59,10 @@ The state integration introduces a fresh `state-v1` genesis and encoding family.
 This is an explicit compatibility break, not a conversion of an existing run.
 The former research-v1 golden bytes remain immutable negative fixtures in chain
 and consensus tests. They must not acquire authority through a renamed header,
-new filename, or imported signer snapshot. The V0 artifact path is still present
-at this intermediate milestone; the complete state record and finalized envelope now belong to `naome-chain`;
-removing the old executable path remains integration work.
+new filename, or imported signer snapshot. The complete state record and finalized
+envelope belong to `naome-chain`. Main validator/verifier entry points now use
+only that full-state path. Remaining V0 artifact library APIs are still present
+at this intermediate milestone and remain integration work.
 
 | Surface | Previous encoding | State integration encoding / owner |
 | --- | --- | --- |
@@ -83,9 +84,13 @@ record, and branch commitments. Old history is not silently discarded, migrated,
 or resumed: operators must retain old runs with their original executable and
 provision an explicitly new directory and genesis for this format.
 
-Existing Rust `Research*` API names, CLI `state` dispatch, and V0 executables and
-tests are inventoried by the ownership table above and are not yet removed by
-this integration milestone. Chain and consensus golden vectors cover the new wire
+Existing Rust `Research*` API names and V0 library APIs remain inventoried by
+the ownership table above. The main executables no longer dispatch V0 commands
+or a `state` alias. Setup alone initializes fresh full-state authority while
+generating new keys and genesis; validator startup can only reopen it. Canonical
+process tests cover strict custody, retransmission, conflict halt, bounded
+control framing, output backpressure, and SIGINT/SIGTERM. The portable verifier
+reads only public canonical archives and has no network or signing command. Chain and consensus golden vectors cover the new wire
 identities and a full submit/vote/commit/reveal/settlement replay. Negative vectors
 cover old records, signed operations, time, proposals, votes, and finality;
 storage and transport tests reject old framing without rewriting history.

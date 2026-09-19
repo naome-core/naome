@@ -183,6 +183,19 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
         vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3", "127.0.0.1:0"],
         vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3", "example.org:4"],
         vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3"],
+        vec![
+            "127.0.0.1:1",
+            "127.0.0.1:2",
+            "127.0.0.1:3",
+            "[0:0:0:0:0:0:0:1]:4",
+        ],
+        vec![
+            "127.0.0.1:1",
+            "127.0.0.1:2",
+            "127.0.0.1:3",
+            "[::ffff:127.0.0.1]:4",
+        ],
+        vec!["127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3", "[fe80::1%1]:4"],
     ] {
         fs::write(&plan, serde_json::to_vec(&endpoints).unwrap()).unwrap();
         assert!(run(&args).is_err());
@@ -221,8 +234,25 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
             .any(|part| part == &original_key[9..])
     );
     for index in 0..4 {
-        assert!(!output.join(format!("node-{index}/history")).exists());
-        assert!(!output.join(format!("node-{index}/signer")).exists());
+        let config = NodeConfig::read(&output.join(format!("node-{index}/node.json"))).unwrap();
+        let genesis = config.genesis().unwrap();
+        let history = naome_storage::state::ResearchHistory::open(
+            &config.history,
+            &config.history_anchor,
+            genesis.clone(),
+            config.maximum_round,
+        )
+        .unwrap();
+        assert_eq!(history.head().unwrap().state().height(), 0);
+        let signer = naome_storage::state::ResearchSigner::open(
+            &config.signer,
+            &config.signer_anchor,
+            genesis,
+            files::key(&config.consensus_key, 2).unwrap(),
+            config.maximum_round,
+        )
+        .unwrap();
+        drop(signer);
     }
     let genesis = Genesis::decode(&fs::read(output.join("genesis.bin")).unwrap()).unwrap();
     let actual = genesis

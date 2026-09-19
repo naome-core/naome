@@ -1,5 +1,9 @@
 # Fixed-validator V0 process partition corpus
 
+> The V0 executable and process tests described here are retired. This historical
+> contract is not a supported command interface. Current operation and independent
+> replay use the [canonical state executables](../research/mvp/operations.md).
+
 ## Scope and authority
 
 `SEC-012-003` tests a cold partition after a shared nonempty finalized prefix

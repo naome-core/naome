@@ -1,0 +1,427 @@
+{
+  "scope": "Retire V0 executable authority and preserve canonical process custody, lifecycle and portable verification",
+  "source_base": "bbb5464e7a7bcb7124d51717612463514f5c2af9",
+  "scoped_source_manifest_sha256": "c7acd8cc853c6c26fd8a0e560ffbae1e8737deacee3c09af1a526feeb5f380c6",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "cargo_incremental": "0",
+  "implementation": [
+    "naome-validator accepts only canonical start/help; naome-verifier accepts only keyless offline verify/help. V0 and state alias dispatch removed.",
+    "Setup creates fresh genesis-bound history, signing journal and separate anchors before publishing configuration. Startup only reopens existing authority, including after total store loss.",
+    "Key roles and paired registration, canonical peer endpoints, private authority directories, local listener bounds, and occupied control paths are checked before opening custody.",
+    "FIFO inputs reject without a writer. Status and shutdown reject unknown JSON fields. Bounded control connection/read/write/queue handling is retained.",
+    "Diagnostic output is bounded and cannot own signing state; both streams share one two-second final flush after custody drops. SIGINT and SIGTERM both release custody. Full verifier reports retain their separate three-MiB ceiling.",
+    "Devnet relocates initialized anchors intact and synchronizes both parents."
+  ],
+  "retired_files": [
+    "crates/naome-validator/src/app/acquisition.rs",
+    "crates/naome-validator/src/app/bundles.rs",
+    "crates/naome-validator/src/app/commands.rs",
+    "crates/naome-validator/src/app/config.rs",
+    "crates/naome-validator/src/app/files.rs",
+    "crates/naome-validator/src/app/input.rs",
+    "crates/naome-validator/src/app/mod.rs",
+    "crates/naome-validator/src/app/proof_sync.rs",
+    "crates/naome-validator/src/app/proposal_job.rs",
+    "crates/naome-validator/src/app/provider.rs",
+    "crates/naome-validator/src/app/publisher.rs",
+    "crates/naome-validator/src/app/report.rs",
+    "crates/naome-validator/src/app/session.rs",
+    "crates/naome-validator/src/app/source_provider.rs",
+    "crates/naome-validator/src/app/sources.rs",
+    "crates/naome-validator/src/app/sources/recovery.rs",
+    "crates/naome-validator/src/app/supervisor.rs",
+    "crates/naome-validator/src/app/supervisor/inbox.rs",
+    "crates/naome-validator/src/app/supervisor/offers.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/contention.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/history.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/integrity.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/lifecycle.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/mod.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/proposal_job.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/provider.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/retained.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_bundles/boundaries.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_bundles/custody.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_bundles/integrity.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_bundles/mod.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_proofs/boundaries.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_proofs/conflict.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_proofs/custody.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_proofs/mod.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_serving/boundaries.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_serving/busy.rs",
+    "crates/naome-validator/tests/cases/artifact_acquisition/source_serving/mod.rs",
+    "crates/naome-validator/tests/cases/autonomous_byzantine.rs",
+    "crates/naome-validator/tests/cases/autonomous_supervisor.rs",
+    "crates/naome-validator/tests/cases/continuous_supervisor.rs",
+    "crates/naome-validator/tests/cases/current_finality.rs",
+    "crates/naome-validator/tests/cases/current_pair.rs",
+    "crates/naome-validator/tests/cases/evidence_recovery.rs",
+    "crates/naome-validator/tests/cases/explicit_proofs.rs",
+    "crates/naome-validator/tests/cases/gated_tcp.rs",
+    "crates/naome-validator/tests/cases/higher_collection.rs",
+    "crates/naome-validator/tests/cases/historical_conflict.rs",
+    "crates/naome-validator/tests/cases/inbox_disposal.rs",
+    "crates/naome-validator/tests/cases/network_intake.rs",
+    "crates/naome-validator/tests/cases/partition.rs",
+    "crates/naome-validator/tests/cases/partition_byzantine.rs",
+    "crates/naome-validator/tests/cases/partition_byzantine_peer.rs",
+    "crates/naome-validator/tests/cases/partition_process_restart.rs",
+    "crates/naome-validator/tests/cases/partition_proof_catch_up.rs",
+    "crates/naome-validator/tests/cases/proof_following.rs",
+    "crates/naome-validator/tests/cases/proof_following_live.rs",
+    "crates/naome-validator/tests/cases/proof_sync.rs",
+    "crates/naome-validator/tests/cases/publication_restart.rs",
+    "crates/naome-validator/tests/cases/publication_retry.rs",
+    "crates/naome-validator/tests/cases/source_recovery.rs",
+    "crates/naome-validator/tests/process.rs",
+    "crates/naome-validator/tests/support/mod.rs",
+    "crates/naome-validator/tests/support/proofs.rs",
+    "crates/naome-verifier/src/app/archive.rs",
+    "crates/naome-verifier/src/app/commands.rs",
+    "crates/naome-verifier/src/app/config.rs",
+    "crates/naome-verifier/src/app/files.rs",
+    "crates/naome-verifier/src/app/files/windows.rs",
+    "crates/naome-verifier/src/app/files/windows_acl.rs",
+    "crates/naome-verifier/src/app/input.rs",
+    "crates/naome-verifier/src/app/mod.rs",
+    "crates/naome-verifier/src/app/report.rs",
+    "crates/naome-verifier/src/app/shutdown.rs",
+    "crates/naome-verifier/tests/cases/archive.rs",
+    "crates/naome-verifier/tests/cases/archive_following.rs",
+    "crates/naome-verifier/tests/cases/archive_peer.rs",
+    "crates/naome-verifier/tests/cases/lifecycle.rs",
+    "crates/naome-verifier/tests/cases/rejections.rs",
+    "crates/naome-verifier/tests/cases/restart.rs",
+    "crates/naome-verifier/tests/cases/validator_provider.rs",
+    "crates/naome-verifier/tests/cases/windows.rs",
+    "crates/naome-verifier/tests/process.rs",
+    "crates/naome-verifier/tests/support/mod.rs",
+    "crates/naome-verifier/tests/support/proofs.rs",
+    "crates/naome-verifier/tests/support/windows.rs",
+    "crates/naome-verifier/tests/support/windows_seed_acl.ps1",
+    "crates/naome-verifier/tests/support/windows_signal.ps1"
+  ],
+  "replacement_coverage": {
+    "publication_and_rewards": "Actual four-process publication, citation payment, unavailable provider, partition/healing, cold restart, independent replay and corrupt export rejection.",
+    "signing_and_finality": "SIGKILL after completed vote before receipt; exact network retransmission without new proposal; no equivocation; catch-up and next necessary quorum vote; authenticated historical conflict permanently halts.",
+    "startup": "Malformed/missing/crossed keys, FIFOs, profile bounds, invalid local bind, occupied socket, duplicate live owner, missing one or all authority directories after an actual signed vote; authority contents and directory presence retained.",
+    "control_and_lifecycle": "Partial headers/bodies time out; oversized/malformed/duplicate/unknown fields and valid suffixes rejected; huge history coordinate bounded; fresh valid submission follows failures; sixteen stalled clients cannot block SIGINT/SIGTERM; stalled stdout/startup stderr bounded; strict reopen succeeds.",
+    "portable_verifier": "Actual executable replays public golden without keys or writes, rejects corruption, directories, oversized files, symlink/reparse inputs, retired interfaces; Windows device/pipe/ADS cases are included for CI.",
+    "output_report": "Conservative full-profile claim-count shape exceeds diagnostic limit and is emitted without truncation."
+  },
+  "local_checks": {
+    "test-build": {
+      "sha256": "59908e20267e95c8fef714d12118a18ab75958cf3a2fc5c2225acbba9744d20a",
+      "results": [],
+      "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s"
+    },
+    "test": {
+      "sha256": "8fe9bcb7de0f8a10620015b151f81ab2a914d91769abc1d3182346790d926beb",
+      "results": [
+        "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.47s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 141.86s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s"
+      ],
+      "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s"
+    },
+    "release-build": {
+      "sha256": "630952867354085dfdad60d74c5384e720c4fb081aa78fe862807292a23b9ecc",
+      "results": [],
+      "completion": "    Finished `release` profile [optimized] target(s) in 11.38s"
+    },
+    "release-test": {
+      "sha256": "98430f29532ff1808317aebcbcf5dbf66542fd373e9bbb63fe670b48c5a83c54",
+      "results": [
+        "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.47s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 136.94s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s"
+      ],
+      "completion": "    Finished `release` profile [optimized] target(s) in 14.15s"
+    },
+    "clippy": {
+      "sha256": "eb72f57d4078d1c05a1488afc015c706584f69c5a2fe062a6e24419546a3c506",
+      "results": [],
+      "completion": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.34s"
+    },
+    "doc": {
+      "sha256": "1f902d2d164088ed3c11d05cb5436f8caa7d7ae43ed0f57d23c2b483696a5518",
+      "results": [],
+      "completion": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.21s"
+    },
+    "doctest": {
+      "sha256": "afd3269e8c42b3596fc3d3a15c5a4bd31b8a35696ec6d32fa71eda623750855a",
+      "results": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s"
+      ],
+      "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.08s"
+    }
+  },
+  "python_devnet_tests": {
+    "count": 12,
+    "sha256": "d38f0a694223a3c98d45b56a565c2927600353e696675909ccb3b18eb003286b"
+  },
+  "native_devnet_smoke": {
+    "schema_version": 1,
+    "outcome": "passed",
+    "backend": "process",
+    "scope": "four fixed validators; canonical records, authenticated operations and certified phase transitions; accelerated qualification",
+    "requested_minimum_heights": 12,
+    "genesis_run_records": 256,
+    "delay_ms_each_direction_per_chunk": 50,
+    "deadline_seconds": 360,
+    "consensus_commands_sent": 0,
+    "workload": "alternating independent owner submissions and full-window NotApproved settlement; proof publication/citation separately qualified by the four-process Rust suite",
+    "limits": {
+      "sampled_role_disk_bytes": 536870912,
+      "container_memory_bytes": 536870912
+    },
+    "attempts": [
+      {
+        "number": 0,
+        "owner": 0,
+        "operation": "ad9eab7278a8870c0bc9824540c693d53f284ff972f28741cc63c1ef5a72cd81",
+        "submission": "ad9eab7278a8870c0bc9824540c693d53f284ff972f28741cc63c1ef5a72cd81",
+        "height": 3,
+        "head": "f38a9c9d3c3b2857f506622bcbcf69b04cb8515fa6ea3ebb6710f295cb89c472",
+        "state": "5c3d5eddc5e59ccd4e5da2b17ed709fbe8fe9d8fb4f9d87e14a9ee3e9e5e87fe",
+        "voting_deadline": 1789838980,
+        "certified_start": 1789838965,
+        "certified_end": 1789838984
+      },
+      {
+        "number": 1,
+        "owner": 1,
+        "operation": "faec707c918e9159c0cfdbd6c5d0cefb968ff6946c0de6593591e9c9020b99ed",
+        "submission": "faec707c918e9159c0cfdbd6c5d0cefb968ff6946c0de6593591e9c9020b99ed",
+        "height": 6,
+        "head": "31918e0f6083a9e50c2163f4b138043ca8a4be4f26d712621a5a03fedf79569e",
+        "state": "1d7fd47c3ad0ada305dd58bf7570025c7d9ec567c2f09bcf75ce717846c6235b",
+        "voting_deadline": 1789839010,
+        "certified_start": 1789838995,
+        "certified_end": 1789839014
+      },
+      {
+        "number": 2,
+        "owner": 0,
+        "operation": "24c10b7acc6f154dfe68ecca7037e53cda3ccd532b0dd14f56163656d29697f0",
+        "submission": "24c10b7acc6f154dfe68ecca7037e53cda3ccd532b0dd14f56163656d29697f0",
+        "height": 9,
+        "head": "d4252bcffb033f24076bd7ddc2814a6849ea99aa0bb3f0738bd984e61d5dde69",
+        "state": "f274ee26800bee2b8c3ce18e15bf3665de511a46f2e10db670cf89b9868322d3",
+        "voting_deadline": 1789839052,
+        "certified_start": 1789839037,
+        "certified_end": 1789839056
+      },
+      {
+        "number": 3,
+        "owner": 1,
+        "operation": "4e89872feefca2f8fd006b121a4a1eda4ec7402e5ff40b38bd3665edc24cfeb8",
+        "submission": "4e89872feefca2f8fd006b121a4a1eda4ec7402e5ff40b38bd3665edc24cfeb8",
+        "height": 12,
+        "head": "36405e361a69437769581aa72f907c49dcc52d5c09684a7b01a14a285db33a1a",
+        "state": "b3afe2824067e064c55dfea1c1bddbcfa9e113b09690dd789ac78656ed1332b2",
+        "voting_deadline": 1789839090,
+        "certified_start": 1789839075,
+        "certified_end": 1789839091
+      }
+    ],
+    "faults": [
+      {
+        "operation": "authenticated_links_disabled",
+        "validator": 3,
+        "height": 3
+      },
+      {
+        "operation": "partition_healed_on_deadline",
+        "validator": 3,
+        "height_at_cut": 3,
+        "survivor_heights_before_heal": {
+          "0": 6,
+          "1": 6,
+          "2": 6
+        }
+      },
+      {
+        "operation": "healed_and_caught_up",
+        "validator": 3,
+        "height": 6
+      },
+      {
+        "operation": "sigkill_restart",
+        "validator": 0,
+        "height": 9
+      },
+      {
+        "operation": "graceful_restart",
+        "validator": 1,
+        "height": 12
+      }
+    ],
+    "verified": [
+      {
+        "validator": 0,
+        "height": 12,
+        "head": "36405e361a69437769581aa72f907c49dcc52d5c09684a7b01a14a285db33a1a",
+        "state": "b3afe2824067e064c55dfea1c1bddbcfa9e113b09690dd789ac78656ed1332b2",
+        "consensus_commitment": "e7bdd10eba45275ab5b26462dcb15fffc973fda60a3a6b058b95277cfa17cc53",
+        "retained_finality_frame_sha256": [
+          "5aac21a205512bde555fded597f5f8aa05a3ce2b3e095481d2eff0012331aa9d",
+          "2054f205d1a53c2418b2fd1d2f8a4dd5700244a217588d127eed82ec37cc3ac4",
+          "b005ac6db6b6e8c3490af0a30daad8560144c9d04d546fb3fc3fb4c551a474a9",
+          "79cb7f6d01cbe13f3c55686c06b1a93f674761707be285568a71b4719db2c20b",
+          "599504482836ef85458947d858b8f50e39535692c8a8d8b89799fddb6332124d",
+          "f4870354a9366ca1c060c54074e5ac3060bf48783e4e107661aa413872af49a1",
+          "bed7d51437585427f1814958f9491d5d409a04f414de443bba071b96847dc13f",
+          "b3a476f9217aae5dd79db443656c8ff9ae006d108d7b15d613350281a0cc34f4",
+          "43e1d91e2c130f84575e00c17d1f226b2051963843f872cefcf2433a522b3844",
+          "b21284ab87ab7fd3d2b458ca18849fe375cd9c383512c11574ff276e50573c9d",
+          "8217a7f89a6fc9d1dd2964dcb0ef425e8f443241565043db9d623165e8f6f901",
+          "80102b71a0cf4423d8026b58021a0be6825bc5e83c06225f3a9d0d960d7f43f5"
+        ]
+      },
+      {
+        "validator": 1,
+        "height": 12,
+        "head": "36405e361a69437769581aa72f907c49dcc52d5c09684a7b01a14a285db33a1a",
+        "state": "b3afe2824067e064c55dfea1c1bddbcfa9e113b09690dd789ac78656ed1332b2",
+        "consensus_commitment": "e7bdd10eba45275ab5b26462dcb15fffc973fda60a3a6b058b95277cfa17cc53",
+        "retained_finality_frame_sha256": [
+          "8369a84b53a651e370465469853b844092593546cfeff247734bde5d1aada7a9",
+          "be3b6c1dd46ac1c4ee02d186ce588074963a63a292a7aec5d861f43557d76135",
+          "d16deaa46e6f8fb19b3fc669f0c9380369697d9873f260ccaffc4343f99001d7",
+          "79cb7f6d01cbe13f3c55686c06b1a93f674761707be285568a71b4719db2c20b",
+          "599504482836ef85458947d858b8f50e39535692c8a8d8b89799fddb6332124d",
+          "f4870354a9366ca1c060c54074e5ac3060bf48783e4e107661aa413872af49a1",
+          "2ccfe4dacf4dfbbbcd7129d2fd2c2cae768bf09295f854141f34a4e231d2b3de",
+          "9ae4031acd954abf3d0fd88d2e482d49fbd2941559525fb96e93af732d1c60bc",
+          "43e1d91e2c130f84575e00c17d1f226b2051963843f872cefcf2433a522b3844",
+          "19ab48902615d5544c70d21559b5afe6f795261d9ca8d13e11b5d39f176e93b1",
+          "4d06b2dcd1a0579bac2798e1bc5333fd8688101988fe88978273fc681c68a2b0",
+          "80102b71a0cf4423d8026b58021a0be6825bc5e83c06225f3a9d0d960d7f43f5"
+        ]
+      },
+      {
+        "validator": 2,
+        "height": 12,
+        "head": "36405e361a69437769581aa72f907c49dcc52d5c09684a7b01a14a285db33a1a",
+        "state": "b3afe2824067e064c55dfea1c1bddbcfa9e113b09690dd789ac78656ed1332b2",
+        "consensus_commitment": "e7bdd10eba45275ab5b26462dcb15fffc973fda60a3a6b058b95277cfa17cc53",
+        "retained_finality_frame_sha256": [
+          "8369a84b53a651e370465469853b844092593546cfeff247734bde5d1aada7a9",
+          "18f22123c1a3faf54397281fa27c75fbe502acf8897bbc8ff9d199a9f790a640",
+          "d16deaa46e6f8fb19b3fc669f0c9380369697d9873f260ccaffc4343f99001d7",
+          "79cb7f6d01cbe13f3c55686c06b1a93f674761707be285568a71b4719db2c20b",
+          "599504482836ef85458947d858b8f50e39535692c8a8d8b89799fddb6332124d",
+          "f4870354a9366ca1c060c54074e5ac3060bf48783e4e107661aa413872af49a1",
+          "2ccfe4dacf4dfbbbcd7129d2fd2c2cae768bf09295f854141f34a4e231d2b3de",
+          "b3a476f9217aae5dd79db443656c8ff9ae006d108d7b15d613350281a0cc34f4",
+          "43e1d91e2c130f84575e00c17d1f226b2051963843f872cefcf2433a522b3844",
+          "b6c75a44f91e397ad2909222d690a3a4dfae782f83faea9d360bee89c0901cd7",
+          "8217a7f89a6fc9d1dd2964dcb0ef425e8f443241565043db9d623165e8f6f901",
+          "c54b121aec088422f4b6b6d94d1886b7f31c418dbfbb3fd4025b22b852255512"
+        ]
+      },
+      {
+        "validator": 3,
+        "height": 12,
+        "head": "36405e361a69437769581aa72f907c49dcc52d5c09684a7b01a14a285db33a1a",
+        "state": "b3afe2824067e064c55dfea1c1bddbcfa9e113b09690dd789ac78656ed1332b2",
+        "consensus_commitment": "e7bdd10eba45275ab5b26462dcb15fffc973fda60a3a6b058b95277cfa17cc53",
+        "retained_finality_frame_sha256": [
+          "8369a84b53a651e370465469853b844092593546cfeff247734bde5d1aada7a9",
+          "18f22123c1a3faf54397281fa27c75fbe502acf8897bbc8ff9d199a9f790a640",
+          "d16deaa46e6f8fb19b3fc669f0c9380369697d9873f260ccaffc4343f99001d7",
+          "79cb7f6d01cbe13f3c55686c06b1a93f674761707be285568a71b4719db2c20b",
+          "599504482836ef85458947d858b8f50e39535692c8a8d8b89799fddb6332124d",
+          "f4870354a9366ca1c060c54074e5ac3060bf48783e4e107661aa413872af49a1",
+          "2ccfe4dacf4dfbbbcd7129d2fd2c2cae768bf09295f854141f34a4e231d2b3de",
+          "9ae4031acd954abf3d0fd88d2e482d49fbd2941559525fb96e93af732d1c60bc",
+          "878c089a8f92378d11071608c753265e0bc82c01ca697fc5d59e70858a5f95bc",
+          "45329f60f9fb345f6bf9ba77b69992f10e2a4783a104f015633b4efc48fee98c",
+          "8217a7f89a6fc9d1dd2964dcb0ef425e8f443241565043db9d623165e8f6f901",
+          "c54b121aec088422f4b6b6d94d1886b7f31c418dbfbb3fd4025b22b852255512"
+        ]
+      }
+    ],
+    "binary_sha256": {
+      "naome": "dd7ef12e5613db2730dfda53e12277ec0e38086bec78ec9075ab19c16f229f05",
+      "naome-validator": "eacce3c600c00a89a1e796e26d02df1dc0013b89b6cfc076ed1b9d8efeb1c038",
+      "naome-verifier": "7ac29b36204344a18ff52dd5940b5d3e9e6e7835e4816e86fd763d6c9ff588e7"
+    },
+    "source_commit": "bbb5464e7a7bcb7124d51717612463514f5c2af9",
+    "source_worktree_clean": false,
+    "runner_sha256": "ee988427b1056a80d69a936c8b41dea701b75d900eb874a3132c08829dce8c3b",
+    "harness_sha256": {
+      "state_qualify.py": "ee988427b1056a80d69a936c8b41dea701b75d900eb874a3132c08829dce8c3b",
+      "state_backend.py": "a0fab0f11c0841d921685c1e9b68ab9be0a60b466f2b23fc271bd2550e179d18",
+      "state_agent.py": "87649069ba2bdd690c055b23cf1c9e975a303b69201ec92a151f46e37c25a91e",
+      "proxy.py": "10a5a6dc3f28cfac458b55400a8fe4e04917080a5f37b5ae9d9e57ae7c88e705"
+    },
+    "authority_stores_initialized_by_setup": true,
+    "malformed_ingress_rejected_without_authority_change": 32,
+    "elapsed_seconds": 149.728,
+    "resources": {
+      "0": {
+        "samples": 259,
+        "peak_disk_bytes": 244687,
+        "peak_memory_bytes": 35733504
+      },
+      "1": {
+        "samples": 260,
+        "peak_disk_bytes": 268869,
+        "peak_memory_bytes": 35602432
+      },
+      "2": {
+        "samples": 230,
+        "peak_disk_bytes": 196145,
+        "peak_memory_bytes": 36339712
+      },
+      "3": {
+        "samples": 176,
+        "peak_disk_bytes": 191291,
+        "peak_memory_bytes": 36126720
+      }
+    },
+    "corrupt_export_rejected_without_repair": true
+  },
+  "independent_review": {
+    "result": "clear",
+    "mode": "read-only review; no independent Cargo or runtime execution",
+    "findings_fixed": [
+      "Unknown fields accepted on serde unit control variants",
+      "Verifier full report incorrectly shared diagnostic cap",
+      "SIGTERM lifecycle parity"
+    ]
+  },
+  "ci": {
+    "status": "pending dispatch for this milestone"
+  },
+  "remaining": [
+    "Retire V0 runtime, transport, consensus and history authority APIs after migrating remaining authoring callers",
+    "Integrate strict artifact DAG as the canonical proof-library component",
+    "Complete final workspace and platform CI gates",
+    "Run final real-window lab through all three main executables with actual bounded agent review",
+    "Multi-machine and seven-day qualification remain later"
+  ]
+}

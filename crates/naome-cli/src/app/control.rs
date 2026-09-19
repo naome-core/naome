@@ -11,8 +11,8 @@ pub const MAXIMUM: usize = 3 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    Status,
-    Shutdown,
+    Status {},
+    Shutdown {},
     Submit { bytes: String },
     Receipt { id: String },
     Question { id: String },

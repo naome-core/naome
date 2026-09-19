@@ -66,9 +66,9 @@ pub async fn run(args: Vec<String>) -> Result<()> {
         Some("status" | "shutdown") if args.len() == 2 => {
             let config = setup::NodeConfig::read(std::path::Path::new(&args[1]))?;
             let request = if args[0] == "status" {
-                control::Request::Status
+                control::Request::Status {}
             } else {
-                control::Request::Shutdown
+                control::Request::Shutdown {}
             };
             println!("{}", control::call(&config, request).await?);
             Ok(())

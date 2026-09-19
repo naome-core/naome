@@ -1,5 +1,9 @@
 # Fixed-validator process source-backed proofs V0
 
+> The V0 executable and process tests described here are retired. This historical
+> contract is not a supported command interface. Current operation and independent
+> replay use the [canonical state executables](../research/mvp/operations.md).
+
 ## Scope and authority
 
 This profile implements `PROD-020-056` inside the Unix

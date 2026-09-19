@@ -83,58 +83,76 @@ async fn serve(listener: UnixListener, sender: mpsc::Sender<Message>) -> Result<
     }
 }
 pub async fn run(path: &Path) -> Result<()> {
+    let output = crate::output::Output::start(crate::output::Stream::Out)?;
+    let errors = crate::output::Output::start(crate::output::Stream::Error)?;
+    let result = run_owned(path, &output, &errors).await;
+    // run_owned has released history, signing custody and the control socket.
+    // Both streams share a single flush deadline even if neither reader drains.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let flushed = output.finish_until(deadline);
+    let errors_flushed = errors.finish_until(deadline);
+    result?;
+    flushed?;
+    errors_flushed
+}
+async fn run_owned(
+    path: &Path,
+    output: &crate::output::Output,
+    errors: &crate::output::Output,
+) -> Result<()> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let config = NodeConfig::read(path)?;
     let genesis = config.genesis()?;
-    if files::available(config.history.parent().ok_or("history has no parent")?)?
-        < genesis.profile().required_storage_bytes()?
-    {
-        return Err("insufficient free storage for this immutable profile".into());
+    // Configuration and both registered identities are checked before any
+    // authority store is opened. Crossed keys must never enter the runtime.
+    if config.maximum_round > genesis.profile().limits().consensus_rounds {
+        return Err("maximum round exceeds the immutable profile".into());
     }
-    let new = !config.history.exists();
-    if new {
-        for directory in [
-            &config.history,
-            &config.history_anchor,
-            &config.signer,
-            &config.signer_anchor,
-        ] {
-            files::directory(directory)?;
+    let key = files::key(&config.consensus_key, 2)?;
+    let transport_key = files::key(&config.transport_key, 3)?;
+    if !genesis.validators().iter().any(|validator| {
+        validator.consensus_key == key.verifying_key().to_bytes()
+            && validator.transport_key == transport_key.verifying_key().to_bytes()
+    }) {
+        return Err(
+            "consensus and transport keys must belong to the same registered validator".into(),
+        );
+    }
+    for directory in [
+        &config.history,
+        &config.history_anchor,
+        &config.signer,
+        &config.signer_anchor,
+    ] {
+        let metadata = std::fs::symlink_metadata(directory)?;
+        if !metadata.is_dir()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(
+                "existing private authority directories are required; startup never initializes"
+                    .into(),
+            );
         }
     }
-    let history = if new {
-        ResearchHistory::create(
-            &config.history,
-            &config.history_anchor,
-            genesis.clone(),
-            config.maximum_round,
-        )?
-    } else {
-        ResearchHistory::open(
-            &config.history,
-            &config.history_anchor,
-            genesis.clone(),
-            config.maximum_round,
-        )?
-    };
-    let key = files::key(&config.consensus_key, 2)?;
-    let signer = if new {
-        ResearchSigner::create(
-            &config.signer,
-            &config.signer_anchor,
-            genesis.clone(),
-            key,
-            config.maximum_round,
-        )?
-    } else {
-        ResearchSigner::open(
-            &config.signer,
-            &config.signer_anchor,
-            genesis.clone(),
-            key,
-            config.maximum_round,
-        )?
-    };
-    let mut seed = Zeroizing::new(files::key(&config.transport_key, 3)?.to_bytes());
+    if let Some(address) = config.listen_address
+        && (address.port() == 0
+            || address.ip().is_multicast()
+            || matches!(address, std::net::SocketAddr::V6(ip) if ip.scope_id() != 0 || ip.flowinfo() != 0)
+            || matches!(address.ip(), std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()))
+    {
+        return Err("invalid local listener address".into());
+    }
+    if let Ok(metadata) = std::fs::symlink_metadata(&config.control_socket)
+        && (!metadata.file_type().is_socket()
+            || metadata.uid() != rustix::process::geteuid().as_raw())
+    {
+        return Err("control socket path is occupied by an unexpected file".into());
+    }
+    if files::available(&config.history)? < genesis.profile().required_storage_bytes()? {
+        return Err("insufficient free storage for this immutable profile".into());
+    }
+    let mut seed = Zeroizing::new(transport_key.to_bytes());
     let identity = Keypair::ed25519_from_bytes(&mut *seed)?;
     let mut network = StaticArtifactNetwork::new_research(identity, &genesis)?;
     let peers = genesis
@@ -158,6 +176,21 @@ pub async fn run(path: &Path) -> Result<()> {
             .clone(),
     };
     network.listen_on(listen)?;
+    // Missing stores, anchors, or an unsupported format are fatal. In
+    // particular, losing every store never recreates a signer with old keys.
+    let history = ResearchHistory::open(
+        &config.history,
+        &config.history_anchor,
+        genesis.clone(),
+        config.maximum_round,
+    )?;
+    let signer = ResearchSigner::open(
+        &config.signer,
+        &config.signer_anchor,
+        genesis.clone(),
+        key,
+        config.maximum_round,
+    )?;
     let mut runtime_config = ResearchRuntimeConfig {
         allow_simulation_controls: config.simulation,
         ..ResearchRuntimeConfig::default()
@@ -186,27 +219,33 @@ pub async fn run(path: &Path) -> Result<()> {
     )?;
     let _socket = SocketGuard(config.control_socket.clone());
     let (sender, mut receiver) = mpsc::channel(16);
-    let server = tokio::spawn(serve(listener, sender));
-    println!(
-        "{}",
-        json!({"event":"started","peer":runtime.local_peer_id().to_string(),"height":runtime.state()?.height(),"genesis":files::hex(genesis.id().as_bytes())})
-    );
+    struct Server(tokio::task::JoinHandle<Result<()>>);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let server = Server(tokio::spawn(serve(listener, sender)));
+    output.line(&json!({"event":"started","peer":runtime.local_peer_id().to_string(),"height":runtime.state()?.height(),"genesis":files::hex(genesis.id().as_bytes())}).to_string())?;
     let mut space_checked = Instant::now();
     let outcome = loop {
         tokio::select! {
+            ()=output.failed()=>break Err("stdout writer failed".into()),
+            ()=errors.failed()=>break Err("stderr writer failed".into()),
             result=runtime.step()=>match result {
-                Ok(ResearchRuntimeEvent::Finalized{height})=>println!("{}",json!({"event":"finalized","height":height,"state":files::hex(runtime.state()?.commitment().as_bytes())})),
-                Ok(ResearchRuntimeEvent::Rejected{peer,reason})=>eprintln!("{}",json!({"event":"peer_input_rejected","peer":peer.to_string(),"reason":reason})),
+                Ok(ResearchRuntimeEvent::Finalized{height})=>output.line(&json!({"event":"finalized","height":height,"state":files::hex(runtime.state()?.commitment().as_bytes())}).to_string())?,
+                Ok(ResearchRuntimeEvent::Rejected{peer,reason})=>errors.line(&json!({"event":"peer_input_rejected","peer":peer.to_string(),"reason":reason}).to_string())?,
                 Ok(_)=>{},Err(error)=>break Err(error.into()),
             },
             message=receiver.recv()=>{
                 let Some(message)=message else{break Err("control listener stopped".into());};
-                let shutdown=matches!(message.request,Request::Shutdown);
+                let shutdown=matches!(message.request,Request::Shutdown {});
                 let response=handle(&mut runtime,&peers,message.request).unwrap_or_else(|error|json!({"error":error.to_string()}));
                 let _=message.response.send(response);
                 if shutdown {tokio::time::sleep(Duration::from_millis(50)).await;break Ok(());}
             },
             result=tokio::signal::ctrl_c()=>{result?;break Ok(());}
+            _=terminate.recv()=>break Ok(()),
         }
         if space_checked.elapsed() >= Duration::from_secs(10) {
             if files::available(&config.history)? < genesis.profile().required_storage_bytes()? {
@@ -215,7 +254,7 @@ pub async fn run(path: &Path) -> Result<()> {
             space_checked = Instant::now();
         }
     };
-    server.abort();
+    drop(server);
     outcome
 }
 fn handle(
@@ -224,13 +263,13 @@ fn handle(
     request: Request,
 ) -> Result<Value> {
     Ok(match request {
-        Request::Status => {
+        Request::Status {} => {
             let mut value = control::status(runtime.state()?);
             value["pending_operations"] = json!(runtime.pending_operations());
             value["consensus_position"]=json!(runtime.position()?.map(|(height,round,phase)|json!({"height":height,"round":round,"phase":format!("{phase:?}")})));
             value
         }
-        Request::Shutdown => json!({"status":"stopping"}),
+        Request::Shutdown {} => json!({"status":"stopping"}),
         Request::Submit { bytes } => {
             let raw = decode_bytes(
                 &bytes,

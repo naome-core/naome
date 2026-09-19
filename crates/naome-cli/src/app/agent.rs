@@ -166,7 +166,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         );
         return Ok(());
     }
-    let status = control::call(&config, Request::Status).await?;
+    let status = control::call(&config, Request::Status {}).await?;
     let question_id = status["active"]["question"]
         .as_str()
         .ok_or("question ID unavailable")?
@@ -229,7 +229,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             )?;
         }
     };
-    let latest = control::call(&config, Request::Status).await?;
+    let latest = control::call(&config, Request::Status {}).await?;
     voting(&latest, &genesis_id, &question_id, attempt)?;
     let body = OperationBody::Vote {
         question: QuestionId::from_bytes(files::unhex(&question_id)?),

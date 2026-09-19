@@ -90,8 +90,10 @@ The old `naome-devnet` provision/publish/verify executable and its artifact-sour
 publishers are removed. Existing V0 data has no conversion path; keep original
 binaries for historical inspection. Canonical setup creates fresh genesis and
 refuses existing output, invalid or duplicate endpoints, symlinked endpoint files,
-and invalid profile limits. Its keys remain private and selected stores start
-absent. These properties are checked in `naome-cli` setup tests.
+and invalid profile limits. Its keys remain private and all four authority
+stores are initialized at genesis before configuration publication. Startup only
+reopens existing stores. These properties are checked in `naome-cli` setup and
+actual main-executable tests.
 
 Legacy HTTP health/event collectors retired with their dedicated surfaces.
 Canonical supervision uses the node's bounded local status interface, verifies
@@ -104,3 +106,5 @@ Protocol/runtime suites retain authenticated frame and operation rejection check
 The old 128-artifact recovery bundle fixture belongs to the retired V0 publisher
 API; canonical qualification instead checks bounded complete-record history and
 independent replay, alongside the required proof-library process tests.
+
+Setup initializes genesis-bound history and signing stores before any validator starts. The qualifier moves each fresh external-anchor directory intact to its separate per-validator mount and syncs both parent directories; startup only reopens those stores. Missing authority is a failure, never an initialization request.

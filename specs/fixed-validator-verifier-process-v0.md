@@ -1,5 +1,9 @@
 # Fixed-Validator Verifier Process V0
 
+> The V0 executable and process tests described here are retired. This historical
+> contract is not a supported command interface. Current operation and independent
+> replay use the [canonical state executables](../research/mvp/operations.md).
+
 ## Authority and scope
 
 `SEC-003-001` defines the local Unix `naome-verifier` executable;

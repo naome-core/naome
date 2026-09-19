@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "cases/lifecycle.rs"]
+mod lifecycle;
+
 #[path = "cases/state_safety.rs"]
 mod state_safety;
 

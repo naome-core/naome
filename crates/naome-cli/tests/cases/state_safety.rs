@@ -152,6 +152,7 @@ fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_qu
     // withholds the receipt for the actual process's durably completed vote.
     let observed_vote = capture_vote_without_receipt(&lab, Some(proposal.clone()), 1);
     kill(&mut lab, 3);
+    super::lifecycle::refuse_missing_stores(&lab, 3);
     let before = image(&lab, 3);
     let journal_path = journal(&lab, 3);
     let prefix = fs::read(&journal_path).unwrap();

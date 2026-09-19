@@ -195,7 +195,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
         return save_send(&config, &args[5], &bundle.commit).await;
     }
-    let status = control::call(&config, Request::Status).await?;
+    let status = control::call(&config, Request::Status {}).await?;
     if status["genesis"] != files::hex(genesis.id().as_bytes()) {
         return Err("node and local genesis disagree".into());
     }

@@ -1,6 +1,7 @@
 //! Shared command entry point for the canonical trusted NAOME state machine.
 
 mod archive;
+mod output;
 
 #[cfg(unix)]
 mod app;
@@ -17,7 +18,11 @@ pub fn verify_archive(
 pub fn run_verifier_args(args: Vec<String>) -> std::process::ExitCode {
     match args.first().map(String::as_str) {
         None | Some("help" | "--help") => {
-            println!("Usage: naome-verifier verify GENESIS EXPORT_DIRECTORY");
+            let _ = output::message(
+                output::Stream::Out,
+                "Usage: naome-verifier verify GENESIS EXPORT_DIRECTORY",
+                std::time::Duration::from_secs(2),
+            );
             std::process::ExitCode::SUCCESS
         }
         Some("verify") if args.len() == 3 => {
@@ -26,17 +31,52 @@ pub fn run_verifier_args(args: Vec<String>) -> std::process::ExitCode {
                 std::path::Path::new(&args[2]),
             ) {
                 Ok(report) => {
-                    println!("{report}");
-                    std::process::ExitCode::SUCCESS
+                    if output::report(&report.to_string()).is_ok() {
+                        std::process::ExitCode::SUCCESS
+                    } else {
+                        std::process::ExitCode::FAILURE
+                    }
                 }
                 Err(error) => {
-                    eprintln!("naome-verifier: {error}");
+                    let _ = output::message(
+                        output::Stream::Error,
+                        &format!("naome-verifier: {error}"),
+                        std::time::Duration::from_millis(250),
+                    );
                     std::process::ExitCode::FAILURE
                 }
             }
         }
         _ => {
-            eprintln!("naome-verifier only supports: verify GENESIS EXPORT_DIRECTORY");
+            let _ = output::message(
+                output::Stream::Error,
+                "naome-verifier only supports: verify GENESIS EXPORT_DIRECTORY",
+                std::time::Duration::from_millis(250),
+            );
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Validator-only interface. No legacy or operator command can create custody.
+#[cfg(unix)]
+pub fn run_validator_args(args: Vec<String>) -> std::process::ExitCode {
+    match args.first().map(String::as_str) {
+        None | Some("help" | "--help") => {
+            let _ = output::message(
+                output::Stream::Out,
+                "Usage: naome-validator start CONFIG",
+                std::time::Duration::from_secs(2),
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        Some("start") if args.len() == 2 => run_args(args),
+        _ => {
+            let _ = output::message(
+                output::Stream::Error,
+                "naome-validator only supports: start CONFIG",
+                std::time::Duration::from_millis(250),
+            );
             std::process::ExitCode::FAILURE
         }
     }
@@ -54,7 +94,11 @@ pub fn run_args(args: Vec<String>) -> std::process::ExitCode {
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("naome: {error}");
+            let _ = output::message(
+                output::Stream::Error,
+                &format!("naome: {error}"),
+                std::time::Duration::from_millis(250),
+            );
             std::process::ExitCode::FAILURE
         }
     }

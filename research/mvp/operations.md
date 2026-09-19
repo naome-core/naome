@@ -32,7 +32,9 @@ overwrites an existing run. A non-signing observer can independently replay an
 exported completed run with `naome-verifier verify GENESIS EXPORT_DIRECTORY`;
 that entry point accepts only offline verification of the canonical state history
 on Unix and Windows. Validator operation still requires Unix durable custody.
-Legacy V0 commands remain during integration; their retirement is not yet complete.
+The validator accepts only `start CONFIG`; the verifier accepts only `verify`
+and help. Former V0 commands and the `state` prefix are unsupported and fail
+without creating or converting authority.
 A short absolute path also leaves room for Unix
 control-socket path limits. The four ports beginning at `44100` must be available.
 
@@ -61,10 +63,19 @@ and required bytes and rejects insufficient space. Nodes also halt visibly if
 free space later falls below their profile floor.
 
 Setup creates six account keys, four consensus keys, four separate transport
-keys, public `genesis.bin`, and `node-0` through `node-3` configurations. Accounts
+keys, public `genesis.bin`, and `node-0` through `node-3` configurations. It also
+initializes each node’s empty canonical history, signing journal, and two separate
+anchors before publishing its configuration. Accounts
 0–3 are the fixed validator owners; accounts 4–5 are available for independent
 research authors. Private files use owner-only permissions. Keep the entire run
 directory, including retained commitment secrets, private and backed up.
+
+Validator startup only reopens existing stores. A missing journal, anchor, or
+authority directory is a fatal error, even if all stores are missing. Startup
+never recreates signing history with existing keys. Restore the complete correct
+run from its durable backup or provision a new run with fresh keys and genesis;
+do not copy old keys into a new authority store. SIGINT, SIGTERM, and the shutdown
+command release custody. Stalled diagnostic output cannot retain signing locks.
 
 Consensus retries also have a finite per-height round and journal budget. A
 partition without a quorum cannot consume rounds merely through elapsed time.

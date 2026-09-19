@@ -78,15 +78,26 @@ class Qualification:
             (anchors / str(i)).mkdir(mode=0o700)
             config = json.loads(self.backend.config(i).read_text())
             config['listen_address'] = self.backend.backs[i]
-            config['history_anchor'] = str(anchors / str(i) / 'history')
-            config['signer_anchor'] = str(anchors / str(i) / 'signer')
+            for field, name in (('history_anchor', 'history'), ('signer_anchor', 'signer')):
+                source = Path(config[field])
+                destination = anchors / str(i) / name
+                source.rename(destination)
+                for parent in (source.parent, destination.parent):
+                    descriptor = os.open(parent, os.O_RDONLY)
+                    try:
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                config[field] = str(destination)
             private = self.backend.node(i) / 'account.key'
             shutil.copy2(config['account_key'], private)
             config['account_key'] = str(private)
             atomic(self.backend.config(i), config)
             shutil.copy2(REPO / 'examples/research-mvp/question-a.nao', self.backend.node(i) / 'question.nao')
-            require(not Path(config['history']).exists() and not Path(config['signer']).exists(), 'authority stores must start absent')
-        self.report['authority_stores_initially_absent'] = True
+            require(all(Path(config[field]).is_dir() and any(Path(config[field]).iterdir())
+                        for field in ('history', 'signer', 'history_anchor', 'signer_anchor')),
+                    'setup must initialize all four authority stores')
+        self.report['authority_stores_initialized_by_setup'] = True
         if self.args.backend == 'docker':
             self.backend.prepare_containers()
             self.report['image_id'] = self.backend.image_id

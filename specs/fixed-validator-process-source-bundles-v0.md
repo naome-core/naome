@@ -1,5 +1,9 @@
 # Fixed-validator process source bundles V0
 
+> The V0 executable and process tests described here are retired. This historical
+> contract is not a supported command interface. Current operation and independent
+> replay use the [canonical state executables](../research/mvp/operations.md).
+
 ## Scope and authority
 
 `PROD-020-057` exposes offline current-head candidate-bundle export and strict

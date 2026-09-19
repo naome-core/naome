@@ -30,7 +30,14 @@ retirement of V0 authority or replace the final real-window lab.
 The [canonical devnet milestone](evidence/canonical-devnet.json) replaces the
 artifact-chain qualification harness and records delayed state traffic, fault
 recovery and independent replay through the main executables. Its evidence and
-pending qualification states are recorded separately.
+qualification states are recorded separately. Its 100-record Docker CI and
+102-record native run passed; the same overall CI run failed a retired V0
+supervisor process test and is not recorded as green.
+The [executable retirement milestone](evidence/executable-retirement.json) removes
+the V0 validator/verifier implementations and records canonical custody, bounded
+control/output, signal, and portable replay replacements. Both local process
+profiles and a fresh delayed native devnet smoke passed; its platform CI remains
+separate. Remaining V0 library APIs and the final real-window lab are still open.
 
 ## Recorded qualification
 

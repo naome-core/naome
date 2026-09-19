@@ -1,5 +1,9 @@
 # Fixed-validator V0 partition, proof catch-up and renewed voting
 
+> The V0 executable and process tests described here are retired. This historical
+> contract is not a supported command interface. Current operation and independent
+> replay use the [canonical state executables](../research/mvp/operations.md).
+
 ## Contract
 
 `PROD-020-061` integrates the existing partition, live proof-provider, bounded

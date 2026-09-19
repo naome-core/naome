@@ -40,7 +40,7 @@ pub fn directory(path: &Path) -> Result<()> {
 pub fn read(path: &Path, maximum: usize, private: bool) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
         .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > maximum as u64 {
@@ -88,7 +88,9 @@ pub fn create_or_match(path: &Path, bytes: &[u8], private: bool) -> Result<()> {
     if path.try_exists()? {
         let mut file = OpenOptions::new()
             .read(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            )
             .open(path)?;
         let metadata = file.metadata()?;
         if !metadata.is_file()

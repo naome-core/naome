@@ -279,7 +279,7 @@ async fn changed_or_expired_voting_context_never_creates_a_signed_action() {
         fixture.assert_no_vote_files();
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 3);
-        assert!(matches!(requests.last(), Some(Request::Status)));
+        assert!(matches!(requests.last(), Some(Request::Status {})));
     }
 }
 

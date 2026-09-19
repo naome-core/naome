@@ -79,13 +79,22 @@ pub fn run(args: &[String]) -> Result<()> {
             serde_json::from_slice(&files::read(Path::new(&args[5]), 4096, false)?)?;
         let parsed = values
             .iter()
-            .map(|value| value.parse::<std::net::SocketAddr>())
-            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
-        if parsed.len() != 4
-            || parsed.iter().any(|address| {
-                address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast()
+            .map(|value| {
+                let address: std::net::SocketAddr = value.parse()?;
+                if value.len() > 128
+                    || address.port() == 0
+                    || address.ip().is_unspecified()
+                    || address.ip().is_multicast()
+                    || matches!(address, std::net::SocketAddr::V6(ip) if ip.scope_id() != 0 || ip.flowinfo() != 0)
+                    || matches!(address.ip(), std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some())
+                    || address.to_string() != *value
+                {
+                    return Err("canonical literal peer endpoint required".into());
+                }
+                Ok(address)
             })
-        {
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        if parsed.len() != 4 {
             return Err("four distinct literal peer endpoints are required".into());
         }
         values
@@ -156,6 +165,31 @@ pub fn run(args: &[String]) -> Result<()> {
     )?;
     files::create(&root.join("genesis.bin"), &genesis.encode(), false)?;
     for (index, config) in configs.iter().enumerate() {
+        // Initialization is available only while generating a fresh genesis and
+        // fresh keys in a new directory. A validator start can only reopen.
+        for directory in [
+            &config.history,
+            &config.history_anchor,
+            &config.signer,
+            &config.signer_anchor,
+        ] {
+            files::directory(directory)?;
+        }
+        let history = naome_storage::state::ResearchHistory::create(
+            &config.history,
+            &config.history_anchor,
+            genesis.clone(),
+            maximum_round,
+        )?;
+        let signer = naome_storage::state::ResearchSigner::create(
+            &config.signer,
+            &config.signer_anchor,
+            genesis.clone(),
+            files::key(&config.consensus_key, 2)?,
+            maximum_round,
+        )?;
+        drop(signer);
+        drop(history);
         files::create(
             &root.join(format!("node-{index}/node.json")),
             &serde_json::to_vec_pretty(config)?,
