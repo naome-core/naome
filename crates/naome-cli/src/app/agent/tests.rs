@@ -1,7 +1,7 @@
 //! Fake providers exercise adapter boundaries only; they are not AI evidence.
 use super::*;
 use ed25519_dalek::SigningKey;
-use naome_ledger::profile::{Genesis, Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration};
+use naome_ledger::profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration};
 use std::{
     fs,
     path::PathBuf,
@@ -191,7 +191,7 @@ impl Fixture {
         let genesis = Genesis::new(
             Profile::short_test(),
             "naome:zfc".into(),
-            RESEARCH_CHECKER_PROFILE.into(),
+            STATE_CHECKER_PROFILE.into(),
             1,
             100,
             [9; 32],
@@ -200,7 +200,7 @@ impl Fixture {
         )
         .unwrap();
         let config = NodeConfig {
-            version: 1,
+            version: 2,
             genesis: root.join("genesis.bin"),
             history: root.join("history"),
             history_anchor: root.join("history-anchor"),
@@ -209,7 +209,7 @@ impl Fixture {
             consensus_key: root.join("consensus.key"),
             transport_key: root.join("transport.key"),
             account_key: key.clone(),
-            research_profile: root.join("research-profile.txt"),
+            agenda_profile: root.join("agenda-profile.txt"),
             control_socket: root.join("control.sock"),
             maximum_round: 64,
             simulation: true,
@@ -218,7 +218,7 @@ impl Fixture {
         files::directory(&config.signer).unwrap();
         files::create(&config.genesis, &genesis.encode(), false).unwrap();
         files::create(
-            &config.research_profile,
+            &config.agenda_profile,
             b"Small reusable exact mathematical targets.",
             true,
         )

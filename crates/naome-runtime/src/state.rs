@@ -1,6 +1,6 @@
-//! Independent research validator/observer scheduling and authenticated delivery.
+//! Independent state validator/observer scheduling and authenticated delivery.
 //!
-//! All consensus and durable signing authority stays in `ResearchNode`. Queue
+//! All consensus and durable signing authority stays in `StateNode`. Queue
 //! acceptance is explicitly not a finalized receipt. The async boundary keeps
 //! all pending transport tickets and exact retry bytes inside this owner.
 
@@ -10,15 +10,15 @@ mod schedule;
 #[cfg(test)]
 mod tests;
 
-use naome_consensus::state::ResearchPhase;
+use naome_consensus::state::StatePhase;
 use naome_ledger::{
-    OperationId, ResearchError, ResearchState, ValidatorId, authentication::SignedOperation,
+    LedgerError, LedgerState, OperationId, ValidatorId, authentication::SignedOperation,
     time::SignedTimeReport,
 };
-use naome_network::{PeerId, ResearchTicket, StaticArtifactNetwork};
-use naome_node::state::{ResearchNode, ResearchNodeError};
-use naome_protocol::state_exchange::ResearchRequestBody;
-use naome_storage::state::{ResearchHistory, ResearchSigner};
+use naome_network::{PeerId, StateNetwork, StateTicket};
+use naome_node::state::{StateNode, StateNodeError};
+use naome_protocol::state_exchange::StateRequestBody;
+use naome_storage::state::{StateHistory, StateSigner};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
@@ -28,7 +28,7 @@ use std::{
 use tokio::time::Instant;
 
 #[derive(Clone, Debug)]
-pub struct ResearchRuntimeConfig {
+pub struct StateRuntimeConfig {
     pub tick_interval: Duration,
     /// Round-zero delay; later rounds double it up to a sixteen-fold cap.
     pub proposal_timeout: Duration,
@@ -40,7 +40,7 @@ pub struct ResearchRuntimeConfig {
     /// and the fixed quorum denominator remain unchanged.
     pub allow_simulation_controls: bool,
 }
-impl Default for ResearchRuntimeConfig {
+impl Default for StateRuntimeConfig {
     fn default() -> Self {
         Self {
             tick_interval: Duration::from_millis(500),
@@ -52,39 +52,39 @@ impl Default for ResearchRuntimeConfig {
     }
 }
 #[derive(Debug)]
-pub enum ResearchRuntimeError {
-    Node(ResearchNodeError),
+pub enum StateRuntimeError {
+    Node(StateNodeError),
     Rejected(String),
     Clock(&'static str),
     Configuration(&'static str),
     Transport(String),
 }
-impl fmt::Display for ResearchRuntimeError {
+impl fmt::Display for StateRuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Node(e) => e.fmt(f),
-            Self::Rejected(e) => write!(f, "research request rejected: {e}"),
-            Self::Clock(e) => write!(f, "research clock error: {e}"),
-            Self::Configuration(e) => write!(f, "research runtime configuration: {e}"),
-            Self::Transport(e) => write!(f, "research transport: {e}"),
+            Self::Rejected(e) => write!(f, "state request rejected: {e}"),
+            Self::Clock(e) => write!(f, "state clock error: {e}"),
+            Self::Configuration(e) => write!(f, "state runtime configuration: {e}"),
+            Self::Transport(e) => write!(f, "state transport: {e}"),
         }
     }
 }
-impl std::error::Error for ResearchRuntimeError {}
-impl From<ResearchNodeError> for ResearchRuntimeError {
-    fn from(e: ResearchNodeError) -> Self {
+impl std::error::Error for StateRuntimeError {}
+impl From<StateNodeError> for StateRuntimeError {
+    fn from(e: StateNodeError) -> Self {
         Self::Node(e)
     }
 }
-impl From<ResearchError> for ResearchRuntimeError {
-    fn from(e: ResearchError) -> Self {
+impl From<LedgerError> for StateRuntimeError {
+    fn from(e: LedgerError) -> Self {
         Self::Rejected(e.to_string())
     }
 }
-type Result<T> = std::result::Result<T, ResearchRuntimeError>;
+type Result<T> = std::result::Result<T, StateRuntimeError>;
 
 #[derive(Clone, Debug)]
-pub enum ResearchRuntimeEvent {
+pub enum StateRuntimeEvent {
     Tick,
     Network,
     Finalized { height: u64 },
@@ -92,7 +92,7 @@ pub enum ResearchRuntimeEvent {
 }
 struct Delivery {
     peer: PeerId,
-    body: ResearchRequestBody,
+    body: StateRequestBody,
     id: [u8; 32],
     height: u64,
 }
@@ -100,19 +100,19 @@ struct ProofFetch {
     peer: PeerId,
     proof: naome_proof::ProofId,
     deadline: Instant,
-    ticket: Option<ResearchTicket>,
+    ticket: Option<StateTicket>,
     outcome: Option<std::result::Result<Vec<u8>, String>>,
 }
 struct Flight {
     delivery: Delivery,
-    ticket: ResearchTicket,
+    ticket: StateTicket,
 }
 
-pub struct ResearchRuntime {
-    node: ResearchNode,
-    network: StaticArtifactNetwork,
+pub struct StateRuntime {
+    node: StateNode,
+    network: StateNetwork,
     peers: Vec<PeerId>,
-    config: ResearchRuntimeConfig,
+    config: StateRuntimeConfig,
     pending: BTreeMap<OperationId, SignedOperation>,
     pending_bytes: usize,
     action_cursor: usize,
@@ -126,26 +126,26 @@ pub struct ResearchRuntime {
     disabled: Vec<PeerId>,
     next_tick: Instant,
     phase_started: Instant,
-    last_position: Option<(u64, u64, ResearchPhase)>,
+    last_position: Option<(u64, u64, StatePhase)>,
     last_utc: Option<u64>,
     last_clock: Option<(std::time::SystemTime, Instant)>,
     observed_height: u64,
     work_ready: bool,
 }
-impl ResearchRuntime {
+impl StateRuntime {
     pub fn new(
-        history: ResearchHistory,
-        signer: Option<ResearchSigner>,
-        network: StaticArtifactNetwork,
+        history: StateHistory,
+        signer: Option<StateSigner>,
+        network: StateNetwork,
         mut peers: Vec<PeerId>,
-        config: ResearchRuntimeConfig,
+        config: StateRuntimeConfig,
     ) -> Result<Self> {
         if config.tick_interval.is_zero()
             || config.proposal_timeout < config.tick_interval
             || config.prevote_timeout < config.tick_interval
             || config.precommit_timeout < config.tick_interval
         {
-            return Err(ResearchRuntimeError::Configuration(
+            return Err(StateRuntimeError::Configuration(
                 "positive tick and phase intervals required",
             ));
         }
@@ -156,25 +156,25 @@ impl ResearchRuntime {
                 .iter()
                 .any(|p| *p == network.local_peer_id() || !network.is_configured_peer(p))
         {
-            return Err(ResearchRuntimeError::Configuration(
+            return Err(StateRuntimeError::Configuration(
                 "peers must be the configured remote research validators",
             ));
         }
         let genesis = history
             .head()
-            .map_err(ResearchNodeError::from)?
+            .map_err(StateNodeError::from)?
             .state()
             .genesis();
-        let expected = naome_protocol::state_exchange::ResearchContext::new(
+        let expected = naome_protocol::state_exchange::StateContext::new(
             *genesis.id().as_bytes(),
             *genesis.profile().id().as_bytes(),
         );
-        if network.research_context() != Some(expected) {
-            return Err(ResearchRuntimeError::Configuration(
+        if network.state_context() != Some(expected) {
+            return Err(StateRuntimeError::Configuration(
                 "transport context differs from selected history",
             ));
         }
-        let node = ResearchNode::new(history, signer)?;
+        let node = StateNode::new(history, signer)?;
         let observed_height = node.state()?.height();
         let last_position = node.position()?;
         let now = Instant::now();
@@ -203,13 +203,13 @@ impl ResearchRuntime {
             work_ready: false,
         })
     }
-    pub fn state(&self) -> Result<&ResearchState> {
+    pub fn state(&self) -> Result<&LedgerState> {
         Ok(self.node.state()?)
     }
-    pub fn history(&self) -> &ResearchHistory {
+    pub fn history(&self) -> &StateHistory {
         self.node.history()
     }
-    pub fn position(&self) -> Result<Option<(u64, u64, ResearchPhase)>> {
+    pub fn position(&self) -> Result<Option<(u64, u64, StatePhase)>> {
         Ok(self.node.position()?)
     }
     pub fn local_peer_id(&self) -> PeerId {
@@ -246,11 +246,11 @@ impl ResearchRuntime {
             .iter()
             .find(|entry| entry.0 == id && entry.1 == current_height)
         {
-            return Err(ResearchRuntimeError::Rejected(reason.clone()));
+            return Err(StateRuntimeError::Rejected(reason.clone()));
         }
         self.validate_queue_phase(&body, operation.author())?;
         if self.state()?.next_nonce(operation.author()) != Some(operation.nonce()) {
-            return Err(ResearchRuntimeError::Rejected(
+            return Err(StateRuntimeError::Rejected(
                 "operation must use exact next finalized nonce".into(),
             ));
         }
@@ -259,7 +259,7 @@ impl ResearchRuntime {
             .values()
             .any(|op| op.author() == operation.author() && op.nonce() == operation.nonce())
         {
-            return Err(ResearchRuntimeError::Rejected(
+            return Err(StateRuntimeError::Rejected(
                 "different pending operation already occupies this nonce".into(),
             ));
         }
@@ -271,7 +271,7 @@ impl ResearchRuntime {
                 .checked_add(bytes)
                 .is_none_or(|n| n > 2 * limit.record_bytes as usize)
         {
-            return Err(ResearchRuntimeError::Rejected(
+            return Err(StateRuntimeError::Rejected(
                 "pending operation capacity".into(),
             ));
         }
@@ -288,7 +288,7 @@ impl ResearchRuntime {
         use naome_ledger::{operations::OperationBody, state::Phase};
         let state = self.state()?;
         if state.terminated() {
-            return Err(ResearchRuntimeError::Rejected(
+            return Err(StateRuntimeError::Rejected(
                 "research run terminated".into(),
             ));
         }
@@ -330,7 +330,7 @@ impl ResearchRuntime {
             }
         };
         if !valid {
-            return Err(ResearchRuntimeError::Rejected(
+            return Err(StateRuntimeError::Rejected(
                 "operation does not match current finalized research phase or family".into(),
             ));
         }
@@ -340,7 +340,7 @@ impl ResearchRuntime {
         if let Some(operation) = self.pending.remove(&id) {
             let bytes = operation.encode();
             self.pending_bytes -= bytes.len();
-            self.outbox.retain(|d|!matches!(&d.body,ResearchRequestBody::UserAction(body) if body.as_ref()==bytes.as_slice()));
+            self.outbox.retain(|d|!matches!(&d.body,StateRequestBody::UserAction(body) if body.as_ref()==bytes.as_slice()));
         }
         self.rejections.retain(|entry| entry.0 != id);
         let maximum = self
@@ -368,12 +368,12 @@ impl ResearchRuntime {
         self.proof_fetches
             .retain(|fetch| fetch.outcome.is_none() || now < fetch.deadline);
         if !self.peers.contains(&peer) || self.disabled.contains(&peer) {
-            return Err(ResearchRuntimeError::Rejected(
+            return Err(StateRuntimeError::Rejected(
                 "proof peer is unknown or disabled".into(),
             ));
         }
         if self.state()?.library().lookup(proof).is_none() {
-            return Err(ResearchRuntimeError::Rejected(
+            return Err(StateRuntimeError::Rejected(
                 "proof is not in the selected verified library".into(),
             ));
         }
@@ -385,9 +385,7 @@ impl ResearchRuntime {
             return Ok(());
         }
         if self.proof_fetches.len() >= 4 {
-            return Err(ResearchRuntimeError::Rejected(
-                "proof fetch capacity".into(),
-            ));
+            return Err(StateRuntimeError::Rejected("proof fetch capacity".into()));
         }
         self.proof_fetches.push(ProofFetch {
             peer,
@@ -411,7 +409,7 @@ impl ResearchRuntime {
             .iter()
             .position(|fetch| fetch.peer == peer && fetch.proof == proof)
             .ok_or_else(|| {
-                ResearchRuntimeError::Rejected(
+                StateRuntimeError::Rejected(
                     "proof fetch was not requested or its result expired".into(),
                 )
             })?;
@@ -425,7 +423,7 @@ impl ResearchRuntime {
             .expect("completed fetch")
         {
             Ok(bytes) => Ok(Some(bytes)),
-            Err(reason) => Err(ResearchRuntimeError::Transport(reason)),
+            Err(reason) => Err(StateRuntimeError::Transport(reason)),
         }
     }
     fn expire_proof_fetches(&mut self) {
@@ -446,18 +444,16 @@ impl ResearchRuntime {
     }
     pub fn set_peer_enabled(&mut self, peer: PeerId, enabled: bool) -> Result<()> {
         if !self.config.allow_simulation_controls {
-            return Err(ResearchRuntimeError::Configuration(
+            return Err(StateRuntimeError::Configuration(
                 "simulation controls are disabled",
             ));
         }
         if !self.peers.contains(&peer) {
-            return Err(ResearchRuntimeError::Configuration(
-                "unknown simulation peer",
-            ));
+            return Err(StateRuntimeError::Configuration("unknown simulation peer"));
         }
         self.network
-            .set_research_peer_enabled(peer, enabled)
-            .map_err(|e| ResearchRuntimeError::Transport(e.to_string()))?;
+            .set_state_peer_enabled(peer, enabled)
+            .map_err(|e| StateRuntimeError::Transport(e.to_string()))?;
         self.disabled.retain(|p| *p != peer);
         if !enabled {
             self.disabled.push(peer);
@@ -467,7 +463,7 @@ impl ResearchRuntime {
     }
     /// Cancellation-safe one-event poll. Every mutation before the await has its
     /// publication/transport custody in `self`; dropping this future loses none.
-    pub async fn step(&mut self) -> Result<ResearchRuntimeEvent> {
+    pub async fn step(&mut self) -> Result<StateRuntimeEvent> {
         self.drive()?;
         self.flush()?;
         let event = tokio::select! {
@@ -475,7 +471,7 @@ impl ResearchRuntime {
             _=tokio::time::sleep_until(self.next_tick)=>{
                 self.next_tick=Instant::now()+self.config.tick_interval;
                 self.tick()?;
-                ResearchRuntimeEvent::Tick
+                StateRuntimeEvent::Tick
             }
         };
         self.drive()?;
@@ -483,7 +479,7 @@ impl ResearchRuntime {
         let height = self.state()?.height();
         if height != self.observed_height {
             self.observed_height = height;
-            return Ok(ResearchRuntimeEvent::Finalized { height });
+            return Ok(StateRuntimeEvent::Finalized { height });
         }
         Ok(event)
     }

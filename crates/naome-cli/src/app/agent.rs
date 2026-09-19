@@ -181,7 +181,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         .ok_or("submission unavailable")?
         .to_owned();
     let question = control::call(&config, Request::Question { id: submission }).await?;
-    let profile = String::from_utf8(files::read(&config.research_profile, 16384, true)?)?;
+    let profile = String::from_utf8(files::read(&config.agenda_profile, 16384, true)?)?;
     if profile.trim().is_empty() {
         return Err("operator research profile is empty".into());
     }

@@ -3,7 +3,7 @@ use naome_chain::StateRecordExecution;
 use naome_ledger::time::TimeCertificate;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-impl ResearchRuntime {
+impl StateRuntime {
     pub(super) fn tick(&mut self) -> Result<()> {
         let wall = SystemTime::now();
         let monotonic = Instant::now();
@@ -17,10 +17,10 @@ impl ResearchRuntime {
         self.last_clock = Some((wall, monotonic));
         let utc = wall
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| ResearchRuntimeError::Clock("UTC precedes Unix epoch"))?
+            .map_err(|_| StateRuntimeError::Clock("UTC precedes Unix epoch"))?
             .as_secs();
         if self.last_utc.is_some_and(|last| utc < last) {
-            return Err(ResearchRuntimeError::Clock(
+            return Err(StateRuntimeError::Clock(
                 "local UTC moved backwards; no new report signed",
             ));
         }
@@ -37,7 +37,7 @@ impl ResearchRuntime {
                 && self
                     .node
                     .position()?
-                    .is_some_and(|p| p.2 == ResearchPhase::Proposal)
+                    .is_some_and(|p| p.2 == StatePhase::Proposal)
             {
                 self.phase_started = Instant::now();
             }
@@ -52,12 +52,12 @@ impl ResearchRuntime {
             self.drive()?;
             if let Some((_, round, phase)) = self.node.position()? {
                 let base = match phase {
-                    ResearchPhase::Proposal => self.config.proposal_timeout,
-                    ResearchPhase::Prevote => self.config.prevote_timeout,
-                    ResearchPhase::Precommit => self.config.precommit_timeout,
+                    StatePhase::Proposal => self.config.proposal_timeout,
+                    StatePhase::Prevote => self.config.prevote_timeout,
+                    StatePhase::Precommit => self.config.precommit_timeout,
                 };
                 let duration = round_timeout(base, round);
-                if (self.work_ready || phase != ResearchPhase::Proposal)
+                if (self.work_ready || phase != StatePhase::Proposal)
                     && self.phase_started.elapsed() >= duration
                 {
                     let _ = self.node.timeout()?;
@@ -80,7 +80,7 @@ impl ResearchRuntime {
             state
                 .height()
                 .checked_add(1)
-                .ok_or(ResearchRuntimeError::Configuration("height overflow"))?,
+                .ok_or(StateRuntimeError::Configuration("height overflow"))?,
             state.time(),
         )?;
         let mut operations = Vec::new();
@@ -115,7 +115,7 @@ impl ResearchRuntime {
             }
         }
         let result = best
-            .map(|t| t.record().encode().map_err(ResearchRuntimeError::from))
+            .map(|t| t.record().encode().map_err(StateRuntimeError::from))
             .transpose()?;
         for (id, reason) in rejected {
             self.reject_preview(id, reason)?;
@@ -136,11 +136,11 @@ fn check_clock_progress(
     current: SystemTime,
     elapsed: Duration,
 ) -> Result<()> {
-    let wall_elapsed = current.duration_since(previous).map_err(|_| {
-        ResearchRuntimeError::Clock("local UTC moved backwards; no new report signed")
-    })?;
+    let wall_elapsed = current
+        .duration_since(previous)
+        .map_err(|_| StateRuntimeError::Clock("local UTC moved backwards; no new report signed"))?;
     if wall_elapsed.abs_diff(elapsed) > Duration::from_secs(2) {
-        return Err(ResearchRuntimeError::Clock(
+        return Err(StateRuntimeError::Clock(
             "UTC drift exceeded two seconds relative to monotonic time; no new report signed",
         ));
     }

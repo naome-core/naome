@@ -1,10 +1,10 @@
 use super::*;
-use naome_consensus::state::ResearchPublication;
-use naome_protocol::state_exchange::{ResearchContext, ResearchRequest};
+use naome_consensus::state::StatePublication;
+use naome_protocol::state_exchange::{StateContext, StateRequest};
 use sha2::{Digest, Sha256};
 
-impl ResearchRuntime {
-    fn enqueue(&mut self, peer: PeerId, body: ResearchRequestBody) -> Result<()> {
+impl StateRuntime {
+    fn enqueue(&mut self, peer: PeerId, body: StateRequestBody) -> Result<()> {
         if self.disabled.contains(&peer) {
             return Ok(());
         }
@@ -12,12 +12,12 @@ impl ResearchRuntime {
         let maximum = state.genesis().profile().limits().transport_frame_bytes as usize;
         let capacity = state.genesis().profile().limits().transport_buffer_frames as usize;
         let height = state.height();
-        let context = ResearchContext::new(
+        let context = StateContext::new(
             *state.genesis().id().as_bytes(),
             *state.genesis().profile().id().as_bytes(),
         );
-        let request = ResearchRequest::new(context, body.clone(), maximum)
-            .map_err(|e| ResearchRuntimeError::Rejected(e.to_string()))?;
+        let request = StateRequest::new(context, body.clone(), maximum)
+            .map_err(|e| StateRuntimeError::Rejected(e.to_string()))?;
         let id: [u8; 32] = Sha256::digest(request.to_wire_bytes()).into();
         if self.sent.contains(&(peer, id))
             || self.outbox.iter().any(|d| d.peer == peer && d.id == id)
@@ -32,11 +32,11 @@ impl ResearchRuntime {
         // back on every tick can starve time certification behind recurring
         // finality/history traffic when network latency exceeds the tick period.
         // The retained position preserves fairness without increasing capacity.
-        if matches!(&body, ResearchRequestBody::TimeReport(_))
+        if matches!(&body, StateRequestBody::TimeReport(_))
             && let Some(queued) = self
                 .outbox
                 .iter_mut()
-                .find(|d| d.peer == peer && matches!(&d.body, ResearchRequestBody::TimeReport(_)))
+                .find(|d| d.peer == peer && matches!(&d.body, StateRequestBody::TimeReport(_)))
         {
             *queued = Delivery {
                 peer,
@@ -57,7 +57,7 @@ impl ResearchRuntime {
         });
         Ok(())
     }
-    fn broadcast(&mut self, body: ResearchRequestBody) -> Result<()> {
+    fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
         for peer in self.peers.clone() {
             self.enqueue(peer, body.clone())?;
         }
@@ -66,10 +66,10 @@ impl ResearchRuntime {
     pub(super) fn enqueue_publications(&mut self) -> Result<()> {
         for publication in self.node.publications()? {
             let body = match publication {
-                ResearchPublication::Proposal(p) => ResearchRequestBody::Proposal(
-                    p.encode().map_err(ResearchNodeError::from)?.into(),
-                ),
-                ResearchPublication::Vote(v) => ResearchRequestBody::Vote(v.encode().into()),
+                StatePublication::Proposal(p) => {
+                    StateRequestBody::Proposal(p.encode().map_err(StateNodeError::from)?.into())
+                }
+                StatePublication::Vote(v) => StateRequestBody::Vote(v.encode().into()),
             };
             self.broadcast(body)?;
         }
@@ -79,7 +79,7 @@ impl ResearchRuntime {
         let height = self.state()?.height();
         if height > 0 {
             let proof = self.node.finality_bytes(height)?;
-            self.broadcast(ResearchRequestBody::Finalized(proof.into()))?;
+            self.broadcast(StateRequestBody::Finalized(proof.into()))?;
         }
         Ok(())
     }
@@ -90,19 +90,19 @@ impl ResearchRuntime {
         self.enqueue_latest_finality()?;
         self.enqueue_publications()?;
         if let Some(report) = &self.own_time {
-            self.broadcast(ResearchRequestBody::TimeReport(report.clone()))?;
+            self.broadcast(StateRequestBody::TimeReport(report.clone()))?;
         }
         let from = self
             .state()?
             .height()
             .checked_add(1)
-            .ok_or(ResearchRuntimeError::Configuration("height overflow"))?;
+            .ok_or(StateRuntimeError::Configuration("height overflow"))?;
         // One record can consume almost the whole transport envelope. Each
         // returned frame is verified and durably selected before requesting next.
         for peer in self.peers.clone() {
             self.enqueue(
                 peer,
-                ResearchRequestBody::History {
+                StateRequestBody::History {
                     from,
                     max_records: 1,
                 },
@@ -119,7 +119,7 @@ impl ResearchRuntime {
             self.action_cursor = (self.action_cursor + 1) % length;
         }
         for bytes in actions {
-            self.broadcast(ResearchRequestBody::UserAction(bytes))?;
+            self.broadcast(StateRequestBody::UserAction(bytes))?;
         }
         Ok(())
     }
@@ -129,9 +129,9 @@ impl ResearchRuntime {
             if fetch.outcome.is_none() && fetch.ticket.is_none() {
                 // Transient disconnected/already-pending capacity retries are
                 // bounded by this fetch's fixed overall deadline.
-                if let Ok(ticket) = self.network.request_research(
+                if let Ok(ticket) = self.network.request_state(
                     fetch.peer,
-                    ResearchRequestBody::Proof {
+                    StateRequestBody::Proof {
                         proof_id: fetch.proof,
                     },
                 ) {
@@ -159,7 +159,7 @@ impl ResearchRuntime {
             }
             match self
                 .network
-                .request_research(delivery.peer, delivery.body.clone())
+                .request_state(delivery.peer, delivery.body.clone())
             {
                 Ok(ticket) => self.flights.push(Flight { delivery, ticket }),
                 Err(_) => self.outbox.push_back(delivery),

@@ -13,7 +13,7 @@ use naome_authoring::{
     compile_artifact, compile_artifact_against_proof_context,
 };
 use naome_checker::CheckError;
-use naome_ledger::{ArtifactDag, LedgerError};
+use naome_ledger::{ArtifactAdmissionError, ArtifactDag};
 use naome_proof::{
     ArtifactId, ArtifactPayload, DefinitionId, DerivationId, ProofCertificate, ProofId, ProofStep,
     StatementId,
@@ -127,7 +127,7 @@ struct CheckedContext {
     payloads: Vec<(ArtifactId, Vec<u8>)>,
 }
 impl CheckedContext {
-    fn admit(&mut self, id: ArtifactId, bytes: Vec<u8>) -> Result<(), LedgerError> {
+    fn admit(&mut self, id: ArtifactId, bytes: Vec<u8>) -> Result<(), ArtifactAdmissionError> {
         self.dag
             .apply_canonical_artifact_bytes_with_expected_id(bytes.clone(), id)?;
         self.payloads.push((id, bytes));

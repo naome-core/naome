@@ -1,5 +1,5 @@
 use super::codec::{Reader, Writer};
-use naome_ledger::ResearchError;
+use naome_ledger::LedgerError;
 
 const MAGIC: &[u8; 5] = b"NSCF1";
 
@@ -20,10 +20,10 @@ impl<'a> FinalizedStateRecord<'a> {
         input: &'a [u8],
         maximum_bytes: usize,
         maximum_quorum_bytes: usize,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(input, maximum_bytes)?;
         if reader.fixed::<5>()? != *MAGIC {
-            return Err(ResearchError::Invalid("finalized state record version"));
+            return Err(LedgerError::Invalid("finalized state record version"));
         }
         let proposal = reader.bytes(maximum_bytes)?;
         let quorum = reader.bytes(maximum_quorum_bytes)?;
@@ -38,7 +38,7 @@ impl<'a> FinalizedStateRecord<'a> {
     }
 
     /// Frames exact evidence bytes; this does not authenticate their content.
-    pub fn encode_evidence(proposal: &[u8], quorum: &[u8]) -> Result<Vec<u8>, ResearchError> {
+    pub fn encode_evidence(proposal: &[u8], quorum: &[u8]) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
         writer.fixed(MAGIC);
         writer.bytes(proposal)?;

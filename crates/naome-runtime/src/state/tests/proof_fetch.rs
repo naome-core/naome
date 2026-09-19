@@ -1,17 +1,15 @@
 use super::*;
 use ed25519_dalek::Signer;
 use naome_chain::StateRecordExecution;
-use naome_consensus::state::{
-    ResearchLockEvent, ResearchLockState, ResearchPublication, ResearchQuorum,
-};
+use naome_consensus::state::{StateLockEvent, StateLockState, StatePublication, StateQuorum};
 use naome_ledger::{
     CommitmentId, library::ProofPackage, operations::SignedOriginal, time::TimeCertificate,
 };
 use naome_network::{NetworkEvent, PeerSessionEvent};
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
-use naome_protocol::state_exchange::ResearchResponseBody;
+use naome_protocol::state_exchange::StateResponseBody;
 
-fn append(history: &mut ResearchHistory, now: u64, operations: Vec<SignedOperation>) {
+fn append(history: &mut StateHistory, now: u64, operations: Vec<SignedOperation>) {
     let branch = history.head().unwrap();
     let state = branch.state();
     let time = TimeCertificate::new(
@@ -44,25 +42,25 @@ fn append(history: &mut ResearchHistory, now: u64, operations: Vec<SignedOperati
         .map(consensus)
         .find(|key| key.verifying_key().as_bytes() == proposer.as_bytes())
         .unwrap();
-    let mut kernel = ResearchLockState::new(branch, proposer).unwrap();
+    let mut kernel = StateLockState::new(branch, proposer).unwrap();
     let intent = kernel
         .apply(
             branch,
-            &ResearchLockEvent::Author {
+            &StateLockEvent::Author {
                 record: Some(record),
             },
             8,
         )
         .unwrap();
     let signature = signer.sign(&intent.signing_bytes().unwrap()).to_bytes();
-    let ResearchPublication::Proposal(proposal) = intent.complete(signature, branch, 8).unwrap()
+    let StatePublication::Proposal(proposal) = intent.complete(signature, branch, 8).unwrap()
     else {
         panic!("proposal")
     };
     let encoded = proposal.encode().unwrap();
     let mut kernels: Vec<_> = (0..3)
         .map(|i| {
-            ResearchLockState::new(
+            StateLockState::new(
                 branch,
                 ConsensusKey::from_bytes(consensus(i).verifying_key().to_bytes()),
             )
@@ -74,7 +72,7 @@ fn append(history: &mut ResearchHistory, now: u64, operations: Vec<SignedOperati
         let intent = kernel
             .apply(
                 branch,
-                &ResearchLockEvent::Prevote {
+                &StateLockEvent::Prevote {
                     proposal: Some(encoded.clone()),
                 },
                 8,
@@ -83,18 +81,18 @@ fn append(history: &mut ResearchHistory, now: u64, operations: Vec<SignedOperati
         let signature = consensus(i as u8)
             .sign(&intent.signing_bytes().unwrap())
             .to_bytes();
-        let ResearchPublication::Vote(vote) = intent.complete(signature, branch, 8).unwrap() else {
+        let StatePublication::Vote(vote) = intent.complete(signature, branch, 8).unwrap() else {
             panic!("prevote")
         };
         votes.push(vote);
     }
-    let prevotes = ResearchQuorum::from_votes(votes, state.genesis()).unwrap();
+    let prevotes = StateQuorum::from_votes(votes, state.genesis()).unwrap();
     let mut votes = Vec::new();
     for (i, kernel) in kernels.iter_mut().enumerate() {
         let intent = kernel
             .apply(
                 branch,
-                &ResearchLockEvent::Precommit {
+                &StateLockEvent::Precommit {
                     proposal: Some(encoded.clone()),
                     quorum: prevotes.encode(),
                 },
@@ -104,12 +102,12 @@ fn append(history: &mut ResearchHistory, now: u64, operations: Vec<SignedOperati
         let signature = consensus(i as u8)
             .sign(&intent.signing_bytes().unwrap())
             .to_bytes();
-        let ResearchPublication::Vote(vote) = intent.complete(signature, branch, 8).unwrap() else {
+        let StatePublication::Vote(vote) = intent.complete(signature, branch, 8).unwrap() else {
             panic!("precommit")
         };
         votes.push(vote);
     }
-    let precommits = ResearchQuorum::from_votes(votes, state.genesis()).unwrap();
+    let precommits = StateQuorum::from_votes(votes, state.genesis()).unwrap();
     let finality = branch
         .verify_finality(&proposal, &precommits, 8)
         .unwrap()
@@ -117,7 +115,7 @@ fn append(history: &mut ResearchHistory, now: u64, operations: Vec<SignedOperati
         .unwrap();
     history.append_finality(&finality).unwrap();
 }
-fn sign(history: &ResearchHistory, index: u8, body: OperationBody) -> SignedOperation {
+fn sign(history: &StateHistory, index: u8, body: OperationBody) -> SignedOperation {
     let state = history.head().unwrap().state();
     let id = AccountId::for_key(account(index).verifying_key().as_bytes());
     body.sign(
@@ -132,14 +130,14 @@ fn selected_history(
 ) -> (
     Directory,
     Directory,
-    ResearchHistory,
+    StateHistory,
     ProofId,
     ProofId,
     Vec<u8>,
 ) {
     let directory = Directory::new();
     let anchors = Directory::new();
-    let mut history = ResearchHistory::create(&directory.0, &anchors.0, g.clone(), 8).unwrap();
+    let mut history = StateHistory::create(&directory.0, &anchors.0, g.clone(), 8).unwrap();
     let question = CompiledQuestion::compile(
         "foundation = \"naome:zfc\"\nstatement = forall(y,forall(x,equal(x,x)))",
         g.profile(),
@@ -277,8 +275,8 @@ fn selected_history(
 async fn pair() -> (
     Directory,
     Directory,
-    ResearchRuntime,
-    StaticArtifactNetwork,
+    StateRuntime,
+    StateNetwork,
     ProofId,
     ProofId,
     Vec<u8>,
@@ -315,11 +313,11 @@ async fn pair() -> (
     .unwrap();
     drop(listeners);
     let (directory, anchors, history, proof, root, bytes) = selected_history(g.clone());
-    let mut a = StaticArtifactNetwork::new_research(transport(0), &g).unwrap();
-    let mut b = StaticArtifactNetwork::new_research(transport(1), &g).unwrap();
-    a.listen_on(a.research_listen_address().unwrap().clone())
+    let mut a = StateNetwork::new_state(transport(0), &g).unwrap();
+    let mut b = StateNetwork::new_state(transport(1), &g).unwrap();
+    a.listen_on(a.state_listen_address().unwrap().clone())
         .unwrap();
-    b.listen_on(b.research_listen_address().unwrap().clone())
+    b.listen_on(b.state_listen_address().unwrap().clone())
         .unwrap();
     let (pa, pb) = (a.local_peer_id(), b.local_peer_id());
     let (mut ready_a, mut ready_b) = (false, false);
@@ -327,33 +325,33 @@ async fn pair() -> (
         event=a.next_event()=>if let NetworkEvent::PeerSession(PeerSessionEvent::Established{peer_id})=event {ready_a|=peer_id==pb;},
         event=b.next_event()=>if let NetworkEvent::PeerSession(PeerSessionEvent::Established{peer_id})=event {ready_b|=peer_id==pa;},
     }}}).await.unwrap();
-    let runtime = ResearchRuntime::new(
+    let runtime = StateRuntime::new(
         history,
         None,
         a,
         (1..4).map(|i| transport(i).public().to_peer_id()).collect(),
-        ResearchRuntimeConfig {
+        StateRuntimeConfig {
             allow_simulation_controls: true,
-            ..ResearchRuntimeConfig::default()
+            ..StateRuntimeConfig::default()
         },
     )
     .unwrap();
     (directory, anchors, runtime, b, proof, root, bytes)
 }
 async fn respond(
-    runtime: &mut ResearchRuntime,
-    server: &mut StaticArtifactNetwork,
-    response: ResearchResponseBody,
+    runtime: &mut StateRuntime,
+    server: &mut StateNetwork,
+    response: StateResponseBody,
 ) {
     runtime.flush().unwrap();
     let mut response = Some(response);
     tokio::time::timeout(Duration::from_secs(10),async {loop {tokio::select! {
         event=runtime.network.next_event()=>{
-            let done=matches!(event,NetworkEvent::OutboundResearch(_));runtime.network_event(event).unwrap();if done {break;}
+            let done=matches!(event,NetworkEvent::OutboundState(_));runtime.network_event(event).unwrap();if done {break;}
         },
-        event=server.next_event()=>if let NetworkEvent::InboundResearch(inbound)=event {
-            assert_eq!(inbound.peer_id(),runtime.local_peer_id());assert!(matches!(inbound.request().body(),ResearchRequestBody::Proof{..}));
-            server.respond_research(inbound,response.take().unwrap()).unwrap();
+        event=server.next_event()=>if let NetworkEvent::InboundState(inbound)=event {
+            assert_eq!(inbound.peer_id(),runtime.local_peer_id());assert!(matches!(inbound.request().body(),StateRequestBody::Proof{..}));
+            server.respond_state(inbound,response.take().unwrap()).unwrap();
         },
     }}}).await.unwrap();
 }
@@ -371,7 +369,7 @@ async fn actual_noise_proof_fetch_checks_selected_bytes_and_bounds_retention() {
     respond(
         &mut runtime,
         &mut server,
-        ResearchResponseBody::Proof {
+        StateResponseBody::Proof {
             proof_id: proof,
             certificate: bytes.clone().into(),
         },
@@ -388,7 +386,7 @@ async fn actual_noise_proof_fetch_checks_selected_bytes_and_bounds_retention() {
     respond(
         &mut runtime,
         &mut server,
-        ResearchResponseBody::Proof {
+        StateResponseBody::Proof {
             proof_id: proof,
             certificate: altered.into(),
         },
@@ -402,7 +400,7 @@ async fn actual_noise_proof_fetch_checks_selected_bytes_and_bounds_retention() {
             .contains("differs")
     );
     runtime.start_proof_fetch(peer, proof).unwrap();
-    respond(&mut runtime, &mut server, ResearchResponseBody::Unavailable).await;
+    respond(&mut runtime, &mut server, StateResponseBody::Unavailable).await;
     assert!(
         runtime
             .take_proof_fetch(peer, proof)
@@ -415,7 +413,7 @@ async fn actual_noise_proof_fetch_checks_selected_bytes_and_bounds_retention() {
         runtime
             .validate_proof_fetch_response(
                 0,
-                &ResearchResponseBody::Proof {
+                &StateResponseBody::Proof {
                     proof_id: root,
                     certificate: bytes.into()
                 }

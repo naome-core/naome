@@ -2,7 +2,7 @@
 
 > Retired V0 contract. Its implementation and dedicated wire/API tests have been removed.
 > The sole active transport and runtime use canonical complete state records; see
-> [current ownership](ownership.md) and [operating guide](../research/mvp/operations.md).
+> [current ownership](ownership.md) and [operating guide](../docs/mvp/operations.md).
 > The text below records the removed interface and grants no current authority.
 
 ## Authority and scope
@@ -163,7 +163,7 @@ Any failure releases retained blocks and changes no journal state.
 
 ## Durable candidate-store ancestry fill
 
-`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill` accepts
+`StateNetwork::start_artifact_block_candidate_ancestry_fill` accepts
 one exact target, one caller-routed chain-scoped
 `ArtifactBlockCandidateStore`, one selected-artifact history source, and one
 caller-supplied peer identity used only if an exact candidate address is
@@ -220,7 +220,7 @@ finality.
 
 ### Caller-ordered fallback fill
 
-`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_with_peer_fallback`
+`StateNetwork::start_artifact_block_candidate_ancestry_fill_with_peer_fallback`
 is a separate opt-in mode. It accepts the same exact target, candidate store,
 and selected-artifact history source plus one caller-ordered peer-identity
 slice. The direct single-peer start above keeps its no-retry behavior unchanged.
@@ -259,7 +259,7 @@ consensus, finality, or economic authority.
 
 ### Explicit historical selected-anchor fill
 
-`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_from_selected_anchor`
+`StateNetwork::start_artifact_block_candidate_ancestry_fill_from_selected_anchor`
 is a separate direct-peer mode for recovering a candidate path to one exact
 caller-selected historical position in selected-artifact history. The caller
 supplies the exact candidate target, exact selected anchor, matching
@@ -299,7 +299,7 @@ that one continuous structural path to the exact anchor is integrity-readable
 from the same candidate store; it proves no payload availability or artifact
 validity.
 
-`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback`
+`StateNetwork::start_artifact_block_candidate_ancestry_fill_from_selected_anchor_with_peer_fallback`
 is the corresponding opt-in caller-ordered fallback. It preserves the direct
 mode unchanged and reuses the ordinary fallback fill's lazy peer-slice
 validation, exact caller order, per-address attempt reset, one-active-request
@@ -325,7 +325,7 @@ only through its separate `commit_verified` boundary.
 
 ### Explicit canonical-payload-archive serving
 
-`StaticArtifactNetwork::respond_artifact_from_payload_store` is a standalone
+`StateNetwork::respond_artifact_from_payload_store` is a standalone
 caller-routed response call. The caller supplies one exact statically authorized
 Noise-authenticated inbound artifact request from one peer and one
 Foundation-scoped `CanonicalArtifactPayloadStore`. The request contains only
@@ -357,7 +357,7 @@ economic authority. The existing journal responder remains selected-only.
 
 ### Direct candidate-payload validation and archive
 
-`StaticArtifactNetwork::start_artifact_block_candidate_payload_fill` is a
+`StateNetwork::start_artifact_block_candidate_payload_fill` is a
 separate caller-driven direct-peer workflow. The caller supplies one exact
 target, one chain-scoped `ArtifactBlockCandidateStore`, one matching selected
 journal, one Foundation-scoped `CanonicalArtifactPayloadStore`, and one peer
@@ -404,7 +404,7 @@ economic authority.
 
 ### Restartable candidate-branch payload recovery
 
-`StaticArtifactNetwork::start_artifact_block_candidate_branch_payload_fill`
+`StateNetwork::start_artifact_block_candidate_branch_payload_fill`
 extends the direct archive workflow to one fully retained candidate ancestry.
 The caller supplies one exact target, one caller-routed chain-scoped
 `ArtifactBlockCandidateStore`, one matching selected-artifact history source,
@@ -466,7 +466,7 @@ not one cross-store transaction with that journal or the candidate store.
 
 ### Caller-ordered candidate-branch payload fallback
 
-`StaticArtifactNetwork::start_artifact_block_candidate_branch_payload_fill_with_peer_fallback`
+`StateNetwork::start_artifact_block_candidate_branch_payload_fill_with_peer_fallback`
 is a separate opt-in mode. It accepts the same exact target, caller-routed
 stores and selected-artifact history source, and positive local reconstruction
 limit as the direct mode, plus one caller-ordered payload-peer slice. The direct
@@ -693,7 +693,7 @@ unprocessed blocks and never rolls back the committed prefix.
 
 ### Candidate-store start
 
-`StaticArtifactNetwork::start_artifact_block_candidate_ancestry_import`
+`StateNetwork::start_artifact_block_candidate_ancestry_import`
 accepts one exact target, one caller-routed `ArtifactBlockCandidateStore`, the
 selected journal, and one caller-preferred configured artifact-payload peer. It
 compares the store and journal `ArtifactChainId` values before any health or disk

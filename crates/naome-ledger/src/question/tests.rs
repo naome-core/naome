@@ -76,7 +76,7 @@ fn source_codec_golden_and_strict_recompilation() {
     trailing.push(0);
     assert_eq!(
         CompiledQuestion::from_canonical_bytes(&trailing, &Profile::lab()),
-        Err(ResearchError::TrailingBytes)
+        Err(LedgerError::TrailingBytes)
     );
     let mut unknown = bytes.clone();
     unknown[0] = 2;
@@ -89,17 +89,17 @@ fn source_codec_golden_and_strict_recompilation() {
 #[test]
 fn actual_acceptance_fixture_questions_compile() {
     let a = CompiledQuestion::compile(
-        include_str!("../../../../examples/research-mvp/question-a.nao"),
+        include_str!("../../../../examples/state-workflow/question-a.nao"),
         &Profile::lab(),
     )
     .unwrap();
     let b = CompiledQuestion::compile(
-        include_str!("../../../../examples/research-mvp/question-b.nao"),
+        include_str!("../../../../examples/state-workflow/question-b.nao"),
         &Profile::lab(),
     )
     .unwrap();
     let c = CompiledQuestion::compile(
-        include_str!("../../../../examples/research-mvp/question-c.nao"),
+        include_str!("../../../../examples/state-workflow/question-c.nao"),
         &Profile::lab(),
     )
     .unwrap();
@@ -183,7 +183,7 @@ fn target_depth_counts_added_negative_target_and_ignores_removed_prefix() {
     let too_deep = format!("forall(x,{body})");
     assert_eq!(
         CompiledQuestion::compile(&source(&too_deep), &Profile::lab()),
-        Err(ResearchError::Limit("question target depth"))
+        Err(LedgerError::Limit("question target depth"))
     );
     // Leading input negations do not increase either canonical target depth.
     for _ in 0..40 {
@@ -200,7 +200,7 @@ fn bounded_expansion_rejects_exponential_iff_and_deep_source() {
     }
     assert!(matches!(
         CompiledQuestion::compile(&source(&format!("forall(x,{formula})")), &Profile::lab()),
-        Err(ResearchError::Limit(_))
+        Err(LedgerError::Limit(_))
     ));
     let deep = format!(
         "{}forall(x,equal(x,x)){}",
@@ -209,11 +209,11 @@ fn bounded_expansion_rejects_exponential_iff_and_deep_source() {
     );
     assert!(matches!(
         CompiledQuestion::compile(&source(&deep), &Profile::lab()),
-        Err(ResearchError::Limit(_))
+        Err(LedgerError::Limit(_))
     ));
     assert_eq!(
         CompiledQuestion::compile(&" ".repeat(QUESTION_SOURCE_MAX_BYTES + 1), &Profile::lab()),
-        Err(ResearchError::Limit("question source bytes"))
+        Err(LedgerError::Limit("question source bytes"))
     );
 }
 
@@ -230,7 +230,7 @@ fn profile_smaller_bounds_are_enforced_for_both_targets() {
     .unwrap();
     assert_eq!(
         CompiledQuestion::compile(&source("forall(x,equal(x,x))"), &nodes),
-        Err(ResearchError::Limit("question target nodes"))
+        Err(LedgerError::Limit("question target nodes"))
     );
     let depth = Profile::with_limits(
         TimingKind::Lab,
@@ -242,7 +242,7 @@ fn profile_smaller_bounds_are_enforced_for_both_targets() {
     .unwrap();
     assert_eq!(
         CompiledQuestion::compile(&source("forall(x,equal(x,x))"), &depth),
-        Err(ResearchError::Limit("question target depth"))
+        Err(LedgerError::Limit("question target depth"))
     );
     let bytes = Profile::with_limits(
         TimingKind::Lab,
@@ -267,7 +267,7 @@ fn every_opening_context_component_affects_question_id() {
     changed.profile = ProfileId::from_bytes([4; 32]);
     assert_eq!(
         question.question_id(changed, "purpose"),
-        Err(ResearchError::Invalid(
+        Err(LedgerError::Invalid(
             "question compilation profile mismatch"
         ))
     );
@@ -320,7 +320,7 @@ fn nominal_node_boundary_applies_to_the_larger_target() {
     let excessive = source(&format!("forall(x,{})", tree(512)));
     assert_eq!(
         CompiledQuestion::compile(&excessive, &Profile::lab()),
-        Err(ResearchError::Limit("question target nodes"))
+        Err(LedgerError::Limit("question target nodes"))
     );
 }
 

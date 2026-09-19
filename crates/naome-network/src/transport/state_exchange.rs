@@ -1,8 +1,7 @@
-//! Authenticated research envelopes sharing the fixed Noise/Yamux sessions.
+//! Authenticated state_exchange envelopes sharing the fixed Noise/Yamux sessions.
 use super::inbound_retention::{InboundRetentionBudget, InboundRetentionPermit};
 use super::{
-    NetworkEvent, PeerId, PendingBudget, PendingPermit, RequestStartError, StaticArtifactNetwork,
-    StaticPeer,
+    NetworkEvent, PeerId, PendingBudget, PendingPermit, RequestStartError, StateNetwork, StaticPeer,
 };
 use libp2p::{Multiaddr, identity, request_response};
 use naome_ledger::profile::Genesis;
@@ -13,8 +12,8 @@ mod behaviour;
 mod codec;
 pub(super) use behaviour::Behaviour;
 
-pub(super) struct ResearchConfig {
-    context: ResearchContext,
+pub(super) struct StateConfig {
+    context: StateContext,
     maximum: usize,
     budget: Arc<InboundRetentionBudget>,
     outbound: Arc<InboundRetentionBudget>,
@@ -26,22 +25,22 @@ struct Custody {
 }
 impl fmt::Debug for Custody {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ResearchCustody")
+        f.write_str("StateCustody")
     }
 }
 #[derive(Debug)]
 pub(super) struct WireRequest {
-    request: ResearchRequest,
+    request: StateRequest,
     custody: Arc<Custody>,
 }
 #[derive(Debug)]
 pub(super) struct WireResponse {
-    response: ResearchResponse,
+    response: StateResponse,
     _custody: Arc<Custody>,
 }
-pub(super) struct PendingResearch {
+pub(super) struct PendingState {
     pub(super) peer_index: usize,
-    request: ResearchRequest,
+    request: StateRequest,
     digest: [u8; 32],
     custody: Arc<Custody>,
     permit: PendingPermit,
@@ -49,40 +48,40 @@ pub(super) struct PendingResearch {
 }
 #[derive(Debug)]
 #[must_use]
-pub struct InboundResearch {
+pub struct InboundState {
     peer: PeerId,
     wire: WireRequest,
     channel: request_response::ResponseChannel<WireResponse>,
 }
-impl InboundResearch {
+impl InboundState {
     pub const fn peer_id(&self) -> PeerId {
         self.peer
     }
-    pub fn request(&self) -> &ResearchRequest {
+    pub fn request(&self) -> &StateRequest {
         &self.wire.request
     }
 }
 #[must_use]
-pub struct ResearchTicket {
+pub struct StateTicket {
     id: request_response::OutboundRequestId,
     peer: PeerId,
     digest: [u8; 32],
     budget: Arc<PendingBudget>,
     _custody: Arc<Custody>,
 }
-impl fmt::Debug for ResearchTicket {
+impl fmt::Debug for StateTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResearchTicket")
+        f.debug_struct("StateTicket")
             .field("peer", &self.peer)
             .field("id", &self.id)
             .finish()
     }
 }
-impl ResearchTicket {
+impl StateTicket {
     pub const fn peer_id(&self) -> PeerId {
         self.peer
     }
-    pub fn accepts_event(&self, event: &ResearchEvent) -> bool {
+    pub fn accepts_event(&self, event: &StateEvent) -> bool {
         self.id == event.id
             && self.peer == event.peer
             && self.digest == event.digest
@@ -90,15 +89,15 @@ impl ResearchTicket {
     }
     pub fn complete(
         self,
-        event: ResearchEvent,
-    ) -> Result<Result<ResearchReceivedResponse, ResearchFailure>, Box<ResearchMismatch>> {
+        event: StateEvent,
+    ) -> Result<Result<StateReceivedResponse, StateFailure>, Box<StateMismatch>> {
         if !self.accepts_event(&event) {
-            return Err(Box::new(ResearchMismatch {
+            return Err(Box::new(StateMismatch {
                 ticket: self,
                 event,
             }));
         }
-        Ok(event.result.map(|wire| ResearchReceivedResponse {
+        Ok(event.result.map(|wire| StateReceivedResponse {
             wire,
             _permit: event.permit,
             _outbound_slot: event.outbound_slot,
@@ -107,23 +106,23 @@ impl ResearchTicket {
     }
 }
 #[must_use]
-pub struct ResearchEvent {
+pub struct StateEvent {
     id: request_response::OutboundRequestId,
     peer: PeerId,
     digest: [u8; 32],
-    result: Result<WireResponse, ResearchFailure>,
+    result: Result<WireResponse, StateFailure>,
     custody: Arc<Custody>,
     permit: PendingPermit,
     outbound_slot: InboundRetentionPermit,
 }
-impl ResearchEvent {
+impl StateEvent {
     pub const fn peer_id(&self) -> PeerId {
         self.peer
     }
 }
-impl fmt::Debug for ResearchEvent {
+impl fmt::Debug for StateEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResearchEvent")
+        f.debug_struct("StateEvent")
             .field("peer", &self.peer)
             .field("id", &self.id)
             .field("result", &self.result)
@@ -132,55 +131,55 @@ impl fmt::Debug for ResearchEvent {
 }
 #[derive(Debug)]
 #[must_use]
-pub struct ResearchMismatch {
-    ticket: ResearchTicket,
-    event: ResearchEvent,
+pub struct StateMismatch {
+    ticket: StateTicket,
+    event: StateEvent,
 }
-impl ResearchMismatch {
-    pub fn into_parts(self) -> (ResearchTicket, ResearchEvent) {
+impl StateMismatch {
+    pub fn into_parts(self) -> (StateTicket, StateEvent) {
         (self.ticket, self.event)
     }
 }
 #[must_use]
-pub struct ResearchReceivedResponse {
+pub struct StateReceivedResponse {
     wire: WireResponse,
     _permit: PendingPermit,
     _outbound_slot: InboundRetentionPermit,
     _request_custody: Arc<Custody>,
 }
-impl ResearchReceivedResponse {
-    pub fn response(&self) -> &ResearchResponse {
+impl StateReceivedResponse {
+    pub fn response(&self) -> &StateResponse {
         &self.wire.response
     }
 }
-impl fmt::Debug for ResearchReceivedResponse {
+impl fmt::Debug for StateReceivedResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResearchReceivedResponse")
+        f.debug_struct("StateReceivedResponse")
             .field("response", &self.wire.response)
             .finish()
     }
 }
 #[derive(Debug)]
-pub enum ResearchFailure {
+pub enum StateFailure {
     Transport(request_response::OutboundFailure),
     Correlation,
 }
 #[derive(Debug)]
-pub enum ResearchStartError {
+pub enum StateStartError {
     Transport(RequestStartError),
     NotConfigured,
-    Wire(ResearchWireError),
+    Wire(StateWireError),
     Capacity,
 }
 #[derive(Debug)]
-pub enum ResearchRespondError {
+pub enum StateRespondError {
     NotConfigured,
-    Wire(ResearchWireError),
+    Wire(StateWireError),
     Capacity,
     ChannelClosed,
 }
 #[derive(Debug)]
-pub enum ResearchNetworkBuildError {
+pub enum StateNetworkBuildError {
     Transport(super::BuildError),
     Identity,
     Endpoint,
@@ -188,67 +187,65 @@ pub enum ResearchNetworkBuildError {
 }
 macro_rules! debug_error { ($($ty:ty),+) => { $(impl fmt::Display for $ty { fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result { write!(f,"{self:?}") } } impl std::error::Error for $ty {})+ }; }
 debug_error!(
-    ResearchFailure,
-    ResearchStartError,
-    ResearchRespondError,
-    ResearchNetworkBuildError
+    StateFailure,
+    StateStartError,
+    StateRespondError,
+    StateNetworkBuildError
 );
-fn fingerprint(request: &ResearchRequest) -> [u8; 32] {
+fn fingerprint(request: &StateRequest) -> [u8; 32] {
     Sha256::digest(request.to_wire_bytes()).into()
 }
 
 /// Converts a registered Ed25519 transport key into its authenticated peer identity.
-pub fn research_peer_id(transport_key: [u8; 32]) -> Result<PeerId, ResearchNetworkBuildError> {
+pub fn state_peer_id(transport_key: [u8; 32]) -> Result<PeerId, StateNetworkBuildError> {
     let key = identity::ed25519::PublicKey::try_from_bytes(&transport_key)
-        .map_err(|_| ResearchNetworkBuildError::Identity)?;
+        .map_err(|_| StateNetworkBuildError::Identity)?;
     Ok(identity::PublicKey::from(key).to_peer_id())
 }
 
-impl StaticArtifactNetwork {
+impl StateNetwork {
     /// Uses only the immutable genesis transport keys and literal TCP endpoints.
-    pub fn new_research(
+    pub fn new_state(
         identity: identity::Keypair,
         genesis: &Genesis,
-    ) -> Result<Self, ResearchNetworkBuildError> {
+    ) -> Result<Self, StateNetworkBuildError> {
         let local = identity.public().to_peer_id();
         let mut peers = Vec::new();
         let mut listen = None;
         for validator in genesis.validators() {
-            let peer = research_peer_id(validator.transport_key)?;
+            let peer = state_peer_id(validator.transport_key)?;
             let endpoint: SocketAddr = validator
                 .endpoint
                 .parse()
-                .map_err(|_| ResearchNetworkBuildError::Endpoint)?;
+                .map_err(|_| StateNetworkBuildError::Endpoint)?;
             if matches!(endpoint, SocketAddr::V6(a) if a.scope_id() != 0 || a.flowinfo() != 0) {
-                return Err(ResearchNetworkBuildError::Endpoint);
+                return Err(StateNetworkBuildError::Endpoint);
             }
             let address: Multiaddr = match endpoint {
                 SocketAddr::V4(a) => format!("/ip4/{}/tcp/{}", a.ip(), a.port()),
                 SocketAddr::V6(a) => format!("/ip6/{}/tcp/{}", a.ip(), a.port()),
             }
             .parse()
-            .map_err(|_| ResearchNetworkBuildError::Endpoint)?;
+            .map_err(|_| StateNetworkBuildError::Endpoint)?;
             if peer == local {
                 listen = Some(address);
             } else {
                 peers.push(StaticPeer::new(peer, address));
             }
         }
-        let listen = listen.ok_or(ResearchNetworkBuildError::Identity)?;
+        let listen = listen.ok_or(StateNetworkBuildError::Identity)?;
         let maximum = usize::try_from(genesis.profile().limits().transport_frame_bytes)
-            .map_err(|_| ResearchNetworkBuildError::Limits)?;
+            .map_err(|_| StateNetworkBuildError::Limits)?;
         let frames = usize::try_from(genesis.profile().limits().transport_buffer_frames)
-            .map_err(|_| ResearchNetworkBuildError::Limits)?;
-        if !(RESEARCH_FRAME_HEADER_BYTES..=RESEARCH_MAX_FRAME_BYTES).contains(&maximum)
-            || frames == 0
-        {
-            return Err(ResearchNetworkBuildError::Limits);
+            .map_err(|_| StateNetworkBuildError::Limits)?;
+        if !(STATE_FRAME_HEADER_BYTES..=STATE_MAX_FRAME_BYTES).contains(&maximum) || frames == 0 {
+            return Err(StateNetworkBuildError::Limits);
         }
         let bytes = maximum
             .checked_mul(frames)
-            .ok_or(ResearchNetworkBuildError::Limits)?;
-        let config = ResearchConfig {
-            context: ResearchContext::new(
+            .ok_or(StateNetworkBuildError::Limits)?;
+        let config = StateConfig {
+            context: StateContext::new(
                 *genesis.id().as_bytes(),
                 *genesis.profile().id().as_bytes(),
             ),
@@ -258,27 +255,27 @@ impl StaticArtifactNetwork {
             listen,
         };
         let mut network =
-            Self::build(identity, peers.clone()).map_err(ResearchNetworkBuildError::Transport)?;
+            Self::build(identity, peers.clone()).map_err(StateNetworkBuildError::Transport)?;
         network.swarm.behaviour_mut().state_exchange =
             Behaviour::new(peers.iter().map(StaticPeer::peer_id), Some(&config));
-        network.research = Some(config);
+        network.state_exchange = Some(config);
         Ok(network)
     }
-    pub fn research_listen_address(&self) -> Option<&Multiaddr> {
-        self.research.as_ref().map(|c| &c.listen)
+    pub fn state_listen_address(&self) -> Option<&Multiaddr> {
+        self.state_exchange.as_ref().map(|c| &c.listen)
     }
-    /// The immutable run context required by every research frame.
-    pub fn research_context(&self) -> Option<ResearchContext> {
-        self.research.as_ref().map(|c| c.context)
+    /// The immutable run context required by every state_exchange frame.
+    pub fn state_context(&self) -> Option<StateContext> {
+        self.state_exchange.as_ref().map(|c| c.context)
     }
     /// Local partition control; this cannot authorize a key absent from genesis.
-    pub fn set_research_peer_enabled(
+    pub fn set_state_peer_enabled(
         &mut self,
         peer: PeerId,
         enabled: bool,
-    ) -> Result<(), ResearchStartError> {
-        if self.research.is_none() || !self.is_configured_peer(&peer) {
-            return Err(ResearchStartError::NotConfigured);
+    ) -> Result<(), StateStartError> {
+        if self.state_exchange.is_none() || !self.is_configured_peer(&peer) {
+            return Err(StateStartError::NotConfigured);
         }
         if enabled {
             self.swarm.behaviour_mut().allowed.allow_peer(peer);
@@ -288,20 +285,20 @@ impl StaticArtifactNetwork {
         }
         Ok(())
     }
-    pub fn request_research(
+    pub fn request_state(
         &mut self,
         peer: PeerId,
-        body: ResearchRequestBody,
-    ) -> Result<ResearchTicket, ResearchStartError> {
+        body: StateRequestBody,
+    ) -> Result<StateTicket, StateStartError> {
         let config = self
-            .research
+            .state_exchange
             .as_ref()
-            .ok_or(ResearchStartError::NotConfigured)?;
-        let request = ResearchRequest::new(config.context, body, config.maximum)
-            .map_err(ResearchStartError::Wire)?;
+            .ok_or(StateStartError::NotConfigured)?;
+        let request = StateRequest::new(config.context, body, config.maximum)
+            .map_err(StateStartError::Wire)?;
         let custody = Arc::new(Custody {
             _global: InboundRetentionBudget::try_acquire(&config.budget, 2 * request.wire_len())
-                .ok_or(ResearchStartError::Capacity)?,
+                .ok_or(StateStartError::Capacity)?,
             peer: None,
         });
         let digest = fingerprint(&request);
@@ -314,11 +311,11 @@ impl StaticArtifactNetwork {
                 .contains(&peer);
         let (peer_index, permit) = self
             .acquire_request_permit(peer, connected)
-            .map_err(ResearchStartError::Transport)?;
+            .map_err(StateStartError::Transport)?;
         let mut outbound_slot = InboundRetentionBudget::try_acquire(&config.outbound, 0)
-            .ok_or(ResearchStartError::Capacity)?;
+            .ok_or(StateStartError::Capacity)?;
         if !outbound_slot.bind_peer(peer) {
-            return Err(ResearchStartError::Transport(
+            return Err(StateStartError::Transport(
                 RequestStartError::AlreadyPending(peer),
             ));
         }
@@ -329,7 +326,7 @@ impl StaticArtifactNetwork {
                 custody: Arc::clone(&custody),
             },
         );
-        let ticket = ResearchTicket {
+        let ticket = StateTicket {
             id,
             peer,
             digest,
@@ -338,7 +335,7 @@ impl StaticArtifactNetwork {
         };
         let replaced = self.pending.insert(
             (peer, id),
-            PendingResearch {
+            PendingState {
                 peer_index,
                 request,
                 digest,
@@ -350,28 +347,28 @@ impl StaticArtifactNetwork {
         debug_assert!(replaced.is_none());
         Ok(ticket)
     }
-    pub fn respond_research(
+    pub fn respond_state(
         &mut self,
-        inbound: InboundResearch,
-        body: ResearchResponseBody,
-    ) -> Result<(), ResearchRespondError> {
+        inbound: InboundState,
+        body: StateResponseBody,
+    ) -> Result<(), StateRespondError> {
         let config = self
-            .research
+            .state_exchange
             .as_ref()
-            .ok_or(ResearchRespondError::NotConfigured)?;
-        let response = ResearchResponse::new(
+            .ok_or(StateRespondError::NotConfigured)?;
+        let response = StateResponse::new(
             config.context,
             fingerprint(inbound.request()),
             body,
             config.maximum,
         )
-        .map_err(ResearchRespondError::Wire)?;
+        .map_err(StateRespondError::Wire)?;
         if !response.matches_request(inbound.request()) {
-            return Err(ResearchRespondError::Wire(ResearchWireError::ResponseKind));
+            return Err(StateRespondError::Wire(StateWireError::ResponseKind));
         }
         let custody = Arc::new(Custody {
             _global: InboundRetentionBudget::try_acquire(&config.budget, 2 * response.wire_len())
-                .ok_or(ResearchRespondError::Capacity)?,
+                .ok_or(StateRespondError::Capacity)?,
             peer: None,
         });
         self.swarm
@@ -385,9 +382,9 @@ impl StaticArtifactNetwork {
                     _custody: custody,
                 },
             )
-            .map_err(|_| ResearchRespondError::ChannelClosed)
+            .map_err(|_| StateRespondError::ChannelClosed)
     }
-    pub(super) fn handle_research_event(
+    pub(super) fn handle_state_event(
         &mut self,
         event: request_response::Event<WireRequest, WireResponse>,
     ) -> Option<NetworkEvent> {
@@ -406,7 +403,7 @@ impl StaticArtifactNetwork {
                     {
                         return None;
                     }
-                    Some(NetworkEvent::InboundResearch(InboundResearch {
+                    Some(NetworkEvent::InboundState(InboundState {
                         peer,
                         wire: request,
                         channel,
@@ -415,23 +412,23 @@ impl StaticArtifactNetwork {
                 request_response::Message::Response {
                     request_id,
                     response,
-                } => self.finish_research(request_id, peer, Ok(response)),
+                } => self.finish_state(request_id, peer, Ok(response)),
             },
             request_response::Event::OutboundFailure {
                 peer,
                 request_id,
                 error,
                 ..
-            } => self.finish_research(request_id, peer, Err(ResearchFailure::Transport(error))),
+            } => self.finish_state(request_id, peer, Err(StateFailure::Transport(error))),
             request_response::Event::InboundFailure { .. }
             | request_response::Event::ResponseSent { .. } => None,
         }
     }
-    fn finish_research(
+    fn finish_state(
         &mut self,
         id: request_response::OutboundRequestId,
         actual: PeerId,
-        mut result: Result<WireResponse, ResearchFailure>,
+        mut result: Result<WireResponse, StateFailure>,
     ) -> Option<NetworkEvent> {
         let pending = self.pending.remove(&(actual, id))?;
         let peer = self.pending_peer_id(pending.peer_index);
@@ -441,9 +438,9 @@ impl StaticArtifactNetwork {
                     || !wire.response.matches_request(&pending.request)
             })
         {
-            result = Err(ResearchFailure::Correlation);
+            result = Err(StateFailure::Correlation);
         }
-        Some(NetworkEvent::OutboundResearch(ResearchEvent {
+        Some(NetworkEvent::OutboundState(StateEvent {
             id,
             peer,
             digest: pending.digest,

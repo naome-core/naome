@@ -11,7 +11,7 @@ use crate::codec::{Reader, Writer};
 use crate::identity::hash;
 use crate::profile::Profile;
 use crate::question::CompiledQuestion;
-use crate::{AccountId, PackageHash, ResearchError};
+use crate::{AccountId, LedgerError, PackageHash};
 
 mod package;
 mod verification;
@@ -201,13 +201,13 @@ impl ProofLibrary {
 
     /// Canonical complete proof-library state; finality must additionally bind all
     /// research, account, phase, and monetary state outside this component.
-    pub fn encode(&self) -> Result<Vec<u8>, ResearchError> {
+    pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut w = Writer::new();
         self.encode_into(&mut w)?;
         Ok(w.finish())
     }
 
-    fn encode_into(&self, w: &mut Writer) -> Result<(), ResearchError> {
+    fn encode_into(&self, w: &mut Writer) -> Result<(), LedgerError> {
         w.u16(1);
         w.u64(self.records.len() as u64);
         for proof in self.records.values() {
@@ -247,16 +247,16 @@ impl ProofLibrary {
         &mut self,
         package: &NormalizedPackage,
         coordinate: AdmissionCoordinate,
-    ) -> Result<(), ResearchError> {
+    ) -> Result<(), LedgerError> {
         if self.root() != package.parent_library_root {
-            return Err(ResearchError::Invalid("normalization parent changed"));
+            return Err(LedgerError::Invalid("normalization parent changed"));
         }
         let mut staged = self.clone();
         for proof in &package.proofs {
             if staged.records.contains_key(&proof.proof_id)
                 || staged.exact_target(&proof.conclusion).is_some()
             {
-                return Err(ResearchError::Invalid("proof already selected"));
+                return Err(LedgerError::Invalid("proof already selected"));
             }
             let published = LibraryProof {
                 proof: proof.clone(),
@@ -279,7 +279,7 @@ impl ProofLibrary {
         package: &ProofPackage,
         question: &CompiledQuestion,
         profile: &Profile,
-    ) -> Result<NormalizedPackage, ResearchError> {
+    ) -> Result<NormalizedPackage, LedgerError> {
         verification::normalize(
             self,
             package,
@@ -299,13 +299,13 @@ impl ProofLibrary {
         question: &CompiledQuestion,
         profile: &Profile,
         work: &mut VerificationWork,
-    ) -> Result<NormalizedPackage, ResearchError> {
+    ) -> Result<NormalizedPackage, LedgerError> {
         verification::normalize(self, package, question, profile, work)
     }
 }
 
-fn math(error: impl std::fmt::Display) -> ResearchError {
-    ResearchError::Mathematical(error.to_string())
+fn math(error: impl std::fmt::Display) -> LedgerError {
+    LedgerError::Mathematical(error.to_string())
 }
 
 fn record(checked: &CheckedProof, author: AccountId) -> VerifiedProof {

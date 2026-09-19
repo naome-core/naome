@@ -20,7 +20,7 @@ impl Directory {
     }
     fn config(&self) -> NodeConfig {
         NodeConfig {
-            version: 1,
+            version: 2,
             genesis: self.0.join("genesis.bin"),
             history: self.0.join("history"),
             history_anchor: self.0.join("history-anchor"),
@@ -29,7 +29,7 @@ impl Directory {
             consensus_key: self.0.join("consensus.key"),
             transport_key: self.0.join("transport.key"),
             account_key: self.0.join("account.key"),
-            research_profile: self.0.join("profile.txt"),
+            agenda_profile: self.0.join("profile.txt"),
             control_socket: self.0.join("control.sock"),
             maximum_round: 8,
             simulation: true,
@@ -76,7 +76,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
     let genesis = Genesis::new(
         profile,
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [42; 32],
@@ -86,7 +86,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
     .unwrap();
     let original = genesis.encode();
     files::create(&config.genesis, &original, false).unwrap();
-    files::create(&config.research_profile, b"original agenda", true).unwrap();
+    files::create(&config.agenda_profile, b"original agenda", true).unwrap();
     let config_file = dir.0.join("node.json");
     files::create(&config_file, &serde_json::to_vec(&config).unwrap(), true).unwrap();
     let source = dir.0.join("new-profile.txt");
@@ -99,7 +99,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
     .await
     .unwrap();
     assert_eq!(
-        files::read(&config.research_profile, 16384, true).unwrap(),
+        files::read(&config.agenda_profile, 16384, true).unwrap(),
         b"Prioritize reusable foundational results."
     );
     assert_eq!(config.genesis().unwrap().id(), genesis.id());
@@ -123,7 +123,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
         .is_err()
     );
     assert_eq!(
-        files::read(&config.research_profile, 16384, true).unwrap(),
+        files::read(&config.agenda_profile, 16384, true).unwrap(),
         b"Prioritize reusable foundational results."
     );
     assert!(
@@ -151,7 +151,7 @@ fn node_configuration_rejects_unknown_fields_versions_and_public_permissions() {
     assert_eq!(NodeConfig::read(&valid).unwrap().maximum_round, 8);
     for (name, field, value) in [
         ("extra", "unknown", serde_json::json!(true)),
-        ("version", "version", serde_json::json!(2)),
+        ("version", "version", serde_json::json!(1)),
         ("round", "maximum_round", serde_json::json!(0)),
     ] {
         let mut body = serde_json::to_value(&config).unwrap();
@@ -159,6 +159,22 @@ fn node_configuration_rejects_unknown_fields_versions_and_public_permissions() {
         let path = dir.0.join(name);
         files::create(&path, &serde_json::to_vec(&body).unwrap(), true).unwrap();
         assert!(NodeConfig::read(&path).is_err());
+    }
+    // Updating only a version number cannot reinterpret the old profile field.
+    let mut old = serde_json::to_value(&config).unwrap();
+    let profile = old
+        .as_object_mut()
+        .unwrap()
+        .remove("agenda_profile")
+        .unwrap();
+    old["research_profile"] = profile;
+    for version in [1, 2] {
+        old["version"] = serde_json::json!(version);
+        let bytes = serde_json::to_vec(&old).unwrap();
+        let path = dir.0.join(format!("old-profile-{version}"));
+        files::create(&path, &bytes, true).unwrap();
+        assert!(NodeConfig::read(&path).is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
     }
     fs::set_permissions(&valid, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(NodeConfig::read(&valid).is_err());
@@ -236,7 +252,7 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
     for index in 0..4 {
         let config = NodeConfig::read(&output.join(format!("node-{index}/node.json"))).unwrap();
         let genesis = config.genesis().unwrap();
-        let history = naome_storage::state::ResearchHistory::open(
+        let history = naome_storage::state::StateHistory::open(
             &config.history,
             &config.history_anchor,
             genesis.clone(),
@@ -244,7 +260,7 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
         )
         .unwrap();
         assert_eq!(history.head().unwrap().state().height(), 0);
-        let signer = naome_storage::state::ResearchSigner::open(
+        let signer = naome_storage::state::StateSigner::open(
             &config.signer,
             &config.signer_anchor,
             genesis,

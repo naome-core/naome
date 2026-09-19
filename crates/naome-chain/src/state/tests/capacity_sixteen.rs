@@ -25,7 +25,7 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
         fixture.validators().to_vec(),
     )
     .unwrap();
-    let mut state = ResearchState::new(genesis);
+    let mut state = LedgerState::new(genesis);
     assert_eq!(state.genesis().profile().limits().accounts, 16);
     let submission = submit(&mut state, "forall(x,equal(x,x))");
     let now = state.time();

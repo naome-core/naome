@@ -4,16 +4,16 @@ use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey,
     state::{
-        ResearchBranch, ResearchFinality, ResearchIntent, ResearchLockEvent, ResearchLockState,
-        ResearchProposal, ResearchPublication, ResearchQuorum, ResearchVote,
+        StateBranch, StateFinality, StateIntent, StateLockEvent, StateLockState, StateProposal,
+        StatePublication, StateQuorum, StateVote,
     },
 };
 use naome_ledger::{
-    AccountId, CommitmentId, ResearchState,
+    AccountId, CommitmentId, LedgerState,
     authentication::SignedOperation,
     library::ProofPackage,
     operations::{OperationBody, SignedOriginal},
-    profile::{Genesis, Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration},
+    profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
 };
@@ -31,7 +31,7 @@ impl Directory {
     fn new() -> Self {
         loop {
             let path = std::env::temp_dir().join(format!(
-                "naome-research-storage-{}-{}",
+                "naome-state-storage-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -70,7 +70,7 @@ fn genesis() -> Genesis {
     Genesis::new(
         Profile::short_test(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [9; 32],
@@ -90,7 +90,7 @@ fn genesis() -> Genesis {
     )
     .unwrap()
 }
-fn time(state: &ResearchState, now: u64) -> TimeCertificate {
+fn time(state: &LedgerState, now: u64) -> TimeCertificate {
     TimeCertificate::new(
         (0..3)
             .map(|i| {
@@ -111,7 +111,7 @@ fn time(state: &ResearchState, now: u64) -> TimeCertificate {
     )
     .unwrap()
 }
-fn signed(state: &ResearchState, i: u8, body: OperationBody) -> SignedOperation {
+fn signed(state: &LedgerState, i: u8, body: OperationBody) -> SignedOperation {
     body.sign(
         state.genesis(),
         state.next_nonce(author(i)).unwrap(),
@@ -119,7 +119,7 @@ fn signed(state: &ResearchState, i: u8, body: OperationBody) -> SignedOperation 
     )
     .unwrap()
 }
-fn submission(state: &ResearchState, purpose: &str) -> SignedOperation {
+fn submission(state: &LedgerState, purpose: &str) -> SignedOperation {
     signed(
         state,
         4,
@@ -133,13 +133,13 @@ fn submission(state: &ResearchState, purpose: &str) -> SignedOperation {
         },
     )
 }
-fn proposal(branch: &ResearchBranch, record: Vec<u8>) -> ResearchProposal {
+fn proposal(branch: &StateBranch, record: Vec<u8>) -> StateProposal {
     let proposer = branch.proposer(0, MAX_ROUND).unwrap();
-    let mut kernel = ResearchLockState::new(branch, proposer).unwrap();
+    let mut kernel = StateLockState::new(branch, proposer).unwrap();
     let intent = kernel
         .apply(
             branch,
-            &ResearchLockEvent::Author {
+            &StateLockEvent::Author {
                 record: Some(record),
             },
             MAX_ROUND,
@@ -149,38 +149,38 @@ fn proposal(branch: &ResearchBranch, record: Vec<u8>) -> ResearchProposal {
         .sign(&intent.signing_bytes().unwrap())
         .to_bytes();
     match intent.complete(signature, branch, MAX_ROUND).unwrap() {
-        ResearchPublication::Proposal(p) => p,
+        StatePublication::Proposal(p) => p,
         _ => panic!("proposal intent"),
     }
 }
-fn finish_vote(intent: ResearchIntent, branch: &ResearchBranch, i: u8) -> ResearchVote {
+fn finish_vote(intent: StateIntent, branch: &StateBranch, i: u8) -> StateVote {
     let signature = validator(i)
         .sign(&intent.signing_bytes().unwrap())
         .to_bytes();
     match intent.complete(signature, branch, MAX_ROUND).unwrap() {
-        ResearchPublication::Vote(v) => v,
+        StatePublication::Vote(v) => v,
         _ => panic!("vote intent"),
     }
 }
-fn certify(branch: &ResearchBranch, record: Vec<u8>) -> (ResearchFinality, ResearchQuorum) {
+fn certify(branch: &StateBranch, record: Vec<u8>) -> (StateFinality, StateQuorum) {
     certify_with_signers(branch, record, 0)
 }
 fn certify_with_signers(
-    branch: &ResearchBranch,
+    branch: &StateBranch,
     record: Vec<u8>,
     first: u8,
-) -> (ResearchFinality, ResearchQuorum) {
+) -> (StateFinality, StateQuorum) {
     let proposal = proposal(branch, record);
     let encoded = proposal.encode().unwrap();
     let mut kernels: Vec<_> = (0..3)
-        .map(|i| ResearchLockState::new(branch, key(i + first)).unwrap())
+        .map(|i| StateLockState::new(branch, key(i + first)).unwrap())
         .collect();
     let votes = (0..3)
         .map(|i| {
             let intent = kernels[i]
                 .apply(
                     branch,
-                    &ResearchLockEvent::Prevote {
+                    &StateLockEvent::Prevote {
                         proposal: Some(encoded.clone()),
                     },
                     MAX_ROUND,
@@ -189,13 +189,13 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let prevotes = ResearchQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let prevotes = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
     let votes = (0..3)
         .map(|i| {
             let intent = kernels[i]
                 .apply(
                     branch,
-                    &ResearchLockEvent::Precommit {
+                    &StateLockEvent::Precommit {
                         proposal: Some(encoded.clone()),
                         quorum: prevotes.encode(),
                     },
@@ -205,7 +205,7 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let precommits = ResearchQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let precommits = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
     (
         branch
             .verify_finality(&proposal, &precommits, MAX_ROUND)
@@ -213,7 +213,7 @@ fn certify_with_signers(
         prevotes,
     )
 }
-fn record(branch: &ResearchBranch, now: u64, operations: Vec<SignedOperation>) -> Vec<u8> {
+fn record(branch: &StateBranch, now: u64, operations: Vec<SignedOperation>) -> Vec<u8> {
     branch
         .state()
         .prepare_record(time(branch.state(), now), operations)
@@ -222,21 +222,21 @@ fn record(branch: &ResearchBranch, now: u64, operations: Vec<SignedOperation>) -
         .encode()
         .unwrap()
 }
-fn first_finality(branch: &ResearchBranch, purpose: &str) -> ResearchFinality {
+fn first_finality(branch: &StateBranch, purpose: &str) -> StateFinality {
     certify(
         branch,
         record(branch, 100, vec![submission(branch.state(), purpose)]),
     )
     .0
 }
-fn append(history: &mut ResearchHistory, now: u64, ops: Vec<SignedOperation>) -> Vec<u8> {
+fn append(history: &mut StateHistory, now: u64, ops: Vec<SignedOperation>) -> Vec<u8> {
     let encoded = record(history.head().unwrap(), now, ops);
     let (finality, _) = certify(history.head().unwrap(), encoded);
     let expected = finality.branch().commitment();
     let bytes = finality.encode().unwrap();
     assert_eq!(
         history.append_finality(&bytes).unwrap(),
-        ResearchAppendOutcome::Finalized
+        StateAppendOutcome::Finalized
     );
     assert_eq!(history.head().unwrap().commitment(), expected);
     bytes
@@ -247,12 +247,12 @@ fn complete_control_history_reopens_and_observer_uses_same_full_state() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let mut history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     let op = submission(history.head().unwrap().state(), "actual queued question");
     let first = append(&mut history, 100, vec![op]);
     assert_eq!(
         history.append_finality(&first).unwrap(),
-        ResearchAppendOutcome::AlreadyFinalized
+        StateAppendOutcome::AlreadyFinalized
     );
     append(&mut history, 100, vec![]);
     let active = history.head().unwrap().state().active().unwrap();
@@ -268,24 +268,24 @@ fn complete_control_history_reopens_and_observer_uses_same_full_state() {
     append(&mut history, 100, vec![op]);
     assert_eq!(history.head().unwrap().state().library().len(), 0);
     let expected = history.head().unwrap().commitment();
-    let observed = ResearchObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let observed = StateObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     assert_eq!(observed.branch().commitment(), expected);
     assert!(!observed.halted());
     assert_eq!(history.finality_bytes(1).unwrap(), first);
     drop(history);
-    let reopened = ResearchHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let reopened = StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
     assert_eq!(reopened.head().unwrap().commitment(), expected);
     assert_eq!(reopened.head().unwrap().state().height(), 3);
 }
 
-fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, ResearchHistory, Vec<u8>) {
+fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, StateHistory, Vec<u8>) {
     use naome_checker::{ArtifactState, normalize_and_check_with_state};
     use naome_foundation::FreeVariable;
     use naome_proof::{ProofCertificate, ProofStep};
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let mut history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     let op = submission(
         history.head().unwrap().state(),
         "publish a root and its used helper",
@@ -411,7 +411,7 @@ fn real_two_proof_settlement_survives_complete_cold_replay() {
     let (dir, anchors, g, mut history, settlement) = pending_two_proof_settlement();
     assert_eq!(
         history.append_finality(&settlement).unwrap(),
-        ResearchAppendOutcome::Finalized
+        StateAppendOutcome::Finalized
     );
     let expected = history.head().unwrap().commitment();
     assert_eq!(history.head().unwrap().state().library().len(), 2);
@@ -426,15 +426,15 @@ fn real_two_proof_settlement_survives_complete_cold_replay() {
     );
     assert_eq!(history.head().unwrap().state().claims().len(), 1);
     drop(history);
-    let observed = ResearchObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
-    let reopened = ResearchHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let observed = StateObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let reopened = StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
     assert_eq!(observed.branch().commitment(), expected);
     assert_eq!(reopened.head().unwrap().commitment(), expected);
     assert_eq!(observed.branch().state().library().len(), 2);
     assert_eq!(observed.branch().state().balances().paid_completions(), 1);
 }
 
-fn assert_two_proof_settlement(branch: &ResearchBranch, completed: bool) {
+fn assert_two_proof_settlement(branch: &StateBranch, completed: bool) {
     let state = branch.state();
     assert_eq!(state.library().len(), if completed { 2 } else { 0 });
     assert_eq!(state.claims().len(), usize::from(completed));
@@ -472,17 +472,14 @@ fn actual_settlement_anchor_failures_never_expose_partial_proofs_rewards_or_clai
             .decode_finality(&settlement, MAX_ROUND)
             .unwrap()
             .into_branch();
-        let injection = faults::inject(&anchors.0.join("research-finality.anchor"), point);
+        let injection = faults::inject(&anchors.0.join("state-finality.anchor"), point);
         assert!(history.append_finality(&settlement).is_err(), "{point:?}");
         injection.assert_fired();
-        assert!(matches!(
-            history.head(),
-            Err(ResearchStorageError::Poisoned)
-        ));
+        assert!(matches!(history.head(), Err(StateStorageError::Poisoned)));
         drop(injection);
         drop(history);
-        let observed = ResearchObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND);
-        let reopened = ResearchHistory::open(&dir.0, &anchors.0, g, MAX_ROUND);
+        let observed = StateObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND);
+        let reopened = StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND);
         if point == faults::Point::DirectorySync {
             // The final rename was visible; a lost directory-sync acknowledgement
             // may recover the complete new state, but never a partial settlement.
@@ -499,7 +496,7 @@ fn actual_settlement_anchor_failures_never_expose_partial_proofs_rewards_or_clai
                 reopened
                     .receive_finality(expected.state().height(), &settlement)
                     .unwrap(),
-                ResearchAppendOutcome::AlreadyFinalized
+                StateAppendOutcome::AlreadyFinalized
             );
             assert_two_proof_settlement(reopened.head().unwrap(), true);
             assert_eq!(
@@ -520,7 +517,7 @@ fn actual_settlement_anchor_failures_never_expose_partial_proofs_rewards_or_clai
 fn actual_settlement_journal_crash_images_recover_only_old_complete_or_halted_state() {
     let (dir, anchors, g, mut history, settlement) = pending_two_proof_settlement();
     let journal = dir.0.join(crate::JOURNAL_FILE_NAME);
-    let anchor = anchors.0.join("research-finality.anchor");
+    let anchor = anchors.0.join("state-finality.anchor");
     let before = history.head().unwrap().commitment();
     let old_journal = fs::read(&journal).unwrap();
     let old_anchor = fs::read(&anchor).unwrap();
@@ -563,10 +560,10 @@ fn actual_settlement_journal_crash_images_recover_only_old_complete_or_halted_st
                 .unwrap()
                 .sync_all()
                 .unwrap();
-            let observed = ResearchObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND);
+            let observed = StateObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND);
             // Observation never repairs even a harmless uncommitted tail.
             assert_eq!(fs::read(&journal).unwrap(), crash_bytes);
-            let reopened = ResearchHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND);
+            let reopened = StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND);
             let complete = cut == frame_bytes;
             if new_anchor_visible != complete {
                 assert!(
@@ -591,13 +588,13 @@ fn actual_settlement_journal_crash_images_recover_only_old_complete_or_halted_st
                 assert_eq!(fs::read(&journal).unwrap(), old_journal);
                 assert_eq!(
                     reopened.append_finality(&settlement).unwrap(),
-                    ResearchAppendOutcome::Finalized
+                    StateAppendOutcome::Finalized
                 );
             }
             for _ in 0..2 {
                 assert_eq!(
                     reopened.receive_finality(height, &settlement).unwrap(),
-                    ResearchAppendOutcome::AlreadyFinalized
+                    StateAppendOutcome::AlreadyFinalized
                 );
             }
             assert_eq!(reopened.head().unwrap().commitment(), after);
@@ -613,7 +610,7 @@ fn torn_tail_is_read_only_for_observer_and_recovered_only_by_owner() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let mut history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     let op = submission(history.head().unwrap().state(), "recover tail");
     append(&mut history, 100, vec![op]);
     let expected = history.head().unwrap().commitment();
@@ -624,13 +621,13 @@ fn torn_tail_is_read_only_for_observer_and_recovered_only_by_owner() {
     file.write_all(&[0, 0]).unwrap();
     file.sync_all().unwrap();
     drop(file);
-    let observer = ResearchObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let observer = StateObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     assert_eq!(observer.branch().commitment(), expected);
     assert_eq!(
         fs::metadata(&path).unwrap().len(),
         complete.len() as u64 + 2
     );
-    let history = ResearchHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let history = StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
     assert_eq!(history.head().unwrap().commitment(), expected);
     assert_eq!(fs::read(path).unwrap(), complete);
 }
@@ -640,19 +637,19 @@ fn shared_selected_history_and_anchor_locks_exclude_other_owners() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     assert!(matches!(
         crate::open_exclusive_lock(&dir.0, crate::LOCK_FILE_NAME),
         Err(crate::ExclusiveLockError::Locked)
     ));
     assert!(matches!(
-        ResearchHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND),
-        Err(ResearchStorageError::Locked)
+        StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND),
+        Err(StateStorageError::Locked)
     ));
     drop(history);
-    let reopened = ResearchHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let reopened = StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     drop(reopened);
-    assert!(ResearchHistory::create(&dir.0, &anchors.0, g, MAX_ROUND).is_err());
+    assert!(StateHistory::create(&dir.0, &anchors.0, g, MAX_ROUND).is_err());
 }
 
 #[test]
@@ -660,7 +657,7 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let mut history = ResearchHistory::create(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
     let op = submission(
         history.head().unwrap().state(),
         "authenticated history routing",
@@ -694,7 +691,7 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     let head = history.head().unwrap().commitment();
     let journal = dir.0.join(crate::JOURNAL_FILE_NAME);
     let length = fs::metadata(&journal).unwrap().len();
-    let value_bytes = naome_consensus::state::ResearchValue::BYTE_LENGTH;
+    let value_bytes = naome_consensus::state::StateValue::BYTE_LENGTH;
     // A complete outer envelope containing only an unsigned proposal header
     // used to pass claimed_height and trigger historical mathematical replay.
     let header_length = 5 + value_bytes;
@@ -703,7 +700,7 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     unsigned.extend_from_slice(&valid[9..9 + header_length]);
     unsigned.extend_from_slice(&0u32.to_be_bytes());
     assert_eq!(
-        ResearchFinality::claimed_height(&unsigned, valid.len()).unwrap(),
+        StateFinality::claimed_height(&unsigned, valid.len()).unwrap(),
         3
     );
     let mut bad_producer = valid.clone();
@@ -730,14 +727,14 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     assert_eq!(history.historical_replay_count(), 0);
     assert_eq!(
         history.receive_finality(3, &valid).unwrap(),
-        ResearchAppendOutcome::AlreadyFinalized
+        StateAppendOutcome::AlreadyFinalized
     );
     assert_eq!(history.historical_replay_count(), 0);
     let alternative = alternative.unwrap();
     assert_ne!(alternative, valid);
     assert_eq!(
         history.receive_finality(3, &alternative).unwrap(),
-        ResearchAppendOutcome::AlreadyFinalized
+        StateAppendOutcome::AlreadyFinalized
     );
     assert_eq!(history.historical_replay_count(), 1);
     assert_eq!(history.head().unwrap().commitment(), head);
@@ -749,7 +746,7 @@ fn historical_conflicting_finality_is_verified_and_persistently_halts() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let mut history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     let sibling = first_finality(history.head().unwrap(), "different first question context")
         .encode()
         .unwrap();
@@ -759,16 +756,16 @@ fn historical_conflicting_finality_is_verified_and_persistently_halts() {
     assert!(history.report_conflict(1, &selected).is_err());
     assert_eq!(
         history.report_conflict(1, &sibling).unwrap(),
-        ResearchAppendOutcome::ConflictHalt
+        StateAppendOutcome::ConflictHalt
     );
     assert!(history.head().is_err());
     assert!(history.halted().unwrap());
     let expected = history.last_finalized().unwrap().commitment();
     drop(history);
-    let reopened = ResearchHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let reopened = StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     assert!(reopened.halted().unwrap());
     assert_eq!(reopened.last_finalized().unwrap().commitment(), expected);
-    let observed = ResearchObserver::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let observed = StateObserver::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
     assert!(observed.halted());
     assert_eq!(observed.branch().commitment(), expected);
 }
@@ -779,21 +776,17 @@ fn all_history_anchor_failure_boundaries_withhold_live_selection() {
         let dir = Directory::new();
         let anchors = Directory::new();
         let g = genesis();
-        let mut history =
-            ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+        let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
         let finality = first_finality(history.head().unwrap(), "durability boundary")
             .encode()
             .unwrap();
-        let injection = faults::inject(&anchors.0.join("research-finality.anchor"), point);
+        let injection = faults::inject(&anchors.0.join("state-finality.anchor"), point);
         assert!(history.append_finality(&finality).is_err());
         injection.assert_fired();
-        assert!(matches!(
-            history.head(),
-            Err(ResearchStorageError::Poisoned)
-        ));
+        assert!(matches!(history.head(), Err(StateStorageError::Poisoned)));
         drop(injection);
         drop(history);
-        let reopened = ResearchHistory::open(&dir.0, &anchors.0, g, MAX_ROUND);
+        let reopened = StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND);
         if point == faults::Point::DirectorySync {
             assert_eq!(reopened.unwrap().head().unwrap().state().height(), 1);
         } else {
@@ -809,23 +802,20 @@ fn prepared_intent_survives_restart_and_exact_completion_retry_never_resigns() {
     let anchors = Directory::new();
     let g = genesis();
     let mut signer =
-        ResearchSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap();
-    let event = ResearchLockEvent::ProposalTimeout;
-    assert_eq!(
-        signer.prepare(&event).unwrap(),
-        ResearchPreparation::Prepared
-    );
+        StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap();
+    let event = StateLockEvent::ProposalTimeout;
+    assert_eq!(signer.prepare(&event).unwrap(), StatePreparation::Prepared);
     assert_eq!(signer.key_use_count(), 0);
     let checkpoint = signer.snapshot().unwrap();
     let journal_path = dir.0.join(signer.journal_file_name());
     drop(signer);
     let mut signer =
-        ResearchSigner::open(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap();
+        StateSigner::open(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap();
     assert_eq!(signer.snapshot().unwrap(), checkpoint);
     assert!(signer.pending().unwrap());
     assert!(
         signer
-            .prepare(&ResearchLockEvent::Prevote { proposal: None })
+            .prepare(&StateLockEvent::Prevote { proposal: None })
             .is_err()
     );
     let publication = signer.apply_and_sign(&event).unwrap().unwrap();
@@ -835,8 +825,7 @@ fn prepared_intent_survives_restart_and_exact_completion_retry_never_resigns() {
     assert_eq!(signer.key_use_count(), 1);
     assert_eq!(fs::metadata(&journal_path).unwrap().len(), length);
     drop(signer);
-    let mut reopened =
-        ResearchSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).unwrap();
+    let mut reopened = StateSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).unwrap();
     assert_eq!(
         reopened.apply_and_sign(&event).unwrap().unwrap(),
         publication
@@ -855,9 +844,9 @@ fn exhausted_signing_bytes_or_frames_never_use_key_and_pending_intent_recovers()
             let anchors = Directory::new();
             let g = genesis();
             let mut signer =
-                ResearchSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND)
+                StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND)
                     .unwrap();
-            let event = ResearchLockEvent::ProposalTimeout;
+            let event = StateLockEvent::ProposalTimeout;
             if pending {
                 signer.prepare(&event).unwrap();
             }
@@ -870,7 +859,7 @@ fn exhausted_signing_bytes_or_frames_never_use_key_and_pending_intent_recovers()
             } else {
                 signer.prepare(&event).map(|_| ())
             };
-            assert!(matches!(result, Err(ResearchStorageError::Limit(_))));
+            assert!(matches!(result, Err(StateStorageError::Limit(_))));
             assert_eq!(signer.key_use_count(), 0);
             assert_eq!(signer.pending().unwrap(), pending);
             assert_eq!(signer.snapshot().unwrap(), snapshot);
@@ -878,7 +867,7 @@ fn exhausted_signing_bytes_or_frames_never_use_key_and_pending_intent_recovers()
             drop(signer);
             // The injected local capacity fault changed no durable authority.
             let mut recovered =
-                ResearchSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).unwrap();
+                StateSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).unwrap();
             assert_eq!(recovered.pending().unwrap(), pending);
             let publication = recovered.apply_and_sign(&event).unwrap().unwrap();
             assert_eq!(recovered.key_use_count(), 1);
@@ -900,10 +889,10 @@ fn signing_anchor_faults_never_publish_and_preparation_faults_never_use_key() {
             let anchors = Directory::new();
             let g = genesis();
             let mut signer =
-                ResearchSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND)
+                StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND)
                     .unwrap();
             if during_completion {
-                signer.prepare(&ResearchLockEvent::ProposalTimeout).unwrap();
+                signer.prepare(&StateLockEvent::ProposalTimeout).unwrap();
             }
             let injection = faults::inject(&anchors.0.join(signer.anchor_file_name()), point);
             if during_completion {
@@ -912,7 +901,7 @@ fn signing_anchor_faults_never_publish_and_preparation_faults_never_use_key() {
             } else {
                 assert!(
                     signer
-                        .apply_and_sign(&ResearchLockEvent::ProposalTimeout)
+                        .apply_and_sign(&StateLockEvent::ProposalTimeout)
                         .is_err()
                 );
                 assert_eq!(signer.key_use_count(), 0);
@@ -921,7 +910,7 @@ fn signing_anchor_faults_never_publish_and_preparation_faults_never_use_key() {
             assert!(signer.last_publication().is_err());
             drop(injection);
             drop(signer);
-            let reopened = ResearchSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND);
+            let reopened = StateSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND);
             if point == faults::Point::DirectorySync {
                 let signer = reopened.unwrap();
                 assert_eq!(signer.pending().unwrap(), !during_completion);
@@ -945,11 +934,11 @@ fn signer_height_handoff_uses_selected_durable_finality_and_conflict_preempts_pe
     let signer_anchors = Directory::new();
     let g = genesis();
     let mut history =
-        ResearchHistory::create(&history_dir.0, &history_anchors.0, g.clone(), MAX_ROUND).unwrap();
+        StateHistory::create(&history_dir.0, &history_anchors.0, g.clone(), MAX_ROUND).unwrap();
     let conflict = first_finality(history.head().unwrap(), "conflict evidence")
         .encode()
         .unwrap();
-    let mut signer = ResearchSigner::create(
+    let mut signer = StateSigner::create(
         &signer_dir.0,
         &signer_anchors.0,
         g.clone(),
@@ -967,7 +956,7 @@ fn signer_height_handoff_uses_selected_durable_finality_and_conflict_preempts_pe
     );
     let snapshot = signer.snapshot().unwrap();
     drop(signer);
-    let mut signer = ResearchSigner::open(
+    let mut signer = StateSigner::open(
         &signer_dir.0,
         &signer_anchors.0,
         g.clone(),
@@ -976,7 +965,7 @@ fn signer_height_handoff_uses_selected_durable_finality_and_conflict_preempts_pe
     )
     .unwrap();
     assert_eq!(signer.snapshot().unwrap(), snapshot);
-    signer.prepare(&ResearchLockEvent::ProposalTimeout).unwrap();
+    signer.prepare(&StateLockEvent::ProposalTimeout).unwrap();
     assert!(signer.pending().unwrap());
     history.report_conflict(1, &conflict).unwrap();
     assert!(signer.advance_to_history(&mut history).is_err());
@@ -984,11 +973,11 @@ fn signer_height_handoff_uses_selected_durable_finality_and_conflict_preempts_pe
     assert!(signer.sign_prepared().is_err());
     drop(signer);
     let mut reopened =
-        ResearchSigner::open(&signer_dir.0, &signer_anchors.0, g, validator(0), MAX_ROUND).unwrap();
+        StateSigner::open(&signer_dir.0, &signer_anchors.0, g, validator(0), MAX_ROUND).unwrap();
     assert!(reopened.stopped().unwrap());
     assert!(
         reopened
-            .apply_and_sign(&ResearchLockEvent::ProposalTimeout)
+            .apply_and_sign(&StateLockEvent::ProposalTimeout)
             .is_err()
     );
 }
@@ -999,7 +988,7 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let branch = ResearchBranch::from_genesis(ResearchState::new(g.clone())).unwrap();
+    let branch = StateBranch::from_genesis(LedgerState::new(g.clone())).unwrap();
     let record = record(
         &branch,
         100,
@@ -1007,7 +996,7 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
     );
     let (finality, prevotes) = certify(&branch, record.clone());
     let scheduled = branch.proposer(0, MAX_ROUND).unwrap();
-    let mut signer = ResearchSigner::create(
+    let mut signer = StateSigner::create(
         &dir.0,
         &anchors.0,
         g.clone(),
@@ -1017,13 +1006,13 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
     .unwrap();
     let mut expected = Vec::new();
     for event in [
-        ResearchLockEvent::Author {
+        StateLockEvent::Author {
             record: Some(record),
         },
-        ResearchLockEvent::Prevote {
+        StateLockEvent::Prevote {
             proposal: Some(finality.proposal().encode().unwrap()),
         },
-        ResearchLockEvent::Precommit {
+        StateLockEvent::Precommit {
             proposal: Some(finality.proposal().encode().unwrap()),
             quorum: prevotes.encode(),
         },
@@ -1035,12 +1024,12 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
     assert_eq!(signer.retry_publications().unwrap(), expected);
     let previous_votes: Vec<_> = expected
         .iter()
-        .filter(|p| matches!(p, ResearchPublication::Vote(_)))
+        .filter(|p| matches!(p, StatePublication::Vote(_)))
         .cloned()
         .collect();
     assert_eq!(previous_votes.len(), 2);
     drop(signer);
-    let mut recovered = ResearchSigner::open(
+    let mut recovered = StateSigner::open(
         &dir.0,
         &anchors.0,
         g.clone(),
@@ -1051,14 +1040,14 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
     assert_eq!(recovered.current_publications().unwrap(), expected);
     assert_eq!(recovered.key_use_count(), 0);
     recovered
-        .apply_and_sign(&ResearchLockEvent::PrecommitTimeout {
+        .apply_and_sign(&StateLockEvent::PrecommitTimeout {
             votes: finality.quorum().encode(),
         })
         .unwrap();
     assert!(recovered.current_publications().unwrap().is_empty());
     assert_eq!(recovered.retry_publications().unwrap(), previous_votes);
     drop(recovered);
-    let mut recovered = ResearchSigner::open(
+    let mut recovered = StateSigner::open(
         &dir.0,
         &anchors.0,
         g.clone(),
@@ -1073,7 +1062,7 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
     let history_dir = Directory::new();
     let history_anchors = Directory::new();
     let mut history =
-        ResearchHistory::create(&history_dir.0, &history_anchors.0, g.clone(), MAX_ROUND).unwrap();
+        StateHistory::create(&history_dir.0, &history_anchors.0, g.clone(), MAX_ROUND).unwrap();
     history
         .append_finality(&finality.encode().unwrap())
         .unwrap();
@@ -1082,7 +1071,7 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
     assert_eq!(recovered.key_use_count(), 0);
     drop(recovered);
     let recovered =
-        ResearchSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
+        StateSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
     assert_eq!(recovered.height().unwrap(), 2);
     assert!(recovered.retry_publications().unwrap().is_empty());
 }
@@ -1093,7 +1082,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let branch = ResearchBranch::from_genesis(ResearchState::new(g.clone())).unwrap();
+    let branch = StateBranch::from_genesis(LedgerState::new(g.clone())).unwrap();
     let record = record(
         &branch,
         100,
@@ -1102,7 +1091,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     let (finality, prevotes) = certify(&branch, record.clone());
     let proposal = finality.proposal().encode().unwrap();
     let scheduled = branch.proposer(1, MAX_ROUND).unwrap();
-    let mut signer = ResearchSigner::create(
+    let mut signer = StateSigner::create(
         &dir.0,
         &anchors.0,
         g.clone(),
@@ -1111,19 +1100,19 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     )
     .unwrap();
     signer
-        .apply_and_sign(&ResearchLockEvent::Prevote {
+        .apply_and_sign(&StateLockEvent::Prevote {
             proposal: Some(proposal.clone()),
         })
         .unwrap();
     signer
-        .apply_and_sign(&ResearchLockEvent::Precommit {
+        .apply_and_sign(&StateLockEvent::Precommit {
             proposal: Some(proposal),
             quorum: prevotes.encode(),
         })
         .unwrap();
     assert_eq!(signer.retained_record().unwrap(), Some(record.as_slice()));
     drop(signer);
-    let mut signer = ResearchSigner::open(
+    let mut signer = StateSigner::open(
         &dir.0,
         &anchors.0,
         g.clone(),
@@ -1135,7 +1124,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     assert_eq!(signer.retained_quorum().unwrap(), Some(&prevotes));
     assert!(
         signer
-            .apply_and_sign(&ResearchLockEvent::PrecommitTimeout {
+            .apply_and_sign(&StateLockEvent::PrecommitTimeout {
                 votes: finality.quorum().encode()
             })
             .unwrap()
@@ -1144,18 +1133,18 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     assert_eq!(signer.round().unwrap(), 1);
     assert!(
         signer
-            .prepare(&ResearchLockEvent::Author {
+            .prepare(&StateLockEvent::Author {
                 record: Some(record.clone())
             })
             .is_err()
     );
     let publication = signer
-        .apply_and_sign(&ResearchLockEvent::Author { record: None })
+        .apply_and_sign(&StateLockEvent::Author { record: None })
         .unwrap()
         .unwrap();
     let round_one_proposal = publication.encode().unwrap();
     match publication {
-        ResearchPublication::Proposal(p) => {
+        StatePublication::Proposal(p) => {
             assert_eq!(p.record_bytes(), record);
             assert_eq!(p.round(), 1);
             assert_eq!(p.valid_quorum(), Some(&prevotes));
@@ -1165,17 +1154,17 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     let prior = signer.retry_publications().unwrap();
     assert_eq!(prior.len(), 3); // current proposal plus two preceding-round votes
     signer
-        .apply_and_sign(&ResearchLockEvent::Prevote {
+        .apply_and_sign(&StateLockEvent::Prevote {
             proposal: Some(round_one_proposal.clone()),
         })
         .unwrap();
     let mut round_one_votes = Vec::new();
     for i in 0..3 {
-        let mut kernel = ResearchLockState::new(&branch, key(i)).unwrap();
+        let mut kernel = StateLockState::new(&branch, key(i)).unwrap();
         kernel
             .apply(
                 &branch,
-                &ResearchLockEvent::Prevote {
+                &StateLockEvent::Prevote {
                     proposal: Some(finality.proposal().encode().unwrap()),
                 },
                 MAX_ROUND,
@@ -1184,7 +1173,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
         kernel
             .apply(
                 &branch,
-                &ResearchLockEvent::Precommit {
+                &StateLockEvent::Precommit {
                     proposal: Some(finality.proposal().encode().unwrap()),
                     quorum: prevotes.encode(),
                 },
@@ -1194,7 +1183,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
         kernel
             .apply(
                 &branch,
-                &ResearchLockEvent::PrecommitTimeout {
+                &StateLockEvent::PrecommitTimeout {
                     votes: finality.quorum().encode(),
                 },
                 MAX_ROUND,
@@ -1203,7 +1192,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
         let intent = kernel
             .apply(
                 &branch,
-                &ResearchLockEvent::Prevote {
+                &StateLockEvent::Prevote {
                     proposal: Some(round_one_proposal.clone()),
                 },
                 MAX_ROUND,
@@ -1211,9 +1200,9 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
             .unwrap();
         round_one_votes.push(finish_vote(intent, &branch, i));
     }
-    let round_one_quorum = ResearchQuorum::from_votes(round_one_votes, &g).unwrap();
+    let round_one_quorum = StateQuorum::from_votes(round_one_votes, &g).unwrap();
     signer
-        .apply_and_sign(&ResearchLockEvent::Precommit {
+        .apply_and_sign(&StateLockEvent::Precommit {
             proposal: Some(round_one_proposal),
             quorum: round_one_quorum.encode(),
         })
@@ -1224,7 +1213,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     assert_eq!(&exact_retry[3..], &prior[1..]);
     drop(signer);
     let signer =
-        ResearchSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
+        StateSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
     assert_eq!(signer.retry_publications().unwrap(), exact_retry);
     assert_eq!(signer.current_publications().unwrap().len(), 3);
     assert_eq!(signer.key_use_count(), 0);
@@ -1236,8 +1225,8 @@ fn signing_remains_fail_closed_on_unsupported_platform() {
     let dir = Directory::new();
     let anchors = Directory::new();
     assert!(matches!(
-        ResearchSigner::create(&dir.0, &anchors.0, genesis(), validator(0), MAX_ROUND),
-        Err(ResearchStorageError::Platform(_))
+        StateSigner::create(&dir.0, &anchors.0, genesis(), validator(0), MAX_ROUND),
+        Err(StateStorageError::Platform(_))
     ));
     assert!(fs::read_dir(&dir.0).unwrap().next().is_none());
 }
@@ -1251,12 +1240,11 @@ fn legacy_history_and_signer_prefixes_fail_closed_without_rewriting() {
         let g = genesis();
         let (path, old_magic) = if signing {
             let signer =
-                ResearchSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND)
+                StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND)
                     .unwrap();
             (dir.0.join(signer.journal_file_name()), b"NAORSIG1")
         } else {
-            let history =
-                ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+            let history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
             drop(history);
             (dir.0.join(crate::JOURNAL_FILE_NAME), b"NAORHIS1")
         };
@@ -1264,10 +1252,75 @@ fn legacy_history_and_signer_prefixes_fail_closed_without_rewriting() {
         bytes[..8].copy_from_slice(old_magic);
         fs::write(&path, &bytes).unwrap();
         if signing {
-            assert!(ResearchSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).is_err());
+            assert!(StateSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).is_err());
         } else {
-            assert!(ResearchHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).is_err());
+            assert!(StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).is_err());
         }
         assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn legacy_storage_names_refuse_creation_reopen_and_observation_without_writes() {
+    use std::collections::BTreeMap;
+    fn image(path: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+        fs::read_dir(path)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().to_str().unwrap().to_owned(),
+                    fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+    for name in [
+        "artifact-chain.journal",
+        "ARTIFACT-CHAIN.JOURNAL",
+        "Research-Finality.Anchor",
+        "Fixed-Validator-Vote-Safety-fixture.journal",
+        "artifact-chain.lock",
+        "research-finality.anchor",
+        "research-signer-fixture.journal",
+        "fixed-validator-finality.anchor",
+        "candidate-blocks.journal",
+        "payload-store.journal",
+    ] {
+        for anchor in [false, true] {
+            let dir = Directory::new();
+            let anchors = Directory::new();
+            fs::write(
+                if anchor { &anchors.0 } else { &dir.0 }.join(name),
+                b"retained old authority",
+            )
+            .unwrap();
+            let before = (image(&dir.0), image(&anchors.0));
+            let g = genesis();
+            assert!(matches!(
+                StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND),
+                Err(StateStorageError::Invalid(_))
+            ));
+            assert!(matches!(
+                StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND),
+                Err(StateStorageError::Invalid(_))
+            ));
+            assert!(matches!(
+                StateObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND),
+                Err(StateStorageError::Invalid(_))
+            ));
+            #[cfg(unix)]
+            {
+                assert!(matches!(
+                    StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND),
+                    Err(StateStorageError::Invalid(_))
+                ));
+                assert!(matches!(
+                    StateSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND),
+                    Err(StateStorageError::Invalid(_))
+                ));
+            }
+            assert_eq!((image(&dir.0), image(&anchors.0)), before);
+        }
     }
 }

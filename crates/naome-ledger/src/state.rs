@@ -1,7 +1,7 @@
 //! Complete deterministic research state. Provisional execution grants no finality.
 
 use crate::{
-    AccountId, CommitmentId, OperationId, QuestionId, RecordId, ResearchError, ResolutionId,
+    AccountId, CommitmentId, LedgerError, OperationId, QuestionId, RecordId, ResolutionId,
     SolutionRoundId, StateCommitment,
     accounting::{Balances, CitationRecipient, RewardPlan},
     authentication::SignedOperation,
@@ -163,7 +163,7 @@ pub struct EligibilityClaim {
 /// All application state required by deterministic replay. The selected journal
 /// and consensus layer, not this in-memory type, determine what is finalized.
 #[derive(Clone)]
-pub struct ResearchState {
+pub struct LedgerState {
     genesis: Arc<Genesis>,
     height: u64,
     head: RecordId,
@@ -183,7 +183,7 @@ pub struct ResearchState {
     terminated: bool,
 }
 
-impl ResearchState {
+impl LedgerState {
     /// Constructs the empty adopted test genesis. All balances and proof sets are zero.
     pub fn new(genesis: Genesis) -> Self {
         let head = RecordId::from_bytes(hash(
@@ -316,7 +316,7 @@ impl ResearchState {
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
-    ) -> Result<LedgerExecution, ResearchError> {
+    ) -> Result<LedgerExecution, LedgerError> {
         self.prepare(time, operations)
     }
 }
@@ -325,13 +325,13 @@ impl ResearchState {
 /// The provisional successor retains its parent's record identity until bound
 /// by the chain layer. Consensus must still verify and finalize that record.
 pub struct LedgerExecution {
-    next: ResearchState,
+    next: LedgerState,
     time: TimeCertificate,
     operations: Vec<SignedOperation>,
     effects: Vec<u8>,
 }
 impl LedgerExecution {
-    pub fn state(&self) -> &ResearchState {
+    pub fn state(&self) -> &LedgerState {
         &self.next
     }
     pub fn time_certificate(&self) -> &TimeCertificate {
@@ -347,7 +347,7 @@ impl LedgerExecution {
     /// Binds an externally constructed chain identity to a provisional result.
     /// This supplies no proof that the identifier is a valid record and grants
     /// no selected-history authority; consensus must replay the chain record.
-    pub fn bind_record(mut self, record: RecordId) -> ResearchState {
+    pub fn bind_record(mut self, record: RecordId) -> LedgerState {
         self.next.head = record;
         self.next
     }

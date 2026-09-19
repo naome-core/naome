@@ -1,4 +1,4 @@
-use super::ResearchStorageError as Error;
+use super::StateStorageError as Error;
 
 pub(super) fn bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<(), Error> {
     let len = u32::try_from(value.len()).map_err(|_| Error::Limit("journal field"))?;

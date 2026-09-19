@@ -65,7 +65,7 @@ fn default_older_depth_32_is_checked_and_33_rejects_before_checker() {
             let before = library.root();
             assert!(matches!(
                 result,
-                Err(ResearchError::Limit("older dependency depth"))
+                Err(LedgerError::Limit("older dependency depth"))
             ));
             assert_eq!(work, VerificationWork::default());
             assert_eq!(library.root(), before);

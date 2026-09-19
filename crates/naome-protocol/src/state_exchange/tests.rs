@@ -1,79 +1,79 @@
 use super::*;
-const MAX: usize = RESEARCH_MAX_FRAME_BYTES;
-fn context() -> ResearchContext {
-    ResearchContext::new([1; 32], [2; 32])
+const MAX: usize = STATE_MAX_FRAME_BYTES;
+fn context() -> StateContext {
+    StateContext::new([1; 32], [2; 32])
 }
 #[test]
-fn every_research_envelope_roundtrips_and_rejects_all_truncations() {
+fn every_state_envelope_roundtrips_and_rejects_all_truncations() {
     let id = ProofId::from_bytes([3; 32]);
     let requests = [
-        ResearchRequestBody::Handshake,
-        ResearchRequestBody::TimeReport(vec![1].into()),
-        ResearchRequestBody::UserAction(vec![2].into()),
-        ResearchRequestBody::Proposal(vec![3].into()),
-        ResearchRequestBody::Vote(vec![4].into()),
-        ResearchRequestBody::Finalized(vec![5].into()),
-        ResearchRequestBody::History {
+        StateRequestBody::Handshake,
+        StateRequestBody::TimeReport(vec![1].into()),
+        StateRequestBody::UserAction(vec![2].into()),
+        StateRequestBody::Proposal(vec![3].into()),
+        StateRequestBody::Vote(vec![4].into()),
+        StateRequestBody::Finalized(vec![5].into()),
+        StateRequestBody::History {
             from: 1,
             max_records: 2,
         },
-        ResearchRequestBody::Proof { proof_id: id },
+        StateRequestBody::Proof { proof_id: id },
     ];
     for body in requests {
-        let request = ResearchRequest::new(context(), body, MAX).unwrap();
+        let request = StateRequest::new(context(), body, MAX).unwrap();
         let mut bytes = request.to_wire_bytes();
         assert_eq!(bytes.len(), request.wire_len());
         assert_eq!(
-            ResearchRequest::from_wire_bytes(&bytes, context(), MAX).unwrap(),
+            StateRequest::from_wire_bytes(&bytes, context(), MAX).unwrap(),
             request
         );
         for cut in 0..bytes.len() {
-            assert!(ResearchRequest::from_wire_bytes(&bytes[..cut], context(), MAX).is_err());
+            assert!(StateRequest::from_wire_bytes(&bytes[..cut], context(), MAX).is_err());
         }
         bytes.push(0);
-        assert!(ResearchRequest::from_wire_bytes(&bytes, context(), MAX).is_err());
+        assert!(StateRequest::from_wire_bytes(&bytes, context(), MAX).is_err());
     }
     let responses = [
-        ResearchResponseBody::Ready,
-        ResearchResponseBody::Accepted,
-        ResearchResponseBody::Busy,
-        ResearchResponseBody::Rejected(ResearchRejection::Invalid),
-        ResearchResponseBody::Rejected(ResearchRejection::Unauthorized),
-        ResearchResponseBody::Rejected(ResearchRejection::Unsupported),
-        ResearchResponseBody::History(vec![
-            ResearchHistoryItem {
+        StateResponseBody::Ready,
+        StateResponseBody::Accepted,
+        StateResponseBody::Busy,
+        StateResponseBody::Rejected(StateRejection::Invalid),
+        StateResponseBody::Rejected(StateRejection::Unauthorized),
+        StateResponseBody::Rejected(StateRejection::Unsupported),
+        StateResponseBody::History(vec![
+            StateHistoryItem {
                 height: 1,
                 evidence: vec![7].into(),
             },
-            ResearchHistoryItem {
+            StateHistoryItem {
                 height: 2,
                 evidence: vec![8].into(),
             },
         ]),
-        ResearchResponseBody::Proof {
+        StateResponseBody::Proof {
             proof_id: id,
             certificate: vec![9].into(),
         },
-        ResearchResponseBody::Unavailable,
+        StateResponseBody::Unavailable,
     ];
     for body in responses {
-        let response = ResearchResponse::new(context(), [4; 32], body, MAX).unwrap();
+        let response = StateResponse::new(context(), [4; 32], body, MAX).unwrap();
         let mut bytes = response.to_wire_bytes();
         assert_eq!(bytes.len(), response.wire_len());
         assert_eq!(
-            ResearchResponse::from_wire_bytes(&bytes, context(), MAX).unwrap(),
+            StateResponse::from_wire_bytes(&bytes, context(), MAX).unwrap(),
             response
         );
         for cut in 0..bytes.len() {
-            assert!(ResearchResponse::from_wire_bytes(&bytes[..cut], context(), MAX).is_err());
+            assert!(StateResponse::from_wire_bytes(&bytes[..cut], context(), MAX).is_err());
         }
         bytes.push(0);
-        assert!(ResearchResponse::from_wire_bytes(&bytes, context(), MAX).is_err());
+        assert!(StateResponse::from_wire_bytes(&bytes, context(), MAX).is_err());
     }
 }
 #[test]
 fn header_rejects_wrong_context_direction_version_tag_and_excess_before_body() {
-    let bytes = ResearchRequest::new(context(), ResearchRequestBody::Handshake, MAX)
+    let bytes = StateRequest::new(context(), StateRequestBody::Handshake, MAX)
         .unwrap()
         .to_wire_bytes();
     assert_eq!(&bytes[..3], &[0, 2, 0]);
@@ -83,23 +83,23 @@ fn header_rejects_wrong_context_direction_version_tag_and_excess_before_body() {
     for offset in [0, 2, 3, 35, 67] {
         let mut bad = bytes.clone();
         bad[offset] = 255;
-        assert!(research_frame_length(&bad, false, context(), MAX).is_err());
+        assert!(state_frame_length(&bad, false, context(), MAX).is_err());
     }
     let mut oversized = bytes;
     oversized[67] = 3;
     oversized[68..].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        research_frame_length(&oversized, false, context(), MAX),
-        Err(ResearchWireError::Limit)
+        state_frame_length(&oversized, false, context(), MAX),
+        Err(StateWireError::Limit)
     );
 }
 #[test]
 fn bounded_history_and_response_correlation() {
     for (from, max_records) in [(0, 1), (1, 0), (1, 17), (u64::MAX, 2)] {
         assert!(
-            ResearchRequest::new(
+            StateRequest::new(
                 context(),
-                ResearchRequestBody::History { from, max_records },
+                StateRequestBody::History { from, max_records },
                 MAX
             )
             .is_err()
@@ -107,13 +107,13 @@ fn bounded_history_and_response_correlation() {
     }
     for heights in [[1, 1], [2, 1], [1, 3], [0, 1]] {
         assert!(
-            ResearchResponse::new(
+            StateResponse::new(
                 context(),
                 [0; 32],
-                ResearchResponseBody::History(
+                StateResponseBody::History(
                     heights
                         .into_iter()
-                        .map(|height| ResearchHistoryItem {
+                        .map(|height| StateHistoryItem {
                             height,
                             evidence: vec![1].into()
                         })
@@ -124,9 +124,9 @@ fn bounded_history_and_response_correlation() {
             .is_err()
         );
     }
-    let request = ResearchRequest::new(
+    let request = StateRequest::new(
         context(),
-        ResearchRequestBody::History {
+        StateRequestBody::History {
             from: 2,
             max_records: 1,
         },
@@ -134,18 +134,18 @@ fn bounded_history_and_response_correlation() {
     )
     .unwrap();
     for (body, expected) in [
-        (ResearchResponseBody::Ready, false),
-        (ResearchResponseBody::Busy, true),
-        (ResearchResponseBody::Unavailable, true),
+        (StateResponseBody::Ready, false),
+        (StateResponseBody::Busy, true),
+        (StateResponseBody::Unavailable, true),
         (
-            ResearchResponseBody::History(vec![ResearchHistoryItem {
+            StateResponseBody::History(vec![StateHistoryItem {
                 height: 1,
                 evidence: vec![1].into(),
             }]),
             false,
         ),
         (
-            ResearchResponseBody::History(vec![ResearchHistoryItem {
+            StateResponseBody::History(vec![StateHistoryItem {
                 height: 2,
                 evidence: vec![1].into(),
             }]),
@@ -153,25 +153,25 @@ fn bounded_history_and_response_correlation() {
         ),
     ] {
         assert_eq!(
-            ResearchResponse::new(context(), [0; 32], body, MAX)
+            StateResponse::new(context(), [0; 32], body, MAX)
                 .unwrap()
                 .matches_request(&request),
             expected
         );
     }
-    let request = ResearchRequest::new(
+    let request = StateRequest::new(
         context(),
-        ResearchRequestBody::Proof {
+        StateRequestBody::Proof {
             proof_id: ProofId::from_bytes([1; 32]),
         },
         MAX,
     )
     .unwrap();
     assert!(
-        !ResearchResponse::new(
+        !StateResponse::new(
             context(),
             [0; 32],
-            ResearchResponseBody::Proof {
+            StateResponseBody::Proof {
                 proof_id: ProofId::from_bytes([2; 32]),
                 certificate: vec![1].into()
             },
@@ -194,9 +194,9 @@ fn fixed_v2_proof_and_history_wire_vectors() {
         &[3; 32],
     ]
     .concat();
-    let request = ResearchRequest::new(
+    let request = StateRequest::new(
         context(),
-        ResearchRequestBody::Proof {
+        StateRequestBody::Proof {
             proof_id: ProofId::from_bytes([3; 32]),
         },
         MAX,
@@ -204,7 +204,7 @@ fn fixed_v2_proof_and_history_wire_vectors() {
     .unwrap();
     assert_eq!(request.to_wire_bytes(), expected);
     assert_eq!(
-        ResearchRequest::from_wire_bytes(&expected, context(), MAX).unwrap(),
+        StateRequest::from_wire_bytes(&expected, context(), MAX).unwrap(),
         request
     );
     // Response body includes its exact 32-byte request digest, followed by ID
@@ -219,10 +219,10 @@ fn fixed_v2_proof_and_history_wire_vectors() {
         &[9, 8, 7],
     ]
     .concat();
-    let response = ResearchResponse::new(
+    let response = StateResponse::new(
         context(),
         [4; 32],
-        ResearchResponseBody::Proof {
+        StateResponseBody::Proof {
             proof_id: ProofId::from_bytes([3; 32]),
             certificate: vec![9, 8, 7].into(),
         },
@@ -231,7 +231,7 @@ fn fixed_v2_proof_and_history_wire_vectors() {
     .unwrap();
     assert_eq!(response.to_wire_bytes(), expected);
     assert_eq!(
-        ResearchResponse::from_wire_bytes(&expected, context(), MAX).unwrap(),
+        StateResponse::from_wire_bytes(&expected, context(), MAX).unwrap(),
         response
     );
     let expected = [
@@ -245,10 +245,10 @@ fn fixed_v2_proof_and_history_wire_vectors() {
         &[0, 0, 0, 1, 9],
     ]
     .concat();
-    let response = ResearchResponse::new(
+    let response = StateResponse::new(
         context(),
         [4; 32],
-        ResearchResponseBody::History(vec![ResearchHistoryItem {
+        StateResponseBody::History(vec![StateHistoryItem {
             height: 5,
             evidence: vec![9].into(),
         }]),
@@ -257,16 +257,16 @@ fn fixed_v2_proof_and_history_wire_vectors() {
     .unwrap();
     assert_eq!(response.to_wire_bytes(), expected);
     assert_eq!(
-        ResearchResponse::from_wire_bytes(&expected, context(), MAX).unwrap(),
+        StateResponse::from_wire_bytes(&expected, context(), MAX).unwrap(),
         response
     );
 }
 
 #[test]
 fn legacy_research_frame_version_is_rejected_before_body() {
-    let mut bytes = ResearchRequest::new(context(), ResearchRequestBody::Handshake, MAX)
+    let mut bytes = StateRequest::new(context(), StateRequestBody::Handshake, MAX)
         .unwrap()
         .to_wire_bytes();
     bytes[..2].copy_from_slice(&1u16.to_be_bytes());
-    assert!(research_frame_length(&bytes, false, context(), MAX).is_err());
+    assert!(state_frame_length(&bytes, false, context(), MAX).is_err());
 }

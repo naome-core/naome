@@ -188,7 +188,7 @@ fn qualification_actual_4096_steps_and_near_64k_certificate() {
             &small,
             &mut work
         ),
-        Err(ResearchError::Limit("certificate steps"))
+        Err(LedgerError::Limit("certificate steps"))
     ));
     assert_eq!(work, VerificationWork::default());
     let bulky = checked(
@@ -225,7 +225,7 @@ fn qualification_actual_4096_steps_and_near_64k_certificate() {
             &small,
             &mut work
         ),
-        Err(ResearchError::Limit(_))
+        Err(LedgerError::Limit(_))
     ));
     assert_eq!(work, VerificationWork::default());
 }
@@ -288,14 +288,14 @@ fn qualification_17_used_nodes_near_compact_and_default_package_bounds() {
         let mut work = VerificationWork::default();
         assert!(matches!(
             library.normalize_with_work(&package, &obligation(&base, &small), &small, &mut work),
-            Err(ResearchError::Limit(_))
+            Err(LedgerError::Limit(_))
         ));
         assert_eq!(work, VerificationWork::default());
         let extra = generalize(previous.unwrap(), &mut context);
         nodes.push(extra.clone());
         assert!(matches!(
             ProofPackage::new(author(1), extra.0, nodes, &profile),
-            Err(ResearchError::Limit("new proof count"))
+            Err(LedgerError::Limit("new proof count"))
         ));
         let bounded = Profile::with_limits(
             TimingKind::Lab,
@@ -318,7 +318,7 @@ fn qualification_17_used_nodes_near_compact_and_default_package_bounds() {
                 &bounded,
                 &mut work
             ),
-            Err(ResearchError::Limit("checker calls"))
+            Err(LedgerError::Limit("checker calls"))
         ));
         assert_eq!(work, before);
     }
@@ -426,7 +426,7 @@ fn qualification_64_verified_older_citations_and_65th_reject_before_checker() {
     let mut work = VerificationWork::default();
     assert!(matches!(
         library.normalize_with_work(&package, &task, &profile, &mut work),
-        Err(ResearchError::Limit("older dependency count"))
+        Err(LedgerError::Limit("older dependency count"))
     ));
     assert_eq!(work, VerificationWork::default());
 }
@@ -434,7 +434,7 @@ fn qualification_64_verified_older_citations_and_65th_reject_before_checker() {
 #[test]
 fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
     use crate::{
-        ResearchState, SolutionRoundId,
+        LedgerState, SolutionRoundId,
         operations::{OperationBody, SignedOriginal},
         profile::{DOMAIN_RECORD_OVERHEAD_BYTES, Genesis},
         time::{SignedTimeReport, TimeCertificate},
@@ -610,14 +610,14 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
             &small,
             &mut untouched
         ),
-        Err(ResearchError::Limit("older dependency bytes"))
+        Err(LedgerError::Limit("older dependency bytes"))
     ));
     assert_eq!(untouched, VerificationWork::default());
     // The real record admission boundary rejects a 17th operation before phase,
     // signature or proof processing; this is not a claim that these envelopes
     // were admitted or finalized in the empty state used for this count check.
     actions.push(actions[0].clone());
-    let state = ResearchState::new(genesis);
+    let state = LedgerState::new(genesis);
     let time = TimeCertificate::new(
         (0..3)
             .map(|i| {
@@ -639,14 +639,14 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
     .unwrap();
     assert!(matches!(
         state.execute(time, actions),
-        Err(ResearchError::Limit("operations per record"))
+        Err(LedgerError::Limit("operations per record"))
     ));
     // The real default aggregate checker-call ceiling is now exhausted. The
     // next call fails before adding any work, even without the action-count gate.
     let before = work;
     assert!(matches!(
         library.normalize_with_work(&packages[0], &task, &profile, &mut work),
-        Err(ResearchError::Limit("checker calls"))
+        Err(LedgerError::Limit("checker calls"))
     ));
     assert_eq!(work, before);
 }

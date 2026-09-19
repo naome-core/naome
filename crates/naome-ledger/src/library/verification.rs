@@ -4,20 +4,20 @@ use naome_checker::check_normal_form_with_state;
 pub(super) fn bounded_certificate(
     bytes: &[u8],
     profile: &Profile,
-) -> Result<ProofCertificate, ResearchError> {
+) -> Result<ProofCertificate, LedgerError> {
     if bytes.len() > profile.limits().certificate_bytes as usize {
-        return Err(ResearchError::Limit("certificate bytes"));
+        return Err(LedgerError::Limit("certificate bytes"));
     }
     let certificate = ProofCertificate::from_canonical_bytes(bytes).map_err(math)?;
     if certificate.steps().len() > profile.limits().certificate_steps as usize {
-        return Err(ResearchError::Limit("certificate steps"));
+        return Err(LedgerError::Limit("certificate steps"));
     }
     if certificate
         .steps()
         .iter()
         .any(|step| !step.definition_references().is_empty())
     {
-        return Err(ResearchError::Invalid(
+        return Err(LedgerError::Invalid(
             "definitions are not published in this MVP",
         ));
     }
@@ -38,45 +38,40 @@ pub(super) fn dependencies(certificate: &ProofCertificate) -> Vec<ProofId> {
 }
 
 impl VerificationWork {
-    fn check(
-        &mut self,
-        bytes: usize,
-        steps: usize,
-        profile: &Profile,
-    ) -> Result<(), ResearchError> {
+    fn check(&mut self, bytes: usize, steps: usize, profile: &Profile) -> Result<(), LedgerError> {
         let mut next = *self;
         next.checker_calls = self
             .checker_calls
             .checked_add(1)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         next.checker_input_bytes = self
             .checker_input_bytes
             .checked_add(bytes as u64)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         next.dag_steps = self
             .dag_steps
             .checked_add(steps as u64)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         let l = profile.limits();
         if next.checker_calls > l.checker_calls_per_record {
-            return Err(ResearchError::Limit("checker calls"));
+            return Err(LedgerError::Limit("checker calls"));
         }
         if next.checker_input_bytes > l.checker_input_bytes_per_record {
-            return Err(ResearchError::Limit("checker input bytes"));
+            return Err(LedgerError::Limit("checker input bytes"));
         }
         if next.dag_steps > l.dag_steps_per_record {
-            return Err(ResearchError::Limit("DAG steps"));
+            return Err(LedgerError::Limit("DAG steps"));
         }
         *self = next;
         Ok(())
     }
-    fn normalization(&mut self, steps: usize, profile: &Profile) -> Result<(), ResearchError> {
+    fn normalization(&mut self, steps: usize, profile: &Profile) -> Result<(), LedgerError> {
         let next = self
             .normalization_steps
             .checked_add(steps as u64)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         if next > profile.limits().normalization_steps_per_record {
-            return Err(ResearchError::Limit("normalization steps"));
+            return Err(LedgerError::Limit("normalization steps"));
         }
         self.normalization_steps = next;
         Ok(())
@@ -88,12 +83,12 @@ pub(super) fn strict_check(
     state: &ArtifactState,
     profile: &Profile,
     work: &mut VerificationWork,
-) -> Result<CheckedProof, ResearchError> {
+) -> Result<CheckedProof, LedgerError> {
     let certificate = bounded_certificate(bytes, profile)?;
     work.check(bytes.len(), certificate.steps().len(), profile)?;
     let normal = certificate.into_unchecked_normal_form();
     if normal.canonical_bytes() != bytes {
-        return Err(ResearchError::Invalid(
+        return Err(LedgerError::Invalid(
             "certificate is not strict root normal form",
         ));
     }
@@ -105,7 +100,7 @@ fn old_closure(
     library: &ProofLibrary,
     starts: &BTreeSet<ProofId>,
     profile: &Profile,
-) -> Result<Vec<ProofId>, ResearchError> {
+) -> Result<Vec<ProofId>, LedgerError> {
     let mut pending = starts.clone();
     let mut found = BTreeSet::new();
     let mut bytes = 0usize;
@@ -114,17 +109,17 @@ fn old_closure(
             continue;
         }
         if found.len() > profile.limits().dependency_proofs as usize {
-            return Err(ResearchError::Limit("older dependency count"));
+            return Err(LedgerError::Limit("older dependency count"));
         }
         let proof = library
             .lookup(id)
-            .ok_or(ResearchError::Invalid("missing selected proof dependency"))?;
+            .ok_or(LedgerError::Invalid("missing selected proof dependency"))?;
         let _ = bounded_certificate(&proof.bytes, profile)?;
         bytes = bytes
             .checked_add(proof.bytes.len())
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         if bytes > profile.limits().dependency_bytes as usize {
-            return Err(ResearchError::Limit("older dependency bytes"));
+            return Err(LedgerError::Limit("older dependency bytes"));
         }
         for dependency in &proof.dependencies {
             if !found.contains(dependency) {
@@ -145,7 +140,7 @@ fn old_closure(
                     .all(|id| depth.contains_key(id))
             })
             .copied()
-            .ok_or(ResearchError::Invalid("cyclic selected dependency closure"))?;
+            .ok_or(LedgerError::Invalid("cyclic selected dependency closure"))?;
         let maximum = library.records[&id]
             .dependencies
             .iter()
@@ -154,7 +149,7 @@ fn old_closure(
             .unwrap_or(0)
             + 1;
         if maximum > profile.limits().dependency_depth as usize {
-            return Err(ResearchError::Limit("older dependency depth"));
+            return Err(LedgerError::Limit("older dependency depth"));
         }
         depth.insert(id, maximum);
         remaining.remove(&id);
@@ -168,7 +163,7 @@ fn verify_old(
     ids: &[ProofId],
     profile: &Profile,
     work: &mut VerificationWork,
-) -> Result<ArtifactState, ResearchError> {
+) -> Result<ArtifactState, LedgerError> {
     let mut state = ArtifactState::new();
     for id in ids {
         let stored = &library.records[id];
@@ -178,7 +173,7 @@ fn verify_old(
             || checked.conclusion() != &stored.conclusion
             || dependencies(checked.normal_form().certificate()) != stored.dependencies
         {
-            return Err(ResearchError::Invalid("stored proof metadata mismatch"));
+            return Err(LedgerError::Invalid("stored proof metadata mismatch"));
         }
         state.register_proof(checked).map_err(math)?;
     }
@@ -191,7 +186,7 @@ pub(super) fn normalize(
     question: &CompiledQuestion,
     profile: &Profile,
     work: &mut VerificationWork,
-) -> Result<NormalizedPackage, ResearchError> {
+) -> Result<NormalizedPackage, LedgerError> {
     let previous = *work;
     // Revalidate against this profile, even if constructed under another profile.
     let original_bytes = package.encode()?;
@@ -214,14 +209,14 @@ pub(super) fn normalize(
     for (id, bytes) in &package.nodes {
         let checked = strict_check(bytes, &original_state, profile, work)?;
         if checked.proof_id() != *id {
-            return Err(ResearchError::Invalid("claimed proof ID mismatch"));
+            return Err(LedgerError::Invalid("claimed proof ID mismatch"));
         }
         let conclusion_bytes = checked.conclusion().encode_canonical().map_err(math)?;
         if statements
             .insert((checked.statement_id(), conclusion_bytes), *id)
             .is_some()
         {
-            return Err(ResearchError::Invalid(
+            return Err(LedgerError::Invalid(
                 "different new certificates of one exact statement",
             ));
         }
@@ -238,12 +233,12 @@ pub(super) fn normalize(
     } else if &original_root.conclusion == question.refuted_target() {
         ProofOutcome::Refuted
     } else {
-        return Err(ResearchError::Invalid(
+        return Err(LedgerError::Invalid(
             "root does not prove an approved target",
         ));
     };
     if library.exact_target(&original_root.conclusion).is_some() {
-        return Err(ResearchError::Invalid("root target already selected"));
+        return Err(LedgerError::Invalid("root target already selected"));
     }
     let mut substitutions = BTreeMap::new();
     for (id, proof) in &originals {
@@ -273,13 +268,13 @@ pub(super) fn normalize(
             }
         } else {
             if !library.records.contains_key(&id) {
-                return Err(ResearchError::Invalid("missing final dependency"));
+                return Err(LedgerError::Invalid("missing final dependency"));
             }
             citations.insert(id);
         }
     }
     if citations.len() > profile.limits().citation_proofs as usize {
-        return Err(ResearchError::Limit("citation proof count"));
+        return Err(LedgerError::Limit("citation proof count"));
     }
     let final_closure = old_closure(library, &citations, profile)?;
     // Independent second verification of every required final older certificate.
@@ -317,7 +312,7 @@ pub(super) fn normalize(
         if checked.statement_id() != originals[id].statement_id
             || checked.conclusion() != &originals[id].conclusion
         {
-            return Err(ResearchError::Invalid("normalization changed conclusion"));
+            return Err(LedgerError::Invalid("normalization changed conclusion"));
         }
         let proof = record(&checked, package.author);
         rewritten_ids.insert(*id, proof.proof_id);

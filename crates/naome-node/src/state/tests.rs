@@ -6,9 +6,7 @@ use naome_ledger::{
     AccountId,
     authentication::SignedOperation,
     operations::OperationBody,
-    profile::{
-        Genesis, Limits, Profile, RESEARCH_CHECKER_PROFILE, TimingKind, ValidatorRegistration,
-    },
+    profile::{Genesis, Limits, Profile, STATE_CHECKER_PROFILE, TimingKind, ValidatorRegistration},
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
 };
@@ -25,7 +23,7 @@ impl Directory {
     fn new() -> Self {
         loop {
             let path = std::env::temp_dir().join(format!(
-                "naome-research-node-{}-{}",
+                "naome-state-node-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -63,7 +61,7 @@ fn genesis_with_rounds(rounds: u64) -> Genesis {
     Genesis::new(
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [9; 32],
@@ -83,13 +81,13 @@ fn genesis_with_rounds(rounds: u64) -> Genesis {
     )
     .unwrap()
 }
-fn node(i: u8, g: &Genesis) -> (Directory, Directory, ResearchNode) {
+fn node(i: u8, g: &Genesis) -> (Directory, Directory, StateNode) {
     let dir = Directory::new();
     let anchors = Directory::new();
     let maximum = g.profile().limits().consensus_rounds;
-    let history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), maximum).unwrap();
-    let signer = ResearchSigner::create(&dir.0, &anchors.0, g.clone(), key(i), maximum).unwrap();
-    let node = ResearchNode::new(history, Some(signer)).unwrap();
+    let history = StateHistory::create(&dir.0, &anchors.0, g.clone(), maximum).unwrap();
+    let signer = StateSigner::create(&dir.0, &anchors.0, g.clone(), key(i), maximum).unwrap();
+    let node = StateNode::new(history, Some(signer)).unwrap();
     (dir, anchors, node)
 }
 fn operation(g: &Genesis) -> SignedOperation {
@@ -104,7 +102,7 @@ fn operation(g: &Genesis) -> SignedOperation {
     .sign(g, 1, &account(4))
     .unwrap()
 }
-fn record(state: &ResearchState) -> Vec<u8> {
+fn record(state: &LedgerState) -> Vec<u8> {
     let reports = (0..3)
         .map(|i| {
             SignedTimeReport::sign(
@@ -132,25 +130,25 @@ fn record(state: &ResearchState) -> Vec<u8> {
         .encode()
         .unwrap()
 }
-fn relay(nodes: &mut [ResearchNode], only_role: Option<ConsensusVoteRole>) {
+fn relay(nodes: &mut [StateNode], only_role: Option<ConsensusVoteRole>) {
     let messages: Vec<_> = nodes
         .iter()
         .flat_map(|node| node.publications().unwrap())
         .filter(|p| match (p, only_role) {
-            (ResearchPublication::Vote(v), Some(role)) => v.role() == role,
-            (ResearchPublication::Proposal(_), _) => true,
+            (StatePublication::Vote(v), Some(role)) => v.role() == role,
+            (StatePublication::Proposal(_), _) => true,
             (_, None) => true,
         })
         .collect();
     for node in nodes {
         for message in &messages {
             match message {
-                ResearchPublication::Proposal(p) => {
+                StatePublication::Proposal(p) => {
                     if p.value().height() == node.state().unwrap().height() + 1 {
                         node.accept_proposal(&p.encode().unwrap()).unwrap();
                     }
                 }
-                ResearchPublication::Vote(v) => {
+                StatePublication::Vote(v) => {
                     if v.height() == node.state().unwrap().height() + 1 {
                         node.accept_vote(&v.encode()).unwrap();
                     }
@@ -204,7 +202,7 @@ fn absent_proposer_advances_by_nil_quorums_then_three_nodes_finalize_and_fourth_
     let proof = live[0].finality_bytes(1).unwrap();
     assert_eq!(
         offline.accept_finality(&proof).unwrap(),
-        ResearchAppendOutcome::Finalized
+        StateAppendOutcome::Finalized
     );
     assert_eq!(
         offline.state().unwrap().commitment(),
@@ -212,7 +210,7 @@ fn absent_proposer_advances_by_nil_quorums_then_three_nodes_finalize_and_fourth_
     );
     assert_eq!(
         offline.position().unwrap().unwrap(),
-        (2, 0, ResearchPhase::Proposal)
+        (2, 0, StatePhase::Proposal)
     );
     assert_eq!(offline.state().unwrap().library().proofs().count(), 0);
     assert!(
@@ -244,10 +242,7 @@ fn clean_two_two_partition_does_not_consume_round_budget_and_heals() {
             relay(half, None);
             for n in half {
                 assert!(!n.timeout().unwrap());
-                assert_eq!(
-                    n.position().unwrap().unwrap(),
-                    (1, 0, ResearchPhase::Prevote)
-                );
+                assert_eq!(n.position().unwrap().unwrap(), (1, 0, StatePhase::Prevote));
                 assert_eq!(n.state().unwrap().height(), 0);
             }
         }
@@ -293,13 +288,13 @@ fn asymmetric_nil_quorum_delivery_recovers_after_full_cold_restart() {
         relay(&mut live, Some(ConsensusVoteRole::Prevote));
         assert!(
             live.iter()
-                .all(|n| { n.position().unwrap().unwrap() == (1, 0, ResearchPhase::Precommit) })
+                .all(|n| { n.position().unwrap().unwrap() == (1, 0, StatePhase::Precommit) })
         );
         let precommits: Vec<_> = live
             .iter()
             .flat_map(|n| n.publications().unwrap())
             .filter_map(|p| match p {
-                ResearchPublication::Vote(v) if v.role() == ConsensusVoteRole::Precommit => {
+                StatePublication::Vote(v) if v.role() == ConsensusVoteRole::Precommit => {
                     assert_eq!(v.target(), ConsensusVoteTarget::Nil);
                     Some(v.encode())
                 }
@@ -325,16 +320,16 @@ fn asymmetric_nil_quorum_delivery_recovers_after_full_cold_restart() {
                 .zip(&identities)
                 .map(|((dir, anchors), i)| {
                     let history =
-                        ResearchHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+                        StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
                     let signer =
-                        ResearchSigner::open(&dir.0, &anchors.0, g.clone(), key(*i), MAX_ROUND)
+                        StateSigner::open(&dir.0, &anchors.0, g.clone(), key(*i), MAX_ROUND)
                             .unwrap();
-                    ResearchNode::new(history, Some(signer)).unwrap()
+                    StateNode::new(history, Some(signer)).unwrap()
                 })
                 .collect();
         }
         assert!(live[0].publications().unwrap().iter().any(|p| {
-            matches!(p, ResearchPublication::Vote(v)
+            matches!(p, StatePublication::Vote(v)
                 if v.encode() == precommits[0])
         }));
         // Periodic publication alone must heal the asymmetric delivery. No
@@ -382,19 +377,19 @@ fn cold_restart_resends_identical_completed_precommit_and_retains_record() {
         .unwrap();
     assert_eq!(
         nodes[0].position().unwrap().unwrap().2,
-        ResearchPhase::Precommit
+        StatePhase::Precommit
     );
     assert_eq!(nodes[0].state().unwrap().height(), 0);
     let old = nodes.remove(0);
     drop(old);
-    let history = ResearchHistory::open(
+    let history = StateHistory::open(
         &directories[0].0.0,
         &directories[0].1.0,
         g.clone(),
         MAX_ROUND,
     )
     .unwrap();
-    let signer = ResearchSigner::open(
+    let signer = StateSigner::open(
         &directories[0].0.0,
         &directories[0].1.0,
         g.clone(),
@@ -402,7 +397,7 @@ fn cold_restart_resends_identical_completed_precommit_and_retains_record() {
         MAX_ROUND,
     )
     .unwrap();
-    let restarted = ResearchNode::new(history, Some(signer)).unwrap();
+    let restarted = StateNode::new(history, Some(signer)).unwrap();
     assert!(
         restarted
             .publications()
@@ -436,7 +431,7 @@ fn all_validators_restart_after_prevoting_and_recover_the_durable_proposal() {
         .unwrap()
         .into_iter()
         .find_map(|p| match p {
-            ResearchPublication::Proposal(p) => Some(p.encode().unwrap()),
+            StatePublication::Proposal(p) => Some(p.encode().unwrap()),
             _ => None,
         })
         .unwrap();
@@ -444,13 +439,13 @@ fn all_validators_restart_after_prevoting_and_recover_the_durable_proposal() {
     assert!(
         nodes
             .iter()
-            .all(|n| n.position().unwrap().unwrap().2 == ResearchPhase::Prevote)
+            .all(|n| n.position().unwrap().unwrap().2 == StatePhase::Prevote)
     );
     nodes.clear();
     for (i, directory) in directories.iter().enumerate() {
         let history =
-            ResearchHistory::open(&directory.0.0, &directory.1.0, g.clone(), MAX_ROUND).unwrap();
-        let signer = ResearchSigner::open(
+            StateHistory::open(&directory.0.0, &directory.1.0, g.clone(), MAX_ROUND).unwrap();
+        let signer = StateSigner::open(
             &directory.0.0,
             &directory.1.0,
             g.clone(),
@@ -458,14 +453,14 @@ fn all_validators_restart_after_prevoting_and_recover_the_durable_proposal() {
             MAX_ROUND,
         )
         .unwrap();
-        nodes.push(ResearchNode::new(history, Some(signer)).unwrap());
+        nodes.push(StateNode::new(history, Some(signer)).unwrap());
     }
     assert!(
         nodes[proposer]
             .publications()
             .unwrap()
             .iter()
-            .any(|p| matches!(p, ResearchPublication::Proposal(_))
+            .any(|p| matches!(p, StatePublication::Proposal(_))
                 && p.encode().unwrap() == exact_proposal)
     );
     relay(&mut nodes, None);
@@ -482,7 +477,7 @@ fn all_validators_restart_after_prevoting_and_recover_the_durable_proposal() {
 #[test]
 fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers() {
     let g = genesis_with_rounds(64);
-    let initial = ResearchBranch::from_genesis(ResearchState::new(g.clone()))
+    let initial = StateBranch::from_genesis(LedgerState::new(g.clone()))
         .unwrap()
         .proposer(0, 64)
         .unwrap();
@@ -512,7 +507,7 @@ fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers(
         .unwrap()
         .into_iter()
         .find_map(|p| match p {
-            ResearchPublication::Proposal(p) => Some(p.encode().unwrap()),
+            StatePublication::Proposal(p) => Some(p.encode().unwrap()),
             _ => None,
         })
         .unwrap();
@@ -523,7 +518,7 @@ fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers(
         .unwrap()
         .into_iter()
         .find_map(|p| match p {
-            ResearchPublication::Vote(v) => Some(v.encode()),
+            StatePublication::Vote(v) => Some(v.encode()),
             _ => None,
         })
         .unwrap();
@@ -551,7 +546,7 @@ fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers(
         }
         if honest[0].branch().unwrap().proposer(round, 64).unwrap() == faulty_key {
             let mut encoded = proposal.clone();
-            let offset = 5 + naome_consensus::state::ResearchValue::BYTE_LENGTH;
+            let offset = 5 + naome_consensus::state::StateValue::BYTE_LENGTH;
             encoded[offset..offset + 8].copy_from_slice(&round.to_be_bytes());
             encoded[offset + 8..offset + 40].copy_from_slice(faulty_key.as_bytes());
             let mut transcript = b"naome:state:proposal:v1\0".to_vec();

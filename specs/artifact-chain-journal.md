@@ -2,7 +2,7 @@
 
 > Historical V0 contract. Its artifact-only authority and executable callers
 > are removed. This page is not a current implementation or acceptance claim;
-> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+> use [component ownership](ownership.md) and the [MVP rules](../docs/mvp/requirements.md).
 
 This document normatively defines local crash-consistent persistence for one
 selected linear artifact chain. [Artifact Chain](artifact-chain.md) and
@@ -44,8 +44,8 @@ journal except by successful block application.
 One caller-provisioned directory contains:
 
 ```text
-artifact-chain.lock
-artifact-chain.journal
+state.lock
+state.journal
 ```
 
 The directory must already exist. Creation uses create-new semantics and never

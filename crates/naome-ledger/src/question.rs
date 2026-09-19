@@ -14,7 +14,7 @@ use naome_foundation::{FORMULA_MAX_DEPTH, FOUNDATION_ID, Formula, FreeVariable};
 use crate::codec::{Reader, Writer};
 use crate::identity::hash;
 use crate::{
-    AccountId, GenesisId, ProfileId, QuestionId, RecordId, ResearchError, ResolutionId,
+    AccountId, GenesisId, LedgerError, ProfileId, QuestionId, RecordId, ResolutionId,
     SolutionRoundId,
 };
 
@@ -51,9 +51,9 @@ pub struct CompiledQuestion {
 
 impl CompiledQuestion {
     /// Compiles a bounded obligation without accepting proof or definition input.
-    pub fn compile(source: &str, profile: &Profile) -> Result<Self, ResearchError> {
+    pub fn compile(source: &str, profile: &Profile) -> Result<Self, LedgerError> {
         if source.len() > profile.limits().question_source_bytes as usize {
-            return Err(ResearchError::Limit("question source bytes"));
+            return Err(LedgerError::Limit("question source bytes"));
         }
         // At most source.len() leading negations can later be removed.
         // Preflight every expansion against this finite aggregate allowance.
@@ -79,15 +79,15 @@ impl CompiledQuestion {
         }
         parser.trivia();
         if parser.offset != source.len() {
-            return Err(ResearchError::Invalid("question trailing source"));
+            return Err(LedgerError::Invalid("question trailing source"));
         }
         if !parsed.formula.is_closed() {
-            return Err(ResearchError::Invalid("question has free variables"));
+            return Err(LedgerError::Invalid("question has free variables"));
         }
         let encoded = parsed
             .formula
             .encode_canonical_with_node_limit(parse_nodes)
-            .map_err(|error| ResearchError::Mathematical(error.to_string()))?
+            .map_err(|error| LedgerError::Mathematical(error.to_string()))?
             .0;
         // 0x02 is the existing Foundation canonical NOT tag. Removing only
         // leading NOT tags preserves all internal structure and De Bruijn binders.
@@ -95,15 +95,15 @@ impl CompiledQuestion {
         let core_nodes = parsed.nodes - leading;
         let core_depth = parsed.depth - leading;
         if core_nodes + 1 > profile.limits().target_nodes as usize {
-            return Err(ResearchError::Limit("question target nodes"));
+            return Err(LedgerError::Limit("question target nodes"));
         }
         if core_depth + 1 > profile.limits().target_depth as usize {
-            return Err(ResearchError::Limit("question target depth"));
+            return Err(LedgerError::Limit("question target depth"));
         }
         let canonical_core = encoded[leading..].to_vec();
         let core =
             Formula::decode_canonical_with_node_limit(&canonical_core, QUESTION_TARGET_MAX_NODES)
-                .map_err(|error| ResearchError::Mathematical(error.to_string()))?
+                .map_err(|error| LedgerError::Mathematical(error.to_string()))?
                 .0;
         let resolution_id = ResolutionId::from_bytes(hash(
             b"naome:state:resolution:v1\0",
@@ -177,19 +177,19 @@ impl CompiledQuestion {
         &self,
         context: QuestionContext,
         purpose: &str,
-    ) -> Result<QuestionId, ResearchError> {
+    ) -> Result<QuestionId, LedgerError> {
         if context.profile != self.profile_id {
-            return Err(ResearchError::Invalid(
+            return Err(LedgerError::Invalid(
                 "question compilation profile mismatch",
             ));
         }
         if purpose.is_empty() || purpose.len() > QUESTION_SOURCE_MAX_BYTES {
-            return Err(ResearchError::Limit("question purpose bytes"));
+            return Err(LedgerError::Limit("question purpose bytes"));
         }
         let negative = self
             .negative_target
             .encode_canonical()
-            .map_err(|error| ResearchError::Mathematical(error.to_string()))?;
+            .map_err(|error| LedgerError::Mathematical(error.to_string()))?;
         Ok(QuestionId::from_bytes(hash(
             b"naome:state:question:v1\0",
             &[
@@ -210,7 +210,7 @@ impl CompiledQuestion {
     }
 
     /// Encodes the source as the sole authority; derived fields are recomputed.
-    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, ResearchError> {
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
         writer.u8(1);
         writer.string(&self.source)?;
@@ -218,10 +218,10 @@ impl CompiledQuestion {
     }
 
     /// Strictly decodes and recompiles; no supplied identifier is trusted.
-    pub fn from_canonical_bytes(bytes: &[u8], profile: &Profile) -> Result<Self, ResearchError> {
+    pub fn from_canonical_bytes(bytes: &[u8], profile: &Profile) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, QUESTION_SOURCE_MAX_BYTES + 5)?;
         if reader.u8()? != 1 {
-            return Err(ResearchError::Invalid("question codec version"));
+            return Err(LedgerError::Invalid("question codec version"));
         }
         let source = reader.string(QUESTION_SOURCE_MAX_BYTES)?;
         reader.finish()?;
@@ -241,9 +241,9 @@ pub fn solution_round_id(
     question: QuestionId,
     attempt: u64,
     approval: RecordId,
-) -> Result<SolutionRoundId, ResearchError> {
+) -> Result<SolutionRoundId, LedgerError> {
     if attempt == 0 {
-        return Err(ResearchError::Invalid("zero question attempt"));
+        return Err(LedgerError::Invalid("zero question attempt"));
     }
     Ok(SolutionRoundId::from_bytes(hash(
         b"naome:state:solution-round:v1\0",
@@ -271,12 +271,12 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn bounded(&self, nodes: usize, depth: usize) -> Result<(), ResearchError> {
+    fn bounded(&self, nodes: usize, depth: usize) -> Result<(), LedgerError> {
         if nodes > self.maximum_nodes {
-            return Err(ResearchError::Limit("question expansion nodes"));
+            return Err(LedgerError::Limit("question expansion nodes"));
         }
         if depth > FORMULA_MAX_DEPTH as usize {
-            return Err(ResearchError::Limit("question expansion depth"));
+            return Err(LedgerError::Limit("question expansion depth"));
         }
         Ok(())
     }
@@ -296,14 +296,14 @@ impl<'a> Parser<'a> {
     fn byte(&self) -> Option<u8> {
         self.source.as_bytes().get(self.offset).copied()
     }
-    fn name(&mut self) -> Result<&'a str, ResearchError> {
+    fn name(&mut self) -> Result<&'a str, LedgerError> {
         self.trivia();
         let start = self.offset;
         if !self
             .byte()
             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         {
-            return Err(ResearchError::Invalid("question expected name"));
+            return Err(LedgerError::Invalid("question expected name"));
         }
         self.offset += 1;
         while self
@@ -314,31 +314,31 @@ impl<'a> Parser<'a> {
         }
         Ok(&self.source[start..self.offset])
     }
-    fn word(&mut self, expected: &str) -> Result<(), ResearchError> {
+    fn word(&mut self, expected: &str) -> Result<(), LedgerError> {
         if self.name()? != expected {
-            return Err(ResearchError::Invalid("question unexpected field"));
+            return Err(LedgerError::Invalid("question unexpected field"));
         }
         Ok(())
     }
-    fn literal(&mut self, expected: &str) -> Result<(), ResearchError> {
+    fn literal(&mut self, expected: &str) -> Result<(), LedgerError> {
         self.trivia();
         if !self.source[self.offset..].starts_with(expected) {
-            return Err(ResearchError::Invalid(
+            return Err(LedgerError::Invalid(
                 "question unsupported Foundation or success policy",
             ));
         }
         self.offset += expected.len();
         Ok(())
     }
-    fn punctuation(&mut self, expected: u8) -> Result<(), ResearchError> {
+    fn punctuation(&mut self, expected: u8) -> Result<(), LedgerError> {
         self.trivia();
         if self.byte() != Some(expected) {
-            return Err(ResearchError::Invalid("question punctuation"));
+            return Err(LedgerError::Invalid("question punctuation"));
         }
         self.offset += 1;
         Ok(())
     }
-    fn variable(&mut self) -> Result<FreeVariable, ResearchError> {
+    fn variable(&mut self) -> Result<FreeVariable, LedgerError> {
         let name = self.name()?;
         if let Some(variable) = self.variables.get(name) {
             return Ok(*variable);
@@ -347,11 +347,11 @@ impl<'a> Parser<'a> {
         self.next_variable = self
             .next_variable
             .checked_add(1)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         self.variables.insert(name, variable);
         Ok(variable)
     }
-    fn formula(&mut self, source_depth: usize) -> Result<Parsed, ResearchError> {
+    fn formula(&mut self, source_depth: usize) -> Result<Parsed, LedgerError> {
         self.bounded(0, source_depth)?;
         let operator = self.name()?;
         self.punctuation(b'(')?;
@@ -443,7 +443,7 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => {
-                return Err(ResearchError::Invalid(
+                return Err(LedgerError::Invalid(
                     "question unknown formula or unapproved reference",
                 ));
             }

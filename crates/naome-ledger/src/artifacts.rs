@@ -238,11 +238,11 @@ impl AcceptedArtifactRecord {
 /// admissions path-copy only the changed resolver paths.
 #[derive(Clone, Default)]
 #[must_use]
-pub struct LedgerState {
+pub struct ArtifactLedger {
     artifact_state: ArtifactState,
 }
 
-impl LedgerState {
+impl ArtifactLedger {
     /// Constructs an empty ledger state.
     pub const fn new() -> Self {
         Self {
@@ -283,9 +283,9 @@ impl LedgerState {
     pub fn apply_proof(
         &mut self,
         certificate: ProofCertificate,
-    ) -> Result<AcceptedProofRecord, LedgerError> {
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError> {
         let checked = normalize_and_check_with_state(certificate, &self.artifact_state)
-            .map_err(|source| LedgerError::ProofCheck { source })?;
+            .map_err(|source| ArtifactAdmissionError::ProofCheck { source })?;
         let canonical_artifact_bytes =
             ArtifactPayload::Proof(checked.normal_form().certificate().clone())
                 .to_canonical_bytes()
@@ -297,7 +297,7 @@ impl LedgerState {
     pub fn apply_canonical_artifact_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<AcceptedArtifactRecord, LedgerError> {
+    ) -> Result<AcceptedArtifactRecord, ArtifactAdmissionError> {
         self.apply_canonical_artifact_bytes_inner(bytes, None)
     }
 
@@ -309,7 +309,7 @@ impl LedgerState {
         &mut self,
         bytes: Vec<u8>,
         expected_artifact_id: ArtifactId,
-    ) -> Result<AcceptedArtifactRecord, LedgerError> {
+    ) -> Result<AcceptedArtifactRecord, ArtifactAdmissionError> {
         self.apply_canonical_artifact_bytes_inner(bytes, Some(expected_artifact_id))
     }
 
@@ -318,11 +318,11 @@ impl LedgerState {
         &self,
         bytes: Vec<u8>,
         expected_artifact_id: ArtifactId,
-    ) -> Result<(), LedgerError> {
+    ) -> Result<(), ArtifactAdmissionError> {
         let checked = self.check_canonical_artifact_bytes(bytes)?;
         let actual = checked.artifact_id();
         if actual != expected_artifact_id {
-            return Err(LedgerError::ArtifactIdMismatch {
+            return Err(ArtifactAdmissionError::ArtifactIdMismatch {
                 expected: expected_artifact_id,
                 actual,
             });
@@ -331,11 +331,11 @@ impl LedgerState {
             PendingArtifact::Proof { checked, .. } => self
                 .artifact_state
                 .validate_proof_registration(checked)
-                .map_err(|source| LedgerError::State { source }),
+                .map_err(|source| ArtifactAdmissionError::State { source }),
             PendingArtifact::Definition { checked, .. } => self
                 .artifact_state
                 .validate_definition_registration(checked)
-                .map_err(|source| LedgerError::State { source }),
+                .map_err(|source| ArtifactAdmissionError::State { source }),
         }
     }
 
@@ -343,13 +343,13 @@ impl LedgerState {
         &mut self,
         bytes: Vec<u8>,
         expected_artifact_id: Option<ArtifactId>,
-    ) -> Result<AcceptedArtifactRecord, LedgerError> {
+    ) -> Result<AcceptedArtifactRecord, ArtifactAdmissionError> {
         let checked = self.check_canonical_artifact_bytes(bytes)?;
         let actual = checked.artifact_id();
         if let Some(expected) = expected_artifact_id
             && actual != expected
         {
-            return Err(LedgerError::ArtifactIdMismatch { expected, actual });
+            return Err(ArtifactAdmissionError::ArtifactIdMismatch { expected, actual });
         }
         match checked {
             PendingArtifact::Proof {
@@ -370,16 +370,16 @@ impl LedgerState {
     fn check_canonical_artifact_bytes(
         &self,
         bytes: Vec<u8>,
-    ) -> Result<PendingArtifact, LedgerError> {
+    ) -> Result<PendingArtifact, ArtifactAdmissionError> {
         let payload = ArtifactPayload::from_canonical_bytes(&bytes)
-            .map_err(|source| LedgerError::Decode { source })?;
+            .map_err(|source| ArtifactAdmissionError::Decode { source })?;
         let canonical_artifact_bytes = bytes.into_boxed_slice();
         match payload {
             ArtifactPayload::Proof(certificate) => {
                 let normal_form =
                     canonical_proof_normal_form(certificate, &canonical_artifact_bytes[1..])?;
                 let checked = check_normal_form_with_state(normal_form, &self.artifact_state)
-                    .map_err(|source| LedgerError::ProofCheck { source })?;
+                    .map_err(|source| ArtifactAdmissionError::ProofCheck { source })?;
                 Ok(PendingArtifact::Proof {
                     checked,
                     canonical_artifact_bytes,
@@ -387,7 +387,7 @@ impl LedgerState {
             }
             ArtifactPayload::Definition(certificate) => {
                 let checked = check_definition_with_state(certificate, &self.artifact_state)
-                    .map_err(|source| LedgerError::DefinitionCheck { source })?;
+                    .map_err(|source| ArtifactAdmissionError::DefinitionCheck { source })?;
                 Ok(PendingArtifact::Definition {
                     checked,
                     canonical_artifact_bytes,
@@ -400,9 +400,9 @@ impl LedgerState {
         &mut self,
         checked: CheckedProof,
         expected: ProofId,
-    ) -> Result<AcceptedProofRecord, LedgerError> {
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError> {
         if checked.proof_id() != expected {
-            return Err(LedgerError::ArtifactIdMismatch {
+            return Err(ArtifactAdmissionError::ArtifactIdMismatch {
                 expected: ArtifactId::from_proof_id(expected),
                 actual: ArtifactId::from_proof_id(checked.proof_id()),
             });
@@ -417,12 +417,12 @@ impl LedgerState {
         &mut self,
         checked: CheckedProof,
         canonical_artifact_bytes: Box<[u8]>,
-    ) -> Result<AcceptedProofRecord, LedgerError> {
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError> {
         let metadata = ProofRecordMetadata::from_checked(&checked);
         drop(
             self.artifact_state
                 .register_proof(checked)
-                .map_err(|source| LedgerError::State { source })?,
+                .map_err(|source| ArtifactAdmissionError::State { source })?,
         );
         Ok(metadata.into_record(canonical_artifact_bytes))
     }
@@ -431,11 +431,11 @@ impl LedgerState {
         &mut self,
         checked: CheckedDefinition,
         canonical_artifact_bytes: Box<[u8]>,
-    ) -> Result<AcceptedDefinitionRecord, LedgerError> {
+    ) -> Result<AcceptedDefinitionRecord, ArtifactAdmissionError> {
         let metadata = DefinitionRecordMetadata::from_checked(&checked);
         self.artifact_state
             .register_definition(checked)
-            .map_err(|source| LedgerError::State { source })?;
+            .map_err(|source| ArtifactAdmissionError::State { source })?;
         Ok(metadata.into_record(canonical_artifact_bytes))
     }
 }
@@ -443,11 +443,11 @@ impl LedgerState {
 fn canonical_proof_normal_form(
     certificate: ProofCertificate,
     submitted_inner_bytes: &[u8],
-) -> Result<ProofNormalForm, LedgerError> {
+) -> Result<ProofNormalForm, ArtifactAdmissionError> {
     certificate
         .into_unchecked_normal_form()
         .with_matching_canonical_bytes(submitted_inner_bytes.into())
-        .ok_or(LedgerError::NonCanonicalProof)
+        .ok_or(ArtifactAdmissionError::NonCanonicalProof)
 }
 
 enum PendingArtifact {
@@ -550,7 +550,7 @@ impl DefinitionRecordMetadata {
 /// A fail-closed single-artifact ledger admission failure.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum LedgerError {
+pub enum ArtifactAdmissionError {
     /// The tagged payload is not one structurally valid complete artifact.
     Decode { source: ArtifactPayloadError },
     /// A proof is structurally valid but not its canonical root normal form.
@@ -568,7 +568,7 @@ pub enum LedgerError {
     State { source: ArtifactStateError },
 }
 
-impl fmt::Display for LedgerError {
+impl fmt::Display for ArtifactAdmissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Decode { source } => write!(formatter, "artifact decoding failed: {source}"),
@@ -588,7 +588,7 @@ impl fmt::Display for LedgerError {
     }
 }
 
-impl Error for LedgerError {
+impl Error for ArtifactAdmissionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Decode { source } => Some(source),

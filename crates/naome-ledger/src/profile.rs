@@ -9,13 +9,13 @@ use std::net::SocketAddr;
 
 use ed25519_dalek::VerifyingKey;
 
-use crate::ResearchError;
+use crate::LedgerError;
 use crate::codec::{Reader, Writer};
 use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
-pub const RESEARCH_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
+pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
 
 /// Reserved space around one maximum user payload for canonical record headers,
 /// four time reports, operation authentication, and finality signatures. The
@@ -29,7 +29,7 @@ pub const TRANSPORT_ENVELOPE_OVERHEAD_BYTES: u64 = 65536;
 pub const SIGNER_SNAPSHOT_MAX_BYTES: u64 = 8192;
 pub const SIGNER_TRANSCRIPT_MAX_BYTES: u64 = 1024;
 /// Four full fixed-width research votes plus the quorum count byte.
-pub const RESEARCH_QUORUM_BYTES_BOUND: u64 = 1 + 4 * (5 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
+pub const STATE_QUORUM_BYTES_BOUND: u64 = 1 + 4 * (5 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
 /// Journal preparation metadata outside one complete research record.
 pub const SIGNER_FRAME_OVERHEAD_BYTES: u64 = 16384;
 /// Covers the genesis-bound signer prefix, initial anchor and their metadata.
@@ -81,13 +81,13 @@ macro_rules! limit_fields {
                 [$( (stringify!($field), self.$field), )+].into_iter()
             }
             fn write(&self, w: &mut Writer) { $(w.u64(self.$field);)+ }
-            fn read(r: &mut Reader<'_>) -> Result<Self, ResearchError> {
+            fn read(r: &mut Reader<'_>) -> Result<Self, LedgerError> {
                 Ok(Self { $($field: r.u64()?,)+ })
             }
-            fn validate(&self) -> Result<(), ResearchError> {
+            fn validate(&self) -> Result<(), LedgerError> {
                 let ceiling = Self::default();
                 $(if self.$field == 0 || self.$field > ceiling.$field {
-                    return Err(ResearchError::Limit(stringify!($field)));
+                    return Err(LedgerError::Limit(stringify!($field)));
                 })+
                 Ok(())
             }
@@ -171,7 +171,7 @@ impl Rewards {
             w.u128(value);
         }
     }
-    fn read(r: &mut Reader<'_>) -> Result<Self, ResearchError> {
+    fn read(r: &mut Reader<'_>) -> Result<Self, LedgerError> {
         Ok(Self {
             issuance_atoms: r.u128()?,
             author_without_citations_atoms: r.u128()?,
@@ -228,7 +228,7 @@ impl Profile {
 
     /// Starts a distinct profile with reduced bounds; never mutates a live run.
     /// The 64-slot completion reserve and separate terminal slot remain fixed.
-    pub fn with_limits(kind: TimingKind, limits: Limits) -> Result<Self, ResearchError> {
+    pub fn with_limits(kind: TimingKind, limits: Limits) -> Result<Self, LedgerError> {
         let mut profile = Self::preset(kind);
         profile.limits = limits;
         profile.validate()?;
@@ -253,11 +253,11 @@ impl Profile {
             TimingKind::ShortTest => "state-v1-short-test",
         }
     }
-    fn validate(&self) -> Result<(), ResearchError> {
+    fn validate(&self) -> Result<(), LedgerError> {
         self.limits.validate()?;
         let l = &self.limits;
         if self.timing != Self::preset(self.kind).timing || self.rewards != Rewards::default() {
-            return Err(ResearchError::Invalid("timing or reward rules"));
+            return Err(LedgerError::Invalid("timing or reward rules"));
         }
         if l.accounts < 4
             || l.completion_records != 64
@@ -265,15 +265,15 @@ impl Profile {
             || l.run_records < l.completion_records + l.terminal_records
             || l.citation_proofs > l.dependency_proofs
             || l.certificate_bytes > l.package_bytes
-            || l.package_bytes.checked_add(DOMAIN_RECORD_OVERHEAD_BYTES).ok_or(ResearchError::Overflow)? > l.record_bytes
+            || l.package_bytes.checked_add(DOMAIN_RECORD_OVERHEAD_BYTES).ok_or(LedgerError::Overflow)? > l.record_bytes
             // Source and purpose each have a 16KiB absolute codec bound. Keep
             // both plus authentication/header space even for reduced profiles.
-            || (32 * 1024u64).checked_add(DOMAIN_RECORD_OVERHEAD_BYTES).ok_or(ResearchError::Overflow)? > l.record_bytes
-            || l.record_bytes.checked_add(TRANSPORT_ENVELOPE_OVERHEAD_BYTES).ok_or(ResearchError::Overflow)? > l.transport_frame_bytes
+            || (32 * 1024u64).checked_add(DOMAIN_RECORD_OVERHEAD_BYTES).ok_or(LedgerError::Overflow)? > l.record_bytes
+            || l.record_bytes.checked_add(TRANSPORT_ENVELOPE_OVERHEAD_BYTES).ok_or(LedgerError::Overflow)? > l.transport_frame_bytes
             || l.target_depth > l.target_nodes
             || l.formula_work_bytes_per_call != naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES as u64
         {
-            return Err(ResearchError::Invalid("inconsistent research limits"));
+            return Err(LedgerError::Invalid("inconsistent ledger limits"));
         }
         self.required_storage_bytes()?;
         Ok(())
@@ -281,56 +281,56 @@ impl Profile {
     /// Maximum journal frames per consensus height: one author, prevote,
     /// precommit and progress event plus three completions in each round, then
     /// one durable finalized-height handoff. Duplicate retries append nothing.
-    pub fn signer_height_frames(&self) -> Result<u64, ResearchError> {
+    pub fn signer_height_frames(&self) -> Result<u64, LedgerError> {
         self.limits
             .consensus_rounds
             .checked_add(1)
             .and_then(|r| r.checked_mul(7))
             .and_then(|v| v.checked_add(1))
-            .ok_or(ResearchError::Overflow)
+            .ok_or(LedgerError::Overflow)
     }
     /// Conservative complete signing-history reservation for one height.
     /// The bound includes every permitted round, complete record/proposal/QC
     /// recovery bytes, post-state checkpoints, signatures and chained footers.
     /// Publications are reconstructed from their anchored intent + signature,
     /// rather than storing a second copy of the complete publication body.
-    pub fn signer_height_bytes(&self) -> Result<u64, ResearchError> {
+    pub fn signer_height_bytes(&self) -> Result<u64, LedgerError> {
         let record = self.limits.record_bytes;
         let proposal = record
             .checked_add(DOMAIN_RECORD_OVERHEAD_BYTES)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         let per_round = record
-            .checked_add(proposal.checked_mul(2).ok_or(ResearchError::Overflow)?)
-            .and_then(|v| v.checked_add(2 * RESEARCH_QUORUM_BYTES_BOUND))
+            .checked_add(proposal.checked_mul(2).ok_or(LedgerError::Overflow)?)
+            .and_then(|v| v.checked_add(2 * STATE_QUORUM_BYTES_BOUND))
             .and_then(|v| v.checked_add(4 * SIGNER_SNAPSHOT_MAX_BYTES))
             .and_then(|v| v.checked_add(3 * SIGNER_TRANSCRIPT_MAX_BYTES))
             .and_then(|v| v.checked_add(4 * 128 + 3 * SIGNER_COMPLETION_BYTES + 7 * 36))
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         let advance = proposal
             .checked_add(SIGNER_SNAPSHOT_MAX_BYTES + 64 + 36)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         per_round
             .checked_mul(
                 self.limits
                     .consensus_rounds
                     .checked_add(1)
-                    .ok_or(ResearchError::Overflow)?,
+                    .ok_or(LedgerError::Overflow)?,
             )
             .and_then(|v| v.checked_add(advance))
-            .ok_or(ResearchError::Overflow)
+            .ok_or(LedgerError::Overflow)
     }
     /// Full finite-run signer capacity, including a final stop and bounded header.
-    pub fn signer_journal_bytes(&self) -> Result<u64, ResearchError> {
+    pub fn signer_journal_bytes(&self) -> Result<u64, LedgerError> {
         self.signer_height_bytes()?
             .checked_mul(self.limits.run_records)
             .and_then(|v| v.checked_add(SIGNER_HEADER_BYTES_BOUND + SIGNER_STOP_FRAME_BYTES))
-            .ok_or(ResearchError::Overflow)
+            .ok_or(LedgerError::Overflow)
     }
     /// Full finite archive AND worst-case signer history, staged original/final
     /// reveals with dependency closures, indexes/evidence, and a 100% margin.
     /// The default profile deliberately provisions its entire maximum run;
     /// reduced acceptance profiles must be selected before genesis.
-    pub fn required_storage_bytes(&self) -> Result<u64, ResearchError> {
+    pub fn required_storage_bytes(&self) -> Result<u64, LedgerError> {
         let l = &self.limits;
         // One extra frame retains a verified conflict after the final run record.
         let archive = l
@@ -338,24 +338,24 @@ impl Profile {
             .checked_add(1)
             .and_then(|n| n.checked_mul(l.transport_frame_bytes))
             .and_then(|v| v.checked_add(SIGNER_HEADER_BYTES_BOUND))
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         let reveal = l
             .package_bytes
             .checked_mul(2)
             .and_then(|v| v.checked_add(l.dependency_bytes.checked_mul(2)?))
             .and_then(|v| v.checked_mul(l.accounts))
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         archive
             .checked_mul(2)
             .and_then(|v| v.checked_add(self.signer_journal_bytes().ok()?))
             .and_then(|v| v.checked_add(reveal))
             .and_then(|v| v.checked_mul(2))
-            .ok_or(ResearchError::Overflow)
+            .ok_or(LedgerError::Overflow)
     }
-    pub fn maximum_issuance_atoms(&self) -> Result<u128, ResearchError> {
+    pub fn maximum_issuance_atoms(&self) -> Result<u128, LedgerError> {
         u128::from(self.limits.run_records)
             .checked_mul(self.rewards.issuance_atoms)
-            .ok_or(ResearchError::Overflow)
+            .ok_or(LedgerError::Overflow)
     }
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
@@ -379,16 +379,16 @@ impl Profile {
         self.rewards.write(&mut w);
         w.finish()
     }
-    pub fn decode(bytes: &[u8]) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, LedgerError> {
         let mut r = Reader::new(bytes, MAX_PROFILE_BYTES)?;
         if r.fixed::<8>()? != *PROFILE_MAGIC {
-            return Err(ResearchError::Invalid("profile version"));
+            return Err(LedgerError::Invalid("profile version"));
         }
         let kind = match r.u8()? {
             0 => TimingKind::Lab,
             1 => TimingKind::Research,
             2 => TimingKind::ShortTest,
-            _ => return Err(ResearchError::Invalid("timing kind")),
+            _ => return Err(LedgerError::Invalid("timing kind")),
         };
         let timing = Timing {
             voting_seconds: r.u64()?,
@@ -469,7 +469,7 @@ impl Genesis {
         run_nonce: [u8; 32],
         accounts: Vec<[u8; 32]>,
         mut validators: Vec<ValidatorRegistration>,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let mut accounts: Vec<_> = accounts
             .into_iter()
             .map(|key| AccountRegistration {
@@ -492,21 +492,21 @@ impl Genesis {
         result.validate()?;
         Ok(result)
     }
-    fn validate(&self) -> Result<(), ResearchError> {
+    fn validate(&self) -> Result<(), LedgerError> {
         self.profile.validate()?;
         for name in [&self.foundation, &self.checker_profile] {
             if name.is_empty() || name.len() > 128 || !name.bytes().all(|b| b.is_ascii_graphic()) {
-                return Err(ResearchError::Invalid("genesis namespace"));
+                return Err(LedgerError::Invalid("genesis namespace"));
             }
         }
         if self.foundation != naome_foundation::FOUNDATION_ID {
-            return Err(ResearchError::Invalid("unsupported Foundation"));
+            return Err(LedgerError::Invalid("unsupported Foundation"));
         }
-        if self.checker_profile != RESEARCH_CHECKER_PROFILE {
-            return Err(ResearchError::Invalid("unsupported checker profile"));
+        if self.checker_profile != STATE_CHECKER_PROFILE {
+            return Err(LedgerError::Invalid("unsupported checker profile"));
         }
         if self.protocol_version != 1 || self.run_nonce == [0; 32] {
-            return Err(ResearchError::Invalid("genesis version or run nonce"));
+            return Err(LedgerError::Invalid("genesis version or run nonce"));
         }
         // Leave enough UTC range for every timing interval without wrapping.
         self.start_utc
@@ -514,17 +514,17 @@ impl Genesis {
             .and_then(|x| x.checked_add(self.profile.timing.voting_seconds))
             .and_then(|x| x.checked_add(self.profile.timing.commitment_seconds))
             .and_then(|x| x.checked_add(self.profile.timing.reveal_seconds))
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         if self.accounts.len() < 4
             || self.accounts.len() as u64 > self.profile.limits.accounts
             || self.validators.len() != 4
         {
-            return Err(ResearchError::Limit("genesis membership"));
+            return Err(LedgerError::Limit("genesis membership"));
         }
         if self.accounts.windows(2).any(|w| w[0].id >= w[1].id)
             || self.validators.windows(2).any(|w| w[0].id() >= w[1].id())
         {
-            return Err(ResearchError::Invalid("membership order or duplicate"));
+            return Err(LedgerError::Invalid("membership order or duplicate"));
         }
         let mut keys = BTreeSet::new();
         let mut owners = BTreeSet::new();
@@ -532,30 +532,30 @@ impl Genesis {
         for account in &self.accounts {
             valid_key(&account.key)?;
             if !keys.insert(account.key) {
-                return Err(ResearchError::Invalid("duplicate account key"));
+                return Err(LedgerError::Invalid("duplicate account key"));
             }
         }
         for validator in &self.validators {
             valid_key(&validator.consensus_key)?;
             if !keys.insert(validator.consensus_key) {
-                return Err(ResearchError::Invalid("key roles overlap"));
+                return Err(LedgerError::Invalid("key roles overlap"));
             }
             valid_key(&validator.transport_key)?;
             if !keys.insert(validator.transport_key) {
-                return Err(ResearchError::Invalid("key roles overlap"));
+                return Err(LedgerError::Invalid("key roles overlap"));
             }
             if !owners.insert(validator.owner)
                 || !self.accounts.iter().any(|a| a.id == validator.owner)
             {
-                return Err(ResearchError::Invalid("validator owner"));
+                return Err(LedgerError::Invalid("validator owner"));
             }
             if validator.endpoint.len() > 128 {
-                return Err(ResearchError::Limit("endpoint bytes"));
+                return Err(LedgerError::Limit("endpoint bytes"));
             }
             let endpoint: SocketAddr = validator
                 .endpoint
                 .parse()
-                .map_err(|_| ResearchError::Invalid("endpoint"))?;
+                .map_err(|_| LedgerError::Invalid("endpoint"))?;
             if endpoint.port() == 0
                 || endpoint.ip().is_unspecified()
                 || endpoint.ip().is_multicast()
@@ -564,7 +564,7 @@ impl Genesis {
                 || endpoint.to_string() != validator.endpoint
                 || !endpoints.insert(endpoint)
             {
-                return Err(ResearchError::Invalid("canonical unique endpoint"));
+                return Err(LedgerError::Invalid("canonical unique endpoint"));
             }
         }
         Ok(())
@@ -629,10 +629,10 @@ impl Genesis {
         }
         w.finish()
     }
-    pub fn decode(bytes: &[u8]) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, LedgerError> {
         let mut r = Reader::new(bytes, MAX_GENESIS_BYTES)?;
         if r.fixed::<8>()? != *GENESIS_MAGIC {
-            return Err(ResearchError::Invalid("genesis version"));
+            return Err(LedgerError::Invalid("genesis version"));
         }
         let profile = Profile::decode(r.bytes(MAX_PROFILE_BYTES)?)?;
         let foundation = r.string(128)?.to_owned();
@@ -642,7 +642,7 @@ impl Genesis {
         let run_nonce = r.fixed()?;
         let count = r.u8()?;
         if u64::from(count) > profile.limits.accounts || count < 4 {
-            return Err(ResearchError::Limit("accounts"));
+            return Err(LedgerError::Limit("accounts"));
         }
         let mut accounts = Vec::with_capacity(count as usize);
         for _ in 0..count {
@@ -654,7 +654,7 @@ impl Genesis {
         }
         let count = r.u8()?;
         if count != 4 {
-            return Err(ResearchError::Limit("validators"));
+            return Err(LedgerError::Limit("validators"));
         }
         let mut validators = Vec::with_capacity(4);
         for _ in 0..count {
@@ -685,10 +685,10 @@ impl Genesis {
     }
 }
 
-fn valid_key(key: &[u8; 32]) -> Result<(), ResearchError> {
-    let key = VerifyingKey::from_bytes(key).map_err(|_| ResearchError::Invalid("Ed25519 key"))?;
+fn valid_key(key: &[u8; 32]) -> Result<(), LedgerError> {
+    let key = VerifyingKey::from_bytes(key).map_err(|_| LedgerError::Invalid("Ed25519 key"))?;
     if key.is_weak() {
-        return Err(ResearchError::Invalid("weak Ed25519 key"));
+        return Err(LedgerError::Invalid("weak Ed25519 key"));
     }
     Ok(())
 }

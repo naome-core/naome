@@ -13,7 +13,7 @@ fn complete_v1_wire_and_identifier_vectors() {
         }
         out.push('\n');
     }
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     vector(&mut output, "genesis", &state.genesis().encode());
     vector(&mut output, "genesis-id", state.genesis().id().as_bytes());
     vector(&mut output, "initial-state", state.commitment().as_bytes());
@@ -95,7 +95,7 @@ fn complete_v1_wire_and_identifier_vectors() {
 
 #[test]
 fn signed_old_attempt_reveal_never_resolves_new_attempt() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     submit(&mut state, "forall(x,equal(x,x))");
     let old_round = open_and_approve(&mut state);
     let original = commit_original(&mut state, 4, old_round, [7; 32]);
@@ -144,7 +144,7 @@ fn legacy_vector(name: &str) -> Vec<u8> {
 
 #[test]
 fn legacy_research_authority_is_not_reinterpreted_as_state_history() {
-    let state = ResearchState::new(genesis());
+    let state = LedgerState::new(genesis());
     assert!(Genesis::decode(&legacy_vector("genesis")).is_err());
     for name in ["submit-record", "settlement-record"] {
         let mut bytes = legacy_vector(name);

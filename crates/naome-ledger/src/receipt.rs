@@ -2,7 +2,7 @@
 //! mathematical validity nor finality; obtain authority through full replay.
 
 use crate::{
-    AccountId, CommitmentId, GenesisId, OperationId, PackageHash, ProfileId, ResearchError,
+    AccountId, CommitmentId, GenesisId, LedgerError, OperationId, PackageHash, ProfileId,
     SolutionRoundId, StateCommitment,
     accounting::{CitationRecipient, RewardPlan},
     codec::{Reader, Writer},
@@ -35,15 +35,15 @@ pub struct NormalizationReceipt {
 impl NormalizationReceipt {
     /// Reads the exact v1 settlement format. IDs and certificate contents remain
     /// untrusted claims until the containing history has been fully replayed.
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let limits = genesis.profile().limits();
         let mut r = Reader::new(bytes, limits.record_bytes as usize)?;
         if r.u16()? != 1 {
-            return Err(ResearchError::Invalid("normalization receipt version"));
+            return Err(LedgerError::Invalid("normalization receipt version"));
         }
         let genesis_id = GenesisId::from_bytes(r.fixed()?);
         if genesis_id != genesis.id() {
-            return Err(ResearchError::Invalid("normalization receipt genesis"));
+            return Err(LedgerError::Invalid("normalization receipt genesis"));
         }
         let round = SolutionRoundId::from_bytes(r.fixed()?);
         let winning_commit = Receipt {
@@ -59,14 +59,14 @@ impl NormalizationReceipt {
             || winning_commit.coordinate.height > limits.run_records
             || u64::from(winning_commit.coordinate.operation_index) >= limits.operations_per_record
         {
-            return Err(ResearchError::Invalid("winning commitment coordinate"));
+            return Err(LedgerError::Invalid("winning commitment coordinate"));
         }
         let commitment = CommitmentId::from_bytes(r.fixed()?);
         let original_hash = PackageHash::from_bytes(r.fixed()?);
         let parent = StateCommitment::from_bytes(r.fixed()?);
         let profile = ProfileId::from_bytes(r.fixed()?);
         if profile != genesis.profile().id() {
-            return Err(ResearchError::Invalid("normalization receipt profile"));
+            return Err(LedgerError::Invalid("normalization receipt profile"));
         }
         let count = read_count(&mut r, limits.new_helpers + 1)?;
         let mut substitutions = BTreeMap::new();
@@ -75,7 +75,7 @@ impl NormalizationReceipt {
             let old = ProofId::from_bytes(r.fixed()?);
             let new = ProofId::from_bytes(r.fixed()?);
             if previous.is_some_and(|id| id >= old) {
-                return Err(ResearchError::Invalid("normalization substitution order"));
+                return Err(LedgerError::Invalid("normalization substitution order"));
             }
             previous = Some(old);
             substitutions.insert(old, new);
@@ -89,18 +89,18 @@ impl NormalizationReceipt {
             || winning_commit.author != author
             || genesis.account_key(author).is_none()
         {
-            return Err(ResearchError::Invalid("normalization package identity"));
+            return Err(LedgerError::Invalid("normalization package identity"));
         }
         let count = read_count(&mut r, limits.new_helpers + 1)?;
         if count != package.certificates().len() {
-            return Err(ResearchError::Invalid("normalization publication count"));
+            return Err(LedgerError::Invalid("normalization publication count"));
         }
         let mut new_proofs = Vec::with_capacity(count);
         for (expected, _) in package.certificates() {
             let proof = ProofId::from_bytes(r.fixed()?);
             let recipient = AccountId::from_bytes(r.fixed()?);
             if proof != *expected || recipient != author {
-                return Err(ResearchError::Invalid("normalization publication identity"));
+                return Err(LedgerError::Invalid("normalization publication identity"));
             }
             new_proofs.push((proof, recipient));
         }
@@ -114,7 +114,7 @@ impl NormalizationReceipt {
                 || genesis.account_key(recipient).is_none()
                 || new_proofs.iter().any(|(id, _)| *id == proof)
             {
-                return Err(ResearchError::Invalid("normalization citation identity"));
+                return Err(LedgerError::Invalid("normalization citation identity"));
             }
             previous = Some(proof);
             citations.push((proof, recipient));
@@ -133,7 +133,7 @@ impl NormalizationReceipt {
         rewards.encode_into(&mut expected);
         let expected = expected.finish();
         if r.take(expected.len())? != expected {
-            return Err(ResearchError::Invalid("normalization reward plan"));
+            return Err(LedgerError::Invalid("normalization reward plan"));
         }
         r.finish()?;
         Ok(Self {
@@ -155,10 +155,10 @@ impl NormalizationReceipt {
     }
 }
 
-fn read_count(r: &mut Reader<'_>, maximum: u64) -> Result<usize, ResearchError> {
+fn read_count(r: &mut Reader<'_>, maximum: u64) -> Result<usize, LedgerError> {
     let count = r.u32()?;
     if u64::from(count) > maximum {
-        return Err(ResearchError::Limit("normalization receipt entries"));
+        return Err(LedgerError::Limit("normalization receipt entries"));
     }
     Ok(count as usize)
 }

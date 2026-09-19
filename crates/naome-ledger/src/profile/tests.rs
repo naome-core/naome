@@ -21,11 +21,11 @@ fn inputs() -> (Vec<[u8; 32]>, Vec<ValidatorRegistration>) {
 fn genesis(
     accounts: Vec<[u8; 32]>,
     validators: Vec<ValidatorRegistration>,
-) -> Result<Genesis, ResearchError> {
+) -> Result<Genesis, LedgerError> {
     Genesis::new(
         Profile::lab(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         1800000000,
         [42; 32],
@@ -90,7 +90,7 @@ fn profile_rejects_noncanonical_limits_variants_and_every_truncation() {
     }
     let mut bad = bytes.clone();
     bad.push(0);
-    assert_eq!(Profile::decode(&bad), Err(ResearchError::TrailingBytes));
+    assert_eq!(Profile::decode(&bad), Err(LedgerError::TrailingBytes));
     let mut bad = bytes.clone();
     bad[8] = 3;
     assert!(Profile::decode(&bad).is_err());
@@ -130,7 +130,7 @@ fn profile_rejects_noncanonical_limits_variants_and_every_truncation() {
 fn storage_arithmetic_never_wraps() {
     let mut p = Profile::lab();
     p.limits.run_records = u64::MAX;
-    assert_eq!(p.required_storage_bytes(), Err(ResearchError::Overflow));
+    assert_eq!(p.required_storage_bytes(), Err(LedgerError::Overflow));
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn genesis_rejects_every_truncation_trailing_data_and_oversize() {
     }
     let mut bad = bytes;
     bad.push(0);
-    assert_eq!(Genesis::decode(&bad), Err(ResearchError::TrailingBytes));
+    assert_eq!(Genesis::decode(&bad), Err(LedgerError::TrailingBytes));
     assert!(Genesis::decode(&vec![0; MAX_GENESIS_BYTES + 1]).is_err());
 }
 
@@ -275,7 +275,7 @@ fn genesis_identity_binds_all_configuration_and_keys() {
     assert!(bad.validate().is_err());
     let mut bad = g;
     bad.start_utc = u64::MAX;
-    assert_eq!(bad.validate(), Err(ResearchError::Overflow));
+    assert_eq!(bad.validate(), Err(LedgerError::Overflow));
 }
 
 #[test]

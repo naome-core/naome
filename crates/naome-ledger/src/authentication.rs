@@ -3,7 +3,7 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::{
-    AccountId, GenesisId, OperationId, ResearchError,
+    AccountId, GenesisId, LedgerError, OperationId,
     codec::{Reader, Writer},
     identity::hash,
     profile::Genesis,
@@ -36,10 +36,10 @@ impl SignedOperation {
         nonce: u64,
         payload: Vec<u8>,
         key: &SigningKey,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let author = AccountId::for_key(key.verifying_key().as_bytes());
         if genesis.account_key(author) != Some(key.verifying_key().as_bytes()) {
-            return Err(ResearchError::Invalid("unregistered action signer"));
+            return Err(LedgerError::Invalid("unregistered action signer"));
         }
         let mut operation = Self {
             genesis: genesis.id(),
@@ -54,21 +54,21 @@ impl SignedOperation {
     }
 
     /// Verifies exact genesis and role-specific authorization, not state validity.
-    pub fn verify(&self, genesis: &Genesis) -> Result<(), ResearchError> {
+    pub fn verify(&self, genesis: &Genesis) -> Result<(), LedgerError> {
         self.validate_shape()?;
         if self.genesis != genesis.id() {
-            return Err(ResearchError::Invalid("action genesis"));
+            return Err(LedgerError::Invalid("action genesis"));
         }
         let public = genesis
             .account_key(self.author)
-            .ok_or(ResearchError::Invalid("unregistered action author"))?;
+            .ok_or(LedgerError::Invalid("unregistered action author"))?;
         let key =
-            VerifyingKey::from_bytes(public).map_err(|_| ResearchError::Invalid("account key"))?;
+            VerifyingKey::from_bytes(public).map_err(|_| LedgerError::Invalid("account key"))?;
         key.verify_strict(
             &self.signing_bytes(),
             &Signature::from_bytes(&self.signature),
         )
-        .map_err(|_| ResearchError::Invalid("action signature"))
+        .map_err(|_| LedgerError::Invalid("action signature"))
     }
 
     /// Returns the action identity, independent of its signature representation.
@@ -107,10 +107,10 @@ impl SignedOperation {
     }
 
     /// Decodes bounded bytes. Call `verify` before trusting their authorization.
-    pub fn decode(bytes: &[u8]) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, SIGNED_OPERATION_MAX_BYTES)?;
         if reader.fixed::<4>()? != *MAGIC || reader.u16()? != VERSION {
-            return Err(ResearchError::Invalid("action format"));
+            return Err(LedgerError::Invalid("action format"));
         }
         let operation = Self {
             genesis: GenesisId::from_bytes(reader.fixed()?),
@@ -126,15 +126,15 @@ impl SignedOperation {
         Ok(operation)
     }
 
-    fn validate_shape(&self) -> Result<(), ResearchError> {
+    fn validate_shape(&self) -> Result<(), LedgerError> {
         if self.nonce == 0 {
-            return Err(ResearchError::Invalid("zero action nonce"));
+            return Err(LedgerError::Invalid("zero action nonce"));
         }
         if self.payload.is_empty() {
-            return Err(ResearchError::Invalid("empty action payload"));
+            return Err(LedgerError::Invalid("empty action payload"));
         }
         if self.payload.len() > SIGNED_OPERATION_MAX_BYTES - OVERHEAD {
-            return Err(ResearchError::Limit("action payload"));
+            return Err(LedgerError::Limit("action payload"));
         }
         Ok(())
     }

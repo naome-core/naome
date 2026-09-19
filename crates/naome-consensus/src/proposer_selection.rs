@@ -48,13 +48,13 @@ impl ProposerPriorityStateId {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FixedAgreementSetV0 {
+pub(crate) struct FixedAgreementSet {
     entries: Box<[ActiveAgreementEntry]>,
     total_weight: AgreementWeight,
     id: FixedAgreementSetId,
 }
 
-impl FixedAgreementSetV0 {
+impl FixedAgreementSet {
     pub(crate) fn try_from_preselected(
         entries: &[ActiveAgreementEntry],
     ) -> Result<Self, ActiveAgreementSnapshotError> {
@@ -96,26 +96,26 @@ impl FixedAgreementSetV0 {
 /// a key or priority vector
 /// while retaining the same typed state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FixedProposerStateV0 {
-    fixed_set: Arc<FixedAgreementSetV0>,
+pub(crate) struct FixedProposerState {
+    fixed_set: Arc<FixedAgreementSet>,
     priorities: Box<[BigInt]>,
     id: ProposerPriorityStateId,
 }
 
-impl FixedProposerStateV0 {
+impl FixedProposerState {
     pub(crate) fn try_from_preselected(
         entries: &[ActiveAgreementEntry],
     ) -> Result<Self, ActiveAgreementSnapshotError> {
         Ok(Self::from_zeroed_fixed_set(
-            FixedAgreementSetV0::try_from_preselected(entries)?,
+            FixedAgreementSet::try_from_preselected(entries)?,
         ))
     }
 
     fn from_zeroed_preselected_snapshot(snapshot: &ActiveAgreementSnapshot) -> Self {
-        Self::from_zeroed_fixed_set(FixedAgreementSetV0::from_active_snapshot(snapshot))
+        Self::from_zeroed_fixed_set(FixedAgreementSet::from_active_snapshot(snapshot))
     }
 
-    fn from_zeroed_fixed_set(fixed_set: FixedAgreementSetV0) -> Self {
+    fn from_zeroed_fixed_set(fixed_set: FixedAgreementSet) -> Self {
         let fixed_set = Arc::new(fixed_set);
         let priorities = vec![BigInt::from(0_u8); fixed_set.entries().len()].into_boxed_slice();
         let id = derive_priority_state_id(fixed_set.id(), &priorities)
@@ -188,14 +188,14 @@ impl FixedProposerStateV0 {
 /// them activation, branch-selection, finality, persistence, or peer authority.
 #[derive(Clone, PartialEq, Eq)]
 #[must_use]
-pub struct PreselectedProposerStateV0(FixedProposerStateV0);
+pub struct PreselectedProposerState(FixedProposerState);
 
-impl PreselectedProposerStateV0 {
+impl PreselectedProposerState {
     /// Creates the zero-priority arithmetic root for one validated snapshot.
     ///
     /// This operation is not a genesis, reset, recovery, or activation rule.
     pub fn from_zeroed_preselected_snapshot(snapshot: &ActiveAgreementSnapshot) -> Self {
-        Self(FixedProposerStateV0::from_zeroed_preselected_snapshot(
+        Self(FixedProposerState::from_zeroed_preselected_snapshot(
             snapshot,
         ))
     }
@@ -223,10 +223,10 @@ impl PreselectedProposerStateV0 {
     }
 }
 
-impl fmt::Debug for PreselectedProposerStateV0 {
+impl fmt::Debug for PreselectedProposerState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("PreselectedProposerStateV0")
+            .debug_struct("PreselectedProposerState")
             .field("fixed_agreement_set_id", &self.fixed_agreement_set_id())
             .field(
                 "proposer_priority_state_id",

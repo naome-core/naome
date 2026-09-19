@@ -92,16 +92,15 @@ struct Behaviour {
 }
 
 /// Authenticated canonical state transport over the immutable genesis peers.
-pub struct StaticArtifactNetwork {
+pub struct StateNetwork {
     swarm: Swarm<Behaviour>,
     // Each peer behaviour has its own request counter; the peer is part of the key.
-    pending:
-        HashMap<(PeerId, request_response::OutboundRequestId), state_exchange::PendingResearch>,
+    pending: HashMap<(PeerId, request_response::OutboundRequestId), state_exchange::PendingState>,
     pending_budget: Arc<PendingBudget>,
-    research: Option<state_exchange::ResearchConfig>,
+    state_exchange: Option<state_exchange::StateConfig>,
 }
 
-impl StaticArtifactNetwork {
+impl StateNetwork {
     /// Reports static transport configuration, not connectivity or consensus trust.
     pub fn is_configured_peer(&self, peer_id: &PeerId) -> bool {
         self.swarm
@@ -180,7 +179,7 @@ impl StaticArtifactNetwork {
         Ok(Self {
             swarm,
             pending: HashMap::new(),
-            research: None,
+            state_exchange: None,
             pending_budget: Arc::new(PendingBudget::default()),
         })
     }
@@ -250,7 +249,7 @@ impl StaticArtifactNetwork {
             suppressed += 1;
             match self.swarm.select_next_some().await {
                 SwarmEvent::Behaviour(BehaviourEvent::StateExchange(event)) => {
-                    if let Some(event) = self.handle_research_event(event) {
+                    if let Some(event) = self.handle_state_event(event) {
                         return event;
                     }
                 }
@@ -293,8 +292,8 @@ pub enum NetworkEvent {
     Listening {
         address: Multiaddr,
     },
-    InboundResearch(state_exchange::InboundResearch),
-    OutboundResearch(state_exchange::ResearchEvent),
+    InboundState(state_exchange::InboundState),
+    OutboundState(state_exchange::StateEvent),
     PeerSession(PeerSessionEvent),
     ListenerError {
         listener_id: ListenerId,

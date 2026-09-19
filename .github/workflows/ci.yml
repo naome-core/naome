@@ -172,7 +172,7 @@ jobs:
       - name: Build release test targets and devnet binaries
         run: cargo test -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-run
       - name: Qualify canonical publication, citation, outage, partition, and cold replay
-        run: cargo test -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-fail-fast four_process_research_recovery_partition_and_independent_replay
+        run: cargo test -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-fail-fast four_process_state_recovery_partition_and_independent_replay
       - name: Package exact Linux binaries
         run: python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:ci
       - name: Qualify 100 canonical state heights with isolation, delay, and faults

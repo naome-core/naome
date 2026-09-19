@@ -1,10 +1,10 @@
 //! Actual portable verifier: public fixtures only, no private keys or node stores.
 #![cfg(any(unix, windows))]
 use ed25519_dalek::SigningKey;
-use naome_consensus::state::ResearchBranch;
+use naome_consensus::state::StateBranch;
 use naome_ledger::{
-    AccountId, ResearchState,
-    profile::{Genesis, Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration},
+    AccountId, LedgerState,
+    profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
 };
 use serde_json::{Value, json};
 use std::{
@@ -47,7 +47,7 @@ impl Archive {
         let genesis = Genesis::new(
             Profile::short_test(),
             "naome:zfc".into(),
-            RESEARCH_CHECKER_PROFILE.into(),
+            STATE_CHECKER_PROFILE.into(),
             1,
             100,
             [9; 32],
@@ -68,7 +68,7 @@ impl Archive {
                 .collect(),
         )
         .unwrap();
-        let branch = ResearchBranch::from_genesis(ResearchState::new(genesis.clone())).unwrap();
+        let branch = StateBranch::from_genesis(LedgerState::new(genesis.clone())).unwrap();
         let frame = vector("finality");
         let checked = branch.decode_finality(&frame, 32).unwrap();
         let manifest = json!({"version":1,"genesis":hex(genesis.id().as_bytes()),"head":hex(checked.branch().state().head().as_bytes()),"state":hex(checked.branch().state().commitment().as_bytes()),"height":1,"maximum_round":32});

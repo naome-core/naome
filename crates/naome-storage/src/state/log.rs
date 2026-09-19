@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::ResearchStorageError as Error;
+use super::StateStorageError as Error;
 use crate::platform::{durable_open_options, require_finality_platform, sync_finality_file};
 use crate::store_io::{
     ExclusiveLock, ExclusiveLockError, StoreIo, append_body_and_commit, open_exclusive_lock,
@@ -225,7 +225,7 @@ impl<F: StoreIo, A: Anchor> Log<F, A> {
 }
 
 /// Holds both the independently locked anchor and the caller-selected owner
-/// lock. For finality that owner lock is the existing artifact-chain lock.
+/// lock. The canonical history and each signing key have distinct owners.
 pub(super) struct FileLog {
     pub core: Log<File, FileAnchor>,
     _anchor_lock: ExclusiveLock,
@@ -241,6 +241,7 @@ impl FileLog {
         prefix: &[u8],
         limits: Limits,
     ) -> Result<Self, Error> {
+        reject_legacy_namespace(directory, anchor_directory)?;
         require_finality_platform(directory)?;
         require_finality_platform(anchor_directory)?;
         limits.validate(prefix.len())?;
@@ -280,6 +281,7 @@ impl FileLog {
         limits: Limits,
         accept: impl FnMut(&[u8]) -> Result<(), Error>,
     ) -> Result<Self, Error> {
+        reject_legacy_namespace(directory, anchor_directory)?;
         require_finality_platform(directory)?;
         require_finality_platform(anchor_directory)?;
         let owner_lock = lock(directory, owner_lock_name)?;
@@ -310,6 +312,7 @@ pub(super) fn observe(
     limits: Limits,
     accept: impl FnMut(&[u8]) -> Result<(), Error>,
 ) -> Result<Position, Error> {
+    reject_legacy_namespace(directory, anchor_directory)?;
     let anchor = FileAnchor::open(anchor_directory, anchor_name, prefix)?;
     let mut file = File::open(directory.join(file_name))?;
     let result = scan(&mut file, prefix, limits, anchor.position(), accept)?;
@@ -653,4 +656,34 @@ pub(super) fn extend_position(
             .and_then(|v| v.checked_add(u64::from(length)))
             .ok_or(Error::Limit("journal bytes"))?,
     ))
+}
+
+// Changing a filename never grants a fresh authority beside an existing old
+// run. Reject legacy history, signer, and anchor names before creating locks,
+// touching bytes, or replaying a mixed directory. No conversion is inferred.
+fn reject_legacy_namespace(directory: &Path, anchor_directory: &Path) -> Result<(), Error> {
+    for root in [directory, anchor_directory] {
+        for entry in std::fs::read_dir(root)? {
+            let name = entry?.file_name();
+            if name.to_str().is_some_and(|name| {
+                [
+                    "artifact-",
+                    "research-",
+                    "fixed-validator-",
+                    "candidate-",
+                    "payload-",
+                ]
+                .iter()
+                .any(|prefix| {
+                    name.get(..prefix.len())
+                        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+                })
+            }) {
+                return Err(Error::Invalid(
+                    "legacy storage namespace requires its original executable; provision a new run",
+                ));
+            }
+        }
+    }
+    Ok(())
 }

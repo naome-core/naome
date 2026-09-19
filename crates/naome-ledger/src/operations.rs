@@ -1,7 +1,7 @@
 //! Canonical user actions and author authentication for original proof packages.
 
 use crate::{
-    AccountId, CommitmentId, GenesisId, PackageHash, ProfileId, QuestionId, ResearchError,
+    AccountId, CommitmentId, GenesisId, LedgerError, PackageHash, ProfileId, QuestionId,
     SolutionRoundId,
     authentication::SignedOperation,
     codec::{Reader, Writer},
@@ -34,12 +34,12 @@ impl SignedOriginal {
         round: SolutionRoundId,
         package: ProofPackage,
         key: &SigningKey,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let author = AccountId::for_key(key.verifying_key().as_bytes());
         if package.author() != author
             || genesis.account_key(author) != Some(key.verifying_key().as_bytes())
         {
-            return Err(ResearchError::Invalid("original package signer"));
+            return Err(LedgerError::Invalid("original package signer"));
         }
         let mut original = Self {
             genesis: genesis.id(),
@@ -57,24 +57,24 @@ impl SignedOriginal {
         genesis: &Genesis,
         round: SolutionRoundId,
         author: AccountId,
-    ) -> Result<(), ResearchError> {
+    ) -> Result<(), LedgerError> {
         if self.genesis != genesis.id()
             || self.profile != genesis.profile().id()
             || self.round != round
             || self.package.author() != author
         {
-            return Err(ResearchError::Invalid("original context"));
+            return Err(LedgerError::Invalid("original context"));
         }
         let key = genesis
             .account_key(author)
-            .ok_or(ResearchError::Invalid("original author account"))?;
+            .ok_or(LedgerError::Invalid("original author account"))?;
         VerifyingKey::from_bytes(key)
-            .map_err(|_| ResearchError::Invalid("original author key"))?
+            .map_err(|_| LedgerError::Invalid("original author key"))?
             .verify_strict(
                 &self.signing_bytes()?,
                 &Signature::from_bytes(&self.signature),
             )
-            .map_err(|_| ResearchError::Invalid("original author signature"))
+            .map_err(|_| LedgerError::Invalid("original author signature"))
     }
     pub fn package(&self) -> &ProofPackage {
         &self.package
@@ -85,16 +85,16 @@ impl SignedOriginal {
     pub fn original_hash(&self) -> PackageHash {
         self.package.original_hash()
     }
-    pub fn encode(&self) -> Result<Vec<u8>, ResearchError> {
+    pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut bytes = self.unsigned_bytes()?;
         bytes.extend_from_slice(&self.signature);
         Ok(bytes)
     }
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let maximum = genesis.profile().limits().package_bytes as usize;
         let mut reader = Reader::new(bytes, maximum + ORIGINAL_OVERHEAD)?;
         if reader.fixed::<4>()? != *ORIGINAL_MAGIC || reader.u16()? != 1 {
-            return Err(ResearchError::Invalid("original format"));
+            return Err(LedgerError::Invalid("original format"));
         }
         let original = Self {
             genesis: GenesisId::from_bytes(reader.fixed()?),
@@ -106,7 +106,7 @@ impl SignedOriginal {
         reader.finish()?;
         Ok(original)
     }
-    fn unsigned_bytes(&self) -> Result<Vec<u8>, ResearchError> {
+    fn unsigned_bytes(&self) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
         writer.fixed(ORIGINAL_MAGIC);
         writer.u16(1);
@@ -116,7 +116,7 @@ impl SignedOriginal {
         writer.bytes(&self.package.encode()?)?;
         Ok(writer.finish())
     }
-    fn signing_bytes(&self) -> Result<Vec<u8>, ResearchError> {
+    fn signing_bytes(&self) -> Result<Vec<u8>, LedgerError> {
         let mut bytes = ORIGINAL_DOMAIN.to_vec();
         bytes.extend(self.unsigned_bytes()?);
         Ok(bytes)
@@ -206,16 +206,16 @@ impl OperationBody {
         genesis: &Genesis,
         nonce: u64,
         key: &SigningKey,
-    ) -> Result<SignedOperation, ResearchError> {
+    ) -> Result<SignedOperation, LedgerError> {
         SignedOperation::sign(genesis, nonce, self.encode()?, key)
     }
-    pub fn encode(&self) -> Result<Vec<u8>, ResearchError> {
+    pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
         writer.u8(1);
         match self {
             Self::Submit { purpose, question } => {
                 if purpose.is_empty() || purpose.len() > PURPOSE_MAX_BYTES {
-                    return Err(ResearchError::Limit("question purpose"));
+                    return Err(LedgerError::Limit("question purpose"));
                 }
                 writer.u8(1);
                 writer.string(purpose)?;
@@ -249,16 +249,16 @@ impl OperationBody {
         }
         Ok(writer.finish())
     }
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, genesis.profile().limits().record_bytes as usize)?;
         if reader.u8()? != 1 {
-            return Err(ResearchError::Invalid("user body version"));
+            return Err(LedgerError::Invalid("user body version"));
         }
         let body = match reader.u8()? {
             1 => {
                 let purpose = reader.string(PURPOSE_MAX_BYTES)?.to_owned();
                 if purpose.is_empty() {
-                    return Err(ResearchError::Invalid("empty question purpose"));
+                    return Err(LedgerError::Invalid("empty question purpose"));
                 }
                 let question = CompiledQuestion::from_canonical_bytes(
                     reader.bytes(genesis.profile().limits().question_source_bytes as usize + 5)?,
@@ -270,12 +270,12 @@ impl OperationBody {
                 let question = QuestionId::from_bytes(reader.fixed()?);
                 let attempt = reader.u64()?;
                 if attempt == 0 {
-                    return Err(ResearchError::Invalid("zero voting attempt"));
+                    return Err(LedgerError::Invalid("zero voting attempt"));
                 }
                 let yes = match reader.u8()? {
                     0 => false,
                     1 => true,
-                    _ => return Err(ResearchError::Invalid("ballot choice")),
+                    _ => return Err(LedgerError::Invalid("ballot choice")),
                 };
                 Self::Vote {
                     question,
@@ -297,7 +297,7 @@ impl OperationBody {
                     genesis,
                 )?,
             },
-            _ => return Err(ResearchError::Invalid("user operation tag")),
+            _ => return Err(LedgerError::Invalid("user operation tag")),
         };
         reader.finish()?;
         Ok(body)

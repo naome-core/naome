@@ -2,7 +2,7 @@
 //! actual consensus. These tests inspect files at the instant of transmission.
 use super::*;
 use ed25519_dalek::SigningKey;
-use naome_ledger::profile::{Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration};
+use naome_ledger::profile::{Profile, STATE_CHECKER_PROFILE, ValidatorRegistration};
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
@@ -56,7 +56,7 @@ impl Fixture {
         let genesis = Genesis::new(
             Profile::short_test(),
             "naome:zfc".into(),
-            RESEARCH_CHECKER_PROFILE.into(),
+            STATE_CHECKER_PROFILE.into(),
             1,
             100,
             [8; 32],
@@ -65,7 +65,7 @@ impl Fixture {
         )
         .unwrap();
         let config = NodeConfig {
-            version: 1,
+            version: 2,
             genesis: root.join("genesis.bin"),
             history: root.join("history"),
             history_anchor: root.join("history-anchor"),
@@ -74,7 +74,7 @@ impl Fixture {
             consensus_key: root.join("consensus.key"),
             transport_key: root.join("transport.key"),
             account_key,
-            research_profile: root.join("profile.txt"),
+            agenda_profile: root.join("profile.txt"),
             control_socket: root.join("control.sock"),
             maximum_round: 64,
             simulation: true,

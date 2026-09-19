@@ -4,16 +4,12 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget,
-    state::{
-        ResearchBranch, ResearchLockEvent, ResearchLockState, ResearchPublication, ResearchQuorum,
-    },
+    state::{StateBranch, StateLockEvent, StateLockState, StatePublication, StateQuorum},
 };
 use naome_ledger::{
     AccountId,
     operations::OperationBody,
-    profile::{
-        Genesis, Limits, Profile, RESEARCH_CHECKER_PROFILE, TimingKind, ValidatorRegistration,
-    },
+    profile::{Genesis, Limits, Profile, STATE_CHECKER_PROFILE, TimingKind, ValidatorRegistration},
     question::CompiledQuestion,
     time::SignedTimeReport,
 };
@@ -31,7 +27,7 @@ impl Directory {
     fn new() -> Self {
         loop {
             let path = std::env::temp_dir().join(format!(
-                "naome-research-runtime-{}-{}",
+                "naome-state-runtime-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -69,7 +65,7 @@ fn genesis() -> Genesis {
     Genesis::new(
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [9; 32],
@@ -101,9 +97,9 @@ fn operation(g: &Genesis, nonce: u64) -> SignedOperation {
     .sign(g, nonce, &account(4))
     .unwrap()
 }
-fn runtime() -> (Directory, Directory, ResearchRuntime) {
+fn runtime() -> (Directory, Directory, StateRuntime) {
     let g = genesis();
-    let branch = ResearchBranch::from_genesis(ResearchState::new(g.clone())).unwrap();
+    let branch = StateBranch::from_genesis(LedgerState::new(g.clone())).unwrap();
     let index = (0..4)
         .find(|i| {
             let signer = ConsensusKey::from_bytes(consensus(*i).verifying_key().to_bytes());
@@ -112,25 +108,25 @@ fn runtime() -> (Directory, Directory, ResearchRuntime) {
         .unwrap();
     let directory = Directory::new();
     let anchors = Directory::new();
-    let history = ResearchHistory::create(&directory.0, &anchors.0, g.clone(), 8).unwrap();
+    let history = StateHistory::create(&directory.0, &anchors.0, g.clone(), 8).unwrap();
     let signer =
-        ResearchSigner::create(&directory.0, &anchors.0, g.clone(), consensus(index), 8).unwrap();
-    let network = StaticArtifactNetwork::new_research(transport(index), &g).unwrap();
+        StateSigner::create(&directory.0, &anchors.0, g.clone(), consensus(index), 8).unwrap();
+    let network = StateNetwork::new_state(transport(index), &g).unwrap();
     let peers = (0..4)
         .filter(|i| *i != index)
         .map(|i| transport(i).public().to_peer_id())
         .collect();
-    let runtime = ResearchRuntime::new(
+    let runtime = StateRuntime::new(
         history,
         Some(signer),
         network,
         peers,
-        ResearchRuntimeConfig::default(),
+        StateRuntimeConfig::default(),
     )
     .unwrap();
     (directory, anchors, runtime)
 }
-fn ready_work(runtime: &mut ResearchRuntime) {
+fn ready_work(runtime: &mut StateRuntime) {
     let g = runtime.state().unwrap().genesis().clone();
     let state = runtime.state().unwrap();
     let utc = SystemTime::now()
@@ -147,12 +143,12 @@ fn ready_work(runtime: &mut ResearchRuntime) {
     runtime.tick().unwrap();
 }
 
-fn enter_round_one(runtime: &mut ResearchRuntime) -> Vec<ResearchLockState> {
+fn enter_round_one(runtime: &mut StateRuntime) -> Vec<StateLockState> {
     let g = runtime.state().unwrap().genesis().clone();
-    let branch = ResearchBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
+    let branch = StateBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
     let mut kernels: Vec<_> = (0..4)
         .map(|i| {
-            ResearchLockState::new(
+            StateLockState::new(
                 &branch,
                 ConsensusKey::from_bytes(consensus(i).verifying_key().to_bytes()),
             )
@@ -164,24 +160,24 @@ fn enter_round_one(runtime: &mut ResearchRuntime) -> Vec<ResearchLockState> {
         .enumerate()
         .map(|(i, kernel)| {
             let intent = kernel
-                .apply(&branch, &ResearchLockEvent::ProposalTimeout, 8)
+                .apply(&branch, &StateLockEvent::ProposalTimeout, 8)
                 .unwrap();
             let signature = consensus(i as u8)
                 .sign(&intent.signing_bytes().unwrap())
                 .to_bytes();
             match intent.complete(signature, &branch, 8).unwrap() {
-                ResearchPublication::Vote(vote) => vote,
+                StatePublication::Vote(vote) => vote,
                 _ => unreachable!(),
             }
         })
         .collect();
-    let quorum = ResearchQuorum::from_votes(prevotes, &g).unwrap();
+    let quorum = StateQuorum::from_votes(prevotes, &g).unwrap();
     let mut precommits = Vec::new();
     for (i, kernel) in kernels.iter_mut().enumerate() {
         let intent = kernel
             .apply(
                 &branch,
-                &ResearchLockEvent::Precommit {
+                &StateLockEvent::Precommit {
                     proposal: None,
                     quorum: quorum.encode(),
                 },
@@ -191,19 +187,18 @@ fn enter_round_one(runtime: &mut ResearchRuntime) -> Vec<ResearchLockState> {
         let signature = consensus(i as u8)
             .sign(&intent.signing_bytes().unwrap())
             .to_bytes();
-        let ResearchPublication::Vote(vote) = intent.complete(signature, &branch, 8).unwrap()
-        else {
+        let StatePublication::Vote(vote) = intent.complete(signature, &branch, 8).unwrap() else {
             unreachable!()
         };
         runtime.node.accept_vote(&vote.encode()).unwrap();
         precommits.push(vote);
     }
-    let quorum = ResearchQuorum::from_votes(precommits, &g).unwrap();
+    let quorum = StateQuorum::from_votes(precommits, &g).unwrap();
     for kernel in &mut kernels {
         kernel
             .apply(
                 &branch,
-                &ResearchLockEvent::NilPrecommit {
+                &StateLockEvent::NilPrecommit {
                     quorum: quorum.encode(),
                 },
                 8,
@@ -213,7 +208,7 @@ fn enter_round_one(runtime: &mut ResearchRuntime) -> Vec<ResearchLockState> {
     runtime.drive().unwrap();
     assert_eq!(
         runtime.position().unwrap().unwrap(),
-        (1, 1, ResearchPhase::Proposal)
+        (1, 1, StatePhase::Proposal)
     );
     kernels
 }
@@ -231,25 +226,25 @@ async fn later_consensus_round_after_restart_waits_longer_without_duplicate_rese
         })
         .unwrap();
     drop(runtime);
-    let history = ResearchHistory::open(&directory.0, &anchors.0, g.clone(), 8).unwrap();
+    let history = StateHistory::open(&directory.0, &anchors.0, g.clone(), 8).unwrap();
     let signer =
-        ResearchSigner::open(&directory.0, &anchors.0, g.clone(), consensus(index), 8).unwrap();
-    let network = StaticArtifactNetwork::new_research(transport(index), &g).unwrap();
+        StateSigner::open(&directory.0, &anchors.0, g.clone(), consensus(index), 8).unwrap();
+    let network = StateNetwork::new_state(transport(index), &g).unwrap();
     let peers = (0..4)
         .filter(|i| *i != index)
         .map(|i| transport(i).public().to_peer_id())
         .collect();
-    let mut runtime = ResearchRuntime::new(
+    let mut runtime = StateRuntime::new(
         history,
         Some(signer),
         network,
         peers,
-        ResearchRuntimeConfig::default(),
+        StateRuntimeConfig::default(),
     )
     .unwrap();
     assert_eq!(
         runtime.position().unwrap().unwrap(),
-        (1, 1, ResearchPhase::Proposal)
+        (1, 1, StatePhase::Proposal)
     );
     ready_work(&mut runtime);
     let base = runtime.config.proposal_timeout;
@@ -259,7 +254,7 @@ async fn later_consensus_round_after_restart_waits_longer_without_duplicate_rese
         runtime.tick().unwrap();
         assert_eq!(
             runtime.position().unwrap().unwrap(),
-            (1, 1, ResearchPhase::Proposal)
+            (1, 1, StatePhase::Proposal)
         );
         let before = runtime.phase_started;
         let g = runtime.state().unwrap().genesis();
@@ -272,16 +267,16 @@ async fn later_consensus_round_after_restart_waits_longer_without_duplicate_rese
     runtime.tick().unwrap();
     assert_eq!(
         runtime.position().unwrap().unwrap(),
-        (1, 1, ResearchPhase::Prevote)
+        (1, 1, StatePhase::Prevote)
     );
 }
 
 fn authored_proposal(
-    runtime: &ResearchRuntime,
-    kernel: &mut ResearchLockState,
+    runtime: &StateRuntime,
+    kernel: &mut StateLockState,
     index: u8,
-) -> ResearchPublication {
-    let branch = ResearchBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
+) -> StatePublication {
+    let branch = StateBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
     let state = runtime.state().unwrap();
     let certificate = naome_ledger::time::TimeCertificate::new(
         runtime.time_reports.values().cloned().collect(),
@@ -300,7 +295,7 @@ fn authored_proposal(
     let intent = kernel
         .apply(
             &branch,
-            &ResearchLockEvent::Author {
+            &StateLockEvent::Author {
                 record: Some(record),
             },
             8,
@@ -317,7 +312,7 @@ async fn valid_proposal_after_old_interval_is_accepted_within_grown_round() {
     let (_directory, _anchors, mut runtime) = runtime();
     let mut kernels = enter_round_one(&mut runtime);
     ready_work(&mut runtime);
-    let branch = ResearchBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
+    let branch = StateBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
     let index = (0..4)
         .find(|i| {
             ConsensusKey::from_bytes(consensus(*i).verifying_key().to_bytes())
@@ -330,7 +325,7 @@ async fn valid_proposal_after_old_interval_is_accepted_within_grown_round() {
     runtime.tick().unwrap();
     assert_eq!(
         runtime.position().unwrap().unwrap(),
-        (1, 1, ResearchPhase::Proposal)
+        (1, 1, StatePhase::Proposal)
     );
     runtime
         .node
@@ -338,7 +333,7 @@ async fn valid_proposal_after_old_interval_is_accepted_within_grown_round() {
         .unwrap();
     runtime.tick().unwrap();
     assert!(runtime.node.publications().unwrap().iter().any(|p| matches!(p,
-        ResearchPublication::Vote(vote) if vote.round() == 1 && vote.role() == ConsensusVoteRole::Prevote && matches!(vote.target(), ConsensusVoteTarget::Proposal(_))
+        StatePublication::Vote(vote) if vote.round() == 1 && vote.role() == ConsensusVoteRole::Prevote && matches!(vote.target(), ConsensusVoteTarget::Proposal(_))
     )));
 }
 
@@ -346,12 +341,12 @@ async fn valid_proposal_after_old_interval_is_accepted_within_grown_round() {
 async fn retained_proposal_is_driven_before_an_elapsed_timeout_can_emit_nil() {
     let (_directory, _anchors, mut runtime) = runtime();
     ready_work(&mut runtime);
-    let branch = ResearchBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
+    let branch = StateBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
     let scheduled = branch.proposer(0, 8).unwrap();
     let index = (0..4)
         .find(|i| ConsensusKey::from_bytes(consensus(*i).verifying_key().to_bytes()) == scheduled)
         .unwrap();
-    let mut kernel = ResearchLockState::new(&branch, scheduled).unwrap();
+    let mut kernel = StateLockState::new(&branch, scheduled).unwrap();
     let proposal = authored_proposal(&runtime, &mut kernel, index);
     tokio::time::advance(runtime.config.proposal_timeout).await;
     runtime
@@ -366,9 +361,7 @@ async fn retained_proposal_is_driven_before_an_elapsed_timeout_can_emit_nil() {
         .unwrap()
         .into_iter()
         .filter_map(|p| match p {
-            ResearchPublication::Vote(vote) if vote.role() == ConsensusVoteRole::Prevote => {
-                Some(vote)
-            }
+            StatePublication::Vote(vote) if vote.role() == ConsensusVoteRole::Prevote => Some(vote),
             _ => None,
         })
         .collect();
@@ -379,7 +372,7 @@ async fn retained_proposal_is_driven_before_an_elapsed_timeout_can_emit_nil() {
     ));
     assert_eq!(
         runtime.position().unwrap().unwrap(),
-        (1, 0, ResearchPhase::Prevote)
+        (1, 0, StatePhase::Prevote)
     );
 }
 #[tokio::test(start_paused = true)]
@@ -403,7 +396,7 @@ async fn productive_work_after_long_idle_gets_a_complete_proposal_interval() {
     assert!(runtime.work_ready);
     assert_eq!(
         runtime.position().unwrap().unwrap(),
-        (1, 0, ResearchPhase::Proposal)
+        (1, 0, StatePhase::Proposal)
     );
     assert_eq!(runtime.phase_started.elapsed(), Duration::ZERO);
     tokio::time::advance(runtime.config.proposal_timeout).await;
@@ -414,7 +407,7 @@ async fn productive_work_after_long_idle_gets_a_complete_proposal_interval() {
     runtime.tick().unwrap();
     assert_eq!(
         runtime.position().unwrap().unwrap(),
-        (1, 0, ResearchPhase::Prevote)
+        (1, 0, StatePhase::Prevote)
     );
 }
 #[tokio::test]
@@ -483,12 +476,9 @@ async fn refreshing_time_reports_preserves_delivery_order_under_backpressure() {
         runtime.enqueue_periodic().unwrap();
         let queued: Vec<_> = runtime.outbox.iter().filter(|d| d.peer == peer).collect();
         assert!(
-            matches!(&queued[0].body, ResearchRequestBody::TimeReport(actual) if actual == &bytes)
+            matches!(&queued[0].body, StateRequestBody::TimeReport(actual) if actual == &bytes)
         );
-        assert!(matches!(
-            &queued[1].body,
-            ResearchRequestBody::History { .. }
-        ));
+        assert!(matches!(&queued[1].body, StateRequestBody::History { .. }));
         assert_eq!(queued.len(), 2);
         assert_eq!(runtime.outbox.len(), initial_len);
     }

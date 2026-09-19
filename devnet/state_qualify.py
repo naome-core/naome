@@ -93,7 +93,7 @@ class Qualification:
             shutil.copy2(config['account_key'], private)
             config['account_key'] = str(private)
             atomic(self.backend.config(i), config)
-            shutil.copy2(REPO / 'examples/research-mvp/question-a.nao', self.backend.node(i) / 'question.nao')
+            shutil.copy2(REPO / 'examples/state-workflow/question-a.nao', self.backend.node(i) / 'question.nao')
             require(all(Path(config[field]).is_dir() and any(Path(config[field]).iterdir())
                         for field in ('history', 'signer', 'history_anchor', 'signer_anchor')),
                     'setup must initialize all four authority stores')

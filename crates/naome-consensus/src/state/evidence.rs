@@ -1,4 +1,4 @@
-use super::{ResearchConsensusError as Error, Result, codec::Reader};
+use super::{Result, StateConsensusError as Error, codec::Reader};
 use crate::{
     ActiveAgreementEntry, ActiveAgreementSnapshot, AgreementWeight, ConsensusHeight, ConsensusKey,
     ConsensusPosition, ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot,
@@ -7,10 +7,10 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use naome_ledger::{GenesisId, ProfileId, profile::Genesis};
 
 const MAGIC: &[u8; 5] = b"NSCV1";
-/// Fixed width of one versioned research vote, including key and signature.
-pub const RESEARCH_VOTE_BYTES: usize = 5 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64;
-/// A research quorum carries at most four complete signed votes.
-pub const RESEARCH_QUORUM_MAX_BYTES: usize = 1 + 4 * RESEARCH_VOTE_BYTES;
+/// Fixed width of one versioned state vote, including key and signature.
+pub const STATE_VOTE_BYTES: usize = 5 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64;
+/// A state quorum carries at most four complete signed votes.
+pub const STATE_QUORUM_MAX_BYTES: usize = 1 + 4 * STATE_VOTE_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct VoteBody {
@@ -67,12 +67,12 @@ impl VoteBody {
 
 /// A strictly verified signed vote. An opaque target is not a verified proposal.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResearchVote {
+pub struct StateVote {
     pub(super) body: VoteBody,
     pub(super) signer: ConsensusKey,
     signature: [u8; 64],
 }
-impl ResearchVote {
+impl StateVote {
     pub(super) fn complete(
         body: VoteBody,
         signer: ConsensusKey,
@@ -88,7 +88,7 @@ impl ResearchVote {
         })
     }
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self> {
-        let mut reader = Reader::new(bytes, RESEARCH_VOTE_BYTES)?;
+        let mut reader = Reader::new(bytes, STATE_VOTE_BYTES)?;
         if reader.fixed::<5>()? != *MAGIC {
             return Err(Error::Invalid("vote version"));
         }
@@ -194,15 +194,15 @@ pub(super) fn snapshot(
 /// Distinct, same-position and same-role votes; their targets may differ.
 /// Quorum progress and matching-target finality are deliberately separate.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResearchVoteSet {
-    votes: Vec<ResearchVote>,
+pub struct StateVoteSet {
+    votes: Vec<StateVote>,
 }
-impl ResearchVoteSet {
-    pub fn new(mut votes: Vec<ResearchVote>, genesis: &Genesis) -> Result<Self> {
+impl StateVoteSet {
+    pub fn new(mut votes: Vec<StateVote>, genesis: &Genesis) -> Result<Self> {
         if votes.is_empty() || votes.len() > 4 {
             return Err(Error::Limit("vote set"));
         }
-        votes.sort_by_key(ResearchVote::signer);
+        votes.sort_by_key(StateVote::signer);
         if votes.windows(2).any(|p| p[0].signer == p[1].signer) {
             return Err(Error::Invalid("duplicate consensus signer"));
         }
@@ -220,17 +220,17 @@ impl ResearchVoteSet {
         Ok(Self { votes })
     }
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self> {
-        let mut reader = Reader::new(bytes, RESEARCH_QUORUM_MAX_BYTES)?;
+        let mut reader = Reader::new(bytes, STATE_QUORUM_MAX_BYTES)?;
         let count = reader.u8()?;
         if !(1..=4).contains(&count) {
             return Err(Error::Limit("vote set"));
         }
         let mut votes = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            let vote = ResearchVote::decode(reader.take(RESEARCH_VOTE_BYTES)?, genesis)?;
+            let vote = StateVote::decode(reader.take(STATE_VOTE_BYTES)?, genesis)?;
             if votes
                 .last()
-                .is_some_and(|previous: &ResearchVote| previous.signer >= vote.signer)
+                .is_some_and(|previous: &StateVote| previous.signer >= vote.signer)
             {
                 return Err(Error::Invalid("vote signer order"));
             }
@@ -255,19 +255,19 @@ impl ResearchVoteSet {
     pub fn role(&self) -> ConsensusVoteRole {
         self.votes[0].role()
     }
-    pub fn votes(&self) -> &[ResearchVote] {
+    pub fn votes(&self) -> &[StateVote] {
         &self.votes
     }
     pub fn has_supermajority(&self, genesis: &Genesis) -> Result<bool> {
         self.check_genesis(genesis)?;
-        let keys: Vec<_> = self.votes.iter().map(ResearchVote::signer).collect();
+        let keys: Vec<_> = self.votes.iter().map(StateVote::signer).collect();
         snapshot(genesis, self.height(), self.round())?
             .has_strict_supermajority(&keys)
             .map_err(|_| Error::Invalid("quorum signer set"))
     }
     pub fn has_one_third(&self, genesis: &Genesis) -> Result<bool> {
         self.check_genesis(genesis)?;
-        let keys: Vec<_> = self.votes.iter().map(ResearchVote::signer).collect();
+        let keys: Vec<_> = self.votes.iter().map(StateVote::signer).collect();
         snapshot(genesis, self.height(), self.round())?
             .has_strict_one_third(&keys)
             .map_err(|_| Error::Invalid("round signer set"))
@@ -279,14 +279,14 @@ impl ResearchVoteSet {
 
 /// Verified strictly-greater-than-two-thirds evidence for one identical target.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResearchQuorum {
-    set: ResearchVoteSet,
+pub struct StateQuorum {
+    set: StateVoteSet,
 }
-impl ResearchQuorum {
-    pub fn from_votes(votes: Vec<ResearchVote>, genesis: &Genesis) -> Result<Self> {
-        Self::from_set(ResearchVoteSet::new(votes, genesis)?, genesis)
+impl StateQuorum {
+    pub fn from_votes(votes: Vec<StateVote>, genesis: &Genesis) -> Result<Self> {
+        Self::from_set(StateVoteSet::new(votes, genesis)?, genesis)
     }
-    fn from_set(set: ResearchVoteSet, genesis: &Genesis) -> Result<Self> {
+    fn from_set(set: StateVoteSet, genesis: &Genesis) -> Result<Self> {
         if !set.has_supermajority(genesis)? {
             return Err(Error::Invalid("insufficient quorum"));
         }
@@ -297,7 +297,7 @@ impl ResearchQuorum {
         Ok(Self { set })
     }
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self> {
-        Self::from_set(ResearchVoteSet::decode(bytes, genesis)?, genesis)
+        Self::from_set(StateVoteSet::decode(bytes, genesis)?, genesis)
     }
     pub fn encode(&self) -> Vec<u8> {
         self.set.encode()
@@ -314,7 +314,7 @@ impl ResearchQuorum {
     pub fn target(&self) -> ConsensusVoteTarget {
         self.set.votes[0].target()
     }
-    pub fn vote_set(&self) -> &ResearchVoteSet {
+    pub fn vote_set(&self) -> &StateVoteSet {
         &self.set
     }
     pub(super) fn check(

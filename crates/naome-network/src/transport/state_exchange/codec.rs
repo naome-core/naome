@@ -1,6 +1,6 @@
 use super::{
-    Custody, RESEARCH_FRAME_HEADER_BYTES, ResearchContext, ResearchRequest, ResearchResponse,
-    WireRequest, WireResponse, research_frame_length,
+    Custody, STATE_FRAME_HEADER_BYTES, StateContext, StateRequest, StateResponse, WireRequest,
+    WireResponse, state_frame_length,
 };
 use crate::transport::inbound_retention::InboundRetentionBudget;
 use async_trait::async_trait;
@@ -10,17 +10,17 @@ use libp2p::{
     request_response,
 };
 use std::{io, sync::Arc};
-pub(in crate::transport) const RESEARCH_PROTOCOL: StreamProtocol =
+pub(in crate::transport) const STATE_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/naome/state-v1");
 #[derive(Clone)]
-pub(in crate::transport) struct ResearchCodec {
-    pub(super) context: Option<ResearchContext>,
+pub(in crate::transport) struct StateCodec {
+    pub(super) context: Option<StateContext>,
     pub(super) maximum: usize,
     pub(super) global: Option<Arc<InboundRetentionBudget>>,
     pub(super) requests: Arc<InboundRetentionBudget>,
     pub(super) responses: Arc<InboundRetentionBudget>,
 }
-impl ResearchCodec {
+impl StateCodec {
     async fn read<T: AsyncRead + Unpin + Send>(
         &self,
         io: &mut T,
@@ -28,14 +28,14 @@ impl ResearchCodec {
     ) -> io::Result<(Vec<u8>, Arc<Custody>)> {
         let context = self
             .context
-            .ok_or_else(|| io::Error::other("research disabled"))?;
-        let mut header = [0; RESEARCH_FRAME_HEADER_BYTES];
+            .ok_or_else(|| io::Error::other("state_exchange disabled"))?;
+        let mut header = [0; STATE_FRAME_HEADER_BYTES];
         io.read_exact(&mut header).await?;
         let length =
-            research_frame_length(&header, response, context, self.maximum).map_err(invalid)?;
+            state_frame_length(&header, response, context, self.maximum).map_err(invalid)?;
         // Two frame charges cover decode's temporary buffer and retained Arc payloads.
         let global = InboundRetentionBudget::try_acquire(
-            self.global.as_ref().expect("enabled research budget"),
+            self.global.as_ref().expect("enabled state_exchange budget"),
             2 * length,
         )
         .ok_or_else(capacity)?;
@@ -53,10 +53,10 @@ impl ResearchCodec {
             peer: Some(peer),
         });
         let mut bytes = vec![0; length];
-        bytes[..RESEARCH_FRAME_HEADER_BYTES].copy_from_slice(&header);
-        io.read_exact(&mut bytes[RESEARCH_FRAME_HEADER_BYTES..])
+        bytes[..STATE_FRAME_HEADER_BYTES].copy_from_slice(&header);
+        io.read_exact(&mut bytes[STATE_FRAME_HEADER_BYTES..])
             .await?;
-        require_eof(io, "research trailing bytes").await?;
+        require_eof(io, "state_exchange trailing bytes").await?;
         Ok((bytes, custody))
     }
 }
@@ -64,10 +64,10 @@ fn invalid(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 fn capacity() -> io::Error {
-    io::Error::new(io::ErrorKind::WouldBlock, "research custody capacity")
+    io::Error::new(io::ErrorKind::WouldBlock, "state_exchange custody capacity")
 }
 #[async_trait]
-impl request_response::Codec for ResearchCodec {
+impl request_response::Codec for StateCodec {
     type Protocol = StreamProtocol;
     type Request = WireRequest;
     type Response = WireResponse;
@@ -78,7 +78,7 @@ impl request_response::Codec for ResearchCodec {
     ) -> io::Result<Self::Request> {
         let (bytes, custody) = self.read(io, false).await?;
         let request =
-            ResearchRequest::from_wire_bytes(&bytes, self.context.expect("enabled"), self.maximum)
+            StateRequest::from_wire_bytes(&bytes, self.context.expect("enabled"), self.maximum)
                 .map_err(invalid)?;
         Ok(WireRequest { request, custody })
     }
@@ -89,7 +89,7 @@ impl request_response::Codec for ResearchCodec {
     ) -> io::Result<Self::Response> {
         let (bytes, custody) = self.read(io, true).await?;
         let response =
-            ResearchResponse::from_wire_bytes(&bytes, self.context.expect("enabled"), self.maximum)
+            StateResponse::from_wire_bytes(&bytes, self.context.expect("enabled"), self.maximum)
                 .map_err(invalid)?;
         Ok(WireResponse {
             response,

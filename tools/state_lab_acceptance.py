@@ -26,7 +26,7 @@ import time
 
 
 REPO = Path(__file__).resolve().parents[1]
-EXAMPLES = REPO / "examples/research-mvp"
+EXAMPLES = REPO / "examples/state-workflow"
 HELPER = "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
 AGREEMENT_FIELDS = ("state", "head", "height", "accounts", "reserve_atoms",
                     "claims", "library_root", "paid_completions")
@@ -66,7 +66,7 @@ class Lab:
         }
         source_paths = [REPO / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")]
         source_paths += [p for p in (REPO / "crates").rglob("*") if p.is_file() and p.suffix in (".rs", ".toml")]
-        source_paths += list(EXAMPLES.glob("*")) + list((REPO / "tools").glob("research*.py"))
+        source_paths += list(EXAMPLES.glob("*")) + [REPO / "tools/state_lab_acceptance.py", REPO / "tools/agenda_agent_codex.py"]
         source_manifest = {str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
                            for p in sorted(set(source_paths)) if p.is_file()}
         source_bytes = (json.dumps(source_manifest, sort_keys=True, indent=2) + "\n").encode()
@@ -449,7 +449,7 @@ def main():
     parser.add_argument("--binary", type=Path, default=REPO / "target/debug/naome")
     parser.add_argument("--validator", type=Path, required=True)
     parser.add_argument("--verifier", type=Path, required=True)
-    parser.add_argument("--provider", type=Path, default=REPO / "tools/research_agent_codex.py")
+    parser.add_argument("--provider", type=Path, default=REPO / "tools/agenda_agent_codex.py")
     args = parser.parse_args()
     os.umask(0o077)
     lab = Lab(args)

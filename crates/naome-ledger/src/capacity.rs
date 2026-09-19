@@ -1,6 +1,6 @@
 //! Canonical record reservations. Call sites derive use from actual transitions.
 
-use crate::{ResearchError, codec::Writer, profile::Profile};
+use crate::{LedgerError, codec::Writer, profile::Profile};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Capacity {
@@ -41,17 +41,17 @@ impl Capacity {
             && self.remaining
                 >= profile.limits().completion_records + profile.limits().terminal_records
     }
-    pub(crate) fn open(&mut self, profile: &Profile) -> Result<(), ResearchError> {
+    pub(crate) fn open(&mut self, profile: &Profile) -> Result<(), LedgerError> {
         if !self.can_open(profile) {
-            return Err(ResearchError::Invalid("no completion reservation"));
+            return Err(LedgerError::Invalid("no completion reservation"));
         }
         self.active = profile.limits().completion_records;
         self.active_bytes = self.active * self.record_bytes;
         self.active_record()
     }
-    pub(crate) fn active_record(&mut self) -> Result<(), ResearchError> {
+    pub(crate) fn active_record(&mut self) -> Result<(), LedgerError> {
         if self.terminated || self.active == 0 || self.remaining <= 1 {
-            return Err(ResearchError::Invalid("active completion capacity"));
+            return Err(LedgerError::Invalid("active completion capacity"));
         }
         self.active -= 1;
         self.remaining -= 1;
@@ -59,9 +59,9 @@ impl Capacity {
         self.remaining_bytes -= self.record_bytes;
         Ok(())
     }
-    pub(crate) fn ordinary_record(&mut self) -> Result<(), ResearchError> {
+    pub(crate) fn ordinary_record(&mut self) -> Result<(), LedgerError> {
         if self.terminated || self.remaining <= self.active + 1 {
-            return Err(ResearchError::Invalid("unreserved record capacity"));
+            return Err(LedgerError::Invalid("unreserved record capacity"));
         }
         self.remaining -= 1;
         self.remaining_bytes -= self.record_bytes;
@@ -71,9 +71,9 @@ impl Capacity {
         self.active = 0;
         self.active_bytes = 0;
     }
-    pub(crate) fn terminate(&mut self, profile: &Profile) -> Result<(), ResearchError> {
+    pub(crate) fn terminate(&mut self, profile: &Profile) -> Result<(), LedgerError> {
         if self.terminated || self.active != 0 || self.remaining == 0 || self.can_open(profile) {
-            return Err(ResearchError::Invalid("premature run termination"));
+            return Err(LedgerError::Invalid("premature run termination"));
         }
         self.remaining -= 1;
         self.remaining_bytes -= self.record_bytes;

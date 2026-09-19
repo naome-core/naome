@@ -1,4 +1,4 @@
-use super::{ResearchConsensusError as Error, Result};
+use super::{Result, StateConsensusError as Error};
 
 pub(super) struct Reader<'a> {
     bytes: &'a [u8],

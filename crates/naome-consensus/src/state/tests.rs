@@ -4,9 +4,9 @@ use crate::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget, ProposalSignin
 use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_ledger::{
-    AccountId, ResearchState,
+    AccountId, LedgerState,
     operations::OperationBody,
-    profile::{Genesis, Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration},
+    profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
 };
@@ -25,7 +25,7 @@ fn genesis() -> Genesis {
     Genesis::new(
         Profile::short_test(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [9; 32],
@@ -45,8 +45,8 @@ fn genesis() -> Genesis {
     )
     .unwrap()
 }
-fn branch() -> ResearchBranch {
-    ResearchBranch::from_genesis(ResearchState::new(genesis())).unwrap()
+fn branch() -> StateBranch {
+    StateBranch::from_genesis(LedgerState::new(genesis())).unwrap()
 }
 fn signer_for(key: ConsensusKey) -> SigningKey {
     (0..4)
@@ -54,7 +54,7 @@ fn signer_for(key: ConsensusKey) -> SigningKey {
         .find(|sk| sk.verifying_key().as_bytes() == key.as_bytes())
         .unwrap()
 }
-fn record(branch: &ResearchBranch, purpose: &str) -> Vec<u8> {
+fn record(branch: &StateBranch, purpose: &str) -> Vec<u8> {
     let state = branch.state();
     let genesis = state.genesis();
     let reports = (0..4)
@@ -96,11 +96,11 @@ fn record(branch: &ResearchBranch, purpose: &str) -> Vec<u8> {
         .unwrap()
 }
 fn proposal(
-    branch: &ResearchBranch,
+    branch: &StateBranch,
     record: Vec<u8>,
     round: u64,
-    valid: Option<ResearchQuorum>,
-) -> ResearchProposal {
+    valid: Option<StateQuorum>,
+) -> StateProposal {
     let signer = branch.proposer(round, MAX_ROUND).unwrap();
     let intent = branch
         .proposal_intent(record, round, signer, valid, MAX_ROUND)
@@ -109,12 +109,12 @@ fn proposal(
     intent.complete(signature, branch, MAX_ROUND).unwrap()
 }
 fn vote(
-    branch: &ResearchBranch,
+    branch: &StateBranch,
     round: u64,
     role: ConsensusVoteRole,
     target: ConsensusVoteTarget,
     index: u8,
-) -> ResearchVote {
+) -> StateVote {
     let body = VoteBody {
         genesis: branch.state().genesis().id(),
         profile: branch.state().genesis().profile().id(),
@@ -127,15 +127,15 @@ fn vote(
     let signature = validator(index)
         .sign(&body.signing_bytes(signer))
         .to_bytes();
-    ResearchVote::complete(body, signer, signature, branch.state().genesis()).unwrap()
+    StateVote::complete(body, signer, signature, branch.state().genesis()).unwrap()
 }
 fn quorum(
-    branch: &ResearchBranch,
+    branch: &StateBranch,
     round: u64,
     role: ConsensusVoteRole,
     target: ConsensusVoteTarget,
-) -> ResearchQuorum {
-    ResearchQuorum::from_votes(
+) -> StateQuorum {
+    StateQuorum::from_votes(
         (0..3)
             .map(|i| vote(branch, round, role, target, i))
             .collect(),
@@ -143,19 +143,15 @@ fn quorum(
     )
     .unwrap()
 }
-fn target(proposal: &ResearchProposal) -> ConsensusVoteTarget {
+fn target(proposal: &StateProposal) -> ConsensusVoteTarget {
     ConsensusVoteTarget::Proposal(proposal.value().signing_root())
 }
-fn lock(
-    branch: &ResearchBranch,
-    proposal: &ResearchProposal,
-    signer: ConsensusKey,
-) -> ResearchLockState {
-    let mut state = ResearchLockState::new(branch, signer).unwrap();
+fn lock(branch: &StateBranch, proposal: &StateProposal, signer: ConsensusKey) -> StateLockState {
+    let mut state = StateLockState::new(branch, signer).unwrap();
     state
         .apply(
             branch,
-            &ResearchLockEvent::Prevote {
+            &StateLockEvent::Prevote {
                 proposal: Some(proposal.encode().unwrap()),
             },
             MAX_ROUND,
@@ -165,7 +161,7 @@ fn lock(
     state
         .apply(
             branch,
-            &ResearchLockEvent::Precommit {
+            &StateLockEvent::Precommit {
                 proposal: Some(proposal.encode().unwrap()),
                 quorum: qc.encode(),
             },
@@ -174,8 +170,8 @@ fn lock(
         .unwrap();
     state
 }
-fn higher(branch: &ResearchBranch, state: &mut ResearchLockState, round: u64) {
-    let votes = ResearchVoteSet::new(
+fn higher(branch: &StateBranch, state: &mut StateLockState, round: u64) {
+    let votes = StateVoteSet::new(
         (0..2)
             .map(|i| {
                 vote(
@@ -193,16 +189,16 @@ fn higher(branch: &ResearchBranch, state: &mut ResearchLockState, round: u64) {
     state
         .apply(
             branch,
-            &ResearchLockEvent::HigherRound {
+            &StateLockEvent::HigherRound {
                 votes: votes.encode(),
             },
             MAX_ROUND,
         )
         .unwrap();
 }
-fn vote_intent(intent: ResearchIntent) -> ResearchVoteIntent {
+fn vote_intent(intent: StateIntent) -> StateVoteIntent {
     match intent {
-        ResearchIntent::Vote(v) => v,
+        StateIntent::Vote(v) => v,
         _ => panic!("expected vote"),
     }
 }
@@ -238,7 +234,7 @@ fn finality_evidence_subset_and_consensus_round_do_not_change_value_or_successor
     assert_eq!(p0.value(), p3.value());
     let target = target(&p0);
     let q3 = quorum(&branch, 0, ConsensusVoteRole::Precommit, target);
-    let q4 = ResearchQuorum::from_votes(
+    let q4 = StateQuorum::from_votes(
         (0..4)
             .map(|i| vote(&branch, 0, ConsensusVoteRole::Precommit, target, i))
             .collect(),
@@ -267,10 +263,10 @@ fn two_votes_never_finalize_and_duplicate_signers_never_add_weight() {
     let two: Vec<_> = (0..2)
         .map(|i| vote(&branch, 0, ConsensusVoteRole::Precommit, t, i))
         .collect();
-    assert!(ResearchQuorum::from_votes(two.clone(), branch.state().genesis()).is_err());
+    assert!(StateQuorum::from_votes(two.clone(), branch.state().genesis()).is_err());
     let mut duplicates = two;
     duplicates.push(duplicates[0].clone());
-    assert!(ResearchQuorum::from_votes(duplicates, branch.state().genesis()).is_err());
+    assert!(StateQuorum::from_votes(duplicates, branch.state().genesis()).is_err());
     let wrong_role = quorum(&branch, 0, ConsensusVoteRole::Prevote, t);
     assert!(branch.verify_finality(&p, &wrong_role, MAX_ROUND).is_err());
     let wrong_target = quorum(
@@ -297,7 +293,7 @@ fn current_prevote_quorum_locks_exact_record_and_rejects_second_votes() {
     let before = state.snapshot().unwrap();
     assert!(
         state
-            .apply(&branch, &ResearchLockEvent::ProposalTimeout, MAX_ROUND)
+            .apply(&branch, &StateLockEvent::ProposalTimeout, MAX_ROUND)
             .is_err()
     );
     assert_eq!(state.snapshot().unwrap(), before);
@@ -314,7 +310,7 @@ fn lock_survives_missing_or_conflicting_proposal_and_higher_round_catchup() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::Prevote {
+                &StateLockEvent::Prevote {
                     proposal: Some(conflict.encode().unwrap()),
                 },
                 MAX_ROUND,
@@ -326,7 +322,7 @@ fn lock_survives_missing_or_conflicting_proposal_and_higher_round_catchup() {
     higher(&branch, &mut state, 2);
     let intent = vote_intent(
         state
-            .apply(&branch, &ResearchLockEvent::ProposalTimeout, MAX_ROUND)
+            .apply(&branch, &StateLockEvent::ProposalTimeout, MAX_ROUND)
             .unwrap(),
     );
     assert_eq!(intent.target(), target(&p));
@@ -352,7 +348,7 @@ fn only_strictly_newer_valid_round_unlocks_a_different_value() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::Prevote {
+                &StateLockEvent::Prevote {
                     proposal: Some(stale.encode().unwrap())
                 },
                 MAX_ROUND
@@ -370,7 +366,7 @@ fn only_strictly_newer_valid_round_unlocks_a_different_value() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::Prevote {
+                &StateLockEvent::Prevote {
                     proposal: Some(newer.encode().unwrap()),
                 },
                 MAX_ROUND,
@@ -395,7 +391,7 @@ fn retained_proposal_is_mandatory_and_keeps_exact_body_and_valid_qc() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::Author {
+                &StateLockEvent::Author {
                     record: Some(record(&branch, "fresh forbidden"))
                 },
                 MAX_ROUND
@@ -404,13 +400,9 @@ fn retained_proposal_is_mandatory_and_keeps_exact_body_and_valid_qc() {
     );
     assert_eq!(state.snapshot().unwrap(), before);
     let intent = state
-        .apply(
-            &branch,
-            &ResearchLockEvent::Author { record: None },
-            MAX_ROUND,
-        )
+        .apply(&branch, &StateLockEvent::Author { record: None }, MAX_ROUND)
         .unwrap();
-    let ResearchIntent::Proposal(intent) = intent else {
+    let StateIntent::Proposal(intent) = intent else {
         panic!("proposal intent")
     };
     assert_eq!(intent.record_bytes(), bytes);
@@ -431,8 +423,8 @@ fn retained_proposal_is_mandatory_and_keeps_exact_body_and_valid_qc() {
 fn author_intent_cannot_conflict_or_use_unscheduled_signer() {
     let branch = branch();
     let signer = branch.proposer(0, MAX_ROUND).unwrap();
-    let mut state = ResearchLockState::new(&branch, signer).unwrap();
-    let event = ResearchLockEvent::Author {
+    let mut state = StateLockState::new(&branch, signer).unwrap();
+    let event = StateLockEvent::Author {
         record: Some(record(&branch, "a")),
     };
     let first = state.apply(&branch, &event, MAX_ROUND).unwrap();
@@ -442,7 +434,7 @@ fn author_intent_cannot_conflict_or_use_unscheduled_signer() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::Author {
+                &StateLockEvent::Author {
                     record: Some(record(&branch, "b"))
                 },
                 MAX_ROUND
@@ -454,19 +446,19 @@ fn author_intent_cannot_conflict_or_use_unscheduled_signer() {
         .map(validator_key)
         .find(|key| *key != signer)
         .unwrap();
-    let mut wrong = ResearchLockState::new(&branch, other).unwrap();
+    let mut wrong = StateLockState::new(&branch, other).unwrap();
     assert!(wrong.apply(&branch, &event, MAX_ROUND).is_err());
 }
 
 #[test]
 fn quorum_progress_timers_require_correct_role_position_and_denominator() {
     let branch = branch();
-    let mut state = ResearchLockState::new(&branch, validator_key(0)).unwrap();
+    let mut state = StateLockState::new(&branch, validator_key(0)).unwrap();
     state
-        .apply(&branch, &ResearchLockEvent::ProposalTimeout, MAX_ROUND)
+        .apply(&branch, &StateLockEvent::ProposalTimeout, MAX_ROUND)
         .unwrap();
     let votes = |count, role| {
-        ResearchVoteSet::new(
+        StateVoteSet::new(
             (0..count)
                 .map(|i| {
                     vote(
@@ -492,7 +484,7 @@ fn quorum_progress_timers_require_correct_role_position_and_denominator() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::PrevoteTimeout {
+                &StateLockEvent::PrevoteTimeout {
                     votes: votes(2, ConsensusVoteRole::Prevote)
                 },
                 MAX_ROUND
@@ -503,7 +495,7 @@ fn quorum_progress_timers_require_correct_role_position_and_denominator() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::PrevoteTimeout {
+                &StateLockEvent::PrevoteTimeout {
                     votes: votes(3, ConsensusVoteRole::Precommit)
                 },
                 MAX_ROUND
@@ -515,7 +507,7 @@ fn quorum_progress_timers_require_correct_role_position_and_denominator() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::PrevoteTimeout {
+                &StateLockEvent::PrevoteTimeout {
                     votes: votes(3, ConsensusVoteRole::Prevote),
                 },
                 MAX_ROUND,
@@ -527,21 +519,21 @@ fn quorum_progress_timers_require_correct_role_position_and_denominator() {
     state
         .apply(
             &branch,
-            &ResearchLockEvent::PrecommitTimeout {
+            &StateLockEvent::PrecommitTimeout {
                 votes: votes(3, ConsensusVoteRole::Precommit),
             },
             MAX_ROUND,
         )
         .unwrap();
-    assert_eq!(state.phase(), ResearchPhase::Proposal);
+    assert_eq!(state.phase(), StatePhase::Proposal);
     assert_eq!(state.round(), 1);
 }
 
 #[test]
 fn higher_round_needs_two_distinct_signers_and_bounded_work() {
     let branch = branch();
-    let mut state = ResearchLockState::new(&branch, validator_key(0)).unwrap();
-    let singleton = ResearchVoteSet::new(
+    let mut state = StateLockState::new(&branch, validator_key(0)).unwrap();
+    let singleton = StateVoteSet::new(
         vec![vote(
             &branch,
             2,
@@ -557,7 +549,7 @@ fn higher_round_needs_two_distinct_signers_and_bounded_work() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::HigherRound {
+                &StateLockEvent::HigherRound {
                     votes: singleton.encode()
                 },
                 MAX_ROUND
@@ -565,7 +557,7 @@ fn higher_round_needs_two_distinct_signers_and_bounded_work() {
             .is_err()
     );
     assert_eq!(state.snapshot().unwrap(), before);
-    let huge = ResearchVoteSet::new(
+    let huge = StateVoteSet::new(
         (0..2)
             .map(|i| {
                 vote(
@@ -584,7 +576,7 @@ fn higher_round_needs_two_distinct_signers_and_bounded_work() {
         state
             .apply(
                 &branch,
-                &ResearchLockEvent::HigherRound {
+                &StateLockEvent::HigherRound {
                     votes: huge.encode()
                 },
                 MAX_ROUND
@@ -594,7 +586,7 @@ fn higher_round_needs_two_distinct_signers_and_bounded_work() {
     assert_eq!(state.snapshot().unwrap(), before);
     higher(&branch, &mut state, 2);
     assert_eq!(state.round(), 2);
-    assert_eq!(state.phase(), ResearchPhase::Proposal);
+    assert_eq!(state.phase(), StatePhase::Proposal);
 }
 
 #[test]
@@ -604,20 +596,20 @@ fn replay_events_restore_identical_lock_body_and_intents_before_any_key_use() {
     let signer = validator_key(0);
     let qc = quorum(&branch, 0, ConsensusVoteRole::Prevote, target(&p));
     let events = [
-        ResearchLockEvent::Prevote {
+        StateLockEvent::Prevote {
             proposal: Some(p.encode().unwrap()),
         },
-        ResearchLockEvent::Precommit {
+        StateLockEvent::Precommit {
             proposal: Some(p.encode().unwrap()),
             quorum: qc.encode(),
         },
     ];
-    let mut live = ResearchLockState::new(&branch, signer).unwrap();
-    let mut recovered = ResearchLockState::new(&branch, signer).unwrap();
+    let mut live = StateLockState::new(&branch, signer).unwrap();
+    let mut recovered = StateLockState::new(&branch, signer).unwrap();
     for event in events {
         let intent = live.apply(&branch, &event, MAX_ROUND).unwrap();
         let encoded = event.encode().unwrap();
-        let decoded = ResearchLockEvent::decode(&encoded, branch.state().genesis()).unwrap();
+        let decoded = StateLockEvent::decode(&encoded, branch.state().genesis()).unwrap();
         let replay = recovered.apply(&branch, &decoded, MAX_ROUND).unwrap();
         assert_eq!(intent, replay);
         assert_eq!(live.snapshot().unwrap(), recovered.snapshot().unwrap());
@@ -639,26 +631,26 @@ fn strict_evidence_and_proposal_decoders_reject_mutation_truncation_and_reorderi
     let genesis = branch.state().genesis();
     let vote = vote(&branch, 0, ConsensusVoteRole::Prevote, target(&p), 0);
     let wire = vote.encode();
-    assert_eq!(wire.len(), RESEARCH_VOTE_BYTES);
+    assert_eq!(wire.len(), STATE_VOTE_BYTES);
     for index in 0..wire.len() {
         let mut bad = wire.clone();
         bad[index] ^= 1;
         assert!(
-            ResearchVote::decode(&bad, genesis).is_err(),
+            StateVote::decode(&bad, genesis).is_err(),
             "vote byte {index}"
         );
     }
     let qc = quorum(&branch, 0, ConsensusVoteRole::Prevote, target(&p));
     let wire = qc.encode();
     for end in 0..wire.len() {
-        assert!(ResearchQuorum::decode(&wire[..end], genesis).is_err());
+        assert!(StateQuorum::decode(&wire[..end], genesis).is_err());
     }
     let mut reordered = wire.clone();
-    let a = reordered[1..1 + RESEARCH_VOTE_BYTES].to_vec();
-    let b = reordered[1 + RESEARCH_VOTE_BYTES..1 + 2 * RESEARCH_VOTE_BYTES].to_vec();
-    reordered[1..1 + RESEARCH_VOTE_BYTES].copy_from_slice(&b);
-    reordered[1 + RESEARCH_VOTE_BYTES..1 + 2 * RESEARCH_VOTE_BYTES].copy_from_slice(&a);
-    assert!(ResearchQuorum::decode(&reordered, genesis).is_err());
+    let a = reordered[1..1 + STATE_VOTE_BYTES].to_vec();
+    let b = reordered[1 + STATE_VOTE_BYTES..1 + 2 * STATE_VOTE_BYTES].to_vec();
+    reordered[1..1 + STATE_VOTE_BYTES].copy_from_slice(&b);
+    reordered[1 + STATE_VOTE_BYTES..1 + 2 * STATE_VOTE_BYTES].copy_from_slice(&a);
+    assert!(StateQuorum::decode(&reordered, genesis).is_err());
     let wire = p.encode().unwrap();
     for end in 0..wire.len() {
         assert!(branch.verify_proposal(&wire[..end], MAX_ROUND).is_err());
@@ -686,7 +678,7 @@ fn nil_quorums_have_separate_unlock_and_round_advance_effects() {
     state
         .apply(
             &branch,
-            &ResearchLockEvent::NilPrecommit {
+            &StateLockEvent::NilPrecommit {
                 quorum: nil.encode(),
             },
             MAX_ROUND,
@@ -695,7 +687,7 @@ fn nil_quorums_have_separate_unlock_and_round_advance_effects() {
     assert_eq!(state.round(), 1);
     assert_eq!(state.locked_value(), Some((p.value(), 0)));
     state
-        .apply(&branch, &ResearchLockEvent::ProposalTimeout, MAX_ROUND)
+        .apply(&branch, &StateLockEvent::ProposalTimeout, MAX_ROUND)
         .unwrap();
     let nil = quorum(
         &branch,
@@ -706,7 +698,7 @@ fn nil_quorums_have_separate_unlock_and_round_advance_effects() {
     state
         .apply(
             &branch,
-            &ResearchLockEvent::Precommit {
+            &StateLockEvent::Precommit {
                 proposal: None,
                 quorum: nil.encode(),
             },
@@ -739,7 +731,7 @@ fn height_handoff_requires_exact_verified_parent_and_clears_prior_lock() {
     assert_eq!(state.snapshot().unwrap(), before);
     assert!(
         state
-            .apply(&branch, &ResearchLockEvent::ProposalTimeout, MAX_ROUND)
+            .apply(&branch, &StateLockEvent::ProposalTimeout, MAX_ROUND)
             .is_err()
     );
 }
@@ -755,7 +747,7 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
         .encode()
         .unwrap();
     assert_eq!(
-        ResearchFinality::authenticate(&proof, branch.state().genesis(), MAX_ROUND).unwrap(),
+        StateFinality::authenticate(&proof, branch.state().genesis(), MAX_ROUND).unwrap(),
         p.value()
     );
     let mut proposal = p.encode().unwrap();
@@ -767,15 +759,15 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
     super::codec::bytes(&mut bytes, &proposal).unwrap();
     super::codec::bytes(&mut bytes, &[0]).unwrap();
     assert_eq!(
-        ResearchFinality::authenticate(&bytes, branch.state().genesis(), MAX_ROUND),
-        Err(ResearchConsensusError::Limit("vote set"))
+        StateFinality::authenticate(&bytes, branch.state().genesis(), MAX_ROUND),
+        Err(StateConsensusError::Limit("vote set"))
     );
     let mut authenticated_bad = b"NSCF1".to_vec();
     super::codec::bytes(&mut authenticated_bad, &proposal).unwrap();
     super::codec::bytes(&mut authenticated_bad, &qc.encode()).unwrap();
     assert!(matches!(
-        ResearchFinality::authenticate(&authenticated_bad, branch.state().genesis(), MAX_ROUND),
-        Err(ResearchConsensusError::Research(_))
+        StateFinality::authenticate(&authenticated_bad, branch.state().genesis(), MAX_ROUND),
+        Err(StateConsensusError::Ledger(_))
     ));
 }
 
@@ -796,7 +788,7 @@ fn provisional_ledger_execution_cannot_initialize_a_finalized_branch() {
     // Even an arbitrary externally bound identity cannot manufacture a selected
     // branch. A successor must enter through verified consensus and chain replay.
     let provisional = execution.bind_record(naome_ledger::RecordId::from_bytes([0; 32]));
-    assert!(ResearchBranch::from_genesis(provisional).is_err());
+    assert!(StateBranch::from_genesis(provisional).is_err());
     assert_eq!(branch.state().height(), 0);
     assert_eq!(branch.state().library().len(), 0);
 }

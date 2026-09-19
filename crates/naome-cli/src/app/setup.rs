@@ -1,9 +1,7 @@
 use super::{Result, files};
 use naome_ledger::{
     AccountId,
-    profile::{
-        Genesis, Limits, Profile, RESEARCH_CHECKER_PROFILE, TimingKind, ValidatorRegistration,
-    },
+    profile::{Genesis, Limits, Profile, STATE_CHECKER_PROFILE, TimingKind, ValidatorRegistration},
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +24,7 @@ pub struct NodeConfig {
     pub consensus_key: PathBuf,
     pub transport_key: PathBuf,
     pub account_key: PathBuf,
-    pub research_profile: PathBuf,
+    pub agenda_profile: PathBuf,
     pub control_socket: PathBuf,
     pub maximum_round: u64,
     pub simulation: bool,
@@ -37,7 +35,7 @@ pub struct NodeConfig {
 impl NodeConfig {
     pub fn read(path: &Path) -> Result<Self> {
         let config: Self = serde_json::from_slice(&files::read(path, 16384, true)?)?;
-        if config.version != 1 || config.maximum_round == 0 {
+        if config.version != 2 || config.maximum_round == 0 {
             return Err("unsupported node configuration".into());
         }
         Ok(config)
@@ -131,10 +129,10 @@ pub fn run(args: &[String]) -> Result<()> {
             transport_key: transport.verifying_key().to_bytes(),
             endpoint: endpoints[index].clone(),
         });
-        let research_profile = dir.join("research-profile.txt");
-        files::create(&research_profile,b"Prioritize precise, checker-expressible foundational mathematics. Approve small reusable helper results and questions that develop a reusable formal library. Reject unclear or unrelated targets.\n",true)?;
+        let agenda_profile = dir.join("agenda-profile.txt");
+        files::create(&agenda_profile,b"Prioritize precise, checker-expressible foundational mathematics. Approve small reusable helper results and questions that develop a reusable formal library. Reject unclear or unrelated targets.\n",true)?;
         configs.push(NodeConfig {
-            version: 1,
+            version: 2,
             genesis: root.join("genesis.bin"),
             history: dir.join("history"),
             history_anchor: root.join(format!("anchor-history-{index}")),
@@ -143,7 +141,7 @@ pub fn run(args: &[String]) -> Result<()> {
             consensus_key,
             transport_key,
             account_key: keys.join(format!("account-{index}.key")),
-            research_profile,
+            agenda_profile,
             control_socket: dir.join("control.sock"),
             maximum_round,
             simulation: true,
@@ -153,7 +151,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let genesis = Genesis::new(
         profile,
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
         *files::random()?,
@@ -175,13 +173,13 @@ pub fn run(args: &[String]) -> Result<()> {
         ] {
             files::directory(directory)?;
         }
-        let history = naome_storage::state::ResearchHistory::create(
+        let history = naome_storage::state::StateHistory::create(
             &config.history,
             &config.history_anchor,
             genesis.clone(),
             maximum_round,
         )?;
-        let signer = naome_storage::state::ResearchSigner::create(
+        let signer = naome_storage::state::StateSigner::create(
             &config.signer,
             &config.signer_anchor,
             genesis.clone(),

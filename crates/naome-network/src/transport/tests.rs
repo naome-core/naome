@@ -27,14 +27,14 @@ async fn static_configuration_rejects_local_duplicate_and_excess_peers() {
     let local = super::Keypair::generate_ed25519();
     let local_peer_id = local.public().to_peer_id();
     assert!(matches!(
-        StaticArtifactNetwork::build(local.clone(), [StaticPeer::new(local_peer_id, address(1))]),
+        StateNetwork::build(local.clone(), [StaticPeer::new(local_peer_id, address(1))]),
         Err(BuildError::LocalPeer(peer_id)) if peer_id == local_peer_id
     ));
 
     let remote = super::Keypair::generate_ed25519();
     let duplicate = peer(&remote, address(2));
     assert!(matches!(
-        StaticArtifactNetwork::build(local.clone(), [duplicate.clone(), duplicate]),
+        StateNetwork::build(local.clone(), [duplicate.clone(), duplicate]),
         Err(BuildError::DuplicatePeer(peer_id))
             if peer_id == remote.public().to_peer_id()
     ));
@@ -46,7 +46,7 @@ async fn static_configuration_rejects_local_duplicate_and_excess_peers() {
         })
         .collect::<Vec<_>>();
     assert!(matches!(
-        StaticArtifactNetwork::build(local, peers),
+        StateNetwork::build(local, peers),
         Err(BuildError::TooManyPeers { actual, maximum })
             if actual == MAX_STATIC_PEERS + 1 && maximum == MAX_STATIC_PEERS
     ));
@@ -60,7 +60,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
     let local_address = address(8);
     let remote_address = address(9);
 
-    let mut owner = StaticArtifactNetwork::build(
+    let mut owner = StateNetwork::build(
         owner_identity,
         [StaticPeer::new(passive_peer_id, remote_address.clone())],
     )
@@ -122,7 +122,7 @@ async fn composite_session_hooks_reject_wrong_direction_and_stale_dials() {
         .is_ok()
     );
 
-    let mut passive = StaticArtifactNetwork::build(
+    let mut passive = StateNetwork::build(
         passive_identity,
         [StaticPeer::new(owner_peer_id, local_address.clone())],
     )
@@ -162,7 +162,7 @@ async fn connection_limit_rejection_does_not_consume_pre_authentication_budget()
     let local_identity = super::Keypair::generate_ed25519();
     let remote_identity = super::Keypair::generate_ed25519();
     let remote_peer_id = remote_identity.public().to_peer_id();
-    let mut network = StaticArtifactNetwork::build(
+    let mut network = StateNetwork::build(
         local_identity,
         [StaticPeer::new(remote_peer_id, address(9))],
     )

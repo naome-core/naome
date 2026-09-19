@@ -1,4 +1,4 @@
-use crate::{ArtifactDag, ArtifactSetMembership, LedgerError};
+use crate::{ArtifactAdmissionError, ArtifactDag, ArtifactSetMembership};
 use naome_checker::{ArtifactStateError, CheckError, normalize_and_check};
 use naome_foundation::{FreeVariable, ZfcAxiom};
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofId, ProofStep};
@@ -89,7 +89,7 @@ fn dependencies_must_be_selected_before_artifact_admission() {
 
     assert!(matches!(
         dag.apply_canonical_artifact_bytes_with_expected_id(child.clone(), child_id),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::UnknownProofReference { proof_id, .. },
         }) if proof_id == parent_proof_id
     ));
@@ -112,7 +112,7 @@ fn expected_address_and_duplicate_failures_never_mutate_the_dag() {
 
     assert!(matches!(
         dag.apply_canonical_artifact_bytes_with_expected_id(bytes.clone(), wrong),
-        Err(LedgerError::ArtifactIdMismatch { expected, actual })
+        Err(ArtifactAdmissionError::ArtifactIdMismatch { expected, actual })
             if expected == wrong && actual == artifact_id
     ));
     assert_eq!(dag.artifact_set_root(), empty_root);
@@ -121,7 +121,7 @@ fn expected_address_and_duplicate_failures_never_mutate_the_dag() {
     let committed_root = dag.artifact_set_root();
     assert!(matches!(
         dag.apply_canonical_artifact_bytes_with_expected_id(bytes, artifact_id),
-        Err(LedgerError::State {
+        Err(ArtifactAdmissionError::State {
             source: ArtifactStateError::DuplicateProof { proof_id: duplicate },
         }) if duplicate == proof_id
     ));
@@ -143,7 +143,7 @@ fn metered_checked_admission_binds_expected_id_before_any_registration() {
     let root = dag.artifact_set_root();
     assert!(matches!(
         dag.admit_checked_proof(checked, ProofId::from_bytes([0xff; 32])),
-        Err(LedgerError::ArtifactIdMismatch { .. })
+        Err(ArtifactAdmissionError::ArtifactIdMismatch { .. })
     ));
     assert_eq!(dag.artifact_set_root(), root);
     assert!(dag.is_empty());

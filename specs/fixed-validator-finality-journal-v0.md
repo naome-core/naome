@@ -2,7 +2,7 @@
 
 > Historical V0 contract. Its artifact-only authority and executable callers
 > are removed. This page is not a current implementation or acceptance claim;
-> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+> use [component ownership](ownership.md) and the [MVP rules](../docs/mvp/requirements.md).
 
 This document normatively defines the local durable-selection boundary for the
 fixed-validator artifact-only V0 consensus format. It consumes only a sealed
@@ -38,8 +38,8 @@ authority in its directory. It reuses the artifact journal's exact file and
 lock names:
 
 ```text
-artifact-chain.lock
-artifact-chain.journal
+state.lock
+state.journal
 ```
 
 The anchored wrapper does not create a second finality authority. It owns this

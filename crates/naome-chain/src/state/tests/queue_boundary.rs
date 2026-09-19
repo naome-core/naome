@@ -11,7 +11,7 @@ fn distinct_formula(index: usize) -> String {
 
 #[test]
 fn default_queue_accepts_32_in_finalized_order_and_rejects_33_without_mutation() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     assert_eq!(state.genesis().profile().limits().queued_questions, 32);
     let first = submit(&mut state, &distinct_formula(0));
     let now = state.time();
@@ -47,7 +47,7 @@ fn default_queue_accepts_32_in_finalized_order_and_rejects_33_without_mutation()
     let nonce = state.next_nonce(author(4));
     assert!(matches!(
         state.prepare_record(time(&state, state.time()), vec![excess]),
-        Err(ResearchError::Limit(_))
+        Err(LedgerError::Limit(_))
     ));
     assert_eq!(state.commitment(), before);
     assert_eq!(state.next_nonce(author(4)), nonce);

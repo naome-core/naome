@@ -1,6 +1,6 @@
 use super::*;
 
-impl ResearchState {
+impl LedgerState {
     pub(super) fn write_state(&self, w: &mut Writer) {
         w.u16(1);
         w.fixed(self.genesis.id().as_bytes());

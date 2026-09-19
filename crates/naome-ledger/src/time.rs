@@ -1,7 +1,7 @@
 //! Quorum-certified protocol time. No replay operation reads a local clock.
 
 use crate::{
-    GenesisId, RecordId, ResearchError, ValidatorId,
+    GenesisId, LedgerError, RecordId, ValidatorId,
     codec::{Reader, Writer},
     profile::Genesis,
 };
@@ -36,13 +36,13 @@ impl SignedTimeReport {
         height: u64,
         utc_seconds: u64,
         key: &SigningKey,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let validator = ValidatorId::for_key(key.verifying_key().as_bytes());
         if genesis.validator(validator).is_none() {
-            return Err(ResearchError::Invalid("unregistered time signer"));
+            return Err(LedgerError::Invalid("unregistered time signer"));
         }
         if height == 0 {
-            return Err(ResearchError::Invalid("zero report height"));
+            return Err(LedgerError::Invalid("zero report height"));
         }
         let mut report = Self {
             genesis: genesis.id(),
@@ -61,24 +61,24 @@ impl SignedTimeReport {
         genesis: &Genesis,
         parent: RecordId,
         height: u64,
-    ) -> Result<(), ResearchError> {
+    ) -> Result<(), LedgerError> {
         if height == 0
             || self.height != height
             || self.parent != parent
             || self.genesis != genesis.id()
         {
-            return Err(ResearchError::Invalid("time report context"));
+            return Err(LedgerError::Invalid("time report context"));
         }
         let registration = genesis
             .validator(self.validator)
-            .ok_or(ResearchError::Invalid("time report validator"))?;
+            .ok_or(LedgerError::Invalid("time report validator"))?;
         let key = VerifyingKey::from_bytes(&registration.consensus_key)
-            .map_err(|_| ResearchError::Invalid("time signer key"))?;
+            .map_err(|_| LedgerError::Invalid("time signer key"))?;
         key.verify_strict(
             &self.signing_bytes(),
             &Signature::from_bytes(&self.signature),
         )
-        .map_err(|_| ResearchError::Invalid("time report signature"))
+        .map_err(|_| LedgerError::Invalid("time report signature"))
     }
     /// Returns the reporting validator.
     pub const fn validator(&self) -> ValidatorId {
@@ -95,10 +95,10 @@ impl SignedTimeReport {
         bytes
     }
     /// Decodes a report without granting authority.
-    pub fn decode(bytes: &[u8]) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, TIME_REPORT_BYTES)?;
         if reader.fixed::<4>()? != *MAGIC || reader.u16()? != VERSION {
-            return Err(ResearchError::Invalid("time report format"));
+            return Err(LedgerError::Invalid("time report format"));
         }
         let report = Self {
             genesis: GenesisId::from_bytes(reader.fixed()?),
@@ -110,7 +110,7 @@ impl SignedTimeReport {
         };
         reader.finish()?;
         if report.height == 0 {
-            return Err(ResearchError::Invalid("zero report height"));
+            return Err(LedgerError::Invalid("zero report height"));
         }
         Ok(report)
     }
@@ -151,14 +151,14 @@ impl TimeCertificate {
         parent: RecordId,
         height: u64,
         parent_time: u64,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         if !(3..=4).contains(&reports.len()) {
-            return Err(ResearchError::Invalid("time quorum"));
+            return Err(LedgerError::Invalid("time quorum"));
         }
         reports.sort_by_key(SignedTimeReport::validator);
         for pair in reports.windows(2) {
             if pair[0].validator == pair[1].validator {
-                return Err(ResearchError::Invalid("duplicate time signer"));
+                return Err(LedgerError::Invalid("duplicate time signer"));
             }
         }
         let mut seconds = Vec::with_capacity(reports.len());
@@ -194,11 +194,11 @@ impl TimeCertificate {
         parent: RecordId,
         height: u64,
         parent_time: u64,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, TIME_CERTIFICATE_MAX_BYTES)?;
         let count = reader.u8()?;
         if !(3..=4).contains(&count) {
-            return Err(ResearchError::Invalid("time quorum"));
+            return Err(LedgerError::Invalid("time quorum"));
         }
         let mut reports = Vec::with_capacity(count as usize);
         for _ in 0..count {
@@ -207,7 +207,7 @@ impl TimeCertificate {
                 .last()
                 .is_some_and(|last: &SignedTimeReport| last.validator >= report.validator)
             {
-                return Err(ResearchError::Invalid("time report order"));
+                return Err(LedgerError::Invalid("time report order"));
             }
             reports.push(report);
         }

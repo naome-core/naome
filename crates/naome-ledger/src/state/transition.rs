@@ -1,27 +1,27 @@
 use super::encoding::{encode_receipt, outcome_tag};
 use super::*;
 
-impl ResearchState {
+impl LedgerState {
     pub(super) fn prepare(
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
-    ) -> Result<LedgerExecution, ResearchError> {
+    ) -> Result<LedgerExecution, LedgerError> {
         if self.terminated {
-            return Err(ResearchError::Invalid("research run terminated"));
+            return Err(LedgerError::Invalid("research run terminated"));
         }
         let limits = self.genesis.profile().limits();
         if operations.len() as u64 > limits.operations_per_record {
-            return Err(ResearchError::Limit("operations per record"));
+            return Err(LedgerError::Limit("operations per record"));
         }
         let operation_bytes = operations.iter().try_fold(0usize, |size, op| {
             size.checked_add(op.encode().len() + 4)
-                .ok_or(ResearchError::Overflow)
+                .ok_or(LedgerError::Overflow)
         })?;
         if operation_bytes as u64 > limits.record_bytes {
-            return Err(ResearchError::Limit("record operation bytes"));
+            return Err(LedgerError::Limit("record operation bytes"));
         }
-        let height = self.height.checked_add(1).ok_or(ResearchError::Overflow)?;
+        let height = self.height.checked_add(1).ok_or(LedgerError::Overflow)?;
         let certificate =
             TimeCertificate::decode(&time.encode(), &self.genesis, self.head, height, self.time)?;
         let mut next = self.clone();
@@ -34,7 +34,7 @@ impl ResearchState {
         let mut opened = false;
         if self.active.is_none() && !self.capacity.can_open(self.genesis.profile()) {
             if !operations.is_empty() {
-                return Err(ResearchError::Invalid(
+                return Err(LedgerError::Invalid(
                     "terminal record contains user actions",
                 ));
             }
@@ -66,7 +66,7 @@ impl ResearchState {
                 active_progress |= active;
             }
             if !productive {
-                return Err(ResearchError::Invalid("unproductive research record"));
+                return Err(LedgerError::Invalid("unproductive research record"));
             }
             if opened {
                 next.capacity.open(self.genesis.profile())?;
@@ -80,11 +80,11 @@ impl ResearchState {
             }
         }
         if !productive {
-            return Err(ResearchError::Invalid("unproductive research record"));
+            return Err(LedgerError::Invalid("unproductive research record"));
         }
         next.balances.verify_conservation(&self.genesis)?;
         if next.claims.len() as u64 != next.balances.paid_completions() {
-            return Err(ResearchError::Invalid("claim issuance conservation"));
+            return Err(LedgerError::Invalid("claim issuance conservation"));
         }
         let mut derived = Writer::new();
         derived.u16(1);
@@ -104,22 +104,22 @@ impl ResearchState {
         &mut self,
         id: OperationId,
         status: QuestionStatus,
-    ) -> Result<(), ResearchError> {
+    ) -> Result<(), LedgerError> {
         let entry = self
             .questions
             .get_mut(&id)
-            .ok_or(ResearchError::Invalid("missing question state"))?;
+            .ok_or(LedgerError::Invalid("missing question state"))?;
         Arc::make_mut(entry).status = status;
         Ok(())
     }
-    fn expire_queue(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<bool, ResearchError> {
+    fn expire_queue(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<bool, LedgerError> {
         let mut retained = VecDeque::new();
         let mut changed = false;
         while let Some(id) = self.queue.pop_front() {
             let entry = self
                 .questions
                 .get(&id)
-                .ok_or(ResearchError::Invalid("queued question missing"))?;
+                .ok_or(LedgerError::Invalid("queued question missing"))?;
             if self.time >= entry.expires {
                 self.set_question_status(id, QuestionStatus::Expired)?;
                 effect(effects, 1, |w| w.fixed(id.as_bytes()));
@@ -131,17 +131,17 @@ impl ResearchState {
         self.queue = retained;
         Ok(changed)
     }
-    fn open_next(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<(bool, bool), ResearchError> {
+    fn open_next(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<(bool, bool), LedgerError> {
         let mut changed = false;
         while let Some(submission) = self.queue.pop_front() {
             let entry = self
                 .questions
                 .get(&submission)
-                .ok_or(ResearchError::Invalid("opening question missing"))?
+                .ok_or(LedgerError::Invalid("opening question missing"))?
                 .clone();
             let family = entry.question.resolution_id();
             if self.families.contains_key(&family) {
-                return Err(ResearchError::Invalid("closed family remained queued"));
+                return Err(LedgerError::Invalid("closed family remained queued"));
             }
             if let Some(proof) = self
                 .library
@@ -165,7 +165,7 @@ impl ResearchState {
                 .copied()
                 .unwrap_or(0)
                 .checked_add(1)
-                .ok_or(ResearchError::Overflow)?;
+                .ok_or(LedgerError::Overflow)?;
             let context = QuestionContext {
                 genesis: self.genesis.id(),
                 profile: self.genesis.profile().id(),
@@ -177,13 +177,13 @@ impl ResearchState {
             let deadline = self
                 .time
                 .checked_add(self.genesis.profile().timing().voting_seconds)
-                .ok_or(ResearchError::Overflow)?;
+                .ok_or(LedgerError::Overflow)?;
             self.attempt_numbers.insert(family, number);
             self.set_question_status(submission, QuestionStatus::Active)?;
             Arc::make_mut(
                 self.questions
                     .get_mut(&submission)
-                    .ok_or(ResearchError::Invalid("opening question missing"))?,
+                    .ok_or(LedgerError::Invalid("opening question missing"))?,
             )
             .opened_question = Some(question_id);
             self.active = Some(Attempt {
@@ -210,14 +210,14 @@ impl ResearchState {
 
     fn advance_phase(
         &mut self,
-        parent: &ResearchState,
+        parent: &LedgerState,
         effects: &mut Vec<Vec<u8>>,
         work: &mut VerificationWork,
-    ) -> Result<bool, ResearchError> {
+    ) -> Result<bool, LedgerError> {
         let mut attempt = self
             .active
             .take()
-            .ok_or(ResearchError::Invalid("missing active attempt"))?;
+            .ok_or(LedgerError::Invalid("missing active attempt"))?;
         let mut retain = true;
         let mut progressed = true;
         match attempt.phase {
@@ -225,7 +225,7 @@ impl ResearchState {
                 if self.time
                     >= attempt
                         .deadline
-                        .ok_or(ResearchError::Invalid("voting deadline"))? =>
+                        .ok_or(LedgerError::Invalid("voting deadline"))? =>
             {
                 if attempt.votes.values().filter(|&&yes| yes).count() >= 3 {
                     attempt.phase = Phase::ApprovedWait;
@@ -247,7 +247,7 @@ impl ResearchState {
                 let deadline = self
                     .time
                     .checked_add(self.genesis.profile().timing().commitment_seconds)
-                    .ok_or(ResearchError::Overflow)?;
+                    .ok_or(LedgerError::Overflow)?;
                 attempt.phase = Phase::Commit;
                 attempt.round = Some(round);
                 attempt.deadline = Some(deadline);
@@ -260,7 +260,7 @@ impl ResearchState {
                 if self.time
                     >= attempt
                         .deadline
-                        .ok_or(ResearchError::Invalid("commit deadline"))? =>
+                        .ok_or(LedgerError::Invalid("commit deadline"))? =>
             {
                 attempt.phase = Phase::CommitClosedWait;
                 attempt.deadline = None;
@@ -272,7 +272,7 @@ impl ResearchState {
                 let deadline = self
                     .time
                     .checked_add(self.genesis.profile().timing().reveal_seconds)
-                    .ok_or(ResearchError::Overflow)?;
+                    .ok_or(LedgerError::Overflow)?;
                 attempt.phase = Phase::Reveal;
                 attempt.deadline = Some(deadline);
                 effect(effects, 8, |w| {
@@ -284,7 +284,7 @@ impl ResearchState {
                 if self.time
                     >= attempt
                         .deadline
-                        .ok_or(ResearchError::Invalid("reveal deadline"))? =>
+                        .ok_or(LedgerError::Invalid("reveal deadline"))? =>
             {
                 attempt.phase = Phase::SettlementPending;
                 attempt.deadline = None;
@@ -306,12 +306,12 @@ impl ResearchState {
 
     fn admit_action(
         &mut self,
-        parent: &ResearchState,
+        parent: &LedgerState,
         operation: &SignedOperation,
         coordinate: AdmissionCoordinate,
         effects: &mut Vec<Vec<u8>>,
         work: &mut VerificationWork,
-    ) -> Result<(bool, bool), ResearchError> {
+    ) -> Result<(bool, bool), LedgerError> {
         operation.verify(&self.genesis)?;
         let body = OperationBody::decode(operation.payload(), &self.genesis)?;
         let id = operation.id();
@@ -323,15 +323,15 @@ impl ResearchState {
             .next_nonce
             .get(&operation.author())
             .copied()
-            .ok_or(ResearchError::Invalid("action account"))?;
+            .ok_or(LedgerError::Invalid("action account"))?;
         if operation.nonce() != expected {
-            return Err(ResearchError::Invalid("action is not exact next nonce"));
+            return Err(LedgerError::Invalid("action is not exact next nonce"));
         }
         if self
             .nonce_receipts
             .contains_key(&(operation.author(), operation.nonce()))
         {
-            return Err(ResearchError::Invalid("nonce content conflict"));
+            return Err(LedgerError::Invalid("nonce content conflict"));
         }
         let receipt = Receipt {
             operation: id,
@@ -343,7 +343,7 @@ impl ResearchState {
             OperationBody::Submit { purpose, question } => {
                 let family = question.resolution_id();
                 if self.families.contains_key(&family) {
-                    return Err(ResearchError::Invalid("family permanently closed"));
+                    return Err(LedgerError::Invalid("family permanently closed"));
                 }
                 if self.active.as_ref().is_some_and(|a| a.family == family)
                     || self
@@ -351,15 +351,15 @@ impl ResearchState {
                         .iter()
                         .any(|id| self.questions[id].question.resolution_id() == family)
                 {
-                    return Err(ResearchError::Invalid("family already queued or active"));
+                    return Err(LedgerError::Invalid("family already queued or active"));
                 }
                 if self.queue.len() as u64 >= self.genesis.profile().limits().queued_questions {
-                    return Err(ResearchError::Limit("question queue"));
+                    return Err(LedgerError::Limit("question queue"));
                 }
                 let expires = self
                     .time
                     .checked_add(self.genesis.profile().timing().queue_seconds)
-                    .ok_or(ResearchError::Overflow)?;
+                    .ok_or(LedgerError::Overflow)?;
                 self.questions.insert(
                     id,
                     Arc::new(QuestionEntry {
@@ -388,17 +388,17 @@ impl ResearchState {
                     .iter()
                     .any(|v| v.owner == operation.author())
                 {
-                    return Err(ResearchError::Invalid("vote requires validator owner"));
+                    return Err(LedgerError::Invalid("vote requires validator owner"));
                 }
                 let active = self
                     .active
                     .as_mut()
-                    .ok_or(ResearchError::Invalid("vote without attempt"))?;
+                    .ok_or(LedgerError::Invalid("vote without attempt"))?;
                 if active.question_id != question || active.number != attempt {
-                    return Err(ResearchError::Invalid("ballot attempt"));
+                    return Err(LedgerError::Invalid("ballot attempt"));
                 }
                 if active.votes.insert(operation.author(), yes).is_some() {
-                    return Err(ResearchError::Invalid("owner already voted"));
+                    return Err(LedgerError::Invalid("owner already voted"));
                 }
                 true
             }
@@ -407,15 +407,15 @@ impl ResearchState {
                 let active = self
                     .active
                     .as_mut()
-                    .ok_or(ResearchError::Invalid("commit without attempt"))?;
+                    .ok_or(LedgerError::Invalid("commit without attempt"))?;
                 if active.round != Some(round) {
-                    return Err(ResearchError::Invalid("commit solution round"));
+                    return Err(LedgerError::Invalid("commit solution round"));
                 }
                 if active.commitments.contains_key(&operation.author()) {
-                    return Err(ResearchError::Invalid("author already committed"));
+                    return Err(LedgerError::Invalid("author already committed"));
                 }
                 if active.commitments.len() as u64 >= self.genesis.profile().limits().accounts {
-                    return Err(ResearchError::Limit("commitment slots"));
+                    return Err(LedgerError::Limit("commitment slots"));
                 }
                 let limits = self.genesis.profile().limits();
                 let reserved_bytes = limits
@@ -427,7 +427,7 @@ impl ResearchState {
                             .checked_mul(2)
                             .and_then(|y| x.checked_add(y))
                     })
-                    .ok_or(ResearchError::Overflow)?;
+                    .ok_or(LedgerError::Overflow)?;
                 active.commitments.insert(
                     operation.author(),
                     CommitmentEntry {
@@ -449,16 +449,16 @@ impl ResearchState {
                 let active = self
                     .active
                     .as_ref()
-                    .ok_or(ResearchError::Invalid("reveal without attempt"))?;
+                    .ok_or(LedgerError::Invalid("reveal without attempt"))?;
                 if active.round != Some(round) {
-                    return Err(ResearchError::Invalid("reveal solution round"));
+                    return Err(LedgerError::Invalid("reveal solution round"));
                 }
                 let commitment = active
                     .commitments
                     .get(&operation.author())
-                    .ok_or(ResearchError::Invalid("reveal without commitment"))?;
+                    .ok_or(LedgerError::Invalid("reveal without commitment"))?;
                 if commitment.reveal.is_some() {
-                    return Err(ResearchError::Invalid("commitment already revealed"));
+                    return Err(LedgerError::Invalid("commitment already revealed"));
                 }
                 let expected = CommitmentId::for_original(
                     &self.genesis,
@@ -468,7 +468,7 @@ impl ResearchState {
                     &secret,
                 );
                 if commitment.id != expected {
-                    return Err(ResearchError::Invalid("reveal commitment mismatch"));
+                    return Err(LedgerError::Invalid("reveal commitment mismatch"));
                 }
                 let question = &self.questions[&active.submission].question;
                 let _normalized = self.library.normalize_with_work(
@@ -490,7 +490,7 @@ impl ResearchState {
                 true
             }
         };
-        let next = expected.checked_add(1).ok_or(ResearchError::Overflow)?;
+        let next = expected.checked_add(1).ok_or(LedgerError::Overflow)?;
         self.next_nonce.insert(operation.author(), next);
         self.receipts.insert(id, receipt);
         self.nonce_receipts
@@ -499,18 +499,14 @@ impl ResearchState {
         Ok((true, active_progress))
     }
 
-    fn require_parent_phase(
-        &self,
-        parent: &ResearchState,
-        phase: Phase,
-    ) -> Result<(), ResearchError> {
-        let previous = parent.active.as_ref().ok_or(ResearchError::Invalid(
+    fn require_parent_phase(&self, parent: &LedgerState, phase: Phase) -> Result<(), LedgerError> {
+        let previous = parent.active.as_ref().ok_or(LedgerError::Invalid(
             "phase operation without parent attempt",
         ))?;
         let current = self
             .active
             .as_ref()
-            .ok_or(ResearchError::Invalid("phase already closed"))?;
+            .ok_or(LedgerError::Invalid("phase already closed"))?;
         if previous.phase != phase
             || current.phase != phase
             || previous.question_id != current.question_id
@@ -518,24 +514,22 @@ impl ResearchState {
             || self.time
                 >= previous
                     .deadline
-                    .ok_or(ResearchError::Invalid("phase deadline absent"))?
+                    .ok_or(LedgerError::Invalid("phase deadline absent"))?
         {
-            return Err(ResearchError::Invalid(
-                "operation outside open parent phase",
-            ));
+            return Err(LedgerError::Invalid("operation outside open parent phase"));
         }
         Ok(())
     }
 
     fn settle(
         &mut self,
-        parent: &ResearchState,
+        parent: &LedgerState,
         attempt: &Attempt,
         effects: &mut Vec<Vec<u8>>,
         work: &mut VerificationWork,
-    ) -> Result<(), ResearchError> {
+    ) -> Result<(), LedgerError> {
         if self.families.contains_key(&attempt.family) {
-            return Err(ResearchError::Invalid("settlement family already closed"));
+            return Err(LedgerError::Invalid("settlement family already closed"));
         }
         let winner = attempt
             .commitments
@@ -570,7 +564,7 @@ impl ResearchState {
                         proof,
                         recipient: stored.recipient(),
                     })
-                    .ok_or(ResearchError::Invalid("citation not in sealed parent"))
+                    .ok_or(LedgerError::Invalid("citation not in sealed parent"))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let rewards = RewardPlan::new(&self.genesis, normalized.author(), citations)?;
@@ -621,19 +615,19 @@ fn effect(effects: &mut Vec<Vec<u8>>, tag: u8, write: impl FnOnce(&mut Writer)) 
 }
 
 fn normalization_receipt(
-    parent: &ResearchState,
+    parent: &LedgerState,
     attempt: &Attempt,
     commitment: &CommitmentEntry,
     normalized: &NormalizedPackage,
     rewards: &RewardPlan,
-) -> Result<Vec<u8>, ResearchError> {
+) -> Result<Vec<u8>, LedgerError> {
     let mut w = Writer::new();
     w.u16(1);
     w.fixed(parent.genesis.id().as_bytes());
     w.fixed(
         attempt
             .round
-            .ok_or(ResearchError::Invalid("normalization solution round"))?
+            .ok_or(LedgerError::Invalid("normalization solution round"))?
             .as_bytes(),
     );
     encode_receipt(&mut w, &commitment.receipt);
@@ -659,7 +653,7 @@ fn normalization_receipt(
         let proof = parent
             .library
             .lookup(*id)
-            .ok_or(ResearchError::Invalid("normalization citation"))?;
+            .ok_or(LedgerError::Invalid("normalization citation"))?;
         w.fixed(id.as_bytes());
         w.fixed(proof.author().as_bytes());
     }

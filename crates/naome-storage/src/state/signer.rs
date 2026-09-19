@@ -5,12 +5,12 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
     ConsensusKey,
     state::{
-        RESEARCH_QUORUM_MAX_BYTES, ResearchBranch, ResearchIntent, ResearchLockEvent,
-        ResearchLockState, ResearchPhase, ResearchPublication,
+        STATE_QUORUM_MAX_BYTES, StateBranch, StateIntent, StateLockEvent, StateLockState,
+        StatePhase, StatePublication,
     },
 };
 use naome_ledger::{
-    ResearchState,
+    LedgerState,
     profile::{
         Genesis, SIGNER_COMPLETION_BYTES, SIGNER_FRAME_OVERHEAD_BYTES, SIGNER_SNAPSHOT_MAX_BYTES,
         SIGNER_STOP_FRAME_BYTES, SIGNER_TRANSCRIPT_MAX_BYTES,
@@ -19,9 +19,9 @@ use naome_ledger::{
 use std::path::Path;
 
 use super::{
-    ResearchStorageError as Error,
+    StateStorageError as Error,
     codec::{Reader, bytes},
-    history::ResearchHistory,
+    history::StateHistory,
     log::{FileLog, Limits},
 };
 
@@ -36,18 +36,18 @@ const TRANSCRIPT_MAX: usize = SIGNER_TRANSCRIPT_MAX_BYTES as usize;
 
 /// A preparation has synchronized both its event and its checked post-state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResearchPreparation {
+pub enum StatePreparation {
     Prepared,
     AlreadyPrepared,
     AlreadyCompleted,
     Checkpoint,
 }
 
-/// Sole local owner of one registered research consensus key and its lineage.
+/// Sole local owner of one registered state consensus key and its lineage.
 /// Key bytes are never written to the journal, returned by an accessor, or
 /// exposed through a Debug implementation. Secret-key drop zeroization comes
 /// from the storage crate's ed25519-dalek `zeroize` feature.
-pub struct ResearchSigner {
+pub struct StateSigner {
     key: SigningKey,
     #[cfg(test)]
     key_uses: usize,
@@ -66,12 +66,12 @@ struct Context {
     anchor_name: String,
 }
 struct Replay {
-    branch: ResearchBranch,
-    lock: ResearchLockState,
+    branch: StateBranch,
+    lock: StateLockState,
     pending: Option<Pending>,
     completed: Option<Completed>,
-    publications: Vec<ResearchPublication>,
-    previous_votes: Vec<ResearchPublication>,
+    publications: Vec<StatePublication>,
+    previous_votes: Vec<StatePublication>,
     sequence: u64,
     stopped: bool,
     used_height_bytes: u64,
@@ -80,17 +80,17 @@ struct Replay {
 struct Pending {
     sequence: u64,
     event: Vec<u8>,
-    intent: ResearchIntent,
+    intent: StateIntent,
 }
 struct Completed {
     event: Vec<u8>,
-    publication: ResearchPublication,
+    publication: StatePublication,
 }
 
 impl Replay {
     fn new(context: &Context) -> Result<Self, Error> {
-        let branch = ResearchBranch::from_genesis(ResearchState::new(context.genesis.clone()))?;
-        let lock = ResearchLockState::new(&branch, context.signer)?;
+        let branch = StateBranch::from_genesis(LedgerState::new(context.genesis.clone()))?;
+        let lock = StateLockState::new(&branch, context.signer)?;
         Ok(Self {
             branch,
             lock,
@@ -121,7 +121,7 @@ impl Replay {
                     return Err(Error::Invalid("another intent is pending"));
                 }
                 let event_bytes = r.bytes(context.limits.payload_bytes as usize)?.to_vec();
-                let event = ResearchLockEvent::decode(&event_bytes, &context.genesis)?;
+                let event = StateLockEvent::decode(&event_bytes, &context.genesis)?;
                 let snapshot = r.bytes(SNAPSHOT_MAX)?;
                 let transcript = match r.u8()? {
                     0 => None,
@@ -226,7 +226,7 @@ impl Replay {
             self.previous_votes.extend(
                 self.publications
                     .iter()
-                    .filter(|publication| matches!(publication, ResearchPublication::Vote(_)))
+                    .filter(|publication| matches!(publication, StatePublication::Vote(_)))
                     .take(2)
                     .cloned(),
             );
@@ -258,7 +258,7 @@ impl Replay {
     }
 }
 
-impl ResearchSigner {
+impl StateSigner {
     /// Provision a new genesis signer. Existing journal/anchor paths are never
     /// replaced or inferred safe to reset.
     pub fn create(
@@ -321,7 +321,7 @@ impl ResearchSigner {
     fn ensure(&self) -> Result<(), Error> {
         self.log.core.ensure()?;
         if self.state.stopped {
-            return Err(Error::Invalid("terminal research signer stop"));
+            return Err(Error::Invalid("terminal state signer stop"));
         }
         Ok(())
     }
@@ -369,11 +369,11 @@ impl ResearchSigner {
         self.ensure()?;
         Ok(self.state.lock.round())
     }
-    pub fn phase(&self) -> Result<ResearchPhase, Error> {
+    pub fn phase(&self) -> Result<StatePhase, Error> {
         self.ensure()?;
         Ok(self.state.lock.phase())
     }
-    pub fn branch(&self) -> Result<&ResearchBranch, Error> {
+    pub fn branch(&self) -> Result<&StateBranch, Error> {
         self.ensure()?;
         Ok(&self.state.branch)
     }
@@ -389,14 +389,14 @@ impl ResearchSigner {
         self.log.core.ensure()?;
         Ok(self.state.stopped)
     }
-    pub fn last_publication(&self) -> Result<Option<&ResearchPublication>, Error> {
+    pub fn last_publication(&self) -> Result<Option<&StatePublication>, Error> {
         self.ensure()?;
         Ok(self.state.completed.as_ref().map(|c| &c.publication))
     }
     /// Exact durably completed local messages for the current height and round.
     /// Replay retains at most one proposal, prevote, and precommit so a restart
     /// can retransmit the proposal even when the latest publication was a vote.
-    pub fn current_publications(&self) -> Result<Vec<ResearchPublication>, Error> {
+    pub fn current_publications(&self) -> Result<Vec<StatePublication>, Error> {
         self.ensure()?;
         Ok(self.state.publications.clone())
     }
@@ -404,7 +404,7 @@ impl ResearchSigner {
     /// immediately preceding round's two own votes. Previous-round proposals
     /// are excluded, and height changes, skipped rounds, and terminal stop
     /// remove the previous votes. Replay reconstructs this cache without key use.
-    pub fn retry_publications(&self) -> Result<Vec<ResearchPublication>, Error> {
+    pub fn retry_publications(&self) -> Result<Vec<StatePublication>, Error> {
         self.ensure()?;
         Ok(self
             .state
@@ -419,9 +419,7 @@ impl ResearchSigner {
         self.ensure()?;
         Ok(self.state.lock.retained_record())
     }
-    pub fn retained_quorum(
-        &self,
-    ) -> Result<Option<&naome_consensus::state::ResearchQuorum>, Error> {
+    pub fn retained_quorum(&self) -> Result<Option<&naome_consensus::state::StateQuorum>, Error> {
         self.ensure()?;
         Ok(self.state.lock.retained_quorum())
     }
@@ -467,17 +465,17 @@ impl ResearchSigner {
     /// Durably record the exact event, post-checkpoint, and unsigned transcript.
     /// This performs no signing-key operation. A pending intent admits only its
     /// exact retry; a completed immediate retry reuses its durable publication.
-    pub fn prepare(&mut self, event: &ResearchLockEvent) -> Result<ResearchPreparation, Error> {
+    pub fn prepare(&mut self, event: &StateLockEvent) -> Result<StatePreparation, Error> {
         self.ensure()?;
         if self.state.branch.state().terminated() {
-            return Err(Error::Invalid("research run terminated"));
+            return Err(Error::Invalid("state run terminated"));
         }
         self.ensure_completion_capacity(self.protected_records())?;
         event_bounds(event, &self.context.genesis)?;
         let event_bytes = event.encode()?;
         if let Some(pending) = &self.state.pending {
             if pending.event == event_bytes {
-                return Ok(ResearchPreparation::AlreadyPrepared);
+                return Ok(StatePreparation::AlreadyPrepared);
             }
             return Err(Error::Invalid("different event while signature is pending"));
         }
@@ -487,7 +485,7 @@ impl ResearchSigner {
             .as_ref()
             .is_some_and(|c| c.event == event_bytes)
         {
-            return Ok(ResearchPreparation::AlreadyCompleted);
+            return Ok(StatePreparation::AlreadyCompleted);
         }
         let mut next = self.state.lock.clone();
         let intent = next.apply(&self.state.branch, event, self.context.maximum_round)?;
@@ -539,14 +537,14 @@ impl ResearchSigner {
                 event: event_bytes,
                 intent,
             });
-            Ok(ResearchPreparation::Prepared)
+            Ok(StatePreparation::Prepared)
         } else {
-            Ok(ResearchPreparation::Checkpoint)
+            Ok(StatePreparation::Checkpoint)
         }
     }
     /// Uses the key only for an already anchored exact pending transcript.
     /// Completed public bytes are not released until completion and anchor sync.
-    pub fn sign_prepared(&mut self) -> Result<ResearchPublication, Error> {
+    pub fn sign_prepared(&mut self) -> Result<StatePublication, Error> {
         self.ensure()?;
         if self.state.publications.len() >= 3 {
             return Err(Error::Limit("current round publications"));
@@ -594,19 +592,19 @@ impl ResearchSigner {
     }
     pub fn apply_and_sign(
         &mut self,
-        event: &ResearchLockEvent,
-    ) -> Result<Option<ResearchPublication>, Error> {
+        event: &StateLockEvent,
+    ) -> Result<Option<StatePublication>, Error> {
         match self.prepare(event)? {
-            ResearchPreparation::Checkpoint => Ok(None),
-            ResearchPreparation::AlreadyCompleted => Ok(self.last_publication()?.cloned()),
-            ResearchPreparation::Prepared | ResearchPreparation::AlreadyPrepared => {
+            StatePreparation::Checkpoint => Ok(None),
+            StatePreparation::AlreadyCompleted => Ok(self.last_publication()?.cloned()),
+            StatePreparation::Prepared | StatePreparation::AlreadyPrepared => {
                 Ok(Some(self.sign_prepared()?))
             }
         }
     }
     /// Advance only through the sole selected durable history. Raw finality
     /// tokens and caller snapshots are intentionally not accepted as authority.
-    pub fn advance_to_history(&mut self, history: &mut ResearchHistory) -> Result<(), Error> {
+    pub fn advance_to_history(&mut self, history: &mut StateHistory) -> Result<(), Error> {
         self.ensure()?;
         if history.last_finalized()?.state().genesis().id() != self.context.genesis.id() {
             return Err(Error::Invalid("signer/history genesis differs"));
@@ -735,38 +733,38 @@ fn context(genesis: Genesis, key: &SigningKey, maximum_round: u64) -> Result<Con
         maximum_round,
         prefix,
         limits,
-        file_name: format!("research-signer-{name}.journal"),
-        lock_name: format!("research-signer-{name}.lock"),
-        anchor_name: format!("research-signer-{name}.anchor"),
+        file_name: format!("state-signer-{name}.journal"),
+        lock_name: format!("state-signer-{name}.lock"),
+        anchor_name: format!("state-signer-{name}.anchor"),
     })
 }
-fn event_bounds(event: &ResearchLockEvent, genesis: &Genesis) -> Result<(), Error> {
+fn event_bounds(event: &StateLockEvent, genesis: &Genesis) -> Result<(), Error> {
     let maximum = genesis.profile().limits().transport_frame_bytes as usize;
     let (payload, limit, proof) = match event {
-        ResearchLockEvent::Author { record } => (
+        StateLockEvent::Author { record } => (
             record.as_deref(),
             genesis.profile().limits().record_bytes as usize,
             None,
         ),
-        ResearchLockEvent::Prevote { proposal } => (proposal.as_deref(), maximum, None),
-        ResearchLockEvent::Precommit { proposal, quorum } => {
+        StateLockEvent::Prevote { proposal } => (proposal.as_deref(), maximum, None),
+        StateLockEvent::Precommit { proposal, quorum } => {
             (proposal.as_deref(), maximum, Some(quorum.as_slice()))
         }
-        ResearchLockEvent::ProposalTimeout => (None, 0, None),
-        ResearchLockEvent::PrevoteTimeout { votes }
-        | ResearchLockEvent::PrecommitTimeout { votes }
-        | ResearchLockEvent::HigherRound { votes } => (None, 0, Some(votes.as_slice())),
-        ResearchLockEvent::NilPrecommit { quorum } => (None, 0, Some(quorum.as_slice())),
+        StateLockEvent::ProposalTimeout => (None, 0, None),
+        StateLockEvent::PrevoteTimeout { votes }
+        | StateLockEvent::PrecommitTimeout { votes }
+        | StateLockEvent::HigherRound { votes } => (None, 0, Some(votes.as_slice())),
+        StateLockEvent::NilPrecommit { quorum } => (None, 0, Some(quorum.as_slice())),
     };
     if payload.is_some_and(|p| p.len() > limit)
-        || proof.is_some_and(|p| p.len() > RESEARCH_QUORUM_MAX_BYTES)
+        || proof.is_some_and(|p| p.len() > STATE_QUORUM_MAX_BYTES)
     {
         return Err(Error::Limit("signer event bytes"));
     }
     Ok(())
 }
 
-fn publication_hash(publication: &ResearchPublication) -> Result<[u8; 32], Error> {
+fn publication_hash(publication: &StatePublication) -> Result<[u8; 32], Error> {
     Ok(super::log::hash(
         b"naome:state:publication:v1\0",
         &[&publication.encode()?],

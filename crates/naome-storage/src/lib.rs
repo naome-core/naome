@@ -13,6 +13,6 @@ pub use platform::StoragePlatformError;
 #[cfg(test)]
 use store_io::{AppendPhase, ExclusiveLockError, StoreIo, open_exclusive_lock};
 
-// Keep the existing lock identity until the on-disk namespace boundary changes.
-const LOCK_FILE_NAME: &str = "artifact-chain.lock";
-const JOURNAL_FILE_NAME: &str = "artifact-chain.journal";
+// Sole canonical history names. Legacy namespaces are rejected before locking.
+const LOCK_FILE_NAME: &str = "state.lock";
+const JOURNAL_FILE_NAME: &str = "state.journal";

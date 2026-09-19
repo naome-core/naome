@@ -50,10 +50,10 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             if text.trim().is_empty() {
                 return Err("research profile must not be empty".into());
             }
-            files::replace_private(&config.research_profile, text.as_bytes())?;
+            files::replace_private(&config.agenda_profile, text.as_bytes())?;
             println!(
                 "{}",
-                serde_json::json!({"status":"local_research_profile_updated","path":config.research_profile})
+                serde_json::json!({"status":"local_agenda_profile_updated","path":config.agenda_profile})
             );
             Ok(())
         }

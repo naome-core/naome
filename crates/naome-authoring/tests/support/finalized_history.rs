@@ -1,19 +1,19 @@
-use naome_storage::state::{ResearchHistory, ResearchObserver, ResearchAppendOutcome};
+use naome_storage::state::{StateHistory, StateObserver, StateAppendOutcome};
 use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey,
     state::{
-        ResearchBranch, ResearchFinality, ResearchIntent, ResearchLockEvent, ResearchLockState,
-        ResearchProposal, ResearchPublication, ResearchQuorum, ResearchVote,
+        StateBranch, StateFinality, StateIntent, StateLockEvent, StateLockState,
+        StateProposal, StatePublication, StateQuorum, StateVote,
     },
 };
 use naome_ledger::{
-    AccountId, CommitmentId, ResearchState,
+    AccountId, CommitmentId, LedgerState,
     authentication::SignedOperation,
     library::ProofPackage,
     operations::{OperationBody, SignedOriginal},
-    profile::{Genesis, Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration},
+    profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
 };
@@ -69,7 +69,7 @@ fn genesis() -> Genesis {
     Genesis::new(
         Profile::short_test(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [9; 32],
@@ -89,7 +89,7 @@ fn genesis() -> Genesis {
     )
     .unwrap()
 }
-fn time(state: &ResearchState, now: u64) -> TimeCertificate {
+fn time(state: &LedgerState, now: u64) -> TimeCertificate {
     TimeCertificate::new(
         (0..3)
             .map(|i| {
@@ -110,7 +110,7 @@ fn time(state: &ResearchState, now: u64) -> TimeCertificate {
     )
     .unwrap()
 }
-fn signed(state: &ResearchState, i: u8, body: OperationBody) -> SignedOperation {
+fn signed(state: &LedgerState, i: u8, body: OperationBody) -> SignedOperation {
     body.sign(
         state.genesis(),
         state.next_nonce(author(i)).unwrap(),
@@ -118,7 +118,7 @@ fn signed(state: &ResearchState, i: u8, body: OperationBody) -> SignedOperation 
     )
     .unwrap()
 }
-fn submission(state: &ResearchState, purpose: &str) -> SignedOperation {
+fn submission(state: &LedgerState, purpose: &str) -> SignedOperation {
     signed(
         state,
         4,
@@ -132,13 +132,13 @@ fn submission(state: &ResearchState, purpose: &str) -> SignedOperation {
         },
     )
 }
-fn proposal(branch: &ResearchBranch, record: Vec<u8>) -> ResearchProposal {
+fn proposal(branch: &StateBranch, record: Vec<u8>) -> StateProposal {
     let proposer = branch.proposer(0, MAX_ROUND).unwrap();
-    let mut kernel = ResearchLockState::new(branch, proposer).unwrap();
+    let mut kernel = StateLockState::new(branch, proposer).unwrap();
     let intent = kernel
         .apply(
             branch,
-            &ResearchLockEvent::Author {
+            &StateLockEvent::Author {
                 record: Some(record),
             },
             MAX_ROUND,
@@ -148,38 +148,38 @@ fn proposal(branch: &ResearchBranch, record: Vec<u8>) -> ResearchProposal {
         .sign(&intent.signing_bytes().unwrap())
         .to_bytes();
     match intent.complete(signature, branch, MAX_ROUND).unwrap() {
-        ResearchPublication::Proposal(p) => p,
+        StatePublication::Proposal(p) => p,
         _ => panic!("proposal intent"),
     }
 }
-fn finish_vote(intent: ResearchIntent, branch: &ResearchBranch, i: u8) -> ResearchVote {
+fn finish_vote(intent: StateIntent, branch: &StateBranch, i: u8) -> StateVote {
     let signature = validator(i)
         .sign(&intent.signing_bytes().unwrap())
         .to_bytes();
     match intent.complete(signature, branch, MAX_ROUND).unwrap() {
-        ResearchPublication::Vote(v) => v,
+        StatePublication::Vote(v) => v,
         _ => panic!("vote intent"),
     }
 }
-fn certify(branch: &ResearchBranch, record: Vec<u8>) -> (ResearchFinality, ResearchQuorum) {
+fn certify(branch: &StateBranch, record: Vec<u8>) -> (StateFinality, StateQuorum) {
     certify_with_signers(branch, record, 0)
 }
 fn certify_with_signers(
-    branch: &ResearchBranch,
+    branch: &StateBranch,
     record: Vec<u8>,
     first: u8,
-) -> (ResearchFinality, ResearchQuorum) {
+) -> (StateFinality, StateQuorum) {
     let proposal = proposal(branch, record);
     let encoded = proposal.encode().unwrap();
     let mut kernels: Vec<_> = (0..3)
-        .map(|i| ResearchLockState::new(branch, key(i + first)).unwrap())
+        .map(|i| StateLockState::new(branch, key(i + first)).unwrap())
         .collect();
     let votes = (0..3)
         .map(|i| {
             let intent = kernels[i]
                 .apply(
                     branch,
-                    &ResearchLockEvent::Prevote {
+                    &StateLockEvent::Prevote {
                         proposal: Some(encoded.clone()),
                     },
                     MAX_ROUND,
@@ -188,13 +188,13 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let prevotes = ResearchQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let prevotes = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
     let votes = (0..3)
         .map(|i| {
             let intent = kernels[i]
                 .apply(
                     branch,
-                    &ResearchLockEvent::Precommit {
+                    &StateLockEvent::Precommit {
                         proposal: Some(encoded.clone()),
                         quorum: prevotes.encode(),
                     },
@@ -204,7 +204,7 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let precommits = ResearchQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let precommits = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
     (
         branch
             .verify_finality(&proposal, &precommits, MAX_ROUND)
@@ -212,7 +212,7 @@ fn certify_with_signers(
         prevotes,
     )
 }
-fn record(branch: &ResearchBranch, now: u64, operations: Vec<SignedOperation>) -> Vec<u8> {
+fn record(branch: &StateBranch, now: u64, operations: Vec<SignedOperation>) -> Vec<u8> {
     branch
         .state()
         .prepare_record(time(branch.state(), now), operations)
@@ -221,33 +221,33 @@ fn record(branch: &ResearchBranch, now: u64, operations: Vec<SignedOperation>) -
         .encode()
         .unwrap()
 }
-fn first_finality(branch: &ResearchBranch, purpose: &str) -> ResearchFinality {
+fn first_finality(branch: &StateBranch, purpose: &str) -> StateFinality {
     certify(
         branch,
         record(branch, 100, vec![submission(branch.state(), purpose)]),
     )
     .0
 }
-fn append(history: &mut ResearchHistory, now: u64, ops: Vec<SignedOperation>) -> Vec<u8> {
+fn append(history: &mut StateHistory, now: u64, ops: Vec<SignedOperation>) -> Vec<u8> {
     let encoded = record(history.head().unwrap(), now, ops);
     let (finality, _) = certify(history.head().unwrap(), encoded);
     let expected = finality.branch().commitment();
     let bytes = finality.encode().unwrap();
     assert_eq!(
         history.append_finality(&bytes).unwrap(),
-        ResearchAppendOutcome::Finalized
+        StateAppendOutcome::Finalized
     );
     assert_eq!(history.head().unwrap().commitment(), expected);
     bytes
 }
-fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, ResearchHistory, Vec<u8>) {
+fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, StateHistory, Vec<u8>) {
     use naome_checker::{ArtifactState, normalize_and_check_with_state};
     use naome_foundation::FreeVariable;
     use naome_proof::{ProofCertificate, ProofStep};
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let mut history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     let op = submission(
         history.head().unwrap().state(),
         "publish a root and its used helper",

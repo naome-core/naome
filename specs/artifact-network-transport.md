@@ -2,7 +2,7 @@
 
 > Retired V0 contract. Its implementation and dedicated wire/API tests have been removed.
 > The sole active transport and runtime use canonical complete state records; see
-> [current ownership](ownership.md) and [operating guide](../research/mvp/operations.md).
+> [current ownership](ownership.md) and [operating guide](../docs/mvp/operations.md).
 > The text below records the removed interface and grants no current authority.
 
 ## Scope and authority
@@ -21,7 +21,7 @@ defines separately bounded publisher offers and their durable application receip
 The [Fixed-Validator Archive V0](fixed-validator-archive-v0.md) profile composes
 the complete-finality-proof exchange defined here with full local verification.
 
-`StaticArtifactNetwork` connects at most eight explicitly configured peers over
+`StateNetwork` connects at most eight explicitly configured peers over
 TCP, authenticates libp2p identities with Noise, and multiplexes application
 protocols with Yamux. It advances only while its caller polls. It creates no
 runtime, retry task, serving task, import task, or other NAOME-owned background

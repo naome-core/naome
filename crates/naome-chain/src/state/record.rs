@@ -3,7 +3,7 @@ use super::{
     hash,
 };
 use naome_ledger::{
-    GenesisId, RecordId, ResearchError, ResearchState, StateCommitment,
+    GenesisId, LedgerError, LedgerState, RecordId, StateCommitment,
     authentication::SignedOperation,
     profile::Genesis,
     time::{TIME_CERTIFICATE_MAX_BYTES, TimeCertificate},
@@ -27,12 +27,12 @@ pub struct StateRecord {
 }
 impl StateRecord {
     pub(super) fn new(
-        parent: &ResearchState,
-        next: &ResearchState,
+        parent: &LedgerState,
+        next: &LedgerState,
         time_certificate: TimeCertificate,
         operations: Vec<SignedOperation>,
         effects: Vec<u8>,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let record = Self {
             genesis: parent.genesis().id(),
             height: next.height(),
@@ -45,7 +45,7 @@ impl StateRecord {
             effects,
         };
         if record.encode()?.len() as u64 > parent.genesis().profile().limits().record_bytes {
-            return Err(ResearchError::Limit("complete research record"));
+            return Err(LedgerError::Limit("complete state record"));
         }
         Ok(record)
     }
@@ -82,7 +82,7 @@ impl StateRecord {
             &[&self.encode().expect("private bounded record content")],
         ))
     }
-    pub fn encode(&self) -> Result<Vec<u8>, ResearchError> {
+    pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut w = Writer::new();
         w.fixed(MAGIC);
         w.u16(1);
@@ -102,10 +102,10 @@ impl StateRecord {
     }
     /// Decodes observed content and checks static framing/signature context.
     /// The selected parent is still needed to verify time, effects and state.
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let mut r = Reader::new(bytes, genesis.profile().limits().record_bytes as usize)?;
         if r.fixed::<4>()? != *MAGIC || r.u16()? != 1 {
-            return Err(ResearchError::Invalid("research record version"));
+            return Err(LedgerError::Invalid("state record version"));
         }
         let context = GenesisId::from_bytes(r.fixed()?);
         let height = r.u64()?;
@@ -114,7 +114,7 @@ impl StateRecord {
         let next = StateCommitment::from_bytes(r.fixed()?);
         let time = r.u64()?;
         if context != genesis.id() || height == 0 {
-            return Err(ResearchError::Invalid("research record context"));
+            return Err(LedgerError::Invalid("state record context"));
         }
         // The declared time restores the wire object's cache, but grants no
         // authority. State validation recomputes time against the actual parent.
@@ -126,11 +126,11 @@ impl StateRecord {
             time,
         )?;
         if time_certificate.time() != time {
-            return Err(ResearchError::Invalid("record time below report median"));
+            return Err(LedgerError::Invalid("record time below report median"));
         }
         let count = r.u32()?;
         if u64::from(count) > genesis.profile().limits().operations_per_record {
-            return Err(ResearchError::Limit("record operations"));
+            return Err(LedgerError::Limit("record operations"));
         }
         let mut operations = Vec::with_capacity(count as usize);
         for _ in 0..count {

@@ -4,13 +4,11 @@ use super::model::{self, Action, Local, Model, Rules, State, proof, proof_round,
 use crate::state::*;
 use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
-use naome_consensus::state::{ResearchIntent, ResearchLockState, ResearchValue};
+use naome_consensus::state::{StateIntent, StateLockState, StateValue};
 use naome_ledger::{
     AccountId,
     operations::OperationBody,
-    profile::{
-        Genesis, Limits, Profile, RESEARCH_CHECKER_PROFILE, TimingKind, ValidatorRegistration,
-    },
+    profile::{Genesis, Limits, Profile, STATE_CHECKER_PROFILE, TimingKind, ValidatorRegistration},
     question::CompiledQuestion,
     time::TimeCertificate,
 };
@@ -46,7 +44,7 @@ impl Drop for Directory {
     }
 }
 struct Participant {
-    node: Option<ResearchNode>,
+    node: Option<StateNode>,
     history: Directory,
     anchors: Directory,
 }
@@ -72,7 +70,7 @@ fn genesis(keys: &[SigningKey; 4]) -> Genesis {
     Genesis::new(
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [43; 32],
@@ -94,8 +92,8 @@ fn participant(genesis: &Genesis, key: &SigningKey) -> Participant {
     let history = Directory::new();
     let anchors = Directory::new();
     let selected =
-        ResearchHistory::create(&history.0, &anchors.0, genesis.clone(), MAXIMUM_ROUND).unwrap();
-    let signer = ResearchSigner::create(
+        StateHistory::create(&history.0, &anchors.0, genesis.clone(), MAXIMUM_ROUND).unwrap();
+    let signer = StateSigner::create(
         &history.0,
         &anchors.0,
         genesis.clone(),
@@ -104,12 +102,12 @@ fn participant(genesis: &Genesis, key: &SigningKey) -> Participant {
     )
     .unwrap();
     Participant {
-        node: Some(ResearchNode::new(selected, Some(signer)).unwrap()),
+        node: Some(StateNode::new(selected, Some(signer)).unwrap()),
         history,
         anchors,
     }
 }
-fn records(branch: &ResearchBranch, keys: &[SigningKey; 4]) -> [Vec<u8>; 2] {
+fn records(branch: &StateBranch, keys: &[SigningKey; 4]) -> [Vec<u8>; 2] {
     let state = branch.state();
     let genesis = state.genesis();
     let time = TimeCertificate::new(
@@ -145,12 +143,12 @@ fn records(branch: &ResearchBranch, keys: &[SigningKey; 4]) -> [Vec<u8>; 2] {
 struct Replay {
     model: Model,
     state: State,
-    branch: ResearchBranch,
+    branch: StateBranch,
     keys: [SigningKey; 4],
     records: [Vec<u8>; 2],
-    values: [ResearchValue; 2],
+    values: [StateValue; 2],
     proposals: BTreeMap<u8, Vec<u8>>,
-    votes: BTreeMap<(u8, u8, u8), ResearchVote>,
+    votes: BTreeMap<(u8, u8, u8), StateVote>,
 }
 impl Replay {
     fn target(&self, value: u8) -> ConsensusVoteTarget {
@@ -169,7 +167,7 @@ impl Replay {
             _ => unreachable!(),
         }
     }
-    fn faulty_vote(&self, round: u8, role: u8, value: u8) -> ResearchVote {
+    fn faulty_vote(&self, round: u8, role: u8, value: u8) -> StateVote {
         let key = &self.keys[usize::from(self.model.faulty)];
         let genesis = self.branch.state().genesis();
         let mut body = b"NSCV1".to_vec();
@@ -196,9 +194,9 @@ impl Replay {
         };
         transcript.extend_from_slice(&body);
         body.extend_from_slice(&key.sign(&transcript).to_bytes());
-        ResearchVote::decode(&body, genesis).unwrap()
+        StateVote::decode(&body, genesis).unwrap()
     }
-    fn quorum(&self, round: u8, role: u8, target: u8) -> ResearchQuorum {
+    fn quorum(&self, round: u8, role: u8, target: u8) -> StateQuorum {
         assert!(self.model.quorum(self.state, round, role, target));
         let votes = (0..4)
             .filter_map(|actor| {
@@ -211,7 +209,7 @@ impl Replay {
                 }
             })
             .collect();
-        ResearchQuorum::from_votes(votes, self.branch.state().genesis()).unwrap()
+        StateQuorum::from_votes(votes, self.branch.state().genesis()).unwrap()
     }
     fn progress(&self, round: u8, role: u8, minimum: usize) -> Vec<u8> {
         let mut votes = vec![self.faulty_vote(round, role, 3)];
@@ -226,7 +224,7 @@ impl Replay {
         if minimum == 2 {
             votes.truncate(2);
         }
-        ResearchVoteSet::new(votes, self.branch.state().genesis())
+        StateVoteSet::new(votes, self.branch.state().genesis())
             .unwrap()
             .encode()
     }
@@ -249,7 +247,7 @@ impl Replay {
         } else {
             // The optional valid QC is outside the producer's signature. Only
             // reuse the actual signed honest prefix from this execution.
-            self.proposals[&round][..5 + ResearchValue::BYTE_LENGTH + 8 + 32 + 64].to_vec()
+            self.proposals[&round][..5 + StateValue::BYTE_LENGTH + 8 + 32 + 64].to_vec()
         };
         let qc = if encoded <= 2 {
             Vec::new()
@@ -270,13 +268,13 @@ impl Replay {
         );
         bytes
     }
-    fn observe(&self, node: &ResearchNode) -> Local {
+    fn observe(&self, node: &StateNode) -> Local {
         let signer = node.signer.as_ref().unwrap();
         assert_eq!(signer.height().unwrap(), 1);
         let phase = match signer.phase().unwrap() {
-            ResearchPhase::Proposal => 0,
-            ResearchPhase::Prevote => 1,
-            ResearchPhase::Precommit => 2,
+            StatePhase::Proposal => 0,
+            StatePhase::Prevote => 1,
+            StatePhase::Precommit => 2,
         };
         let snapshot = signer.snapshot().unwrap();
         assert_eq!(&snapshot[..5], b"NSCS1");
@@ -289,9 +287,8 @@ impl Replay {
             }
             assert_eq!(present, 1);
             let value =
-                ResearchValue::decode(&snapshot[offset..offset + ResearchValue::BYTE_LENGTH])
-                    .unwrap();
-            offset += ResearchValue::BYTE_LENGTH;
+                StateValue::decode(&snapshot[offset..offset + StateValue::BYTE_LENGTH]).unwrap();
+            offset += StateValue::BYTE_LENGTH;
             let round = u64::from_be_bytes(snapshot[offset..offset + 8].try_into().unwrap());
             offset += 8;
             let index = self.values.iter().position(|v| *v == value).unwrap();
@@ -303,7 +300,7 @@ impl Replay {
             valid: field(),
         }
     }
-    fn step(&mut self, node: &mut ResearchNode, action: Action) {
+    fn step(&mut self, node: &mut StateNode, action: Action) {
         let actor = action.actor();
         let old = self.state.nodes[usize::from(actor)];
         assert_eq!(self.observe(node), old, "before {action:?}");
@@ -311,7 +308,7 @@ impl Replay {
         let next = self.model.apply(self.state, action).unwrap();
         let round = old.cursor / 3;
         let event = match action {
-            Action::Author { proposal, .. } => ResearchLockEvent::Author {
+            Action::Author { proposal, .. } => StateLockEvent::Author {
                 record: if old.valid == 0 {
                     Some(self.records[usize::from(proposal_value(proposal) - 1)].clone())
                 } else {
@@ -319,14 +316,14 @@ impl Replay {
                     None
                 },
             },
-            Action::Prevote { proposal: 0, .. } => ResearchLockEvent::ProposalTimeout,
-            Action::Prevote { proposal, .. } => ResearchLockEvent::Prevote {
+            Action::Prevote { proposal: 0, .. } => StateLockEvent::ProposalTimeout,
+            Action::Prevote { proposal, .. } => StateLockEvent::Prevote {
                 proposal: Some(self.proposal(round, proposal)),
             },
-            Action::Precommit { target: 0, .. } => ResearchLockEvent::PrevoteTimeout {
+            Action::Precommit { target: 0, .. } => StateLockEvent::PrevoteTimeout {
                 votes: self.progress(round, 0, 3),
             },
-            Action::Precommit { target, .. } => ResearchLockEvent::Precommit {
+            Action::Precommit { target, .. } => StateLockEvent::Precommit {
                 proposal: if target == 3 {
                     None
                 } else {
@@ -345,22 +342,22 @@ impl Replay {
             },
             Action::Advance {
                 nil_quorum: true, ..
-            } => ResearchLockEvent::NilPrecommit {
+            } => StateLockEvent::NilPrecommit {
                 quorum: self.quorum(round, 1, 3).encode(),
             },
             Action::Advance {
                 nil_quorum: false, ..
-            } => ResearchLockEvent::PrecommitTimeout {
+            } => StateLockEvent::PrecommitTimeout {
                 votes: self.progress(round, 1, 3),
             },
-            Action::Higher { round, role, .. } => ResearchLockEvent::HigherRound {
+            Action::Higher { round, role, .. } => StateLockEvent::HigherRound {
                 votes: self.progress(round, role, 2),
             },
         };
         node.apply(event).unwrap();
         match action {
             Action::Author { proposal, .. } => {
-                let ResearchPublication::Proposal(p) = node
+                let StatePublication::Proposal(p) = node
                     .signer
                     .as_ref()
                     .unwrap()
@@ -382,7 +379,7 @@ impl Replay {
                 } else {
                     1
                 };
-                let ResearchPublication::Vote(v) = node
+                let StatePublication::Vote(v) = node
                     .signer
                     .as_ref()
                     .unwrap()
@@ -418,14 +415,14 @@ impl Replay {
             .map(|p| p.encode().unwrap())
             .collect();
         drop(node);
-        let history = ResearchHistory::open(
+        let history = StateHistory::open(
             &participant.history.0,
             &participant.anchors.0,
             self.branch.state().genesis().clone(),
             MAXIMUM_ROUND,
         )
         .unwrap();
-        let signer = ResearchSigner::open(
+        let signer = StateSigner::open(
             &participant.history.0,
             &participant.anchors.0,
             self.branch.state().genesis().clone(),
@@ -433,7 +430,7 @@ impl Replay {
             MAXIMUM_ROUND,
         )
         .unwrap();
-        let node = ResearchNode::new(history, Some(signer)).unwrap();
+        let node = StateNode::new(history, Some(signer)).unwrap();
         assert_eq!(node.signer.as_ref().unwrap().snapshot().unwrap(), snapshot);
         assert_eq!(
             node.publications()
@@ -475,16 +472,13 @@ impl Replay {
                     let outcome = node.accept_finality(&finalized.encode().unwrap()).unwrap();
                     assert!(matches!(
                         outcome,
-                        ResearchAppendOutcome::Finalized | ResearchAppendOutcome::AlreadyFinalized
+                        StateAppendOutcome::Finalized | StateAppendOutcome::AlreadyFinalized
                     ));
                     assert_eq!(
                         node.state().unwrap().head(),
                         self.values[usize::from(value - 1)].record_id()
                     );
-                    assert_eq!(
-                        node.position().unwrap(),
-                        Some((2, 0, ResearchPhase::Proposal))
-                    );
+                    assert_eq!(node.position().unwrap(), Some((2, 0, StatePhase::Proposal)));
                     observed.push(node.branch().unwrap().commitment());
                 }
             }
@@ -546,14 +540,14 @@ fn fixture(
             Some(participant(genesis, &keys[actor]))
         }
     });
-    let branch = ResearchBranch::from_genesis(ResearchState::new(genesis.clone())).unwrap();
+    let branch = StateBranch::from_genesis(LedgerState::new(genesis.clone())).unwrap();
     let records = records(&branch, keys);
     let values = records.each_ref().map(|record| {
-        let mut state = ResearchLockState::new(&branch, consensus_key(&keys[0])).unwrap();
-        let ResearchIntent::Proposal(intent) = state
+        let mut state = StateLockState::new(&branch, consensus_key(&keys[0])).unwrap();
+        let StateIntent::Proposal(intent) = state
             .apply(
                 &branch,
-                &ResearchLockEvent::Author {
+                &StateLockEvent::Author {
                     record: Some(record.clone()),
                 },
                 MAXIMUM_ROUND,
@@ -619,7 +613,7 @@ fn canonical_signed_quorum_subsets_match_four_unit_validator_boundary() {
                 };
                 replay.step(participant.as_mut().unwrap().node.as_mut().unwrap(), action);
             }
-            let votes: [ResearchVote; 4] = std::array::from_fn(|actor| {
+            let votes: [StateVote; 4] = std::array::from_fn(|actor| {
                 if actor == faulty {
                     replay.faulty_vote(0, role, 1)
                 } else {
@@ -633,7 +627,7 @@ fn canonical_signed_quorum_subsets_match_four_unit_validator_boundary() {
                     .filter(|(i, _)| mask & (1 << i) != 0)
                     .map(|(_, vote)| vote.clone())
                     .collect();
-                let quorum = ResearchQuorum::from_votes(selected, &genesis);
+                let quorum = StateQuorum::from_votes(selected, &genesis);
                 assert_eq!(
                     quorum.is_ok(),
                     mask.count_ones() >= 3,
@@ -643,7 +637,7 @@ fn canonical_signed_quorum_subsets_match_four_unit_validator_boundary() {
                     assert_eq!(quorum.target(), replay.target(1));
                     assert_eq!(quorum.role(), Replay::role(role));
                     let encoded = quorum.encode();
-                    let decoded = ResearchQuorum::decode(&encoded, &genesis).unwrap();
+                    let decoded = StateQuorum::decode(&encoded, &genesis).unwrap();
                     assert_eq!(decoded.encode(), encoded);
                 }
                 checked += 1;

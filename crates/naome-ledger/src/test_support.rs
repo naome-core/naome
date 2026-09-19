@@ -18,7 +18,7 @@ pub(crate) fn genesis_with_profile(profile: Profile) -> Genesis {
     Genesis::new(
         profile,
         "naome:zfc".into(),
-        crate::profile::RESEARCH_CHECKER_PROFILE.into(),
+        crate::profile::STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [9; 32],

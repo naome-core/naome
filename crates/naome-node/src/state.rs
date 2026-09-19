@@ -1,18 +1,16 @@
-//! Sole live owner of research signing and selected-history transitions.
+//! Sole live owner of state signing and selected-history transitions.
 //!
 //! Transport and clocks stay in runtime. This owner verifies bounded evidence,
 //! orders finality before voting, and never releases a signature before the
 //! signer journal has durably completed it.
 
 use naome_consensus::state::{
-    ResearchBranch, ResearchConsensusError, ResearchFinality, ResearchLockEvent, ResearchPhase,
-    ResearchProposal, ResearchPublication, ResearchQuorum, ResearchVote, ResearchVoteSet,
+    StateBranch, StateConsensusError, StateFinality, StateLockEvent, StatePhase, StateProposal,
+    StatePublication, StateQuorum, StateVote, StateVoteSet,
 };
 use naome_consensus::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget};
-use naome_ledger::{ResearchState, time::SignedTimeReport};
-use naome_storage::state::{
-    ResearchAppendOutcome, ResearchHistory, ResearchSigner, ResearchStorageError,
-};
+use naome_ledger::{LedgerState, time::SignedTimeReport};
+use naome_storage::state::{StateAppendOutcome, StateHistory, StateSigner, StateStorageError};
 use std::{collections::BTreeMap, fmt};
 
 /// Volatile evidence is bounded independently of the complete durable history.
@@ -23,47 +21,47 @@ const PROPOSALS_PER_SIGNER: usize = MAX_PROPOSALS / 4;
 const VOTES_PER_SIGNER: usize = MAX_VOTES / 4;
 
 #[derive(Debug)]
-pub enum ResearchNodeError {
+pub enum StateNodeError {
     Rejected(String),
-    Storage(ResearchStorageError),
+    Storage(StateStorageError),
     Halted,
 }
-impl fmt::Display for ResearchNodeError {
+impl fmt::Display for StateNodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Rejected(s) => write!(f, "research input rejected: {s}"),
+            Self::Rejected(s) => write!(f, "state input rejected: {s}"),
             Self::Storage(e) => e.fmt(f),
-            Self::Halted => f.write_str("research node halted on verified conflicting finality"),
+            Self::Halted => f.write_str("state node halted on verified conflicting finality"),
         }
     }
 }
-impl std::error::Error for ResearchNodeError {}
-impl From<ResearchConsensusError> for ResearchNodeError {
-    fn from(e: ResearchConsensusError) -> Self {
+impl std::error::Error for StateNodeError {}
+impl From<StateConsensusError> for StateNodeError {
+    fn from(e: StateConsensusError) -> Self {
         Self::Rejected(e.to_string())
     }
 }
-impl From<ResearchStorageError> for ResearchNodeError {
-    fn from(e: ResearchStorageError) -> Self {
+impl From<StateStorageError> for StateNodeError {
+    fn from(e: StateStorageError) -> Self {
         Self::Storage(e)
     }
 }
-type Result<T> = std::result::Result<T, ResearchNodeError>;
+type Result<T> = std::result::Result<T, StateNodeError>;
 
 /// Only this non-cloneable owner can move its live signer or selected history.
-pub struct ResearchNode {
-    history: ResearchHistory,
-    signer: Option<ResearchSigner>,
-    proposals: BTreeMap<(u64, [u8; 32]), ResearchProposal>,
-    votes: BTreeMap<(u64, u8, ConsensusKey), ResearchVote>,
+pub struct StateNode {
+    history: StateHistory,
+    signer: Option<StateSigner>,
+    proposals: BTreeMap<(u64, [u8; 32]), StateProposal>,
+    votes: BTreeMap<(u64, u8, ConsensusKey), StateVote>,
 }
-impl ResearchNode {
-    pub fn new(mut history: ResearchHistory, mut signer: Option<ResearchSigner>) -> Result<Self> {
+impl StateNode {
+    pub fn new(mut history: StateHistory, mut signer: Option<StateSigner>) -> Result<Self> {
         if history.halted()? {
             if let Some(signer) = signer.as_mut() {
                 let _ = signer.advance_to_history(&mut history);
             }
-            return Err(ResearchNodeError::Halted);
+            return Err(StateNodeError::Halted);
         }
         let recovered = if let Some(signer) = signer.as_mut() {
             // Complete exactly the anchored intent before any height handoff.
@@ -86,19 +84,19 @@ impl ResearchNode {
         }
         Ok(node)
     }
-    pub fn state(&self) -> Result<&ResearchState> {
+    pub fn state(&self) -> Result<&LedgerState> {
         Ok(self.history.head()?.state())
     }
-    pub fn branch(&self) -> Result<&ResearchBranch> {
+    pub fn branch(&self) -> Result<&StateBranch> {
         Ok(self.history.head()?)
     }
-    pub fn history(&self) -> &ResearchHistory {
+    pub fn history(&self) -> &StateHistory {
         &self.history
     }
     pub fn signer_key(&self) -> Option<ConsensusKey> {
-        self.signer.as_ref().map(ResearchSigner::signer)
+        self.signer.as_ref().map(StateSigner::signer)
     }
-    pub fn position(&self) -> Result<Option<(u64, u64, ResearchPhase)>> {
+    pub fn position(&self) -> Result<Option<(u64, u64, StatePhase)>> {
         self.signer
             .as_ref()
             .map(|s| Ok((s.height()?, s.round()?, s.phase()?)))
@@ -117,7 +115,7 @@ impl ResearchNode {
         let Some(s) = &self.signer else {
             return Ok(false);
         };
-        Ok(s.phase()? == ResearchPhase::Proposal
+        Ok(s.phase()? == StatePhase::Proposal
             && self.branch()?.proposer(s.round()?, self.maximum_round())? == s.signer())
     }
     pub fn already_authored(&self) -> Result<bool> {
@@ -139,22 +137,18 @@ impl ResearchNode {
     pub fn finality_bytes(&mut self, height: u64) -> Result<Vec<u8>> {
         Ok(self.history.finality_bytes(height)?)
     }
-    pub fn publications(&self) -> Result<Vec<ResearchPublication>> {
+    pub fn publications(&self) -> Result<Vec<StatePublication>> {
         // Retry current proposals and this key's current/previous-round votes.
         // A sole advanced node must still let lagging peers finish the quorum
         // that advanced it; one future signer cannot trigger their round jump.
-        let round = self
-            .signer
-            .as_ref()
-            .map(ResearchSigner::round)
-            .transpose()?;
+        let round = self.signer.as_ref().map(StateSigner::round).transpose()?;
         let signer = self.signer_key();
         Ok(self
             .proposals
             .values()
             .filter(|p| round.is_none_or(|r| p.round() == r))
             .cloned()
-            .map(ResearchPublication::Proposal)
+            .map(StatePublication::Proposal)
             .chain(
                 self.votes
                     .values()
@@ -163,7 +157,7 @@ impl ResearchNode {
                             && signer.is_none_or(|s| v.signer() == s)
                     })
                     .cloned()
-                    .map(ResearchPublication::Vote),
+                    .map(StatePublication::Vote),
             )
             .collect())
     }
@@ -171,22 +165,22 @@ impl ResearchNode {
         let p = self
             .branch()?
             .verify_proposal(bytes, self.maximum_round())?;
-        self.retain(ResearchPublication::Proposal(p))
+        self.retain(StatePublication::Proposal(p))
     }
     pub fn accept_vote(&mut self, bytes: &[u8]) -> Result<()> {
-        let vote = ResearchVote::decode(bytes, self.state()?.genesis())?;
+        let vote = StateVote::decode(bytes, self.state()?.genesis())?;
         if vote.height() != self.branch()?.next_height()? || vote.round() > self.maximum_round() {
-            return Err(ResearchNodeError::Rejected("vote height or round".into()));
+            return Err(StateNodeError::Rejected("vote height or round".into()));
         }
-        self.retain(ResearchPublication::Vote(vote))
+        self.retain(StatePublication::Vote(vote))
     }
-    fn retain(&mut self, publication: ResearchPublication) -> Result<()> {
+    fn retain(&mut self, publication: StatePublication) -> Result<()> {
         match publication {
-            ResearchPublication::Proposal(p) => {
+            StatePublication::Proposal(p) => {
                 let key = (p.round(), *p.value().signing_root().as_bytes());
                 if let Some(old) = self.proposals.get_mut(&key) {
-                    if p.valid_quorum().map(ResearchQuorum::round)
-                        > old.valid_quorum().map(ResearchQuorum::round)
+                    if p.valid_quorum().map(StateQuorum::round)
+                        > old.valid_quorum().map(StateQuorum::round)
                     {
                         *old = p;
                     }
@@ -195,11 +189,11 @@ impl ResearchNode {
                 self.reserve_proposal(p.round(), p.proposer())?;
                 self.proposals.insert(key, p);
             }
-            ResearchPublication::Vote(v) => {
+            StatePublication::Vote(v) => {
                 let key = (v.round(), role(v.role()), v.signer());
                 if let Some(old) = self.votes.get(&key) {
                     if old != &v {
-                        return Err(ResearchNodeError::Rejected("equivocating vote".into()));
+                        return Err(StateNodeError::Rejected("equivocating vote".into()));
                     }
                     return Ok(());
                 }
@@ -209,18 +203,18 @@ impl ResearchNode {
         }
         Ok(())
     }
-    fn apply(&mut self, event: ResearchLockEvent) -> Result<()> {
+    fn apply(&mut self, event: StateLockEvent) -> Result<()> {
         if let Some(signer) = &self.signer {
             let key = signer.signer();
             let round = signer.round()?;
             // Reserve volatile custody before any durable intent or signing-key
             // call. Each key has an independent budget and current slots win.
             match &event {
-                ResearchLockEvent::Author { .. } => self.reserve_proposal(round, key)?,
-                ResearchLockEvent::Prevote { .. } | ResearchLockEvent::ProposalTimeout => {
+                StateLockEvent::Author { .. } => self.reserve_proposal(round, key)?,
+                StateLockEvent::Prevote { .. } | StateLockEvent::ProposalTimeout => {
                     self.reserve_vote(round, ConsensusVoteRole::Prevote, key)?
                 }
-                ResearchLockEvent::Precommit { .. } | ResearchLockEvent::PrevoteTimeout { .. } => {
+                StateLockEvent::Precommit { .. } | StateLockEvent::PrevoteTimeout { .. } => {
                     self.reserve_vote(round, ConsensusVoteRole::Precommit, key)?
                 }
                 _ => {}
@@ -258,13 +252,13 @@ impl ResearchNode {
             })
             .min()
             .map(|(_, key)| key)
-            .ok_or_else(|| ResearchNodeError::Rejected("signer vote retention limit".into()))?;
+            .ok_or_else(|| StateNodeError::Rejected("signer vote retention limit".into()))?;
         self.votes.remove(&victim);
         Ok(())
     }
     fn reserve_proposal(&mut self, round: u64, signer: ConsensusKey) -> Result<()> {
         if self.proposals.keys().filter(|key| key.0 == round).count() >= 2 {
-            return Err(ResearchNodeError::Rejected(
+            return Err(StateNodeError::Rejected(
                 "equivocating proposal retention limit".into(),
             ));
         }
@@ -286,9 +280,7 @@ impl ResearchNode {
             })
             .min()
             .map(|(_, key)| key)
-            .ok_or_else(|| {
-                ResearchNodeError::Rejected("proposer payload retention limit".into())
-            })?;
+            .ok_or_else(|| StateNodeError::Rejected("proposer payload retention limit".into()))?;
         self.proposals.remove(&victim);
         Ok(())
     }
@@ -304,31 +296,31 @@ impl ResearchNode {
         if !self.is_proposer()? || self.already_authored()? {
             return Ok(());
         }
-        self.apply(ResearchLockEvent::Author { record })
+        self.apply(StateLockEvent::Author { record })
     }
-    pub fn accept_finality(&mut self, bytes: &[u8]) -> Result<ResearchAppendOutcome> {
+    pub fn accept_finality(&mut self, bytes: &[u8]) -> Result<StateAppendOutcome> {
         let maximum = self
             .state()?
             .genesis()
             .profile()
             .limits()
             .transport_frame_bytes as usize;
-        let height = ResearchFinality::claimed_height(bytes, maximum)?;
+        let height = StateFinality::claimed_height(bytes, maximum)?;
         if height > self.state()?.height().saturating_add(1) {
-            return Err(ResearchNodeError::Rejected("history gap".into()));
+            return Err(StateNodeError::Rejected("history gap".into()));
         }
         let result = self
             .history
             .receive_finality(height, bytes)
             .map_err(|error| match error {
-                ResearchStorageError::Validation(message) => ResearchNodeError::Rejected(message),
-                other => ResearchNodeError::Storage(other),
+                StateStorageError::Validation(message) => StateNodeError::Rejected(message),
+                other => StateNodeError::Storage(other),
             })?;
         if let Some(signer) = self.signer.as_mut() {
-            if result == ResearchAppendOutcome::ConflictHalt {
+            if result == StateAppendOutcome::ConflictHalt {
                 // A verified conflict preempts even an anchored unsigned intent.
                 let _ = signer.advance_to_history(&mut self.history);
-                return Err(ResearchNodeError::Halted);
+                return Err(StateNodeError::Halted);
             }
             if signer.pending()? {
                 let _ = signer.sign_prepared()?;
@@ -337,35 +329,35 @@ impl ResearchNode {
             let advanced = signer.advance_to_history(&mut self.history);
             advanced?;
         }
-        if result == ResearchAppendOutcome::ConflictHalt {
-            return Err(ResearchNodeError::Halted);
+        if result == StateAppendOutcome::ConflictHalt {
+            return Err(StateNodeError::Halted);
         }
-        if result == ResearchAppendOutcome::Finalized {
+        if result == StateAppendOutcome::Finalized {
             self.proposals.clear();
             self.votes.clear();
         }
         Ok(result)
     }
-    fn votes_at(&self, round: u64, role_: ConsensusVoteRole) -> Vec<ResearchVote> {
+    fn votes_at(&self, round: u64, role_: ConsensusVoteRole) -> Vec<StateVote> {
         self.votes
             .values()
             .filter(|v| v.round() == round && v.role() == role_)
             .cloned()
             .collect()
     }
-    fn vote_set(&self, round: u64, role_: ConsensusVoteRole) -> Result<Option<ResearchVoteSet>> {
+    fn vote_set(&self, round: u64, role_: ConsensusVoteRole) -> Result<Option<StateVoteSet>> {
         let votes = self.votes_at(round, role_);
         if votes.is_empty() {
             return Ok(None);
         }
-        Ok(Some(ResearchVoteSet::new(votes, self.state()?.genesis())?))
+        Ok(Some(StateVoteSet::new(votes, self.state()?.genesis())?))
     }
     fn quorum(
         &self,
         round: u64,
         role_: ConsensusVoteRole,
         target: ConsensusVoteTarget,
-    ) -> Result<Option<ResearchQuorum>> {
+    ) -> Result<Option<StateQuorum>> {
         let votes: Vec<_> = self
             .votes_at(round, role_)
             .into_iter()
@@ -374,7 +366,7 @@ impl ResearchNode {
         if votes.len() < 3 {
             return Ok(None);
         }
-        Ok(Some(ResearchQuorum::from_votes(
+        Ok(Some(StateQuorum::from_votes(
             votes,
             self.state()?.genesis(),
         )?))
@@ -424,7 +416,7 @@ impl ResearchNode {
                 }
             }
             if let Some(votes) = higher {
-                self.apply(ResearchLockEvent::HigherRound { votes })?;
+                self.apply(StateLockEvent::HigherRound { votes })?;
                 continue;
             }
             if let Some(qc) = self.quorum(
@@ -432,7 +424,7 @@ impl ResearchNode {
                 ConsensusVoteRole::Precommit,
                 ConsensusVoteTarget::Nil,
             )? {
-                self.apply(ResearchLockEvent::NilPrecommit {
+                self.apply(StateLockEvent::NilPrecommit {
                     quorum: qc.encode(),
                 })?;
                 continue;
@@ -443,13 +435,13 @@ impl ResearchNode {
                 .filter(|p| p.round() == round)
                 .cloned()
                 .collect();
-            if phase == ResearchPhase::Proposal && proposals.len() == 1 {
-                self.apply(ResearchLockEvent::Prevote {
+            if phase == StatePhase::Proposal && proposals.len() == 1 {
+                self.apply(StateLockEvent::Prevote {
                     proposal: Some(proposals[0].encode()?),
                 })?;
                 continue;
             }
-            if phase == ResearchPhase::Prevote {
+            if phase == StatePhase::Prevote {
                 let mut candidates = Vec::new();
                 if let Some(qc) =
                     self.quorum(round, ConsensusVoteRole::Prevote, ConsensusVoteTarget::Nil)?
@@ -467,7 +459,7 @@ impl ResearchNode {
                 }
                 if candidates.len() == 1 {
                     let (proposal, qc) = candidates.pop().expect("one candidate");
-                    self.apply(ResearchLockEvent::Precommit {
+                    self.apply(StateLockEvent::Precommit {
                         proposal,
                         quorum: qc.encode(),
                     })?;
@@ -483,26 +475,26 @@ impl ResearchNode {
             return Ok(false);
         };
         match phase {
-            ResearchPhase::Proposal => self.apply(ResearchLockEvent::ProposalTimeout)?,
-            ResearchPhase::Prevote => {
+            StatePhase::Proposal => self.apply(StateLockEvent::ProposalTimeout)?,
+            StatePhase::Prevote => {
                 let Some(votes) = self.vote_set(round, ConsensusVoteRole::Prevote)? else {
                     return Ok(false);
                 };
                 if !votes.has_supermajority(self.state()?.genesis())? {
                     return Ok(false);
                 }
-                self.apply(ResearchLockEvent::PrevoteTimeout {
+                self.apply(StateLockEvent::PrevoteTimeout {
                     votes: votes.encode(),
                 })?;
             }
-            ResearchPhase::Precommit => {
+            StatePhase::Precommit => {
                 let Some(votes) = self.vote_set(round, ConsensusVoteRole::Precommit)? else {
                     return Ok(false);
                 };
                 if !votes.has_supermajority(self.state()?.genesis())? {
                     return Ok(false);
                 }
-                self.apply(ResearchLockEvent::PrecommitTimeout {
+                self.apply(StateLockEvent::PrecommitTimeout {
                     votes: votes.encode(),
                 })?;
             }

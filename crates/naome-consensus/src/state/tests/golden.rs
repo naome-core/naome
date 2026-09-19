@@ -76,12 +76,12 @@ fn legacy_research_consensus_evidence_is_rejected() {
                 assert!(branch.decode_finality(&bytes, MAX_ROUND).is_err());
             }
             "prevote" | "nil-precommit" => {
-                assert!(ResearchVote::decode(&bytes, branch.state().genesis()).is_err());
+                assert!(StateVote::decode(&bytes, branch.state().genesis()).is_err());
                 bytes[..5].copy_from_slice(b"NSCV1");
-                assert!(ResearchVote::decode(&bytes, branch.state().genesis()).is_err());
+                assert!(StateVote::decode(&bytes, branch.state().genesis()).is_err());
             }
             "precommit-quorum" => {
-                assert!(ResearchQuorum::decode(&bytes, branch.state().genesis()).is_err())
+                assert!(StateQuorum::decode(&bytes, branch.state().genesis()).is_err())
             }
             "branch-commitment" => assert_ne!(bytes, current.branch().commitment()),
             name => panic!("unhandled legacy vector {name}"),

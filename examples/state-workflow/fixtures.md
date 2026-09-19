@@ -31,7 +31,7 @@ second provider while its original provider is unavailable and establish the
 positive payment to its original recipient. C must create neither a completion
 payment nor an eligibility claim.
 
-`crates/naome-authoring/tests/research_mvp_fixtures.rs` compiles these proofs,
+`crates/naome-authoring/tests/state_workflow_fixtures.rs` compiles these proofs,
 checks original decoded and canonical normal-form certificates independently,
 asserts the exact conclusions and reachable dependency, checks missing-reference
 failure, and reloads H's encoded bytes into an independent checker state. Its

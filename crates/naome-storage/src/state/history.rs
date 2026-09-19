@@ -1,20 +1,20 @@
 use std::path::{Path, PathBuf};
 
-use naome_consensus::state::{ResearchBranch, ResearchFinality};
-use naome_ledger::{ResearchState, profile::Genesis};
+use naome_consensus::state::{StateBranch, StateFinality};
+use naome_ledger::{LedgerState, profile::Genesis};
 
 use super::{
-    ResearchStorageError as Error,
+    StateStorageError as Error,
     log::{self, FileLog, Limits, Position},
 };
 
 const MAGIC: &[u8; 8] = b"NAOSHIS1";
-const ANCHOR: &str = "research-finality.anchor";
+const ANCHOR: &str = "state-finality.anchor";
 const FINALITY: u8 = 1;
 const CONFLICT: u8 = 2;
 
 fn authenticate_height(height: u64, bytes: &[u8], context: &Context) -> Result<(), Error> {
-    let value = ResearchFinality::authenticate(bytes, &context.genesis, context.maximum_round)?;
+    let value = StateFinality::authenticate(bytes, &context.genesis, context.maximum_round)?;
     if value.height() != height {
         return Err(Error::Invalid(
             "authenticated finality height differs from hint",
@@ -28,23 +28,23 @@ mod sealed {
 }
 /// Selected state obtainable only from full anchored replay or durable append.
 /// A decoded record, snapshot, or caller-constructed state cannot implement it.
-pub trait SelectedResearchHistory: sealed::Sealed {
-    fn selected_branch(&self) -> Result<&ResearchBranch, Error>;
+pub trait SelectedStateHistory: sealed::Sealed {
+    fn selected_branch(&self) -> Result<&StateBranch, Error>;
     fn is_halted(&self) -> Result<bool, Error>;
 }
 
 /// Result after body, commit footer, and independent anchor are all durable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResearchAppendOutcome {
+pub enum StateAppendOutcome {
     Finalized,
     AlreadyFinalized,
     ConflictHalt,
 }
 
-/// The sole writer of the selected complete research history in a directory.
-/// Shares both the journal pathname and owner lock with existing V0 storage.
+/// The sole writer of the selected complete state history in a directory.
+/// Legacy storage namespaces are rejected before any new authority is created.
 /// No state is installed or returned from a failed append.
-pub struct ResearchHistory {
+pub struct StateHistory {
     log: FileLog,
     replay: Replay,
     context: Context,
@@ -58,8 +58,8 @@ struct Context {
     maximum_round: u64,
 }
 struct Replay {
-    branch: ResearchBranch,
-    latest_parent: Option<ResearchBranch>,
+    branch: StateBranch,
+    latest_parent: Option<StateBranch>,
     // One small authenticated log coordinate/commitment per finalized height;
     // complete states and proof bodies are not cloned for every historical row.
     coordinates: Vec<(Position, u64)>,
@@ -70,7 +70,7 @@ struct Replay {
 }
 impl Replay {
     fn new(context: &Context) -> Result<Self, Error> {
-        let branch = ResearchBranch::from_genesis(ResearchState::new(context.genesis.clone()))?;
+        let branch = StateBranch::from_genesis(LedgerState::new(context.genesis.clone()))?;
         let commitment = branch.commitment();
         Ok(Self {
             branch,
@@ -87,7 +87,7 @@ impl Replay {
     }
     fn apply(&mut self, body: &[u8], context: &Context) -> Result<(), Error> {
         if self.halted {
-            return Err(Error::Invalid("record after research conflict halt"));
+            return Err(Error::Invalid("record after state conflict halt"));
         }
         match body.first().copied() {
             Some(FINALITY) => {
@@ -107,7 +107,7 @@ impl Replay {
                 self.verify_conflict(height, &body[9..], context)?;
                 self.halted = true;
             }
-            _ => return Err(Error::Invalid("research history frame kind")),
+            _ => return Err(Error::Invalid("state history frame kind")),
         }
         Ok(())
     }
@@ -120,13 +120,13 @@ impl Replay {
             .map_err(|_| Error::Limit("history commitment allocation"))?;
         Ok(())
     }
-    fn install(&mut self, finality: ResearchFinality, coordinate: (Position, u64)) {
+    fn install(&mut self, finality: StateFinality, coordinate: (Position, u64)) {
         let child = finality.into_branch();
         self.latest_parent = Some(std::mem::replace(&mut self.branch, child));
         self.coordinates.push(coordinate);
         self.commitments.push(self.branch.commitment());
     }
-    fn parent(&self, height: u64, context: &Context) -> Result<ResearchBranch, Error> {
+    fn parent(&self, height: u64, context: &Context) -> Result<StateBranch, Error> {
         if height == 0 || height > self.branch.state().height() {
             return Err(Error::Invalid("historical finality height"));
         }
@@ -140,7 +140,7 @@ impl Replay {
             .coordinates
             .get((height - 1) as usize)
             .ok_or(Error::Invalid("historical coordinate"))?;
-        let mut branch = ResearchBranch::from_genesis(ResearchState::new(context.genesis.clone()))?;
+        let mut branch = StateBranch::from_genesis(LedgerState::new(context.genesis.clone()))?;
         #[cfg(test)]
         self.historical_replays
             .set(self.historical_replays.get() + 1);
@@ -177,7 +177,7 @@ impl Replay {
     }
 }
 
-impl ResearchHistory {
+impl StateHistory {
     #[cfg(test)]
     pub(super) fn historical_replay_count(&self) -> usize {
         self.replay.historical_replays.get()
@@ -230,15 +230,15 @@ impl ResearchHistory {
         })
     }
     /// Returns the operable selected branch. A durable conflict stops new work.
-    pub fn head(&self) -> Result<&ResearchBranch, Error> {
+    pub fn head(&self) -> Result<&StateBranch, Error> {
         self.log.core.ensure()?;
         if self.replay.halted {
-            return Err(Error::Invalid("terminal research finality conflict"));
+            return Err(Error::Invalid("terminal state finality conflict"));
         }
         Ok(&self.replay.branch)
     }
     /// Readable last selected state, including after a verified conflict halt.
-    pub fn last_finalized(&self) -> Result<&ResearchBranch, Error> {
+    pub fn last_finalized(&self) -> Result<&StateBranch, Error> {
         self.log.core.ensure()?;
         Ok(&self.replay.branch)
     }
@@ -246,13 +246,13 @@ impl ResearchHistory {
         self.log.core.ensure()?;
         Ok(self.replay.halted)
     }
-    pub(super) fn branch_at(&self, height: u64) -> Result<ResearchBranch, Error> {
+    pub(super) fn branch_at(&self, height: u64) -> Result<StateBranch, Error> {
         self.log.core.ensure()?;
         if height == self.replay.branch.state().height() {
             return Ok(self.replay.branch.clone());
         }
         if height == 0 {
-            return Ok(ResearchBranch::from_genesis(ResearchState::new(
+            return Ok(StateBranch::from_genesis(LedgerState::new(
                 self.context.genesis.clone(),
             ))?);
         }
@@ -273,7 +273,7 @@ impl ResearchHistory {
         &mut self,
         height: u64,
         bytes: &[u8],
-    ) -> Result<ResearchAppendOutcome, Error> {
+    ) -> Result<StateAppendOutcome, Error> {
         self.head()?;
         let selected = self.replay.branch.state().height();
         if height
@@ -291,16 +291,16 @@ impl ResearchHistory {
         // Its indexed disk read checks the chained frame before this shortcut;
         // different sufficient signature sets still receive full validation.
         if self.finality_bytes(height)?.as_slice() == bytes {
-            return Ok(ResearchAppendOutcome::AlreadyFinalized);
+            return Ok(StateAppendOutcome::AlreadyFinalized);
         }
         let parent = self.replay.parent(height, &self.context)?;
         let candidate = parent.decode_finality(bytes, self.context.maximum_round)?;
         if candidate.branch().commitment() == self.replay.commitments[height as usize] {
-            return Ok(ResearchAppendOutcome::AlreadyFinalized);
+            return Ok(StateAppendOutcome::AlreadyFinalized);
         }
         self.report_conflict(height, bytes)
     }
-    pub fn append_finality(&mut self, bytes: &[u8]) -> Result<ResearchAppendOutcome, Error> {
+    pub fn append_finality(&mut self, bytes: &[u8]) -> Result<StateAppendOutcome, Error> {
         self.head()?;
         match self
             .replay
@@ -316,7 +316,7 @@ impl ResearchHistory {
                 let next = log::extend_position(prior.0, prior.1, &body)?;
                 self.log.core.append(&body)?;
                 self.replay.install(finality, next);
-                Ok(ResearchAppendOutcome::Finalized)
+                Ok(StateAppendOutcome::Finalized)
             }
             Err(original) => {
                 // Repeated finality evidence may use a different sufficient
@@ -325,7 +325,7 @@ impl ResearchHistory {
                     && let Ok(finality) = parent.decode_finality(bytes, self.context.maximum_round)
                 {
                     if finality.branch().commitment() == self.replay.branch.commitment() {
-                        return Ok(ResearchAppendOutcome::AlreadyFinalized);
+                        return Ok(StateAppendOutcome::AlreadyFinalized);
                     }
                     return self.report_conflict(self.replay.branch.state().height(), bytes);
                 }
@@ -339,7 +339,7 @@ impl ResearchHistory {
         &mut self,
         height: u64,
         bytes: &[u8],
-    ) -> Result<ResearchAppendOutcome, Error> {
+    ) -> Result<StateAppendOutcome, Error> {
         self.head()?;
         self.replay.verify_conflict(height, bytes, &self.context)?;
         let mut body = Vec::with_capacity(9 + bytes.len());
@@ -348,7 +348,7 @@ impl ResearchHistory {
         body.extend_from_slice(bytes);
         self.log.core.append(&body)?;
         self.replay.halted = true;
-        Ok(ResearchAppendOutcome::ConflictHalt)
+        Ok(StateAppendOutcome::ConflictHalt)
     }
     /// Exact first finality proof at this height. Re-reading verifies the stored
     /// frame checksum before exposing any bytes.
@@ -364,9 +364,9 @@ impl ResearchHistory {
         Ok(body[1..].to_vec())
     }
 }
-impl sealed::Sealed for ResearchHistory {}
-impl SelectedResearchHistory for ResearchHistory {
-    fn selected_branch(&self) -> Result<&ResearchBranch, Error> {
+impl sealed::Sealed for StateHistory {}
+impl SelectedStateHistory for StateHistory {
+    fn selected_branch(&self) -> Result<&StateBranch, Error> {
         self.last_finalized()
     }
     fn is_halted(&self) -> Result<bool, Error> {
@@ -376,11 +376,11 @@ impl SelectedResearchHistory for ResearchHistory {
 
 /// Independent read-only observation, using the identical frame, mathematical,
 /// finality, and historical conflict replay paths as an operational reopen.
-pub struct ResearchObserver {
-    branch: ResearchBranch,
+pub struct StateObserver {
+    branch: StateBranch,
     halted: bool,
 }
-impl ResearchObserver {
+impl StateObserver {
     pub fn open(
         directory: impl AsRef<Path>,
         anchor_directory: impl AsRef<Path>,
@@ -403,16 +403,16 @@ impl ResearchObserver {
             halted: replay.halted,
         })
     }
-    pub fn branch(&self) -> &ResearchBranch {
+    pub fn branch(&self) -> &StateBranch {
         &self.branch
     }
     pub fn halted(&self) -> bool {
         self.halted
     }
 }
-impl sealed::Sealed for ResearchObserver {}
-impl SelectedResearchHistory for ResearchObserver {
-    fn selected_branch(&self) -> Result<&ResearchBranch, Error> {
+impl sealed::Sealed for StateObserver {}
+impl SelectedStateHistory for StateObserver {
+    fn selected_branch(&self) -> Result<&StateBranch, Error> {
         Ok(&self.branch)
     }
     fn is_halted(&self) -> Result<bool, Error> {

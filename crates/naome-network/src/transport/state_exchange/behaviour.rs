@@ -1,6 +1,6 @@
 //! Select a separately budgeted codec only after Noise has authenticated the peer.
-use super::codec::{RESEARCH_PROTOCOL, ResearchCodec};
-use super::{ResearchConfig, WireRequest, WireResponse};
+use super::codec::{STATE_PROTOCOL, StateCodec};
+use super::{StateConfig, WireRequest, WireResponse};
 use crate::transport::{REQUEST_TIMEOUT, inbound_retention::InboundRetentionBudget};
 use libp2p::{
     Multiaddr, PeerId,
@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-type Inner = request_response::Behaviour<ResearchCodec>;
+type Inner = request_response::Behaviour<StateCodec>;
 
 pub(in crate::transport) struct Behaviour {
     peers: Vec<(PeerId, Inner)>,
@@ -24,21 +24,21 @@ pub(in crate::transport) struct Behaviour {
 impl Behaviour {
     pub(in crate::transport) fn new(
         peers: impl Iterator<Item = PeerId>,
-        config: Option<&ResearchConfig>,
+        config: Option<&StateConfig>,
     ) -> Self {
         Self {
             peers: peers
                 .map(|peer| {
                     let maximum = config.map_or(0, |c| c.maximum);
-                    let codec = ResearchCodec {
+                    let codec = StateCodec {
                         context: config.map(|c| c.context),
                         maximum,
                         global: config.map(|c| Arc::clone(&c.budget)),
                         requests: Arc::new(InboundRetentionBudget::new(2, 4 * maximum)),
                         responses: Arc::new(InboundRetentionBudget::new(2, 4 * maximum)),
                     };
-                    let protocols = config
-                        .map(|_| (RESEARCH_PROTOCOL, request_response::ProtocolSupport::Full));
+                    let protocols =
+                        config.map(|_| (STATE_PROTOCOL, request_response::ProtocolSupport::Full));
                     (
                         peer,
                         Inner::with_codec(
@@ -72,7 +72,7 @@ impl Behaviour {
         request: WireRequest,
     ) -> request_response::OutboundRequestId {
         self.inner(*peer)
-            .expect("configured research peer")
+            .expect("configured state_exchange peer")
             .send_request(peer, request)
     }
     pub(in crate::transport) fn send_response(
@@ -82,7 +82,7 @@ impl Behaviour {
         response: WireResponse,
     ) -> Result<(), ()> {
         self.inner(peer)
-            .expect("configured research peer")
+            .expect("configured state_exchange peer")
             .send_response(channel, response)
             .map_err(|_| ())
     }
@@ -99,7 +99,7 @@ impl NetworkBehaviour for Behaviour {
     ) -> Result<THandler<Self>, ConnectionDenied> {
         self.inner(peer)
             .ok_or_else(|| {
-                ConnectionDenied::new(std::io::Error::other("unconfigured research peer"))
+                ConnectionDenied::new(std::io::Error::other("unconfigured state_exchange peer"))
             })?
             .handle_established_inbound_connection(id, peer, local, remote)
     }
@@ -113,7 +113,7 @@ impl NetworkBehaviour for Behaviour {
     ) -> Result<THandler<Self>, ConnectionDenied> {
         self.inner(peer)
             .ok_or_else(|| {
-                ConnectionDenied::new(std::io::Error::other("unconfigured research peer"))
+                ConnectionDenied::new(std::io::Error::other("unconfigured state_exchange peer"))
             })?
             .handle_established_outbound_connection(id, peer, address, role, port)
     }
@@ -136,7 +136,7 @@ impl NetworkBehaviour for Behaviour {
         event: THandlerOutEvent<Self>,
     ) {
         self.inner(peer)
-            .expect("authenticated configured research handler")
+            .expect("authenticated configured state_exchange handler")
             .on_connection_handler_event(peer, id, event);
     }
     fn poll(

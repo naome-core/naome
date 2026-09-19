@@ -22,7 +22,7 @@ the same profile before executing tests. Linux can package these exact binaries:
 
 ```sh
 CARGO_INCREMENTAL=0 cargo test -p naome-cli -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-run
-CARGO_INCREMENTAL=0 cargo test -p naome-cli -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-fail-fast four_process_research_recovery_partition_and_independent_replay
+CARGO_INCREMENTAL=0 cargo test -p naome-cli -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-fail-fast four_process_state_recovery_partition_and_independent_replay
 python3 -B -m unittest discover -s devnet -p 'test_*.py'
 python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:local
 python3 -B devnet/qualify.py --backend docker --image naome-devnet:local --bin-dir target/release --directory /tmp/naome-devnet-run-1 --heights 100 --delay-ms 50 --deadline-seconds 2400

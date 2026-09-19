@@ -2,7 +2,7 @@
 
 > Historical V0 contract. Its artifact-only authority and executable callers
 > are removed. This page is not a current implementation or acceptance claim;
-> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+> use [component ownership](ownership.md) and the [MVP rules](../docs/mvp/requirements.md).
 
 This document normatively defines a Foundation-scoped append-only archive of
 exact tagged proof and definition payloads. It preserves bytes admitted from
@@ -190,7 +190,7 @@ preflight is a reusable admission or selected-state token.
 
 ## Caller-routed network serving
 
-`StaticArtifactNetwork::respond_artifact_from_payload_store` consumes one exact
+`StateNetwork::respond_artifact_from_payload_store` consumes one exact
 statically authorized Noise-authenticated inbound `ArtifactRequest` only when
 its caller explicitly routes that request and one mutable archive handle to
 this responder. The request contains an `ArtifactId` but no chain, branch,

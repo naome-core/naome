@@ -16,31 +16,31 @@ impl ProofPackage {
         root: ProofId,
         nodes: Vec<(ProofId, Vec<u8>)>,
         profile: &Profile,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         let limit = profile.limits().new_helpers as usize + 1;
         if nodes.is_empty() || nodes.len() > limit {
-            return Err(ResearchError::Limit("new proof count"));
+            return Err(LedgerError::Limit("new proof count"));
         }
         let mut unique = BTreeMap::new();
         let mut size = 2usize + 32 + 32 + 4;
         for (id, bytes) in nodes {
             size = size
                 .checked_add(36 + bytes.len())
-                .ok_or(ResearchError::Overflow)?;
+                .ok_or(LedgerError::Overflow)?;
             if size > profile.limits().package_bytes as usize {
-                return Err(ResearchError::Limit("original package bytes"));
+                return Err(LedgerError::Limit("original package bytes"));
             }
             let _ = bounded_certificate(&bytes, profile)?;
             if let Some(previous) = unique.insert(id, bytes.clone())
                 && previous != bytes
             {
-                return Err(ResearchError::Invalid(
+                return Err(LedgerError::Invalid(
                     "conflicting certificate under one proof ID",
                 ));
             }
         }
         if !unique.contains_key(&root) {
-            return Err(ResearchError::Invalid("missing package root"));
+            return Err(LedgerError::Invalid("missing package root"));
         }
         let ordered = topological(&unique, profile)?;
         let nodes = ordered
@@ -63,7 +63,7 @@ impl ProofPackage {
     pub fn certificates(&self) -> &[(ProofId, Vec<u8>)] {
         &self.nodes
     }
-    pub fn encode(&self) -> Result<Vec<u8>, ResearchError> {
+    pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut w = Writer::new();
         w.u16(1);
         w.fixed(self.author.as_bytes());
@@ -83,16 +83,16 @@ impl ProofPackage {
                 .expect("bounded package fields fit canonical framing")],
         ))
     }
-    pub fn decode(bytes: &[u8], profile: &Profile) -> Result<Self, ResearchError> {
+    pub fn decode(bytes: &[u8], profile: &Profile) -> Result<Self, LedgerError> {
         let mut r = Reader::new(bytes, profile.limits().package_bytes as usize)?;
         if r.u16()? != 1 {
-            return Err(ResearchError::Invalid("proof package version"));
+            return Err(LedgerError::Invalid("proof package version"));
         }
         let author = AccountId::from_bytes(r.fixed()?);
         let root = ProofId::from_bytes(r.fixed()?);
         let count = r.u32()? as usize;
         if count == 0 || count > profile.limits().new_helpers as usize + 1 {
-            return Err(ResearchError::Limit("new proof count"));
+            return Err(LedgerError::Limit("new proof count"));
         }
         let mut nodes = Vec::with_capacity(count);
         for _ in 0..count {
@@ -105,7 +105,7 @@ impl ProofPackage {
         r.finish()?;
         let package = Self::new(author, root, nodes, profile)?;
         if package.encode()? != bytes {
-            return Err(ResearchError::Invalid("noncanonical proof package"));
+            return Err(LedgerError::Invalid("noncanonical proof package"));
         }
         Ok(package)
     }
@@ -115,7 +115,7 @@ impl ProofPackage {
 pub(super) fn topological(
     nodes: &BTreeMap<ProofId, Vec<u8>>,
     profile: &Profile,
-) -> Result<Vec<ProofId>, ResearchError> {
+) -> Result<Vec<ProofId>, LedgerError> {
     let mut pending = BTreeMap::new();
     for (id, bytes) in nodes {
         let certificate = bounded_certificate(bytes, profile)?;
@@ -133,7 +133,7 @@ pub(super) fn topological(
             .iter()
             .find(|(_, dependencies)| dependencies.is_empty())
             .map(|(id, _)| *id)
-            .ok_or(ResearchError::Invalid("cyclic proof group"))?;
+            .ok_or(LedgerError::Invalid("cyclic proof group"))?;
         pending.remove(&next);
         for dependencies in pending.values_mut() {
             dependencies.remove(&next);

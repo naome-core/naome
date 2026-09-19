@@ -64,7 +64,7 @@ fn sync_directory_platform(directory: &Path) -> io::Result<()> {
     File::open(directory)?.sync_all()
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn sync_directory_platform(_directory: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -72,6 +72,7 @@ fn sync_directory_platform(_directory: &Path) -> io::Result<()> {
     ))
 }
 
+#[cfg(not(windows))]
 fn require_durable_directory_sync() -> Result<(), StoragePlatformError> {
     #[cfg(unix)]
     {

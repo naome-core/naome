@@ -5,9 +5,9 @@ use super::{
     setup::NodeConfig,
 };
 use naome_ledger::{OperationId, authentication::SignedOperation};
-use naome_network::{Keypair, StaticArtifactNetwork, research_peer_id};
-use naome_runtime::state::{ResearchRuntime, ResearchRuntimeConfig, ResearchRuntimeEvent};
-use naome_storage::state::{ResearchHistory, ResearchSigner};
+use naome_network::{Keypair, StateNetwork, state_peer_id};
+use naome_runtime::state::{StateRuntime, StateRuntimeConfig, StateRuntimeEvent};
+use naome_storage::state::{StateHistory, StateSigner};
 use serde_json::{Value, json};
 use std::{
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
@@ -154,11 +154,11 @@ async fn run_owned(
     }
     let mut seed = Zeroizing::new(transport_key.to_bytes());
     let identity = Keypair::ed25519_from_bytes(&mut *seed)?;
-    let mut network = StaticArtifactNetwork::new_research(identity, &genesis)?;
+    let mut network = StateNetwork::new_state(identity, &genesis)?;
     let peers = genesis
         .validators()
         .iter()
-        .map(|v| research_peer_id(v.transport_key))
+        .map(|v| state_peer_id(v.transport_key))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let remote = peers
         .iter()
@@ -171,29 +171,29 @@ async fn run_owned(
             format!("/{family}/{}/tcp/{}", address.ip(), address.port()).parse()?
         }
         None => network
-            .research_listen_address()
+            .state_listen_address()
             .ok_or("state endpoint unavailable")?
             .clone(),
     };
     network.listen_on(listen)?;
     // Missing stores, anchors, or an unsupported format are fatal. In
     // particular, losing every store never recreates a signer with old keys.
-    let history = ResearchHistory::open(
+    let history = StateHistory::open(
         &config.history,
         &config.history_anchor,
         genesis.clone(),
         config.maximum_round,
     )?;
-    let signer = ResearchSigner::open(
+    let signer = StateSigner::open(
         &config.signer,
         &config.signer_anchor,
         genesis.clone(),
         key,
         config.maximum_round,
     )?;
-    let mut runtime_config = ResearchRuntimeConfig {
+    let mut runtime_config = StateRuntimeConfig {
         allow_simulation_controls: config.simulation,
-        ..ResearchRuntimeConfig::default()
+        ..StateRuntimeConfig::default()
     };
     if genesis.profile().kind() == naome_ledger::profile::TimingKind::ShortTest {
         runtime_config.tick_interval = Duration::from_millis(50);
@@ -201,7 +201,7 @@ async fn run_owned(
         runtime_config.prevote_timeout = Duration::from_millis(350);
         runtime_config.precommit_timeout = Duration::from_millis(350);
     }
-    let mut runtime = ResearchRuntime::new(history, Some(signer), network, remote, runtime_config)?;
+    let mut runtime = StateRuntime::new(history, Some(signer), network, remote, runtime_config)?;
     // The signer/history locks above prove that no other owning process is live.
     // Only a same-user socket at the configured exact path may be removed.
     if let Ok(metadata) = std::fs::symlink_metadata(&config.control_socket) {
@@ -233,8 +233,8 @@ async fn run_owned(
             ()=output.failed()=>break Err("stdout writer failed".into()),
             ()=errors.failed()=>break Err("stderr writer failed".into()),
             result=runtime.step()=>match result {
-                Ok(ResearchRuntimeEvent::Finalized{height})=>output.line(&json!({"event":"finalized","height":height,"state":files::hex(runtime.state()?.commitment().as_bytes())}).to_string())?,
-                Ok(ResearchRuntimeEvent::Rejected{peer,reason})=>errors.line(&json!({"event":"peer_input_rejected","peer":peer.to_string(),"reason":reason}).to_string())?,
+                Ok(StateRuntimeEvent::Finalized{height})=>output.line(&json!({"event":"finalized","height":height,"state":files::hex(runtime.state()?.commitment().as_bytes())}).to_string())?,
+                Ok(StateRuntimeEvent::Rejected{peer,reason})=>errors.line(&json!({"event":"peer_input_rejected","peer":peer.to_string(),"reason":reason}).to_string())?,
                 Ok(_)=>{},Err(error)=>break Err(error.into()),
             },
             message=receiver.recv()=>{
@@ -258,7 +258,7 @@ async fn run_owned(
     outcome
 }
 fn handle(
-    runtime: &mut ResearchRuntime,
+    runtime: &mut StateRuntime,
     peers: &[naome_network::PeerId],
     request: Request,
 ) -> Result<Value> {

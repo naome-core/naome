@@ -1,6 +1,6 @@
 //! Exact whole-atom reward plans and atomic balance updates.
 
-use crate::{AccountId, GenesisId, ResearchError, codec::Writer, profile::Genesis};
+use crate::{AccountId, GenesisId, LedgerError, codec::Writer, profile::Genesis};
 use naome_proof::ProofId;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,25 +27,25 @@ impl RewardPlan {
         genesis: &Genesis,
         author: AccountId,
         mut citations: Vec<CitationRecipient>,
-    ) -> Result<Self, ResearchError> {
+    ) -> Result<Self, LedgerError> {
         if genesis.account_key(author).is_none() {
-            return Err(ResearchError::Invalid("reward author account"));
+            return Err(LedgerError::Invalid("reward author account"));
         }
         if citations.len() as u64 > genesis.profile().limits().citation_proofs {
-            return Err(ResearchError::Limit("citation recipients"));
+            return Err(LedgerError::Limit("citation recipients"));
         }
         citations.sort_by_key(|entry| entry.proof);
         if citations
             .windows(2)
             .any(|pair| pair[0].proof == pair[1].proof)
         {
-            return Err(ResearchError::Invalid("duplicate eligible citation"));
+            return Err(LedgerError::Invalid("duplicate eligible citation"));
         }
         if citations
             .iter()
             .any(|entry| genesis.account_key(entry.recipient).is_none())
         {
-            return Err(ResearchError::Invalid("citation recipient account"));
+            return Err(LedgerError::Invalid("citation recipient account"));
         }
         let rewards = genesis.profile().rewards();
         let mut plan = Self {
@@ -80,16 +80,16 @@ impl RewardPlan {
             .credits
             .values()
             .try_fold(plan.reserve, |total, atoms| {
-                total.checked_add(*atoms).ok_or(ResearchError::Overflow)
+                total.checked_add(*atoms).ok_or(LedgerError::Overflow)
             })?;
         if total != rewards.issuance_atoms {
-            return Err(ResearchError::Invalid("reward conservation"));
+            return Err(LedgerError::Invalid("reward conservation"));
         }
         Ok(plan)
     }
-    fn credit(&mut self, recipient: AccountId, atoms: u128) -> Result<(), ResearchError> {
+    fn credit(&mut self, recipient: AccountId, atoms: u128) -> Result<(), LedgerError> {
         let balance = self.credits.entry(recipient).or_default();
-        *balance = balance.checked_add(atoms).ok_or(ResearchError::Overflow)?;
+        *balance = balance.checked_add(atoms).ok_or(LedgerError::Overflow)?;
         Ok(())
     }
     /// Returns credits after proof-level division and recipient aggregation.
@@ -157,47 +157,47 @@ impl Balances {
         &mut self,
         plan: &RewardPlan,
         genesis: &Genesis,
-    ) -> Result<(), ResearchError> {
+    ) -> Result<(), LedgerError> {
         if plan.genesis != genesis.id() {
-            return Err(ResearchError::Invalid("reward plan genesis"));
+            return Err(LedgerError::Invalid("reward plan genesis"));
         }
         let mut next = self.clone();
         for (recipient, atoms) in &plan.credits {
             let balance = next
                 .accounts
                 .get_mut(recipient)
-                .ok_or(ResearchError::Invalid("payment account"))?;
-            *balance = balance.checked_add(*atoms).ok_or(ResearchError::Overflow)?;
+                .ok_or(LedgerError::Invalid("payment account"))?;
+            *balance = balance.checked_add(*atoms).ok_or(LedgerError::Overflow)?;
         }
         next.reserve = next
             .reserve
             .checked_add(plan.reserve)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         next.paid_completions = next
             .paid_completions
             .checked_add(1)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         next.verify_conservation(genesis)?;
         *self = next;
         Ok(())
     }
     /// Verifies complete account membership and the once-per-completion supply.
-    pub fn verify_conservation(&self, genesis: &Genesis) -> Result<(), ResearchError> {
+    pub fn verify_conservation(&self, genesis: &Genesis) -> Result<(), LedgerError> {
         let registered: BTreeSet<_> = genesis.accounts().iter().map(|a| a.id()).collect();
         if self.accounts.keys().copied().collect::<BTreeSet<_>>() != registered {
-            return Err(ResearchError::Invalid("balance account set"));
+            return Err(LedgerError::Invalid("balance account set"));
         }
         let expected = u128::from(self.paid_completions)
             .checked_mul(genesis.profile().rewards().issuance_atoms)
-            .ok_or(ResearchError::Overflow)?;
+            .ok_or(LedgerError::Overflow)?;
         let actual = self
             .accounts
             .values()
             .try_fold(self.reserve, |total, atoms| {
-                total.checked_add(*atoms).ok_or(ResearchError::Overflow)
+                total.checked_add(*atoms).ok_or(LedgerError::Overflow)
             })?;
         if actual != expected {
-            return Err(ResearchError::Invalid("total supply conservation"));
+            return Err(LedgerError::Invalid("total supply conservation"));
         }
         Ok(())
     }

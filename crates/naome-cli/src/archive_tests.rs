@@ -2,7 +2,7 @@ use super::*;
 use ed25519_dalek::SigningKey;
 use naome_ledger::{
     AccountId,
-    profile::{Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration},
+    profile::{Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
 };
 use std::{
     fs,
@@ -17,7 +17,7 @@ fn genesis() -> Genesis {
     Genesis::new(
         Profile::short_test(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [9; 32],
@@ -64,7 +64,7 @@ impl Fixture {
         ));
         fs::create_dir(&root).unwrap();
         let g = genesis();
-        let branch = ResearchBranch::from_genesis(ResearchState::new(g.clone())).unwrap();
+        let branch = StateBranch::from_genesis(LedgerState::new(g.clone())).unwrap();
         let frame = vector("finality");
         let checked = branch.decode_finality(&frame, 32).unwrap();
         assert_eq!(

@@ -3,7 +3,7 @@
 //! publication provenance, rewards, or finality.
 
 use crate::artifact_set::AuthenticatedArtifactSet;
-use crate::{AcceptedArtifactRecord, ArtifactState, LedgerError, LedgerState};
+use crate::{AcceptedArtifactRecord, ArtifactAdmissionError, ArtifactLedger, ArtifactState};
 use crate::{ArtifactSetProof, ArtifactSetRoot};
 use naome_proof::ArtifactId;
 
@@ -14,7 +14,7 @@ use naome_proof::ArtifactId;
 #[derive(Clone, Default)]
 #[must_use]
 pub struct ArtifactDag {
-    ledger: LedgerState,
+    ledger: ArtifactLedger,
     records: AuthenticatedArtifactSet<AcceptedArtifactRecord>,
 }
 
@@ -22,7 +22,7 @@ impl ArtifactDag {
     /// Constructs an empty artifact DAG.
     pub const fn new() -> Self {
         Self {
-            ledger: LedgerState::new(),
+            ledger: ArtifactLedger::new(),
             records: AuthenticatedArtifactSet::new(),
         }
     }
@@ -67,7 +67,7 @@ impl ArtifactDag {
     pub fn apply_canonical_artifact_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<&AcceptedArtifactRecord, LedgerError> {
+    ) -> Result<&AcceptedArtifactRecord, ArtifactAdmissionError> {
         let record = self.ledger.apply_canonical_artifact_bytes(bytes)?;
         Ok(self.retain_record(record))
     }
@@ -80,7 +80,7 @@ impl ArtifactDag {
         &mut self,
         bytes: Vec<u8>,
         expected_artifact_id: ArtifactId,
-    ) -> Result<&AcceptedArtifactRecord, LedgerError> {
+    ) -> Result<&AcceptedArtifactRecord, ArtifactAdmissionError> {
         let record = self
             .ledger
             .apply_canonical_artifact_bytes_with_expected_id(bytes, expected_artifact_id)?;
@@ -97,7 +97,7 @@ impl ArtifactDag {
         &self,
         bytes: Vec<u8>,
         artifact_id: ArtifactId,
-    ) -> Result<(), LedgerError> {
+    ) -> Result<(), ArtifactAdmissionError> {
         self.ledger
             .validate_canonical_artifact_bytes_with_expected_id(bytes, artifact_id)
     }
@@ -109,7 +109,7 @@ impl ArtifactDag {
         &mut self,
         checked: naome_checker::CheckedProof,
         expected: naome_proof::ProofId,
-    ) -> Result<&AcceptedArtifactRecord, LedgerError> {
+    ) -> Result<&AcceptedArtifactRecord, ArtifactAdmissionError> {
         let record = self.ledger.admit_checked_proof(checked, expected)?;
         Ok(self.retain_record(AcceptedArtifactRecord::Proof(record)))
     }

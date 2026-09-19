@@ -16,7 +16,7 @@ use naome_proof::{ProofCertificate, ProofStep};
 fn author(index: u8) -> AccountId {
     AccountId::for_key(account(index).verifying_key().as_bytes())
 }
-fn time(state: &ResearchState, utc: u64) -> TimeCertificate {
+fn time(state: &LedgerState, utc: u64) -> TimeCertificate {
     TimeCertificate::new(
         (0..3)
             .map(|i| {
@@ -37,7 +37,7 @@ fn time(state: &ResearchState, utc: u64) -> TimeCertificate {
     )
     .unwrap()
 }
-fn apply(state: &mut ResearchState, utc: u64, ops: Vec<SignedOperation>) -> StateRecord {
+fn apply(state: &mut LedgerState, utc: u64, ops: Vec<SignedOperation>) -> StateRecord {
     let before = state.commitment();
     let transition = state.prepare_record(time(state, utc), ops).unwrap();
     assert_eq!(state.commitment(), before);
@@ -49,7 +49,7 @@ fn apply(state: &mut ResearchState, utc: u64, ops: Vec<SignedOperation>) -> Stat
     *state = transition.into_state();
     record
 }
-fn signed(state: &ResearchState, index: u8, body: OperationBody) -> SignedOperation {
+fn signed(state: &LedgerState, index: u8, body: OperationBody) -> SignedOperation {
     body.sign(
         state.genesis(),
         state.next_nonce(author(index)).unwrap(),
@@ -57,14 +57,14 @@ fn signed(state: &ResearchState, index: u8, body: OperationBody) -> SignedOperat
     )
     .unwrap()
 }
-fn question(state: &ResearchState, formula: &str) -> CompiledQuestion {
+fn question(state: &LedgerState, formula: &str) -> CompiledQuestion {
     CompiledQuestion::compile(
         &format!("foundation = \"naome:zfc\"\nstatement = {formula}\n"),
         state.genesis().profile(),
     )
     .unwrap()
 }
-fn submit(state: &mut ResearchState, formula: &str) -> OperationId {
+fn submit(state: &mut LedgerState, formula: &str) -> OperationId {
     let action = signed(
         state,
         4,
@@ -77,7 +77,7 @@ fn submit(state: &mut ResearchState, formula: &str) -> OperationId {
     apply(state, state.time(), vec![action]);
     id
 }
-fn open_and_approve(state: &mut ResearchState) -> SolutionRoundId {
+fn open_and_approve(state: &mut LedgerState) -> SolutionRoundId {
     apply(state, state.time(), vec![]);
     let active = state.active().unwrap();
     let votes = (0..3)
@@ -100,7 +100,7 @@ fn open_and_approve(state: &mut ResearchState) -> SolutionRoundId {
     apply(state, state.time(), vec![]);
     state.active().unwrap().solution_round.unwrap()
 }
-fn root_package(state: &ResearchState, index: u8) -> ProofPackage {
+fn root_package(state: &LedgerState, index: u8) -> ProofPackage {
     let certificate = ProofCertificate::new(vec![
         ProofStep::EqualityReflexivity {
             variable: FreeVariable::new(0),
@@ -127,7 +127,7 @@ fn root_package(state: &ResearchState, index: u8) -> ProofPackage {
     )
     .unwrap()
 }
-fn start_reveal(state: &mut ResearchState) {
+fn start_reveal(state: &mut LedgerState) {
     apply(state, state.active().unwrap().deadline.unwrap(), vec![]);
     assert_eq!(state.active().unwrap().phase, Phase::CommitClosedWait);
     apply(state, state.time(), vec![]);
@@ -136,7 +136,7 @@ fn start_reveal(state: &mut ResearchState) {
 
 #[test]
 fn complete_real_proof_settlement_and_replay_are_atomic() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     let submitted = submit(&mut state, "forall(x, equal(x,x))");
     let round = open_and_approve(&mut state);
     let original =
@@ -204,7 +204,7 @@ fn complete_real_proof_settlement_and_replay_are_atomic() {
 
 #[test]
 fn phase_start_deadline_and_nonce_rejections_leave_parent_unchanged() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     submit(&mut state, "forall(x,equal(x,x))");
     let before = state.commitment();
     let fabricated = signed(
@@ -276,7 +276,7 @@ fn phase_start_deadline_and_nonce_rejections_leave_parent_unchanged() {
 
 #[test]
 fn absence_never_counts_yes_and_expiry_never_means_refutation() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     let id = submit(&mut state, "forall(x,equal(x,x))");
     apply(&mut state, 100, vec![]);
     let active = state.active().unwrap();
@@ -318,7 +318,7 @@ fn absence_never_counts_yes_and_expiry_never_means_refutation() {
 
 #[test]
 fn supplied_time_cache_is_recomputed_against_actual_parent() {
-    let state = ResearchState::new(genesis());
+    let state = LedgerState::new(genesis());
     let cert = TimeCertificate::new(
         (0..3)
             .map(|i| {
@@ -346,7 +346,7 @@ fn supplied_time_cache_is_recomputed_against_actual_parent() {
 }
 
 fn commit_original(
-    state: &mut ResearchState,
+    state: &mut LedgerState,
     index: u8,
     round: SolutionRoundId,
     secret: [u8; 32],
@@ -405,7 +405,7 @@ fn commit_original(
     original
 }
 
-fn finish(state: &mut ResearchState) {
+fn finish(state: &mut LedgerState) {
     let deadline = state.active().unwrap().deadline.unwrap();
     apply(state, deadline, vec![]);
     apply(state, deadline, vec![]);
@@ -413,7 +413,7 @@ fn finish(state: &mut ResearchState) {
 
 #[test]
 fn commitment_order_wins_even_when_reveals_arrive_in_reverse_order() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     submit(&mut state, "forall(x,equal(x,x))");
     let round = open_and_approve(&mut state);
     let first = commit_original(&mut state, 4, round, [4; 32]);
@@ -459,7 +459,7 @@ fn commitment_order_wins_even_when_reveals_arrive_in_reverse_order() {
 #[test]
 fn invalid_or_missing_earlier_reveal_does_not_block_later_eligible_commitment() {
     for try_invalid in [false, true] {
-        let mut state = ResearchState::new(genesis());
+        let mut state = LedgerState::new(genesis());
         submit(&mut state, "forall(x,equal(x,x))");
         let round = open_and_approve(&mut state);
         let first = commit_original(&mut state, 4, round, [4; 32]);
@@ -508,7 +508,7 @@ fn invalid_or_missing_earlier_reveal_does_not_block_later_eligible_commitment() 
 
 #[test]
 fn reveal_at_exact_deadline_and_wrong_original_author_are_rejected() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     submit(&mut state, "forall(x,equal(x,x))");
     let round = open_and_approve(&mut state);
     let original = commit_original(&mut state, 4, round, [4; 32]);
@@ -550,7 +550,7 @@ fn reveal_at_exact_deadline_and_wrong_original_author_are_rejected() {
 
 #[test]
 fn record_roundtrip_preserves_parent_time_clamp_and_rejects_claimed_effect_tampering() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     submit(&mut state, "forall(x,equal(x,x))");
     let transition = state.prepare_record(time(&state, 50), vec![]).unwrap();
     let record = transition.record();
@@ -580,7 +580,7 @@ fn record_roundtrip_preserves_parent_time_clamp_and_rejects_claimed_effect_tampe
 
 #[test]
 fn streaming_state_commitment_matches_materialized_canonical_bytes() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     submit(&mut state, "forall(x,equal(x,x))");
     let round = open_and_approve(&mut state);
     let original = commit_original(&mut state, 4, round, [4; 32]);
@@ -624,7 +624,7 @@ fn checked_node(
     context.register_proof(proof).unwrap();
     node
 }
-fn solve(state: &mut ResearchState, index: u8, package: ProofPackage) {
+fn solve(state: &mut LedgerState, index: u8, package: ProofPackage) {
     let round = open_and_approve(state);
     let secret = [index; 32];
     let original = SignedOriginal::sign(state.genesis(), round, package, &account(index)).unwrap();
@@ -654,7 +654,7 @@ fn solve(state: &mut ResearchState, index: u8, package: ProofPackage) {
 #[test]
 fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuance() {
     use naome_foundation::Formula;
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     let mut context = ArtifactState::new();
     let x = FreeVariable::new(0);
     let helper = checked_node(
@@ -767,7 +767,7 @@ fn multiple_reveals_share_budget_before_any_additional_checker_call() {
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
+    let mut state = LedgerState::new(super::test_support::genesis_with_profile(profile));
     submit(&mut state, "forall(x,equal(x,x))");
     let round = open_and_approve(&mut state);
     let first = commit_original(&mut state, 4, round, [4; 32]);
@@ -844,7 +844,7 @@ fn minimum_65_record_run_terminates_before_unfunded_opening_and_preserves_reads(
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
+    let mut state = LedgerState::new(super::test_support::genesis_with_profile(profile));
     let submitted = submit(&mut state, "forall(x,equal(x,x))");
     assert_eq!(state.remaining_records(), 64);
     assert_eq!(state.reserved_records(), 0);
@@ -909,7 +909,7 @@ fn minimum_66_record_run_protects_active_slots_and_settles_timely_reveal_after_p
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
+    let mut state = LedgerState::new(super::test_support::genesis_with_profile(profile));
     let submitted = submit(&mut state, "forall(x,equal(x,x))");
     let now = state.time();
     apply(&mut state, now, vec![]);
@@ -1027,7 +1027,7 @@ fn actual_queue_limit_and_exact_expiry_preserve_state_on_rejection() {
         },
     )
     .unwrap();
-    let mut state = ResearchState::new(super::test_support::genesis_with_profile(profile));
+    let mut state = LedgerState::new(super::test_support::genesis_with_profile(profile));
     let active = submit(&mut state, "forall(x,equal(x,x))");
     let queued = submit(&mut state, "forall(x,member(x,x))");
     assert_eq!(

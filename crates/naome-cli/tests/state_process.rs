@@ -38,7 +38,7 @@ fn process_binary(name: &str) -> PathBuf {
 }
 fn example(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/research-mvp")
+        .join("../../examples/state-workflow")
         .join(name)
 }
 fn raw(args: &[String]) -> Output {
@@ -300,7 +300,7 @@ impl Drop for Lab {
 }
 
 #[test]
-fn four_process_research_recovery_partition_and_independent_replay() {
+fn four_process_state_recovery_partition_and_independent_replay() {
     let _guard = process_guard();
     let mut lab = Lab::new();
     let a_package = lab.file("a.package");

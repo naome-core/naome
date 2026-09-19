@@ -28,11 +28,11 @@ pub mod state;
 pub mod time;
 
 pub use identity::*;
-pub use state::{LedgerExecution, ResearchState};
+pub use state::{LedgerExecution, LedgerState};
 
-/// A rejected research value. Rejection must leave selected state unchanged.
+/// A rejected ledger value. Rejection must leave selected state unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ResearchError {
+pub enum LedgerError {
     /// A bounded input ended before the required field.
     Truncated,
     /// A decoder did not consume exactly one canonical value.
@@ -47,20 +47,20 @@ pub enum ResearchError {
     Mathematical(String),
 }
 
-impl std::fmt::Display for ResearchError {
+impl std::fmt::Display for LedgerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Truncated => f.write_str("truncated research value"),
-            Self::TrailingBytes => f.write_str("trailing research bytes"),
-            Self::Limit(name) => write!(f, "research limit exceeded: {name}"),
-            Self::Invalid(reason) => write!(f, "invalid research value: {reason}"),
-            Self::Overflow => f.write_str("research arithmetic overflow"),
+            Self::Truncated => f.write_str("truncated ledger value"),
+            Self::TrailingBytes => f.write_str("trailing ledger bytes"),
+            Self::Limit(name) => write!(f, "ledger limit exceeded: {name}"),
+            Self::Invalid(reason) => write!(f, "invalid ledger value: {reason}"),
+            Self::Overflow => f.write_str("ledger arithmetic overflow"),
             Self::Mathematical(reason) => write!(f, "mathematical verification failed: {reason}"),
         }
     }
 }
 
-impl std::error::Error for ResearchError {}
+impl std::error::Error for LedgerError {}
 
 #[cfg(test)]
 mod test_support;

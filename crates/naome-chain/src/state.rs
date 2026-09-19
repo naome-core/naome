@@ -5,7 +5,7 @@
 //! Neither provisional preparation nor decoding grants finality.
 
 use naome_ledger::{
-    ResearchError, ResearchState, authentication::SignedOperation, time::TimeCertificate,
+    LedgerError, LedgerState, authentication::SignedOperation, time::TimeCertificate,
 };
 use sha2::{Digest, Sha256};
 mod codec;
@@ -31,15 +31,15 @@ pub trait StateRecordExecution {
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
-    ) -> Result<StateTransition, ResearchError>;
-    fn validate_record(&self, record: &StateRecord) -> Result<StateTransition, ResearchError>;
+    ) -> Result<StateTransition, LedgerError>;
+    fn validate_record(&self, record: &StateRecord) -> Result<StateTransition, LedgerError>;
 }
-impl StateRecordExecution for ResearchState {
+impl StateRecordExecution for LedgerState {
     fn prepare_record(
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
-    ) -> Result<StateTransition, ResearchError> {
+    ) -> Result<StateTransition, LedgerError> {
         let execution = self.execute(time, operations)?;
         let record = StateRecord::new(
             self,
@@ -52,23 +52,19 @@ impl StateRecordExecution for ResearchState {
         Ok(StateTransition { record, next })
     }
 
-    fn validate_record(&self, record: &StateRecord) -> Result<StateTransition, ResearchError> {
+    fn validate_record(&self, record: &StateRecord) -> Result<StateTransition, LedgerError> {
         if record.parent() != self.head()
-            || record.height()
-                != self
-                    .height()
-                    .checked_add(1)
-                    .ok_or(ResearchError::Overflow)?
+            || record.height() != self.height().checked_add(1).ok_or(LedgerError::Overflow)?
             || record.previous_state() != self.commitment()
         {
-            return Err(ResearchError::Invalid("state record parent"));
+            return Err(LedgerError::Invalid("state record parent"));
         }
         let transition = self.prepare_record(
             record.time_certificate().clone(),
             record.operations().to_vec(),
         )?;
         if transition.record.encode()? != record.encode()? {
-            return Err(ResearchError::Invalid("state record effects or successor"));
+            return Err(LedgerError::Invalid("state record effects or successor"));
         }
         Ok(transition)
     }
@@ -78,19 +74,19 @@ impl StateRecordExecution for ResearchState {
 /// and durable installation are still required before external publication.
 pub struct StateTransition {
     record: StateRecord,
-    next: ResearchState,
+    next: LedgerState,
 }
 impl StateTransition {
     pub fn record(&self) -> &StateRecord {
         &self.record
     }
-    pub fn state(&self) -> &ResearchState {
+    pub fn state(&self) -> &LedgerState {
         &self.next
     }
-    pub fn into_state(self) -> ResearchState {
+    pub fn into_state(self) -> LedgerState {
         self.next
     }
-    pub fn into_parts(self) -> (StateRecord, ResearchState) {
+    pub fn into_parts(self) -> (StateRecord, LedgerState) {
         (self.record, self.next)
     }
 }

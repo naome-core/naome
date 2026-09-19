@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use naome_ledger::{
     AccountId,
-    profile::{Genesis, Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration},
+    profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
 };
 #[cfg(unix)]
-use naome_storage::state::ResearchSigner;
-use naome_storage::state::{ResearchHistory, ResearchStorageError};
+use naome_storage::state::StateSigner;
+use naome_storage::state::{StateHistory, StateStorageError};
 
 const HISTORY_ENV: &str = "NAOME_STATE_LOCK_PROBE_HISTORY";
 const ANCHOR_ENV: &str = "NAOME_STATE_LOCK_PROBE_ANCHOR";
@@ -102,7 +102,7 @@ fn genesis() -> Genesis {
     Genesis::new(
         Profile::short_test(),
         "naome:zfc".into(),
-        RESEARCH_CHECKER_PROFILE.into(),
+        STATE_CHECKER_PROFILE.into(),
         1,
         100,
         [81; 32],
@@ -126,13 +126,13 @@ fn open(
     history: &std::path::Path,
     anchors: &std::path::Path,
     kind: &str,
-) -> Result<(), ResearchStorageError> {
+) -> Result<(), StateStorageError> {
     let g = genesis();
     let maximum = g.profile().limits().consensus_rounds;
     match kind {
-        "history" => ResearchHistory::open(history, anchors, g, maximum).map(drop),
+        "history" => StateHistory::open(history, anchors, g, maximum).map(drop),
         #[cfg(unix)]
-        "signer" => ResearchSigner::open(
+        "signer" => StateSigner::open(
             history,
             anchors,
             g,
@@ -154,7 +154,7 @@ fn canonical_lock_child_probe() {
     let result = open(&PathBuf::from(history), &PathBuf::from(anchors), &kind);
     match phase.as_str() {
         "locked" => assert!(
-            matches!(result, Err(ResearchStorageError::Locked)),
+            matches!(result, Err(StateStorageError::Locked)),
             "expected Locked, got {result:?}"
         ),
         "released" => result.expect("first-attempt child reopen after release"),
@@ -171,11 +171,11 @@ fn verify_locks(kind: &str, independent_anchor: bool) {
         let maximum = g.profile().limits().consensus_rounds;
         let owner: Box<dyn std::any::Any> = match kind {
             "history" => {
-                Box::new(ResearchHistory::create(&history.path, &anchors.path, g, maximum).unwrap())
+                Box::new(StateHistory::create(&history.path, &anchors.path, g, maximum).unwrap())
             }
             #[cfg(unix)]
             "signer" => Box::new(
-                ResearchSigner::create(
+                StateSigner::create(
                     &history.path,
                     &anchors.path,
                     g,

@@ -46,9 +46,9 @@ pub fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> 
 }
 
 /// Compiles a proof against an explicitly supplied, checker-validated context.
-/// This supports offline research packages and downloaded helper certificates.
+/// This supports offline state packages and downloaded helper certificates.
 /// Compilation establishes mathematical validity only; it does not establish
-/// that these references belong to a selected research library or earn rewards.
+/// that these references belong to a selected state library or earn rewards.
 pub fn compile_against_proof_context(
     source: &str,
     context: &ArtifactState,

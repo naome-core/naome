@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn cloned_ledgers_share_a_selected_prefix_and_isolate_later_admission() {
-    let mut selected = LedgerState::new();
+    let mut selected = ArtifactLedger::new();
     let source = selected
         .apply(certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Pairing)]))
         .unwrap();
@@ -31,10 +31,10 @@ fn cloned_ledgers_share_a_selected_prefix_and_isolate_later_admission() {
 fn canonical_bytes_match_authoring_admission_and_duplicate_semantics() {
     let variable = FreeVariable::new(42);
     let bytes = canonical_bytes(identity(variable));
-    let mut strict = LedgerState::new();
+    let mut strict = ArtifactLedger::new();
     let strict_applied = strict.apply_canonical_proof_bytes(bytes.clone()).unwrap();
 
-    let mut authoring = LedgerState::new();
+    let mut authoring = ArtifactLedger::new();
     let authoring_applied = authoring.apply(identity(variable)).unwrap();
     assert_eq!(strict_applied, authoring_applied);
     assert!(
@@ -46,7 +46,7 @@ fn canonical_bytes_match_authoring_admission_and_duplicate_semantics() {
     assert!(strict_applied.direct_proof_dependencies().is_empty());
     assert_eq!(
         strict.apply_canonical_proof_bytes(bytes),
-        Err(LedgerError::State {
+        Err(ArtifactAdmissionError::State {
             source: ArtifactStateError::DuplicateProof {
                 proof_id: strict_applied.proof_id(),
             },
@@ -62,14 +62,14 @@ fn expected_proof_id_is_checked_before_registration_and_duplicate_state() {
     let actual = checked.proof_id();
     let expected = ProofId::from_bytes([0x91; 32]);
     assert_ne!(expected, actual);
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     let mismatch = ledger
         .apply_canonical_proof_bytes_with_expected_id(bytes.clone(), expected)
         .unwrap_err();
     assert_eq!(
         mismatch,
-        LedgerError::ArtifactIdMismatch {
+        ArtifactAdmissionError::ArtifactIdMismatch {
             expected: ArtifactId::from_proof_id(expected),
             actual: ArtifactId::from_proof_id(actual),
         }
@@ -87,14 +87,14 @@ fn expected_proof_id_is_checked_before_registration_and_duplicate_state() {
 
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(bytes.clone(), expected),
-        Err(LedgerError::ArtifactIdMismatch {
+        Err(ArtifactAdmissionError::ArtifactIdMismatch {
             expected: ArtifactId::from_proof_id(expected),
             actual: ArtifactId::from_proof_id(actual),
         })
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(bytes, actual),
-        Err(LedgerError::State {
+        Err(ArtifactAdmissionError::State {
             source: ArtifactStateError::DuplicateProof { proof_id: actual },
         })
     );
@@ -105,7 +105,7 @@ fn addressed_validation_matches_single_admission_without_mutating() {
     let bytes = canonical_bytes(identity(FreeVariable::new(41)));
     let checked = normalize_and_check(identity(FreeVariable::new(41))).unwrap();
     let proof_id = checked.proof_id();
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     ledger
         .validate_canonical_proof_bytes_with_expected_id(bytes.clone(), proof_id)
@@ -120,7 +120,7 @@ fn addressed_validation_matches_single_admission_without_mutating() {
     let _ = ledger
         .apply_canonical_proof_bytes_with_expected_id(bytes.clone(), proof_id)
         .unwrap();
-    let expected = Err(LedgerError::State {
+    let expected = Err(ArtifactAdmissionError::State {
         source: ArtifactStateError::DuplicateProof { proof_id },
     });
     assert_eq!(
@@ -149,21 +149,21 @@ fn validation_errors_precede_expected_proof_id_binding() {
     let missing_reference = canonical_bytes(certificate(vec![ProofStep::ProofReference {
         proof_id: missing,
     }]));
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(vec![0], expected),
-        Err(LedgerError::Decode {
+        Err(ArtifactAdmissionError::Decode {
             source: ArtifactPayloadError::Proof(ProofCertificateError::UnexpectedEnd),
         })
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(noncanonical, expected),
-        Err(LedgerError::NonCanonicalProof)
+        Err(ArtifactAdmissionError::NonCanonicalProof)
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(invalid_inference, expected),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::Logic {
                 step: 2,
                 source: LogicError::ModusPonensMismatch,
@@ -172,7 +172,7 @@ fn validation_errors_precede_expected_proof_id_binding() {
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(missing_reference, expected),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: missing,
@@ -238,10 +238,10 @@ fn representation_mutations_are_noncanonical_and_atomic() {
         let canonical = canonical_bytes(certificate);
         assert_ne!(submitted, canonical, "{name}");
 
-        let mut ledger = LedgerState::new();
+        let mut ledger = ArtifactLedger::new();
         assert_eq!(
             ledger.apply_canonical_proof_bytes(submitted),
-            Err(LedgerError::NonCanonicalProof),
+            Err(ArtifactAdmissionError::NonCanonicalProof),
             "{name}"
         );
         let applied = ledger
@@ -275,12 +275,12 @@ fn decode_errors_precede_canonicality_without_mutation() {
         ),
     ];
 
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
     for (bytes, source) in cases {
         let error = ledger
             .apply_canonical_proof_bytes(bytes.to_vec())
             .unwrap_err();
-        assert_eq!(error, LedgerError::Decode { source });
+        assert_eq!(error, ArtifactAdmissionError::Decode { source });
         assert!(error.source().is_some());
     }
     let applied = ledger.apply_canonical_proof_bytes(valid).unwrap();
@@ -303,15 +303,15 @@ fn canonicality_precedes_reachable_reference_checking() {
         ProofStep::ProofReference { proof_id: missing },
     ]);
     let canonical = canonical_bytes(submitted.clone());
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     assert_eq!(
         ledger.apply_canonical_proof_bytes(submitted.to_canonical_bytes()),
-        Err(LedgerError::NonCanonicalProof)
+        Err(ArtifactAdmissionError::NonCanonicalProof)
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes(canonical),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: missing,
@@ -320,7 +320,7 @@ fn canonicality_precedes_reachable_reference_checking() {
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes(invalid_inference),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::Logic {
                 step: 2,
                 source: LogicError::ModusPonensMismatch,
@@ -353,14 +353,14 @@ fn canonical_five_reference_proof_requires_complete_pre_transition_state() {
         .collect::<Vec<_>>();
     let target = proof_using_every_reference(&references, ZfcAxiom::Choice);
     let target_bytes = canonical_bytes(target);
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     for (bytes, _, _) in &parents[..parents.len() - 1] {
         let _ = ledger.apply_canonical_proof_bytes(bytes.clone()).unwrap();
     }
     assert_eq!(
         ledger.apply_canonical_proof_bytes(target_bytes.clone()),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 4,
                 proof_id: parents[4].1,
@@ -389,7 +389,7 @@ fn canonical_five_reference_proof_requires_complete_pre_transition_state() {
 fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order() {
     let source_proof = certificate(vec![ProofStep::ZfcAxiom(ZfcAxiom::Pairing)]);
     let source_bytes = canonical_bytes(source_proof);
-    let mut original = LedgerState::new();
+    let mut original = ArtifactLedger::new();
     let source = original.apply_canonical_proof_bytes(source_bytes).unwrap();
     let repeated = vec![
         (source.proof_id(), ZfcAxiom::Pairing.formula()),
@@ -425,10 +425,10 @@ fn records_keep_only_unique_direct_dependencies_and_replay_in_dependency_order()
             .contains(&source.proof_id())
     );
 
-    let mut replay = LedgerState::new();
+    let mut replay = ArtifactLedger::new();
     assert_eq!(
         replay.apply_canonical_proof_bytes(child.canonical_proof_bytes().to_vec()),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: source.proof_id(),
@@ -457,7 +457,7 @@ fn authoring_record_excludes_unreachable_unknown_dependencies() {
         ProofStep::ProofReference { proof_id: missing },
         ProofStep::ZfcAxiom(ZfcAxiom::Pairing),
     ]);
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     let record = ledger.apply(candidate).unwrap();
 
@@ -470,7 +470,7 @@ fn authoring_record_excludes_unreachable_unknown_dependencies() {
 #[test]
 fn alternative_derivations_share_a_statement_and_register_distinct_identities() {
     let variable = FreeVariable::new(7);
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     let direct = ledger.apply(identity(variable)).unwrap();
     assert!(ledger.contains_proof(direct.proof_id()));
@@ -490,12 +490,12 @@ fn accepted_record_content_is_independent_of_the_selected_state() {
     let variable = FreeVariable::new(7);
     let direct_bytes = canonical_bytes(identity(variable));
 
-    let mut absent = LedgerState::new();
+    let mut absent = ArtifactLedger::new();
     let new = absent
         .apply_canonical_proof_bytes(direct_bytes.clone())
         .unwrap();
 
-    let mut present = LedgerState::new();
+    let mut present = ArtifactLedger::new();
     let detour = present.apply(identity_detour(variable)).unwrap();
     let existing = present.apply_canonical_proof_bytes(direct_bytes).unwrap();
 
@@ -506,14 +506,14 @@ fn accepted_record_content_is_independent_of_the_selected_state() {
 #[test]
 fn references_resolve_only_from_the_selected_pre_transition_state() {
     let variable = FreeVariable::new(9);
-    let mut selected = LedgerState::new();
+    let mut selected = ArtifactLedger::new();
     let source = selected.apply(identity(variable)).unwrap();
     let dependent = referenced_generalization(source.proof_id(), variable);
 
-    let mut independent = LedgerState::new();
+    let mut independent = ArtifactLedger::new();
     assert_eq!(
         independent.apply(dependent.clone()),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::UnknownProofReference {
                 step: 0,
                 proof_id: source.proof_id(),
@@ -536,7 +536,7 @@ fn one_proof_can_use_five_members_of_the_pre_transition_state() {
         ZfcAxiom::PowerSet,
         ZfcAxiom::Infinity,
     ];
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
     let references = axioms
         .iter()
         .copied()
@@ -554,7 +554,7 @@ fn one_proof_can_use_five_members_of_the_pre_transition_state() {
     assert!(ledger.contains_proof(applied.proof_id()));
 
     for missing in 0..references.len() {
-        let mut incomplete = LedgerState::new();
+        let mut incomplete = ArtifactLedger::new();
         for (index, axiom) in axioms.iter().copied().enumerate() {
             if index == missing {
                 continue;
@@ -568,7 +568,7 @@ fn one_proof_can_use_five_members_of_the_pre_transition_state() {
 
         assert!(matches!(
             incomplete.apply(proof.clone()),
-            Err(LedgerError::ProofCheck {
+            Err(ArtifactAdmissionError::ProofCheck {
                 source: CheckError::UnknownProofReference { proof_id, .. }
             }) if proof_id == references[missing].0
         ));
@@ -582,12 +582,12 @@ fn one_proof_can_use_five_members_of_the_pre_transition_state() {
 #[test]
 fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
     let variable = FreeVariable::new(11);
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
     let source = ledger.apply(identity(variable)).unwrap();
 
     assert_eq!(
         ledger.apply(identity(FreeVariable::new(42))),
-        Err(LedgerError::State {
+        Err(ArtifactAdmissionError::State {
             source: ArtifactStateError::DuplicateProof {
                 proof_id: source.proof_id(),
             },
@@ -602,7 +602,7 @@ fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
     let alias_bytes = canonical_bytes(alias.clone());
     assert_eq!(
         ledger.apply(alias),
-        Err(LedgerError::State {
+        Err(ArtifactAdmissionError::State {
             source: ArtifactStateError::DuplicateDerivation {
                 derivation_id: source.derivation_id(),
             },
@@ -614,14 +614,14 @@ fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
         ledger.apply_canonical_proof_bytes_with_expected_id(alias_bytes.clone(), wrong_expected);
     assert_eq!(
         mismatch,
-        Err(LedgerError::ArtifactIdMismatch {
+        Err(ArtifactAdmissionError::ArtifactIdMismatch {
             expected: ArtifactId::from_proof_id(wrong_expected),
             actual: ArtifactId::from_proof_id(alias_id),
         })
     );
     assert_eq!(
         ledger.apply_canonical_proof_bytes_with_expected_id(alias_bytes, alias_id),
-        Err(LedgerError::State {
+        Err(ArtifactAdmissionError::State {
             source: ArtifactStateError::DuplicateDerivation {
                 derivation_id: source.derivation_id(),
             },
@@ -637,12 +637,12 @@ fn duplicate_artifacts_and_reference_aliases_leave_state_unchanged() {
 #[test]
 fn checker_and_registration_errors_expose_sources_without_partial_updates() {
     let variable = FreeVariable::new(13);
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
     let open = certificate(vec![ProofStep::EqualityReflexivity { variable }]);
     let open_error = ledger.apply(open).unwrap_err();
     assert!(matches!(
         open_error,
-        LedgerError::ProofCheck {
+        ArtifactAdmissionError::ProofCheck {
             source: CheckError::OpenConclusion { step: 0 }
         }
     ));
@@ -653,7 +653,7 @@ fn checker_and_registration_errors_expose_sources_without_partial_updates() {
     let duplicate_error = ledger.apply(identity(variable)).unwrap_err();
     assert!(matches!(
         duplicate_error,
-        LedgerError::State {
+        ArtifactAdmissionError::State {
             source: ArtifactStateError::DuplicateProof { .. }
         }
     ));

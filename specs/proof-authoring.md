@@ -265,7 +265,7 @@ but it cannot authorize a definition alias, proof citation, or function
 obligation statement.
 
 `compile_artifact_against_selected_history` accepts the sealed
-`SelectedResearchHistory` interface. It rejects a halted history before parsing
+`SelectedStateHistory` interface. It rejects a halted history before parsing
 source, then borrows the finalized full state's immutable checked proof library.
 Only a durable history owner or its replay-verified read-only observer can supply
 this interface. Proposed records, unselected packages, and caller-built snapshots

@@ -2,7 +2,8 @@
 
 The state-v1 architecture integration is in progress. The evidence below remains
 tied to its recorded commits and does not qualify the new format or establish
-that the remaining parallel authority paths have been removed. Fresh complete
+that the final integration is qualified. The parallel authority APIs are now
+removed and neutral names are implemented; final qualification remains pending. Fresh complete
 workspace, platform CI, and real-window lab evidence are required for integration
 acceptance.
 
@@ -63,8 +64,19 @@ actual timeout/catch-up rules and replays its witnesses through anchored honest
 signers and cold restart; separate tests check every four-unit quorum subset and
 shared full-width weight arithmetic. Cross-process tests cover history/signer
 owners and their independent anchors. The ledger retains the proof/set malformed
-decoder campaign. Neutral API/on-disk naming and final real-window qualification
-remain outstanding; this milestone does not establish public-network security.
+decoder campaign. The later naming boundary replaces the remaining API/filename labels; final
+real-window qualification remains outstanding. This milestone does not establish
+public-network security.
+
+The [neutral state boundary milestone](evidence/neutral-state-boundary.json)
+completes the canonical API names, version-2 operator configuration, authority
+filenames, and current documentation/tool paths. Legacy authority namespaces and
+configuration fields fail closed without conversion or writes. Both complete
+pinned local workspace profiles passed 533 tests; formatting, Clippy,
+documentation and doctests passed. A fresh four-validator native devnet passed
+12 records with delay, isolation/healing, process restarts and independent replay.
+The actual-agent 300/120/120-second lab and final exact-head platform/devnet CI
+remain pending; earlier reports below remain historical evidence.
 
 ## Recorded qualification
 
@@ -112,17 +124,17 @@ permissionless-network security.
 |---|---|
 | Profile | [Profile/genesis tests](../../crates/naome-ledger/src/profile/tests.rs) |
 | Questions | [Question compilation tests](../../crates/naome-ledger/src/question/tests.rs) |
-| State | [Research state transitions](../../crates/naome-chain/src/state/tests.rs), [wire/replay vectors](../../crates/naome-chain/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-chain/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-chain/src/state/tests/capacity_sixteen.rs) |
+| State | [Canonical state transitions](../../crates/naome-chain/src/state/tests.rs), [wire/replay vectors](../../crates/naome-chain/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-chain/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-chain/src/state/tests/capacity_sixteen.rs) |
 | Library | [Mathematical normalization/reuse tests](../../crates/naome-ledger/src/library/tests.rs), [workload qualification](../../crates/naome-ledger/src/library/tests/qualification.rs), [older-depth boundary](../../crates/naome-ledger/src/library/tests/depth_boundary.rs) |
 | Accounting | [Exact monetary distribution](../../crates/naome-ledger/src/accounting/tests.rs) |
 | Receipts | [Settlement inspection and canonical receipt tests](../../crates/naome-chain/src/state/receipt_tests.rs) |
 | Authentication/time | [Action authentication](../../crates/naome-ledger/src/authentication/tests.rs), [signed time](../../crates/naome-ledger/src/time/tests.rs) |
 | Consensus/node | [Consensus kernel](../../crates/naome-consensus/src/state/tests.rs), [node recovery](../../crates/naome-node/src/state/tests.rs) |
-| Storage | [Research history/signer/settlement recovery](../../crates/naome-storage/src/state/tests.rs), [journal I/O faults](../../crates/naome-storage/src/state/log_tests.rs) |
+| Storage | [State history/signer/settlement recovery](../../crates/naome-storage/src/state/tests.rs), [journal I/O faults](../../crates/naome-storage/src/state/log_tests.rs) |
 | Transport/runtime | [Network exchange](../../crates/naome-network/src/transport/state_exchange/tests.rs), [exact frame limits](../../crates/naome-network/src/transport/state_exchange/tests/boundary.rs), [peer isolation and lifecycle](../../crates/naome-network/src/transport/state_exchange/tests/lifecycle.rs), [wire protocol](../../crates/naome-protocol/src/state_exchange/tests.rs), [runtime intake](../../crates/naome-runtime/src/state/tests.rs) |
 | CLI | [Agent](../../crates/naome-cli/src/app/agent/tests.rs), [durable actions](../../crates/naome-cli/src/app/actions/tests.rs), [private files](../../crates/naome-cli/src/app/files/tests.rs), [setup/local profile](../../crates/naome-cli/src/app/setup/tests.rs) |
-| Process | [four_process_research_recovery_partition_and_independent_replay](../../crates/naome-cli/tests/research_process.rs): accelerated independent processes |
-| LAB | [research_lab_acceptance.py](../../tools/research_lab_acceptance.py): real windows, actual provider, separate four-process state; report required |
+| Process | [four_process_state_recovery_partition_and_independent_replay](../../crates/naome-cli/tests/state_process.rs): accelerated independent processes |
+| LAB | [state_lab_acceptance.py](../../tools/state_lab_acceptance.py): real windows, actual provider, separate four-process state; report required |
 
 ## Requirement mapping
 
@@ -131,7 +143,7 @@ identify runner actions and fields in the recorded acceptance report.
 
 | Requirement | Executable evidence and scope |
 |---|---|
-| MVP-01 | Profile: `genesis_identity_binds_all_configuration_and_keys`, `rejects_duplicate_keys_roles_and_owners`, strict codec tests. Network: `research_noise_peer_with_wrong_genesis_never_delivers_application_payload`. LAB: `independent_process_custody` and immutable profile. |
+| MVP-01 | Profile: `genesis_identity_binds_all_configuration_and_keys`, `rejects_duplicate_keys_roles_and_owners`, strict codec tests. Network: `state_noise_peer_with_wrong_genesis_never_delivers_application_payload`. LAB: `independent_process_custody` and immutable profile. |
 | MVP-02 | Process test and LAB start four executables with separate configured histories, anchors, signer stores and keys. LAB records custody and agreement. |
 | MVP-03 | State: `complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuance`; Consensus: `verified_control_record_finality_binds_full_state_and_preserves_empty_library`; LAB compares complete state/accounts/claims/library. |
 | MVP-04 | Consensus control-record test above; Storage: `complete_control_history_reopens_and_observer_uses_same_full_state`; Process finalizes an unapproved question without a proof. |

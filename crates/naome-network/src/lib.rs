@@ -13,13 +13,13 @@ pub use transport::{
     BuildError, CONNECTION_TIMEOUT, DIAL_RETRY_BASE, DIAL_RETRY_MAX, INBOUND_AUTH_BURST,
     INBOUND_AUTH_REFILL_INTERVAL, ListenError, MAX_CONNECTIONS_PER_PEER, MAX_PENDING_REQUESTS,
     MAX_STATIC_PEERS, MAX_YAMUX_STREAMS_PER_CONNECTION, NetworkEvent, PeerSessionEvent,
-    REQUEST_TIMEOUT, RequestStartError, STABLE_SESSION_DURATION, StaticArtifactNetwork, StaticPeer,
+    REQUEST_TIMEOUT, RequestStartError, STABLE_SESSION_DURATION, StateNetwork, StaticPeer,
     TCP_LISTEN_BACKLOG,
 };
 
 pub use transport::state_exchange::{
-    InboundResearch, ResearchContext, ResearchEvent, ResearchFailure, ResearchHistoryItem,
-    ResearchMismatch, ResearchNetworkBuildError, ResearchReceivedResponse, ResearchRejection,
-    ResearchRequest, ResearchRequestBody, ResearchRespondError, ResearchResponse,
-    ResearchResponseBody, ResearchStartError, ResearchTicket, ResearchWireError, research_peer_id,
+    InboundState, StateContext, StateEvent, StateFailure, StateHistoryItem, StateMismatch,
+    StateNetworkBuildError, StateReceivedResponse, StateRejection, StateRequest, StateRequestBody,
+    StateRespondError, StateResponse, StateResponseBody, StateStartError, StateTicket,
+    StateWireError, state_peer_id,
 };

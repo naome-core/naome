@@ -4,7 +4,7 @@
 //! and seals successors with matching precommit evidence. Storage owns durable
 //! selection and signer custody; the ledger owns deterministic state execution.
 //!
-//! [`PreselectedProposerStateV0`] exposes shared arithmetic only. Its selected
+//! [`PreselectedProposerState`] exposes shared arithmetic only. Its selected
 //! keys grant no signing, finality, persistence, or recovery authority.
 
 use std::error::Error;
@@ -13,8 +13,7 @@ mod proposer_selection;
 pub mod state;
 mod votes;
 pub use proposer_selection::{
-    FixedAgreementSetId, PreselectedProposerStateV0, ProposerPriorityStateId,
-    ProposerSelectionError,
+    FixedAgreementSetId, PreselectedProposerState, ProposerPriorityStateId, ProposerSelectionError,
 };
 pub use votes::{ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot};
 #[cfg(test)]

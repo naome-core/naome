@@ -3,16 +3,16 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget,
-    state::{ResearchBranch, ResearchLockEvent, ResearchPhase, ResearchPublication},
+    state::{StateBranch, StateLockEvent, StatePhase, StatePublication},
 };
 use naome_ledger::{
-    ResearchState,
+    LedgerState,
     operations::OperationBody,
     profile::Genesis,
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
 };
-use naome_storage::state::ResearchSigner;
+use naome_storage::state::StateSigner;
 use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
@@ -27,10 +27,10 @@ fn key(lab: &Lab, relative: &str, role: u8) -> SigningKey {
 fn genesis(lab: &Lab) -> Genesis {
     Genesis::decode(&fs::read(lab.root.join("genesis.bin")).unwrap()).unwrap()
 }
-fn signer(lab: &Lab, node: usize) -> ResearchSigner {
+fn signer(lab: &Lab, node: usize) -> StateSigner {
     let g = genesis(lab);
     let maximum = g.profile().limits().consensus_rounds;
-    ResearchSigner::open(
+    StateSigner::open(
         lab.root.join(format!("node-{node}/signer")),
         lab.root.join(format!("anchor-signer-{node}")),
         g,
@@ -69,12 +69,12 @@ fn image(lab: &Lab, node: usize) -> BTreeMap<PathBuf, Vec<u8>> {
     result
 }
 fn alternate_proposal(lab: &Lab) -> Vec<u8> {
-    let branch = ResearchBranch::from_genesis(ResearchState::new(genesis(lab))).unwrap();
+    let branch = StateBranch::from_genesis(LedgerState::new(genesis(lab))).unwrap();
     make_proposal(lab, &branch, "conflicting vote target", 4, "question-a.nao")
 }
 fn make_proposal(
     lab: &Lab,
-    branch: &ResearchBranch,
+    branch: &StateBranch,
     purpose: &str,
     author: usize,
     source: &str,
@@ -118,11 +118,11 @@ fn make_proposal(
         .map(|i| key(lab, &format!("node-{i}/consensus.key"), 2))
         .find(|key| key.verifying_key().as_bytes() == proposer.as_bytes())
         .unwrap();
-    let mut kernel = naome_consensus::state::ResearchLockState::new(branch, proposer).unwrap();
+    let mut kernel = naome_consensus::state::StateLockState::new(branch, proposer).unwrap();
     let intent = kernel
         .apply(
             branch,
-            &ResearchLockEvent::Author {
+            &StateLockEvent::Author {
                 record: Some(record),
             },
             maximum,
@@ -157,10 +157,10 @@ fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_qu
     let journal_path = journal(&lab, 3);
     let prefix = fs::read(&journal_path).unwrap();
     let mut recovered = signer(&lab, 3);
-    assert_eq!(recovered.phase().unwrap(), ResearchPhase::Prevote);
+    assert_eq!(recovered.phase().unwrap(), StatePhase::Prevote);
     let publications = recovered.retry_publications().unwrap();
     assert_eq!(publications.len(), 1);
-    let ResearchPublication::Vote(vote) = &publications[0] else {
+    let StatePublication::Vote(vote) = &publications[0] else {
         panic!("expected durable vote")
     };
     assert_eq!(vote.role(), ConsensusVoteRole::Prevote);
@@ -168,7 +168,7 @@ fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_qu
     assert_eq!(vote.encode(), observed_vote);
     assert_eq!(
         recovered
-            .apply_and_sign(&ResearchLockEvent::Prevote {
+            .apply_and_sign(&StateLockEvent::Prevote {
                 proposal: Some(proposal.clone())
             })
             .unwrap(),
@@ -176,7 +176,7 @@ fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_qu
     );
     assert!(
         recovered
-            .apply_and_sign(&ResearchLockEvent::ProposalTimeout)
+            .apply_and_sign(&StateLockEvent::ProposalTimeout)
             .is_err()
     );
     drop(recovered);
@@ -227,7 +227,7 @@ fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_qu
     let final_archive = exported(&lab, 0, "after-catch-up");
     let g = genesis(&lab);
     let maximum = g.profile().limits().consensus_rounds;
-    let mut branch = ResearchBranch::from_genesis(ResearchState::new(g)).unwrap();
+    let mut branch = StateBranch::from_genesis(LedgerState::new(g)).unwrap();
     let recovered_key = ConsensusKey::from_bytes(
         key(&lab, "node-3/consensus.key", 2)
             .verifying_key()
@@ -369,13 +369,13 @@ fn capture_vote_without_receipt(
     expected_height: u64,
 ) -> Vec<u8> {
     use naome_network::{
-        Keypair, NetworkEvent, PeerSessionEvent, ResearchRequestBody as Request,
-        ResearchResponseBody as Response, StaticArtifactNetwork, research_peer_id,
+        Keypair, NetworkEvent, PeerSessionEvent, StateNetwork, StateRequestBody as Request,
+        StateResponseBody as Response, state_peer_id,
     };
     let g = genesis(lab);
     let mut seed = Zeroizing::new(key(lab, "node-0/transport.key", 3).to_bytes());
     let identity = Keypair::ed25519_from_bytes(&mut *seed).unwrap();
-    let peer = research_peer_id(
+    let peer = state_peer_id(
         key(lab, "node-3/transport.key", 3)
             .verifying_key()
             .to_bytes(),
@@ -386,9 +386,9 @@ fn capture_vote_without_receipt(
         .build()
         .unwrap()
         .block_on(async {
-            let mut network = StaticArtifactNetwork::new_research(identity, &g).unwrap();
+            let mut network = StateNetwork::new_state(identity, &g).unwrap();
             network
-                .listen_on(network.research_listen_address().unwrap().clone())
+                .listen_on(network.state_listen_address().unwrap().clone())
                 .unwrap();
             tokio::time::timeout(Duration::from_secs(20), async {
                 let mut ticket = None;
@@ -399,7 +399,7 @@ fn capture_vote_without_receipt(
                         {
                             ticket = Some(
                                 network
-                                    .request_research(
+                                    .request_state(
                                         peer,
                                         Request::Proposal(
                                             proposal.as_ref().unwrap().clone().into(),
@@ -408,11 +408,11 @@ fn capture_vote_without_receipt(
                                     .unwrap(),
                             );
                         }
-                        NetworkEvent::InboundResearch(inbound) => {
+                        NetworkEvent::InboundState(inbound) => {
                             assert_eq!(inbound.peer_id(), peer);
                             if let Request::Vote(bytes) = inbound.request().body() {
-                                let vote = naome_consensus::state::ResearchVote::decode(bytes, &g)
-                                    .unwrap();
+                                let vote =
+                                    naome_consensus::state::StateVote::decode(bytes, &g).unwrap();
                                 assert_eq!(
                                     vote.signer(),
                                     ConsensusKey::from_bytes(
@@ -432,9 +432,9 @@ fn capture_vote_without_receipt(
                                 Request::Proof { .. } => Response::Unavailable,
                                 _ => Response::Accepted,
                             };
-                            network.respond_research(inbound, response).unwrap();
+                            network.respond_state(inbound, response).unwrap();
                         }
-                        NetworkEvent::OutboundResearch(event) => {
+                        NetworkEvent::OutboundState(event) => {
                             if let Some(active) = ticket.take() {
                                 let received = active.complete(event).unwrap().unwrap();
                                 assert_eq!(received.response().body(), &Response::Accepted);
@@ -451,12 +451,8 @@ fn capture_vote_without_receipt(
 
 // Fixture certificates intentionally model a quorum that equivocates. They are
 // not evidence that a public network tolerates a compromised supermajority.
-fn certify(
-    lab: &Lab,
-    branch: &ResearchBranch,
-    bytes: &[u8],
-) -> naome_consensus::state::ResearchFinality {
-    use naome_consensus::state::{ResearchLockState, ResearchQuorum};
+fn certify(lab: &Lab, branch: &StateBranch, bytes: &[u8]) -> naome_consensus::state::StateFinality {
+    use naome_consensus::state::{StateLockState, StateQuorum};
     let maximum = branch.state().genesis().profile().limits().consensus_rounds;
     let proposal = branch.verify_proposal(bytes, maximum).unwrap();
     let keys = (0..3)
@@ -465,7 +461,7 @@ fn certify(
     let mut kernels = keys
         .iter()
         .map(|key| {
-            ResearchLockState::new(
+            StateLockState::new(
                 branch,
                 ConsensusKey::from_bytes(key.verifying_key().to_bytes()),
             )
@@ -477,26 +473,26 @@ fn certify(
         let intent = kernel
             .apply(
                 branch,
-                &ResearchLockEvent::Prevote {
+                &StateLockEvent::Prevote {
                     proposal: Some(bytes.to_vec()),
                 },
                 maximum,
             )
             .unwrap();
         let signature = key.sign(&intent.signing_bytes().unwrap()).to_bytes();
-        let ResearchPublication::Vote(vote) = intent.complete(signature, branch, maximum).unwrap()
+        let StatePublication::Vote(vote) = intent.complete(signature, branch, maximum).unwrap()
         else {
             panic!("vote")
         };
         votes.push(vote);
     }
-    let prevotes = ResearchQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let prevotes = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
     let mut votes = Vec::new();
     for (kernel, key) in kernels.iter_mut().zip(&keys) {
         let intent = kernel
             .apply(
                 branch,
-                &ResearchLockEvent::Precommit {
+                &StateLockEvent::Precommit {
                     proposal: Some(bytes.to_vec()),
                     quorum: prevotes.encode(),
                 },
@@ -504,19 +500,19 @@ fn certify(
             )
             .unwrap();
         let signature = key.sign(&intent.signing_bytes().unwrap()).to_bytes();
-        let ResearchPublication::Vote(vote) = intent.complete(signature, branch, maximum).unwrap()
+        let StatePublication::Vote(vote) = intent.complete(signature, branch, maximum).unwrap()
         else {
             panic!("vote")
         };
         votes.push(vote);
     }
-    let quorum = ResearchQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let quorum = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
     branch.verify_finality(&proposal, &quorum, maximum).unwrap()
 }
 
 #[test]
 fn canonical_authenticated_historical_conflict_stops_pending_publication_and_persists_halt() {
-    use naome_storage::state::{ResearchHistory, ResearchObserver};
+    use naome_storage::state::{StateHistory, StateObserver};
     let _guard = process_guard();
     let mut lab = Lab::new();
     lab.start(3);
@@ -524,7 +520,7 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
     lab.stop(3);
     let g = genesis(&lab);
     let maximum = g.profile().limits().consensus_rounds;
-    let initial = ResearchBranch::from_genesis(ResearchState::new(g.clone())).unwrap();
+    let initial = StateBranch::from_genesis(LedgerState::new(g.clone())).unwrap();
     let selected = certify(
         &lab,
         &initial,
@@ -539,7 +535,7 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
         selected.branch().commitment(),
         conflicting.branch().commitment()
     );
-    let mut history = ResearchHistory::open(
+    let mut history = StateHistory::open(
         lab.root.join("node-3/history"),
         lab.root.join("anchor-history-3"),
         g.clone(),
@@ -564,7 +560,7 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
     let prefix = fs::read(&journal_path).unwrap();
     let before = image(&lab, 3);
     deliver_conflict_until_process_stops(&mut lab, conflicting.encode().unwrap(), &vote);
-    let observer = ResearchObserver::open(
+    let observer = StateObserver::open(
         lab.root.join("node-3/history"),
         lab.root.join("anchor-history-3"),
         g,
@@ -581,7 +577,7 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
     assert!(stopped.retry_publications().is_err());
     assert!(
         stopped
-            .apply_and_sign(&ResearchLockEvent::ProposalTimeout)
+            .apply_and_sign(&StateLockEvent::ProposalTimeout)
             .is_err()
     );
     drop(stopped);
@@ -609,13 +605,13 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
 
 fn deliver_conflict_until_process_stops(lab: &mut Lab, conflict: Vec<u8>, pending_vote: &[u8]) {
     use naome_network::{
-        Keypair, NetworkEvent, PeerSessionEvent, ResearchRequestBody as Request,
-        ResearchResponseBody as Response, StaticArtifactNetwork, research_peer_id,
+        Keypair, NetworkEvent, PeerSessionEvent, StateNetwork, StateRequestBody as Request,
+        StateResponseBody as Response, state_peer_id,
     };
     let g = genesis(lab);
     let mut seed = Zeroizing::new(key(lab, "node-0/transport.key", 3).to_bytes());
     let identity = Keypair::ed25519_from_bytes(&mut *seed).unwrap();
-    let peer = research_peer_id(
+    let peer = state_peer_id(
         key(lab, "node-3/transport.key", 3)
             .verifying_key()
             .to_bytes(),
@@ -623,23 +619,23 @@ fn deliver_conflict_until_process_stops(lab: &mut Lab, conflict: Vec<u8>, pendin
     .unwrap();
     let child = lab.nodes[3].as_mut().unwrap();
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-        let mut network=StaticArtifactNetwork::new_research(identity,&g).unwrap();
-        network.listen_on(network.research_listen_address().unwrap().clone()).unwrap();
+        let mut network=StateNetwork::new_state(identity,&g).unwrap();
+        network.listen_on(network.state_listen_address().unwrap().clone()).unwrap();
         tokio::time::timeout(Duration::from_secs(20),async {
             let mut ticket=None;let mut sent=false;
             loop {tokio::select! {
                 _=tokio::time::sleep(Duration::from_millis(10))=>if let Some(status)=child.try_wait().unwrap() {assert!(sent);assert!(!status.success());break;},
                 event=network.next_event()=>match event {
                     NetworkEvent::PeerSession(PeerSessionEvent::Established{peer_id}) if peer_id==peer&&!sent=> {
-                        ticket=Some(network.request_research(peer,Request::Finalized(conflict.clone().into())).unwrap());sent=true;
+                        ticket=Some(network.request_state(peer,Request::Finalized(conflict.clone().into())).unwrap());sent=true;
                     }
-                    NetworkEvent::InboundResearch(inbound)=> {
+                    NetworkEvent::InboundState(inbound)=> {
                         assert_eq!(inbound.peer_id(),peer);
                         if let Request::Vote(bytes)=inbound.request().body() {assert_eq!(bytes.as_ref(),pending_vote);continue;}
                         let response=match inbound.request().body() {Request::Handshake=>Response::Ready,Request::History{..}=>Response::History(Vec::new()),Request::Proof{..}=>Response::Unavailable,_=>Response::Accepted};
-                        network.respond_research(inbound,response).unwrap();
+                        network.respond_state(inbound,response).unwrap();
                     }
-                    NetworkEvent::OutboundResearch(event)=>if let Some(active)=ticket.take() {let _ = active.complete(event).unwrap();},
+                    NetworkEvent::OutboundState(event)=>if let Some(active)=ticket.take() {let _ = active.complete(event).unwrap();},
                     _=>{}
                 }
             }}

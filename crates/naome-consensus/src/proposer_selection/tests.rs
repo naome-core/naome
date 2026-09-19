@@ -33,7 +33,7 @@ fn hex_array<const N: usize>(hex: &str) -> [u8; N] {
 
 #[test]
 fn fixed_set_and_priority_state_identity_layouts_have_independent_goldens() {
-    let state = FixedProposerStateV0::try_from_preselected(&[entry(1, 1), entry(2, 3)]).unwrap();
+    let state = FixedProposerState::try_from_preselected(&[entry(1, 1), entry(2, 3)]).unwrap();
 
     let mut set_preimage = Vec::new();
     set_preimage.extend_from_slice(b"naome:fixed-agreement-set:v0\0");
@@ -84,8 +84,7 @@ fn fixed_set_and_priority_state_identity_layouts_have_independent_goldens() {
 
 #[test]
 fn weighted_sequence_matches_the_reference_schedule() {
-    let mut state =
-        FixedProposerStateV0::try_from_preselected(&[entry(1, 1), entry(2, 3)]).unwrap();
+    let mut state = FixedProposerState::try_from_preselected(&[entry(1, 1), entry(2, 3)]).unwrap();
 
     let expected = [
         (key(2), vec![signed(1), signed(-1)]),
@@ -106,7 +105,7 @@ fn weighted_sequence_matches_the_reference_schedule() {
 
 #[test]
 fn equal_priority_ties_use_the_lowest_consensus_key() {
-    let state = FixedProposerStateV0::try_from_preselected(&[entry(9, 1), entry(3, 1)]).unwrap();
+    let state = FixedProposerState::try_from_preselected(&[entry(9, 1), entry(3, 1)]).unwrap();
     let (proposer, successor) = state.select_next().unwrap();
 
     assert_eq!(proposer, key(3));
@@ -120,8 +119,8 @@ fn equal_priority_ties_use_the_lowest_consensus_key() {
 fn input_order_does_not_change_set_state_or_schedule() {
     let entries = [entry(1, 2), entry(2, 5), entry(3, 3)];
     let reversed = [entry(3, 3), entry(2, 5), entry(1, 2)];
-    let mut left = FixedProposerStateV0::try_from_preselected(&entries).unwrap();
-    let mut right = FixedProposerStateV0::try_from_preselected(&reversed).unwrap();
+    let mut left = FixedProposerState::try_from_preselected(&entries).unwrap();
+    let mut right = FixedProposerState::try_from_preselected(&reversed).unwrap();
 
     assert_eq!(left.fixed_set_id(), right.fixed_set_id());
     assert_eq!(left.id(), right.id());
@@ -137,7 +136,7 @@ fn input_order_does_not_change_set_state_or_schedule() {
 
 #[test]
 fn empty_fixed_set_halts_proposer_selection() {
-    let state = FixedProposerStateV0::try_from_preselected(&[]).unwrap();
+    let state = FixedProposerState::try_from_preselected(&[]).unwrap();
     assert_eq!(
         state.select_next(),
         Err(ProposerSelectionError::NoActiveValidators)
@@ -146,7 +145,7 @@ fn empty_fixed_set_halts_proposer_selection() {
 
 #[test]
 fn one_maximum_weight_validator_remains_stable() {
-    let state = FixedProposerStateV0::try_from_preselected(&[entry(1, u128::MAX)]).unwrap();
+    let state = FixedProposerState::try_from_preselected(&[entry(1, u128::MAX)]).unwrap();
     let (proposer, successor) = state.select_next().unwrap();
 
     assert_eq!(proposer, key(1));
@@ -163,7 +162,7 @@ fn maximum_validator_count_is_scheduled_without_overflow() {
             ActiveAgreementEntry::new(ConsensusKey::from_bytes(bytes), AgreementWeight::new(1))
         })
         .collect::<Vec<_>>();
-    let mut state = FixedProposerStateV0::try_from_preselected(&entries).unwrap();
+    let mut state = FixedProposerState::try_from_preselected(&entries).unwrap();
 
     for expected in entries {
         let (proposer, successor) = state.select_next().unwrap();
@@ -230,7 +229,7 @@ fn small_weight_schedules_return_to_zero_with_exact_counts() {
             for third_weight in 1_u128..=5 {
                 let weights = [first_weight, second_weight, third_weight];
                 let period = weights.iter().sum::<u128>() as usize;
-                let mut state = FixedProposerStateV0::try_from_preselected(&[
+                let mut state = FixedProposerState::try_from_preselected(&[
                     entry(1, first_weight),
                     entry(2, second_weight),
                     entry(3, third_weight),
@@ -251,7 +250,7 @@ fn small_weight_schedules_return_to_zero_with_exact_counts() {
 
 #[test]
 fn combined_rescale_and_negative_floor_vector_is_exact() {
-    let fixed_set = FixedAgreementSetV0::try_from_preselected(&[
+    let fixed_set = FixedAgreementSet::try_from_preselected(&[
         entry(1, 1),
         entry(2, 1),
         entry(3, 1),
@@ -263,7 +262,7 @@ fn combined_rescale_and_negative_floor_vector_is_exact() {
         .map(BigInt::from)
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    let state = FixedProposerStateV0 {
+    let state = FixedProposerState {
         id: derive_priority_state_id(fixed_set.id(), &priorities).unwrap(),
         fixed_set: Arc::new(fixed_set),
         priorities,
@@ -279,7 +278,7 @@ fn combined_rescale_and_negative_floor_vector_is_exact() {
 
 #[test]
 fn each_step_normalizes_instead_of_reusing_one_batched_normalization() {
-    let fixed_set = FixedAgreementSetV0::try_from_preselected(&[
+    let fixed_set = FixedAgreementSet::try_from_preselected(&[
         entry(1, 1),
         entry(2, 1),
         entry(3, 2),
@@ -291,7 +290,7 @@ fn each_step_normalizes_instead_of_reusing_one_batched_normalization() {
         .map(BigInt::from)
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    let mut state = FixedProposerStateV0 {
+    let mut state = FixedProposerState {
         id: derive_priority_state_id(fixed_set.id(), &priorities).unwrap(),
         fixed_set: Arc::new(fixed_set),
         priorities,
@@ -323,7 +322,7 @@ fn maximum_count_can_sum_to_maximum_total_weight() {
         entries[MAX_ACTIVE_VALIDATORS - 1].consensus_key(),
         AgreementWeight::new(u128::MAX - (MAX_ACTIVE_VALIDATORS as u128 - 1)),
     );
-    let state = FixedProposerStateV0::try_from_preselected(&entries).unwrap();
+    let state = FixedProposerState::try_from_preselected(&entries).unwrap();
 
     let (proposer, successor) = state.select_next().unwrap();
     assert_eq!(proposer, entries[MAX_ACTIVE_VALIDATORS - 1].consensus_key());
@@ -354,7 +353,7 @@ fn small_reachable_states_match_an_independent_i128_model() {
     for first in 1_u128..=4 {
         for second in 1_u128..=4 {
             for third in 1_u128..=4 {
-                let mut state = FixedProposerStateV0::try_from_preselected(&[
+                let mut state = FixedProposerState::try_from_preselected(&[
                     entry(1, first),
                     entry(2, second),
                     entry(3, third),

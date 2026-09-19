@@ -1,25 +1,25 @@
 use super::{
-    ResearchConsensusError as Error, Result,
+    Result, StateConsensusError as Error,
     codec::{Reader, bytes},
     digest,
-    evidence::{RESEARCH_QUORUM_MAX_BYTES, ResearchQuorum, verify_signer},
+    evidence::{STATE_QUORUM_MAX_BYTES, StateQuorum, verify_signer},
 };
 use crate::{
     ActiveAgreementEntry, AgreementWeight, ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget,
-    ProposalSigningRoot, proposer_selection::FixedProposerStateV0,
+    ProposalSigningRoot, proposer_selection::FixedProposerState,
 };
 use naome_chain::StateRecordExecution;
 use naome_chain::{FinalizedStateRecord, StateRecord};
-use naome_ledger::{GenesisId, ProfileId, RecordId, ResearchState, StateCommitment};
+use naome_ledger::{GenesisId, LedgerState, ProfileId, RecordId, StateCommitment};
 
 const VALUE_MAGIC: &[u8; 5] = b"NSCB1";
 const VALUE_BYTES: usize = 5 + 8 * 32 + 8;
 const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP1";
 
-/// Evidence-free header binding a complete research record and proposer state.
+/// Evidence-free header binding a complete state record and proposer state.
 /// Neither observing nor decoding this header grants application authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ResearchValue {
+pub struct StateValue {
     genesis: GenesisId,
     profile: ProfileId,
     height: u64,
@@ -30,7 +30,7 @@ pub struct ResearchValue {
     fixed_set: [u8; 32],
     next_proposer: [u8; 32],
 }
-impl ResearchValue {
+impl StateValue {
     pub const BYTE_LENGTH: usize = VALUE_BYTES;
     pub const fn genesis(&self) -> GenesisId {
         self.genesis
@@ -79,7 +79,7 @@ impl ResearchValue {
     pub fn decode(input: &[u8]) -> Result<Self> {
         let mut r = Reader::new(input, VALUE_BYTES)?;
         if r.fixed::<5>()? != *VALUE_MAGIC {
-            return Err(Error::Invalid("research value version"));
+            return Err(Error::Invalid("ledger value version"));
         }
         let result = Self {
             genesis: GenesisId::from_bytes(r.fixed()?),
@@ -94,7 +94,7 @@ impl ResearchValue {
         };
         r.finish()?;
         if result.height == 0 {
-            return Err(Error::Invalid("zero research height"));
+            return Err(Error::Invalid("zero state height"));
         }
         Ok(result)
     }
@@ -117,16 +117,16 @@ impl ResearchValue {
     }
 }
 
-/// Immutable branch whose research state is advanced only by verified finality.
+/// Immutable branch whose state state is advanced only by verified finality.
 #[derive(Clone)]
-pub struct ResearchBranch {
-    state: ResearchState,
-    proposer: FixedProposerStateV0,
+pub struct StateBranch {
+    state: LedgerState,
+    proposer: FixedProposerState,
 }
-impl ResearchBranch {
-    pub fn from_genesis(state: ResearchState) -> Result<Self> {
+impl StateBranch {
+    pub fn from_genesis(state: LedgerState) -> Result<Self> {
         if state.height() != 0 {
-            return Err(Error::Invalid("research branch requires genesis"));
+            return Err(Error::Invalid("state branch requires genesis"));
         }
         let entries: Vec<_> = state
             .genesis()
@@ -139,11 +139,11 @@ impl ResearchBranch {
                 )
             })
             .collect();
-        let proposer = FixedProposerStateV0::try_from_preselected(&entries)
-            .map_err(|_| Error::Invalid("research fixed set"))?;
+        let proposer = FixedProposerState::try_from_preselected(&entries)
+            .map_err(|_| Error::Invalid("state fixed set"))?;
         Ok(Self { state, proposer })
     }
-    pub fn state(&self) -> &ResearchState {
+    pub fn state(&self) -> &LedgerState {
         &self.state
     }
     pub fn commitment(&self) -> [u8; 32] {
@@ -166,7 +166,7 @@ impl ResearchBranch {
         &self,
         round: u64,
         maximum_round: u64,
-    ) -> Result<(ConsensusKey, FixedProposerStateV0)> {
+    ) -> Result<(ConsensusKey, FixedProposerState)> {
         if round > maximum_round {
             return Err(Error::Limit("round derivation"));
         }
@@ -181,32 +181,32 @@ impl ResearchBranch {
         }
         Ok((key, state))
     }
-    fn next_proposer(&self) -> Result<FixedProposerStateV0> {
+    fn next_proposer(&self) -> Result<FixedProposerState> {
         self.proposer
             .select_next()
             .map(|(_, state)| state)
             .map_err(|_| Error::Invalid("proposer successor"))
     }
-    fn validate_record_bytes(&self, record_bytes: &[u8]) -> Result<(ResearchValue, ResearchState)> {
+    fn validate_record_bytes(&self, record_bytes: &[u8]) -> Result<(StateValue, LedgerState)> {
         let record = StateRecord::decode(record_bytes, self.state.genesis())?;
         if record.encode()?.as_slice() != record_bytes {
-            return Err(Error::Invalid("noncanonical research record"));
+            return Err(Error::Invalid("noncanonical state record"));
         }
         if record.parent() != self.state.head()
             || record.height() != self.next_height()?
             || record.previous_state() != self.state.commitment()
         {
-            return Err(Error::Invalid("research record parent"));
+            return Err(Error::Invalid("state record parent"));
         }
         let next = self.state.validate_record(&record)?.into_state();
         if next.commitment() != record.next_state()
             || next.head() != record.id()
             || next.height() != record.height()
         {
-            return Err(Error::Invalid("research successor state"));
+            return Err(Error::Invalid("state successor state"));
         }
         let proposer = self.next_proposer()?;
-        let value = ResearchValue {
+        let value = StateValue {
             genesis: self.state.genesis().id(),
             profile: self.state.genesis().profile().id(),
             height: record.height(),
@@ -219,7 +219,7 @@ impl ResearchBranch {
         };
         Ok((value, next))
     }
-    pub(super) fn value_for_record(&self, record_bytes: &[u8]) -> Result<ResearchValue> {
+    pub(super) fn value_for_record(&self, record_bytes: &[u8]) -> Result<StateValue> {
         self.validate_record_bytes(record_bytes)
             .map(|(value, _)| value)
     }
@@ -228,15 +228,15 @@ impl ResearchBranch {
         record_bytes: Vec<u8>,
         round: u64,
         signer: ConsensusKey,
-        valid: Option<ResearchQuorum>,
+        valid: Option<StateQuorum>,
         maximum_round: u64,
-    ) -> Result<ResearchProposalIntent> {
+    ) -> Result<StateProposalIntent> {
         if self.proposer(round, maximum_round)? != signer {
-            return Err(Error::Invalid("not scheduled research proposer"));
+            return Err(Error::Invalid("not scheduled state proposer"));
         }
         let value = self.value_for_record(&record_bytes)?;
         validate_valid_quorum(&valid, &value, round, self.state.genesis())?;
-        Ok(ResearchProposalIntent {
+        Ok(StateProposalIntent {
             value,
             record_bytes,
             round,
@@ -245,7 +245,7 @@ impl ResearchBranch {
             parent_commitment: self.commitment(),
         })
     }
-    pub fn verify_proposal(&self, input: &[u8], maximum_round: u64) -> Result<ResearchProposal> {
+    pub fn verify_proposal(&self, input: &[u8], maximum_round: u64) -> Result<StateProposal> {
         let maximum = self
             .state
             .genesis()
@@ -254,22 +254,22 @@ impl ResearchBranch {
             .transport_frame_bytes as usize;
         let mut r = Reader::new(input, maximum)?;
         if r.fixed::<5>()? != *PROPOSAL_MAGIC {
-            return Err(Error::Invalid("research proposal version"));
+            return Err(Error::Invalid("state proposal version"));
         }
-        let value = ResearchValue::decode(r.take(VALUE_BYTES)?)?;
+        let value = StateValue::decode(r.take(VALUE_BYTES)?)?;
         if value.genesis != self.state.genesis().id()
             || value.profile != self.state.genesis().profile().id()
             || value.parent != self.state.head()
             || value.height != self.next_height()?
             || value.previous != self.state.commitment()
         {
-            return Err(Error::Invalid("research proposal parent"));
+            return Err(Error::Invalid("state proposal parent"));
         }
         let round = r.u64()?;
         let proposer = ConsensusKey::from_bytes(r.fixed()?);
         let signature = r.fixed()?;
         if self.proposer(round, maximum_round)? != proposer {
-            return Err(Error::Invalid("research proposer"));
+            return Err(Error::Invalid("state proposer"));
         }
         verify_signer(
             self.state.genesis(),
@@ -277,11 +277,11 @@ impl ResearchBranch {
             &proposal_signing_bytes(value, round, proposer),
             signature,
         )?;
-        let qc_bytes = r.bytes(RESEARCH_QUORUM_MAX_BYTES)?;
+        let qc_bytes = r.bytes(STATE_QUORUM_MAX_BYTES)?;
         let valid = if qc_bytes.is_empty() {
             None
         } else {
-            Some(ResearchQuorum::decode(qc_bytes, self.state.genesis())?)
+            Some(StateQuorum::decode(qc_bytes, self.state.genesis())?)
         };
         validate_valid_quorum(&valid, &value, round, self.state.genesis())?;
         let record_bytes = r
@@ -290,10 +290,10 @@ impl ResearchBranch {
         r.finish()?;
         let expected = self.value_for_record(&record_bytes)?;
         if value != expected {
-            return Err(Error::Invalid("research value commitment"));
+            return Err(Error::Invalid("ledger value commitment"));
         }
-        Ok(ResearchProposal {
-            intent: ResearchProposalIntent {
+        Ok(StateProposal {
+            intent: StateProposalIntent {
                 value,
                 record_bytes,
                 round,
@@ -306,10 +306,10 @@ impl ResearchBranch {
     }
     pub fn verify_finality(
         &self,
-        proposal: &ResearchProposal,
-        quorum: &ResearchQuorum,
+        proposal: &StateProposal,
+        quorum: &StateQuorum,
         maximum_round: u64,
-    ) -> Result<ResearchFinality> {
+    ) -> Result<StateFinality> {
         quorum.check(
             self.state.genesis(),
             proposal.value().height(),
@@ -325,26 +325,26 @@ impl ResearchBranch {
             proposer: self.next_proposer()?,
         };
         if child.commitment() != proposal.value().next_consensus_commitment() {
-            return Err(Error::Invalid("research branch successor"));
+            return Err(Error::Invalid("state branch successor"));
         }
-        Ok(ResearchFinality {
+        Ok(StateFinality {
             proposal,
             quorum: quorum.clone(),
             child,
         })
     }
-    pub fn decode_finality(&self, input: &[u8], maximum_round: u64) -> Result<ResearchFinality> {
+    pub fn decode_finality(&self, input: &[u8], maximum_round: u64) -> Result<StateFinality> {
         // Do not start application replay on an unauthenticated finality claim.
-        let _ = ResearchFinality::authenticate(input, self.state.genesis(), maximum_round)?;
+        let _ = StateFinality::authenticate(input, self.state.genesis(), maximum_round)?;
         let maximum = self
             .state
             .genesis()
             .profile()
             .limits()
             .transport_frame_bytes as usize;
-        let record = FinalizedStateRecord::decode(input, maximum, RESEARCH_QUORUM_MAX_BYTES)?;
+        let record = FinalizedStateRecord::decode(input, maximum, STATE_QUORUM_MAX_BYTES)?;
         let proposal = self.verify_proposal(record.proposal(), maximum_round)?;
-        let quorum = ResearchQuorum::decode(record.quorum(), self.state.genesis())?;
+        let quorum = StateQuorum::decode(record.quorum(), self.state.genesis())?;
         self.verify_finality(&proposal, &quorum, maximum_round)
     }
 }
@@ -369,8 +369,8 @@ fn branch_commitment(
     )
 }
 fn validate_valid_quorum(
-    valid: &Option<ResearchQuorum>,
-    value: &ResearchValue,
+    valid: &Option<StateQuorum>,
+    value: &StateValue,
     round: u64,
     genesis: &naome_ledger::profile::Genesis,
 ) -> Result<()> {
@@ -388,7 +388,7 @@ fn validate_valid_quorum(
     }
     Ok(())
 }
-fn proposal_signing_bytes(value: ResearchValue, round: u64, proposer: ConsensusKey) -> Vec<u8> {
+fn proposal_signing_bytes(value: StateValue, round: u64, proposer: ConsensusKey) -> Vec<u8> {
     let mut bytes = b"naome:state:proposal:v1\0".to_vec();
     bytes.extend(value.encode());
     bytes.extend_from_slice(&round.to_be_bytes());
@@ -398,19 +398,19 @@ fn proposal_signing_bytes(value: ResearchValue, round: u64, proposer: ConsensusK
 
 /// Application-verified unsigned proposal. Persist intent before key use.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResearchProposalIntent {
-    pub(super) value: ResearchValue,
+pub struct StateProposalIntent {
+    pub(super) value: StateValue,
     pub(super) record_bytes: Vec<u8>,
     pub(super) round: u64,
     pub(super) proposer: ConsensusKey,
-    pub(super) valid: Option<ResearchQuorum>,
+    pub(super) valid: Option<StateQuorum>,
     pub(super) parent_commitment: [u8; 32],
 }
-impl ResearchProposalIntent {
+impl StateProposalIntent {
     pub fn signing_bytes(&self) -> Vec<u8> {
         proposal_signing_bytes(self.value, self.round, self.proposer)
     }
-    pub const fn value(&self) -> ResearchValue {
+    pub const fn value(&self) -> StateValue {
         self.value
     }
     pub const fn round(&self) -> u64 {
@@ -422,7 +422,7 @@ impl ResearchProposalIntent {
     pub fn record_bytes(&self) -> &[u8] {
         &self.record_bytes
     }
-    pub fn valid_quorum(&self) -> Option<&ResearchQuorum> {
+    pub fn valid_quorum(&self) -> Option<&StateQuorum> {
         self.valid.as_ref()
     }
     /// Exact recovery bytes including the full immutable record and retained QC.
@@ -432,13 +432,13 @@ impl ResearchProposalIntent {
     pub fn complete(
         &self,
         signature: [u8; 64],
-        branch: &ResearchBranch,
+        branch: &StateBranch,
         maximum_round: u64,
-    ) -> Result<ResearchProposal> {
+    ) -> Result<StateProposal> {
         branch.verify_proposal(&encode_proposal(self, signature)?, maximum_round)
     }
 }
-fn encode_proposal(intent: &ResearchProposalIntent, signature: [u8; 64]) -> Result<Vec<u8>> {
+fn encode_proposal(intent: &StateProposalIntent, signature: [u8; 64]) -> Result<Vec<u8>> {
     let mut out = PROPOSAL_MAGIC.to_vec();
     out.extend(intent.value.encode());
     out.extend_from_slice(&intent.round.to_be_bytes());
@@ -449,7 +449,7 @@ fn encode_proposal(intent: &ResearchProposalIntent, signature: [u8; 64]) -> Resu
         &intent
             .valid
             .as_ref()
-            .map_or_else(Vec::new, ResearchQuorum::encode),
+            .map_or_else(Vec::new, StateQuorum::encode),
     )?;
     bytes(&mut out, &intent.record_bytes)?;
     Ok(out)
@@ -457,15 +457,15 @@ fn encode_proposal(intent: &ResearchProposalIntent, signature: [u8; 64]) -> Resu
 
 /// Complete producer-authenticated proposal, verified against an exact branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResearchProposal {
-    pub(super) intent: ResearchProposalIntent,
+pub struct StateProposal {
+    pub(super) intent: StateProposalIntent,
     signature: [u8; 64],
 }
-impl ResearchProposal {
+impl StateProposal {
     pub fn encode(&self) -> Result<Vec<u8>> {
         encode_proposal(&self.intent, self.signature)
     }
-    pub const fn value(&self) -> ResearchValue {
+    pub const fn value(&self) -> StateValue {
         self.intent.value
     }
     pub const fn round(&self) -> u64 {
@@ -477,7 +477,7 @@ impl ResearchProposal {
     pub fn record_bytes(&self) -> &[u8] {
         &self.intent.record_bytes
     }
-    pub fn valid_quorum(&self) -> Option<&ResearchQuorum> {
+    pub fn valid_quorum(&self) -> Option<&StateQuorum> {
         self.intent.valid.as_ref()
     }
     pub const fn parent_commitment(&self) -> &[u8; 32] {
@@ -485,14 +485,14 @@ impl ResearchProposal {
     }
 }
 
-/// Sealed research successor and sufficient finality evidence. Durable selection
+/// Sealed state successor and sufficient finality evidence. Durable selection
 /// is storage's responsibility; this token establishes only verified transition.
-pub struct ResearchFinality {
-    proposal: ResearchProposal,
-    quorum: ResearchQuorum,
-    child: ResearchBranch,
+pub struct StateFinality {
+    proposal: StateProposal,
+    quorum: StateQuorum,
+    child: StateBranch,
 }
-impl ResearchFinality {
+impl StateFinality {
     /// Bounded evidence authentication before historical or mathematical replay.
     /// The result remains an observed header, not a selected/verified successor:
     /// exact parent, scheduled proposer and application effects need the branch.
@@ -500,18 +500,18 @@ impl ResearchFinality {
         input: &[u8],
         genesis: &naome_ledger::profile::Genesis,
         maximum_round: u64,
-    ) -> Result<ResearchValue> {
+    ) -> Result<StateValue> {
         let maximum = genesis.profile().limits().transport_frame_bytes as usize;
-        let record = FinalizedStateRecord::decode(input, maximum, RESEARCH_QUORUM_MAX_BYTES)?;
+        let record = FinalizedStateRecord::decode(input, maximum, STATE_QUORUM_MAX_BYTES)?;
         let proposal = record.proposal();
         let finality_quorum = record.quorum();
         let mut p = Reader::new(proposal, maximum)?;
         if p.fixed::<5>()? != *PROPOSAL_MAGIC {
-            return Err(Error::Invalid("research proposal version"));
+            return Err(Error::Invalid("state proposal version"));
         }
-        let value = ResearchValue::decode(p.take(VALUE_BYTES)?)?;
+        let value = StateValue::decode(p.take(VALUE_BYTES)?)?;
         if value.genesis != genesis.id() || value.profile != genesis.profile().id() {
-            return Err(Error::Invalid("research evidence context"));
+            return Err(Error::Invalid("state evidence context"));
         }
         let entries: Vec<_> = genesis
             .validators()
@@ -523,14 +523,14 @@ impl ResearchFinality {
                 )
             })
             .collect();
-        let fixed = FixedProposerStateV0::try_from_preselected(&entries)
-            .map_err(|_| Error::Invalid("research fixed set"))?;
+        let fixed = FixedProposerState::try_from_preselected(&entries)
+            .map_err(|_| Error::Invalid("state fixed set"))?;
         if value.fixed_set != *fixed.fixed_set_id().as_bytes() {
-            return Err(Error::Invalid("research evidence fixed set"));
+            return Err(Error::Invalid("state evidence fixed set"));
         }
         let round = p.u64()?;
         if round > maximum_round || round > genesis.profile().limits().consensus_rounds {
-            return Err(Error::Limit("research evidence round"));
+            return Err(Error::Limit("state evidence round"));
         }
         let proposer = ConsensusKey::from_bytes(p.fixed()?);
         let signature = p.fixed()?;
@@ -540,16 +540,16 @@ impl ResearchFinality {
             &proposal_signing_bytes(value, round, proposer),
             signature,
         )?;
-        let valid_bytes = p.bytes(RESEARCH_QUORUM_MAX_BYTES)?;
+        let valid_bytes = p.bytes(STATE_QUORUM_MAX_BYTES)?;
         let valid = if valid_bytes.is_empty() {
             None
         } else {
-            Some(ResearchQuorum::decode(valid_bytes, genesis)?)
+            Some(StateQuorum::decode(valid_bytes, genesis)?)
         };
         validate_valid_quorum(&valid, &value, round, genesis)?;
         let record_bytes = p.bytes(genesis.profile().limits().record_bytes as usize)?;
         p.finish()?;
-        let quorum = ResearchQuorum::decode(finality_quorum, genesis)?;
+        let quorum = StateQuorum::decode(finality_quorum, genesis)?;
         quorum.check(
             genesis,
             value.height,
@@ -567,7 +567,7 @@ impl ResearchFinality {
             || record.previous_state() != value.previous
             || record.next_state() != value.next
         {
-            return Err(Error::Invalid("research evidence record binding"));
+            return Err(Error::Invalid("state evidence record binding"));
         }
         Ok(value)
     }
@@ -575,25 +575,25 @@ impl ResearchFinality {
     /// Untrusted routing hint only. The receiver must still verify the complete
     /// proof against the selected parent at this height before using any field.
     pub fn claimed_height(input: &[u8], maximum_bytes: usize) -> Result<u64> {
-        let record = FinalizedStateRecord::decode(input, maximum_bytes, RESEARCH_QUORUM_MAX_BYTES)?;
+        let record = FinalizedStateRecord::decode(input, maximum_bytes, STATE_QUORUM_MAX_BYTES)?;
         let proposal = record.proposal();
         let mut p = Reader::new(proposal, maximum_bytes)?;
         if p.fixed::<5>()? != *PROPOSAL_MAGIC {
-            return Err(Error::Invalid("research proposal version"));
+            return Err(Error::Invalid("state proposal version"));
         }
-        Ok(ResearchValue::decode(p.take(VALUE_BYTES)?)?.height())
+        Ok(StateValue::decode(p.take(VALUE_BYTES)?)?.height())
     }
 
-    pub fn proposal(&self) -> &ResearchProposal {
+    pub fn proposal(&self) -> &StateProposal {
         &self.proposal
     }
-    pub fn quorum(&self) -> &ResearchQuorum {
+    pub fn quorum(&self) -> &StateQuorum {
         &self.quorum
     }
-    pub fn branch(&self) -> &ResearchBranch {
+    pub fn branch(&self) -> &StateBranch {
         &self.child
     }
-    pub fn into_branch(self) -> ResearchBranch {
+    pub fn into_branch(self) -> StateBranch {
         self.child
     }
     pub fn encode(&self) -> Result<Vec<u8>> {

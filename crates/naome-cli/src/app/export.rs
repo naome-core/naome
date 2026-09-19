@@ -6,8 +6,8 @@ use super::{
     setup::NodeConfig,
 };
 use crate::archive::Manifest;
-use naome_consensus::state::ResearchBranch;
-use naome_ledger::ResearchState;
+use naome_consensus::state::StateBranch;
+use naome_ledger::LedgerState;
 use serde_json::json;
 use std::path::Path;
 
@@ -199,7 +199,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             }
             let root = Path::new(&args[2]);
             files::directory(root)?;
-            let mut branch = ResearchBranch::from_genesis(ResearchState::new(genesis.clone()))?;
+            let mut branch = StateBranch::from_genesis(LedgerState::new(genesis.clone()))?;
             for n in 1..=height {
                 let response = control::call(&config, Request::History { height: n }).await?;
                 let bytes = decode_bytes(

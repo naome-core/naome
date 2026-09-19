@@ -46,7 +46,7 @@ fn every_wire_byte_is_bound_or_strictly_rejected() {
     extra.push(0);
     assert_eq!(
         SignedOperation::decode(&extra),
-        Err(ResearchError::TrailingBytes)
+        Err(LedgerError::TrailingBytes)
     );
 }
 

@@ -1,10 +1,10 @@
 # Specification and implementation ownership
 
 This index routes readers to the retained component contracts. The
-[MVP requirements](../research/mvp/requirements.md) define the trusted research
+[MVP requirements](../docs/mvp/requirements.md) define the trusted research
 workflow and its acceptance criteria. The research implementation and the retained
 mathematical and fixed-validator foundation are indexed below. The
-[verification map](../research/mvp/verification.md) records acceptance evidence
+[verification map](../docs/mvp/verification.md) records acceptance evidence
 separately from implementation. The former public-network
 backlog, dynamic-membership profile, and economic projections are not part of
 this MVP branch. Historical rule IDs in retained contracts identify their
@@ -13,19 +13,19 @@ additional source of authority.
 
 | Responsibility | Owning crate | Normative contracts |
 | --- | --- | --- |
-| Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, and passive claims | `naome-ledger` | [MVP requirements and R1–R11](../research/mvp/requirements.md) |
+| Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, and passive claims | `naome-ledger` | [MVP requirements and R1–R11](../docs/mvp/requirements.md) |
 | Canonical complete state record, finalized envelope framing, exact-parent replay and provisional successor binding | `naome-chain::state` | [State-format boundary](#state-format-integration-boundary) |
-| Full research-record agreement and bounded round transitions | `naome-consensus::state` | [MVP full research records](../research/mvp/requirements.md#r8) |
-| Research history, independent replay, exclusive signer custody, and anchored crash recovery | `naome-storage::state`, `naome-node::state` | [MVP operational rules](../research/mvp/requirements.md), [Recovery procedures](../research/mvp/operations.md) |
-| Authenticated complete records, history and proof transfer, bounded request custody, and live scheduling | `naome-protocol::state_exchange`, `naome-network::transport::state_exchange`, `naome-runtime::state` | [MVP authentication and limits](../research/mvp/requirements.md) |
-| Operator CLI, durable local actions, bounded operator-agent review, inspection and portable offline archive replay | `naome-cli`; `naome-validator start` and `naome-verifier verify` | [Operating guide](../research/mvp/operations.md), [Acceptance evidence](../research/mvp/verification.md) |
+| Full state-record agreement and bounded round transitions | `naome-consensus::state` | [MVP full state records](../docs/mvp/requirements.md#r8) |
+| Canonical history, independent replay, exclusive signer custody, and anchored crash recovery | `naome-storage::state`, `naome-node::state` | [MVP operational rules](../docs/mvp/requirements.md), [Recovery procedures](../docs/mvp/operations.md) |
+| Authenticated complete records, history and proof transfer, bounded request custody, and live scheduling | `naome-protocol::state_exchange`, `naome-network::transport::state_exchange`, `naome-runtime::state` | [MVP authentication and limits](../docs/mvp/requirements.md) |
+| Operator CLI, durable local actions, bounded operator-agent review, inspection and portable offline archive replay | `naome-cli`; `naome-validator start` and `naome-verifier verify` | [Operating guide](../docs/mvp/operations.md), [Acceptance evidence](../docs/mvp/verification.md) |
 | Primitive language, axioms, and proof rules | `naome-foundation` | [Foundation](foundation.md) |
 | Proof and definition representations, canonical bytes, and identities | `naome-proof` | [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Foundation-relative proof checking and conservative definition checking | `naome-checker` | [Foundation](foundation.md), [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Strict typed admission and immutable accepted records | `naome-ledger` | [Artifact Admission](artifact-admission.md) |
 | Checked artifact DAG, strict admission, and authenticated exact set inside the complete proof library | `naome-ledger` | [Artifact Set](artifact-set.md), [Artifact Admission](artifact-admission.md) |
 | Source parsing, proof lowering, diagnostics, and finalized-history and offline-context authoring | `naome-authoring` | [Proof Authoring](proof-authoring.md) |
-| Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-cli`, `devnet/qualify.py` | [Canonical Process Operations](../research/mvp/operations.md), [Devnet Operations](../devnet/OPERATIONS.md) |
+| Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-cli`, `devnet/qualify.py` | [Canonical Process Operations](../docs/mvp/operations.md), [Devnet Operations](../devnet/OPERATIONS.md) |
 
 The authority boundaries follow the contracts above. Decoding supplies no
 checked proof; an authenticated response supplies no validity or selection;
@@ -80,8 +80,14 @@ record, and branch commitments. Old history is not silently discarded, migrated,
 or resumed: operators must retain old runs with their original executable and
 provision an explicitly new directory and genesis for this format.
 
-Existing Rust `Research*` API names and historical on-disk filenames still
-await their neutral naming boundary; they denote the sole canonical state path. The main executables no longer dispatch V0 commands
+The Rust APIs now use `LedgerState` for the complete state and `ArtifactLedger`
+for strict proof/definition admission. Chain, consensus, transport, storage,
+node and runtime APIs use `State*` names with no research-subsystem aliases.
+Storage uses `state.journal`, `state.lock`, `state-finality.anchor` and
+`state-signer-KEY.*`. Old artifact/research/V0 filenames are rejected before
+locks or writes, including during read-only observation. Node configuration
+version 2 uses `agenda_profile`; version 1 and its old field name are rejected.
+No existing directory or signing authority is converted. The main executables no longer dispatch V0 commands
 or a `state` alias. Setup alone initializes fresh full-state authority while
 generating new keys and genesis; validator startup can only reopen it. Canonical
 process tests cover strict custody, retransmission, conflict halt, bounded
@@ -91,7 +97,7 @@ identities and a full submit/vote/commit/reveal/settlement replay. Negative vect
 cover old records, signed operations, time, proposals, votes, and finality;
 storage and transport tests reject old framing without rewriting history.
 
-`naome-ledger::ResearchState::execute` returns provisional `LedgerExecution`
+`naome-ledger::LedgerState::execute` returns provisional `LedgerExecution`
 without constructing a record. Only `naome-chain::StateRecordExecution`
 constructs a complete record, enforces its total byte limit, replays claimed
 records against their exact parent, and compares every encoded effect and state

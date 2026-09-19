@@ -1,7 +1,7 @@
 //! Authoring against healthy, fully replayed canonical finalized history.
 
 use super::*;
-use naome_storage::state::{ResearchStorageError, SelectedResearchHistory};
+use naome_storage::state::{SelectedStateHistory, StateStorageError};
 
 /// Compiles one proof using the selected full state's checked proof library.
 /// History health is checked before source parsing. Proposed records, downloaded
@@ -10,7 +10,7 @@ use naome_storage::state::{ResearchStorageError, SelectedResearchHistory};
 /// subsequent ledger admission rechecks the result against its actual parent.
 pub fn compile_against_selected_history(
     source: &str,
-    selected: &(impl SelectedResearchHistory + ?Sized),
+    selected: &(impl SelectedStateHistory + ?Sized),
 ) -> Result<CompiledProof, SelectedHistoryCompileError> {
     match compile_artifact_against_selected_history(source, selected)? {
         CompiledArtifact::Proof(proof) => Ok(proof),
@@ -25,11 +25,11 @@ pub fn compile_against_selected_history(
 /// definitions remain offline authoring artifacts under the trusted MVP rules.
 pub fn compile_artifact_against_selected_history(
     source: &str,
-    selected: &(impl SelectedResearchHistory + ?Sized),
+    selected: &(impl SelectedStateHistory + ?Sized),
 ) -> Result<CompiledArtifact, SelectedHistoryCompileError> {
     let context = || {
         if selected.is_halted()? {
-            return Err(ResearchStorageError::Invalid("selected history halted"));
+            return Err(StateStorageError::Invalid("selected history halted"));
         }
         Ok(selected
             .selected_branch()?
@@ -49,7 +49,7 @@ pub fn compile_artifact_against_selected_history(
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SelectedHistoryCompileError {
-    SelectedState { source: Box<ResearchStorageError> },
+    SelectedState { source: Box<StateStorageError> },
     Compilation { source: CompileError },
 }
 

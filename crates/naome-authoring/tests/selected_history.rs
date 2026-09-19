@@ -4,7 +4,7 @@ use naome_authoring::{
     CompileError, SelectedHistoryCompileError, compile, compile_against_selected_history,
 };
 use naome_proof::ProofId;
-use naome_storage::state::SelectedResearchHistory;
+use naome_storage::state::SelectedStateHistory;
 
 fn source_for(id: ProofId) -> String {
     let hex: String = id.as_bytes().iter().map(|v| format!("{v:02x}")).collect();
@@ -39,7 +39,7 @@ fn image(path: &std::path::Path) -> std::collections::BTreeMap<PathBuf, FileImag
         })
         .collect()
 }
-fn missing(source: &str, selected: &impl SelectedResearchHistory, id: ProofId) {
+fn missing(source: &str, selected: &impl SelectedStateHistory, id: ProofId) {
     assert!(matches!(compile_against_selected_history(source, selected),
         Err(SelectedHistoryCompileError::Compilation { source: CompileError::Check { source, .. } })
         if matches!(source.as_ref(), naome_checker::CheckError::UnknownProofReference { proof_id, .. } if *proof_id == id)));
@@ -48,7 +48,10 @@ fn missing(source: &str, selected: &impl SelectedResearchHistory, id: ProofId) {
 #[test]
 fn only_finalized_settlement_authorizes_helpers_and_replay_preserves_authoring() {
     let (dir, anchors, genesis, mut history, settlement) = pending_two_proof_settlement();
-    let helper = compile(include_str!("../../../examples/research-mvp/helper-h.nao")).unwrap();
+    let helper = compile(include_str!(
+        "../../../examples/state-workflow/helper-h.nao"
+    ))
+    .unwrap();
     let source = source_for(helper.proof_id());
     let before = image(&dir.0);
     let before_anchor = image(&anchors.0);
@@ -72,7 +75,7 @@ fn only_finalized_settlement_authorizes_helpers_and_replay_preserves_authoring()
     assert_eq!(image(&anchors.0), before_anchor);
     assert_eq!(
         history.append_finality(&settlement).unwrap(),
-        ResearchAppendOutcome::Finalized
+        StateAppendOutcome::Finalized
     );
     let compiled = compile_against_selected_history(&source, &history).unwrap();
     let mono = compile("foundation = \"naome:zfc\" statement = forall(y,forall(x,equal(x,x))) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) p2 = generalization(p1,y) return p2").unwrap();
@@ -117,7 +120,7 @@ fn only_finalized_settlement_authorizes_helpers_and_replay_preserves_authoring()
     assert_eq!(image(&dir.0), before);
     assert_eq!(image(&anchors.0), before_anchor);
     drop(history);
-    let reopened = ResearchHistory::open(&dir.0, &anchors.0, genesis.clone(), MAX_ROUND).unwrap();
+    let reopened = StateHistory::open(&dir.0, &anchors.0, genesis.clone(), MAX_ROUND).unwrap();
     assert_eq!(
         compile_against_selected_history(&source, &reopened).unwrap(),
         compiled
@@ -131,7 +134,7 @@ fn only_finalized_settlement_authorizes_helpers_and_replay_preserves_authoring()
             .lookup(helper.proof_id()),
         Some(&helper_record)
     );
-    let observer = ResearchObserver::open(&dir.0, &anchors.0, genesis, MAX_ROUND).unwrap();
+    let observer = StateObserver::open(&dir.0, &anchors.0, genesis, MAX_ROUND).unwrap();
     assert_eq!(
         compile_against_selected_history(&source, &observer).unwrap(),
         compiled
@@ -146,7 +149,7 @@ fn conflict_halt_precedes_source_parsing_for_writer_reopen_and_observer() {
     let dir = Directory::new();
     let anchors = Directory::new();
     let g = genesis();
-    let mut history = ResearchHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     let sibling = first_finality(history.head().unwrap(), "conflicting question")
         .encode()
         .unwrap();
@@ -154,9 +157,9 @@ fn conflict_halt_precedes_source_parsing_for_writer_reopen_and_observer() {
     append(&mut history, 100, vec![op]);
     assert_eq!(
         history.report_conflict(1, &sibling).unwrap(),
-        ResearchAppendOutcome::ConflictHalt
+        StateAppendOutcome::ConflictHalt
     );
-    fn rejected(history: &impl SelectedResearchHistory) {
+    fn rejected(history: &impl SelectedStateHistory) {
         assert!(history.selected_branch().is_ok()); // readable history is not operable history
         for source in [
             "malformed source",
@@ -172,9 +175,9 @@ fn conflict_halt_precedes_source_parsing_for_writer_reopen_and_observer() {
     let before_anchor = image(&anchors.0);
     rejected(&history);
     drop(history);
-    let reopened = ResearchHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let reopened = StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
     rejected(&reopened);
-    let observer = ResearchObserver::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let observer = StateObserver::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
     rejected(&observer);
     assert_eq!(image(&dir.0), before);
     assert_eq!(image(&anchors.0), before_anchor);

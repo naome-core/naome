@@ -74,17 +74,17 @@ fn question(source: &str) -> CompiledQuestion {
 }
 fn qa() -> CompiledQuestion {
     question(include_str!(
-        "../../../../examples/research-mvp/question-a.nao"
+        "../../../../examples/state-workflow/question-a.nao"
     ))
 }
 fn qb() -> CompiledQuestion {
     question(include_str!(
-        "../../../../examples/research-mvp/question-b.nao"
+        "../../../../examples/state-workflow/question-b.nao"
     ))
 }
 fn qc() -> CompiledQuestion {
     question(include_str!(
-        "../../../../examples/research-mvp/question-c.nao"
+        "../../../../examples/state-workflow/question-c.nao"
     ))
 }
 fn publish_a() -> (ProofLibrary, Node, Node) {
@@ -254,7 +254,7 @@ fn different_new_certificates_of_same_statement_include_root_collision() {
         library
             .normalize(&package, &qc(), &Profile::lab())
             .unwrap_err(),
-        ResearchError::Invalid("different new certificates of one exact statement")
+        LedgerError::Invalid("different new certificates of one exact statement")
     );
     assert!(library.is_empty());
     let coalesced = ProofPackage::new(
@@ -321,7 +321,7 @@ fn invalid_unused_original_and_noncanonical_original_are_not_repaired() {
         library
             .normalize(&package, &qc(), &Profile::lab())
             .unwrap_err(),
-        ResearchError::Invalid("certificate is not strict root normal form")
+        LedgerError::Invalid("certificate is not strict root normal form")
     );
     assert_eq!(library.root(), before);
 }
@@ -357,13 +357,13 @@ fn cycles_unknown_dependencies_wrong_target_and_known_roots_fail() {
         library
             .normalize(&known, &qc(), &Profile::lab())
             .unwrap_err(),
-        ResearchError::Invalid("root target already selected")
+        LedgerError::Invalid("root target already selected")
     );
     assert_eq!(
         ProofLibrary::new()
             .normalize(&known, &qa(), &Profile::lab())
             .unwrap_err(),
-        ResearchError::Invalid("root does not prove an approved target")
+        LedgerError::Invalid("root does not prove an approved target")
     );
 }
 
@@ -480,7 +480,7 @@ fn older_ancestors_are_checked_but_only_first_boundary_proof_is_cited() {
         let profile = Profile::with_limits(TimingKind::Lab, constrained).unwrap();
         assert!(matches!(
             library.normalize(&package, &task, &profile),
-            Err(ResearchError::Limit(_))
+            Err(LedgerError::Limit(_))
         ));
     }
 }
@@ -551,7 +551,7 @@ fn claimed_identity_is_checked_and_package_hash_binds_author_and_root() {
         ProofLibrary::new()
             .normalize(&forged, &qc(), &Profile::lab())
             .unwrap_err(),
-        ResearchError::Invalid("claimed proof ID mismatch")
+        LedgerError::Invalid("claimed proof ID mismatch")
     );
 }
 

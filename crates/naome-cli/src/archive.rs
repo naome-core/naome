@@ -1,8 +1,8 @@
 //! Read-only canonical archive replay shared by the operator and verifier.
 //! No control socket, private key, signing, or state-directory writes are used.
 
-use naome_consensus::state::ResearchBranch;
-use naome_ledger::{PackageHash, ResearchState, operations::SignedOriginal, profile::Genesis};
+use naome_consensus::state::StateBranch;
+use naome_ledger::{LedgerState, PackageHash, operations::SignedOriginal, profile::Genesis};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Read, path::Path};
@@ -25,7 +25,7 @@ pub(crate) struct Manifest {
 }
 
 pub(crate) struct ReplayedArchive {
-    pub(crate) branch: ResearchBranch,
+    pub(crate) branch: StateBranch,
     pub(crate) originals: BTreeMap<PackageHash, SignedOriginal>,
 }
 
@@ -45,7 +45,7 @@ pub(crate) fn replay(
         return Err("archive manifest context or bounds mismatch".into());
     }
     let maximum = genesis.profile().limits().transport_frame_bytes as usize;
-    let mut branch = ResearchBranch::from_genesis(ResearchState::new(genesis.clone()))?;
+    let mut branch = StateBranch::from_genesis(LedgerState::new(genesis.clone()))?;
     let mut originals = std::collections::BTreeMap::new();
     for height in 1..=manifest.height {
         let bytes = read(&root.join(format!("{height:08}.finality")), maximum)?;
@@ -126,7 +126,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub(crate) fn status(state: &ResearchState) -> Value {
+pub(crate) fn status(state: &LedgerState) -> Value {
     let active=state.active().map(|a|json!({"submission":hex(a.submission.as_bytes()),"question":hex(a.question.as_bytes()),"family":hex(a.family.as_bytes()),"attempt":a.number,"phase":format!("{:?}",a.phase),"deadline":a.deadline,"round":a.solution_round.map(|r|hex(r.as_bytes())),"votes":a.votes.iter().map(|(id,yes)|json!({"owner":hex(id.as_bytes()),"yes":yes})).collect::<Vec<_>>(),"commitments":a.commitments,"reveals":a.reveals}));
     json!({"status":"finalized","genesis":hex(state.genesis().id().as_bytes()),"profile":hex(state.genesis().profile().id().as_bytes()),"height":state.height(),"head":hex(state.head().as_bytes()),"state":hex(state.commitment().as_bytes()),"time":state.time(),"active":active,"library_root":hex(&state.library().root()),"proof_count":state.library().len(),"queued":state.queued().count(),"accounts":state.balances().accounts().iter().map(|(id,balance)|json!({"account":hex(id.as_bytes()),"balance_atoms":balance.to_string(),"next_nonce":state.next_nonce(*id)})).collect::<Vec<_>>(),"validators":state.genesis().validators().iter().enumerate().map(|(i,v)|json!({"index":i,"owner":hex(v.owner.as_bytes()),"endpoint":v.endpoint})).collect::<Vec<_>>(),"reserve_atoms":state.balances().reserve().to_string(),"paid_completions":state.balances().paid_completions(),"claims":state.claims().values().map(|c|json!({"family":hex(c.family.as_bytes()),"author":hex(c.author.as_bytes()),"ordinal":c.completion_ordinal})).collect::<Vec<_>>(),"remaining_records":state.remaining_records(),"reserved_records":state.reserved_records(),"remaining_bytes":state.remaining_bytes(),"reserved_bytes":state.reserved_bytes(),"terminated":state.terminated()})
 }

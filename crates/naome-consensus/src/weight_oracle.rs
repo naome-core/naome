@@ -265,7 +265,7 @@ fn compare_arithmetic(profile: Profile) {
             multiple(signed, 3) > (0, total)
         );
     }
-    let mut proposer = PreselectedProposerStateV0::from_zeroed_preselected_snapshot(&snapshot);
+    let mut proposer = PreselectedProposerState::from_zeroed_preselected_snapshot(&snapshot);
     for actor in profile.proposers {
         let (key, next) = proposer.select_next().unwrap();
         assert_eq!(key, keys[usize::from(actor)], "{profile:?}");

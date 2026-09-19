@@ -2,7 +2,7 @@ use super::*;
 use crate::AppendPhase;
 use crate::fault_io::{ScriptedIo, Trace, all_append_faults};
 
-const PREFIX: &[u8] = b"research-test-genesis-and-bound-limits-v1";
+const PREFIX: &[u8] = b"state-test-genesis-and-bound-limits-v1";
 fn limits() -> Limits {
     Limits {
         payload_bytes: 128,

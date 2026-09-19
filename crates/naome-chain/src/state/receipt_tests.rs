@@ -5,7 +5,7 @@ use naome_foundation::{Formula, FreeVariable};
 use naome_ledger::receipt::*;
 use naome_ledger::{AccountId, CommitmentId, PackageHash, library::ProofPackage};
 use naome_ledger::{
-    ResearchState,
+    LedgerState,
     authentication::SignedOperation,
     operations::{OperationBody, SignedOriginal},
     question::CompiledQuestion,
@@ -18,7 +18,7 @@ use naome_proof::{ProofCertificate, ProofStep};
 fn author(index: u8) -> AccountId {
     AccountId::for_key(account(index).verifying_key().as_bytes())
 }
-fn apply(state: &mut ResearchState, ops: Vec<SignedOperation>, deadline: bool) {
+fn apply(state: &mut LedgerState, ops: Vec<SignedOperation>, deadline: bool) {
     let utc = if deadline {
         state.active().unwrap().deadline.unwrap()
     } else {
@@ -45,7 +45,7 @@ fn apply(state: &mut ResearchState, ops: Vec<SignedOperation>, deadline: bool) {
     .unwrap();
     *state = state.prepare_record(time, ops).unwrap().into_state();
 }
-fn action(state: &ResearchState, index: u8, body: OperationBody) -> SignedOperation {
+fn action(state: &LedgerState, index: u8, body: OperationBody) -> SignedOperation {
     body.sign(
         state.genesis(),
         state.next_nonce(author(index)).unwrap(),
@@ -69,7 +69,7 @@ fn checked(steps: Vec<ProofStep>, context: &mut ArtifactState) -> (ProofId, Vec<
     node
 }
 fn settle(
-    state: &mut ResearchState,
+    state: &mut LedgerState,
     index: u8,
     formula: &str,
     nodes: Vec<(ProofId, Vec<u8>)>,
@@ -148,7 +148,7 @@ fn settle(
 
 #[test]
 fn receipt_reads_actual_settlements_and_rejects_truncation_and_reward_mutations() {
-    let mut state = ResearchState::new(genesis());
+    let mut state = LedgerState::new(genesis());
     let x = FreeVariable::new(0);
     let mut context = ArtifactState::new();
     let h = checked(

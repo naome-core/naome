@@ -9,9 +9,9 @@ use naome_foundation::{Formula, FreeVariable};
 use naome_ledger::ArtifactDag;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
-const HELPER_H: &str = include_str!("../../../examples/research-mvp/helper-h.nao");
-const SOLUTION_A: &str = include_str!("../../../examples/research-mvp/solution-a.nao");
-const SOLUTION_B: &str = include_str!("../../../examples/research-mvp/solution-b.nao");
+const HELPER_H: &str = include_str!("../../../examples/state-workflow/helper-h.nao");
+const SOLUTION_A: &str = include_str!("../../../examples/state-workflow/solution-a.nao");
+const SOLUTION_B: &str = include_str!("../../../examples/state-workflow/solution-b.nao");
 fn check_exact_bytes(bytes: &[u8], state: &ArtifactState) -> CheckedProof {
     let original = ProofCertificate::from_canonical_bytes(bytes).unwrap();
     assert_eq!(original.to_canonical_bytes(), bytes);
@@ -45,7 +45,7 @@ fn selected_source(source: &str) -> (ArtifactDag, CompiledProof) {
 }
 
 #[test]
-fn research_mvp_roots_use_real_helper_and_have_distinct_exact_targets() {
+fn state_mvp_roots_use_real_helper_and_have_distinct_exact_targets() {
     let (journal, helper) = selected_source(HELPER_H);
     let a = compile_against_proof_context(SOLUTION_A, journal.artifact_state()).unwrap();
     let b = compile_against_proof_context(SOLUTION_B, journal.artifact_state()).unwrap();
@@ -82,7 +82,7 @@ fn research_mvp_roots_use_real_helper_and_have_distinct_exact_targets() {
 }
 
 #[test]
-fn research_mvp_b_rechecks_from_exported_helper_bytes_without_original_store() {
+fn state_mvp_b_rechecks_from_exported_helper_bytes_without_original_store() {
     let (journal, helper) = selected_source(HELPER_H);
     let b = compile_against_proof_context(SOLUTION_B, journal.artifact_state()).unwrap();
     let helper_bytes = helper.canonical_proof_bytes().to_vec();
@@ -115,9 +115,9 @@ fn research_mvp_b_rechecks_from_exported_helper_bytes_without_original_store() {
 }
 
 #[test]
-fn research_mvp_original_duplicate_and_replaced_b_are_both_actually_valid() {
-    let duplicate_source = include_str!("../../../examples/research-mvp/helper-h-duplicate.nao");
-    let original_source = include_str!("../../../examples/research-mvp/solution-b-original.nao");
+fn state_mvp_original_duplicate_and_replaced_b_are_both_actually_valid() {
+    let duplicate_source = include_str!("../../../examples/state-workflow/helper-h-duplicate.nao");
+    let original_source = include_str!("../../../examples/state-workflow/solution-b-original.nao");
     let (old, helper) = selected_source(HELPER_H);
     let (staged, duplicate) = selected_source(duplicate_source);
     assert_eq!(helper.statement_id(), duplicate.statement_id());

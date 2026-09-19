@@ -13,7 +13,13 @@ The current integration format is `state-v1`. Existing research-v1 runs cannot
 be reopened or converted with this executable. Retain their directories and use
 the original executable for historical inspection. Start a new directory and
 genesis for state-v1; see the [format boundary](../../specs/ownership.md#state-format-integration-boundary).
-The linked lab results qualify the earlier MVP baseline, not this new format.
+Node configuration version 2 uses `agenda_profile` and `agenda-profile.txt`.
+The canonical journal names are `state.journal`, `state.lock`,
+`state-finality.anchor`, and `state-signer-KEY.*`. Earlier state-v1 builds used
+legacy filenames and configuration version 1; those directories also require
+their original executable. Do not manually rename authority files or edit a
+configuration version to resume an earlier run.
+The linked baseline lab results qualify the earlier MVP, not this new build.
 
 ## Build and choose an immutable run
 
@@ -94,7 +100,7 @@ Inspect every committed bound and preview exact question identity before use:
 
 ```sh
 "$BIN" profile-info "$RUN/genesis.bin"
-"$BIN" compile-question "$RUN/genesis.bin" examples/research-mvp/question-a.nao
+"$BIN" compile-question "$RUN/genesis.bin" examples/state-workflow/question-a.nao
 ```
 
 The question preview shows its normalized statement, negation parity, and shared
@@ -150,7 +156,7 @@ An explicitly configured provider executable can supply an agenda decision:
 ```sh
 "$BIN" agent-vote "$C0" "$RUN/accounts/account-0.key" \
   "$RUN/a-agent-vote-0.bin" "$RUN/a-agent-report-0.json" \
-  "$PWD/tools/research_agent_codex.py"
+  "$PWD/tools/agenda_agent_codex.py"
 ```
 
 The executable receives one JSON request on stdin containing `version`, `profile`,
@@ -170,7 +176,7 @@ descendants are terminated when an invocation finishes or times out. Malformed,
 failed, excessive, or late decisions create no vote. The CLI rechecks the active
 question/phase and local voting deadline before signing.
 
-The supplied [Codex bridge](../../tools/research_agent_codex.py) requires an
+The supplied [Codex bridge](../../tools/agenda_agent_codex.py) requires an
 independently logged-in `codex` command on PATH. It uses a strict structured
 decision, an empty temporary working directory, no enabled tools, bounded event
 output, and a 55-second inner timeout. It receives the public question and
@@ -189,13 +195,13 @@ determined separately by the deterministic checker.
 ## Submit, approve, commit, and reveal A
 
 The checked examples are described in
-[the fixture notes](../../examples/research-mvp/fixtures.md). A publishes its root
+[the fixture notes](../../examples/state-workflow/fixtures.md). A publishes its root
 and helper H together under account 4. Use a fresh output path for each distinct
 action:
 
 ```sh
 "$BIN" submit "$C0" "$RUN/accounts/account-4.key" \
-  examples/research-mvp/question-a.nao 'Develop a reusable reflexivity helper' \
+  examples/state-workflow/question-a.nao 'Develop a reusable reflexivity helper' \
   "$RUN/a-submit.bin"
 "$BIN" status "$C0"
 ```
@@ -216,8 +222,8 @@ An early three-YES quorum does not shorten the voting window. Wait for a finaliz
 
 ```sh
 "$BIN" package "$RUN/genesis.bin" "$RUN/accounts/account-4.key" \
-  "$RUN/a.package" examples/research-mvp/solution-a.nao \
-  --helper examples/research-mvp/helper-h.nao
+  "$RUN/a.package" examples/state-workflow/solution-a.nao \
+  --helper examples/state-workflow/helper-h.nao
 "$BIN" commit "$C0" "$RUN/accounts/account-4.key" \
   "$RUN/a.package" "$RUN/a.secret" "$RUN/a-commit.bin"
 ```
@@ -262,8 +268,8 @@ To demonstrate duplicate-helper substitution, construct its original package as:
 
 ```sh
 "$BIN" package "$RUN/genesis.bin" "$RUN/accounts/account-5.key" \
-  "$RUN/b.package" examples/research-mvp/solution-b-original.nao \
-  --helper examples/research-mvp/helper-h-duplicate.nao
+  "$RUN/b.package" examples/state-workflow/solution-b-original.nao \
+  --helper examples/state-workflow/helper-h-duplicate.nao
 ```
 
 The original duplicate helper remains subject to full checking. Settlement reuses
@@ -314,7 +320,7 @@ same links with `on`. Two validators must never finalize; no command reduces the
 four-owner denominator. Shutdown/restart uses the existing durable state.
 
 The process test is
-`crates/naome-cli/tests/research_process.rs`. Its accelerated execution,
+`crates/naome-cli/tests/state_process.rs`. Its accelerated execution,
 the normal lab-window run, real-provider agent evidence, full two-profile workspace
 checks, and cross-platform CI are separate qualification states. Record the exact
 genesis/profile, commit, executed commands, timing, outcomes, and retained reports
@@ -334,11 +340,11 @@ umask 077
 QUALIFICATION=$(mktemp -d /tmp/naome-qualification.XXXXXX)
 cp target/release/naome target/release/naome-validator target/release/naome-verifier "$QUALIFICATION/"
 chmod 500 "$QUALIFICATION/naome" "$QUALIFICATION/naome-validator" "$QUALIFICATION/naome-verifier"
-python3 tools/research_lab_acceptance.py \
+python3 tools/state_lab_acceptance.py \
   --binary "$QUALIFICATION/naome" \
   --validator "$QUALIFICATION/naome-validator" \
   --verifier "$QUALIFICATION/naome-verifier" \
-  --provider "$PWD/tools/research_agent_codex.py" \
+  --provider "$PWD/tools/agenda_agent_codex.py" \
   >"$QUALIFICATION/progress.jsonl" 2>&1
 ```
 
