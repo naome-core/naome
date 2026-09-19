@@ -1,5 +1,9 @@
 # NAOME Canonical Artifact Payload Store
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 This document normatively defines a Foundation-scoped append-only archive of
 exact tagged proof and definition payloads. It preserves bytes admitted from
 accepted records or strictly validated as exact children of selected or

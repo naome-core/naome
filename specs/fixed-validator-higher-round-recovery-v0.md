@@ -1,5 +1,9 @@
 # Fixed-Validator Higher-Round Recovery V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Authority and scope
 
 `PROD-020-064` extends the existing fixed-validator V0 driver and bounded runtime

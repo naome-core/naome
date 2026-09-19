@@ -1,5 +1,9 @@
 # Fixed-Validator Recovery Simulation V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Selected properties and boundaries
 
 This suite exercises the artifact-only fixed-validator V0 implementation. Its

@@ -24,11 +24,6 @@ additional source of authority.
 | Foundation-relative proof checking and conservative definition checking | `naome-checker` | [Foundation](foundation.md), [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Strict typed admission and immutable accepted records | `naome-ledger` | [Artifact Admission](artifact-admission.md) |
 | Checked artifact DAG, strict admission, and authenticated exact set inside the complete proof library | `naome-ledger` | [Artifact Set](artifact-set.md), [Artifact Admission](artifact-admission.md) |
-| Remaining V0 exact-parent artifact blocks and branch snapshots, pending caller retirement | `naome-chain` | [Artifact Chain](artifact-chain.md) |
-| Selected-history persistence, unselected stores, strict replay, and durable signing safety | `naome-storage` | [Artifact Chain Journal](artifact-chain-journal.md), [Candidate Store](artifact-block-candidate-store.md), [Payload Store](canonical-artifact-payload-store.md), [Recovery Bundle](candidate-branch-recovery-bundle.md), [Vote Safety Journal](fixed-validator-vote-safety-journal-v0.md), [Finality Journal](fixed-validator-finality-journal-v0.md), [External Anchor](fixed-validator-external-anchor-v0.md) |
-| Fixed-validator transition semantics and verified agreement/producer evidence | `naome-consensus` | [Agreement Evidence](fixed-validator-agreement-evidence-v0.md), [Producer Authorization](fixed-validator-producer-authorization-v0.md), [Proposer State](fixed-validator-proposer-state-v0.md), [Proposal Control](fixed-validator-proposal-control-v0.md), [Consensus Envelope](fixed-validator-artifact-consensus-envelope-v0.md) |
-| Sole signing-scope custody and ordered node execution | `naome-node` | [Startup](fixed-validator-node-startup-v0.md), [Driver](fixed-validator-node-driver-v0.md), [Voting](fixed-validator-node-voting-v0.md), [Round Progression](fixed-validator-node-round-progression-v0.md), [Finality](fixed-validator-node-finality-v0.md), [Proposal Authoring](fixed-validator-node-proposal-authoring-v0.md) |
-| Bounded volatile proposal/evidence retention | `naome-node` | [Current Inbox](fixed-validator-node-current-round-inbox-v0.md), [Finality Inbox](fixed-validator-node-current-round-finality-inbox-v0.md), [Nil-Precommit Inbox](fixed-validator-node-current-round-nil-precommit-inbox-v0.md), [Higher Inbox](fixed-validator-node-higher-round-inbox-v0.md), [Proposal Buffer](fixed-validator-node-proposal-buffer-v0.md), [Deferral](fixed-validator-node-proposal-deferral-v0.md), [Buffered Precommit](fixed-validator-node-buffered-proposal-precommit-v0.md) |
 | Source parsing, proof lowering, diagnostics, and finalized-history and offline-context authoring | `naome-authoring` | [Proof Authoring](proof-authoring.md) |
 | Validator and verifier processes, provisioning, and qualification | `naome-validator`, `naome-verifier`, `naome-cli`, `devnet/qualify.py` | [Canonical Process Operations](../research/mvp/operations.md), [Devnet Operations](../devnet/OPERATIONS.md) |
 
@@ -37,8 +32,8 @@ checked proof; an authenticated response supplies no validity or selection;
 candidate and payload retention supply no selected-state authority. Consensus
 owns transition semantics, storage owns durable replay and signing-safety
 records, and the node owns the sole live signing scope and command custody.
-Alternative selected-history journal owners use the same exclusive directory
-lock and require explicit clean replacement.
+The canonical history is the sole selected-state journal owner. Unsupported
+V0 bytes fail closed; creating a fresh run never converts old authority.
 
 Within `naome-network`, `transport` owns the sole canonical state exchange,
 fixed genesis sessions, request permits, and terminal correlation. The V0
@@ -46,12 +41,12 @@ artifact/block/head/candidate/recovery/consensus-push exchanges, acquisition,
 and store-serving APIs are removed. `naome-protocol` contains only the bounded
 state envelope. `naome-runtime::state` owns live canonical scheduling, delivery,
 proof fetch, and history catch-up; its V0 runtime and auxiliary journals are
-removed. No artifact-only transport or runtime authority remains. Within `naome-node`, `fixed_validator` separates
-startup, signing scope, driver, inboxes, proposals, voting, round progression,
-and finality. Driver work classification has one shared precedence definition.
-Storage journal families separate their private mutation owners from replay,
-record encoding, durable append, and error reporting. These internal modules
-preserve the fixed-validator authority boundaries. The repository root is a
+removed. No artifact-only transport or runtime authority remains. The old artifact
+blocks, V0 consensus branches, node coordinator, candidate/payload stores, and
+separate finality/signing journals are removed. The canonical node owns its
+bounded lock/round state; storage owns canonical history, its separately
+anchored signer, and strict replay. Shared quorum/proposer arithmetic and
+platform durability primitives remain without an alternate history path. The repository root is a
 virtual Cargo workspace; the `naome-author` source-authoring CLI remains in `naome-authoring`; the canonical state CLI is `naome-cli` (`naome`).
 
 ## State-format integration boundary
@@ -62,8 +57,8 @@ The former research-v1 golden bytes remain immutable negative fixtures in chain
 and consensus tests. They must not acquire authority through a renamed header,
 new filename, or imported signer snapshot. The complete state record and finalized
 envelope belong to `naome-chain`. Main validator/verifier entry points now use
-only that full-state path. Remaining V0 artifact library APIs are still present
-at this intermediate milestone and remain integration work.
+only that full-state path. V0 artifact-chain, consensus, node, and journal
+authority APIs have been removed.
 
 | Surface | Previous encoding | State integration encoding / owner |
 | --- | --- | --- |
@@ -85,8 +80,8 @@ record, and branch commitments. Old history is not silently discarded, migrated,
 or resumed: operators must retain old runs with their original executable and
 provision an explicitly new directory and genesis for this format.
 
-Existing Rust `Research*` API names and V0 library APIs remain inventoried by
-the ownership table above. The main executables no longer dispatch V0 commands
+Existing Rust `Research*` API names and historical on-disk filenames still
+await their neutral naming boundary; they denote the sole canonical state path. The main executables no longer dispatch V0 commands
 or a `state` alias. Setup alone initializes fresh full-state authority while
 generating new keys and genesis; validator startup can only reopen it. Canonical
 process tests cover strict custody, retransmission, conflict halt, bounded
@@ -113,5 +108,14 @@ matching provenance records atomically. The complete library/state bytes and
 replay vectors are unchanged. Its immutable resolver serves authoring through
 the sealed selected full-history interface; the old artifact-journal authoring
 adapter has been removed. Definition authoring remains offline and does not
-extend MVP publication rules. Temporary `naome-chain` DAG reexports exist only
-for remaining V0 library callers pending their removal.
+extend MVP publication rules. The temporary `naome-chain` DAG reexports and their V0 callers are removed.
+
+The canonical safety model exhausts four possible Byzantine placements, three
+rounds, and two complete state values. Its progress rules match the canonical
+kernel, including mixed-target three-signer timeouts and two-signer higher-round
+catch-up. Witnesses replay through real anchored honest signers, cold reopen,
+and complete-state finality; weak-quorum and forgotten-lock mutants establish
+that the safety oracle detects conflicts. All 128 role/subset/fault-placement
+cases check the actual four-unit-validator quorum boundary. Separate arithmetic
+oracles cover 19,164 eligible weighted configurations, 19 symmetry classes, and
+full-width thresholds; this is not weighted-network qualification.

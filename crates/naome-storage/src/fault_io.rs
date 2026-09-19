@@ -70,29 +70,6 @@ impl ScriptedIo {
         }
     }
 
-    pub(crate) fn from_images(visible: Vec<u8>, durable: Vec<u8>) -> Self {
-        Self {
-            volatile: Cursor::new(visible),
-            durable,
-            fault: None,
-            set_len_failure: false,
-            plain_sync_failure: false,
-            body_written: 0,
-            commit_written: 0,
-            trace: Vec::new(),
-        }
-    }
-
-    pub(crate) fn fault(&self) -> Option<&Fault> {
-        self.fault.as_ref()
-    }
-
-    pub(crate) fn inject_fault(&mut self, fault: Fault) {
-        self.fault = Some(fault);
-        self.body_written = 0;
-        self.commit_written = 0;
-    }
-
     fn phase_written(&mut self, phase: AppendPhase) -> &mut usize {
         match phase {
             AppendPhase::Body => &mut self.body_written,

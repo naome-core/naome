@@ -691,7 +691,7 @@ fn signing_platform() -> Result<(), Error> {
     #[cfg(not(unix))]
     {
         Err(Error::Platform(
-            crate::FixedValidatorAnchorErrorV0::UnsupportedDurableDirectorySync,
+            crate::StoragePlatformError::UnsupportedDurableDirectorySync,
         ))
     }
 }

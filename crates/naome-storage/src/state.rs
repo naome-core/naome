@@ -27,7 +27,7 @@ use std::io;
 #[derive(Debug)]
 pub enum ResearchStorageError {
     Io(io::Error),
-    Platform(crate::FixedValidatorAnchorErrorV0),
+    Platform(crate::StoragePlatformError),
     Locked,
     Invalid(&'static str),
     Limit(&'static str),
@@ -61,8 +61,8 @@ impl From<io::Error> for ResearchStorageError {
         Self::Io(e)
     }
 }
-impl From<crate::FixedValidatorAnchorErrorV0> for ResearchStorageError {
-    fn from(e: crate::FixedValidatorAnchorErrorV0) -> Self {
+impl From<crate::StoragePlatformError> for ResearchStorageError {
+    fn from(e: crate::StoragePlatformError) -> Self {
         Self::Platform(e)
     }
 }

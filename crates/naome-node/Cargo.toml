@@ -11,7 +11,6 @@ publish.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
-naome-proof = { path = "../naome-proof" }
 naome-ledger = { path = "../naome-ledger" }
 naome-storage = { path = "../naome-storage" }
 

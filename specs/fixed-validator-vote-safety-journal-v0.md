@@ -1,5 +1,9 @@
 # Fixed-Validator Vote-Safety Journal V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Status and authority
 
 This document normatively defines one local, per-consensus-key durable signing

@@ -1,5 +1,9 @@
 # Fixed-validator V0 Byzantine process partition
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Contract and authority
 
 `SEC-012-006` refines the existing Byzantine bridge case in

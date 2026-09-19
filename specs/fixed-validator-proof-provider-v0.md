@@ -1,5 +1,9 @@
 # Fixed-Validator Proof Provider V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Scope and authority
 
 `SEC-003-003` connects the existing Unix validator process to the independently

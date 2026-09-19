@@ -76,17 +76,6 @@ impl FixedAgreementSetV0 {
         }
     }
 
-    pub(crate) fn positioned_snapshot(
-        &self,
-        position: ConsensusPosition,
-    ) -> ActiveAgreementSnapshot {
-        ActiveAgreementSnapshot {
-            position,
-            entries: self.entries.clone(),
-            total_weight: self.total_weight,
-        }
-    }
-
     pub(crate) fn entries(&self) -> &[ActiveAgreementEntry] {
         &self.entries
     }
@@ -169,13 +158,6 @@ impl FixedProposerStateV0 {
                 id,
             },
         ))
-    }
-
-    pub(crate) fn positioned_snapshot(
-        &self,
-        position: ConsensusPosition,
-    ) -> ActiveAgreementSnapshot {
-        self.fixed_set.positioned_snapshot(position)
     }
 
     pub(crate) fn fixed_set_id(&self) -> FixedAgreementSetId {

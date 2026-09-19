@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use super::ResearchStorageError as Error;
-use crate::fixed_validator_anchor::{
-    durable_open_options, require_finality_platform, sync_finality_file,
-};
+use crate::platform::{durable_open_options, require_finality_platform, sync_finality_file};
 use crate::store_io::{
     ExclusiveLock, ExclusiveLockError, StoreIo, append_body_and_commit, open_exclusive_lock,
 };

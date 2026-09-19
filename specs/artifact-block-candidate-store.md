@@ -1,5 +1,9 @@
 # NAOME Artifact Block Candidate Store
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 This document normatively defines a chain-scoped append-only store for
 structural `ArtifactBlock` candidates. It preserves observed block bytes for
 later caller evaluation and deliberately confers no selected-state authority.

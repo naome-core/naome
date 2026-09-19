@@ -1,69 +1,24 @@
-//! Authenticated agreement evidence and a typed fixed-validator consensus kernel.
+//! Authenticated agreement and finality for the canonical complete NAOME state.
 //!
-//! The branch fixes its caller-selected validator set at artifact genesis,
-//! derives weighted-round-robin proposers, verifies proposals and signed votes,
-//! and seals immutable successors with matching precommit evidence. This crate
-//! does not choose validators, persist signing safety, install durable finality,
-//! own network sessions, or execute research rewards.
+//! The fixed-set branch derives proposers, verifies proposals and signed votes,
+//! and seals successors with matching precommit evidence. Storage owns durable
+//! selection and signer custody; the ledger owns deterministic state execution.
 //!
-//! [`PreselectedProposerStateV0`] is a separate arithmetic reference for one
-//! immutable caller-preselected snapshot. Its selected keys grant no proposal,
-//! signing, finality, persistence, or recovery authority.
+//! [`PreselectedProposerStateV0`] exposes shared arithmetic only. Its selected
+//! keys grant no signing, finality, persistence, or recovery authority.
 
 use std::error::Error;
 use std::fmt;
-
-mod agreement_evidence;
-mod consensus_value;
-mod fixed_consensus_branch;
-mod fixed_validator_lock_state;
-mod fixed_validator_proposal_authoring;
-mod producer_authorization;
 mod proposer_selection;
 pub mod state;
-
-pub use agreement_evidence::{
-    CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,
-    ConsensusSignature, ConsensusVoteDecodeError, ConsensusVoteId, ConsensusVoteRole,
-    ConsensusVoteTarget, ConsensusVoteVerifyError, PrecommitCertificateId,
-    PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateBuildError,
-    QuorumCertificateId, QuorumCertificateVerifyError, UnverifiedConsensusVoteRouteV0,
-    VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0, VerifiedQuorumCertificateV0,
-};
-pub use consensus_value::{
-    ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
-    ConsensusProposalVerifyError, ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
-    UnverifiedFixedConsensusProposalRouteV0,
-};
-pub use fixed_consensus_branch::{
-    FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBoundedSeparateFinalityVerifyError,
-    FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
-    FixedConsensusNilPrecommitVerifyErrorV0, FixedConsensusNilPrevoteVerifyErrorV0,
-    FixedConsensusPrecommitBatchSealErrorV0, FixedConsensusProposalPrecommitVerifyErrorV0,
-    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusProposalValueVerifyErrorV0,
-    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
-    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
-};
-pub use fixed_validator_lock_state::{
-    FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
-    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
-    FixedValidatorVoteIntentV0, ObservedFixedValidatorHigherRoundCheckpointV0,
-    ObservedFixedValidatorVoteIntentV0, VerifiedFixedValidatorHigherRoundAdvanceV0,
-    VerifiedReplayFixedValidatorHigherRoundCheckpointV0, VerifiedReplayFixedValidatorVoteIntentV0,
-};
-pub use fixed_validator_proposal_authoring::{
-    CompletedFixedValidatorProposalV0, FixedValidatorProposalIntentErrorV0,
-    FixedValidatorProposalIntentV0, FixedValidatorProposalSourceV0,
-    ObservedFixedValidatorProposalIntentV0,
-};
-pub use producer_authorization::{
-    ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,
-};
+mod votes;
 pub use proposer_selection::{
     FixedAgreementSetId, PreselectedProposerStateV0, ProposerPriorityStateId,
     ProposerSelectionError,
 };
+pub use votes::{ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot};
+#[cfg(test)]
+mod weight_oracle;
 
 /// Exact width of one opaque consensus-key address.
 pub const CONSENSUS_KEY_BYTES: usize = 32;
@@ -468,7 +423,3 @@ impl Error for AgreementSignerError {}
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../../tests/support/codec_corpus.rs"]
-mod codec_corpus;

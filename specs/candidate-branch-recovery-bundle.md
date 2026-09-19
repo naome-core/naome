@@ -1,5 +1,9 @@
 # NAOME Candidate-Branch Recovery Bundle V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Authority and scope
 
 `CandidateBranchRecoveryBundleV0` is a caller-owned prerelease offline transfer

@@ -1,5 +1,9 @@
 # Fixed-validator agreement evidence V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Status and authority
 
 This specification defines the prerelease V0 canonical bytes and stateless

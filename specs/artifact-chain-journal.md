@@ -1,5 +1,9 @@
 # NAOME Artifact Chain Journal
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 This document normatively defines local crash-consistent persistence for one
 selected linear artifact chain. [Artifact Chain](artifact-chain.md) and
 [Artifact Admission](artifact-admission.md) own block and artifact admission. The journal neither weakens those checks nor

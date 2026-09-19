@@ -4,7 +4,6 @@ use ed25519_dalek::SigningKey;
 use naome_ledger::profile::{Genesis, Profile, RESEARCH_CHECKER_PROFILE, ValidatorRegistration};
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -12,7 +11,7 @@ use std::{
 use tokio::net::UnixListener;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Directory(PathBuf);
+struct Directory(PathBuf, PathBuf);
 impl Directory {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
@@ -21,23 +20,39 @@ impl Directory {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         files::directory(&path).unwrap();
-        Self(path)
+        // Keep hard links beside the checked-in launcher on the same filesystem,
+        // independently of where the OS temporary/control-socket directory lives.
+        let providers =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/agent-provider-fixtures");
+        fs::create_dir_all(&providers).unwrap();
+        let providers = providers.join(path.file_name().unwrap());
+        files::directory(&providers).unwrap();
+        Self(path, providers)
     }
     fn executable(&self, name: &str, body: &str) -> PathBuf {
-        let path = self.0.join(name);
+        let path = self.1.join(name);
+        // A newly written executable can transiently be held writable by a
+        // concurrently forked child before its exec closes inherited FDs.
+        // Hard-link a stable checked-in launcher; the generated body is read as
+        // shell input, so Linux ETXTBSY cannot mask adapter behavior.
         files::create(
-            &path,
-            format!("#!/bin/sh\n/bin/cat >/dev/null\n{body}\n").as_bytes(),
+            &self.1.join(format!("{name}.body")),
+            format!("/bin/cat >/dev/null\n{body}\n").as_bytes(),
             true,
         )
         .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::hard_link(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/agent-provider.sh"),
+            &path,
+        )
+        .unwrap();
         path
     }
 }
 impl Drop for Directory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.1);
     }
 }
 fn quoted(text: &str) -> String {
@@ -277,7 +292,10 @@ async fn changed_or_expired_voting_context_never_creates_a_signed_action() {
         let result = run(&fixture.args(&executable)).await;
         assert!(result.is_err());
         fixture.assert_no_vote_files();
-        let requests = server.await.unwrap();
+        let requests = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("fixture must receive all three requests")
+            .unwrap();
         assert_eq!(requests.len(), 3);
         assert!(matches!(requests.last(), Some(Request::Status {})));
     }

@@ -1,5 +1,9 @@
 # Fixed-validator V0 partitioned owner restart
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Contract and authority
 
 `SEC-012-004` checks one finite lifecycle boundary: a validator that acquired a

@@ -2,7 +2,7 @@
 name = "naome-storage"
 version.workspace = true
 edition.workspace = true
-description = "Crash-consistent local storage for NAOME artifact chains and canonical artifact payloads."
+description = "Anchored canonical state history and restart-safe signing custody for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -11,9 +11,7 @@ publish.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
-naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
-naome-proof = { path = "../naome-proof" }
 sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -21,6 +19,8 @@ atomicwrites = "0.4.4"
 winsafe = { version = "0.0.28", features = ["kernel"] }
 
 [dev-dependencies]
+naome-foundation = { path = "../naome-foundation" }
+naome-proof = { path = "../naome-proof" }
 naome-checker = { path = "../naome-checker" }
 
 [lints]

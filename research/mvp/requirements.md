@@ -14,7 +14,7 @@ Statements about existing code come from the preparatory review against reposito
 
 The code foundation retains the mathematical libraries and authoring CLI, strict artifact admission, fixed-validator consensus, authenticated static-peer networking, durable storage and recovery, validator/verifier processes, and devnet qualification. The former fee/bond/reward-weight projections, dynamic organization membership, validator-set replacement, peer discovery, and isolated V1 state-measurement prototype have been removed with their dedicated tests and obsolete specifications. Their source remains available in Git history. The remaining component ownership is indexed in [Specification and implementation ownership](../../specs/ownership.md).
 
-The retained V0 path continues to finalize individual artifacts. The separate research path adds complete research records, phases, proof groups, rewards, and passive eligibility claims. Mathematical fixtures, codec checks, fixed-validator restart, partition, and recovery tests support its acceptance; implementation alone does not establish that every acceptance gate has passed.
+The canonical state path finalizes complete records binding phases, proof groups, rewards, and passive eligibility claims. The former single-artifact V0 authority has been removed. Mathematical fixtures, codec checks, fixed-validator restart, partition, and recovery tests support its acceptance; implementation alone does not establish that every acceptance gate has passed.
 
 Navigation: [Checklist](#checklist) · [Acceptance scenarios](#acceptance) · [Implementation stages](#implementation) · [Rules and parameters](#rules) · [Research status and remaining work](#r11).
 
@@ -245,7 +245,7 @@ The winning author receives exactly one passive, nontransferable eligibility cla
 
 ### R8. New records and unambiguous encoding
 
-The current `ConsensusValueV0`/`ArtifactBlock` model confirms a single artifact. The MVP requires its own versioned research-record format that can also bind zero or multiple new artifacts and research operations. No research result may exist solely in an unconfirmed side database. The existing consensus, transport, and storage paths must actually verify, sign, transmit, select, and replay this format.
+The canonical `StateRecord` format binds zero or multiple new artifacts together with authenticated operations and the complete resulting state. The former single-artifact `ConsensusValueV0`/`ArtifactBlock` authority is removed. No research result may exist solely in an unconfirmed side database. The existing consensus, transport, and storage paths must actually verify, sign, transmit, select, and replay this format.
 
 The binding record content includes genesis/profile, height, parent identifier, complete previous-state commitment, time certificate, ordered user operations, deterministically derived phase/settlement results, and the complete successor-state commitment. Signature evidence is separate from the content it identifies; the choice of a sufficient subset of signatures must not change that content's identity or payout.
 

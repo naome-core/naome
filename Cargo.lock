@@ -1806,7 +1806,6 @@ dependencies = [
  "naome-chain",
  "naome-foundation",
  "naome-ledger",
- "naome-proof",
  "num-bigint",
  "sha2 0.11.0",
 ]
@@ -1849,7 +1848,6 @@ dependencies = [
  "naome-consensus",
  "naome-foundation",
  "naome-ledger",
- "naome-proof",
  "naome-storage",
 ]
 

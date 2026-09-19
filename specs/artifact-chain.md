@@ -1,5 +1,9 @@
 # Single-artifact block and linear chain state
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 An `ArtifactBlock` is the sole canonical selected-state transition. It commits:
 
 ```text

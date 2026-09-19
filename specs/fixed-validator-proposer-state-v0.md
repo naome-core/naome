@@ -1,5 +1,10 @@
 # Fixed-validator proposer and branch state V0
 
+> Shared fixed-set proposer arithmetic remains current. The V0 artifact-only
+> branch, root constructor, and separate finality journals described below are
+> retired; the canonical state branch uses this arithmetic under the
+> [current ownership contract](ownership.md).
+
 ## Status and authority
 
 This specification defines the prerelease fixed-validator V0 proposer

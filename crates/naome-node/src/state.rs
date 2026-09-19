@@ -534,3 +534,6 @@ fn eviction_priority(existing: u64, current: u64, incoming: u64) -> Option<(u8, 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod safety_model;

@@ -1,5 +1,9 @@
 # Bounded fixed-validator V0 safety model
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Contract and status
 
 `TEST-005-001` and `TEST-005-002` supply finite, independent model checking and selected real

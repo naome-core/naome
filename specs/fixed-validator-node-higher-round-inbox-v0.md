@@ -1,5 +1,9 @@
 # Fixed-Validator Node Higher-Round Inbox V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Authority and scope
 
 This document defines one caller-owned, process-local fixed-validator V0 inbox

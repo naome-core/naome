@@ -1,5 +1,9 @@
 # Fixed-validator process artifact acquisition V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 > The V0 executable and process tests described here are retired. This historical
 > contract is not a supported command interface. Current operation and independent
 > replay use the [canonical state executables](../research/mvp/operations.md).

@@ -1,5 +1,9 @@
 # Fixed-validator V0 runtime partition simulation
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Selected property and authority
 
 `SEC-012-002` exercises the existing fixed-validator V0 Runtime owner after a

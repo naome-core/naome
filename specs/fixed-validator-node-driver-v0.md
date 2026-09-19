@@ -1,5 +1,9 @@
 # Fixed-Validator Node Driver V0
 
+> Historical V0 contract. Its artifact-only authority and executable callers
+> are removed. This page is not a current implementation or acceptance claim;
+> use [component ownership](ownership.md) and the [MVP rules](../research/mvp/requirements.md).
+
 ## Authority and scope
 
 This document defines one synchronous, closure-scoped, partial fixed-validator

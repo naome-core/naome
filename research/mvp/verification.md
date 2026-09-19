@@ -55,6 +55,17 @@ The canonical frame and state rules are unchanged. Shared authentication,
 connection/stream limits, exact correlation, and custody remain covered by
 canonical tests; fresh local and CI evidence is recorded separately.
 
+The [canonical authority milestone](evidence/authority-retirement.json) removes
+V0 artifact blocks, separate consensus branches and journals, candidate/payload
+stores, and the old node coordinator. Canonical state rules, replay, crash-fault,
+process and transport coverage remain. A new canonical safety model uses the
+actual timeout/catch-up rules and replays its witnesses through anchored honest
+signers and cold restart; separate tests check every four-unit quorum subset and
+shared full-width weight arithmetic. Cross-process tests cover history/signer
+owners and their independent anchors. The ledger retains the proof/set malformed
+decoder campaign. Neutral API/on-disk naming and final real-window qualification
+remain outstanding; this milestone does not establish public-network security.
+
 ## Recorded qualification
 
 | Evidence | Source and result |
