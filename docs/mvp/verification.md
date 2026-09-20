@@ -33,6 +33,26 @@ permissionless-network security. Keys, secrets, raw histories and provider
 diagnostics remain private. Public reports include the intentionally published
 fixture profile and actual agent decision and reason.
 
+## Pilot preparation
+
+The next pilot's [local preparation evidence](evidence/pilot-local.json), dated
+20 September 2026, records an exact file manifest for the changes after
+`6cdab88`. Both complete Rust profiles passed 535 tests with separate build
+barriers; formatting, Clippy, rustdoc and the doctest command passed. All 18
+devnet/Python tests passed. A release-binary rehearsal moved four private bundles,
+settled one real proof and helper with one validator offline, restored it,
+cold-restarted all four, and independently replayed 12 matching records. It also
+rejected duplicate node exports, corrupt archive bytes, missing anchors and
+simulation controls. The run took 36.979 seconds with compact short-test limits
+and manual votes; cleanup completed.
+
+The [pilot runbook](pilot.md) defines deployment and collection on real machines.
+The rehearsal is one-host evidence. Standard-limit network execution, a new
+real-agent or LAB-window run, Docker and CI for this patch, physical machine
+independence, and the seven-day profile were not run. The revised 19-page
+[paper](whitepaper-en.pdf) passed structural checks and rendered-page visual
+review; that document review does not qualify the proposed public network.
+
 ## Executable evidence locations
 
 | Label | Source and scope |

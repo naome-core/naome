@@ -1,5 +1,8 @@
 # Canonical state devnet qualification
 
+For trusted hosts on separate machines, use the [pilot runbook](../docs/mvp/pilot.md).
+The local devnet and portable-bundle rehearsal remain single-machine evidence.
+
 This harness starts four trusted fixed validators with separate keys, histories,
 signer journals, independent anchor directories, and authenticated TCP sessions.
 The operator uses `naome`, validators use `naome-validator start`, and exported

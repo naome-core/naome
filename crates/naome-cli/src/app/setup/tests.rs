@@ -7,6 +7,80 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn portable_config_uses_its_own_directory_and_preserves_absolute_paths() {
+    let dir = Directory::new();
+    let mut config = dir.config();
+    config.history = PathBuf::from("data/history");
+    config.signer_anchor = PathBuf::from("anchors/signer");
+    config.control_socket = PathBuf::from("control.sock");
+    let path = dir.0.join("node.json");
+    files::create(&path, &serde_json::to_vec(&config).unwrap(), true).unwrap();
+    let relocated = dir.0.join("moved");
+    files::directory(&relocated).unwrap();
+    fs::rename(&path, relocated.join("node.json")).unwrap();
+    let read = NodeConfig::read(&relocated.join("node.json")).unwrap();
+    assert_eq!(
+        read.history,
+        relocated.canonicalize().unwrap().join("data/history")
+    );
+    assert_eq!(
+        read.signer_anchor,
+        relocated.canonicalize().unwrap().join("anchors/signer")
+    );
+    assert_eq!(
+        read.control_socket,
+        relocated.canonicalize().unwrap().join("control.sock")
+    );
+    assert_eq!(read.genesis, config.genesis);
+    assert!(!read.history.exists());
+    assert!(!read.signer_anchor.exists());
+}
+
+#[test]
+fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
+    let dir = Directory::new();
+    let plan = dir.0.join("endpoints.json");
+    let endpoints = [
+        "10.10.0.1:4100",
+        "10.10.0.2:4100",
+        "10.10.0.3:4100",
+        "10.10.0.4:4100",
+    ];
+    fs::write(&plan, serde_json::to_vec(&endpoints).unwrap()).unwrap();
+    let mut args = vec![
+        "unused".into(),
+        "lab".into(),
+        "128".into(),
+        "44100".into(),
+        "standard".into(),
+        plan.to_str().unwrap().into(),
+    ];
+    let (standard, actual) = parameters(&args).unwrap();
+    assert_eq!(actual, endpoints);
+    assert_eq!(
+        standard,
+        Profile::with_limits(
+            TimingKind::Lab,
+            Limits {
+                run_records: 128,
+                ..Limits::default()
+            }
+        )
+        .unwrap()
+    );
+    args[4] = "compact".into();
+    let (compact, actual) = parameters(&args).unwrap();
+    assert_eq!(actual, endpoints);
+    assert_ne!(compact.id(), standard.id());
+    assert!(compact.required_storage_bytes().unwrap() < standard.required_storage_bytes().unwrap());
+    args.truncate(4);
+    assert_eq!(parameters(&args).unwrap().0, standard);
+    args.push("unknown".into());
+    assert!(parameters(&args).is_err());
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {

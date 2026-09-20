@@ -1,5 +1,9 @@
 # Operating the trusted research MVP
 
+For separate-machine deployment, start with the [pilot runbook](pilot.md).
+It prepares relocatable per-node bundles and collects independently replayed
+archives. The commands below describe the research workflow within that run.
+
 These commands operate a four-validator canonical state genesis on Unix. The
 current qualification target is four independent local processes with separate
 keys, journals, anchors, and authenticated network connections. The [completed integration lab report](evidence/final-integration-lab.json) records actual
@@ -382,3 +386,15 @@ Each new run supplies acceptance evidence only after it finishes successfully.
 The [verification map](verification.md) separates component tests, process tests,
 lab evidence, and repository/CI gates. A successful lab run does not replace the
 complete pinned test/release workspace checks or required platform CI.
+
+## Rebuild the research paper
+
+The [paper source](paper/whitepaper_en.md) and its preserved vector diagrams are
+versioned with the implementation. On macOS, with ReportLab, pypdf and pdfplumber
+available, run `python3 docs/mvp/paper/build_whitepaper.py en` and
+`python3 docs/mvp/paper/check_paper.py`. The builder uses the system Times New
+Roman, Arial Unicode and Andale Mono fonts and writes `whitepaper-en.pdf`. Render
+and visually inspect every page after changes; structural checks alone do not
+qualify layout. The paper describes both the trusted MVP and the broader public
+proposal; the requirement and verification documents define the operational
+scope and actual evidence.

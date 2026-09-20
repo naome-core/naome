@@ -173,6 +173,8 @@ jobs:
         run: cargo test -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-run
       - name: Qualify canonical publication, citation, outage, partition, and cold replay
         run: cargo test -p naome-validator -p naome-verifier -p naome-cli --profile release --all-targets --all-features --locked --no-fail-fast four_process_state_recovery_partition_and_independent_replay
+      - name: Rehearse portable pilot bundles and independent archive collection
+        run: python3 -B devnet/rehearse_pilot.py --bin-dir target/release --directory "$RUNNER_TEMP/pilot"
       - name: Package exact Linux binaries
         run: python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:ci
       - name: Qualify 100 canonical state heights with isolation, delay, and faults
@@ -182,7 +184,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: devnet-qualification
-          path: ${{ runner.temp }}/naome-devnet/report.json
+          path: |
+            ${{ runner.temp }}/naome-devnet/report.json
+            ${{ runner.temp }}/pilot/rehearsal-report.json
           if-no-files-found: warn
           retention-days: 14
 

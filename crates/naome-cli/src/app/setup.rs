@@ -34,9 +34,35 @@ pub struct NodeConfig {
 }
 impl NodeConfig {
     pub fn read(path: &Path) -> Result<Self> {
-        let config: Self = serde_json::from_slice(&files::read(path, 16384, true)?)?;
+        let mut config: Self = serde_json::from_slice(&files::read(path, 16384, true)?)?;
         if config.version != 2 || config.maximum_round == 0 {
             return Err("unsupported node configuration".into());
+        }
+        // Portable bundles resolve paths beside their configuration, never
+        // against the operator's working directory. Existing absolute paths
+        // retain their meaning; this does not initialize or copy custody.
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let parent = parent.canonicalize()?;
+        for field in [
+            &mut config.genesis,
+            &mut config.history,
+            &mut config.history_anchor,
+            &mut config.signer,
+            &mut config.signer_anchor,
+            &mut config.consensus_key,
+            &mut config.transport_key,
+            &mut config.account_key,
+            &mut config.agenda_profile,
+            &mut config.control_socket,
+        ] {
+            if field.is_relative() {
+                *field = parent.join(&*field);
+            }
         }
         Ok(config)
     }
@@ -44,10 +70,13 @@ impl NodeConfig {
         Ok(Genesis::decode(&files::read(&self.genesis, 16384, false)?)?)
     }
 }
-pub fn run(args: &[String]) -> Result<()> {
-    if !(args.len() == 4 || ((args.len() == 5 || args.len() == 6) && args[4] == "compact")) {
+fn parameters(args: &[String]) -> Result<(Profile, [String; 4])> {
+    if !(args.len() == 4
+        || ((args.len() == 5 || args.len() == 6)
+            && matches!(args[4].as_str(), "compact" | "standard")))
+    {
         return Err(
-            "usage: setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [compact [ENDPOINTS_JSON]]".into(),
+            "usage: setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [standard|compact [ENDPOINTS_JSON]]".into(),
         );
     }
     let timing = match args[1].as_str() {
@@ -60,14 +89,13 @@ pub fn run(args: &[String]) -> Result<()> {
         run_records: args[2].parse()?,
         ..Limits::default()
     };
-    if args.len() >= 5 {
+    if args.get(4).is_some_and(|mode| mode == "compact") {
         limits.record_bytes = 128 * 1024;
         limits.package_bytes = 64 * 1024;
         limits.transport_frame_bytes = 192 * 1024;
         limits.consensus_rounds = 8;
     }
     let profile = Profile::with_limits(timing, limits)?;
-    let maximum_round = profile.limits().consensus_rounds;
     let base: u16 = args[3].parse()?;
     if !(1024..=65532).contains(&base) {
         return Err("base port must be 1024 through 65532".into());
@@ -99,6 +127,12 @@ pub fn run(args: &[String]) -> Result<()> {
     } else {
         std::array::from_fn(|index| format!("127.0.0.1:{}", base + index as u16))
     };
+    Ok((profile, endpoints))
+}
+
+pub fn run(args: &[String]) -> Result<()> {
+    let (profile, endpoints) = parameters(args)?;
+    let maximum_round = profile.limits().consensus_rounds;
     let requested = Path::new(&args[0]);
     files::directory(requested)?;
     let root = requested.canonicalize()?;

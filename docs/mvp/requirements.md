@@ -4,7 +4,9 @@ The trusted MVP baseline adopts rules R1–R11 and their parameters. Acceptance
 uses four independent local validator processes with separate keys and durable
 stores, including simulated partitions and failures. A real two-machine run
 remains later qualification. The accompanying [English whitepaper](whitepaper-en.pdf),
-edition `concise-v10` dated 14 September 2026, is the broader research reference.
+revised 20 September 2026, distinguishes the implemented trusted MVP from the
+broader public-network proposal. The [pilot runbook](pilot.md) defines the next
+separate-machine qualification and its evidence requirements.
 
 **Goal:** Known, trusted participants jointly operate a small research network. They submit formal questions, select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
 

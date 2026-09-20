@@ -76,6 +76,10 @@ encodings are independent of this state-format family.
 
 Storage uses `state.journal`, `state.lock`, `state-finality.anchor`, and
 `state-signer-KEY.*`. Node configuration version 2 uses `agenda_profile`.
+Relative configuration paths resolve beside the configuration file; absolute
+paths retain their meaning. This permits private [pilot bundles](../docs/mvp/pilot.md)
+to move before startup without changing genesis or creating new signing state.
+Explicit peer endpoints may use either standard or compact pre-genesis limits.
 Unsupported artifact/research/V0 authority filenames, old framing, and version-1
 configuration are rejected before locks or writes, including during read-only
 observation. No old directory, history, or signing authority is automatically
