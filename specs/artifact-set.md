@@ -123,8 +123,9 @@ and registration all succeed before tree insertion. Duplicate rules then make
 insertion logically infallible. Failed admission changes neither record count,
 topology, root, nor existing witnesses.
 
-Block preparation and preflight project the root produced by one `ArtifactId`
+The standalone DAG projection API computes the root produced by one `ArtifactId`
 without mutating records or topology. Projection performs no payload decode,
 checking, dependency resolution, or registry admission and must not clone or
-scan the selected set. Journal replay stores no Merkle nodes; it reconstructs
-and verifies the set through strict block application.
+scan the selected set. Canonical history replay reconstructs the library and
+its derived set through
+strict complete-state execution; it stores no separate Merkle-node authority.

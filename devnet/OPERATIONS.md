@@ -84,27 +84,21 @@ Only `report.json` is intended for publication. Containers, their internal netwo
 probe containers and native process groups are owned by the run and cleaned up on
 success, failure and handled interruption. Cleanup failures fail qualification.
 
-## Retired V0 qualification surfaces
+## Authority setup and supervision
 
-The old `naome-devnet` provision/publish/verify executable and its artifact-source
-publishers are removed. Existing V0 data has no conversion path; keep original
-binaries for historical inspection. Canonical setup creates fresh genesis and
-refuses existing output, invalid or duplicate endpoints, symlinked endpoint files,
-and invalid profile limits. Its keys remain private and all four authority
-stores are initialized at genesis before configuration publication. Startup only
-reopens existing stores. These properties are checked in `naome-cli` setup and
-actual main-executable tests.
+Canonical setup creates fresh genesis and refuses existing output, invalid or
+duplicate endpoints, symlinked endpoint files, and invalid profile limits. Keys
+remain private. Setup initializes all four histories and signing stores at
+genesis before publishing configuration; validator startup only reopens them.
+Missing authority is a failure, never an initialization request.
 
-Legacy HTTP health/event collectors retired with their dedicated surfaces.
-Canonical supervision uses the node's bounded local status interface, verifies
-process liveness, rejects state regression/conflict, and applies fixed deadlines.
-The retained Python tests cover concurrent probes, failed-role propagation,
-symlink-safe durable reports, timer healing, memory/disk limits, exact delayed TCP
-transfer, listener release, private mounts and process/probe cleanup. Malformed
-canonical intake must leave authority unchanged before valid work progresses.
-Protocol/runtime suites retain authenticated frame and operation rejection checks.
-The old 128-artifact recovery bundle fixture belongs to the retired V0 publisher
-API; canonical qualification instead checks bounded complete-record history and
-independent replay, alongside the required proof-library process tests.
+The qualifier moves each fresh external-anchor directory intact to its separate
+per-validator mount and syncs both parent directories. Supervision uses the
+node's bounded local status interface, checks process liveness, rejects state
+regression/conflict, and applies fixed deadlines.
 
-Setup initializes genesis-bound history and signing stores before any validator starts. The qualifier moves each fresh external-anchor directory intact to its separate per-validator mount and syncs both parent directories; startup only reopens those stores. Missing authority is a failure, never an initialization request.
+Python tests cover concurrent probes, failed-role propagation, symlink-safe
+durable reports, timer healing, memory/disk limits, exact delayed TCP transfer,
+listener release, private mounts and process/probe cleanup. Malformed intake
+must leave authority unchanged before valid work progresses. Protocol/runtime
+suites separately cover authenticated framing and operation rejection.

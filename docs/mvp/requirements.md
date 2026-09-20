@@ -1,28 +1,31 @@
-# NAOME: MVP Starting Point — Requirements, Rules, and Acceptance
+# NAOME trusted MVP: requirements, rules, and acceptance
 
-As of 15 September 2026. The research basis is the accompanying [English whitepaper](whitepaper-en.pdf), edition `concise-v10` dated 14 September 2026.
-
-Implementation was authorized on 15 September 2026 with R1–R11 and their proposed parameters adopted as the trusted MVP baseline. The user subsequently requested local network simulation because a second machine is not yet available. Current acceptance therefore uses four independent local validator processes with separate keys and durable stores, including simulated network partitions and failures. A real two-machine run remains later qualification and must not be claimed from this evidence. All other requirements and acceptance scenarios remain in scope.
-
-Origin: Consolidated from the locally backed-up branch `task/whitepaper-rule-inventory`, commit `0d6259badd6575d681ebdf2c3b42bff24e396ebc`. The new starting branch `task/mvp-start` was created from `origin/main` commit `d29f0776aecd1b1d9eca8bb5056f25912a91c17c`.
+The trusted MVP baseline adopts rules R1–R11 and their parameters. Acceptance
+uses four independent local validator processes with separate keys and durable
+stores, including simulated partitions and failures. A real two-machine run
+remains later qualification. The accompanying [English whitepaper](whitepaper-en.pdf),
+edition `concise-v10` dated 14 September 2026, is the broader research reference.
 
 **Goal:** Known, trusted participants jointly operate a small research network. They submit formal questions, select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
 
-This file is the trusted MVP implementation and acceptance contract: 35 requirements, seven acceptance scenarios, five implementation stages, and rules R1–R11 with their parameters. The checklist is accepted within the trusted, bounded four-process local simulation authorized above. [Verification evidence](verification.md) records component tests, storage faults, actual process and lab execution, complete workspace qualification, and cross-platform CI separately. The whitepaper remains the broader research reference.
+This is the implementation and acceptance contract: 35 requirements, seven
+acceptance scenarios, five implementation stages, and rules R1–R11. The checklist
+is accepted within the trusted, bounded local simulation. [Verification evidence](verification.md)
+separates component checks, storage faults, process and lab execution, and
+cross-platform CI, with the source snapshot for each result.
 
-Statements about existing code come from the preparatory review against repository commit `02855decfcbd7ec4e152e4debd4ebb7f2de54d93`. They provide a documented starting point, not evidence about later branch states. The following plan requires no additional accompanying model scripts, review reports, or manuscript sources.
-
-The code foundation retains the mathematical libraries and authoring CLI, strict artifact admission, fixed-validator consensus, authenticated static-peer networking, durable storage and recovery, validator/verifier processes, and devnet qualification. The former fee/bond/reward-weight projections, dynamic organization membership, validator-set replacement, peer discovery, and isolated V1 state-measurement prototype have been removed with their dedicated tests and obsolete specifications. Their source remains available in Git history. The remaining component ownership is indexed in [Specification and implementation ownership](../../specs/ownership.md).
-
-The canonical state path finalizes complete records binding phases, proof groups, rewards, and passive eligibility claims. The former single-artifact V0 authority has been removed. Mathematical fixtures, codec checks, fixed-validator restart, partition, and recovery tests support its acceptance; implementation alone does not establish that every acceptance gate has passed.
+The canonical state path finalizes complete records binding phases, proof groups,
+rewards, and passive eligibility claims. [Component ownership](../../specs/ownership.md)
+indexes the mathematical libraries, authoring, consensus, authenticated static
+network, storage, runtime, executables, and qualification tooling.
 
 Navigation: [Checklist](#checklist) · [Acceptance scenarios](#acceptance) · [Implementation stages](#implementation) · [Rules and parameters](#rules) · [Research status and remaining work](#r11).
 
-## 1. Established Scope and Recommended Limits
+## 1. Scope and Limits
 
-The user specified the trusted participant group, “Survival of the first,” and a command-line interface, then adopted the following simplifications for this trusted MVP. These rules do not adopt a public-network protocol. Their precise meaning is defined in [rules R1–R11](#rules); the acceptance cases make their effects testable.
+The trusted participant group, “Survival of the first,” and command-line interface use the following MVP rules. These rules do not adopt a public-network protocol. Their precise meaning is defined in [rules R1–R11](#rules); the acceptance cases make their effects testable.
 
-| Area | Proposed scope |
+| Area | Scope |
 |---|---|
 | Validators | Four fixed validators with equal weight; three votes form a quorum of strictly more than two-thirds. |
 | Users | Research accounts registered in genesis; submissions require no starting balance. |

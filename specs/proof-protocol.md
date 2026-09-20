@@ -4,8 +4,9 @@ This document normatively defines NAOME's canonical proof certificate and proof
 identities. The [ZFC Foundation](foundation.md) owns the primitive language and
 rules; [Mathematical Definitions](mathematical-definitions.md) owns conservative
 definition artifacts and expansion. [Artifact Admission](artifact-admission.md),
-[Artifact Set](artifact-set.md), and [Artifact Chain](artifact-chain.md) own the
-selected-state layers. The [ownership index](ownership.md) maps each layer to
+[Artifact Set](artifact-set.md), and the [MVP state rules](../docs/mvp/requirements.md)
+own strict admission, authenticated membership, and complete selected state.
+The [ownership index](ownership.md) maps each layer to
 its implementation and normative contract.
 
 The protocol pipeline is:
@@ -15,8 +16,11 @@ canonical typed artifact
   -> deterministic proof or definition checking
   -> immutable accepted record
   -> authenticated selected artifact set
-  -> exact-parent single-artifact block
 ```
+
+MVP proof packages continue through atomic proof-library publication in a complete
+finalized state record. Conservative definitions remain an offline authoring and
+checking facility; the MVP does not publish them as research results.
 
 Mathematical checking decides Foundation-relative proof validity. State roots,
 blocks, ancestry, persistence, and later consensus may
@@ -449,6 +453,8 @@ The normative contract is in [Selected artifact state and admission](artifact-ad
 
 The normative contract is in [Authenticated artifact set](artifact-set.md).
 
-## Single-artifact block and linear chain state
+## Complete finalized state
 
-The normative contract is in [Single-artifact block and linear chain state](artifact-chain.md).
+The [MVP rules](../docs/mvp/requirements.md) define atomic proof-library publication,
+settlement, and full-state finality. [Component ownership](ownership.md) separates
+mathematical admission from ledger execution, consensus, and durable replay.

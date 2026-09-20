@@ -1,142 +1,61 @@
 {
-  "final_local_source_manifest_sha256": "0fa0aae207249bd3b813c16678352ac51ab1738d50337ed25f7eac532a6dceec",
-  "final_local_source_files": 223,
-  "scope": "Completed trusted MVP canonical-state integration on task/mvp-start; no PR or merge",
-  "lab_implementation_commit": "7e43f2bc3c5e967b2a2f3aad54496c61eb064be2",
-  "final_test_portability_fix": {
-    "path": "crates/naome-node/src/state/safety_model/model.rs",
-    "change": "Two #[cfg(unix)] attributes on wrappers called only by Unix replay; portable exploration and both mutant tests remain active. Entire module is #[cfg(test)]; no production behavior changes.",
-    "patch_sha256": "574d5fdf3375f9d15071d59efc5b556c9888cf68e355c65fa8a8d1b53f832dee",
-    "complete_local_validation_logs": {
+  "scope": "Canonical state-v1 trusted MVP qualification; results identify the measured snapshots, not subsequent documentation edits",
+  "implementation_commit": "0bae7b0e61c576f9fc1edf2f465da90602a9645e",
+  "local_qualification": {
+    "source_manifest_sha256": "0fa0aae207249bd3b813c16678352ac51ab1738d50337ed25f7eac532a6dceec",
+    "source_files": 223,
+    "rust": "1.97.1",
+    "cargo_incremental": "0",
+    "workspace_test": 533,
+    "workspace_release": 533,
+    "commands": {
+      "build": "cargo test --workspace --profile test --all-targets --all-features --locked --no-run",
+      "test": "cargo test --workspace --profile test --all-targets --all-features --locked --no-fail-fast",
+      "release-build": "cargo test --workspace --profile release --all-targets --all-features --locked --no-run",
+      "release-test": "cargo test --workspace --profile release --all-targets --all-features --locked --no-fail-fast",
+      "clippy": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+      "doc": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --all-features --locked",
+      "doctest": "cargo test --workspace --doc --all-features --locked"
+    },
+    "logs": {
       "build": {
         "sha256": "f59168c952c1d801612b3047518ec8830e7dfc37f6a0d0c64348cc4f23a13c49",
-        "passed_tests": 0,
         "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s",
-        "results": []
+        "passed_tests": 0
       },
       "test": {
         "sha256": "7c43fd6a1be25a62e96df659143ccc3cfb9246543c689d00cd1d1610e62883a3",
-        "passed_tests": 533,
         "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s",
-        "results": [
-          "test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
-          "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
-          "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
-          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
-          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s",
-          "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
-          "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
-          "test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s",
-          "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.51s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 173.91s",
-          "test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s",
-          "test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
-          "test result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.49s",
-          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
-          "test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.03s",
-          "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 73.95s",
-          "test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
-          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s",
-          "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.83s",
-          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s"
-        ]
+        "passed_tests": 533
       },
       "release-build": {
         "sha256": "17c0f50c6ab2bc434e2b1be1dba7f3028b5f47be0309e12e8a54f39be58e701a",
-        "passed_tests": 0,
         "completion": "    Finished `release` profile [optimized] target(s) in 2.08s",
-        "results": []
+        "passed_tests": 0
       },
       "release-test": {
         "sha256": "d66a5856fc59b5c7730584e07dcc024d0b2b056546dfc56d43eb64d459759eab",
-        "passed_tests": 533,
         "completion": "    Finished `release` profile [optimized] target(s) in 0.14s",
-        "results": [
-          "test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
-          "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s",
-          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
-          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s",
-          "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
-          "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
-          "test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s",
-          "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.52s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 138.52s",
-          "test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s",
-          "test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.41s",
-          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
-          "test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s",
-          "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.46s",
-          "test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
-          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s",
-          "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.17s",
-          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s"
-        ]
+        "passed_tests": 533
       },
       "clippy": {
         "sha256": "514abba06371cf07710ac765ac4ec0e874ef9233543789e9650468152e9c41e0",
-        "passed_tests": 0,
         "completion": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.51s",
-        "results": []
+        "passed_tests": 0
       },
       "doc": {
         "sha256": "4d215792a063267d7b5e0621a72d9ff55d72357ea6d6c8f7646c93dacc66a219",
-        "passed_tests": 0,
         "completion": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.68s",
-        "results": []
+        "passed_tests": 0
       },
       "doctest": {
         "sha256": "484a8cc49b766deee4a23ceae34291e1849d00146420a4b79e340b44e34ba347",
-        "passed_tests": 0,
         "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s",
-        "results": [
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-          "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
-        ]
+        "passed_tests": 0
       }
     },
-    "rebuilt_release_executables_match_lab_hashes": true
-  },
-  "supplemental_windows_target_lint": {
-    "command": "cargo clippy -p naome-node --target x86_64-pc-windows-gnu --all-targets --all-features --locked -- -D warnings",
-    "result": "passed",
-    "log_sha256": "a349cdbb9efd766ba8956841e31db682c6ce31bc94265bc22349299b62edac4f",
-    "scope": "Cross-target compilation/lint on macOS; not native Windows execution or a substitute for final CI"
-  },
-  "canonical_authority": "Ledger deterministic transitions, chain full state records, consensus agreement/finality, storage anchored history and signer custody, node execution, authenticated protocol/network/runtime, and main operator/validator/verifier executables. No authoritative parallel research or V0 artifact history remains.",
-  "local_qualification": {
-    "report": "neutral-state-boundary.json",
-    "report_sha256": "48f2f3cf259808b2149cce0f4c5d588f52143bbac5d0eb81fe3142b4b8a7c843",
-    "workspace_test": 533,
-    "workspace_release": 533,
-    "pinned_rust": "1.97.1",
-    "cargo_incremental": "0",
-    "format_clippy_documentation_doctest_commands": "passed; the final crates contain zero doctests",
-    "native_devnet_records": 12
+    "format": "cargo fmt --all -- --check passed",
+    "note": "Complete local checks follow the Unix-test-helper cfg correction. The production executables were rebuilt and matched the lab hashes. Zero doctests are defined."
   },
   "real_lab": {
     "report": "final-integration-lab.json",
@@ -172,967 +91,99 @@
     },
     "result": "passed"
   },
-  "preceding_milestone_ci": {
-    "conclusion": "failure",
-    "databaseId": 35463787211,
-    "headSha": "7e43f2bc3c5e967b2a2f3aad54496c61eb064be2",
+  "lab_to_implementation": {
+    "lab_commit": "7e43f2bc3c5e967b2a2f3aad54496c61eb064be2",
+    "later_code_change": "Two #[cfg(unix)] attributes on wrappers called only by Unix replay; portable exploration and both mutant tests remain active. Entire module is #[cfg(test)]; no production behavior changes.",
+    "path": "crates/naome-node/src/state/safety_model/model.rs",
+    "patch_sha256": "574d5fdf3375f9d15071d59efc5b556c9888cf68e355c65fa8a8d1b53f832dee",
+    "rebuilt_release_executables_match_lab_hashes": true
+  },
+  "platform_ci": {
+    "headSha": "0bae7b0e61c576f9fc1edf2f465da90602a9645e",
+    "url": "https://github.com/naome-core/naome/actions/runs/35465126870",
+    "status": "completed",
+    "conclusion": "success",
     "jobs": [
       {
-        "completedAt": "2026-09-19T19:16:54Z",
-        "conclusion": "success",
-        "databaseId": 105952211616,
-        "name": "Rust quality",
-        "startedAt": "2026-09-19T19:15:41Z",
-        "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:42Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:41Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:44Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:42Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:54Z",
-            "conclusion": "success",
-            "name": "Verify pinned Rust toolchain",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:44Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:54Z",
-            "conclusion": "success",
-            "name": "Check formatting",
-            "number": 4,
-            "startedAt": "2026-09-19T19:15:54Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:26Z",
-            "conclusion": "success",
-            "name": "Check documentation",
-            "number": 5,
-            "startedAt": "2026-09-19T19:15:54Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:52Z",
-            "conclusion": "success",
-            "name": "Run documentation tests",
-            "number": 6,
-            "startedAt": "2026-09-19T19:16:26Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:52Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 12,
-            "startedAt": "2026-09-19T19:16:52Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:52Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 13,
-            "startedAt": "2026-09-19T19:16:52Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211616"
-      },
-      {
-        "completedAt": "2026-09-19T19:21:16Z",
-        "conclusion": "success",
-        "databaseId": 105952211678,
-        "name": "Rust tests (macOS ARM64, release) / Full workspace",
-        "startedAt": "2026-09-19T19:15:48Z",
-        "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:49Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:48Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:51Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:49Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:00Z",
-            "conclusion": "success",
-            "name": "Verify checkout, profile, and pinned toolchain",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:51Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:01Z",
-            "conclusion": "success",
-            "name": "Restore Cargo cache",
-            "number": 4,
-            "startedAt": "2026-09-19T19:16:00Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:01Z",
-            "conclusion": "skipped",
-            "name": "Check with Clippy",
-            "number": 5,
-            "startedAt": "2026-09-19T19:16:01Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:18:17Z",
-            "conclusion": "success",
-            "name": "Build all test targets and process binaries",
-            "number": 6,
-            "startedAt": "2026-09-19T19:16:01Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:21:12Z",
-            "conclusion": "success",
-            "name": "Run all tests",
-            "number": 7,
-            "startedAt": "2026-09-19T19:18:17Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:21:12Z",
-            "conclusion": "success",
-            "name": "Verify tracked sources are unchanged",
-            "number": 8,
-            "startedAt": "2026-09-19T19:21:12Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:21:12Z",
-            "conclusion": "skipped",
-            "name": "Save Cargo cache from main",
-            "number": 9,
-            "startedAt": "2026-09-19T19:21:12Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:21:13Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 18,
-            "startedAt": "2026-09-19T19:21:12Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:21:13Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 19,
-            "startedAt": "2026-09-19T19:21:13Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211678"
-      },
-      {
-        "completedAt": "2026-09-19T19:17:19Z",
-        "conclusion": "failure",
-        "databaseId": 105952211734,
-        "name": "Rust tests (Windows x86_64, test) / Full workspace",
-        "startedAt": "2026-09-19T19:15:42Z",
-        "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:44Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:43Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:52Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:44Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:09Z",
-            "conclusion": "success",
-            "name": "Verify checkout, profile, and pinned toolchain",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:52Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:10Z",
-            "conclusion": "success",
-            "name": "Restore Cargo cache",
-            "number": 4,
-            "startedAt": "2026-09-19T19:16:09Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:15Z",
-            "conclusion": "failure",
-            "name": "Check with Clippy",
-            "number": 5,
-            "startedAt": "2026-09-19T19:16:10Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:15Z",
-            "conclusion": "skipped",
-            "name": "Build all test targets and process binaries",
-            "number": 6,
-            "startedAt": "2026-09-19T19:17:15Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:15Z",
-            "conclusion": "skipped",
-            "name": "Run all tests",
-            "number": 7,
-            "startedAt": "2026-09-19T19:17:15Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:15Z",
-            "conclusion": "skipped",
-            "name": "Verify tracked sources are unchanged",
-            "number": 8,
-            "startedAt": "2026-09-19T19:17:15Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:15Z",
-            "conclusion": "skipped",
-            "name": "Save Cargo cache from main",
-            "number": 9,
-            "startedAt": "2026-09-19T19:17:15Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:17Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 18,
-            "startedAt": "2026-09-19T19:17:15Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:17Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 19,
-            "startedAt": "2026-09-19T19:17:17Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211734"
-      },
-      {
-        "completedAt": "2026-09-19T19:38:34Z",
-        "conclusion": "success",
-        "databaseId": 105952211757,
         "name": "Devnet qualification",
-        "startedAt": "2026-09-19T19:15:41Z",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:42Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:41Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:43Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:42Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:52Z",
-            "conclusion": "success",
-            "name": "Verify pinned toolchain and devnet tooling",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:43Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:52Z",
-            "conclusion": "success",
-            "name": "Restore validated main release cache",
-            "number": 4,
-            "startedAt": "2026-09-19T19:15:52Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:15Z",
-            "conclusion": "success",
-            "name": "Build release test targets and devnet binaries",
-            "number": 5,
-            "startedAt": "2026-09-19T19:15:52Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:18:42Z",
-            "conclusion": "success",
-            "name": "Qualify canonical publication, citation, outage, partition, and cold replay",
-            "number": 6,
-            "startedAt": "2026-09-19T19:17:15Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:18:55Z",
-            "conclusion": "success",
-            "name": "Package exact Linux binaries",
-            "number": 7,
-            "startedAt": "2026-09-19T19:18:42Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:38:32Z",
-            "conclusion": "success",
-            "name": "Qualify 100 canonical state heights with isolation, delay, and faults",
-            "number": 8,
-            "startedAt": "2026-09-19T19:18:55Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:38:33Z",
-            "conclusion": "success",
-            "name": "Retain public qualification evidence",
-            "number": 9,
-            "startedAt": "2026-09-19T19:38:32Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:38:33Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 18,
-            "startedAt": "2026-09-19T19:38:33Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:38:33Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 19,
-            "startedAt": "2026-09-19T19:38:33Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211757"
+        "conclusion": "success"
       },
       {
-        "completedAt": "2026-09-19T19:19:38Z",
-        "conclusion": "success",
-        "databaseId": 105952211878,
-        "name": "Rust tests (Windows x86_64, release) / Full workspace",
-        "startedAt": "2026-09-19T19:15:42Z",
-        "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:44Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:43Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:51Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:44Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:04Z",
-            "conclusion": "success",
-            "name": "Verify checkout, profile, and pinned toolchain",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:51Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:05Z",
-            "conclusion": "success",
-            "name": "Restore Cargo cache",
-            "number": 4,
-            "startedAt": "2026-09-19T19:16:04Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:05Z",
-            "conclusion": "skipped",
-            "name": "Check with Clippy",
-            "number": 5,
-            "startedAt": "2026-09-19T19:16:05Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:03Z",
-            "conclusion": "success",
-            "name": "Build all test targets and process binaries",
-            "number": 6,
-            "startedAt": "2026-09-19T19:16:05Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:35Z",
-            "conclusion": "success",
-            "name": "Run all tests",
-            "number": 7,
-            "startedAt": "2026-09-19T19:19:03Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:35Z",
-            "conclusion": "success",
-            "name": "Verify tracked sources are unchanged",
-            "number": 8,
-            "startedAt": "2026-09-19T19:19:35Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:35Z",
-            "conclusion": "skipped",
-            "name": "Save Cargo cache from main",
-            "number": 9,
-            "startedAt": "2026-09-19T19:19:35Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:37Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 18,
-            "startedAt": "2026-09-19T19:19:35Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:37Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 19,
-            "startedAt": "2026-09-19T19:19:37Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211878"
-      },
-      {
-        "completedAt": "2026-09-19T19:20:19Z",
-        "conclusion": "success",
-        "databaseId": 105952211879,
         "name": "Rust tests (Linux x86_64, release) / Full workspace",
-        "startedAt": "2026-09-19T19:15:41Z",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:42Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:41Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:44Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:42Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:53Z",
-            "conclusion": "success",
-            "name": "Verify checkout, profile, and pinned toolchain",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:44Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:54Z",
-            "conclusion": "success",
-            "name": "Restore Cargo cache",
-            "number": 4,
-            "startedAt": "2026-09-19T19:15:53Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:54Z",
-            "conclusion": "skipped",
-            "name": "Check with Clippy",
-            "number": 5,
-            "startedAt": "2026-09-19T19:15:54Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:50Z",
-            "conclusion": "success",
-            "name": "Build all test targets and process binaries",
-            "number": 6,
-            "startedAt": "2026-09-19T19:15:54Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:18Z",
-            "conclusion": "success",
-            "name": "Run all tests",
-            "number": 7,
-            "startedAt": "2026-09-19T19:17:50Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:18Z",
-            "conclusion": "success",
-            "name": "Verify tracked sources are unchanged",
-            "number": 8,
-            "startedAt": "2026-09-19T19:20:18Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:18Z",
-            "conclusion": "skipped",
-            "name": "Save Cargo cache from main",
-            "number": 9,
-            "startedAt": "2026-09-19T19:20:18Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:18Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 18,
-            "startedAt": "2026-09-19T19:20:18Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:18Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 19,
-            "startedAt": "2026-09-19T19:20:18Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211879"
+        "conclusion": "success"
       },
       {
-        "completedAt": "2026-09-19T19:22:07Z",
-        "conclusion": "success",
-        "databaseId": 105952211890,
-        "name": "Rust tests (macOS ARM64, test) / Full workspace",
-        "startedAt": "2026-09-19T19:15:48Z",
+        "name": "Rust quality",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:49Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:48Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:52Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:49Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:02Z",
-            "conclusion": "success",
-            "name": "Verify checkout, profile, and pinned toolchain",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:52Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:03Z",
-            "conclusion": "success",
-            "name": "Restore Cargo cache",
-            "number": 4,
-            "startedAt": "2026-09-19T19:16:02Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:49Z",
-            "conclusion": "success",
-            "name": "Check with Clippy",
-            "number": 5,
-            "startedAt": "2026-09-19T19:16:03Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:50Z",
-            "conclusion": "success",
-            "name": "Build all test targets and process binaries",
-            "number": 6,
-            "startedAt": "2026-09-19T19:16:49Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:02Z",
-            "conclusion": "success",
-            "name": "Run all tests",
-            "number": 7,
-            "startedAt": "2026-09-19T19:17:50Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:02Z",
-            "conclusion": "success",
-            "name": "Verify tracked sources are unchanged",
-            "number": 8,
-            "startedAt": "2026-09-19T19:22:02Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:02Z",
-            "conclusion": "skipped",
-            "name": "Save Cargo cache from main",
-            "number": 9,
-            "startedAt": "2026-09-19T19:22:02Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:03Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 18,
-            "startedAt": "2026-09-19T19:22:02Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:05Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 19,
-            "startedAt": "2026-09-19T19:22:03Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211890"
+        "conclusion": "success"
       },
       {
-        "completedAt": "2026-09-19T19:20:33Z",
-        "conclusion": "success",
-        "databaseId": 105952211894,
         "name": "Rust tests (Linux x86_64, test) / Full workspace",
-        "startedAt": "2026-09-19T19:15:41Z",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:15:42Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:15:41Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:43Z",
-            "conclusion": "success",
-            "name": "Check out repository",
-            "number": 2,
-            "startedAt": "2026-09-19T19:15:42Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:52Z",
-            "conclusion": "success",
-            "name": "Verify checkout, profile, and pinned toolchain",
-            "number": 3,
-            "startedAt": "2026-09-19T19:15:43Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:15:53Z",
-            "conclusion": "success",
-            "name": "Restore Cargo cache",
-            "number": 4,
-            "startedAt": "2026-09-19T19:15:52Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:16:21Z",
-            "conclusion": "success",
-            "name": "Check with Clippy",
-            "number": 5,
-            "startedAt": "2026-09-19T19:15:53Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:17:03Z",
-            "conclusion": "success",
-            "name": "Build all test targets and process binaries",
-            "number": 6,
-            "startedAt": "2026-09-19T19:16:21Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:31Z",
-            "conclusion": "success",
-            "name": "Run all tests",
-            "number": 7,
-            "startedAt": "2026-09-19T19:17:03Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:31Z",
-            "conclusion": "success",
-            "name": "Verify tracked sources are unchanged",
-            "number": 8,
-            "startedAt": "2026-09-19T19:20:31Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:31Z",
-            "conclusion": "skipped",
-            "name": "Save Cargo cache from main",
-            "number": 9,
-            "startedAt": "2026-09-19T19:20:31Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:31Z",
-            "conclusion": "success",
-            "name": "Post Check out repository",
-            "number": 18,
-            "startedAt": "2026-09-19T19:20:31Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:31Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 19,
-            "startedAt": "2026-09-19T19:20:31Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952211894"
+        "conclusion": "success"
       },
       {
-        "completedAt": "2026-09-19T19:19:44Z",
-        "conclusion": "failure",
-        "databaseId": 105952765852,
+        "name": "Rust tests (Windows x86_64, test) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, test) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, release) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Windows x86_64, release) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
         "name": "Rust platform (Windows x86_64)",
-        "startedAt": "2026-09-19T19:19:41Z",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:19:42Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:19:41Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:42Z",
-            "conclusion": "failure",
-            "name": "Verify both Windows profiles",
-            "number": 2,
-            "startedAt": "2026-09-19T19:19:42Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:42Z",
-            "conclusion": "skipped",
-            "name": "Reject workflow cancellation",
-            "number": 3,
-            "startedAt": "2026-09-19T19:19:42Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:19:42Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 4,
-            "startedAt": "2026-09-19T19:19:42Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952765852"
+        "conclusion": "success"
       },
       {
-        "completedAt": "2026-09-19T19:20:39Z",
-        "conclusion": "success",
-        "databaseId": 105952894983,
         "name": "Rust platform (Linux x86_64)",
-        "startedAt": "2026-09-19T19:20:36Z",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:20:37Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:20:37Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:37Z",
-            "conclusion": "success",
-            "name": "Verify both Linux profiles",
-            "number": 2,
-            "startedAt": "2026-09-19T19:20:37Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:37Z",
-            "conclusion": "skipped",
-            "name": "Reject workflow cancellation",
-            "number": 3,
-            "startedAt": "2026-09-19T19:20:37Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:20:37Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 4,
-            "startedAt": "2026-09-19T19:20:37Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105952894983"
+        "conclusion": "success"
       },
       {
-        "completedAt": "2026-09-19T19:22:13Z",
-        "conclusion": "success",
-        "databaseId": 105953119532,
         "name": "Rust platform (macOS ARM64)",
-        "startedAt": "2026-09-19T19:22:10Z",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:22:10Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:22:10Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:11Z",
-            "conclusion": "success",
-            "name": "Verify both macOS profiles",
-            "number": 2,
-            "startedAt": "2026-09-19T19:22:10Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:11Z",
-            "conclusion": "skipped",
-            "name": "Reject workflow cancellation",
-            "number": 3,
-            "startedAt": "2026-09-19T19:22:11Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:22:11Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 4,
-            "startedAt": "2026-09-19T19:22:11Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105953119532"
+        "conclusion": "success"
       },
       {
-        "completedAt": "2026-09-19T19:38:40Z",
-        "conclusion": "failure",
-        "databaseId": 105955523684,
         "name": "Rust CI",
-        "startedAt": "2026-09-19T19:38:37Z",
         "status": "completed",
-        "steps": [
-          {
-            "completedAt": "2026-09-19T19:38:37Z",
-            "conclusion": "success",
-            "name": "Set up job",
-            "number": 1,
-            "startedAt": "2026-09-19T19:38:37Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:38:38Z",
-            "conclusion": "failure",
-            "name": "Verify required jobs",
-            "number": 2,
-            "startedAt": "2026-09-19T19:38:37Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:38:38Z",
-            "conclusion": "skipped",
-            "name": "Reject workflow cancellation",
-            "number": 3,
-            "startedAt": "2026-09-19T19:38:38Z",
-            "status": "completed"
-          },
-          {
-            "completedAt": "2026-09-19T19:38:38Z",
-            "conclusion": "success",
-            "name": "Complete job",
-            "number": 4,
-            "startedAt": "2026-09-19T19:38:38Z",
-            "status": "completed"
-          }
-        ],
-        "url": "https://github.com/naome-core/naome/actions/runs/35463787211/job/105955523684"
+        "conclusion": "success"
       }
-    ],
-    "status": "completed",
-    "url": "https://github.com/naome-core/naome/actions/runs/35463787211"
+    ]
   },
-  "ci_failure_correction": "The Windows test job failed Clippy because the two Unix-only replay wrappers were compiled on Windows. The final publication includes their precise cfg correction; other profile, quality and devnet jobs succeeded. A new complete exact-head workflow is required.",
   "ci_devnet": {
     "report": "final-integration-ci-devnet.json",
-    "report_sha256": "9fe247a6b14641d1e864aac761e6eba02c57933b9370ef416104446e4ff82ab6",
-    "outcome": "passed"
+    "report_sha256": "f36941b71dbfa05da8bf3e0c90f897ac4ccb763a11d513c3854763fd6d12c4e4",
+    "source_commit": "0bae7b0e61c576f9fc1edf2f465da90602a9645e",
+    "outcome": "passed",
+    "records_per_validator": [
+      102,
+      102,
+      102,
+      102
+    ],
+    "elapsed_seconds": 1137.879
   },
   "independent_review": {
     "reviewer": "canonical_devnet_review",
     "result": "clear",
     "scope": "Read-only architecture and exact local source/log/binary/evidence mapping. Final test-only cfg correction independently reviewed: no portable exploration or mutant coverage gated and no production change. Final lab and documentation reviewed separately before publication; no independent Cargo run."
   },
-  "publication_ci": "This evidence and test-portability extension receives a separate workflow_dispatch on its exact committed head. The final handoff identifies and verifies that workflow; the preceding milestone CI above is explicitly failed and does not qualify the final head.",
   "qualification_boundary": [
     "Four independent local validator processes, fixed trusted membership and compact genesis limits",
     "No multi-machine or seven-day qualification",

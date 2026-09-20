@@ -12,7 +12,7 @@ in [requirements.md](requirements.md).
 The current integration format is `state-v1`. Existing research-v1 runs cannot
 be reopened or converted with this executable. Retain their directories and use
 the original executable for historical inspection. Start a new directory and
-genesis for state-v1; see the [format boundary](../../specs/ownership.md#state-format-integration-boundary).
+genesis for state-v1; see the [format boundary](../../specs/ownership.md#canonical-state-formats).
 Node configuration version 2 uses `agenda_profile` and `agenda-profile.txt`.
 The canonical journal names are `state.journal`, `state.lock`,
 `state-finality.anchor`, and `state-signer-KEY.*`. Earlier state-v1 builds used
@@ -377,7 +377,7 @@ the progress log wholesale. The report records
 local four-process evidence; it does not establish operation on two physical
 machines or completion of the seven-day research profile.
 
-The [recorded lab run](evidence/lab-acceptance.json) completed successfully.
+The [recorded lab run](evidence/final-integration-lab.json) completed successfully.
 Each new run supplies acceptance evidence only after it finishes successfully.
 The [verification map](verification.md) separates component tests, process tests,
 lab evidence, and repository/CI gates. A successful lab run does not replace the

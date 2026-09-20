@@ -1,8 +1,7 @@
 # Canonical codec conformance
 
-`TEST-001`, `TEST-003`, `TEST-091` and `TEST-092` apply to the current
-serialized formats below. A new consensus-critical representation must extend
-this inventory and its executable vectors, mutation corpus and resource oracles
+This contract covers the current serialized formats below. A new
+consensus-critical representation must extend this inventory and its executable vectors, mutation corpus and resource oracles
 in the same change. This contract does not declare unfinished protocol rules or
 future dynamic-validator formats implemented.
 
@@ -47,7 +46,7 @@ with the deterministic case index. The campaign requires both acceptance and
 rejection and bounds its generated cases by
 `seed_count * (1 + 1025 + 128 * 5 + 2) + 512`. This is a bound on test generation,
 not a proof of parser cost. Existing exhaustive short-vector bit mutations and
-prefix tests remain in place. Journal-body, recovery-bundle and receipt tests
+prefix tests remain in place. Journal-body and receipt tests
 also recompute framing hashes so malformed fields reach the inner parser.
 
 Resource evidence uses actual decoded node counts, explicit byte/count/depth
