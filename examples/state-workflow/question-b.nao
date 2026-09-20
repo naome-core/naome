@@ -1,0 +1,3 @@
+# Proof obligation B: negative orientation; solution-b.nao refutes this.
+foundation = "naome:zfc"
+statement = not_(implies(forall(x, equal(x, x)), forall(x, equal(x, x))))

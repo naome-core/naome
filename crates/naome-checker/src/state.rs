@@ -34,6 +34,9 @@ impl_key256!(ProofId, DerivationId, StatementId, DefinitionId);
 /// mathematical checking until their blocks are selected by the caller.
 /// Cloning is constant-time: immutable resolver nodes remain shared, and every
 /// later successful registration copies only the changed Patricia paths.
+/// An explicitly temporary original-group verification branch may use
+/// [`Self::register_proof_for_verification`] to resolve checked but unselected
+/// aliases. Such a branch must never become the selected publication state.
 #[derive(Clone, Default)]
 #[must_use]
 pub struct ArtifactState {
@@ -111,6 +114,34 @@ impl ArtifactState {
         debug_assert!(inserted);
 
         Ok(normal_form.into_canonical_bytes())
+    }
+
+    /// Registers a checked reference in a temporary verification context.
+    ///
+    /// An original proof group may cite two different certificates of the same
+    /// derivation before its admission policy replaces one with an older proof.
+    /// This method permits that alias only after the ordinary registration
+    /// checks establish identical derivation, statement, and actual conclusion,
+    /// and verify every required proof and definition dependency. It adds only
+    /// the new concrete ProofId; existing conclusions and identities stay intact.
+    ///
+    /// This is mathematical verification, not selection or publication. Use a
+    /// temporary resolver and discard it after checking the original group.
+    /// Selected-state admission must continue to use [`Self::register_proof`],
+    /// which still rejects duplicate derivations. Do not publish this resolver.
+    pub fn register_proof_for_verification(
+        &mut self,
+        proof: CheckedProof,
+    ) -> Result<Box<[u8]>, ArtifactStateError> {
+        match self.validate_proof_registration(&proof) {
+            Err(ArtifactStateError::DuplicateDerivation { .. }) => {
+                let inserted = self.proofs.insert(proof.proof_id, proof.derivation_id);
+                debug_assert!(inserted);
+                Ok(proof.normal_form.into_canonical_bytes())
+            }
+            Err(error) => Err(error),
+            Ok(()) => self.register_proof(proof),
+        }
     }
 
     /// Applies the exact proof registration checks without mutating state.

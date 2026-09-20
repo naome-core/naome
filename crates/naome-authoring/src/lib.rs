@@ -18,7 +18,6 @@ use naome_proof::{
     DerivationId, ProofCertificate, ProofCertificateError, ProofFormula, ProofId, ProofReplacement,
     ProofSeparation, ProofStep, StatementId,
 };
-use naome_storage::{ArtifactChainJournal, ArtifactChainJournalError};
 
 /// Maximum UTF-8 bytes accepted in one `.nao` source value.
 pub const AUTHORING_SOURCE_MAX_BYTES: usize = CERTIFICATE_MAX_BYTES;
@@ -29,7 +28,7 @@ const FORMULA_BINDING_MAX_NODES: usize = FORMULA_MAX_NODES;
 /// Compiles one complete, dependency-free `.nao` proof source.
 ///
 /// Reachable dependencies fail because this entry point uses an empty selected-
-/// artifact state. Use [`compile_against_selected_chain`] when references to
+/// artifact state. Use [`compile_against_selected_history`] when references to
 /// already selected artifacts are expected.
 pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
     match compile_artifact(source)? {
@@ -44,6 +43,31 @@ pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
 /// but it cannot authorize citations, definition aliases, or function obligations.
 pub fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> {
     compile_with_artifact_state(source, &ArtifactState::new())
+}
+
+/// Compiles a proof against an explicitly supplied, checker-validated context.
+/// This supports offline state packages and downloaded helper certificates.
+/// Compilation establishes mathematical validity only; it does not establish
+/// that these references belong to a selected state library or earn rewards.
+pub fn compile_against_proof_context(
+    source: &str,
+    context: &ArtifactState,
+) -> Result<CompiledProof, CompileError> {
+    match compile_with_artifact_state(source, context)? {
+        CompiledArtifact::Proof(proof) => Ok(proof),
+        CompiledArtifact::Definition(_) => Err(CompileError::ExpectedProof { offset: 0 }),
+    }
+}
+
+/// Compiles a proof or conservative definition against a checked offline context.
+/// The context grants mathematical dependency resolution only. It grants no
+/// finalized publication, rewards, or permission to publish definitions in the
+/// trusted MVP, whose operation rules remain proof-only.
+pub fn compile_artifact_against_proof_context(
+    source: &str,
+    context: &ArtifactState,
+) -> Result<CompiledArtifact, CompileError> {
+    compile_with_artifact_state(source, context)
 }
 
 fn compile_with_artifact_state(
@@ -63,14 +87,14 @@ fn compile_with_artifact_state(
 mod diagnostics;
 mod output;
 mod parser;
-mod selected_chain;
+mod selected_history;
 
 pub use diagnostics::{
     CompileDiagnostic, CompileError, DiagnosticCode, SourcePosition, SourceSpan,
 };
 pub use output::{CompiledArtifact, CompiledDefinition, CompiledProof};
 use parser::Parser;
-pub use selected_chain::{
-    SelectedChainCompileError, compile_against_selected_chain,
-    compile_artifact_against_selected_chain,
+pub use selected_history::{
+    SelectedHistoryCompileError, compile_against_selected_history,
+    compile_artifact_against_selected_history,
 };

@@ -6,6 +6,19 @@ and non-membership proofs. Its sole key is the complete 32-byte `ArtifactId`.
 Typed payloads, `ProofId`, `DefinitionId`, statement and derivation identities,
 conclusions, and dependency indexes are not separately hashed into this set.
 
+`naome-ledger::ArtifactDag` owns this set and its strict checked resolver.
+The canonical `ProofLibrary` contains that DAG alongside publication provenance;
+only normalized package publication atomically installs both. Every DAG proof
+has exactly one library record with matching canonical bytes and dependencies.
+The complete library encoding already commits those identities, bytes,
+provenance, and dependency edges, so the set is a derived component rather than
+an additional history or finality authority. This ownership change does not
+alter library/state encodings or the set hash transcript below.
+
+Standalone DAGs also support offline proof and conservative-definition
+checking. Their membership witnesses establish exact membership only, with no
+network selection, publication reward, or consensus authority.
+
 ### Key bits and topology
 
 Bits are read most-significant first:
@@ -110,8 +123,9 @@ and registration all succeed before tree insertion. Duplicate rules then make
 insertion logically infallible. Failed admission changes neither record count,
 topology, root, nor existing witnesses.
 
-Block preparation and preflight project the root produced by one `ArtifactId`
+The standalone DAG projection API computes the root produced by one `ArtifactId`
 without mutating records or topology. Projection performs no payload decode,
 checking, dependency resolution, or registry admission and must not clone or
-scan the selected set. Journal replay stores no Merkle nodes; it reconstructs
-and verifies the set through strict block application.
+scan the selected set. Canonical history replay reconstructs the library and
+its derived set through
+strict complete-state execution; it stores no separate Merkle-node authority.

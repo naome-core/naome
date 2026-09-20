@@ -10,40 +10,46 @@ use naome_proof::{
     ProofCertificateError, ProofId, ProofStep,
 };
 
-use super::{AcceptedArtifactRecord, AcceptedProofRecord, LedgerError, LedgerState};
+use super::{AcceptedArtifactRecord, AcceptedProofRecord, ArtifactAdmissionError, ArtifactLedger};
 
 trait ProofAdmissionTestExt {
     fn proof_state(&self) -> &ArtifactState;
-    fn apply(&mut self, certificate: ProofCertificate) -> Result<AcceptedProofRecord, LedgerError>;
+    fn apply(
+        &mut self,
+        certificate: ProofCertificate,
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError>;
     fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<AcceptedProofRecord, LedgerError>;
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError>;
     fn apply_canonical_proof_bytes_with_expected_id(
         &mut self,
         bytes: Vec<u8>,
         expected: ProofId,
-    ) -> Result<AcceptedProofRecord, LedgerError>;
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError>;
     fn validate_canonical_proof_bytes_with_expected_id(
         &self,
         bytes: Vec<u8>,
         expected: ProofId,
-    ) -> Result<(), LedgerError>;
+    ) -> Result<(), ArtifactAdmissionError>;
 }
 
-impl ProofAdmissionTestExt for LedgerState {
+impl ProofAdmissionTestExt for ArtifactLedger {
     fn proof_state(&self) -> &ArtifactState {
         self.artifact_state()
     }
 
-    fn apply(&mut self, certificate: ProofCertificate) -> Result<AcceptedProofRecord, LedgerError> {
+    fn apply(
+        &mut self,
+        certificate: ProofCertificate,
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError> {
         self.apply_proof(certificate)
     }
 
     fn apply_canonical_proof_bytes(
         &mut self,
         bytes: Vec<u8>,
-    ) -> Result<AcceptedProofRecord, LedgerError> {
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError> {
         match self.apply_canonical_artifact_bytes(tagged_proof(bytes))? {
             AcceptedArtifactRecord::Proof(record) => Ok(record),
             AcceptedArtifactRecord::Definition(_) => {
@@ -56,7 +62,7 @@ impl ProofAdmissionTestExt for LedgerState {
         &mut self,
         bytes: Vec<u8>,
         expected: ProofId,
-    ) -> Result<AcceptedProofRecord, LedgerError> {
+    ) -> Result<AcceptedProofRecord, ArtifactAdmissionError> {
         match self.apply_canonical_artifact_bytes_with_expected_id(
             tagged_proof(bytes),
             ArtifactId::from_proof_id(expected),
@@ -72,7 +78,7 @@ impl ProofAdmissionTestExt for LedgerState {
         &self,
         bytes: Vec<u8>,
         expected: ProofId,
-    ) -> Result<(), LedgerError> {
+    ) -> Result<(), ArtifactAdmissionError> {
         self.validate_canonical_artifact_bytes_with_expected_id(
             tagged_proof(bytes),
             ArtifactId::from_proof_id(expected),

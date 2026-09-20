@@ -1,52 +1,6 @@
-//! Bounded, caller-configured fixed-validator V0 event-loop integration.
+//! Live scheduling, delivery, and catch-up for the canonical finalized state.
 //!
-//! The runtime composes the existing sole-scope driver and authenticated direct
-//! delivery. Consensus verification, signing, and finality remain in the driver.
-//! Its explicit local timing and routing policy does not establish production
-//! timing, general gossip, or distributed liveness. The optional publication
-//! journal recovers exact signed bytes and durable per-peer transport receipts.
+//! Consensus verification, durable signing, and finality remain in their owning
+//! crates. The caller drives this fixed-validator runtime and its network loop.
 
-mod evidence_journal;
-pub use evidence_journal::FixedValidatorEvidenceJournalErrorV0;
-mod owner;
-mod publication_journal;
-pub use publication_journal::FixedValidatorPublicationJournalErrorV0;
-mod publication;
-mod routing;
-mod timer;
-mod types;
-
-pub use owner::FixedValidatorRuntimeV0;
-pub use owner::artifact_exchange::{
-    FixedValidatorRuntimeAcquisitionRefusalV0, FixedValidatorRuntimeAcquisitionStartErrorV0,
-    FixedValidatorRuntimeAncestryFillAdvanceErrorV0,
-    FixedValidatorRuntimeFinalityProofResponseErrorV0,
-    FixedValidatorRuntimePayloadFillAdvanceErrorV0,
-};
-pub use publication::{
-    FixedValidatorRuntimeDeliveryStateV0, FixedValidatorRuntimePeerDeliveryV0,
-    FixedValidatorRuntimePublicationMessageV0, FixedValidatorRuntimePublicationV0,
-};
-pub use routing::{
-    FixedValidatorRuntimeAdmissionReportV0, FixedValidatorRuntimeAdmissionResultV0,
-    FixedValidatorRuntimeInputSourceV0, FixedValidatorRuntimeRouteV0,
-    FixedValidatorRuntimeRoutingErrorV0,
-};
-
-pub use timer::{
-    FixedValidatorPhaseDurationV0, FixedValidatorPublicationRetryIntervalV0,
-    FixedValidatorRuntimeTimeoutsV0, FixedValidatorRuntimeTimerV0,
-    FixedValidatorRuntimeTimingErrorV0,
-};
-pub use types::{
-    FixedValidatorRuntimeCreateErrorV0, FixedValidatorRuntimeCreateFailureV0,
-    FixedValidatorRuntimeEventV0, FixedValidatorRuntimeFailureV0,
-    FixedValidatorRuntimeFinalityProofRequestErrorV0, FixedValidatorRuntimePartsV0,
-    FixedValidatorRuntimeProofRefusalV0, FixedValidatorRuntimeQueueErrorV0,
-    FixedValidatorRuntimeQueueFailureV0, FixedValidatorRuntimeTransportPollV0,
-};
-
-#[cfg(test)]
-#[path = "../../../tests/support/codec_corpus.rs"]
-mod codec_corpus;
-pub mod verified_membership;
+pub mod state;

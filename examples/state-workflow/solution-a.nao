@@ -1,0 +1,7 @@
+# A's root genuinely uses helper H, published in the same research group.
+foundation = "naome:zfc"
+statement = forall(y, forall(x, equal(x, x)))
+proof:
+    p0 = cite("c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73")
+    p1 = generalization(p0, y)
+    return p1

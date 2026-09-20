@@ -1,3 +1,4 @@
+//! Canonical owner and external-anchor custody, including immediate release.
 use std::env;
 use std::fs;
 use std::io;
@@ -6,19 +7,19 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use naome_chain::ArtifactChainDefinition;
-use naome_storage::{
-    ArtifactBlockCandidateStore, ArtifactBlockCandidateStoreError,
-    ArtifactBlockCandidateStoreLimits, ArtifactChainJournal, ArtifactChainJournalError,
-    ArtifactPayloadStoreLimits, CanonicalArtifactPayloadStore, CanonicalArtifactPayloadStoreError,
+use ed25519_dalek::SigningKey;
+use naome_ledger::{
+    AccountId,
+    profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
 };
+#[cfg(unix)]
+use naome_storage::state::StateSigner;
+use naome_storage::state::{StateHistory, StateStorageError};
 
-const LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_CHAIN_JOURNAL_LOCK_PROBE";
-const PAYLOAD_LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_PAYLOAD_STORE_LOCK_PROBE";
-const CANDIDATE_LOCK_PROBE_ENV: &str = "NAOME_ARTIFACT_BLOCK_CANDIDATE_STORE_LOCK_PROBE";
-const CHAIN_ID_BYTE: u8 = 0x11;
+const HISTORY_ENV: &str = "NAOME_STATE_LOCK_PROBE_HISTORY";
+const ANCHOR_ENV: &str = "NAOME_STATE_LOCK_PROBE_ANCHOR";
+const KIND_ENV: &str = "NAOME_STATE_LOCK_PROBE_KIND";
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 struct TestDirectory {
     path: PathBuf,
 }
@@ -44,18 +45,6 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.path).unwrap();
     }
-}
-
-fn chain_definition() -> ArtifactChainDefinition {
-    ArtifactChainDefinition::new([CHAIN_ID_BYTE; 32])
-}
-
-fn payload_limits() -> ArtifactPayloadStoreLimits {
-    ArtifactPayloadStoreLimits::new(1, 1).unwrap()
-}
-
-fn candidate_limits() -> ArtifactBlockCandidateStoreLimits {
-    ArtifactBlockCandidateStoreLimits::new(1).unwrap()
 }
 
 const PROBE_PHASE_ENV: &str = "NAOME_LOCK_PROBE_PHASE";
@@ -102,128 +91,141 @@ fn run_probe(command: &mut Command, phase: &str) {
     );
 }
 
-#[test]
-fn exclusive_lock_child_probe() {
-    let Some(path) = env::var_os(LOCK_PROBE_ENV) else {
-        return;
-    };
-    let phase = env::var(PROBE_PHASE_ENV).expect("lock probe phase is required");
-    let result =
-        ArtifactChainJournal::open_recovering_unverified(PathBuf::from(path), chain_definition())
-            .map(drop);
-    match phase.as_str() {
-        "locked" => assert!(
-            matches!(result, Err(ArtifactChainJournalError::Locked)),
-            "expected Locked, got {result:?}"
-        ),
-        "released" => result.expect("released owner must permit first-attempt child acquisition"),
-        other => panic!("unknown lock probe phase: {other}"),
-    }
-    // Serial libtest prints its test-name prefix without a trailing newline.
-    println!("\nNAOME_LOCK_PROBE_{phase}_OK");
-}
-
-#[test]
-fn exclusive_lock_is_enforced_across_processes() {
-    for _ in 0..PROBE_CYCLES {
-        let directory = TestDirectory::new();
-        let owner = ArtifactChainJournal::create(&directory.path, chain_definition()).unwrap();
-        let mut command = probe_command("exclusive_lock_child_probe");
-        command.env(LOCK_PROBE_ENV, &directory.path);
-        run_probe(&mut command, "locked");
-        drop(owner);
-        drop(
-            ArtifactChainJournal::open_recovering_unverified(&directory.path, chain_definition())
-                .expect("owner drop must permit immediate parent reopen"),
-        );
-        run_probe(&mut command, "released");
-    }
-}
-
-#[test]
-fn payload_store_lock_child_probe() {
-    let Some(path) = env::var_os(PAYLOAD_LOCK_PROBE_ENV) else {
-        return;
-    };
-    let phase = env::var(PROBE_PHASE_ENV).expect("lock probe phase is required");
-    let result =
-        CanonicalArtifactPayloadStore::open(PathBuf::from(path), payload_limits()).map(drop);
-    match phase.as_str() {
-        "locked" => assert!(
-            matches!(result, Err(CanonicalArtifactPayloadStoreError::Locked)),
-            "expected Locked, got {result:?}"
-        ),
-        "released" => result.expect("released owner must permit first-attempt child acquisition"),
-        other => panic!("unknown lock probe phase: {other}"),
-    }
-    // Serial libtest prints its test-name prefix without a trailing newline.
-    println!("\nNAOME_LOCK_PROBE_{phase}_OK");
-}
-
-#[test]
-fn payload_store_lock_is_enforced_across_processes() {
-    for _ in 0..PROBE_CYCLES {
-        let directory = TestDirectory::new();
-        let owner =
-            CanonicalArtifactPayloadStore::create(&directory.path, payload_limits()).unwrap();
-        let mut command = probe_command("payload_store_lock_child_probe");
-        command.env(PAYLOAD_LOCK_PROBE_ENV, &directory.path);
-        run_probe(&mut command, "locked");
-        drop(owner);
-        drop(
-            CanonicalArtifactPayloadStore::open(&directory.path, payload_limits())
-                .expect("owner drop must permit immediate parent reopen"),
-        );
-        run_probe(&mut command, "released");
-    }
-}
-
-#[test]
-fn candidate_store_lock_child_probe() {
-    let Some(path) = env::var_os(CANDIDATE_LOCK_PROBE_ENV) else {
-        return;
-    };
-    let phase = env::var(PROBE_PHASE_ENV).expect("lock probe phase is required");
-    let result = ArtifactBlockCandidateStore::open(
-        PathBuf::from(path),
-        chain_definition(),
-        candidate_limits(),
+fn genesis() -> Genesis {
+    let accounts: Vec<_> = (0..6)
+        .map(|i| {
+            SigningKey::from_bytes(&[i + 1; 32])
+                .verifying_key()
+                .to_bytes()
+        })
+        .collect();
+    Genesis::new(
+        Profile::short_test(),
+        "naome:zfc".into(),
+        STATE_CHECKER_PROFILE.into(),
+        1,
+        100,
+        [81; 32],
+        accounts.clone(),
+        (0..4)
+            .map(|i| ValidatorRegistration {
+                owner: AccountId::for_key(&accounts[i]),
+                consensus_key: SigningKey::from_bytes(&[i as u8 + 101; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                transport_key: SigningKey::from_bytes(&[i as u8 + 201; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                endpoint: format!("127.0.0.1:{}", 47000 + i),
+            })
+            .collect(),
     )
-    .map(drop);
+    .unwrap()
+}
+fn open(
+    history: &std::path::Path,
+    anchors: &std::path::Path,
+    kind: &str,
+) -> Result<(), StateStorageError> {
+    let g = genesis();
+    let maximum = g.profile().limits().consensus_rounds;
+    match kind {
+        "history" => StateHistory::open(history, anchors, g, maximum).map(drop),
+        #[cfg(unix)]
+        "signer" => StateSigner::open(
+            history,
+            anchors,
+            g,
+            SigningKey::from_bytes(&[101; 32]),
+            maximum,
+        )
+        .map(drop),
+        _ => panic!("unsupported probe kind"),
+    }
+}
+#[test]
+fn canonical_lock_child_probe() {
+    let Some(history) = env::var_os(HISTORY_ENV) else {
+        return;
+    };
+    let anchors = env::var_os(ANCHOR_ENV).expect("anchor path");
+    let kind = env::var(KIND_ENV).expect("kind");
+    let phase = env::var(PROBE_PHASE_ENV).expect("phase");
+    let result = open(&PathBuf::from(history), &PathBuf::from(anchors), &kind);
     match phase.as_str() {
         "locked" => assert!(
-            matches!(result, Err(ArtifactBlockCandidateStoreError::Locked)),
+            matches!(result, Err(StateStorageError::Locked)),
             "expected Locked, got {result:?}"
         ),
-        "released" => result.expect("released owner must permit first-attempt child acquisition"),
-        other => panic!("unknown lock probe phase: {other}"),
+        "released" => result.expect("first-attempt child reopen after release"),
+        _ => panic!("unknown probe phase"),
     }
-    // Serial libtest prints its test-name prefix without a trailing newline.
     println!("\nNAOME_LOCK_PROBE_{phase}_OK");
 }
-
-#[test]
-fn candidate_store_lock_is_enforced_across_processes() {
+fn verify_locks(kind: &str, independent_anchor: bool) {
     for _ in 0..PROBE_CYCLES {
-        let directory = TestDirectory::new();
-        let owner = ArtifactBlockCandidateStore::create(
-            &directory.path,
-            chain_definition(),
-            candidate_limits(),
-        )
-        .unwrap();
-        let mut command = probe_command("candidate_store_lock_child_probe");
-        command.env(CANDIDATE_LOCK_PROBE_ENV, &directory.path);
+        let history = TestDirectory::new();
+        let anchors = TestDirectory::new();
+        let alternate = TestDirectory::new();
+        let g = genesis();
+        let maximum = g.profile().limits().consensus_rounds;
+        let owner: Box<dyn std::any::Any> = match kind {
+            "history" => {
+                Box::new(StateHistory::create(&history.path, &anchors.path, g, maximum).unwrap())
+            }
+            #[cfg(unix)]
+            "signer" => Box::new(
+                StateSigner::create(
+                    &history.path,
+                    &anchors.path,
+                    g,
+                    SigningKey::from_bytes(&[101; 32]),
+                    maximum,
+                )
+                .unwrap(),
+            ),
+            _ => panic!("unsupported store kind"),
+        };
+        let selected = if independent_anchor {
+            // Give the probe a distinct owner-lock path and an exact copy of
+            // the initialized public journal. Only the anchor lock is shared.
+            for entry in fs::read_dir(&history.path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|ext| ext == "journal") {
+                    fs::copy(&path, alternate.path.join(path.file_name().unwrap())).unwrap();
+                }
+            }
+            &alternate.path
+        } else {
+            &history.path
+        };
+        let mut command = probe_command("canonical_lock_child_probe");
+        command
+            .env(HISTORY_ENV, selected)
+            .env(ANCHOR_ENV, &anchors.path)
+            .env(KIND_ENV, kind);
         run_probe(&mut command, "locked");
         drop(owner);
-        drop(
-            ArtifactBlockCandidateStore::open(
-                &directory.path,
-                chain_definition(),
-                candidate_limits(),
-            )
-            .expect("owner drop must permit immediate parent reopen"),
-        );
+        open(&history.path, &anchors.path, kind)
+            .expect("immediate parent reopen after explicit unlock");
         run_probe(&mut command, "released");
     }
+}
+#[test]
+fn canonical_history_owner_lock_is_enforced_across_processes() {
+    verify_locks("history", false);
+}
+#[test]
+fn canonical_history_anchor_lock_is_independently_enforced_across_processes() {
+    verify_locks("history", true);
+}
+#[cfg(unix)]
+#[test]
+fn canonical_signer_owner_lock_is_enforced_across_processes() {
+    verify_locks("signer", false);
+}
+#[cfg(unix)]
+#[test]
+fn canonical_signer_anchor_lock_is_independently_enforced_across_processes() {
+    verify_locks("signer", true);
 }

@@ -248,3 +248,116 @@ fn single_registration_validation_matches_registration_without_mutating() {
     assert!(state.contains_derivation(derivation_id));
     assert!(state.contains_statement(statement_id));
 }
+
+#[test]
+fn verification_only_alias_preserves_strict_registration_and_existing_identity() {
+    let mut selected = ArtifactState::new();
+    let original = direct_identity(FreeVariable::new(0));
+    let old_id = original.proof_id();
+    let old_statement = original.statement_id();
+    let old_derivation = original.derivation_id();
+    selected.register_proof(original).unwrap();
+    let alias = || {
+        crate::normalize_and_check_with_state(
+            certificate(vec![ProofStep::ProofReference { proof_id: old_id }]),
+            &selected,
+        )
+        .unwrap()
+    };
+    let alias_id = alias().proof_id();
+    assert_ne!(alias_id, old_id);
+    assert_eq!(alias().derivation_id(), old_derivation);
+    let mut strict = selected.clone();
+    assert_eq!(
+        strict.register_proof(alias()),
+        Err(ArtifactStateError::DuplicateDerivation {
+            derivation_id: old_derivation
+        })
+    );
+    assert!(!strict.contains_proof(alias_id));
+    let mut temporary = selected.clone();
+    temporary.register_proof_for_verification(alias()).unwrap();
+    assert!(temporary.contains_proof(old_id));
+    assert!(temporary.contains_proof(alias_id));
+    assert_eq!(temporary.proofs.len(), 2);
+    assert_eq!(temporary.derivations.len(), 1);
+    assert_eq!(temporary.statements.len(), 1);
+    assert_eq!(
+        temporary.derivations.get(&old_derivation),
+        Some(&old_statement)
+    );
+    assert_eq!(
+        temporary.statements.get(&old_statement).unwrap().conclusion,
+        direct_identity(FreeVariable::new(0)).conclusion
+    );
+    assert!(!selected.contains_proof(alias_id));
+    let through_alias = crate::normalize_and_check_with_state(
+        certificate(vec![ProofStep::ProofReference { proof_id: alias_id }]),
+        &temporary,
+    )
+    .unwrap();
+    assert_eq!(through_alias.conclusion(), alias().conclusion());
+    assert!(matches!(
+        temporary.register_proof_for_verification(alias()),
+        Err(ArtifactStateError::DuplicateProof { .. })
+    ));
+}
+
+#[test]
+fn verification_only_alias_checks_dependencies_before_acceptance() {
+    let mut source = ArtifactState::new();
+    let original = direct_identity(FreeVariable::new(0));
+    let old_id = original.proof_id();
+    source.register_proof(original).unwrap();
+    let alias = crate::normalize_and_check_with_state(
+        certificate(vec![ProofStep::ProofReference { proof_id: old_id }]),
+        &source,
+    )
+    .unwrap();
+    let alias_id = alias.proof_id();
+    let mut unrelated = ArtifactState::new();
+    assert_eq!(
+        unrelated.register_proof_for_verification(alias),
+        Err(ArtifactStateError::MissingProofDependency { proof_id: old_id })
+    );
+    assert!(!unrelated.contains_proof(alias_id));
+    assert_eq!(unrelated.proofs.len(), 0);
+}
+
+#[test]
+fn verification_only_registration_rejects_every_identity_collision() {
+    let mut state = ArtifactState::new();
+    let original = direct_identity(FreeVariable::new(0));
+    let proof_id = original.proof_id();
+    let statement_id = original.statement_id();
+    let derivation_id = original.derivation_id();
+    state.register_proof(original).unwrap();
+    let mut forged = axiom(ZfcAxiom::Pairing);
+    forged.proof_id = proof_id;
+    assert!(matches!(
+        state.register_proof_for_verification(forged),
+        Err(ArtifactStateError::ProofIdentityCollision { .. })
+    ));
+    let mut forged = axiom(ZfcAxiom::Pairing);
+    forged.derivation_id = derivation_id;
+    assert!(matches!(
+        state.register_proof_for_verification(forged),
+        Err(ArtifactStateError::DerivationIdentityCollision { .. })
+    ));
+    let mut forged = axiom(ZfcAxiom::Pairing);
+    forged.derivation_id = derivation_id;
+    forged.statement_id = statement_id;
+    assert!(matches!(
+        state.register_proof_for_verification(forged),
+        Err(ArtifactStateError::StatementIdentityCollision { .. })
+    ));
+    let mut forged = axiom(ZfcAxiom::Pairing);
+    forged.statement_id = statement_id;
+    assert!(matches!(
+        state.register_proof_for_verification(forged),
+        Err(ArtifactStateError::StatementIdentityCollision { .. })
+    ));
+    assert_eq!(state.proofs.len(), 1);
+    assert_eq!(state.derivations.len(), 1);
+    assert_eq!(state.statements.len(), 1);
+}

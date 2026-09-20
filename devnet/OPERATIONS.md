@@ -1,230 +1,107 @@
-# Operational fixed-validator devnet V0
+# Canonical state devnet qualification
 
-This is a reproducible, bounded deployment of four equal-weight validators and
-two independent, source-only publishers. Each role has its own private directory,
-Noise identity, process, and container. Publishers have no signing key. Validator
-candidate and payload stores begin empty; new synthetic proof candidates are
-created after startup and arrive through authenticated network offers and source
-acquisition. The qualifier never writes validator source files or sends consensus
-commands. Existing durable-choice, proof-validation, signing and finality rules
-remain the authority.
+For trusted hosts on separate machines, use the [pilot runbook](../docs/mvp/pilot.md).
+The local devnet and portable-bundle rehearsal remain single-machine evidence.
 
-The supported qualification is 4–128 heights (at least eight with faults), with
-100 heights by default. It is an operational V0 development profile, not a
-production timeout policy, an indefinite network, a public admission service, or
-evidence of geographically distributed performance. Local isolated containers
-provide separate role mounts and network fault injection on one Docker host.
-The process backend is a development smoke path with process suspension rather
-than a network partition.
+This harness starts four trusted fixed validators with separate keys, histories,
+signer journals, independent anchor directories, and authenticated TCP sessions.
+The operator uses `naome`, validators use `naome-validator start`, and exported
+history is independently replayed by `naome-verifier verify`. No artifact-chain
+publisher or alternate history authority is involved.
 
-## Build and qualify
+The default workload finalizes at least 100 complete state records. Two distinct
+registered owners alternate authenticated question submissions. Each attempt must
+open its full 15-second short-test voting window and close as `NotApproved` only
+after the certified deadline. The qualifier sends no consensus commands. This is
+accelerated state/transport qualification. Proof publication, helper retrieval,
+citation payment, commitment/reveal and settlement remain mandatory in the
+separate Rust four-process suite and real-window lab; the 100-record run does not
+claim 100 proof publications.
 
-Run from the repository root with the toolchain in `rust-toolchain.toml`, Python
-3.9 or later, and Docker Engine/Desktop with Compose v2. Linux native binaries
-can be packaged without sending the repository or private role files to Docker:
+## Build and run
+
+Use the toolchain in `rust-toolchain.toml`. Compile all three process packages in
+the same profile before executing tests. Linux can package these exact binaries:
 
 ```sh
-cargo test -p naome-devnet -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-run
-cargo test -p naome-devnet -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-fail-fast
+CARGO_INCREMENTAL=0 cargo test -p naome-cli -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-run
+CARGO_INCREMENTAL=0 cargo test -p naome-cli -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-fail-fast four_process_state_recovery_partition_and_independent_replay
 python3 -B -m unittest discover -s devnet -p 'test_*.py'
 python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:local
-python3 -B devnet/qualify.py --backend docker --image naome-devnet:local --bin-dir target/release --directory /tmp/naome-devnet-run-1
+python3 -B devnet/qualify.py --backend docker --image naome-devnet:local --bin-dir target/release --directory /tmp/naome-devnet-run-1 --heights 100 --delay-ms 50 --deadline-seconds 2400
 ```
 
-On macOS, build the native helpers using the same Cargo commands, then build
-Linux runtime binaries inside Docker instead of using `image.py`:
+The output directory must be new and should remain outside the repository.
+`--heights` accepts 4–128; fault qualification requires at least 12. The target is
+a minimum: a complete attempt can finish up to two records beyond it. Genesis
+allows 256 records so the maximum requested height leaves the ledger's protected
+attempt capacity intact. All other limits and short-test timing rules are
+unchanged. A failed run is retained for inspection and is never repaired or reset.
+
+For native smoke testing on Unix without Docker:
 
 ```sh
-docker build -f devnet/Dockerfile -t naome-devnet:local .
-python3 -B devnet/qualify.py --backend docker --image naome-devnet:local --bin-dir target/release --directory /tmp/naome-devnet-run-1
+python3 -B devnet/qualify.py --backend process --bin-dir target/release --directory /tmp/naome-devnet-process-1 --heights 12 --delay-ms 50
 ```
 
-Both image paths pin their base image digests. The source Dockerfile uses its
-own allowlisted build context; keep generated private deployments outside the
-repository. The qualifier resolves the image to an immutable image ID and records
-runtime binary hashes. On Linux those hashes must equal the native binary hashes.
-On macOS the native provisioner and Linux runtime are different builds and their
-hashes are recorded separately. No image is pushed to a registry.
+The native path uses the same workload and delay proxy. It disables authenticated
+links through explicit simulation controls while leaving the isolated process
+running. It does not establish container isolation or multi-machine operation.
+Docker is qualified on Linux, where native binary hashes must match the pinned
+image's three runtime binary hashes. A source image can also be built with
+`docker build -f devnet/Dockerfile -t naome-devnet:local .`; cross-host Docker
+Desktop operation is not established by the Linux CI result.
 
-Choose a new output directory each time. Existing output is refused. Use
-`--subnet PRIVATE_IPv4/24` if the default `172.30.88.0/24` conflicts with another
-local network. The generated `compose.json` mounts only each role's directory in
-its respective container. Containers use a read-only root filesystem, no Linux
-capabilities, no additional privileges, a private internal bridge, and bounds of
-512 MiB memory, no swap, two CPUs and 128 processes. Health endpoints stay inside
-the containers; the qualifier queries each role's loopback HTTP endpoint through
-`docker exec`, since host port publication is not reliable on an internal-only
-bridge. The qualifier owns and removes its uniquely named
-containers/network on success, failure or a handled interrupt. It retains role
-state and the report for inspection; it never resets a failed validator.
+## Isolation, faults, and evidence
 
-Without Docker, the following exercises the same native binaries, workload and
-finality oracle, but does not supply container-isolation evidence:
+Each Docker container receives only its own node directory, a separate anchor
+parent, and the read-only public genesis. It has no other validator's keys or
+journals, no host port publication, a read-only root filesystem, no Linux
+capabilities or additional privileges, and an internal bridge. Limits are 512 MiB
+memory with no additional swap, two CPUs and 128 processes. The qualifier samples
+per-role disk use against 512 MiB and records peak process/container memory. Native
+memory samples are observations; Docker supplies memory enforcement.
 
-```sh
-python3 -B devnet/qualify.py --backend process --bin-dir target/release --directory /tmp/naome-devnet-process-1 --heights 8
-```
+A bounded proxy delays each TCP chunk by 50 ms in each direction by default.
+Genesis binds each advertised endpoint. The local bind override directs the same
+authenticated peer identity through the proxy; it changes no consensus or ledger
+rule. The fault schedule includes malformed operation intake, one validator's
+30-second network isolation, SIGKILL and strict reopen, and graceful restart.
+Healing occurs at a fixed deadline even if finality has stopped. The run fails
+unless the isolated validator stays at its old head and the surviving quorum
+finalizes fresh work before healing. The returning validator must catch up.
 
-## What the qualification checks
+Every validator export must independently replay to the same height, record head,
+full state commitment and consensus commitment. The record head binds the full
+ancestry. Different valid finality certificates may contain different sufficient
+signer subsets; their raw bytes need not match across validators. Each validator's
+selected evidence must remain byte-identical across its own restart. Public
+reports retain per-validator finality-frame hashes. Corrupted exported evidence
+must be rejected by the actual verifier without modifying the input.
 
-The workload is generated separately at each publisher, one requested height at
-a time, with distinct, locally verified closed mathematical proofs. Each height
-waits for the expected finalized head and exact durable offer receipts from the
-participating validators before advancing. The default schedule includes:
+The report records exact binary and harness hashes, source commit, whether the
+working tree was clean, genesis capacity, certified window times, fault results,
+replay results and resource observations. `outcome: passed` and a zero process exit
+are both required. Process logs, keys, signed actions and journals remain private.
+Only `report.json` is intended for publication. Containers, their internal network,
+probe containers and native process groups are owned by the run and cleaned up on
+success, failure and handled interruption. Cleanup failures fail qualification.
 
-- 50 ms delay in each direction for each forwarded TCP chunk of at most 32 KiB;
-- a full 32-ID invalid offer from one publisher while the other offers valid work;
-- a 30-second validator network disconnection after height three, healed by time
-  independently of finality, followed by catch-up to the same head;
-- a publisher SIGKILL and strict reopen halfway through the run;
-- a graceful validator restart and strict reopen three quarters through the run.
+## Authority setup and supervision
 
-The devnet supervisor polls every 100 ms so source discovery and retry turns do
-not routinely consume the ten-second consensus phase budget. The phase timers,
-network delay, rate limits, 100-height CI workload and fault schedule are retained.
-Independent publisher tools and read-only health probes run in bounded parallel
-workers; every role's result, both publisher receipts and all replay checks remain
-mandatory. Periodic `status.json` snapshots use atomic replacement without disk
-synchronization because they are regenerated diagnostics. Startup markers,
-source offers, journal/anchor state and the qualification report remain durable.
+Canonical setup creates fresh genesis and refuses existing output, invalid or
+duplicate endpoints, symlinked endpoint files, and invalid profile limits. Keys
+remain private. Setup initializes all four histories and signing stores at
+genesis before publishing configuration; validator startup only reopens them.
+Missing authority is a failure, never an initialization request.
 
-The process smoke path substitutes SIGSTOP/SIGCONT of the validator child for
-network disconnection. It does not claim liveness while a peer remains offline.
-There is no unsafe signing-recovery test disguised as a restart: the validator
-restart is graceful, and the killed publisher owns no consensus signing key.
+The qualifier moves each fresh external-anchor directory intact to its separate
+per-validator mount and syncs both parent directories. Supervision uses the
+node's bounded local status interface, checks process liveness, rejects state
+regression/conflict, and applies fixed deadlines.
 
-After stopping all roles, `naome-devnet verify` independently opens each anchored
-finality journal, validates its recorded finality, compares every block and proof
-payload with the expected workload, and checks contiguous ancestry. All four
-reports must agree on height, head and ancestry digest. A pass also requires
-observed completed network acquisition, no unknown or regressing finalized heads,
-no unexpected child exit, no reported errors, and completed cleanup.
-
-`report.json` separates publication and finality/receipt wait time per height,
-aggregate health-probe time and final replay time. It also records injected
-faults, replay results, source and
-runtime binary provenance, sample counts, observed event totals, peak sampled
-resident memory on Linux, peak sampled role disk use, and connection counts.
-Sampling is every half-second; these are observations, not precise allocation
-maxima. The role disk limit is a sampled 512 MiB stop threshold, not a filesystem
-quota. macOS process RSS/CPU values are unavailable and remain null, not zero.
-Logs rotate at 8 MiB with two backups; Docker logs have their own bounded rotation.
-Failure reports also contain bounded wrapper error output and container exit,
-health and OOM status. Only `report.json` is uploaded by CI. Never upload the
-private role tree.
-
-`--height-timeout` defaults to 180 seconds, `--deadline-seconds` to 3600, and
-`--partition-seconds` to 30. `--interval-seconds` can add up to 60 seconds between
-heights for a longer bounded observation, within an explicitly increased total
-deadline (at most one day). The configured source stores allow 256 entries and
-8 MiB of payloads; the fixture stops at 128 heights. Capacity saturation remains
-a refusal. None of these parameters establishes production liveness.
-
-## Run and inspect individual roles
-
-For manual operation, create a public JSON plan with six distinct canonical
-literal IP/TCP endpoints. Set `version` to zero and `heights` to 4–128. For example:
-
-```json
-{
-  "version": 0,
-  "heights": 100,
-  "validator_addresses": [
-    "/ip4/127.0.0.1/tcp/4101", "/ip4/127.0.0.1/tcp/4102",
-    "/ip4/127.0.0.1/tcp/4103", "/ip4/127.0.0.1/tcp/4104"
-  ],
-  "publisher_addresses": [
-    "/ip4/127.0.0.1/tcp/4105", "/ip4/127.0.0.1/tcp/4106"
-  ]
-}
-```
-
-Provision once, then start one agent per role in separate terminals, choosing
-distinct health ports when roles share a host:
-
-```sh
-target/release/naome-devnet init /tmp/plan.json /tmp/naome-roles
-python3 -B devnet/agent.py run --role /tmp/naome-roles/validator-0 --validator "$PWD/target/release/naome-validator" --port 8080
-```
-
-Repeat the agent command for `validator-1` through `validator-3` and `publisher-0`
-through `publisher-1`, with ports 8081–8085. Wait for healthy startup, then create
-fresh work on each publisher using its own directory:
-
-```sh
-target/release/naome-devnet publish /tmp/naome-roles/publisher-0 1
-target/release/naome-devnet publish /tmp/naome-roles/publisher-1 1
-curl --fail http://127.0.0.1:8080/health
-curl --fail http://127.0.0.1:8080/status
-curl --fail http://127.0.0.1:8080/metrics
-python3 -B devnet/agent.py status --role /tmp/naome-roles/validator-0
-```
-
-Advance the height only after all validators report that finalized height and
-head. `/status` is always diagnostic JSON; `/health` returns 503 before readiness,
-after an error/exit, or when a validator exceeds its finality-stall threshold.
-An idle completed workload eventually reports stalled until stopped. `/metrics`
-exposes bounded Prometheus counters and gauges. These HTTP endpoints accept only
-reads and provide no authentication, so keep them on loopback or a private,
-operator-controlled network. They never grant consensus authority.
-
-The plan optionally accepts `validator_listen_addresses` and
-`publisher_listen_addresses`, each the same length as its advertised array. When
-an advertised endpoint differs from its listener, the agent owns a bounded TCP
-delay proxy on the advertised endpoint; both addresses must be bindable in that
-role's network namespace. Omit these arrays for direct transport. Public role
-configuration contains all peer identities, but each private role directory
-contains only its own Noise seed and, for a validator, its own signing seed.
-Provisioned directories are mode 0700 and files 0600.
-
-To place roles on independently managed private hosts, provision actual reachable
-endpoints and securely transfer only the respective role directory to each host;
-run the same version of the binaries and agent there. The automated qualification
-in this change covers one-host containers; it does not certify this multi-host
-deployment, firewall policy, WAN behavior, or operator key distribution.
-
-## Stop, reopen and recover
-
-Use SIGTERM/Ctrl-C on the agent for a graceful shutdown. It stops its child and
-waits for exit; a forced timeout is an error. For generated containers use the
-exact `compose.json` and project name from that run. Re-running the same agent
-against an initialized role uses `open.toml`, preserving identities, anchors,
-journals, source custody and durable candidate choice. The agent binds startup
-to hashes of `role.json`, `create.toml` and `open.toml`; changed configuration or
-an interrupted first create is refused for operator inspection. There is no
-automatic reset, key regeneration, image upgrade or journal repair.
-
-After stopping the validators, independently verify their workload histories:
-
-```sh
-target/release/naome-devnet verify /tmp/naome-roles/validator-0 100
-```
-
-Run this for all four validators and compare `height`, `head` and
-`ancestry_sha256`. A live journal remains exclusively owned and cannot be opened
-by the verifier. This fixture-specific command requires the exact synthetic
-workload; it is not a general application-chain explorer.
-
-If a publisher workload build is interrupted, preserve its diagnostic
-`producer/staging` directory for inspection. Once no `publish` process owns
-`producer/owner.lock`, an operator may move that scratch directory aside and
-retry the same height; existing immutable bundles must match exactly. A leftover
-`offer.pending` may likewise be moved aside after confirming no producer is
-running. These scratch files contain no signing authority. Never apply that
-cleanup procedure to candidate/payload stores, anchors, journals or validator
-choice state.
-
-For actual source corruption, stop the role and use the explicit operator source
-recovery procedure in `specs/fixed-validator-process-v0.md`. The agent deliberately
-does not automate migration or rewrite its configuration binding: run a separately
-reviewed recovery configuration directly with the native validator, preserving
-the original stores and authority. Incomplete signing state remains a refusal;
-this devnet supplies no repair or safe arbitrary validator SIGKILL-resume promise.
-
-CI's `Devnet qualification` job performs the 100-height container run and is a
-dependency of the required `Rust CI` result, alongside the full Linux, macOS and
-Windows test/release matrices. Qualification jobs may restore the matching main
-release cache, but still run every build and qualification command; only the
-existing successful main matrix writes caches. The Docker configuration follows the documented
-[Compose service controls](https://docs.docker.com/reference/compose-file/services/)
-and [network reconnect behavior](https://docs.docker.com/reference/cli/docker/network/connect/).
+Python tests cover concurrent probes, failed-role propagation, symlink-safe
+durable reports, timer healing, memory/disk limits, exact delayed TCP transfer,
+listener release, private mounts and process/probe cleanup. Malformed intake
+must leave authority unchanged before valid work progresses. Protocol/runtime
+suites separately cover authenticated framing and operation rejection.

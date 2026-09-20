@@ -70,10 +70,10 @@ fn tagged_definition_and_dependent_proof_admit_in_selected_order() {
     let proof_inner = canonical_bytes(proof);
     let proof_bytes = tagged_proof(proof_inner.clone());
 
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
     assert_eq!(
         ledger.apply_canonical_artifact_bytes(proof_bytes.clone()),
-        Err(LedgerError::ProofCheck {
+        Err(ArtifactAdmissionError::ProofCheck {
             source: CheckError::DefinitionExpansion {
                 step: 1,
                 source: naome_proof::DefinitionExpansionError::UnknownDefinition { definition_id },
@@ -126,7 +126,7 @@ fn accepted_proof_projects_sorted_distinct_mixed_artifact_dependencies() {
     let definition = relation_definition();
     let definition_id = definition.definition_id();
     let definition_artifact_id = ArtifactId::from_definition_id(definition_id);
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
     let _ = ledger
         .apply_canonical_artifact_bytes_with_expected_id(
             ArtifactPayload::Definition(definition).to_canonical_bytes(),
@@ -167,11 +167,11 @@ fn artifact_address_mismatch_precedes_registration_for_both_types() {
     let actual = ArtifactId::from_definition_id(definition_id);
     let expected = ArtifactId::from_proof_id(ProofId::from_bytes([0x55; 32]));
     let bytes = ArtifactPayload::Definition(definition).to_canonical_bytes();
-    let mut ledger = LedgerState::new();
+    let mut ledger = ArtifactLedger::new();
 
     assert_eq!(
         ledger.apply_canonical_artifact_bytes_with_expected_id(bytes.clone(), expected),
-        Err(LedgerError::ArtifactIdMismatch { expected, actual })
+        Err(ArtifactAdmissionError::ArtifactIdMismatch { expected, actual })
     );
     assert!(!ledger.contains_definition(definition_id));
 

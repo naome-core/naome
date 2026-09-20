@@ -1,0 +1,40 @@
+[package]
+name = "naome-cli"
+version.workspace = true
+edition.workspace = true
+description = "NAOME setup, operation, and independent verification CLI."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "naome"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+naome-chain = { path = "../naome-chain" }
+naome-consensus = { path = "../naome-consensus" }
+naome-ledger = { path = "../naome-ledger" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+ed25519-dalek.workspace = true
+getrandom = "0.3"
+naome-authoring = { path = "../naome-authoring" }
+naome-checker = { path = "../naome-checker" }
+naome-network = { path = "../naome-network" }
+naome-proof = { path = "../naome-proof" }
+naome-runtime = { path = "../naome-runtime" }
+naome-storage = { path = "../naome-storage" }
+rustix = { version = "1.1", features = ["fs", "process"] }
+sha2.workspace = true
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "signal", "sync", "time", "io-util", "process"] }
+zeroize = "1"
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+
+[lints]
+workspace = true

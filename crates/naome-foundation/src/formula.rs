@@ -1,6 +1,7 @@
 //! Primitive first-order formulas for set theory.
 
 mod canonical;
+mod source;
 
 pub use canonical::{FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FormulaCodecError};
 

@@ -1,0 +1,192 @@
+{
+  "scope": "Canonical state-v1 trusted MVP qualification; results identify the measured snapshots, not subsequent documentation edits",
+  "implementation_commit": "0bae7b0e61c576f9fc1edf2f465da90602a9645e",
+  "local_qualification": {
+    "source_manifest_sha256": "0fa0aae207249bd3b813c16678352ac51ab1738d50337ed25f7eac532a6dceec",
+    "source_files": 223,
+    "rust": "1.97.1",
+    "cargo_incremental": "0",
+    "workspace_test": 533,
+    "workspace_release": 533,
+    "commands": {
+      "build": "cargo test --workspace --profile test --all-targets --all-features --locked --no-run",
+      "test": "cargo test --workspace --profile test --all-targets --all-features --locked --no-fail-fast",
+      "release-build": "cargo test --workspace --profile release --all-targets --all-features --locked --no-run",
+      "release-test": "cargo test --workspace --profile release --all-targets --all-features --locked --no-fail-fast",
+      "clippy": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+      "doc": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps --all-features --locked",
+      "doctest": "cargo test --workspace --doc --all-features --locked"
+    },
+    "logs": {
+      "build": {
+        "sha256": "f59168c952c1d801612b3047518ec8830e7dfc37f6a0d0c64348cc4f23a13c49",
+        "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s",
+        "passed_tests": 0
+      },
+      "test": {
+        "sha256": "7c43fd6a1be25a62e96df659143ccc3cfb9246543c689d00cd1d1610e62883a3",
+        "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s",
+        "passed_tests": 533
+      },
+      "release-build": {
+        "sha256": "17c0f50c6ab2bc434e2b1be1dba7f3028b5f47be0309e12e8a54f39be58e701a",
+        "completion": "    Finished `release` profile [optimized] target(s) in 2.08s",
+        "passed_tests": 0
+      },
+      "release-test": {
+        "sha256": "d66a5856fc59b5c7730584e07dcc024d0b2b056546dfc56d43eb64d459759eab",
+        "completion": "    Finished `release` profile [optimized] target(s) in 0.14s",
+        "passed_tests": 533
+      },
+      "clippy": {
+        "sha256": "514abba06371cf07710ac765ac4ec0e874ef9233543789e9650468152e9c41e0",
+        "completion": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.51s",
+        "passed_tests": 0
+      },
+      "doc": {
+        "sha256": "4d215792a063267d7b5e0621a72d9ff55d72357ea6d6c8f7646c93dacc66a219",
+        "completion": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.68s",
+        "passed_tests": 0
+      },
+      "doctest": {
+        "sha256": "484a8cc49b766deee4a23ceae34291e1849d00146420a4b79e340b44e34ba347",
+        "completion": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s",
+        "passed_tests": 0
+      }
+    },
+    "format": "cargo fmt --all -- --check passed",
+    "note": "Complete local checks follow the Unix-test-helper cfg correction. The production executables were rebuilt and matched the lab hashes. Zero doctests are defined."
+  },
+  "real_lab": {
+    "report": "final-integration-lab.json",
+    "report_sha256": "aae056b8641893c61d5c85793dab3d76de4cdb2f8ffb34ea079c0d87d7308904",
+    "elapsed_seconds": 1665.669,
+    "source_snapshot": {
+      "file_count": 217,
+      "manifest_sha256": "3f8785fcffe1bcb2ef73e940b9cb595ee11a2dc0efd07f53e090df19684835a3",
+      "git_head": "7e43f2bc3c5e967b2a2f3aad54496c61eb064be2",
+      "scope": "Cargo manifests/lock, pinned toolchain, Rust crate sources, research Python tools and example fixtures at runner startup; includes uncommitted files",
+      "provider_sha256": "6a485056eac4a745f44809fb979f18d13b50444f72dfd93af4a0f4246ec5ed4b"
+    },
+    "source_manifest_matches_committed_tree": true,
+    "executables": {
+      "naome": {
+        "path": "/private/tmp/naome-final-binaries/naome",
+        "sha256": "e4caff60266b9c0ad76a18d34a8c29a241bc1866a790d9b3f0d8ec9946a90dc1"
+      },
+      "naome-validator": {
+        "path": "/private/tmp/naome-final-binaries/naome-validator",
+        "sha256": "f6d2243be54eb588d579ddfe458f5a442298e974a6fb69dfbee4a4c6de76364d"
+      },
+      "naome-verifier": {
+        "path": "/private/tmp/naome-final-binaries/naome-verifier",
+        "sha256": "988d855b738b53d88ddb66fc4acbfd7f5b2586fc4ae9d22ceb2acda61beab980"
+      }
+    },
+    "timing": {
+      "profile": "lab",
+      "voting_seconds": 300,
+      "commitment_seconds": 120,
+      "reveal_seconds": 120
+    },
+    "result": "passed"
+  },
+  "lab_to_implementation": {
+    "lab_commit": "7e43f2bc3c5e967b2a2f3aad54496c61eb064be2",
+    "later_code_change": "Two #[cfg(unix)] attributes on wrappers called only by Unix replay; portable exploration and both mutant tests remain active. Entire module is #[cfg(test)]; no production behavior changes.",
+    "path": "crates/naome-node/src/state/safety_model/model.rs",
+    "patch_sha256": "574d5fdf3375f9d15071d59efc5b556c9888cf68e355c65fa8a8d1b53f832dee",
+    "rebuilt_release_executables_match_lab_hashes": true
+  },
+  "platform_ci": {
+    "headSha": "0bae7b0e61c576f9fc1edf2f465da90602a9645e",
+    "url": "https://github.com/naome-core/naome/actions/runs/35465126870",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "Devnet qualification",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Linux x86_64, release) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust quality",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Linux x86_64, test) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Windows x86_64, test) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, test) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (macOS ARM64, release) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust tests (Windows x86_64, release) / Full workspace",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (Windows x86_64)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (Linux x86_64)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust platform (macOS ARM64)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Rust CI",
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "ci_devnet": {
+    "report": "final-integration-ci-devnet.json",
+    "report_sha256": "f36941b71dbfa05da8bf3e0c90f897ac4ccb763a11d513c3854763fd6d12c4e4",
+    "source_commit": "0bae7b0e61c576f9fc1edf2f465da90602a9645e",
+    "outcome": "passed",
+    "records_per_validator": [
+      102,
+      102,
+      102,
+      102
+    ],
+    "elapsed_seconds": 1137.879
+  },
+  "independent_review": {
+    "reviewer": "canonical_devnet_review",
+    "result": "clear",
+    "scope": "Read-only architecture and exact local source/log/binary/evidence mapping. Final test-only cfg correction independently reviewed: no portable exploration or mutant coverage gated and no production change. Final lab and documentation reviewed separately before publication; no independent Cargo run."
+  },
+  "qualification_boundary": [
+    "Four independent local validator processes, fixed trusted membership and compact genesis limits",
+    "No multi-machine or seven-day qualification",
+    "No permissionless-network security claim"
+  ]
+}

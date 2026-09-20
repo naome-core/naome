@@ -1,89 +1,23 @@
-//! Numeric consensus projections, authenticated agreement evidence, and one
-//! typed fixed-validator artifact-consensus branch kernel for NAOME.
+//! Authenticated agreement and finality for the canonical complete NAOME state.
 //!
-//! This crate projects caller-supplied positive height values into numeric
-//! non-genesis epochs, evaluates a caller-supplied epoch's numeric linear
-//! genesis-bootstrap cap, compares caller-supplied checkpoint and
-//! operator-minimum epochs through a numeric freshness window, and checks a
-//! caller-supplied upgrade activation epoch against a numeric minimum delay. It
-//! also freezes already selected agreement snapshots for standalone threshold
-//! and evidence verification, admits individually verified active votes
-//! against an exact typed round, and canonically assembles one exact
-//! caller-routed signed-vote batch against a typed round. Its typed V0 branch constructs one
-//! caller-selected fixed set only at a matching artifact virtual genesis; derives exact
-//! height-anchored weighted-round-robin proposers, sequential round snapshots,
-//! and complete fixed-validator artifact-only V0 branch-state projections;
-//! admits proof-derived proposal controls before voting; applies volatile,
-//! unsigned locking and valid-value effects; and seals a fully admitted proposal
-//! only with matching non-nil precommit evidence before publishing an immutable
-//! successor. A bounded compatibility boundary can derive the one exact round
-//! claimed by a complete envelope under caller-local work policy before running
-//! that same full verification once. It does not prove that the caller-selected
-//! genesis or fixed set is canonical; select or change validators; persist
-//! locking or signing-safety state; schedule timeouts; install durable finality;
-//! create or release signatures; trust peers; mutate a selected chain; or
-//! execute economics.
+//! The fixed-set branch derives proposers, verifies proposals and signed votes,
+//! and seals successors with matching precommit evidence. Storage owns durable
+//! selection and signer custody; the ledger owns deterministic state execution.
 //!
-//! [`PreselectedProposerStateV0`] separately exposes an opaque arithmetic
-//! reference for zero-rooted caller-preselected snapshots, sequential proposer
-//! steps, and complete snapshot replacement. It has no branch conversion and
-//! grants no snapshot-selection, activation, proposal, signing, finality,
-//! persistence, recovery, or peer authority.
+//! [`PreselectedProposerState`] exposes shared arithmetic only. Its selected
+//! keys grant no signing, finality, persistence, or recovery authority.
 
 use std::error::Error;
 use std::fmt;
-
-mod agreement_evidence;
-mod consensus_value;
-mod fixed_consensus_branch;
-mod fixed_validator_lock_state;
-mod fixed_validator_proposal_authoring;
-mod producer_authorization;
 mod proposer_selection;
-pub mod verified_membership;
-
-pub use agreement_evidence::{
-    CONSENSUS_SIGNATURE_BYTES, ConsensusContextV0, ConsensusGenesisId, ConsensusProtocolVersion,
-    ConsensusSignature, ConsensusVoteDecodeError, ConsensusVoteId, ConsensusVoteRole,
-    ConsensusVoteTarget, ConsensusVoteVerifyError, PrecommitCertificateId,
-    PrecommitCertificateVerifyError, ProposalSigningRoot, QuorumCertificateBuildError,
-    QuorumCertificateId, QuorumCertificateVerifyError, UnverifiedConsensusVoteRouteV0,
-    VerifiedConsensusVoteV0, VerifiedPrecommitCertificateV0, VerifiedQuorumCertificateV0,
-};
-pub use consensus_value::{
-    ConsensusAncestryId, ConsensusEnvelopeId, ConsensusEnvelopeVerifyError,
-    ConsensusProposalVerifyError, ConsensusStateCommitment, ConsensusValueError, ConsensusValueV0,
-    UnverifiedFixedConsensusProposalRouteV0,
-};
-pub use fixed_consensus_branch::{
-    FixedConsensusBoundedEnvelopeVerifyError, FixedConsensusBoundedSeparateFinalityVerifyError,
-    FixedConsensusBranchCoordinateV0, FixedConsensusBranchV0, FixedConsensusGenesisError,
-    FixedConsensusNilPrecommitVerifyErrorV0, FixedConsensusNilPrevoteVerifyErrorV0,
-    FixedConsensusPrecommitBatchSealErrorV0, FixedConsensusProposalPrecommitVerifyErrorV0,
-    FixedConsensusProposalPrevoteVerifyErrorV0, FixedConsensusProposalValueVerifyErrorV0,
-    FixedConsensusRoundV0, OwnedVerifiedFixedConsensusTransitionV0,
-    VerifiedFixedConsensusProposalV0, VerifiedFixedConsensusTransitionV0,
-};
-pub use fixed_validator_lock_state::{
-    FixedValidatorHigherRoundCheckpointErrorV0, FixedValidatorLockPhaseV0,
-    FixedValidatorLockStateError, FixedValidatorLockStateV0, FixedValidatorLockedValueV0,
-    FixedValidatorUnsignedVoteEffectV0, FixedValidatorValidValueV0, FixedValidatorVoteIntentError,
-    FixedValidatorVoteIntentV0, ObservedFixedValidatorHigherRoundCheckpointV0,
-    ObservedFixedValidatorVoteIntentV0, VerifiedFixedValidatorHigherRoundAdvanceV0,
-    VerifiedReplayFixedValidatorHigherRoundCheckpointV0, VerifiedReplayFixedValidatorVoteIntentV0,
-};
-pub use fixed_validator_proposal_authoring::{
-    CompletedFixedValidatorProposalV0, FixedValidatorProposalIntentErrorV0,
-    FixedValidatorProposalIntentV0, FixedValidatorProposalSourceV0,
-    ObservedFixedValidatorProposalIntentV0,
-};
-pub use producer_authorization::{
-    ProducerAuthorizationVerifyError, VerifiedProducerAuthorizationV0,
-};
+pub mod state;
+mod votes;
 pub use proposer_selection::{
-    FixedAgreementSetId, PreselectedProposerStateV0, ProposerPriorityStateId,
-    ProposerSelectionError,
+    FixedAgreementSetId, PreselectedProposerState, ProposerPriorityStateId, ProposerSelectionError,
 };
+pub use votes::{ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot};
+#[cfg(test)]
+mod weight_oracle;
 
 /// Exact width of one opaque consensus-key address.
 pub const CONSENSUS_KEY_BYTES: usize = 32;
@@ -91,119 +25,10 @@ pub const CONSENSUS_KEY_BYTES: usize = 32;
 /// Maximum number of active validator entries in one agreement snapshot.
 pub const MAX_ACTIVE_VALIDATORS: usize = 256;
 
-/// Nominal width used to project positive consensus heights into numeric epochs.
-///
-/// The terminal epoch reachable through `u64` need not have a complete
-/// representable reverse range.
-pub const NON_GENESIS_HEIGHTS_PER_EPOCH: u64 = 8_192;
-
-const CHECKPOINT_NUMERIC_FRESHNESS_WINDOW_EPOCHS: u64 = 30;
-const GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS: u64 = 730;
-const INITIAL_GENESIS_BOOTSTRAP_WEIGHT_UNITS: u128 = 10_000_000_000_000_000;
-const UPGRADE_ACTIVATION_NUMERIC_MINIMUM_DELAY_EPOCHS: u64 = 15;
-
-/// Numeric epoch projected from a caller-supplied positive consensus height.
-///
-/// This value establishes no canonical block, finality, ancestry, genesis
-/// installation, clock, deadline, persistence, activation, or consensus-state
-/// authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[must_use]
-pub struct ConsensusEpoch(u64);
-
-impl ConsensusEpoch {
-    /// Returns the projected numeric epoch value.
-    pub const fn value(self) -> u64 {
-        self.0
-    }
-}
-
-/// Opaque numeric output of the independent genesis-bootstrap linear cap.
-///
-/// This value is distinctly tagged from ordinary Knowledge Weight and active
-/// agreement weight. It proves no genesis allocation, validator membership,
-/// canonical epoch, active-set contribution, or consensus-state transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[must_use]
-pub struct GenesisBootstrapWeightCap(u128);
-
-impl GenesisBootstrapWeightCap {
-    /// Returns the exact numeric cap units.
-    pub const fn units(self) -> u128 {
-        self.0
-    }
-}
-
-/// Projects the independent pre-sunset linear genesis-bootstrap cap.
-///
-/// For caller-supplied epoch `E < 730`, this returns exactly
-/// `floor(10_000_000_000_000_000 * (730 - E) / 730)` in a distinct output
-/// type. Epochs at or beyond 730 return [`None`] because this numeric projection
-/// does not define or apply terminal sunset state. The result establishes no
-/// canonical epoch or genesis context, tagged allocation, validator split,
-/// ordinary-weight replacement, tombstone handling, active-set weight,
-/// persistence, or consensus state.
-pub const fn project_linear_genesis_bootstrap_cap(
-    epoch: ConsensusEpoch,
-) -> Option<GenesisBootstrapWeightCap> {
-    let epoch = epoch.value();
-    if epoch >= GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS {
-        None
-    } else {
-        Some(GenesisBootstrapWeightCap(
-            INITIAL_GENESIS_BOOTSTRAP_WEIGHT_UNITS
-                * (GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS - epoch) as u128
-                / GENESIS_BOOTSTRAP_LINEAR_CAP_EPOCHS as u128,
-        ))
-    }
-}
-
-/// Returns whether a checkpoint epoch is within the numeric freshness window.
-///
-/// The result is true exactly when `checkpoint_epoch` is fewer than 30 epochs
-/// behind `operator_minimum_epoch`. Equal or numerically newer checkpoint
-/// epochs therefore pass this age-only comparison. Passing does not establish
-/// checkpoint existence, authentication, selection, future-epoch
-/// admissibility, chain or genesis identity, version compatibility, finality,
-/// snapshot commitments, operator provenance or monotonicity of the minimum,
-/// installation, persistence, synchronization, or consensus state.
-pub const fn checkpoint_epoch_is_within_numeric_freshness_window(
-    checkpoint_epoch: ConsensusEpoch,
-    operator_minimum_epoch: ConsensusEpoch,
-) -> bool {
-    if checkpoint_epoch.value() >= operator_minimum_epoch.value() {
-        true
-    } else {
-        operator_minimum_epoch.value() - checkpoint_epoch.value()
-            < CHECKPOINT_NUMERIC_FRESHNESS_WINDOW_EPOCHS
-    }
-}
-
-/// Returns whether a candidate activation epoch meets the numeric minimum delay.
-///
-/// The result is true exactly when `candidate_activation_epoch` is at least 15
-/// epochs after `readiness_epoch`. The comparison subtracts only after proving
-/// that the candidate is not earlier, so it remains total across the full
-/// projected epoch domain. Passing establishes no readiness-certificate
-/// existence or validity, protocol-version identity, signature or snapshot
-/// authority, canonical epoch, scheduled activation coordinate, cancellation,
-/// activation, persistence, or consensus state.
-pub const fn upgrade_activation_epoch_meets_numeric_minimum_delay(
-    readiness_epoch: ConsensusEpoch,
-    candidate_activation_epoch: ConsensusEpoch,
-) -> bool {
-    let readiness_epoch = readiness_epoch.value();
-    let candidate_activation_epoch = candidate_activation_epoch.value();
-
-    candidate_activation_epoch >= readiness_epoch
-        && candidate_activation_epoch - readiness_epoch
-            >= UPGRADE_ACTIVATION_NUMERIC_MINIMUM_DELAY_EPOCHS
-}
-
 /// In-memory consensus height used to distinguish agreement positions.
 ///
-/// The numeric projection reserves zero and treats positive values as
-/// non-genesis coordinates. Constructing or projecting a value does not prove
+/// Zero is reserved for genesis and positive values name subsequent agreement
+/// coordinates. Constructing a value does not prove
 /// installed genesis, block existence, canonicality, or finality, and this
 /// representation does not define canonical wire bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -219,21 +44,6 @@ impl ConsensusHeight {
     /// Returns the in-memory height value.
     pub const fn value(self) -> u64 {
         self.0
-    }
-
-    /// Projects this caller-supplied height into its numeric non-genesis epoch.
-    ///
-    /// Zero is treated only as the reserved numeric genesis coordinate and
-    /// returns [`None`]. Every positive height `H` returns
-    /// `floor((H - 1) / 8192)`. This projection does not prove that the height
-    /// exists, is canonical or finalized, belongs to selected ancestry, or is
-    /// related to installed genesis or consensus state.
-    pub const fn non_genesis_epoch(self) -> Option<ConsensusEpoch> {
-        if self.0 == 0 {
-            None
-        } else {
-            Some(ConsensusEpoch((self.0 - 1) / NON_GENESIS_HEIGHTS_PER_EPOCH))
-        }
     }
 }
 
@@ -612,7 +422,3 @@ impl Error for AgreementSignerError {}
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../../tests/support/codec_corpus.rs"]
-mod codec_corpus;

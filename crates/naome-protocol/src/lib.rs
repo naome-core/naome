@@ -1,13 +1,6 @@
-//! Bounded transport-neutral artifact, block, and chain-head wire contracts.
+//! Bounded, context-bound canonical state exchange contracts.
 //!
-//! These contracts preserve exact wire bytes and immutable request addresses.
-//! Decoding or observing availability grants no peer, mathematical-validity,
-//! selected-chain, consensus, finality, or economic authority.
-//! Transport runtime and storage coordination belong to their owning crates.
+//! Decoding a frame grants no mathematical validity, finality, or economic
+//! authority. Authentication and deterministic replay belong to their owners.
 
-pub mod artifact_exchange;
-pub mod block_exchange;
-pub mod chain_head_announcement;
-pub mod chain_head_exchange;
-
-pub mod candidate_offer;
+pub mod state_exchange;

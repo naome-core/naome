@@ -63,13 +63,13 @@ definition or proof address.
 Dependencies are direct, not transitive. Accepted bytes and dependency lists are
 immutable. Callers cannot insert unchecked records, identities, edges, or set
 leaves. Registration rechecks direct dependencies so a checked value cannot be
-moved from a different selected context. The
-[artifact-chain journal](artifact-chain-journal.md) and
-[fixed-validator finality journal](fixed-validator-finality-journal-v0.md#authority-and-clean-replacement)
-are alternative durable selected-state owners using the same exclusive
-per-directory journal lock; both reconstruct accepted records only through
-strict replay. They cannot own the same directory concurrently, and switching
-owners requires the finality journal's explicit clean-replacement contract.
+moved from a different selected context. The canonical proof library owns its
+checked DAG and matching publication
+provenance within the complete ledger state. `naome-storage::state` is the sole
+durable selected-history owner; strict replay reconstructs the complete state
+and its library. Standalone artifact admission remains available for offline
+proof and definition checking and supplies no finality or publication authority.
+See [component ownership](ownership.md).
 
 Duplicate concrete proofs, derivations, and definitions are rejected. Multiple
 different checked derivations may establish one `StatementId`, but selecting a

@@ -1,12 +1,8 @@
-//! Explicit local process ownership for the existing fixed-validator V0 runtime.
-
-#[cfg(unix)]
-mod app;
-
+//! Canonical full-state validator; initialization belongs to `naome setup`.
 fn main() -> std::process::ExitCode {
     #[cfg(unix)]
     {
-        app::main()
+        naome_cli::run_validator_args(std::env::args().skip(1).collect())
     }
     #[cfg(not(unix))]
     {

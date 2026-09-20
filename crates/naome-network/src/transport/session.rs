@@ -59,20 +59,20 @@ impl Behaviour {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn connection_status(&self, peer_id: &PeerId) -> Option<bool> {
-        self.peer(peer_id)
-            .map(|peer| matches!(peer.link, Link::Connected { .. }))
-    }
-
     pub(super) fn connection_status_at(&self, index: usize) -> Option<bool> {
         self.peers
             .get(index)
             .map(|peer| matches!(peer.link, Link::Connected { .. }))
     }
 
+    #[cfg(test)]
     pub(super) fn peer_count(&self) -> usize {
         self.peers.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn inbound_tokens_for_test(&self) -> u32 {
+        self.inbound_budget.tokens()
     }
 
     pub(super) fn peer_id_at(&self, index: usize) -> Option<PeerId> {
@@ -224,43 +224,6 @@ impl Behaviour {
         }
         self.schedule_retry(peer_id, now, false);
         true
-    }
-
-    #[cfg(test)]
-    pub(super) fn mark_connected_for_test(&mut self, peer_id: PeerId) {
-        let peer = self.peer_mut(&peer_id).unwrap();
-        peer.link = Link::Connected {
-            connection_id: ConnectionId::new_unchecked(usize::MAX),
-            connected_at: Instant::now(),
-        };
-    }
-
-    #[cfg(test)]
-    pub(super) fn mark_disconnected_for_test(&mut self, peer_id: PeerId) {
-        assert!(self.record_closed(
-            peer_id,
-            ConnectionId::new_unchecked(usize::MAX),
-            0,
-            Instant::now(),
-        ));
-        self.pending_events
-            .push_back(PeerSessionEvent::Disconnected { peer_id });
-    }
-
-    #[cfg(test)]
-    pub(super) fn is_test_connected(&self, peer_id: &PeerId) -> bool {
-        self.peer(peer_id).is_some_and(|peer| {
-            matches!(
-                peer.link,
-                Link::Connected { connection_id, .. }
-                    if connection_id == ConnectionId::new_unchecked(usize::MAX)
-            )
-        })
-    }
-
-    #[cfg(test)]
-    pub(super) fn inbound_tokens_for_test(&self) -> u32 {
-        self.inbound_budget.tokens()
     }
 }
 

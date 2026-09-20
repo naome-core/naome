@@ -48,13 +48,13 @@ impl ProposerPriorityStateId {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FixedAgreementSetV0 {
+pub(crate) struct FixedAgreementSet {
     entries: Box<[ActiveAgreementEntry]>,
     total_weight: AgreementWeight,
     id: FixedAgreementSetId,
 }
 
-impl FixedAgreementSetV0 {
+impl FixedAgreementSet {
     pub(crate) fn try_from_preselected(
         entries: &[ActiveAgreementEntry],
     ) -> Result<Self, ActiveAgreementSnapshotError> {
@@ -76,17 +76,6 @@ impl FixedAgreementSetV0 {
         }
     }
 
-    pub(crate) fn positioned_snapshot(
-        &self,
-        position: ConsensusPosition,
-    ) -> ActiveAgreementSnapshot {
-        ActiveAgreementSnapshot {
-            position,
-            entries: self.entries.clone(),
-            total_weight: self.total_weight,
-        }
-    }
-
     pub(crate) fn entries(&self) -> &[ActiveAgreementEntry] {
         &self.entries
     }
@@ -103,30 +92,30 @@ impl FixedAgreementSetV0 {
 /// One exact, internally reachable proposer-priority state for one immutable set.
 ///
 /// Priorities have no public raw constructor. V0 starts at zero and publishes
-/// successors only through [`Self::select_next`] or the deterministic complete-
-/// snapshot transition, so callers cannot substitute a key or priority vector
+/// successors only through [`Self::select_next`], so callers cannot substitute
+/// a key or priority vector
 /// while retaining the same typed state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FixedProposerStateV0 {
-    fixed_set: Arc<FixedAgreementSetV0>,
+pub(crate) struct FixedProposerState {
+    fixed_set: Arc<FixedAgreementSet>,
     priorities: Box<[BigInt]>,
     id: ProposerPriorityStateId,
 }
 
-impl FixedProposerStateV0 {
+impl FixedProposerState {
     pub(crate) fn try_from_preselected(
         entries: &[ActiveAgreementEntry],
     ) -> Result<Self, ActiveAgreementSnapshotError> {
         Ok(Self::from_zeroed_fixed_set(
-            FixedAgreementSetV0::try_from_preselected(entries)?,
+            FixedAgreementSet::try_from_preselected(entries)?,
         ))
     }
 
     fn from_zeroed_preselected_snapshot(snapshot: &ActiveAgreementSnapshot) -> Self {
-        Self::from_zeroed_fixed_set(FixedAgreementSetV0::from_active_snapshot(snapshot))
+        Self::from_zeroed_fixed_set(FixedAgreementSet::from_active_snapshot(snapshot))
     }
 
-    fn from_zeroed_fixed_set(fixed_set: FixedAgreementSetV0) -> Self {
+    fn from_zeroed_fixed_set(fixed_set: FixedAgreementSet) -> Self {
         let fixed_set = Arc::new(fixed_set);
         let priorities = vec![BigInt::from(0_u8); fixed_set.entries().len()].into_boxed_slice();
         let id = derive_priority_state_id(fixed_set.id(), &priorities)
@@ -171,79 +160,6 @@ impl FixedProposerStateV0 {
         ))
     }
 
-    /// Applies the exact transition to one complete caller-preselected snapshot.
-    ///
-    /// This arithmetic does not establish snapshot provenance, canonicality,
-    /// activation, branch selection, finality, persistence, or network trust.
-    pub(crate) fn transition_to_preselected_snapshot(
-        &self,
-        final_snapshot: &ActiveAgreementSnapshot,
-    ) -> Result<Self, ProposerSelectionError> {
-        for priority in &self.priorities {
-            encode_signed_i256(priority)?;
-        }
-
-        let fixed_set = Arc::new(FixedAgreementSetV0::from_active_snapshot(final_snapshot));
-        if fixed_set.entries().is_empty() {
-            let priorities = Vec::new().into_boxed_slice();
-            let id = derive_priority_state_id(fixed_set.id(), &priorities)?;
-            return Ok(Self {
-                fixed_set,
-                priorities,
-                id,
-            });
-        }
-
-        let removed_weight = self
-            .fixed_set
-            .entries()
-            .iter()
-            .filter(|old_entry| {
-                fixed_set
-                    .entries()
-                    .binary_search_by_key(&old_entry.consensus_key(), |entry| entry.consensus_key())
-                    .is_err()
-            })
-            .fold(BigInt::from(0_u8), |total, entry| {
-                total + BigInt::from(entry.agreement_weight().units())
-            });
-        let updated_total = BigInt::from(fixed_set.total_weight().units()) + removed_weight;
-        let new_priority = -(&updated_total + (&updated_total / 8_u8));
-        encode_signed_i256(&new_priority)?;
-
-        let mut priorities = fixed_set
-            .entries()
-            .iter()
-            .map(|final_entry| {
-                self.fixed_set
-                    .entries()
-                    .binary_search_by_key(&final_entry.consensus_key(), |entry| {
-                        entry.consensus_key()
-                    })
-                    .map_or_else(
-                        |_| new_priority.clone(),
-                        |old_index| self.priorities[old_index].clone(),
-                    )
-            })
-            .collect::<Vec<_>>();
-        normalize_priorities(&mut priorities, fixed_set.total_weight())?;
-
-        let priorities = priorities.into_boxed_slice();
-        let id = derive_priority_state_id(fixed_set.id(), &priorities)?;
-        Ok(Self {
-            fixed_set,
-            priorities,
-            id,
-        })
-    }
-
-    pub(crate) fn positioned_snapshot(
-        &self,
-        position: ConsensusPosition,
-    ) -> ActiveAgreementSnapshot {
-        self.fixed_set.positioned_snapshot(position)
-    }
-
     pub(crate) fn fixed_set_id(&self) -> FixedAgreementSetId {
         self.fixed_set.id()
     }
@@ -261,8 +177,7 @@ impl FixedProposerStateV0 {
 /// Opaque arithmetic reference state for caller-preselected agreement snapshots.
 ///
 /// A value starts with zero priorities for one already validated snapshot and
-/// can then advance only through [`Self::select_next`] or
-/// [`Self::transition_to_preselected_snapshot`]. Snapshot positions are not
+/// can then advance only through [`Self::select_next`]. Snapshot positions are not
 /// bound into this state. Construction does not establish genesis, authorize a
 /// reset or recovery, or make the supplied snapshot canonical. A returned key
 /// is an arithmetic winner only and grants no proposal or signing authority.
@@ -273,14 +188,14 @@ impl FixedProposerStateV0 {
 /// them activation, branch-selection, finality, persistence, or peer authority.
 #[derive(Clone, PartialEq, Eq)]
 #[must_use]
-pub struct PreselectedProposerStateV0(FixedProposerStateV0);
+pub struct PreselectedProposerState(FixedProposerState);
 
-impl PreselectedProposerStateV0 {
+impl PreselectedProposerState {
     /// Creates the zero-priority arithmetic root for one validated snapshot.
     ///
     /// This operation is not a genesis, reset, recovery, or activation rule.
     pub fn from_zeroed_preselected_snapshot(snapshot: &ActiveAgreementSnapshot) -> Self {
-        Self(FixedProposerStateV0::from_zeroed_preselected_snapshot(
+        Self(FixedProposerState::from_zeroed_preselected_snapshot(
             snapshot,
         ))
     }
@@ -291,20 +206,6 @@ impl PreselectedProposerStateV0 {
     pub fn select_next(&self) -> Result<(ConsensusKey, Self), ProposerSelectionError> {
         let (key, successor) = self.0.select_next()?;
         Ok((key, Self(successor)))
-    }
-
-    /// Applies the exact arithmetic transition to a complete validated snapshot.
-    ///
-    /// This does not establish snapshot provenance, canonicality, activation,
-    /// branch selection, finality, persistence, recovery, or network trust. An
-    /// empty result is a halt state and grants no authority to resume consensus.
-    pub fn transition_to_preselected_snapshot(
-        &self,
-        final_snapshot: &ActiveAgreementSnapshot,
-    ) -> Result<Self, ProposerSelectionError> {
-        self.0
-            .transition_to_preselected_snapshot(final_snapshot)
-            .map(Self)
     }
 
     /// Returns the content identity of the state's sorted key-and-weight set.
@@ -322,10 +223,10 @@ impl PreselectedProposerStateV0 {
     }
 }
 
-impl fmt::Debug for PreselectedProposerStateV0 {
+impl fmt::Debug for PreselectedProposerState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("PreselectedProposerStateV0")
+            .debug_struct("PreselectedProposerState")
             .field("fixed_agreement_set_id", &self.fixed_agreement_set_id())
             .field(
                 "proposer_priority_state_id",
