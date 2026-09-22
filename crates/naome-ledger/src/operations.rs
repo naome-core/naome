@@ -3,18 +3,19 @@
 use crate::{
     AccountId, CommitmentId, GenesisId, LedgerError, PackageHash, ProfileId, QuestionId,
     SolutionRoundId,
-    authentication::SignedOperation,
+    authentication::{SignedOperation, author_key},
     codec::{Reader, Writer},
     identity::hash,
     library::ProofPackage,
     profile::Genesis,
     question::CompiledQuestion,
 };
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey};
 
 const ORIGINAL_MAGIC: &[u8; 4] = b"NSOR";
-const ORIGINAL_DOMAIN: &[u8] = b"naome:state:original-authorization:v1\0";
-const ORIGINAL_OVERHEAD: usize = 4 + 2 + 32 + 32 + 32 + 4 + 64;
+const ORIGINAL_VERSION: u16 = 2;
+const ORIGINAL_DOMAIN: &[u8] = b"naome:state:original-authorization:v2\0";
+const ORIGINAL_OVERHEAD: usize = 4 + 2 + 32 + 32 + 32 + 32 + 4 + 64;
 const PURPOSE_MAX_BYTES: usize = 16 * 1024;
 
 /// A package signed by its single author under the exact approved solution round.
@@ -23,12 +24,14 @@ pub struct SignedOriginal {
     genesis: GenesisId,
     profile: ProfileId,
     round: SolutionRoundId,
+    public_key: [u8; 32],
     package: ProofPackage,
     signature: [u8; 64],
 }
 
 impl SignedOriginal {
-    /// Signs unchanged package bytes before commitment publication.
+    /// Signs unchanged package bytes before commitment publication. Registration
+    /// and publication authority are checked separately by canonical ledger state.
     pub fn sign(
         genesis: &Genesis,
         round: SolutionRoundId,
@@ -36,23 +39,23 @@ impl SignedOriginal {
         key: &SigningKey,
     ) -> Result<Self, LedgerError> {
         let author = AccountId::for_key(key.verifying_key().as_bytes());
-        if package.author() != author
-            || genesis.account_key(author) != Some(key.verifying_key().as_bytes())
-        {
+        if package.author() != author {
             return Err(LedgerError::Invalid("original package signer"));
         }
         let mut original = Self {
             genesis: genesis.id(),
             profile: genesis.profile().id(),
             round,
+            public_key: key.verifying_key().to_bytes(),
             package,
             signature: [0; 64],
         };
         original.signature = key.sign(&original.signing_bytes()?).to_bytes();
         Ok(original)
     }
-    /// Validates the original signature and context, before mathematical checking.
-    pub fn verify(
+    /// Validates the signature, key-derived author and context, before canonical
+    /// registration checks and mathematical checking grant publication authority.
+    pub fn verify_signature(
         &self,
         genesis: &Genesis,
         round: SolutionRoundId,
@@ -65,11 +68,7 @@ impl SignedOriginal {
         {
             return Err(LedgerError::Invalid("original context"));
         }
-        let key = genesis
-            .account_key(author)
-            .ok_or(LedgerError::Invalid("original author account"))?;
-        VerifyingKey::from_bytes(key)
-            .map_err(|_| LedgerError::Invalid("original author key"))?
+        author_key(&self.public_key, author)?
             .verify_strict(
                 &self.signing_bytes()?,
                 &Signature::from_bytes(&self.signature),
@@ -93,26 +92,29 @@ impl SignedOriginal {
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let maximum = genesis.profile().limits().package_bytes as usize;
         let mut reader = Reader::new(bytes, maximum + ORIGINAL_OVERHEAD)?;
-        if reader.fixed::<4>()? != *ORIGINAL_MAGIC || reader.u16()? != 1 {
+        if reader.fixed::<4>()? != *ORIGINAL_MAGIC || reader.u16()? != ORIGINAL_VERSION {
             return Err(LedgerError::Invalid("original format"));
         }
         let original = Self {
             genesis: GenesisId::from_bytes(reader.fixed()?),
             profile: ProfileId::from_bytes(reader.fixed()?),
             round: SolutionRoundId::from_bytes(reader.fixed()?),
+            public_key: reader.fixed()?,
             package: ProofPackage::decode(reader.bytes(maximum)?, genesis.profile())?,
             signature: reader.fixed()?,
         };
         reader.finish()?;
+        author_key(&original.public_key, original.package.author())?;
         Ok(original)
     }
     fn unsigned_bytes(&self) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
         writer.fixed(ORIGINAL_MAGIC);
-        writer.u16(1);
+        writer.u16(ORIGINAL_VERSION);
         writer.fixed(self.genesis.as_bytes());
         writer.fixed(self.profile.as_bytes());
         writer.fixed(self.round.as_bytes());
+        writer.fixed(&self.public_key);
         writer.bytes(&self.package.encode()?)?;
         Ok(writer.finish())
     }
@@ -149,6 +151,8 @@ impl CommitmentId {
 /// Strict domain payload inside a signed account operation.
 #[derive(Clone, PartialEq, Eq)]
 pub enum OperationBody {
+    /// Registers the account identified by the authenticated envelope's key.
+    Register,
     Submit {
         purpose: String,
         question: CompiledQuestion,
@@ -172,6 +176,7 @@ pub enum OperationBody {
 impl std::fmt::Debug for OperationBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Register => f.write_str("Register"),
             Self::Submit { question, .. } => f
                 .debug_tuple("Submit")
                 .field(&question.resolution_id())
@@ -211,8 +216,9 @@ impl OperationBody {
     }
     pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
-        writer.u8(1);
+        writer.u8(2);
         match self {
+            Self::Register => writer.u8(5),
             Self::Submit { purpose, question } => {
                 if purpose.is_empty() || purpose.len() > PURPOSE_MAX_BYTES {
                     return Err(LedgerError::Limit("question purpose"));
@@ -251,10 +257,11 @@ impl OperationBody {
     }
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, genesis.profile().limits().record_bytes as usize)?;
-        if reader.u8()? != 1 {
+        if reader.u8()? != 2 {
             return Err(LedgerError::Invalid("user body version"));
         }
         let body = match reader.u8()? {
+            5 => Self::Register,
             1 => {
                 let purpose = reader.string(PURPOSE_MAX_BYTES)?.to_owned();
                 if purpose.is_empty() {
@@ -303,3 +310,6 @@ impl OperationBody {
         Ok(body)
     }
 }
+
+#[cfg(test)]
+mod tests;

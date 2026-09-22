@@ -16,7 +16,7 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
         profile,
         fixture.foundation().into(),
         fixture.checker_profile().into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         100,
         [19; 32],
         (0..16)
@@ -26,7 +26,10 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
     )
     .unwrap();
     let mut state = LedgerState::new(genesis);
-    assert_eq!(state.genesis().profile().limits().accounts, 16);
+    assert_eq!(
+        state.genesis().profile().limits().commitments_per_attempt,
+        16
+    );
     let submission = submit(&mut state, "forall(x,equal(x,x))");
     let now = state.time();
     apply(&mut state, now, vec![]);
@@ -118,7 +121,7 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
     assert_eq!(state.reserved_records(), 0);
     state
         .balances()
-        .verify_conservation(state.genesis())
+        .verify_conservation(state.genesis(), state.accounts())
         .unwrap();
     let settled = state.commitment();
     let unrelated = signed(

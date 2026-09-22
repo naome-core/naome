@@ -62,7 +62,7 @@ fn genesis_with_rounds(rounds: u64) -> Genesis {
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         "naome:zfc".into(),
         STATE_CHECKER_PROFILE.into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         100,
         [9; 32],
         (0..6)

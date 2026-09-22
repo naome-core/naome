@@ -26,7 +26,7 @@ fn genesis(
         Profile::lab(),
         "naome:zfc".into(),
         STATE_CHECKER_PROFILE.into(),
-        1,
+        STATE_PROTOCOL_VERSION,
         1800000000,
         [42; 32],
         accounts,
@@ -48,7 +48,7 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(lab.timing().reveal_seconds, 120);
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
-    assert_eq!(short.name(), "state-v1-short-test");
+    assert_eq!(short.name(), "state-v2-short-test");
     assert_ne!(lab.id(), research.id());
     assert_ne!(lab.id(), short.id());
     assert_eq!(
@@ -108,7 +108,7 @@ fn profile_rejects_noncanonical_limits_variants_and_every_truncation() {
     };
     assert!(Profile::with_limits(TimingKind::Lab, limits).is_err());
     let limits = Limits {
-        accounts: 3,
+        genesis_accounts: 3,
         ..Limits::default()
     };
     assert!(Profile::with_limits(TimingKind::Lab, limits).is_err());
@@ -131,6 +131,101 @@ fn storage_arithmetic_never_wraps() {
     let mut p = Profile::lab();
     p.limits.run_records = u64::MAX;
     assert_eq!(p.required_storage_bytes(), Err(LedgerError::Overflow));
+}
+
+#[test]
+fn registration_capacity_is_independent_of_genesis_and_reveal_work() {
+    let standard = Profile::lab();
+    assert_eq!(standard.limits().genesis_accounts, 16);
+    assert_eq!(standard.limits().registered_accounts, 256);
+    assert_eq!(standard.limits().commitments_per_attempt, 16);
+    let smaller_registry = Profile::with_limits(
+        TimingKind::Lab,
+        Limits {
+            registered_accounts: 16,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    assert_ne!(smaller_registry.id(), standard.id());
+    assert_eq!(
+        smaller_registry.required_storage_bytes().unwrap(),
+        standard.required_storage_bytes().unwrap()
+    );
+    let fewer_commitments = Profile::with_limits(
+        TimingKind::Lab,
+        Limits {
+            commitments_per_attempt: 8,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    let staging_per_commitment =
+        2 * (standard.limits().package_bytes + standard.limits().dependency_bytes);
+    assert_eq!(
+        standard.required_storage_bytes().unwrap()
+            - fewer_commitments.required_storage_bytes().unwrap(),
+        2 * 8 * staging_per_commitment
+    );
+    assert_eq!(fewer_commitments.limits().completion_records, 64);
+    assert_eq!(
+        fewer_commitments.limits().checker_calls_per_record,
+        standard.limits().checker_calls_per_record
+    );
+    for limits in [
+        Limits {
+            genesis_accounts: 17,
+            ..Limits::default()
+        },
+        Limits {
+            registered_accounts: 257,
+            ..Limits::default()
+        },
+        Limits {
+            registered_accounts: 15,
+            ..Limits::default()
+        },
+        Limits {
+            commitments_per_attempt: 17,
+            ..Limits::default()
+        },
+        Limits {
+            commitments_per_attempt: 0,
+            ..Limits::default()
+        },
+    ] {
+        assert!(Profile::with_limits(TimingKind::Lab, limits).is_err());
+    }
+    let (_, validators) = inputs();
+    assert!(genesis((1..=17).map(key).collect(), validators).is_err());
+}
+
+#[test]
+fn old_profile_and_genesis_versions_are_not_reinterpreted() {
+    let mut old_profile = Profile::lab().encode();
+    // The former encoding omitted registered_accounts and commitments_per_attempt.
+    let extra_limits_start = 9 + 6 * 8 + 3 * 8;
+    old_profile.drain(extra_limits_start..extra_limits_start + 16);
+    old_profile[..8].copy_from_slice(b"NAOPROF1");
+    assert_eq!(
+        Profile::decode(&old_profile),
+        Err(LedgerError::Invalid("profile version"))
+    );
+    old_profile[..8].copy_from_slice(b"NAOPROF2");
+    assert!(Profile::decode(&old_profile).is_err());
+
+    let genesis = fixture();
+    let mut old_genesis = genesis.encode();
+    old_genesis[..8].copy_from_slice(b"NAOGENS1");
+    assert_eq!(
+        Genesis::decode(&old_genesis),
+        Err(LedgerError::Invalid("genesis version"))
+    );
+    for protocol_version in [1, 3] {
+        let mut unsupported = genesis.clone();
+        unsupported.protocol_version = protocol_version;
+        assert!(Genesis::decode(&unsupported.encode()).is_err());
+    }
 }
 
 #[test]
@@ -268,7 +363,7 @@ fn genesis_identity_binds_all_configuration_and_keys() {
         assert_ne!(g.id(), v.id());
     }
     let mut bad = g.clone();
-    bad.protocol_version = 2;
+    bad.protocol_version = 1;
     assert!(bad.validate().is_err());
     let mut bad = g.clone();
     bad.run_nonce = [0; 32];
@@ -282,12 +377,12 @@ fn genesis_identity_binds_all_configuration_and_keys() {
 fn lab_profile_golden_encoding_and_identity() {
     // Independently written protocol vector: magic, variant, timing, bounds,
     // rewards. Changes require an explicit new encoding/profile decision.
-    let values: [u64; 37] = [
-        300, 120, 120, 1800, 2, 60, 1, 32, 16, 1, 16384, 1024, 32, 16, 262144, 65536, 4096, 64,
-        2097152, 32, 64, 16, 1, 1048576, 8192, 64, 1, 2, 4, 4194304, 2592, 75497472, 10616832,
-        1114112, 1114112, 64, 64,
+    let values: [u64; 39] = [
+        300, 120, 120, 1800, 2, 60, 1, 32, 16, 256, 16, 1, 16384, 1024, 32, 16, 262144, 65536,
+        4096, 64, 2097152, 32, 64, 16, 1, 1048576, 8192, 64, 1, 2, 4, 4194304, 2592, 75497472,
+        10616832, 1114112, 1114112, 64, 64,
     ];
-    let mut bytes = b"NAOPROF1\0".to_vec();
+    let mut bytes = b"NAOPROF2\0".to_vec();
     for value in values {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -301,13 +396,13 @@ fn lab_profile_golden_encoding_and_identity() {
     ] {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
-    assert_eq!(bytes.len(), 401);
+    assert_eq!(bytes.len(), 417);
     assert_eq!(Profile::lab().encode(), bytes);
     assert_eq!(
         Profile::lab().id().as_bytes(),
         &[
-            171, 87, 52, 240, 226, 92, 116, 178, 137, 70, 211, 150, 0, 23, 151, 77, 128, 57, 245,
-            126, 84, 101, 202, 56, 188, 150, 212, 152, 177, 31, 47, 63
+            135, 31, 98, 217, 112, 108, 81, 6, 141, 230, 107, 32, 142, 118, 216, 250, 188, 150,
+            248, 45, 94, 84, 66, 29, 177, 67, 80, 102, 190, 193, 28, 30
         ]
     );
 }

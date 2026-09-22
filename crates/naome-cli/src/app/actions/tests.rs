@@ -57,7 +57,7 @@ impl Fixture {
             Profile::short_test(),
             "naome:zfc".into(),
             STATE_CHECKER_PROFILE.into(),
-            1,
+            naome_ledger::profile::STATE_PROTOCOL_VERSION,
             100,
             [8; 32],
             accounts,
@@ -175,6 +175,56 @@ async fn respond(stream: &mut tokio::net::UnixStream, value: Value) {
     control::write(stream, &serde_json::to_vec(&value).unwrap())
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn registration_persists_exact_retry_before_send_and_recovers_a_finalized_receipt() {
+    let fixture = Fixture::new();
+    let key_path = fixture.root.join("researcher.key");
+    account(&["create".into(), key_path.to_str().unwrap().into()])
+        .await
+        .unwrap();
+    let original_key = fs::read(&key_path).unwrap();
+    assert!(
+        account(&["create".into(), key_path.to_str().unwrap().into()])
+            .await
+            .is_err()
+    );
+    assert_eq!(fs::read(&key_path).unwrap(), original_key);
+    let key = files::key(&key_path, 1).unwrap();
+    let registration = OperationBody::Register
+        .sign(&fixture.genesis, 1, &key)
+        .unwrap();
+    let action = fixture.root.join("register.action");
+    let args = [
+        "register".into(),
+        fixture.config_path.to_str().unwrap().into(),
+        key_path.to_str().unwrap().into(),
+        action.to_str().unwrap().into(),
+    ];
+    for acknowledge in [false, true] {
+        let listener = fixture.listener();
+        let expected = registration.encode();
+        let output = action.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, message) = request(&listener).await;
+            let Request::Submit { bytes } = message else {
+                panic!("registration retry must preserve nonce one without status lookup")
+            };
+            assert_eq!(bytes, files::hex(&expected));
+            assert_eq!(files::read(&output, 4096, true).unwrap(), expected);
+            if acknowledge {
+                respond(
+                    &mut stream,
+                    json!({"status":"finalized","height":1,"operation_index":0}),
+                )
+                .await;
+            }
+        });
+        assert_eq!(account(&args).await.is_ok(), acknowledge);
+        server.await.unwrap();
+    }
+    assert_eq!(fs::read(action).unwrap(), registration.encode());
 }
 
 #[tokio::test]

@@ -2,11 +2,16 @@ use super::*;
 
 impl LedgerState {
     pub(super) fn write_state(&self, w: &mut Writer) {
-        w.u16(1);
+        w.u16(2);
         w.fixed(self.genesis.id().as_bytes());
         w.u64(self.height);
         w.u64(self.time);
         w.fixed(&self.library.root());
+        w.u32(self.accounts.len() as u32);
+        for (account, key) in &self.accounts {
+            w.fixed(account.as_bytes());
+            w.fixed(key);
+        }
         self.balances.encode_into(w);
         w.u32(self.next_nonce.len() as u32);
         for (author, nonce) in &self.next_nonce {

@@ -13,9 +13,6 @@ pub fn run(args: &[String]) -> Result<()> {
     let genesis = Genesis::decode(&files::read(Path::new(&args[0]), 16384, false)?)?;
     let key = files::key(Path::new(&args[1]), 1)?;
     let author = AccountId::for_key(key.verifying_key().as_bytes());
-    if genesis.account_key(author).is_none() {
-        return Err("account is not registered in this genesis".into());
-    }
     let mut context = ArtifactState::new();
     let mut new = Vec::new();
     let limits = genesis.profile().limits();

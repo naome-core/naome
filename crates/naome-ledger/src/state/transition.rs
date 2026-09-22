@@ -32,6 +32,7 @@ impl LedgerState {
         let mut productive = next.expire_queue(&mut effects)?;
         let mut active_progress = false;
         let mut opened = false;
+        let mut registered = false;
         if self.active.is_none() && !self.capacity.can_open(self.genesis.profile()) {
             if !operations.is_empty() {
                 return Err(LedgerError::Invalid(
@@ -62,11 +63,23 @@ impl LedgerState {
                 };
                 let (accepted, active) =
                     next.admit_action(self, operation, coordinate, &mut effects, &mut work)?;
+                registered |= accepted
+                    && matches!(
+                        OperationBody::decode(operation.payload(), &self.genesis)?,
+                        OperationBody::Register
+                    );
                 productive |= accepted;
                 active_progress |= active;
             }
             if !productive {
                 return Err(LedgerError::Invalid("unproductive research record"));
+            }
+            // New identities never consume the protected completion reservation,
+            // including when bundled with a vote, reveal or automatic transition.
+            if registered && (opened || active_progress) {
+                return Err(LedgerError::Invalid(
+                    "registration requires an ordinary record",
+                ));
             }
             if opened {
                 next.capacity.open(self.genesis.profile())?;
@@ -82,7 +95,11 @@ impl LedgerState {
         if !productive {
             return Err(LedgerError::Invalid("unproductive research record"));
         }
-        next.balances.verify_conservation(&self.genesis)?;
+        next.balances
+            .verify_conservation(&self.genesis, &next.accounts)?;
+        if !next.accounts.keys().eq(next.next_nonce.keys()) {
+            return Err(LedgerError::Invalid("nonce account set"));
+        }
         if next.claims.len() as u64 != next.balances.paid_completions() {
             return Err(LedgerError::Invalid("claim issuance conservation"));
         }
@@ -312,18 +329,36 @@ impl LedgerState {
         effects: &mut Vec<Vec<u8>>,
         work: &mut VerificationWork,
     ) -> Result<(bool, bool), LedgerError> {
-        operation.verify(&self.genesis)?;
+        operation.verify_signature(&self.genesis)?;
         let body = OperationBody::decode(operation.payload(), &self.genesis)?;
         let id = operation.id();
         if let Some(receipt) = self.receipts.get(&id) {
             effect(effects, 15, |w| encode_receipt(w, receipt));
             return Ok((false, false));
         }
-        let expected = self
-            .next_nonce
-            .get(&operation.author())
-            .copied()
-            .ok_or(LedgerError::Invalid("action account"))?;
+        let expected = if matches!(body, OperationBody::Register) {
+            if self.accounts.contains_key(&operation.author()) {
+                return Err(LedgerError::Invalid("account already registered"));
+            }
+            if self.accounts.len() as u64 >= self.genesis.profile().limits().registered_accounts {
+                return Err(LedgerError::Limit("registered accounts"));
+            }
+            if self.genesis.validators().iter().any(|validator| {
+                &validator.consensus_key == operation.public_key()
+                    || &validator.transport_key == operation.public_key()
+            }) {
+                return Err(LedgerError::Invalid("key roles overlap"));
+            }
+            1
+        } else {
+            if self.account_key(operation.author()) != Some(operation.public_key()) {
+                return Err(LedgerError::Invalid("unregistered action account"));
+            }
+            self.next_nonce
+                .get(&operation.author())
+                .copied()
+                .ok_or(LedgerError::Invalid("action account"))?
+        };
         if operation.nonce() != expected {
             return Err(LedgerError::Invalid("action is not exact next nonce"));
         }
@@ -340,6 +375,16 @@ impl LedgerState {
             coordinate,
         };
         let active_progress = match body {
+            OperationBody::Register => {
+                self.accounts
+                    .insert(operation.author(), *operation.public_key());
+                self.balances.register(operation.author())?;
+                effect(effects, 16, |w| {
+                    w.fixed(operation.author().as_bytes());
+                    w.fixed(operation.public_key());
+                });
+                false
+            }
             OperationBody::Submit { purpose, question } => {
                 let family = question.resolution_id();
                 if self.families.contains_key(&family) {
@@ -414,7 +459,9 @@ impl LedgerState {
                 if active.commitments.contains_key(&operation.author()) {
                     return Err(LedgerError::Invalid("author already committed"));
                 }
-                if active.commitments.len() as u64 >= self.genesis.profile().limits().accounts {
+                if active.commitments.len() as u64
+                    >= self.genesis.profile().limits().commitments_per_attempt
+                {
                     return Err(LedgerError::Limit("commitment slots"));
                 }
                 let limits = self.genesis.profile().limits();
@@ -445,7 +492,7 @@ impl LedgerState {
                 original,
             } => {
                 self.require_parent_phase(parent, Phase::Reveal)?;
-                original.verify(&self.genesis, round, operation.author())?;
+                original.verify_signature(&self.genesis, round, operation.author())?;
                 let active = self
                     .active
                     .as_ref()
@@ -543,7 +590,7 @@ impl LedgerState {
         };
         let reveal = winner.reveal.as_ref().expect("selected eligible reveal");
         let question = &self.questions[&attempt.submission].question;
-        reveal.original.verify(
+        reveal.original.verify_signature(
             &self.genesis,
             attempt.round.expect("settlement round"),
             winner.receipt.author,
@@ -576,7 +623,8 @@ impl LedgerState {
             operation_index: self.genesis.profile().limits().operations_per_record as u32,
         };
         self.library.publish(&normalized, coordinate)?;
-        self.balances.apply(&rewards, &self.genesis)?;
+        self.balances
+            .apply(&rewards, &self.genesis, &self.accounts)?;
         let ordinal = self.balances.paid_completions();
         self.claims.insert(
             attempt.family,

@@ -20,7 +20,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 fn vector(name: &str) -> Vec<u8> {
-    let line = include_str!("../../naome-consensus/src/state/tests/golden-v1.txt")
+    let line = include_str!("../../naome-consensus/src/state/tests/golden-v2.txt")
         .lines()
         .find(|line| line.split_whitespace().next() == Some(name))
         .unwrap();
@@ -48,7 +48,7 @@ impl Archive {
             Profile::short_test(),
             "naome:zfc".into(),
             STATE_CHECKER_PROFILE.into(),
-            1,
+            naome_ledger::profile::STATE_PROTOCOL_VERSION,
             100,
             [9; 32],
             (0..6)

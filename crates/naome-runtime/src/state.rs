@@ -83,6 +83,9 @@ impl From<LedgerError> for StateRuntimeError {
 }
 type Result<T> = std::result::Result<T, StateRuntimeError>;
 
+// Local transport custody is independent of the canonical account registry.
+const MAX_PENDING_OPERATIONS: usize = 16;
+
 #[derive(Clone, Debug)]
 pub enum StateRuntimeEvent {
     Tick,
@@ -117,6 +120,7 @@ pub struct StateRuntime {
     pending_bytes: usize,
     action_cursor: usize,
     rejections: VecDeque<(OperationId, u64, String)>,
+    deferred: VecDeque<(OperationId, naome_ledger::AccountId, u64)>,
     time_reports: BTreeMap<ValidatorId, SignedTimeReport>,
     own_time: Option<Arc<[u8]>>,
     outbox: VecDeque<Delivery>,
@@ -187,6 +191,7 @@ impl StateRuntime {
             pending_bytes: 0,
             action_cursor: 0,
             rejections: VecDeque::new(),
+            deferred: VecDeque::new(),
             time_reports: BTreeMap::new(),
             own_time: None,
             outbox: VecDeque::new(),
@@ -226,12 +231,16 @@ impl StateRuntime {
             .find(|entry| entry.0 == id)
             .map(|entry| entry.2.as_str())
     }
+    /// Local custody yielded to active work; the exact signed bytes may retry.
+    pub fn operation_deferred(&self, id: OperationId) -> bool {
+        self.deferred.iter().any(|entry| entry.0 == id)
+    }
     pub fn finality_bytes(&mut self, height: u64) -> Result<Vec<u8>> {
         Ok(self.node.finality_bytes(height)?)
     }
     /// Validates authenticated queue input, but promises no admission receipt.
     pub fn submit_operation(&mut self, operation: SignedOperation) -> Result<OperationId> {
-        operation.verify(self.state()?.genesis())?;
+        operation.verify_signature(self.state()?.genesis())?;
         let body = naome_ledger::operations::OperationBody::decode(
             operation.payload(),
             self.state()?.genesis(),
@@ -248,37 +257,124 @@ impl StateRuntime {
         {
             return Err(StateRuntimeError::Rejected(reason.clone()));
         }
+        let state = self.state()?;
+        if matches!(body, naome_ledger::operations::OperationBody::Register) {
+            if state.account_key(operation.author()).is_some() {
+                return Err(StateRuntimeError::Rejected(
+                    "account is already registered".into(),
+                ));
+            }
+            if state.accounts().len() as u64
+                >= state.genesis().profile().limits().registered_accounts
+            {
+                return Err(StateRuntimeError::Rejected(
+                    "registered account capacity".into(),
+                ));
+            }
+            if state.genesis().validators().iter().any(|validator| {
+                &validator.consensus_key == operation.public_key()
+                    || &validator.transport_key == operation.public_key()
+            }) {
+                return Err(StateRuntimeError::Rejected(
+                    "validator keys cannot register researcher accounts".into(),
+                ));
+            }
+        } else if state.account_key(operation.author()) != Some(operation.public_key()) {
+            return Err(StateRuntimeError::Rejected(
+                "operation author is not registered".into(),
+            ));
+        }
         self.validate_queue_phase(&body, operation.author())?;
-        if self.state()?.next_nonce(operation.author()) != Some(operation.nonce()) {
+        if !Self::has_current_nonce(self.state()?, &operation) {
             return Err(StateRuntimeError::Rejected(
                 "operation must use exact next finalized nonce".into(),
             ));
         }
-        if self
-            .pending
-            .values()
-            .any(|op| op.author() == operation.author() && op.nonce() == operation.nonce())
-        {
-            return Err(StateRuntimeError::Rejected(
-                "different pending operation already occupies this nonce".into(),
-            ));
-        }
         let limit = self.state()?.genesis().profile().limits();
         let bytes = operation.encode().len();
-        if self.pending.len() >= limit.accounts as usize
-            || self
-                .pending_bytes
-                .checked_add(bytes)
-                .is_none_or(|n| n > 2 * limit.record_bytes as usize)
+        let maximum_bytes = 2 * limit.record_bytes as usize;
+        let active = matches!(
+            body,
+            naome_ledger::operations::OperationBody::Vote { .. }
+                | naome_ledger::operations::OperationBody::Commit { .. }
+                | naome_ledger::operations::OperationBody::Reveal { .. }
+        );
+        self.reserve_pending_slot(&operation, active, bytes, maximum_bytes)?;
+        self.pending_bytes += bytes;
+        self.rejections.retain(|entry| entry.0 != id);
+        self.deferred.retain(|entry| entry.0 != id);
+        self.pending.insert(id, operation);
+        Ok(id)
+    }
+    fn reserve_pending_slot(
+        &mut self,
+        operation: &SignedOperation,
+        active: bool,
+        bytes: usize,
+        maximum_bytes: usize,
+    ) -> Result<()> {
+        use naome_ledger::operations::OperationBody;
+        let genesis = self.state()?.genesis();
+        let ordinary = |op: &SignedOperation| {
+            matches!(
+                OperationBody::decode(op.payload(), genesis),
+                Ok(OperationBody::Register | OperationBody::Submit { .. })
+            )
+        };
+        let mut evicted = Vec::new();
+        if let Some((id, occupied)) = self
+            .pending
+            .iter()
+            .find(|(_, op)| op.author() == operation.author() && op.nonce() == operation.nonce())
         {
+            if !active || !ordinary(occupied) {
+                return Err(StateRuntimeError::Rejected(
+                    "different pending operation already occupies this nonce".into(),
+                ));
+            }
+            evicted.push(*id);
+        }
+        let mut count = self.pending.len() - evicted.len();
+        let mut retained_bytes = self.pending_bytes
+            - evicted
+                .iter()
+                .map(|id| self.pending[id].encode().len())
+                .sum::<usize>();
+        let fits = |count: usize, retained: usize| {
+            count < MAX_PENDING_OPERATIONS
+                && retained
+                    .checked_add(bytes)
+                    .is_some_and(|total| total <= maximum_bytes)
+        };
+        if active && !fits(count, retained_bytes) {
+            for (id, pending) in &self.pending {
+                if !evicted.contains(id) && ordinary(pending) {
+                    evicted.push(*id);
+                    count -= 1;
+                    retained_bytes -= pending.encode().len();
+                    if fits(count, retained_bytes) {
+                        break;
+                    }
+                }
+            }
+        }
+        if !fits(count, retained_bytes) {
             return Err(StateRuntimeError::Rejected(
                 "pending operation capacity".into(),
             ));
         }
-        self.pending_bytes += bytes;
-        self.rejections.retain(|entry| entry.0 != id);
-        self.pending.insert(id, operation);
-        Ok(id)
+        // Commit evictions only after proving the new bounded queue fits.
+        for id in evicted {
+            let displaced = &self.pending[&id];
+            let diagnostic = (id, displaced.author(), displaced.nonce());
+            self.remove_pending(id);
+            self.deferred.retain(|entry| entry.0 != id);
+            if self.deferred.len() == MAX_PENDING_OPERATIONS {
+                self.deferred.pop_front();
+            }
+            self.deferred.push_back(diagnostic);
+        }
+        Ok(())
     }
     fn validate_queue_phase(
         &self,
@@ -294,6 +390,7 @@ impl StateRuntime {
         }
         let active = state.active();
         let valid = match body {
+            OperationBody::Register => state.registration_available(),
             OperationBody::Submit { question, .. } => {
                 let family = question.resolution_id();
                 !state.families().contains_key(&family)
@@ -317,16 +414,32 @@ impl StateRuntime {
                             && !a.votes.contains_key(&author)
                     })
             }
-            OperationBody::Commit { round, .. } => active
-                .as_ref()
-                .is_some_and(|a| a.phase == Phase::Commit && a.solution_round == Some(*round)),
+            OperationBody::Commit { round, .. } => active.as_ref().is_some_and(|a| {
+                a.phase == Phase::Commit
+                    && a.solution_round == Some(*round)
+                    && a.commitments
+                        < state.genesis().profile().limits().commitments_per_attempt as usize
+                    && !state.has_active_commitment(author)
+            }),
             OperationBody::Reveal {
-                round, original, ..
+                round,
+                secret,
+                original,
             } => {
-                original.verify(state.genesis(), *round, author)?;
+                original.verify_signature(state.genesis(), *round, author)?;
+                // Mirror the ledger's existing commitment check before giving
+                // this input priority over ordinary registration custody.
+                let commitment = naome_ledger::CommitmentId::for_original(
+                    state.genesis(),
+                    *round,
+                    author,
+                    original.original_hash(),
+                    secret,
+                );
                 active
                     .as_ref()
                     .is_some_and(|a| a.phase == Phase::Reveal && a.solution_round == Some(*round))
+                    && state.awaiting_reveal(author, commitment)
             }
         };
         if !valid {
@@ -336,12 +449,21 @@ impl StateRuntime {
         }
         Ok(())
     }
+    fn has_current_nonce(state: &LedgerState, operation: &SignedOperation) -> bool {
+        state.next_nonce(operation.author()) == Some(operation.nonce())
+            || (state.account_key(operation.author()).is_none()
+                && operation.nonce() == 1
+                && matches!(
+                    naome_ledger::operations::OperationBody::decode(
+                        operation.payload(),
+                        state.genesis()
+                    ),
+                    Ok(naome_ledger::operations::OperationBody::Register)
+                ))
+    }
     fn reject_preview(&mut self, id: OperationId, reason: String) -> Result<()> {
-        if let Some(operation) = self.pending.remove(&id) {
-            let bytes = operation.encode();
-            self.pending_bytes -= bytes.len();
-            self.outbox.retain(|d|!matches!(&d.body,StateRequestBody::UserAction(body) if body.as_ref()==bytes.as_slice()));
-        }
+        self.remove_pending(id);
+        self.deferred.retain(|entry| entry.0 != id);
         self.rejections.retain(|entry| entry.0 != id);
         let maximum = self
             .state()?
@@ -355,6 +477,13 @@ impl StateRuntime {
         self.rejections
             .push_back((id, self.state()?.height(), reason));
         Ok(())
+    }
+    fn remove_pending(&mut self, id: OperationId) {
+        if let Some(operation) = self.pending.remove(&id) {
+            let bytes = operation.encode();
+            self.pending_bytes -= bytes.len();
+            self.outbox.retain(|d|!matches!(&d.body,StateRequestBody::UserAction(body) if body.as_ref()==bytes.as_slice()));
+        }
     }
     /// Starts a real authenticated request to a configured remote validator.
     /// The selected checked library supplies the expected bytes; fetching grants
@@ -512,9 +641,15 @@ impl StateRuntime {
             .pending
             .iter()
             .filter_map(|(id, op)| {
-                (state.receipt(*id).is_none() && state.next_nonce(op.author()) != Some(op.nonce()))
-                    .then_some(*id)
+                (state.receipt(*id).is_none() && !Self::has_current_nonce(state, op)).then_some(*id)
             })
+            .chain(self.deferred.iter().filter_map(|(id, author, nonce)| {
+                let next = state.next_nonce(*author);
+                (state.receipt(*id).is_none()
+                    && next != Some(*nonce)
+                    && !(next.is_none() && *nonce == 1))
+                    .then_some(*id)
+            }))
             .collect();
         for id in consumed {
             self.reject_preview(
@@ -523,9 +658,10 @@ impl StateRuntime {
             )?;
         }
         let state = self.node.state()?;
-        self.pending.retain(|id, op| {
-            state.receipt(*id).is_none() && state.next_nonce(op.author()) == Some(op.nonce())
-        });
+        self.pending
+            .retain(|id, op| state.receipt(*id).is_none() && Self::has_current_nonce(state, op));
+        self.deferred
+            .retain(|entry| state.receipt(entry.0).is_none());
         self.pending_bytes = self.pending.values().map(|op| op.encode().len()).sum();
         self.last_position = self.node.position()?;
         self.phase_started = Instant::now();

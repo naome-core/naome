@@ -183,7 +183,7 @@ fn complete_real_proof_settlement_and_replay_are_atomic() {
     );
     state
         .balances()
-        .verify_conservation(state.genesis())
+        .verify_conservation(state.genesis(), state.accounts())
         .unwrap();
     let duplicate = signed(
         &state,
@@ -603,7 +603,7 @@ fn streaming_state_commitment_matches_materialized_canonical_bytes() {
         let bytes = snapshot.canonical_bytes();
         assert_eq!(
             snapshot.commitment().as_bytes(),
-            &hash(b"naome:state:state:v1\0", &[&bytes])
+            &hash(b"naome:state:state:v2\0", &[&bytes])
         );
     }
 }
@@ -651,10 +651,17 @@ fn solve(state: &mut LedgerState, index: u8, package: ProofPackage) {
     finish(state);
 }
 
-#[test]
-fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuance() {
+fn attribution_workflow(first: u8, second: u8) {
     use naome_foundation::Formula;
     let mut state = LedgerState::new(genesis());
+    for index in [first, second] {
+        if state.account_key(author(index)).is_none() {
+            let registration = OperationBody::Register
+                .sign(state.genesis(), 1, &account(index))
+                .unwrap();
+            apply(&mut state, 100, vec![registration]);
+        }
+    }
     let mut context = ArtifactState::new();
     let x = FreeVariable::new(0);
     let helper = checked_node(
@@ -678,16 +685,16 @@ fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuan
         &mut context,
     );
     let package = ProofPackage::new(
-        author(4),
+        author(first),
         a.0,
         vec![a, helper.clone()],
         state.genesis().profile(),
     )
     .unwrap();
     submit(&mut state, "forall(y,forall(x,equal(x,x)))");
-    solve(&mut state, 4, package);
+    solve(&mut state, first, package);
     let published = state.library().lookup(helper.0).unwrap();
-    assert_eq!(published.author(), author(4));
+    assert_eq!(published.author(), author(first));
     let admitted = published.coordinate();
     let exported = published.canonical_bytes().to_vec();
     drop(context);
@@ -714,15 +721,16 @@ fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuan
         ],
         &mut independent,
     );
-    let package = ProofPackage::new(author(5), b.0, vec![b], state.genesis().profile()).unwrap();
+    let package =
+        ProofPackage::new(author(second), b.0, vec![b], state.genesis().profile()).unwrap();
     let b_id = submit(
         &mut state,
         "not_(implies(forall(x,equal(x,x)),forall(y,equal(y,y))))",
     );
-    solve(&mut state, 5, package);
+    solve(&mut state, second, package);
     let b_family = state.question(b_id).unwrap().question().resolution_id();
     assert!(
-        matches!(state.families().get(&b_family),Some(FamilyResult::Completed{outcome:ProofOutcome::Refuted,author:a,..}) if *a==author(5))
+        matches!(state.families().get(&b_family),Some(FamilyResult::Completed{outcome:ProofOutcome::Refuted,author:a,..}) if *a==author(second))
     );
     assert_eq!(
         state.library().lookup(helper.0).unwrap().coordinate(),
@@ -730,10 +738,10 @@ fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuan
     );
     assert_eq!(
         state.library().lookup(helper.0).unwrap().recipient(),
-        author(4)
+        author(first)
     );
-    assert_eq!(state.balances().account(author(4)), Some(800_000_000));
-    assert_eq!(state.balances().account(author(5)), Some(600_000_000));
+    assert_eq!(state.balances().account(author(first)), Some(800_000_000));
+    assert_eq!(state.balances().account(author(second)), Some(600_000_000));
     for index in 0..4 {
         assert_eq!(state.balances().account(author(index)), Some(100_000_000));
     }
@@ -752,8 +760,18 @@ fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuan
     assert_eq!(state.library().len(), 3);
     state
         .balances()
-        .verify_conservation(state.genesis())
+        .verify_conservation(state.genesis(), state.accounts())
         .unwrap();
+}
+
+#[test]
+fn complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuance() {
+    attribution_workflow(4, 5);
+}
+
+#[test]
+fn newly_registered_authors_receive_original_and_citation_rewards() {
+    attribution_workflow(6, 7);
 }
 
 #[test]
@@ -1074,3 +1092,5 @@ mod golden;
 mod queue_boundary;
 
 mod capacity_sixteen;
+
+mod admission;

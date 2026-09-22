@@ -11,8 +11,8 @@ pub struct CitationRecipient {
     pub recipient: AccountId,
 }
 
-/// Reproducible reward arithmetic. Eligibility and settlement are checked by
-/// the research state machine, not established by constructing this plan.
+/// Reproducible reward arithmetic. Account registration, eligibility and
+/// settlement require canonical ledger state, not construction of this plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardPlan {
     genesis: GenesisId,
@@ -28,9 +28,6 @@ impl RewardPlan {
         author: AccountId,
         mut citations: Vec<CitationRecipient>,
     ) -> Result<Self, LedgerError> {
-        if genesis.account_key(author).is_none() {
-            return Err(LedgerError::Invalid("reward author account"));
-        }
         if citations.len() as u64 > genesis.profile().limits().citation_proofs {
             return Err(LedgerError::Limit("citation recipients"));
         }
@@ -40,12 +37,6 @@ impl RewardPlan {
             .any(|pair| pair[0].proof == pair[1].proof)
         {
             return Err(LedgerError::Invalid("duplicate eligible citation"));
-        }
-        if citations
-            .iter()
-            .any(|entry| genesis.account_key(entry.recipient).is_none())
-        {
-            return Err(LedgerError::Invalid("citation recipient account"));
         }
         let rewards = genesis.profile().rewards();
         let mut plan = Self {
@@ -137,6 +128,19 @@ impl Balances {
             paid_completions: 0,
         }
     }
+    /// Adds a zero balance after canonical account admission. It never issues
+    /// currency or overwrites a previously registered account.
+    pub(crate) fn register(&mut self, account: AccountId) -> Result<(), LedgerError> {
+        match self.accounts.entry(account) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(0);
+                Ok(())
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                Err(LedgerError::Invalid("balance account already registered"))
+            }
+        }
+    }
     /// Returns a registered account's exact balance.
     pub fn account(&self, account: AccountId) -> Option<u128> {
         self.accounts.get(&account).copied()
@@ -157,6 +161,7 @@ impl Balances {
         &mut self,
         plan: &RewardPlan,
         genesis: &Genesis,
+        registry: &BTreeMap<AccountId, [u8; 32]>,
     ) -> Result<(), LedgerError> {
         if plan.genesis != genesis.id() {
             return Err(LedgerError::Invalid("reward plan genesis"));
@@ -177,13 +182,17 @@ impl Balances {
             .paid_completions
             .checked_add(1)
             .ok_or(LedgerError::Overflow)?;
-        next.verify_conservation(genesis)?;
+        next.verify_conservation(genesis, registry)?;
         *self = next;
         Ok(())
     }
     /// Verifies complete account membership and the once-per-completion supply.
-    pub fn verify_conservation(&self, genesis: &Genesis) -> Result<(), LedgerError> {
-        let registered: BTreeSet<_> = genesis.accounts().iter().map(|a| a.id()).collect();
+    pub fn verify_conservation(
+        &self,
+        genesis: &Genesis,
+        registry: &BTreeMap<AccountId, [u8; 32]>,
+    ) -> Result<(), LedgerError> {
+        let registered: BTreeSet<_> = registry.keys().copied().collect();
         if self.accounts.keys().copied().collect::<BTreeSet<_>>() != registered {
             return Err(LedgerError::Invalid("balance account set"));
         }

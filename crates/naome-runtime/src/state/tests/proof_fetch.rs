@@ -10,7 +10,14 @@ use naome_proof::{ProofCertificate, ProofId, ProofStep};
 use naome_protocol::state_exchange::StateResponseBody;
 
 fn append(history: &mut StateHistory, now: u64, operations: Vec<SignedOperation>) {
-    let branch = history.head().unwrap();
+    let bytes = finality(history.head().unwrap(), now, operations);
+    history.append_finality(&bytes).unwrap();
+}
+pub(super) fn finality(
+    branch: &StateBranch,
+    now: u64,
+    operations: Vec<SignedOperation>,
+) -> Vec<u8> {
     let state = branch.state();
     let time = TimeCertificate::new(
         (0..3)
@@ -108,12 +115,11 @@ fn append(history: &mut StateHistory, now: u64, operations: Vec<SignedOperation>
         votes.push(vote);
     }
     let precommits = StateQuorum::from_votes(votes, state.genesis()).unwrap();
-    let finality = branch
+    branch
         .verify_finality(&proposal, &precommits, 8)
         .unwrap()
         .encode()
-        .unwrap();
-    history.append_finality(&finality).unwrap();
+        .unwrap()
 }
 fn sign(history: &StateHistory, index: u8, body: OperationBody) -> SignedOperation {
     let state = history.head().unwrap().state();
@@ -304,7 +310,7 @@ async fn pair() -> (
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         base.foundation().into(),
         base.checker_profile().into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         100,
         [9; 32],
         base.accounts().iter().map(|a| *a.key()).collect(),

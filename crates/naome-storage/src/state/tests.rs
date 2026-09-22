@@ -71,7 +71,7 @@ fn genesis() -> Genesis {
         Profile::short_test(),
         "naome:zfc".into(),
         STATE_CHECKER_PROFILE.into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         100,
         [9; 32],
         (0..6)
@@ -120,9 +120,12 @@ fn signed(state: &LedgerState, i: u8, body: OperationBody) -> SignedOperation {
     .unwrap()
 }
 fn submission(state: &LedgerState, purpose: &str) -> SignedOperation {
+    submission_by(state, 4, purpose)
+}
+fn submission_by(state: &LedgerState, researcher: u8, purpose: &str) -> SignedOperation {
     signed(
         state,
-        4,
+        researcher,
         OperationBody::Submit {
             purpose: purpose.into(),
             question: CompiledQuestion::compile(
@@ -279,6 +282,11 @@ fn complete_control_history_reopens_and_observer_uses_same_full_state() {
 }
 
 fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, StateHistory, Vec<u8>) {
+    pending_two_proof_settlement_for(4)
+}
+fn pending_two_proof_settlement_for(
+    researcher: u8,
+) -> (Directory, Directory, Genesis, StateHistory, Vec<u8>) {
     use naome_checker::{ArtifactState, normalize_and_check_with_state};
     use naome_foundation::FreeVariable;
     use naome_proof::{ProofCertificate, ProofStep};
@@ -286,8 +294,28 @@ fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, StateHistor
     let anchors = Directory::new();
     let g = genesis();
     let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
-    let op = submission(
+    if g.account_key(author(researcher)).is_none() {
+        let registration = OperationBody::Register
+            .sign(&g, 1, &account(researcher))
+            .unwrap();
+        let registration_id = registration.id();
+        append(&mut history, 100, vec![registration]);
+        let expected = history.head().unwrap().commitment();
+        drop(history);
+        history = StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+        assert_eq!(history.head().unwrap().commitment(), expected);
+        let state = history.head().unwrap().state();
+        assert_eq!(
+            state.account_key(author(researcher)),
+            Some(account(researcher).verifying_key().as_bytes())
+        );
+        assert_eq!(state.balances().account(author(researcher)), Some(0));
+        assert_eq!(state.next_nonce(author(researcher)), Some(2));
+        assert_eq!(state.receipt(registration_id).unwrap().nonce, 1);
+    }
+    let op = submission_by(
         history.head().unwrap().state(),
+        researcher,
         "publish a root and its used helper",
     );
     append(&mut history, 100, vec![op]);
@@ -353,14 +381,19 @@ fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, StateHistor
         root.proof_id(),
         root.normal_form().canonical_bytes().to_vec(),
     );
-    let package = ProofPackage::new(author(4), a.0, vec![a, h], g.profile()).unwrap();
-    let original = SignedOriginal::sign(&g, round, package, &account(4)).unwrap();
+    let package = ProofPackage::new(author(researcher), a.0, vec![a, h], g.profile()).unwrap();
+    let original = SignedOriginal::sign(&g, round, package, &account(researcher)).unwrap();
     let secret = [77; 32];
-    let commitment =
-        CommitmentId::for_original(&g, round, author(4), original.original_hash(), &secret);
+    let commitment = CommitmentId::for_original(
+        &g,
+        round,
+        author(researcher),
+        original.original_hash(),
+        &secret,
+    );
     let op = signed(
         history.head().unwrap().state(),
-        4,
+        researcher,
         OperationBody::Commit { round, commitment },
     );
     let now = history.head().unwrap().state().time();
@@ -377,7 +410,7 @@ fn pending_two_proof_settlement() -> (Directory, Directory, Genesis, StateHistor
     append(&mut history, deadline, vec![]);
     let op = signed(
         history.head().unwrap().state(),
-        4,
+        researcher,
         OperationBody::Reveal {
             round,
             secret,
@@ -432,6 +465,84 @@ fn real_two_proof_settlement_survives_complete_cold_replay() {
     assert_eq!(reopened.head().unwrap().commitment(), expected);
     assert_eq!(observed.branch().state().library().len(), 2);
     assert_eq!(observed.branch().state().balances().paid_completions(), 1);
+}
+
+#[test]
+fn registered_researcher_restarts_completes_and_replays_without_duplicate_issuance() {
+    // The fixture closes and reopens the journal immediately after registration,
+    // then uses that recovered account to submit, commit and reveal real proofs.
+    let (dir, anchors, g, mut history, settlement) = pending_two_proof_settlement_for(6);
+    assert!(g.account_key(author(6)).is_none());
+    let registration = OperationBody::Register.sign(&g, 1, &account(6)).unwrap();
+    let registration_finality = history.finality_bytes(1).unwrap();
+    let pending = history.head().unwrap().commitment();
+    let before = history.head().unwrap().state();
+    assert_eq!(before.accounts().len(), g.accounts().len() + 1);
+    assert_eq!(before.balances().account(author(6)), Some(0));
+    assert_eq!(before.next_nonce(author(6)), Some(5));
+    assert_eq!(
+        before.receipt(registration.id()).unwrap().coordinate.height,
+        1
+    );
+    assert_eq!(before.balances().paid_completions(), 0);
+    before
+        .balances()
+        .verify_conservation(&g, before.accounts())
+        .unwrap();
+    assert_eq!(
+        history.receive_finality(1, &registration_finality).unwrap(),
+        StateAppendOutcome::AlreadyFinalized
+    );
+    assert_eq!(history.head().unwrap().commitment(), pending);
+    assert_eq!(
+        history.append_finality(&settlement).unwrap(),
+        StateAppendOutcome::Finalized
+    );
+    let expected = history.head().unwrap().commitment();
+    let settled_height = history.head().unwrap().state().height();
+    drop(history);
+
+    let observed = StateObserver::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut reopened = StateHistory::open(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    for branch in [observed.branch(), reopened.head().unwrap()] {
+        assert_eq!(branch.commitment(), expected);
+        let state = branch.state();
+        assert_eq!(state.accounts().len(), g.accounts().len() + 1);
+        assert_eq!(
+            state.account_key(author(6)),
+            Some(account(6).verifying_key().as_bytes())
+        );
+        assert_eq!(state.next_nonce(author(6)), Some(5));
+        assert_eq!(state.receipt(registration.id()).unwrap().nonce, 1);
+        assert_eq!(state.library().len(), 2);
+        assert_eq!(state.balances().account(author(6)), Some(700_000_000));
+        assert_eq!(state.balances().account(author(4)), Some(0));
+        assert_eq!(state.balances().paid_completions(), 1);
+        assert_eq!(state.balances().reserve(), 100_000_000);
+        for index in 0..4 {
+            assert_eq!(state.balances().account(author(index)), Some(50_000_000));
+        }
+        assert_eq!(state.claims().len(), 1);
+        assert_eq!(state.claims().values().next().unwrap().author, author(6));
+        state
+            .balances()
+            .verify_conservation(&g, state.accounts())
+            .unwrap();
+    }
+    let journal = dir.0.join(crate::JOURNAL_FILE_NAME);
+    let journal_bytes = fs::metadata(&journal).unwrap().len();
+    for (height, finality) in [(1, &registration_finality), (settled_height, &settlement)] {
+        assert_eq!(
+            reopened.receive_finality(height, finality).unwrap(),
+            StateAppendOutcome::AlreadyFinalized
+        );
+        assert_eq!(reopened.head().unwrap().commitment(), expected);
+        assert_eq!(
+            reopened.head().unwrap().state().next_nonce(author(6)),
+            Some(5)
+        );
+        assert_eq!(fs::metadata(&journal).unwrap().len(), journal_bytes);
+    }
 }
 
 fn assert_two_proof_settlement(branch: &StateBranch, completed: bool) {

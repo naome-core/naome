@@ -186,7 +186,7 @@ pub fn run(args: &[String]) -> Result<()> {
         profile,
         "naome:zfc".into(),
         STATE_CHECKER_PROFILE.into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
         *files::random()?,
         accounts

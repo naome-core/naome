@@ -16,6 +16,8 @@ use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
 pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
+/// Research protocol with bounded self-registration under the fixed validators.
+pub const STATE_PROTOCOL_VERSION: u16 = 2;
 
 /// Reserved space around one maximum user payload for canonical record headers,
 /// four time reports, operation authentication, and finality signatures. The
@@ -39,8 +41,8 @@ pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;
 /// Terminal signer stop plus its chained frame header/footer.
 pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
 
-const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF1";
-const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS1";
+const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF2";
+const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS2";
 const MAX_PROFILE_BYTES: usize = 4096;
 const MAX_GENESIS_BYTES: usize = 16384;
 
@@ -98,7 +100,9 @@ macro_rules! limit_fields {
 limit_fields! {
     active_attempts = 1,
     queued_questions = 32,
-    accounts = 16,
+    genesis_accounts = 16,
+    registered_accounts = 256,
+    commitments_per_attempt = 16,
     commitments_per_account = 1,
     question_source_bytes = 16 * 1024,
     target_nodes = 1024,
@@ -248,9 +252,9 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "state-v1-lab",
-            TimingKind::Research => "state-v1-research",
-            TimingKind::ShortTest => "state-v1-short-test",
+            TimingKind::Lab => "state-v2-lab",
+            TimingKind::Research => "state-v2-research",
+            TimingKind::ShortTest => "state-v2-short-test",
         }
     }
     fn validate(&self) -> Result<(), LedgerError> {
@@ -259,7 +263,8 @@ impl Profile {
         if self.timing != Self::preset(self.kind).timing || self.rewards != Rewards::default() {
             return Err(LedgerError::Invalid("timing or reward rules"));
         }
-        if l.accounts < 4
+        if l.genesis_accounts < 4
+            || l.registered_accounts < l.genesis_accounts
             || l.completion_records != 64
             || l.terminal_records != 1
             || l.run_records < l.completion_records + l.terminal_records
@@ -343,7 +348,7 @@ impl Profile {
             .package_bytes
             .checked_mul(2)
             .and_then(|v| v.checked_add(l.dependency_bytes.checked_mul(2)?))
-            .and_then(|v| v.checked_mul(l.accounts))
+            .and_then(|v| v.checked_mul(l.commitments_per_attempt))
             .ok_or(LedgerError::Overflow)?;
         archive
             .checked_mul(2)
@@ -409,7 +414,7 @@ impl Profile {
         Ok(result)
     }
     pub fn id(&self) -> ProfileId {
-        ProfileId::from_bytes(hash(b"naome:state:profile:v1\0", &[&self.encode()]))
+        ProfileId::from_bytes(hash(b"naome:state:profile:v2\0", &[&self.encode()]))
     }
 }
 
@@ -505,7 +510,7 @@ impl Genesis {
         if self.checker_profile != STATE_CHECKER_PROFILE {
             return Err(LedgerError::Invalid("unsupported checker profile"));
         }
-        if self.protocol_version != 1 || self.run_nonce == [0; 32] {
+        if self.protocol_version != STATE_PROTOCOL_VERSION || self.run_nonce == [0; 32] {
             return Err(LedgerError::Invalid("genesis version or run nonce"));
         }
         // Leave enough UTC range for every timing interval without wrapping.
@@ -516,7 +521,7 @@ impl Genesis {
             .and_then(|x| x.checked_add(self.profile.timing.reveal_seconds))
             .ok_or(LedgerError::Overflow)?;
         if self.accounts.len() < 4
-            || self.accounts.len() as u64 > self.profile.limits.accounts
+            || self.accounts.len() as u64 > self.profile.limits.genesis_accounts
             || self.validators.len() != 4
         {
             return Err(LedgerError::Limit("genesis membership"));
@@ -641,7 +646,7 @@ impl Genesis {
         let start_utc = r.u64()?;
         let run_nonce = r.fixed()?;
         let count = r.u8()?;
-        if u64::from(count) > profile.limits.accounts || count < 4 {
+        if u64::from(count) > profile.limits.genesis_accounts || count < 4 {
             return Err(LedgerError::Limit("accounts"));
         }
         let mut accounts = Vec::with_capacity(count as usize);
@@ -681,7 +686,7 @@ impl Genesis {
         Ok(result)
     }
     pub fn id(&self) -> GenesisId {
-        GenesisId::from_bytes(hash(b"naome:state:genesis:v1\0", &[&self.encode()]))
+        GenesisId::from_bytes(hash(b"naome:state:genesis:v2\0", &[&self.encode()]))
     }
 }
 

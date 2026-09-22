@@ -19,7 +19,7 @@ pub(crate) fn genesis_with_profile(profile: Profile) -> Genesis {
         profile,
         "naome:zfc".into(),
         naome_ledger::profile::STATE_CHECKER_PROFILE.into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         100,
         [9; 32],
         (0..6)

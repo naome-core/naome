@@ -169,6 +169,7 @@ pub struct LedgerState {
     head: RecordId,
     time: u64,
     library: ProofLibrary,
+    accounts: BTreeMap<AccountId, [u8; 32]>,
     balances: Balances,
     next_nonce: BTreeMap<AccountId, u64>,
     receipts: BTreeMap<OperationId, Receipt>,
@@ -194,12 +195,18 @@ impl LedgerState {
         let balances = Balances::new(&genesis);
         let capacity = Capacity::new(genesis.profile());
         let next_nonce = genesis.accounts().iter().map(|a| (a.id(), 1)).collect();
+        let accounts = genesis
+            .accounts()
+            .iter()
+            .map(|a| (a.id(), *a.key()))
+            .collect();
         Self {
             genesis: Arc::new(genesis),
             height: 0,
             head,
             time,
             library: ProofLibrary::new(),
+            accounts,
             balances,
             next_nonce,
             receipts: BTreeMap::new(),
@@ -234,6 +241,22 @@ impl LedgerState {
     }
     pub fn balances(&self) -> &Balances {
         &self.balances
+    }
+    /// Canonically admitted research keys, including the initial genesis accounts.
+    /// Membership grants no validator or consensus authority.
+    pub fn accounts(&self) -> &BTreeMap<AccountId, [u8; 32]> {
+        &self.accounts
+    }
+    pub fn account_key(&self, account: AccountId) -> Option<&[u8; 32]> {
+        self.accounts.get(&account)
+    }
+    /// Capacity availability only; finalized admission also checks the record's
+    /// automatic transitions, key roles and exact next nonce.
+    pub fn registration_available(&self) -> bool {
+        !self.terminated
+            && (self.accounts.len() as u64) < self.genesis.profile().limits().registered_accounts
+            && self.capacity.remaining() > self.capacity.reserved() + 1
+            && (self.active.is_some() || self.capacity.can_open(self.genesis.profile()))
     }
     pub fn receipt(&self, id: OperationId) -> Option<&Receipt> {
         self.receipts.get(&id)
@@ -293,12 +316,29 @@ impl LedgerState {
             .as_ref()
             .and_then(|a| self.questions.get(&a.submission).map(Arc::as_ref))
     }
+    /// Whether this author already occupies a commitment slot in the active attempt.
+    pub fn has_active_commitment(&self, author: AccountId) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|attempt| attempt.commitments.contains_key(&author))
+    }
+    /// Checks an outstanding finalized reveal reservation for local queue priority.
+    /// The reveal still requires signature, deadline and mathematical validation.
+    pub fn awaiting_reveal(&self, author: AccountId, commitment: CommitmentId) -> bool {
+        self.active.as_ref().is_some_and(|attempt| {
+            attempt.phase == Phase::Reveal
+                && attempt
+                    .commitments
+                    .get(&author)
+                    .is_some_and(|entry| entry.id == commitment && entry.reveal.is_none())
+        })
+    }
     /// A complete state commitment includes content roots for immutable bytes,
     /// every account/receipt/question/phase/family/claim and both resource budgets.
     pub fn commitment(&self) -> StateCommitment {
         let mut count = Writer::counting();
         self.write_state(&mut count);
-        let mut digest = Writer::hashing(b"naome:state:state:v1\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:state:v2\0", count.len());
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }

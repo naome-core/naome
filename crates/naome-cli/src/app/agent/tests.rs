@@ -195,7 +195,7 @@ impl Fixture {
             Profile::short_test(),
             "naome:zfc".into(),
             STATE_CHECKER_PROFILE.into(),
-            1,
+            naome_ledger::profile::STATE_PROTOCOL_VERSION,
             100,
             [9; 32],
             accounts,

@@ -155,7 +155,7 @@ fn retained(
     author: AccountId,
 ) -> Result<SignedOperation> {
     let operation = SignedOperation::decode(bytes)?;
-    operation.verify(genesis)?;
+    operation.verify_signature(genesis)?;
     if operation.author() != author
         || !matches!(
             OperationBody::decode(operation.payload(), genesis)?,

@@ -293,6 +293,11 @@ fn handle(
             None => {
                 match runtime.operation_rejection(OperationId::from_bytes(files::unhex(&id)?)) {
                     Some(reason) => json!({"status":"rejected","reason":reason}),
+                    None if runtime
+                        .operation_deferred(OperationId::from_bytes(files::unhex(&id)?)) =>
+                    {
+                        json!({"status":"deferred","reason":"local queue yielded to active attempt work; resubmit the saved action"})
+                    }
                     None => json!({"status":"not_finalized"}),
                 }
             }

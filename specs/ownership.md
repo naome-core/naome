@@ -55,24 +55,24 @@ The repository root is a virtual Cargo workspace. `naome-author` is the offline
 source-authoring CLI in `naome-authoring`; `naome` is the operator CLI in
 `naome-cli`. `naome-validator start` reopens existing signing authority.
 `naome-verifier verify` reads public archives with no network or signing command.
-Setup alone initializes fresh authority while generating new keys and genesis.
+Setup initializes fresh consensus authority while generating new keys and genesis. Research keys may be created separately and gain account authority only through finalized registration.
 
 ## Canonical state formats
 
-The `state-v1` profile uses a fresh genesis. Mathematical proof and Foundation
+The `state-v2` account-admission profile uses a fresh genesis and rejects earlier genesis versions. Mathematical proof and Foundation
 encodings are independent of this state-format family.
 
 | Surface | Encoding and owner |
 | --- | --- |
-| Profile and genesis | `NAOPROF1`, `NAOGENS1`, `state-v1`; ledger profile |
+| Profile and genesis | `NAOPROF2`, `NAOGENS2`, `state-v2`; ledger profile |
 | Complete application record | `NSRC` plus version 1; `naome-chain::StateRecord` |
-| Signed actions, originals, certified time reports | `NSUA`, `NSOR`, `NSTM`; ledger authentication/operations/time |
+| Signed actions, originals, certified time reports | `NSUA`/`NSOR` version 2 with signer keys; `NSTM` unchanged; ledger authentication/operations/time |
 | Consensus value, proposal, vote, finality | `NSCB1`, `NSCP1`, `NSCV1`; consensus; `NSCF1` outer framing in chain, authenticated by consensus |
 | Lock events and checked snapshots | `NSCE1`, `NSCS1`; consensus |
 | History, signing journal, external anchor | `NAOSHIS1`, `NAOSSIG1`, `NAOSANC1`; storage |
 | Authenticated exchange | `/naome/state-v1`, envelope version 2; network/protocol |
 | Private key and durable commitment bundle | `NSKEY001`, `NSSEC001`; CLI |
-| State hash and signature domains | `naome:state:*:v1`; corresponding owning component |
+| State hash and signature domains | Profile, genesis, action, original and application-state domains use v2; unchanged components retain v1 and bind the v2 genesis |
 
 Storage uses `state.journal`, `state.lock`, `state-finality.anchor`, and
 `state-signer-KEY.*`. Node configuration version 2 uses `agenda_profile`.
