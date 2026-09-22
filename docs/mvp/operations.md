@@ -13,10 +13,10 @@ This qualification does not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The join-intent format is `state-v3`. Existing state-v2, state-v1, and
+The explicit retirement-order format is `state-v4`. Existing state-v3, state-v2, state-v1, and
 research-v1 runs cannot be reopened or converted with this executable. Retain
 their directories and use the original executable for historical inspection.
-Start a new directory and genesis for state-v3; see the
+Start a new directory and genesis for state-v4; see the
 [format boundary](../../specs/ownership.md#canonical-state-formats).
 Node configuration version 2 uses `agenda_profile` and `agenda-profile.txt`.
 The canonical journal names are `state.journal`, `state.lock`,
@@ -38,8 +38,15 @@ cargo build -p naome-cli -p naome-validator -p naome-verifier --bins --profile r
 BIN="$PWD/target/release/naome"
 VALIDATOR="$PWD/target/release/naome-validator"
 RUN=/tmp/naome-lab-001
-"$BIN" setup "$RUN" lab 256 44100 compact
+printf '[2,0,3,1]\n' > /tmp/bootstrap-retirement-order.json
+"$BIN" setup "$RUN" lab 256 44100 /tmp/bootstrap-retirement-order.json compact
 ```
+
+The JSON order lists generated `node-0` through `node-3` indices, in the
+operator-selected retirement sequence. Setup resolves them to consensus validator
+IDs, commits the four IDs in genesis, and prints them. Review that sequence before
+startup with `profile-info`; it does not retire any key or change active membership.
+An omitted, repeated, or unknown index is rejected before provisioning.
 
 Run this from the repository root. `RUN` must name a new directory; setup never
 overwrites an existing run. A non-signing observer can independently replay an

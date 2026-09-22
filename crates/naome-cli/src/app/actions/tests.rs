@@ -41,7 +41,7 @@ impl Fixture {
         let mut accounts = vec![key.verifying_key().to_bytes()];
         accounts
             .extend((1..4).map(|i| SigningKey::from_bytes(&[i; 32]).verifying_key().to_bytes()));
-        let validators = (0..4)
+        let validators: Vec<_> = (0..4)
             .map(|i| ValidatorRegistration {
                 owner: AccountId::for_key(&accounts[i]),
                 consensus_key: SigningKey::from_bytes(&[100 + i as u8; 32])
@@ -53,6 +53,7 @@ impl Fixture {
                 endpoint: format!("127.0.0.1:{}", 44000 + i),
             })
             .collect();
+        let retirement_order = [2, 0, 3, 1].map(|i| validators[i].id()).to_vec();
         let genesis = Genesis::new(
             Profile::short_test(),
             "naome:zfc".into(),
@@ -62,6 +63,7 @@ impl Fixture {
             [8; 32],
             accounts,
             validators,
+            retirement_order,
         )
         .unwrap();
         let config = NodeConfig {

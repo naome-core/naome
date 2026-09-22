@@ -11,8 +11,8 @@ use crate::{
 };
 
 const MAGIC: &[u8; 4] = b"NSUA";
-const VERSION: u16 = 3;
-const SIGNING_DOMAIN: &[u8] = b"naome:state:user-action:v3\0";
+const VERSION: u16 = 4;
+const SIGNING_DOMAIN: &[u8] = b"naome:state:user-action:v4\0";
 /// Maximum signed operation bytes, including framing and signature.
 pub const SIGNED_OPERATION_MAX_BYTES: usize = 1_048_576;
 const OVERHEAD: usize = 4 + 2 + 32 + 32 + 32 + 8 + 4 + 64;
@@ -72,7 +72,7 @@ impl SignedOperation {
     /// Returns the action identity, independent of its signature representation.
     pub fn id(&self) -> OperationId {
         OperationId::from_bytes(hash(
-            b"naome:state:operation:v3\0",
+            b"naome:state:operation:v4\0",
             &[&self.unsigned_bytes()],
         ))
     }

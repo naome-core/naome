@@ -463,6 +463,7 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
         [17; 32],
         keys.iter().map(|k| k.verifying_key().to_bytes()).collect(),
         fixture.validators().to_vec(),
+        fixture.retirement_order().to_vec(),
     )
     .unwrap();
     let publisher = AccountId::for_key(keys[0].verifying_key().as_bytes());

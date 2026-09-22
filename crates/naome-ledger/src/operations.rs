@@ -13,8 +13,8 @@ use crate::{
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
 const ORIGINAL_MAGIC: &[u8; 4] = b"NSOR";
-const ORIGINAL_VERSION: u16 = 3;
-const ORIGINAL_DOMAIN: &[u8] = b"naome:state:original-authorization:v3\0";
+const ORIGINAL_VERSION: u16 = 4;
+const ORIGINAL_DOMAIN: &[u8] = b"naome:state:original-authorization:v4\0";
 const ORIGINAL_OVERHEAD: usize = 4 + 2 + 32 + 32 + 32 + 32 + 4 + 64;
 const PURPOSE_MAX_BYTES: usize = 16 * 1024;
 
@@ -138,7 +138,7 @@ impl CommitmentId {
         secret: &[u8; 32],
     ) -> Self {
         Self::from_bytes(hash(
-            b"naome:state:commitment:v3\0",
+            b"naome:state:commitment:v4\0",
             &[
                 genesis.id().as_bytes(),
                 genesis.profile().id().as_bytes(),

@@ -62,6 +62,19 @@ fn genesis() -> Genesis {
         consensus_rounds: 8,
         ..Limits::default()
     };
+    let retirement_registrations: Vec<_> = (0..4)
+        .map(|i| ValidatorRegistration {
+            owner: AccountId::for_key(account(i).verifying_key().as_bytes()),
+            consensus_key: consensus(i).verifying_key().to_bytes(),
+            transport_key: SigningKey::from_bytes(&[201 + i; 32])
+                .verifying_key()
+                .to_bytes(),
+            endpoint: format!("127.0.0.1:{}", 46000 + u16::from(i)),
+        })
+        .collect();
+    let retirement_order = [2, 0, 3, 1]
+        .map(|i| retirement_registrations[i].id())
+        .to_vec();
     Genesis::new(
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         "naome:zfc".into(),
@@ -72,16 +85,8 @@ fn genesis() -> Genesis {
         (0..6)
             .map(|i| account(i).verifying_key().to_bytes())
             .collect(),
-        (0..4)
-            .map(|i| ValidatorRegistration {
-                owner: AccountId::for_key(account(i).verifying_key().as_bytes()),
-                consensus_key: consensus(i).verifying_key().to_bytes(),
-                transport_key: SigningKey::from_bytes(&[201 + i; 32])
-                    .verifying_key()
-                    .to_bytes(),
-                endpoint: format!("127.0.0.1:{}", 46000 + u16::from(i)),
-            })
-            .collect(),
+        retirement_registrations,
+        retirement_order,
     )
     .unwrap()
 }

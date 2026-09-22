@@ -66,7 +66,18 @@ fn signing_key(key: ConsensusKey) -> SigningKey {
         .unwrap()
 }
 fn genesis() -> Genesis {
-    Genesis::new(
+    let retirement_registrations: Vec<_> = (0..4)
+            .map(|i| ValidatorRegistration {
+                owner: author(i),
+                consensus_key: validator(i).verifying_key().to_bytes(),
+                transport_key: SigningKey::from_bytes(&[i + 201; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                endpoint: format!("127.0.0.1:{}", 43000 + u16::from(i)),
+            })
+            .collect();
+    let retirement_order = [2, 0, 3, 1].map(|i| retirement_registrations[i].id()).to_vec();
+        Genesis::new(
         Profile::short_test(),
         "naome:zfc".into(),
         STATE_CHECKER_PROFILE.into(),
@@ -76,16 +87,8 @@ fn genesis() -> Genesis {
         (0..6)
             .map(|i| account(i).verifying_key().to_bytes())
             .collect(),
-        (0..4)
-            .map(|i| ValidatorRegistration {
-                owner: author(i),
-                consensus_key: validator(i).verifying_key().to_bytes(),
-                transport_key: SigningKey::from_bytes(&[i + 201; 32])
-                    .verifying_key()
-                    .to_bytes(),
-                endpoint: format!("127.0.0.1:{}", 43000 + u16::from(i)),
-            })
-            .collect(),
+    retirement_registrations,
+    retirement_order,
     )
     .unwrap()
 }

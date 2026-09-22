@@ -306,6 +306,7 @@ async fn pair() -> (
     }
     let mut limits = base.profile().limits().clone();
     limits.run_records = 66;
+    let retirement_order = [2, 0, 3, 1].map(|i| validators[i].id()).to_vec();
     let g = Genesis::new(
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         base.foundation().into(),
@@ -315,6 +316,7 @@ async fn pair() -> (
         [9; 32],
         base.accounts().iter().map(|a| *a.key()).collect(),
         validators,
+        retirement_order,
     )
     .unwrap();
     drop(listeners);

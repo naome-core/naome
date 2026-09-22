@@ -1,6 +1,6 @@
 # Trusted research MVP verification
 
-The current join-intent implementation uses canonical `state-v3` history through
+The current retirement-order implementation uses canonical `state-v4` history through
 `naome`, `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
 proof-library component of that complete state. The historical
 [qualification report](evidence/final-integration.json) records source identities,
@@ -12,6 +12,16 @@ The recorded lab and CI reports below qualify their historical v1 snapshots.
 The merged v2 account-admission result is separate. Neither qualifies the v3
 join-intent extension or a migration; earlier runs require their original
 executable.
+
+## Explicit retirement-order qualification
+
+The v4 genesis and profile are incompatible with v3. The new genesis field is an
+exact four-validator-ID permutation selected through a required setup JSON plan;
+`profile-info` exposes it. Ledger tests cover missing, duplicate and foreign IDs,
+order identity, strict wire decoding and stable state replay. CLI setup tests
+cover rejection before provisioning. Focused, full-workspace, platform and
+process evidence for this new source snapshot must be recorded separately from
+the v3 results below. The order has no effect on live authority.
 
 ## Local join-intent qualification
 

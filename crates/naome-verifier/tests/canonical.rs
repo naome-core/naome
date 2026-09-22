@@ -20,7 +20,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 fn vector(name: &str) -> Vec<u8> {
-    let line = include_str!("../../naome-consensus/src/state/tests/golden-v3.txt")
+    let line = include_str!("../../naome-consensus/src/state/tests/golden-v4.txt")
         .lines()
         .find(|line| line.split_whitespace().next() == Some(name))
         .unwrap();
@@ -44,6 +44,21 @@ impl Archive {
         ));
         fs::create_dir(&root).unwrap();
         let account = |i: u8| SigningKey::from_bytes(&[i + 1; 32]);
+        let retirement_registrations: Vec<_> = (0..4)
+            .map(|i| ValidatorRegistration {
+                owner: AccountId::for_key(account(i).verifying_key().as_bytes()),
+                consensus_key: SigningKey::from_bytes(&[i + 101; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                transport_key: SigningKey::from_bytes(&[i + 201; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                endpoint: format!("127.0.0.1:{}", 42000 + u16::from(i)),
+            })
+            .collect();
+        let retirement_order = [2, 0, 3, 1]
+            .map(|i| retirement_registrations[i].id())
+            .to_vec();
         let genesis = Genesis::new(
             Profile::short_test(),
             "naome:zfc".into(),
@@ -54,18 +69,8 @@ impl Archive {
             (0..6)
                 .map(|i| account(i).verifying_key().to_bytes())
                 .collect(),
-            (0..4)
-                .map(|i| ValidatorRegistration {
-                    owner: AccountId::for_key(account(i).verifying_key().as_bytes()),
-                    consensus_key: SigningKey::from_bytes(&[i + 101; 32])
-                        .verifying_key()
-                        .to_bytes(),
-                    transport_key: SigningKey::from_bytes(&[i + 201; 32])
-                        .verifying_key()
-                        .to_bytes(),
-                    endpoint: format!("127.0.0.1:{}", 42000 + u16::from(i)),
-                })
-                .collect(),
+            retirement_registrations,
+            retirement_order,
         )
         .unwrap();
         let branch = StateBranch::from_genesis(LedgerState::new(genesis.clone())).unwrap();

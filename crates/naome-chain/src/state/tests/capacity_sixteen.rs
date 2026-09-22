@@ -23,6 +23,7 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
             .map(|index| account(index).verifying_key().to_bytes())
             .collect(),
         fixture.validators().to_vec(),
+        fixture.retirement_order().to_vec(),
     )
     .unwrap();
     let mut state = LedgerState::new(genesis);

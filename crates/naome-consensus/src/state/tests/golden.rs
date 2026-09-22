@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn signed_consensus_protocol_v3_golden_vectors() {
+fn signed_consensus_protocol_v4_golden_vectors() {
     use std::fmt::Write;
     let branch = branch();
     let proposal = proposal(
@@ -40,7 +40,7 @@ fn signed_consensus_protocol_v3_golden_vectors() {
         std::fs::write(path, &output).unwrap();
         return;
     }
-    assert_eq!(output, include_str!("golden-v3.txt"));
+    assert_eq!(output, include_str!("golden-v4.txt"));
 }
 
 #[test]

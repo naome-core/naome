@@ -94,14 +94,23 @@ impl Lab {
                     .map(|_| base)
             })
             .unwrap();
-        command(&[
+        let order_path = root.with_extension("retirement.json");
+        fs::write(&order_path, b"[2,0,3,1]").unwrap();
+        let configured = command(&[
             "setup".into(),
             path(&root),
             "short-test".into(),
             "128".into(),
             base.to_string(),
+            path(&order_path),
             "compact".into(),
         ]);
+        let inspected = command(&["profile-info".into(), path(root.join("genesis.bin"))]);
+        assert_eq!(configured["genesis"], inspected["genesis"]);
+        assert_eq!(
+            configured["retirement_order"],
+            inspected["retirement_order"]
+        );
         Self {
             root,
             nodes: (0..4).map(|_| None).collect(),
@@ -298,6 +307,7 @@ impl Drop for Lab {
             );
         } else {
             let _ = fs::remove_dir_all(&self.root);
+            let _ = fs::remove_file(self.root.with_extension("retirement.json"));
         }
     }
 }

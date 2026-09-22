@@ -49,15 +49,19 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
         "10.10.0.4:4100",
     ];
     fs::write(&plan, serde_json::to_vec(&endpoints).unwrap()).unwrap();
+    let order = dir.0.join("retirement.json");
+    fs::write(&order, b"[2,0,3,1]").unwrap();
     let mut args = vec![
         "unused".into(),
         "lab".into(),
         "128".into(),
         "44100".into(),
+        order.to_str().unwrap().into(),
         "standard".into(),
         plan.to_str().unwrap().into(),
     ];
-    let (standard, actual) = parameters(&args).unwrap();
+    let (standard, actual, retirement_order) = parameters(&args).unwrap();
+    assert_eq!(retirement_order, [2, 0, 3, 1]);
     assert_eq!(actual, endpoints);
     assert_eq!(
         standard,
@@ -70,12 +74,12 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
         )
         .unwrap()
     );
-    args[4] = "compact".into();
-    let (compact, actual) = parameters(&args).unwrap();
+    args[5] = "compact".into();
+    let (compact, actual, _) = parameters(&args).unwrap();
     assert_eq!(actual, endpoints);
     assert_ne!(compact.id(), standard.id());
     assert!(compact.required_storage_bytes().unwrap() < standard.required_storage_bytes().unwrap());
-    args.truncate(4);
+    args.truncate(5);
     assert_eq!(parameters(&args).unwrap().0, standard);
     args.push("unknown".into());
     assert!(parameters(&args).is_err());
@@ -139,7 +143,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
     )
     .unwrap();
     let accounts = (1..=4).map(key).collect::<Vec<_>>();
-    let validators = (0..4)
+    let validators: Vec<_> = (0..4)
         .map(|i| ValidatorRegistration {
             owner: AccountId::for_key(&accounts[i]),
             consensus_key: key(101 + i as u8),
@@ -147,6 +151,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
             endpoint: format!("127.0.0.1:{}", 43000 + i),
         })
         .collect();
+    let retirement_order = [2, 0, 3, 1].map(|i| validators[i].id()).to_vec();
     let genesis = Genesis::new(
         profile,
         "naome:zfc".into(),
@@ -156,6 +161,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
         [42; 32],
         accounts,
         validators,
+        retirement_order,
     )
     .unwrap();
     let original = genesis.encode();
@@ -259,11 +265,14 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
     let dir = Directory::new();
     let plan = dir.0.join("endpoints.json");
     let output = dir.0.join("run");
+    let order = dir.0.join("retirement.json");
+    fs::write(&order, b"[2,0,3,1]").unwrap();
     let args = vec![
         output.to_str().unwrap().into(),
         "short-test".into(),
         "160".into(),
         "44100".into(),
+        order.to_str().unwrap().into(),
         "compact".into(),
         plan.to_str().unwrap().into(),
     ];
@@ -298,10 +307,26 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
         "172.30.88.13:4200",
     ];
     fs::write(&plan, serde_json::to_vec(&expected).unwrap()).unwrap();
+    for invalid_order in [
+        b"[0,1,2,2]".as_slice(),
+        b"[0,1,2,4]",
+        b"[0,1,2]",
+        b"[0,1,2,3,4]",
+        b"[0,1,2,\"3\"]",
+    ] {
+        fs::write(&order, invalid_order).unwrap();
+        assert!(run(&args).is_err());
+        assert!(!output.exists());
+    }
+    fs::write(&order, b"[2,0,3,1]").unwrap();
+    let mut omitted = args.clone();
+    omitted.remove(4);
+    assert!(run(&omitted).is_err());
+    assert!(!output.exists());
     let symlink = dir.0.join("endpoints-link.json");
     std::os::unix::fs::symlink(&plan, &symlink).unwrap();
     let mut invalid = args.clone();
-    invalid[5] = symlink.to_str().unwrap().into();
+    invalid[6] = symlink.to_str().unwrap().into();
     assert!(run(&invalid).is_err());
     assert!(!output.exists());
     invalid = args.clone();
@@ -345,6 +370,11 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
         drop(signer);
     }
     let genesis = Genesis::decode(&fs::read(output.join("genesis.bin")).unwrap()).unwrap();
+    let selected = [2, 0, 3, 1].map(|index| {
+        let key = files::key(&output.join(format!("node-{index}/consensus.key")), 2).unwrap();
+        naome_ledger::ValidatorId::for_key(key.verifying_key().as_bytes())
+    });
+    assert_eq!(genesis.retirement_order(), &selected);
     let actual = genesis
         .validators()
         .iter()

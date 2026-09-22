@@ -56,6 +56,7 @@ fn exact_join_intent_roundtrip_and_context_bound_key_possession() {
             .map(|account| *account.key())
             .collect(),
         genesis.validators().to_vec(),
+        genesis.retirement_order().to_vec(),
     )
     .unwrap();
     assert_ne!(genesis.id(), other_genesis.id());
