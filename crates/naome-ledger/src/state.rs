@@ -394,7 +394,7 @@ impl LedgerState {
     pub fn commitment(&self) -> StateCommitment {
         let mut count = Writer::counting();
         self.write_state(&mut count);
-        let mut digest = Writer::hashing(b"naome:state:state:v3\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:state:v4\0", count.len());
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }

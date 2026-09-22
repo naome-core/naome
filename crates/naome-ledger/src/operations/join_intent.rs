@@ -10,8 +10,8 @@ use std::net::{IpAddr, SocketAddr};
 
 const INTENT_MAGIC: &[u8; 4] = b"NSJI";
 const INTENT_VERSION: u16 = 1;
-const CONSENSUS_DOMAIN: &[u8] = b"naome:state:join-consensus-possession:v3\0";
-const TRANSPORT_DOMAIN: &[u8] = b"naome:state:join-transport-possession:v3\0";
+const CONSENSUS_DOMAIN: &[u8] = b"naome:state:join-consensus-possession:v4\0";
+const TRANSPORT_DOMAIN: &[u8] = b"naome:state:join-transport-possession:v4\0";
 const ENDPOINT_MAX_BYTES: usize = 128;
 
 /// A claim holder's proposed validator keys and endpoint, without installation.

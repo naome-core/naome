@@ -15,6 +15,19 @@ pub(crate) fn genesis() -> Genesis {
     genesis_with_profile(Profile::short_test())
 }
 pub(crate) fn genesis_with_profile(profile: Profile) -> Genesis {
+    let retirement_registrations: Vec<_> = (0..4)
+        .map(|i| ValidatorRegistration {
+            owner: AccountId::for_key(account(i).verifying_key().as_bytes()),
+            consensus_key: validator(i).verifying_key().to_bytes(),
+            transport_key: SigningKey::from_bytes(&[i + 201; 32])
+                .verifying_key()
+                .to_bytes(),
+            endpoint: format!("127.0.0.1:{}", 41000 + u16::from(i)),
+        })
+        .collect();
+    let retirement_order = [2, 0, 3, 1]
+        .map(|i| retirement_registrations[i].id())
+        .to_vec();
     Genesis::new(
         profile,
         "naome:zfc".into(),
@@ -25,16 +38,8 @@ pub(crate) fn genesis_with_profile(profile: Profile) -> Genesis {
         (0..6)
             .map(|i| account(i).verifying_key().to_bytes())
             .collect(),
-        (0..4)
-            .map(|i| ValidatorRegistration {
-                owner: AccountId::for_key(account(i).verifying_key().as_bytes()),
-                consensus_key: validator(i).verifying_key().to_bytes(),
-                transport_key: SigningKey::from_bytes(&[i + 201; 32])
-                    .verifying_key()
-                    .to_bytes(),
-                endpoint: format!("127.0.0.1:{}", 41000 + u16::from(i)),
-            })
-            .collect(),
+        retirement_registrations,
+        retirement_order,
     )
     .unwrap()
 }

@@ -13,6 +13,7 @@ pub(super) fn registration_runtime() -> (Directory, Directory, StateRuntime) {
         [9; 32],
         base.accounts().iter().map(|a| *a.key()).collect(),
         base.validators().to_vec(),
+        base.retirement_order().to_vec(),
     )
     .unwrap();
     runtime_with_genesis(genesis)

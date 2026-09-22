@@ -117,16 +117,24 @@ def prepare(args):
     endpoints = read(args.endpoints)
     require(isinstance(endpoints, list) and len(endpoints) == 4,
             'endpoints JSON must contain four literal IP:port strings')
+    retirement = read(args.retirement_order)
+    require(isinstance(retirement, list) and len(retirement) == 4
+            and all(type(index) is int for index in retirement)
+            and sorted(retirement) == [0, 1, 2, 3],
+            'retirement order must list node indices 0, 1, 2, 3 exactly once')
     root = args.directory.absolute()
     mkdir(root)  # Never reuse a previous run, even after a failed preparation.
     plan = root / 'endpoints.json'
     write(plan, endpoints)
+    retirement_plan = root / 'retirement-order.json'
+    write(retirement_plan, retirement)
     staging = root / 'provisioning'
     configured = run(native['naome'], 'setup', staging, args.timing, args.records,
-                     44100, args.limits, plan)
+                     44100, retirement_plan, args.limits, plan)
     profile = run(native['naome'], 'profile-info', staging / 'genesis.bin')
     manifest = {'version': 1, 'genesis': configured['genesis'], 'profile': profile,
                 'genesis_sha256': digest(staging / 'genesis.bin'), 'endpoints': endpoints,
+                'retirement_order': configured['retirement_order'],
                 'timing': args.timing, 'limits': args.limits, 'source': source(),
                 'provisioner_binary_sha256': {n: digest(p) for n, p in native.items()},
                 'custody': 'Fresh initialized stores; move each bundle to one operator before first start. Never run a copied signer.'}
@@ -189,6 +197,8 @@ def check(bundle, native):
     profile = run(native['naome'], 'profile-info', bundle / 'genesis.bin')
     require(profile == manifest['profile'] and profile['genesis'] == manifest['genesis'],
             'genesis/profile differ from pilot plan')
+    require(profile['retirement_order'] == manifest['retirement_order'],
+            'retirement order differs from pilot plan')
     require(config['maximum_round'] == profile['limits']['consensus_rounds'], 'round limit changed')
     require(len(os.fsencode(bundle / 'control.sock')) < 100,
             'bundle path too long for portable Unix control socket; move to a shorter path')
@@ -264,6 +274,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('prepare')
     p.add_argument('--endpoints', type=Path, required=True)
+    p.add_argument('--retirement-order', type=Path, required=True)
     p.add_argument('--directory', type=Path, required=True)
     p.add_argument('--timing', choices=('lab', 'research', 'short-test'), default='lab')
     p.add_argument('--limits', choices=('standard', 'compact'), default='standard')

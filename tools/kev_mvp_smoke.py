@@ -250,11 +250,21 @@ class Smoke:
             require(digest(target) == original_hash == digest(source), 'binary changed while being copied')
             self.binaries[name] = target
             self.report['executables'][name] = {'source': self.public(source), 'sha256': original_hash}
-        configured = self.command('naome', 'setup', self.root / 'network', 'lab', '128', free_ports(), 'compact')
+        plan = self.root / 'retirement-order.json'
+        shutil.copyfile(self.args.retirement_order, plan)
+        os.chmod(plan, 0o600)
+        configured = self.command('naome', 'setup', self.root / 'network', 'lab', '128', free_ports(), plan, 'compact')
         self.report.update(genesis=configured['genesis'], profile=configured['profile'],
                            required_storage_bytes=configured['required_storage_bytes'])
         genesis = self.root / 'network/genesis.bin'
         immutable = self.command('naome', 'profile-info', genesis)
+        require(configured['retirement_order'] == immutable['retirement_order'],
+                'profile-info retirement order differs from setup output')
+        self.report['checks']['bootstrap_retirement_order'] = {
+            'node_indices': json.loads(plan.read_text()),
+            'validator_ids': configured['retirement_order'],
+            'plan_sha256': digest(plan),
+        }
         self.report['immutable_profile'] = immutable
         node_settings = [json.loads(self.node_config(index).read_text()) for index in range(4)]
         for field in ('history', 'history_anchor', 'signer', 'signer_anchor', 'consensus_key',
@@ -371,10 +381,13 @@ def main():
     parser.add_argument('--validator', type=Path, required=True)
     parser.add_argument('--verifier', type=Path, required=True)
     parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--retirement-order', type=Path, required=True,
+                        help='JSON permutation of generated node indices 0, 1, 2, 3')
     parser.add_argument('--scenario', choices=('baseline', 'require-yes'), default='baseline',
                         help='require-yes uses an explicit equality-library priority and requires a real YES')
     args = parser.parse_args()
     args.config = args.config.resolve(strict=True)
+    args.retirement_order = args.retirement_order.resolve(strict=True)
     os.umask(0o077)
     smoke = Smoke(args)
     try:

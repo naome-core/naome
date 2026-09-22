@@ -37,6 +37,15 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def retirement_indices(path):
+    indices = json.loads(path.read_text())
+    require(isinstance(indices, list) and len(indices) == 4
+            and all(type(index) is int for index in indices)
+            and sorted(indices) == [0, 1, 2, 3],
+            "retirement order must list node indices 0, 1, 2, 3 exactly once")
+    return indices
+
+
 class Lab:
     def __init__(self, args):
         self.args = args
@@ -264,11 +273,20 @@ class Lab:
         return output
 
     def execute(self):
-        configured = self.run("setup", self.root / "network", "lab", "128", self.base, "compact")
+        plan = self.file("retirement-order.json")
+        plan.write_text(json.dumps(self.args.retirement_indices) + "\n")
+        configured = self.run("setup", self.root / "network", "lab", "128", self.base, plan, "compact")
         self.report["genesis"] = configured["genesis"]
         self.report["profile"] = configured["profile"]
         self.report["required_storage_bytes"] = configured["required_storage_bytes"]
         self.report["immutable_profile"] = self.run("profile-info", self.file("genesis.bin"))
+        selected = configured["retirement_order"]
+        require(len(selected) == 4 and len(set(selected)) == 4
+                and self.report["immutable_profile"]["retirement_order"] == selected,
+                "profile-info retirement order differs from setup output")
+        self.report["checks"]["bootstrap_retirement_order"] = {
+            "node_indices": self.args.retirement_indices, "validator_ids": selected,
+        }
         configs = [json.loads(self.config(i).read_text()) for i in range(4)]
         for field in ("history", "history_anchor", "signer", "signer_anchor", "consensus_key", "transport_key", "control_socket"):
             require(len({config[field] for config in configs}) == 4, f"nodes share a {field} path")
@@ -450,7 +468,13 @@ def main():
     parser.add_argument("--validator", type=Path, required=True)
     parser.add_argument("--verifier", type=Path, required=True)
     parser.add_argument("--provider", type=Path, default=REPO / "tools/agenda_agent_codex.py")
+    parser.add_argument("--retirement-order", type=Path, required=True,
+                        help="JSON permutation of generated node indices 0, 1, 2, 3")
     args = parser.parse_args()
+    try:
+        args.retirement_indices = retirement_indices(args.retirement_order)
+    except (OSError, ValueError, RuntimeError) as error:
+        parser.error(str(error))
     os.umask(0o077)
     lab = Lab(args)
     print(json.dumps({"private_run_directory": str(lab.root), "mode": "real lab windows; actual agent required"}), flush=True)

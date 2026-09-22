@@ -13,10 +13,10 @@ This qualification does not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The join-intent format is `state-v3`. Existing state-v2, state-v1, and
+The explicit retirement-order format is `state-v4`. Existing state-v3, state-v2, state-v1, and
 research-v1 runs cannot be reopened or converted with this executable. Retain
 their directories and use the original executable for historical inspection.
-Start a new directory and genesis for state-v3; see the
+Start a new directory and genesis for state-v4; see the
 [format boundary](../../specs/ownership.md#canonical-state-formats).
 Node configuration version 2 uses `agenda_profile` and `agenda-profile.txt`.
 The canonical journal names are `state.journal`, `state.lock`,
@@ -38,8 +38,15 @@ cargo build -p naome-cli -p naome-validator -p naome-verifier --bins --profile r
 BIN="$PWD/target/release/naome"
 VALIDATOR="$PWD/target/release/naome-validator"
 RUN=/tmp/naome-lab-001
-"$BIN" setup "$RUN" lab 256 44100 compact
+printf '[2,0,3,1]\n' > /tmp/bootstrap-retirement-order.json
+"$BIN" setup "$RUN" lab 256 44100 /tmp/bootstrap-retirement-order.json compact
 ```
+
+The JSON order lists generated `node-0` through `node-3` indices, in the
+operator-selected retirement sequence. Setup resolves them to consensus validator
+IDs, commits the four IDs in genesis, and prints them. Review that sequence before
+startup with `profile-info`; it does not retire any key or change active membership.
+An omitted, repeated, or unknown index is rejected before provisioning.
 
 Run this from the repository root. `RUN` must name a new directory; setup never
 overwrites an existing run. A non-signing observer can independently replay an
@@ -422,14 +429,18 @@ umask 077
 QUALIFICATION=$(mktemp -d /tmp/naome-qualification.XXXXXX)
 cp target/release/naome target/release/naome-validator target/release/naome-verifier "$QUALIFICATION/"
 chmod 500 "$QUALIFICATION/naome" "$QUALIFICATION/naome-validator" "$QUALIFICATION/naome-verifier"
+printf '[2,0,3,1]\n' > "$QUALIFICATION/retirement-order.json"
 python3 tools/state_lab_acceptance.py \
   --binary "$QUALIFICATION/naome" \
   --validator "$QUALIFICATION/naome-validator" \
   --verifier "$QUALIFICATION/naome-verifier" \
   --provider "$PWD/tools/agenda_agent_codex.py" \
+  --retirement-order "$QUALIFICATION/retirement-order.json" \
   >"$QUALIFICATION/progress.jsonl" 2>&1
 ```
 
+Select the four generated node indices for this run and review the resulting
+validator IDs in the runner's public report before treating it as evidence.
 This takes approximately three nine-minute research attempts, plus startup,
 network recovery, checking and export. It uses actual 300/120/120-second lab
 windows and a real agent invocation. The actual agent's YES or NO is retained;

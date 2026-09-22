@@ -22,6 +22,11 @@ fn genesis(
     accounts: Vec<[u8; 32]>,
     validators: Vec<ValidatorRegistration>,
 ) -> Result<Genesis, LedgerError> {
+    let retirement_order = if validators.len() == 4 {
+        [2, 0, 3, 1].map(|i| validators[i].id()).to_vec()
+    } else {
+        Vec::new()
+    };
     Genesis::new(
         Profile::lab(),
         "naome:zfc".into(),
@@ -31,6 +36,7 @@ fn genesis(
         [42; 32],
         accounts,
         validators,
+        retirement_order,
     )
 }
 fn fixture() -> Genesis {
@@ -48,7 +54,7 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(lab.timing().reveal_seconds, 120);
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
-    assert_eq!(short.name(), "state-v3-short-test");
+    assert_eq!(short.name(), "state-v4-short-test");
     assert_ne!(lab.id(), research.id());
     assert_ne!(lab.id(), short.id());
     assert_eq!(
@@ -213,17 +219,19 @@ fn old_profile_and_genesis_versions_are_not_reinterpreted() {
     );
     old_profile[..8].copy_from_slice(b"NAOPROF2");
     assert!(Profile::decode(&old_profile).is_err());
+    old_profile[..8].copy_from_slice(b"NAOPROF3");
+    assert!(Profile::decode(&old_profile).is_err());
 
     let genesis = fixture();
     let mut old_genesis = genesis.encode();
-    for old_magic in [b"NAOGENS1", b"NAOGENS2"] {
+    for old_magic in [b"NAOGENS1", b"NAOGENS2", b"NAOGENS3"] {
         old_genesis[..8].copy_from_slice(old_magic);
         assert_eq!(
             Genesis::decode(&old_genesis),
             Err(LedgerError::Invalid("genesis version"))
         );
     }
-    for protocol_version in [1, 2, 4] {
+    for protocol_version in [1, 2, 3, 5] {
         let mut unsupported = genesis.clone();
         unsupported.protocol_version = protocol_version;
         assert!(Genesis::decode(&unsupported.encode()).is_err());
@@ -236,7 +244,20 @@ fn constructor_normalizes_but_decoder_rejects_membership_order() {
     let g = genesis(a.clone(), v.clone()).unwrap();
     a.reverse();
     v.reverse();
-    assert_eq!(genesis(a, v).unwrap(), g);
+    assert_ne!(genesis(a.clone(), v.clone()).unwrap().id(), g.id());
+    let same_order = Genesis::new(
+        Profile::lab(),
+        "naome:zfc".into(),
+        STATE_CHECKER_PROFILE.into(),
+        STATE_PROTOCOL_VERSION,
+        1800000000,
+        [42; 32],
+        a,
+        v,
+        g.retirement_order().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(same_order, g);
     assert_eq!(Genesis::decode(&g.encode()).unwrap(), g);
     let mut bad = g.clone();
     bad.accounts.swap(0, 1);
@@ -252,6 +273,55 @@ fn constructor_normalizes_but_decoder_rejects_membership_order() {
     }
     assert!(g.account_key(AccountId::from_bytes([0; 32])).is_none());
     assert!(g.validator(ValidatorId::from_bytes([0; 32])).is_none());
+}
+
+#[test]
+fn explicit_retirement_order_is_exact_genesis_bound_and_replay_stable() {
+    let g = fixture();
+    assert_eq!(g.retirement_order().len(), 4);
+    let (_, registrations) = inputs();
+    assert_eq!(
+        g.retirement_order(),
+        &[
+            registrations[2].id(),
+            registrations[0].id(),
+            registrations[3].id(),
+            registrations[1].id()
+        ]
+    );
+    let decoded = Genesis::decode(&g.encode()).unwrap();
+    assert_eq!(decoded.retirement_order(), g.retirement_order());
+    assert_eq!(decoded.id(), g.id());
+    assert_eq!(
+        crate::LedgerState::new(decoded).commitment(),
+        crate::LedgerState::new(g.clone()).commitment()
+    );
+
+    let mut reversed = g.clone();
+    reversed.retirement_order.reverse();
+    reversed.validate().unwrap();
+    assert_eq!(reversed.validators(), g.validators());
+    assert_ne!(reversed.id(), g.id());
+    assert_ne!(
+        crate::LedgerState::new(reversed).commitment(),
+        crate::LedgerState::new(g.clone()).commitment()
+    );
+
+    let mut duplicate = g.clone();
+    duplicate.retirement_order[1] = duplicate.retirement_order[0];
+    assert_eq!(
+        duplicate.validate(),
+        Err(LedgerError::Invalid("bootstrap retirement order"))
+    );
+    assert!(Genesis::decode(&duplicate.encode()).is_err());
+    let mut unknown = g.clone();
+    unknown.retirement_order[0] = ValidatorId::from_bytes([0; 32]);
+    assert!(unknown.validate().is_err());
+    assert!(Genesis::decode(&unknown.encode()).is_err());
+    let mut missing = g;
+    missing.retirement_order.pop();
+    assert!(missing.validate().is_err());
+    assert!(Genesis::decode(&missing.encode()).is_err());
 }
 
 #[test]
@@ -384,7 +454,7 @@ fn lab_profile_golden_encoding_and_identity() {
         4096, 64, 2097152, 32, 64, 16, 1, 1048576, 8192, 64, 1, 2, 4, 4194304, 2592, 75497472,
         10616832, 1114112, 1114112, 64, 64,
     ];
-    let mut bytes = b"NAOPROF3\0".to_vec();
+    let mut bytes = b"NAOPROF4\0".to_vec();
     for value in values {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -403,8 +473,8 @@ fn lab_profile_golden_encoding_and_identity() {
     assert_eq!(
         Profile::lab().id().as_bytes(),
         &[
-            8, 33, 57, 100, 64, 38, 147, 100, 33, 82, 121, 175, 201, 190, 255, 207, 125, 115, 109,
-            44, 236, 91, 161, 189, 209, 207, 99, 13, 45, 246, 205, 91
+            128, 220, 27, 191, 218, 52, 143, 50, 21, 144, 26, 11, 114, 185, 13, 149, 11, 180, 179,
+            171, 207, 127, 6, 84, 196, 212, 107, 186, 187, 157, 45, 135
         ]
     );
 }

@@ -31,9 +31,16 @@ Create `endpoints.json` with the real addresses, in node-bundle order:
 
 On a trusted provisioning machine, choose a new unused output directory:
 
+The retirement-order JSON must contain each generated node index exactly once,
+in the chosen order, for example `[2,0,3,1]`. The provisioner commits the
+corresponding validator IDs in genesis and the manifest. Review them with
+`naome profile-info GENESIS` before distributing bundles; this does not retire
+any validator or change the four active signers.
+
 ```sh
 python3 -B devnet/pilot.py --bin-dir target/release prepare \
-  --endpoints /absolute/path/endpoints.json --directory /private/pilot \
+  --endpoints /absolute/path/endpoints.json \
+  --retirement-order /absolute/path/retirement-order.json --directory /private/pilot \
   --timing lab --records 128 --limits standard
 ```
 

@@ -71,7 +71,9 @@ class Qualification:
     def prepare(self):
         endpoints = self.root / 'endpoints.json'
         endpoints.write_text(json.dumps(self.backend.fronts))
-        command([self.args.bin_dir / 'naome', 'setup', self.root / 'run', 'short-test', 256, 44100, 'compact', endpoints])
+        retirement = self.root / 'retirement-order.json'
+        retirement.write_text(json.dumps([2, 0, 3, 1]))
+        command([self.args.bin_dir / 'naome', 'setup', self.root / 'run', 'short-test', 256, 44100, retirement, 'compact', endpoints])
         anchors = self.root / 'anchors'
         anchors.mkdir(mode=0o700)
         for i in range(4):

@@ -70,14 +70,28 @@ impl NodeConfig {
         Ok(Genesis::decode(&files::read(&self.genesis, 16384, false)?)?)
     }
 }
-fn parameters(args: &[String]) -> Result<(Profile, [String; 4])> {
-    if !(args.len() == 4
-        || ((args.len() == 5 || args.len() == 6)
-            && matches!(args[4].as_str(), "compact" | "standard")))
+fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
+    if !(args.len() == 5
+        || ((args.len() == 6 || args.len() == 7)
+            && matches!(args[5].as_str(), "compact" | "standard")))
     {
         return Err(
-            "usage: setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [standard|compact [ENDPOINTS_JSON]]".into(),
+            "usage: setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT RETIREMENT_ORDER_JSON [standard|compact [ENDPOINTS_JSON]]".into(),
         );
+    }
+    // The plan names generated node indices, not the canonical validator list.
+    // Refuse to create keys or a run directory until all four are specified.
+    let retirement_order: [usize; 4] =
+        serde_json::from_slice(&files::read(Path::new(&args[4]), 4096, false)?)?;
+    if retirement_order.iter().any(|&index| index >= 4)
+        || retirement_order
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != 4
+    {
+        return Err("retirement order must contain each node index 0, 1, 2, 3 exactly once".into());
     }
     let timing = match args[1].as_str() {
         "lab" => TimingKind::Lab,
@@ -89,7 +103,7 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4])> {
         run_records: args[2].parse()?,
         ..Limits::default()
     };
-    if args.get(4).is_some_and(|mode| mode == "compact") {
+    if args.get(5).is_some_and(|mode| mode == "compact") {
         limits.record_bytes = 128 * 1024;
         limits.package_bytes = 64 * 1024;
         limits.transport_frame_bytes = 192 * 1024;
@@ -100,9 +114,9 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4])> {
     if !(1024..=65532).contains(&base) {
         return Err("base port must be 1024 through 65532".into());
     }
-    let endpoints: [String; 4] = if args.len() == 6 {
+    let endpoints: [String; 4] = if args.len() == 7 {
         let values: [String; 4] =
-            serde_json::from_slice(&files::read(Path::new(&args[5]), 4096, false)?)?;
+            serde_json::from_slice(&files::read(Path::new(&args[6]), 4096, false)?)?;
         let parsed = values
             .iter()
             .map(|value| {
@@ -127,11 +141,11 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4])> {
     } else {
         std::array::from_fn(|index| format!("127.0.0.1:{}", base + index as u16))
     };
-    Ok((profile, endpoints))
+    Ok((profile, endpoints, retirement_order))
 }
 
 pub fn run(args: &[String]) -> Result<()> {
-    let (profile, endpoints) = parameters(args)?;
+    let (profile, endpoints, retirement_indices) = parameters(args)?;
     let maximum_round = profile.limits().consensus_rounds;
     let requested = Path::new(&args[0]);
     files::directory(requested)?;
@@ -182,6 +196,9 @@ pub fn run(args: &[String]) -> Result<()> {
             listen_address: None,
         });
     }
+    let retirement_order = retirement_indices
+        .map(|index| registrations[index].id())
+        .to_vec();
     let genesis = Genesis::new(
         profile,
         "naome:zfc".into(),
@@ -194,6 +211,7 @@ pub fn run(args: &[String]) -> Result<()> {
             .map(|k| k.verifying_key().to_bytes())
             .collect(),
         registrations,
+        retirement_order,
     )?;
     files::create(&root.join("genesis.bin"), &genesis.encode(), false)?;
     for (index, config) in configs.iter().enumerate() {
@@ -230,7 +248,7 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     println!(
         "{}",
-        serde_json::json!({"status":"configured","genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(genesis.profile().id().as_bytes()),"timing":args[1],"run_records":genesis.profile().limits().run_records,"required_storage_bytes":required,"directory":root,"validators_started":false})
+        serde_json::json!({"status":"configured","genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(genesis.profile().id().as_bytes()),"retirement_order":genesis.retirement_order().iter().map(|id| files::hex(id.as_bytes())).collect::<Vec<_>>(),"timing":args[1],"run_records":genesis.profile().limits().run_records,"required_storage_bytes":required,"directory":root,"validators_started":false})
     );
     Ok(())
 }
@@ -242,7 +260,7 @@ pub fn profile_info(path: &Path) -> Result<()> {
     let rewards = profile.rewards();
     println!(
         "{}",
-        serde_json::json!({"genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(profile.id().as_bytes()),"kind":format!("{:?}",profile.kind()),"limits":profile.limits().named_values().collect::<std::collections::BTreeMap<_,_>>(),"timing":{"voting_seconds":timing.voting_seconds,"commitment_seconds":timing.commitment_seconds,"reveal_seconds":timing.reveal_seconds,"queue_seconds":timing.queue_seconds,"clock_error_seconds":timing.clock_error_seconds,"agent_call_seconds":timing.agent_call_seconds},"rewards":{"issuance_atoms":rewards.issuance_atoms.to_string(),"author_without_citations_atoms":rewards.author_without_citations_atoms.to_string(),"author_with_citations_atoms":rewards.author_with_citations_atoms.to_string(),"citation_pool_atoms":rewards.citation_pool_atoms.to_string(),"validator_atoms_each":rewards.validator_atoms_each.to_string(),"reserve_atoms":rewards.reserve_atoms.to_string()},"required_storage_bytes_per_node":profile.required_storage_bytes()?,"canonical_profile":files::hex(&profile.encode())})
+        serde_json::json!({"genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(profile.id().as_bytes()),"retirement_order":genesis.retirement_order().iter().map(|id| files::hex(id.as_bytes())).collect::<Vec<_>>(),"kind":format!("{:?}",profile.kind()),"limits":profile.limits().named_values().collect::<std::collections::BTreeMap<_,_>>(),"timing":{"voting_seconds":timing.voting_seconds,"commitment_seconds":timing.commitment_seconds,"reveal_seconds":timing.reveal_seconds,"queue_seconds":timing.queue_seconds,"clock_error_seconds":timing.clock_error_seconds,"agent_call_seconds":timing.agent_call_seconds},"rewards":{"issuance_atoms":rewards.issuance_atoms.to_string(),"author_without_citations_atoms":rewards.author_without_citations_atoms.to_string(),"author_with_citations_atoms":rewards.author_with_citations_atoms.to_string(),"citation_pool_atoms":rewards.citation_pool_atoms.to_string(),"validator_atoms_each":rewards.validator_atoms_each.to_string(),"reserve_atoms":rewards.reserve_atoms.to_string()},"required_storage_bytes_per_node":profile.required_storage_bytes()?,"canonical_profile":files::hex(&profile.encode())})
     );
     Ok(())
 }

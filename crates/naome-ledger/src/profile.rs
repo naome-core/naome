@@ -16,8 +16,8 @@ use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
 pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
-/// Research protocol with bounded self-registration and passive join intents under fixed validators.
-pub const STATE_PROTOCOL_VERSION: u16 = 3;
+/// Research protocol with an explicit bootstrap retirement order under fixed validators.
+pub const STATE_PROTOCOL_VERSION: u16 = 4;
 
 /// Reserved space around one maximum user payload for canonical record headers,
 /// four time reports, operation authentication, and finality signatures. The
@@ -41,8 +41,8 @@ pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;
 /// Terminal signer stop plus its chained frame header/footer.
 pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
 
-const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF3";
-const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS3";
+const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF4";
+const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS4";
 const MAX_PROFILE_BYTES: usize = 4096;
 const MAX_GENESIS_BYTES: usize = 16384;
 
@@ -252,9 +252,9 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "state-v3-lab",
-            TimingKind::Research => "state-v3-research",
-            TimingKind::ShortTest => "state-v3-short-test",
+            TimingKind::Lab => "state-v4-lab",
+            TimingKind::Research => "state-v4-research",
+            TimingKind::ShortTest => "state-v4-short-test",
         }
     }
     fn validate(&self) -> Result<(), LedgerError> {
@@ -414,7 +414,7 @@ impl Profile {
         Ok(result)
     }
     pub fn id(&self) -> ProfileId {
-        ProfileId::from_bytes(hash(b"naome:state:profile:v3\0", &[&self.encode()]))
+        ProfileId::from_bytes(hash(b"naome:state:profile:v4\0", &[&self.encode()]))
     }
 }
 
@@ -461,6 +461,9 @@ pub struct Genesis {
     run_nonce: [u8; 32],
     accounts: Vec<AccountRegistration>,
     validators: Vec<ValidatorRegistration>,
+    /// Explicit order in which bootstrap slots may eventually be retired.
+    /// It records policy only; it does not authorize a retirement.
+    retirement_order: Vec<ValidatorId>,
 }
 
 impl Genesis {
@@ -474,6 +477,7 @@ impl Genesis {
         run_nonce: [u8; 32],
         accounts: Vec<[u8; 32]>,
         mut validators: Vec<ValidatorRegistration>,
+        retirement_order: Vec<ValidatorId>,
     ) -> Result<Self, LedgerError> {
         let mut accounts: Vec<_> = accounts
             .into_iter()
@@ -493,6 +497,7 @@ impl Genesis {
             run_nonce,
             accounts,
             validators,
+            retirement_order,
         };
         result.validate()?;
         Ok(result)
@@ -530,6 +535,20 @@ impl Genesis {
             || self.validators.windows(2).any(|w| w[0].id() >= w[1].id())
         {
             return Err(LedgerError::Invalid("membership order or duplicate"));
+        }
+        if self.retirement_order.len() != 4
+            || self
+                .retirement_order
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                != self
+                    .validators
+                    .iter()
+                    .map(ValidatorRegistration::id)
+                    .collect()
+        {
+            return Err(LedgerError::Invalid("bootstrap retirement order"));
         }
         let mut keys = BTreeSet::new();
         let mut owners = BTreeSet::new();
@@ -598,6 +617,10 @@ impl Genesis {
     pub fn validators(&self) -> &[ValidatorRegistration] {
         &self.validators
     }
+    /// Genesis-bound bootstrap slot order. No member is retired by this value.
+    pub fn retirement_order(&self) -> &[ValidatorId] {
+        &self.retirement_order
+    }
     pub fn account_key(&self, id: AccountId) -> Option<&[u8; 32]> {
         self.accounts
             .binary_search_by_key(&id, AccountRegistration::id)
@@ -631,6 +654,10 @@ impl Genesis {
             w.fixed(&validator.consensus_key);
             w.fixed(&validator.transport_key);
             w.string(&validator.endpoint).expect("bounded endpoint");
+        }
+        w.u8(self.retirement_order.len() as u8);
+        for id in &self.retirement_order {
+            w.fixed(id.as_bytes());
         }
         w.finish()
     }
@@ -670,6 +697,14 @@ impl Genesis {
                 endpoint: r.string(128)?.to_owned(),
             });
         }
+        let count = r.u8()?;
+        if count != 4 {
+            return Err(LedgerError::Invalid("bootstrap retirement order"));
+        }
+        let mut retirement_order = Vec::with_capacity(4);
+        for _ in 0..count {
+            retirement_order.push(ValidatorId::from_bytes(r.fixed()?));
+        }
         r.finish()?;
         // Do not normalize hostile wire order: exactly one representation is valid.
         let result = Self {
@@ -681,12 +716,13 @@ impl Genesis {
             run_nonce,
             accounts,
             validators,
+            retirement_order,
         };
         result.validate()?;
         Ok(result)
     }
     pub fn id(&self) -> GenesisId {
-        GenesisId::from_bytes(hash(b"naome:state:genesis:v3\0", &[&self.encode()]))
+        GenesisId::from_bytes(hash(b"naome:state:genesis:v4\0", &[&self.encode()]))
     }
 }
 

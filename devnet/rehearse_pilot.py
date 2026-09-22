@@ -28,8 +28,10 @@ def rehearse(args):
             sock.close()
     plan = root / 'endpoints.json'
     pilot.write(plan, endpoints)
+    retirement_plan = root / 'retirement-order.json'
+    pilot.write(retirement_plan, [2, 0, 3, 1])
     prepared = root / 'prepared'
-    pilot.prepare(SimpleNamespace(bin_dir=args.bin_dir, endpoints=plan, directory=prepared,
+    pilot.prepare(SimpleNamespace(bin_dir=args.bin_dir, endpoints=plan, retirement_order=retirement_plan, directory=prepared,
                                   timing='short-test', records=128, limits='compact'))
     bundles, children, logs = [], {}, []
     checks = {}

@@ -96,7 +96,7 @@ fn fixture() -> (Genesis, Vec<identity::Keypair>) {
                 .to_bytes()
         })
         .collect();
-    let validators = (0..4)
+    let validators: Vec<ValidatorRegistration> = (0..4)
         .map(|i| ValidatorRegistration {
             owner: AccountId::for_key(&accounts[i]),
             consensus_key: SigningKey::from_bytes(&[i as u8 + 101; 32])
@@ -108,6 +108,7 @@ fn fixture() -> (Genesis, Vec<identity::Keypair>) {
             endpoint: listeners[i].local_addr().unwrap().to_string(),
         })
         .collect();
+    let retirement_order = [2, 0, 3, 1].map(|i| validators[i].id()).to_vec();
     (
         Genesis::new(
             Profile::short_test(),
@@ -118,6 +119,7 @@ fn fixture() -> (Genesis, Vec<identity::Keypair>) {
             [9; 32],
             accounts,
             validators,
+            retirement_order,
         )
         .unwrap(),
         keys,
@@ -142,6 +144,7 @@ async fn pair_context(mismatch: bool) -> (StateNetwork, StateNetwork) {
         },
         genesis.accounts().iter().map(|a| *a.key()).collect(),
         genesis.validators().to_vec(),
+        genesis.retirement_order().to_vec(),
     )
     .unwrap();
     let mut b = StateNetwork::new_state(keys[1].clone(), &other).unwrap();

@@ -3,7 +3,7 @@ use super::*;
 // Fixed public test seeds and secrets only. These bytes are regression vectors,
 // never credentials for an operational genesis.
 #[test]
-fn complete_v3_wire_and_identifier_vectors() {
+fn complete_v4_wire_and_identifier_vectors() {
     let mut output = String::new();
     fn vector(out: &mut String, name: &str, bytes: &[u8]) {
         use std::fmt::Write;
@@ -105,7 +105,7 @@ fn complete_v3_wire_and_identifier_vectors() {
         std::fs::write(path, &output).unwrap();
         return;
     }
-    assert_eq!(output, include_str!("golden-v3.txt"));
+    assert_eq!(output, include_str!("golden-v4.txt"));
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn signed_old_attempt_reveal_never_resolves_new_attempt() {
     assert!(state.library().is_empty());
 }
 
-// Archived bytes are intentionally immutable: a fresh state-v3 genesis is
+// Archived bytes are intentionally immutable: a fresh state-v4 genesis is
 // required. Prefix substitution is not an authorized migration of signatures.
 fn legacy_vector(name: &str) -> Vec<u8> {
     let line = include_str!("legacy-research-v1.txt")
@@ -206,6 +206,30 @@ fn protocol_v1_genesis_and_actions_are_not_reinterpreted() {
             }
             "signed-original" => assert!(SignedOriginal::decode(&bytes, state.genesis()).is_err()),
             "submit-record" | "settlement-record" => {
+                assert!(StateRecord::decode(&bytes, state.genesis()).is_err())
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn state_v3_history_is_not_reinterpreted_as_v4() {
+    let state = LedgerState::new(genesis());
+    for line in include_str!("golden-v3.txt").lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let bytes: Vec<_> = fields[2]
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        match fields[0] {
+            "genesis" => assert!(Genesis::decode(&bytes).is_err()),
+            "signed-registration" | "signed-submit" | "signed-commit" | "signed-reveal" => {
+                assert!(SignedOperation::decode(&bytes).is_err())
+            }
+            "signed-original" => assert!(SignedOriginal::decode(&bytes, state.genesis()).is_err()),
+            "registration-record" | "submit-record" | "settlement-record" => {
                 assert!(StateRecord::decode(&bytes, state.genesis()).is_err())
             }
             _ => {}

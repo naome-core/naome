@@ -99,6 +99,21 @@ fn genesis() -> Genesis {
                 .to_bytes()
         })
         .collect();
+    let retirement_registrations: Vec<_> = (0..4)
+        .map(|i| ValidatorRegistration {
+            owner: AccountId::for_key(&accounts[i]),
+            consensus_key: SigningKey::from_bytes(&[i as u8 + 101; 32])
+                .verifying_key()
+                .to_bytes(),
+            transport_key: SigningKey::from_bytes(&[i as u8 + 201; 32])
+                .verifying_key()
+                .to_bytes(),
+            endpoint: format!("127.0.0.1:{}", 47000 + i),
+        })
+        .collect();
+    let retirement_order = [2, 0, 3, 1]
+        .map(|i| retirement_registrations[i].id())
+        .to_vec();
     Genesis::new(
         Profile::short_test(),
         "naome:zfc".into(),
@@ -107,18 +122,8 @@ fn genesis() -> Genesis {
         100,
         [81; 32],
         accounts.clone(),
-        (0..4)
-            .map(|i| ValidatorRegistration {
-                owner: AccountId::for_key(&accounts[i]),
-                consensus_key: SigningKey::from_bytes(&[i as u8 + 101; 32])
-                    .verifying_key()
-                    .to_bytes(),
-                transport_key: SigningKey::from_bytes(&[i as u8 + 201; 32])
-                    .verifying_key()
-                    .to_bytes(),
-                endpoint: format!("127.0.0.1:{}", 47000 + i),
-            })
-            .collect(),
+        retirement_registrations,
+        retirement_order,
     )
     .unwrap()
 }
