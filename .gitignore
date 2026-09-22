@@ -8,3 +8,6 @@ debug/
 # Python caches and macOS metadata
 __pycache__/
 .DS_Store
+
+# Managed local model runtime, downloaded weights, and private configuration
+.local/

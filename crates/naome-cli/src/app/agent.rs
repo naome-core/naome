@@ -25,10 +25,15 @@ use tokio::{
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Decision {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<u64>,
     decision: String,
-    reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
     provider: String,
     tool_calls: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assessment: Option<serde_json::Value>,
 }
 struct ProcessGroup(Option<rustix::process::Pid>);
 impl Drop for ProcessGroup {
@@ -79,6 +84,16 @@ async fn invoke(executable: &Path, input: &[u8], seconds: u64) -> Result<Decisio
         if !valid_decision(&decision) {
             return Err("invalid bounded agent decision".into());
         }
+        if serde_json::from_slice::<serde_json::Value>(input).is_ok_and(|v| v["version"] == 2)
+            && decision.version != Some(2)
+        {
+            return Err("configured v2 request requires a bound v2 assessment".into());
+        }
+        if let Some(assessment) = &decision.assessment
+            && assessment["input_sha256"] != files::hex(&Sha256::digest(input))
+        {
+            return Err("agent assessment does not bind the input request".into());
+        }
         Ok(decision)
     })
     .await
@@ -86,11 +101,33 @@ async fn invoke(executable: &Path, input: &[u8], seconds: u64) -> Result<Decisio
 }
 
 fn valid_decision(decision: &Decision) -> bool {
-    matches!(decision.decision.as_str(), "YES" | "NO")
-        && !decision.reason.trim().is_empty()
-        && decision.reason.len() <= 4096
-        && !decision.provider.is_empty()
-        && decision.provider.len() <= 128
+    if decision.provider.trim().is_empty()
+        || decision.provider.len() > 128
+        || decision
+            .reason
+            .as_ref()
+            .is_some_and(|s| s.trim().is_empty() || s.len() > 4096)
+    {
+        return false;
+    }
+    match decision.version.unwrap_or(1) {
+        1 => {
+            matches!(decision.decision.as_str(), "YES" | "NO")
+                && decision.reason.is_some()
+                && decision.assessment.is_none()
+        }
+        2 => {
+            matches!(decision.decision.as_str(), "YES" | "NO" | "REVIEW")
+                && decision.assessment.as_ref().is_some_and(|a| {
+                    a.is_object()
+                        && a["input_sha256"]
+                            .as_str()
+                            .is_some_and(|s| files::unhex::<32>(s).is_ok())
+                        && serde_json::to_vec(a).is_ok_and(|bytes| bytes.len() <= 6144)
+                })
+        }
+        _ => false,
+    }
 }
 fn voting(status: &serde_json::Value, genesis: &str, question: &str, attempt: u64) -> Result<()> {
     if status["genesis"] != genesis
@@ -130,10 +167,48 @@ fn retained(
     Ok(operation)
 }
 
+fn save_report(
+    path: &Path,
+    report: &serde_json::Value,
+    operation: Option<&SignedOperation>,
+) -> Result<()> {
+    if path.try_exists()?
+        && let Some(operation) = operation
+    {
+        let bytes = files::read(path, 16384, true)?;
+        let mut legacy: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if legacy["operation"] == files::hex(operation.id().as_bytes()) {
+            if let Some(object) = legacy.as_object_mut() {
+                object.remove("operation");
+            }
+            if &legacy == report {
+                // A pre-upgrade crash could retain its report and budget.action
+                // before the caller's ACTION_FILE. Preserve that exact evidence.
+                return files::create_or_match(path, &bytes, true);
+            }
+        }
+    }
+    files::create_or_match(path, &serde_json::to_vec_pretty(report)?, true)
+}
+
 pub async fn run(args: &[String]) -> Result<()> {
-    if args.len() != 5 {
+    execute(args, false).await
+}
+
+pub async fn review(args: &[String]) -> Result<()> {
+    if !matches!(args.len(), 4 | 6) {
+        return Err("usage: agent-review CONFIG ACCOUNT_KEY REPORT_FILE PROVIDER_EXECUTABLE [--provider-config FILE]".into());
+    }
+    // No action path is consulted in review mode, including exact retry paths.
+    let mut normalized = args.to_vec();
+    normalized.insert(2, String::new());
+    execute(&normalized, true).await
+}
+
+async fn execute(args: &[String], review_only: bool) -> Result<()> {
+    if !matches!(args.len(), 5 | 7) || (args.len() == 7 && args[5] != "--provider-config") {
         return Err(
-            "usage: agent-vote CONFIG ACCOUNT_KEY ACTION_FILE REPORT_FILE PROVIDER_EXECUTABLE"
+            "usage: agent-vote CONFIG ACCOUNT_KEY ACTION_FILE REPORT_FILE PROVIDER_EXECUTABLE [--provider-config FILE]"
                 .into(),
         );
     }
@@ -149,7 +224,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     }
     // A retained signed vote is an exact retry and needs no fresh inference.
     let action_path = Path::new(&args[2]);
-    if action_path.try_exists()? {
+    if !review_only && action_path.try_exists()? {
         let bytes = files::read(action_path, 65536, true)?;
         let operation = retained(&bytes, &genesis, author)?;
         files::create_or_match(action_path, &bytes, true)?;
@@ -186,6 +261,16 @@ pub async fn run(args: &[String]) -> Result<()> {
         return Err("operator research profile is empty".into());
     }
     let mut input = json!({"version":1,"profile":profile,"question":question["source"],"purpose":question["purpose"],"question_id":question_id,"attempt":attempt,"genesis":genesis_id,"author":files::hex(author.as_bytes())});
+    if args.len() == 7 {
+        input["version"] = json!(2);
+        input["formal_targets"] = question["formal_targets"].clone();
+        input["foundation"] = json!(genesis.foundation());
+        input["checker_profile"] = json!(genesis.checker_profile());
+        // Configuration contains local runtime settings and model/policy versions.
+        // It is frozen into the durable context along with model/policy versions.
+        input["provider_config"] =
+            serde_json::from_slice(&files::read(Path::new(&args[6]), 8192, true)?)?;
+    }
     let context = files::hex(&Sha256::digest(serde_json::to_vec(&input)?));
     let limits = genesis.profile().limits();
     let budget = budget::Budget::open(
@@ -231,10 +316,28 @@ pub async fn run(args: &[String]) -> Result<()> {
     };
     let latest = control::call(&config, Request::Status {}).await?;
     voting(&latest, &genesis_id, &question_id, attempt)?;
+    let mut report = json!({"kind":"actual_agent_review","request_sha256":outcome.request,"question_id":question_id,"genesis":genesis_id,"decision":outcome.decision,"attempts":outcome.index,"elapsed_ms":outcome.elapsed_ms,"authority":"operator agenda vote only; no proof-validity authority"});
+    if review_only || outcome.decision.decision == "REVIEW" {
+        files::create_or_match(
+            Path::new(&args[3]),
+            &serde_json::to_vec_pretty(&report)?,
+            true,
+        )?;
+        println!(
+            "{}",
+            json!({"agent_review":report,"vote_signed":false,"submission":null})
+        );
+        return Ok(());
+    }
+    let yes = match outcome.decision.decision.as_str() {
+        "YES" => true,
+        "NO" => false,
+        _ => return Err("agent result does not authorize a vote".into()),
+    };
     let body = OperationBody::Vote {
         question: QuestionId::from_bytes(files::unhex(&question_id)?),
         attempt,
-        yes: outcome.decision.decision == "YES",
+        yes,
     };
     let retained_path = budget.path("action");
     let operation = if retained_path.try_exists()? {
@@ -258,13 +361,9 @@ pub async fn run(args: &[String]) -> Result<()> {
         files::create(&retained_path, &operation.encode(), true)?;
         operation
     };
-    let report = json!({"kind":"actual_agent_review","request_sha256":outcome.request,"question_id":question_id,"genesis":genesis_id,"decision":outcome.decision,"attempts":outcome.index,"elapsed_ms":outcome.elapsed_ms,"operation":files::hex(operation.id().as_bytes()),"authority":"operator agenda vote only; no proof-validity authority"});
-    files::create_or_match(
-        Path::new(&args[3]),
-        &serde_json::to_vec_pretty(&report)?,
-        true,
-    )?;
+    save_report(Path::new(&args[3]), &report, Some(&operation))?;
     files::create_or_match(action_path, &operation.encode(), true)?;
+    report["operation"] = json!(files::hex(operation.id().as_bytes()));
     let result = control::call(
         &config,
         Request::Submit {

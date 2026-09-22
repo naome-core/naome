@@ -118,6 +118,11 @@ impl Budget {
                     || outcome.index != index
                     || outcome.request != reservation.request
                     || !valid_decision(&outcome.decision)
+                    || outcome
+                        .decision
+                        .assessment
+                        .as_ref()
+                        .is_some_and(|a| a["input_sha256"] != reservation.request)
                 {
                     return Err("invalid durable agent result".into());
                 }
@@ -136,6 +141,9 @@ impl Budget {
     }
     pub fn reserve(&self, index: u64, remaining: u64, input: &[u8]) -> Result<String> {
         let request = files::hex(&Sha256::digest(input));
+        // Save the exact bounded context for offline inspection/reproduction.
+        // No secret key bytes are part of the provider request.
+        files::create_or_match(&self.path(&format!("{index}.request.json")), input, true)?;
         files::create(
             &self.path(&format!("{index}.reservation")),
             &serde_json::to_vec(&Reservation {

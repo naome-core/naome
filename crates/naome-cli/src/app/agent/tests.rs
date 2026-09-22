@@ -30,6 +30,9 @@ impl Directory {
         Self(path, providers)
     }
     fn executable(&self, name: &str, body: &str) -> PathBuf {
+        self.raw_executable(name, &format!("/bin/cat >/dev/null\n{body}"))
+    }
+    fn raw_executable(&self, name: &str, body: &str) -> PathBuf {
         let path = self.1.join(name);
         // A newly written executable can transiently be held writable by a
         // concurrently forked child before its exec closes inherited FDs.
@@ -37,7 +40,7 @@ impl Directory {
         // shell input, so Linux ETXTBSY cannot mask adapter behavior.
         files::create(
             &self.1.join(format!("{name}.body")),
-            format!("/bin/cat >/dev/null\n{body}\n").as_bytes(),
+            format!("{body}\n").as_bytes(),
             true,
         )
         .unwrap();
@@ -390,4 +393,313 @@ async fn retained_vote_retry_submits_identical_bytes_without_provider_or_new_non
     assert!(
         matches!((&requests[3], &requests[4]), (Request::Submit {bytes:a}, Request::Submit {bytes:b}) if a == b)
     );
+}
+
+fn review_args(args: &[String]) -> Vec<String> {
+    let mut args = args.to_vec();
+    args.remove(2);
+    args
+}
+fn question_fixture() -> serde_json::Value {
+    json!({"source":"statement = forall(x, equal(x,x))","purpose":"Equality reflexivity.",
+        "formal_targets":{"R":"forall(b0, equal(b0,b0))","not_R":"not_(forall(b0, equal(b0,b0)))","submitted_negation_parity":false}})
+}
+fn structured_provider(directory: &Directory, decision: &str, marker: &Path) -> PathBuf {
+    let script = format!(
+        "import hashlib,json,sys\nb=sys.stdin.buffer.read()\nprint(json.dumps({{'version':2,'decision':{decision:?},'provider':'fixture-v2','tool_calls':0,'assessment':{{'input_sha256':hashlib.sha256(b).hexdigest()}}}}))"
+    );
+    directory.raw_executable(
+        "structured",
+        &format!(
+            "printf x >> {}\nexec python3 -c {}",
+            quoted(marker.to_str().unwrap()),
+            quoted(&script)
+        ),
+    )
+}
+
+#[tokio::test]
+async fn review_only_then_vote_uses_one_retained_decision_and_identical_report() {
+    let fixture = Fixture::new();
+    let marker = fixture.directory.0.join("calls");
+    let executable = structured_provider(&fixture.directory, "YES", &marker);
+    let server = fixture.server(vec![
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+        json!({"status":"pending"}),
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+    ]);
+    let args = fixture.args(&executable);
+    review(&review_args(&args)).await.unwrap();
+    assert!(!Path::new(&args[2]).exists());
+    let report = files::read(Path::new(&args[3]), 16384, true).unwrap();
+    assert!(
+        !fs::read_dir(&fixture.config.signer).unwrap().any(|e| e
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|v| v == "action"))
+    );
+    run(&args).await.unwrap();
+    assert!(Path::new(&args[2]).exists());
+    assert_eq!(
+        report,
+        files::read(Path::new(&args[3]), 16384, true).unwrap()
+    );
+    // Even after a vote exists, a review cannot take the retry-submit shortcut.
+    review(&review_args(&args)).await.unwrap();
+    assert_eq!(fs::read(marker).unwrap(), b"x");
+    let requests = server.await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| matches!(r, Request::Submit { .. }))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn review_result_is_terminal_and_never_silently_signs_no() {
+    let fixture = Fixture::new();
+    let marker = fixture.directory.0.join("calls");
+    let executable = structured_provider(&fixture.directory, "REVIEW", &marker);
+    let server = fixture.server(vec![
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+    ]);
+    let args = fixture.args(&executable);
+    run(&args).await.unwrap();
+    run(&args).await.unwrap();
+    assert!(!Path::new(&args[2]).exists());
+    assert!(Path::new(&args[3]).exists());
+    assert_eq!(fs::read(marker).unwrap(), b"x");
+    assert!(
+        server
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| !matches!(r, Request::Submit { .. }))
+    );
+}
+
+#[tokio::test]
+async fn v2_decisions_require_version_and_exact_input_binding() {
+    let directory = Directory::new();
+    let marker = directory.0.join("calls");
+    let executable = structured_provider(&directory, "YES", &marker);
+    let accepted = invoke(&executable, b"bounded request", 5).await.unwrap();
+    assert!(accepted.reason.is_none());
+    for (field, value) in [
+        ("version", json!(3)),
+        ("assessment", json!([])),
+        ("assessment", json!({"input_sha256":"00".repeat(32)})),
+        ("version", json!(1)),
+    ] {
+        let mut invalid = serde_json::to_value(&accepted).unwrap();
+        invalid[field] = value;
+        let executable = directory.executable(
+            &format!(
+                "bad-{field}-{}",
+                files::hex(files::random().unwrap().as_ref())
+            ),
+            &output(invalid),
+        );
+        assert!(invoke(&executable, b"bounded request", 2).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn changed_provider_configuration_cannot_reset_review_budget_or_rescore_in_place() {
+    let fixture = Fixture::new();
+    let marker = fixture.directory.0.join("calls");
+    let executable = structured_provider(&fixture.directory, "YES", &marker);
+    let config = fixture.directory.0.join("provider.json");
+    files::create(&config, b"{\"policy\":1}", true).unwrap();
+    let mut args = fixture.args(&executable);
+    args.extend(["--provider-config".into(), config.to_str().unwrap().into()]);
+    let server = fixture.server(vec![
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+        fixture.status.clone(),
+        question_fixture(),
+    ]);
+    review(&review_args(&args)).await.unwrap();
+    files::replace_private(&config, b"{\"policy\":2}").unwrap();
+    let error = run(&args).await.err().unwrap().to_string();
+    assert!(error.contains("context or allowance changed"));
+    assert_eq!(fs::read(marker).unwrap(), b"x");
+    assert!(!Path::new(&args[2]).exists());
+    assert_eq!(server.await.unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn failed_reviews_consume_the_voting_budget() {
+    let fixture = Fixture::new();
+    let marker = fixture.directory.0.join("calls");
+    let executable = fixture.directory.executable(
+        "invalid",
+        &format!(
+            "printf x >> {}\nprintf '{{}}'",
+            quoted(marker.to_str().unwrap())
+        ),
+    );
+    let server = fixture.server(vec![
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+        question_fixture(),
+    ]);
+    let args = fixture.args(&executable);
+    assert!(review(&review_args(&args)).await.is_err());
+    assert!(run(&args).await.is_err());
+    assert_eq!(fs::read(marker).unwrap(), b"xx");
+    fixture.assert_no_vote_files();
+    assert_eq!(server.await.unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn kev_engine_receives_compiler_context_and_returns_unsigned_structured_assessment() {
+    // Exercise Rust -> real Python context/policy engine -> Rust, with an injected
+    // transport fixture. This deliberately makes no model inference or network call.
+    let fixture = Fixture::new();
+    let settings = fixture.directory.0.join("kev.json");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let script = format!(
+        r#"import json,sys
+sys.path.insert(0, {tools:?})
+from naome_kev import config,engine
+from naome_kev.schema import encode
+p={settings:?}
+# The fixture config is created before the CLI reads it (outside this provider).
+def transport(settings,payload):
+    assert settings['model'] == config.MODEL
+    assert payload['state']['compiler_facts']['formal_targets']['R'].startswith('forall')
+    return {{'model':config.MODEL,'usage':{{'input_tokens':100,'output_tokens':0}},'answers':{{k:{{'type':'noul','noul':({{'excluded':.05,'relevance':.9999999999999999,'value':.24800000000000003}}.get(k,.95))}} for k in ('relevance','value','fidelity','sufficient','excluded')}}}}
+print(encode(engine.evaluate(sys.stdin.buffer.read(),transport)).decode())
+"#,
+        tools = root.join("tools").to_str().unwrap(),
+        settings = settings.to_str().unwrap()
+    );
+    let make_config = format!(
+        "import sys;sys.path.insert(0,{:?});from naome_kev import config;from naome_kev.schema import encode;sys.stdout.buffer.write(encode(config.default({:?})))",
+        root.join("tools").to_str().unwrap(),
+        fixture.directory.0.to_str().unwrap()
+    );
+    let created = std::process::Command::new("python3")
+        .args(["-c", &make_config])
+        .output()
+        .unwrap();
+    assert!(created.status.success());
+    files::create(&settings, &created.stdout, true).unwrap();
+    let executable = fixture.directory.raw_executable(
+        "kev-fixture",
+        &format!("exec python3 -c {}", quoted(&script)),
+    );
+    let mut args = fixture.args(&executable);
+    args.extend([
+        "--provider-config".into(),
+        settings.to_str().unwrap().into(),
+    ]);
+    let server = fixture.server(vec![
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+    ]);
+    review(&review_args(&args)).await.unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&files::read(Path::new(&args[3]), 16384, true).unwrap()).unwrap();
+    assert_eq!(report["decision"]["decision"], "YES");
+    assert_eq!(report["decision"]["assessment"]["score_bps"], 7744);
+    let replay = std::process::Command::new("python3")
+        .arg(root.join("tools/agenda_agent_kev.py"))
+        .args(["replay", &args[3], settings.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let comparison: serde_json::Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(comparison["result"]["score_bps"], 7744);
+    assert!(
+        report["decision"]["assessment"]["model"]
+            .as_str()
+            .unwrap()
+            .starts_with("kev-4b@485ace8703592fcf405488b262449990824cfed1+")
+    );
+    assert!(report["decision"].get("reason").is_none());
+    assert!(!Path::new(&args[2]).exists());
+    assert_eq!(server.await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn configured_request_rejects_legacy_response_downgrade() {
+    let directory = Directory::new();
+    let executable = directory.executable("legacy", &output(decision()));
+    assert!(invoke(&executable, b"{\"version\":2}", 2).await.is_err());
+    assert!(invoke(&executable, b"{\"version\":1}", 2).await.is_ok());
+}
+
+#[tokio::test]
+async fn legacy_report_survives_interruption_before_action_copy() {
+    let fixture = Fixture::new();
+    let marker = fixture.directory.0.join("calls");
+    let executable = fixture.directory.executable(
+        "legacy",
+        &format!(
+            "printf x >> {}\n{}",
+            quoted(marker.to_str().unwrap()),
+            output(decision())
+        ),
+    );
+    let server = fixture.server(vec![
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+        json!({"status":"pending"}),
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
+        json!({"status":"pending"}),
+    ]);
+    let args = fixture.args(&executable);
+    run(&args).await.unwrap();
+    let action = files::read(Path::new(&args[2]), 65536, true).unwrap();
+    let operation = SignedOperation::decode(&action).unwrap();
+    let mut report: serde_json::Value =
+        serde_json::from_slice(&files::read(Path::new(&args[3]), 16384, true).unwrap()).unwrap();
+    report["operation"] = json!(files::hex(operation.id().as_bytes()));
+    let legacy = serde_json::to_vec_pretty(&report).unwrap();
+    files::replace_private(Path::new(&args[3]), &legacy).unwrap();
+    fs::remove_file(&args[2]).unwrap();
+    run(&args).await.unwrap();
+    assert_eq!(
+        files::read(Path::new(&args[2]), 65536, true).unwrap(),
+        action
+    );
+    assert_eq!(
+        files::read(Path::new(&args[3]), 16384, true).unwrap(),
+        legacy
+    );
+    assert_eq!(fs::read(marker).unwrap(), b"x");
+    assert_eq!(server.await.unwrap().len(), 8);
+    report["question_id"] = json!("wrong");
+    assert!(save_report(Path::new(&args[3]), &report, Some(&operation)).is_err());
 }
