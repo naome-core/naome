@@ -16,7 +16,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         None | Some("--help" | "help") => {
             println!(
-                "Trusted research MVP commands:\n  setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [standard|compact [ENDPOINTS_JSON]]\n  profile-info GENESIS\n  start|status|shutdown CONFIG\n  profile CONFIG TEXT_FILE\n  compile-question GENESIS SOURCE\n  submit CONFIG KEY SOURCE PURPOSE ACTION\n  vote CONFIG KEY YES|NO ACTION\n  agent-vote CONFIG KEY ACTION REPORT PROVIDER\n  package GENESIS KEY OUTPUT ROOT_SOURCE [--reference PROOF|--helper SOURCE]...\n  commit CONFIG KEY PACKAGE SECRET ACTION\n  reveal CONFIG KEY SECRET ACTION\n  send CONFIG ACTION\n  receipt|question CONFIG ID\n  fetch-proof CONFIG PROOF_ID OUTPUT\n  fetch-proof-from CONFIG VALIDATOR_INDEX PROOF_ID OUTPUT\n  check-proof GENESIS ROOT_PROOF [DEPENDENCY_PROOF...]\n  export CONFIG DIRECTORY\n  verify GENESIS DIRECTORY\n  inspect GENESIS DIRECTORY SUBMISSION_ID OUTPUT_DIRECTORY\n  peer CONFIG VALIDATOR_INDEX on|off"
+                "Trusted research MVP commands:\n  setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [standard|compact [ENDPOINTS_JSON]]\n  profile-info GENESIS\n  start|status|shutdown CONFIG\n  profile CONFIG TEXT_FILE\n  compile-question GENESIS SOURCE\n  submit CONFIG KEY SOURCE PURPOSE ACTION\n  vote CONFIG KEY YES|NO ACTION\n  agent-vote CONFIG KEY ACTION REPORT PROVIDER [--provider-config FILE]\n  agent-review CONFIG KEY REPORT PROVIDER [--provider-config FILE]\n  package GENESIS KEY OUTPUT ROOT_SOURCE [--reference PROOF|--helper SOURCE]...\n  commit CONFIG KEY PACKAGE SECRET ACTION\n  reveal CONFIG KEY SECRET ACTION\n  send CONFIG ACTION\n  receipt|question CONFIG ID\n  fetch-proof CONFIG PROOF_ID OUTPUT\n  fetch-proof-from CONFIG VALIDATOR_INDEX PROOF_ID OUTPUT\n  check-proof GENESIS ROOT_PROOF [DEPENDENCY_PROOF...]\n  export CONFIG DIRECTORY\n  verify GENESIS DIRECTORY\n  inspect GENESIS DIRECTORY SUBMISSION_ID OUTPUT_DIRECTORY\n  peer CONFIG VALIDATOR_INDEX on|off"
             );
             Ok(())
         }
@@ -43,6 +43,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
         Some("package") => package::run(&args[1..]),
         Some("check-proof") => package::check(&args[1..]),
         Some("agent-vote") => agent::run(&args[1..]).await,
+        Some("agent-review") => agent::review(&args[1..]).await,
         Some("profile") if args.len() == 3 => {
             let config = setup::NodeConfig::read(std::path::Path::new(&args[1]))?;
             let text =

@@ -53,6 +53,28 @@ independence, and the seven-day profile were not run. The revised 19-page
 [paper](whitepaper-en.pdf) passed structural checks and rendered-page visual
 review; that document review does not qualify the proposed public network.
 
+## Local Kev voting prototype
+
+Local validation on 2026-09-22 used an Apple M4 with 16 GiB RAM. Rust 1.97.1
+passed 543 tests in each of the test and release profiles, plus formatting,
+Clippy, rustdoc and doctests. After the Python-only lifecycle changes, all 54
+offline tests passed; Rust sources were unchanged from that validation.
+
+Actual model loading cancellation, termination cleanup, restart and process
+reuse passed. Existing installation reuse was exercised directly; fresh-download
+interruption and resumption used fixtures. Real Kev reviews produced unsigned
+REVIEW and finalized YES/NO ballots. The final four-validator smoke reused
+assessments without extra inference and replayed four archives to the same head.
+This is one-machine evidence, not separate-machine or full research-lifecycle
+acceptance. No CI or publication result is claimed.
+
+The frozen benchmark scored 37/48 baseline questions across 60 calls including
+repeat/order probes. A confident wrong answer to `17 mod 5` illustrates why this
+is not a dependable mathematical authority. Scores and policy thresholds remain
+uncalibrated. The benchmark script and question set are local research artifacts
+under ignored `.local/kev/research/`; reports are under `.local/kev/evidence/`.
+See the [Kev runbook](kev.md) for repeatable software and integration checks.
+
 ## Executable evidence locations
 
 | Label | Source and scope |

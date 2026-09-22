@@ -158,7 +158,12 @@ weight:
 "$BIN" profile "$C0" /absolute/path/research-preferences.txt
 ```
 
-An explicitly configured provider executable can supply an agenda decision:
+The optional [local Kev provider](kev.md) supports structured review, voting and
+offline policy replay without an account or API key. Run
+`python3 tools/agenda_agent_kev.py setup` once and `start` before a time-sensitive
+vote; its runbook covers configuration, status, shutdown and recovery.
+
+An explicitly configured legacy provider executable can also supply an agenda decision:
 
 ```sh
 "$BIN" agent-vote "$C0" "$RUN/accounts/account-0.key" \
@@ -169,7 +174,7 @@ An explicitly configured provider executable can supply an agenda decision:
 The executable receives one JSON request on stdin containing `version`, `profile`,
 `question`, `purpose`, `question_id`, `attempt`, `genesis`, `author`, and
 `agent_budget` (the inference index, maximum attempts, and remaining tool calls).
-It must return one JSON object
+For this no-config v1 path, it must return one JSON object
 on stdout with exactly `decision` (`YES` or `NO`), nonempty `reason`, nonempty
 `provider`, and integer `tool_calls`. The adapter allows at most two inference
 attempts per node/question/attempt, 60 seconds per inference, 8,192 output bytes,
@@ -190,7 +195,9 @@ output, and a 55-second inner timeout. It receives the public question and
 operator profile, never account keys or commitment secrets. Its reported tool
 count is zero, even when the outer allowance is positive. A missing login or
 provider failure produces no vote. Operators can instead supply another
-executable that implements the exact bounded contract.
+executable that implements the bounded contract. `agent-review CONFIG KEY REPORT
+PROVIDER` uses the same durable budget but never signs or submits; a later
+`agent-vote` can reuse its accepted decision and report.
 
 The executable is an operator-selected integration, not an automatically selected
 AI service. A provider label or JSON report is not proof that an AI service ran.

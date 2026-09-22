@@ -47,6 +47,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check Kev provider and local policy (offline fixtures)
+        run: python3 -m unittest discover -s tools/tests -v
+
       - name: Check documentation
         env:
           RUSTDOCFLAGS: -D warnings
