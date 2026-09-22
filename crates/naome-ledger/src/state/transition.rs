@@ -32,7 +32,7 @@ impl LedgerState {
         let mut productive = next.expire_queue(&mut effects)?;
         let mut active_progress = false;
         let mut opened = false;
-        let mut registered = false;
+        let mut ordinary_admission = false;
         if self.active.is_none() && !self.capacity.can_open(self.genesis.profile()) {
             if !operations.is_empty() {
                 return Err(LedgerError::Invalid(
@@ -63,10 +63,10 @@ impl LedgerState {
                 };
                 let (accepted, active) =
                     next.admit_action(self, operation, coordinate, &mut effects, &mut work)?;
-                registered |= accepted
+                ordinary_admission |= accepted
                     && matches!(
                         OperationBody::decode(operation.payload(), &self.genesis)?,
-                        OperationBody::Register
+                        OperationBody::Register | OperationBody::JoinIntent(_)
                     );
                 productive |= accepted;
                 active_progress |= active;
@@ -76,9 +76,9 @@ impl LedgerState {
             }
             // New identities never consume the protected completion reservation,
             // including when bundled with a vote, reveal or automatic transition.
-            if registered && (opened || active_progress) {
+            if ordinary_admission && (opened || active_progress) {
                 return Err(LedgerError::Invalid(
-                    "registration requires an ordinary record",
+                    "account and join admission require an ordinary record",
                 ));
             }
             if opened {
@@ -102,6 +102,9 @@ impl LedgerState {
         }
         if next.claims.len() as u64 != next.balances.paid_completions() {
             return Err(LedgerError::Invalid("claim issuance conservation"));
+        }
+        if next.join_intents.len() > next.claims.len() {
+            return Err(LedgerError::Invalid("join intent without claim"));
         }
         let mut derived = Writer::new();
         derived.u16(1);
@@ -376,6 +379,12 @@ impl LedgerState {
         };
         let active_progress = match body {
             OperationBody::Register => {
+                if self.join_intents.values().any(|pending| {
+                    pending.intent.consensus_key() == operation.public_key()
+                        || pending.intent.transport_key() == operation.public_key()
+                }) {
+                    return Err(LedgerError::Invalid("key roles overlap"));
+                }
                 self.accounts
                     .insert(operation.author(), *operation.public_key());
                 self.balances.register(operation.author())?;
@@ -383,6 +392,83 @@ impl LedgerState {
                     w.fixed(operation.author().as_bytes());
                     w.fixed(operation.public_key());
                 });
+                false
+            }
+            OperationBody::JoinIntent(intent) => {
+                intent.verify(&self.genesis, operation.author(), operation.nonce())?;
+                let family = intent.family();
+                let claim = parent.claims.get(&family).ok_or(LedgerError::Invalid(
+                    "join intent requires earlier sealed claim",
+                ))?;
+                if claim.author != operation.author()
+                    || claim.completion_ordinal != intent.completion_ordinal()
+                    || !matches!(
+                        parent.families.get(&family),
+                        Some(FamilyResult::Completed { author, ordinal, .. })
+                            if *author == claim.author && *ordinal == claim.completion_ordinal
+                    )
+                {
+                    return Err(LedgerError::Invalid("join intent claim attribution"));
+                }
+                let consensus_key = intent.consensus_key();
+                let transport_key = intent.transport_key();
+                if consensus_key == transport_key
+                    || self
+                        .accounts
+                        .values()
+                        .any(|key| key == consensus_key || key == transport_key)
+                    || self.genesis.validators().iter().any(|validator| {
+                        &validator.consensus_key == consensus_key
+                            || &validator.transport_key == consensus_key
+                            || &validator.consensus_key == transport_key
+                            || &validator.transport_key == transport_key
+                    })
+                    || self.join_intents.iter().any(|(other_family, pending)| {
+                        let other = &pending.intent;
+                        *other_family != family
+                            && (other.consensus_key() == consensus_key
+                                || other.transport_key() == consensus_key
+                                || other.consensus_key() == transport_key
+                                || other.transport_key() == transport_key)
+                    })
+                {
+                    return Err(LedgerError::Invalid("join intent key roles overlap"));
+                }
+                if self
+                    .genesis
+                    .validators()
+                    .iter()
+                    .any(|validator| validator.endpoint == intent.endpoint())
+                    || self.join_intents.iter().any(|(other_family, pending)| {
+                        *other_family != family && pending.intent.endpoint() == intent.endpoint()
+                    })
+                {
+                    return Err(LedgerError::Invalid(
+                        "join intent endpoint already reserved",
+                    ));
+                }
+                let previous = self
+                    .join_intents
+                    .get(&family)
+                    .map(|entry| entry.receipt.operation);
+                effect(effects, 17, |w| {
+                    w.fixed(family.as_bytes());
+                    w.fixed(id.as_bytes());
+                    if let Some(previous) = previous {
+                        w.u8(1);
+                        w.fixed(previous.as_bytes());
+                    } else {
+                        w.u8(0);
+                    }
+                });
+                self.join_intents.insert(
+                    family,
+                    JoinIntentEntry {
+                        intent,
+                        receipt,
+                        signed_operation: Arc::from(operation.encode()),
+                    },
+                );
                 false
             }
             OperationBody::Submit { purpose, question } => {

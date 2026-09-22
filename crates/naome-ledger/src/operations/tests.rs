@@ -30,12 +30,12 @@ fn package(genesis: &Genesis, author: AccountId) -> ProofPackage {
 fn registration_body_has_no_second_identity_or_extra_payload() {
     let genesis = genesis();
     let bytes = OperationBody::Register.encode().unwrap();
-    assert_eq!(bytes, [2, 5]);
+    assert_eq!(bytes, [3, 5]);
     assert_eq!(
         OperationBody::decode(&bytes, &genesis).unwrap(),
         OperationBody::Register
     );
-    for invalid in [&[1, 5][..], &[2, 5, 0], &[2, 6], &[2]] {
+    for invalid in [&[2, 5][..], &[3, 5, 0], &[3, 6], &[3]] {
         assert!(OperationBody::decode(invalid, &genesis).is_err());
     }
     let operation = OperationBody::Register
@@ -144,4 +144,13 @@ fn v1_original_and_old_signature_domain_are_rejected() {
     old_message.extend(original.unsigned_bytes().unwrap());
     original.signature = key.sign(&old_message).to_bytes();
     assert!(original.verify_signature(&genesis, round, author).is_err());
+
+    let mut v2 = SignedOriginal::sign(&genesis, round, package(&genesis, author), &key).unwrap();
+    let mut old_wire = v2.encode().unwrap();
+    old_wire[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert!(SignedOriginal::decode(&old_wire, &genesis).is_err());
+    let mut old_message = b"naome:state:original-authorization:v2\0".to_vec();
+    old_message.extend(v2.unsigned_bytes().unwrap());
+    v2.signature = key.sign(&old_message).to_bytes();
+    assert!(v2.verify_signature(&genesis, round, author).is_err());
 }

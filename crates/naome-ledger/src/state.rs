@@ -11,7 +11,7 @@ use crate::{
     library::{
         AdmissionCoordinate, NormalizedPackage, ProofLibrary, ProofOutcome, VerificationWork,
     },
-    operations::{OperationBody, SignedOriginal},
+    operations::{JoinIntent, OperationBody, SignedOriginal},
     profile::Genesis,
     question::{CompiledQuestion, QuestionContext, checker_profile_id, solution_round_id},
     time::TimeCertificate,
@@ -21,6 +21,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 mod encoding;
+#[cfg(test)]
+mod tests;
 mod transition;
 
 /// An attempt phase advances only through a validated finalized record.
@@ -160,6 +162,27 @@ pub struct EligibilityClaim {
     pub completion_ordinal: u64,
 }
 
+/// The current finalized candidate consent for a later handoff. The author may
+/// supersede it before activation; no intent consumes the claim or grants weight.
+#[derive(Clone)]
+pub struct JoinIntentEntry {
+    intent: JoinIntent,
+    receipt: Receipt,
+    signed_operation: Arc<[u8]>,
+}
+impl JoinIntentEntry {
+    pub fn intent(&self) -> &JoinIntent {
+        &self.intent
+    }
+    pub const fn receipt(&self) -> Receipt {
+        self.receipt
+    }
+    /// Exact authenticated bytes committed to state, including possession proofs.
+    pub fn signed_operation(&self) -> &[u8] {
+        &self.signed_operation
+    }
+}
+
 /// All application state required by deterministic replay. The selected journal
 /// and consensus layer, not this in-memory type, determine what is finalized.
 #[derive(Clone)]
@@ -180,6 +203,7 @@ pub struct LedgerState {
     active: Option<Attempt>,
     families: BTreeMap<ResolutionId, FamilyResult>,
     claims: BTreeMap<ResolutionId, EligibilityClaim>,
+    join_intents: BTreeMap<ResolutionId, JoinIntentEntry>,
     capacity: Capacity,
     terminated: bool,
 }
@@ -217,6 +241,7 @@ impl LedgerState {
             active: None,
             families: BTreeMap::new(),
             claims: BTreeMap::new(),
+            join_intents: BTreeMap::new(),
             capacity,
             terminated: false,
         }
@@ -281,6 +306,37 @@ impl LedgerState {
     pub fn claims(&self) -> &BTreeMap<ResolutionId, EligibilityClaim> {
         &self.claims
     }
+    /// Current finalized join preparation per claim, never the active set.
+    pub fn join_intents(&self) -> &BTreeMap<ResolutionId, JoinIntentEntry> {
+        &self.join_intents
+    }
+    pub fn join_intent(&self, family: ResolutionId) -> Option<&JoinIntentEntry> {
+        self.join_intents.get(&family)
+    }
+    /// Cheap local intake preview. Final admission also verifies candidate keys,
+    /// endpoint uniqueness, nonce, automatic transitions, and ordinary capacity.
+    pub fn can_submit_join_intent(
+        &self,
+        author: AccountId,
+        family: ResolutionId,
+        ordinal: u64,
+    ) -> bool {
+        !self.terminated
+            && self.capacity.remaining() > self.capacity.reserved() + 1
+            && (self.active.is_some() || self.capacity.can_open(self.genesis.profile()))
+            && self
+                .claims
+                .get(&family)
+                .is_some_and(|claim| claim.author == author && claim.completion_ordinal == ordinal)
+            && matches!(
+                self.families.get(&family),
+                Some(FamilyResult::Completed {
+                    author: completed_author,
+                    ordinal: completed_ordinal,
+                    ..
+                }) if *completed_author == author && *completed_ordinal == ordinal
+            )
+    }
     pub fn remaining_records(&self) -> u64 {
         self.capacity.remaining()
     }
@@ -338,7 +394,7 @@ impl LedgerState {
     pub fn commitment(&self) -> StateCommitment {
         let mut count = Writer::counting();
         self.write_state(&mut count);
-        let mut digest = Writer::hashing(b"naome:state:state:v2\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:state:v3\0", count.len());
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }

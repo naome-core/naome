@@ -13,10 +13,13 @@ use crate::{
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
 const ORIGINAL_MAGIC: &[u8; 4] = b"NSOR";
-const ORIGINAL_VERSION: u16 = 2;
-const ORIGINAL_DOMAIN: &[u8] = b"naome:state:original-authorization:v2\0";
+const ORIGINAL_VERSION: u16 = 3;
+const ORIGINAL_DOMAIN: &[u8] = b"naome:state:original-authorization:v3\0";
 const ORIGINAL_OVERHEAD: usize = 4 + 2 + 32 + 32 + 32 + 32 + 4 + 64;
 const PURPOSE_MAX_BYTES: usize = 16 * 1024;
+
+mod join_intent;
+pub use join_intent::JoinIntent;
 
 /// A package signed by its single author under the exact approved solution round.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,7 +138,7 @@ impl CommitmentId {
         secret: &[u8; 32],
     ) -> Self {
         Self::from_bytes(hash(
-            b"naome:state:commitment:v1\0",
+            b"naome:state:commitment:v3\0",
             &[
                 genesis.id().as_bytes(),
                 genesis.profile().id().as_bytes(),
@@ -153,6 +156,8 @@ impl CommitmentId {
 pub enum OperationBody {
     /// Registers the account identified by the authenticated envelope's key.
     Register,
+    /// Records claim-holder consent and candidate key possession, without activation.
+    JoinIntent(JoinIntent),
     Submit {
         purpose: String,
         question: CompiledQuestion,
@@ -177,6 +182,7 @@ impl std::fmt::Debug for OperationBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Register => f.write_str("Register"),
+            Self::JoinIntent(intent) => f.debug_tuple("JoinIntent").field(intent).finish(),
             Self::Submit { question, .. } => f
                 .debug_tuple("Submit")
                 .field(&question.resolution_id())
@@ -216,9 +222,13 @@ impl OperationBody {
     }
     pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
-        writer.u8(2);
+        writer.u8(3);
         match self {
             Self::Register => writer.u8(5),
+            Self::JoinIntent(intent) => {
+                writer.u8(6);
+                intent.encode_into(&mut writer)?;
+            }
             Self::Submit { purpose, question } => {
                 if purpose.is_empty() || purpose.len() > PURPOSE_MAX_BYTES {
                     return Err(LedgerError::Limit("question purpose"));
@@ -257,11 +267,12 @@ impl OperationBody {
     }
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, genesis.profile().limits().record_bytes as usize)?;
-        if reader.u8()? != 2 {
+        if reader.u8()? != 3 {
             return Err(LedgerError::Invalid("user body version"));
         }
         let body = match reader.u8()? {
             5 => Self::Register,
+            6 => Self::JoinIntent(JoinIntent::decode_from(&mut reader)?),
             1 => {
                 let purpose = reader.string(PURPOSE_MAX_BYTES)?.to_owned();
                 if purpose.is_empty() {

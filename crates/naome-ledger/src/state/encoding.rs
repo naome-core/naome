@@ -2,7 +2,7 @@ use super::*;
 
 impl LedgerState {
     pub(super) fn write_state(&self, w: &mut Writer) {
-        w.u16(2);
+        w.u16(3);
         w.fixed(self.genesis.id().as_bytes());
         w.u64(self.height);
         w.u64(self.time);
@@ -132,6 +132,15 @@ impl LedgerState {
             w.fixed(claim.family.as_bytes());
             w.fixed(claim.author.as_bytes());
             w.u64(claim.completion_ordinal);
+        }
+        w.u32(self.join_intents.len() as u32);
+        for (family, pending) in &self.join_intents {
+            w.fixed(family.as_bytes());
+            encode_receipt(w, &pending.receipt);
+            // Exact authenticated operation bytes include every candidate field
+            // and both key-possession proofs, not merely a mutable lookup hint.
+            w.bytes(&pending.signed_operation)
+                .expect("bounded signed join intent");
         }
         self.capacity.encode_into(w);
         w.u8(u8::from(self.terminated));

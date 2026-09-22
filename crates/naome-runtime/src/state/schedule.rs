@@ -101,7 +101,8 @@ impl StateRuntime {
                     state.genesis(),
                 )?;
                 let priority = match body {
-                    naome_ledger::operations::OperationBody::Register => 2,
+                    naome_ledger::operations::OperationBody::Register
+                    | naome_ledger::operations::OperationBody::JoinIntent(_) => 2,
                     naome_ledger::operations::OperationBody::Submit { .. } => 1,
                     _ => 0,
                 };

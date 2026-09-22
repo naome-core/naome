@@ -206,9 +206,35 @@ async fn state_real_noise_roundtrip_retained_response_blocks_next_and_resumes() 
 }
 #[tokio::test]
 async fn state_unknown_local_identity_fails_closed() {
+    use ed25519_dalek::SigningKey;
+    use naome_ledger::{AccountId, ResolutionId, operations::JoinIntent};
+
     let (genesis, _) = fixture();
+    let candidate_consensus = SigningKey::from_bytes(&[71; 32]);
+    let candidate_transport = SigningKey::from_bytes(&[72; 32]);
+    let candidate_endpoint = (43000..43005)
+        .map(|port| format!("127.0.0.1:{port}"))
+        .find(|endpoint| !genesis.validators().iter().any(|v| v.endpoint == *endpoint))
+        .unwrap();
+    let intent = JoinIntent::new(
+        &genesis,
+        AccountId::for_key(genesis.accounts()[4].key()),
+        1,
+        ResolutionId::from_bytes([88; 32]),
+        1,
+        &candidate_consensus,
+        &candidate_transport,
+        candidate_endpoint,
+    )
+    .unwrap();
+    let candidate_identity =
+        identity::Keypair::ed25519_from_bytes(candidate_transport.to_bytes()).unwrap();
+    assert_eq!(
+        state_peer_id(*intent.transport_key()).unwrap(),
+        candidate_identity.public().to_peer_id()
+    );
     assert!(matches!(
-        StateNetwork::new_state(identity::Keypair::generate_ed25519(), &genesis),
+        StateNetwork::new_state(candidate_identity, &genesis),
         Err(StateNetworkBuildError::Identity)
     ));
 }

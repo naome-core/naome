@@ -122,4 +122,13 @@ fn v1_action_and_old_signature_domain_are_not_admission_authority() {
     old_message.extend(signed.unsigned_bytes());
     signed.signature = key.sign(&old_message).to_bytes();
     assert!(signed.verify_signature(&genesis).is_err());
+
+    let mut v2 = SignedOperation::sign(&genesis, 1, vec![2, 5], &key).unwrap();
+    let mut old_wire = v2.encode();
+    old_wire[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert!(SignedOperation::decode(&old_wire).is_err());
+    let mut old_message = b"naome:state:user-action:v2\0".to_vec();
+    old_message.extend(v2.unsigned_bytes());
+    v2.signature = key.sign(&old_message).to_bytes();
+    assert!(v2.verify_signature(&genesis).is_err());
 }

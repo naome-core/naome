@@ -20,7 +20,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 fn vector(name: &str) -> Vec<u8> {
-    let line = include_str!("../../naome-consensus/src/state/tests/golden-v2.txt")
+    let line = include_str!("../../naome-consensus/src/state/tests/golden-v3.txt")
         .lines()
         .find(|line| line.split_whitespace().next() == Some(name))
         .unwrap();

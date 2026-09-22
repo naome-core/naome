@@ -48,7 +48,7 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(lab.timing().reveal_seconds, 120);
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
-    assert_eq!(short.name(), "state-v2-short-test");
+    assert_eq!(short.name(), "state-v3-short-test");
     assert_ne!(lab.id(), research.id());
     assert_ne!(lab.id(), short.id());
     assert_eq!(
@@ -216,12 +216,14 @@ fn old_profile_and_genesis_versions_are_not_reinterpreted() {
 
     let genesis = fixture();
     let mut old_genesis = genesis.encode();
-    old_genesis[..8].copy_from_slice(b"NAOGENS1");
-    assert_eq!(
-        Genesis::decode(&old_genesis),
-        Err(LedgerError::Invalid("genesis version"))
-    );
-    for protocol_version in [1, 3] {
+    for old_magic in [b"NAOGENS1", b"NAOGENS2"] {
+        old_genesis[..8].copy_from_slice(old_magic);
+        assert_eq!(
+            Genesis::decode(&old_genesis),
+            Err(LedgerError::Invalid("genesis version"))
+        );
+    }
+    for protocol_version in [1, 2, 4] {
         let mut unsupported = genesis.clone();
         unsupported.protocol_version = protocol_version;
         assert!(Genesis::decode(&unsupported.encode()).is_err());
@@ -382,7 +384,7 @@ fn lab_profile_golden_encoding_and_identity() {
         4096, 64, 2097152, 32, 64, 16, 1, 1048576, 8192, 64, 1, 2, 4, 4194304, 2592, 75497472,
         10616832, 1114112, 1114112, 64, 64,
     ];
-    let mut bytes = b"NAOPROF2\0".to_vec();
+    let mut bytes = b"NAOPROF3\0".to_vec();
     for value in values {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -401,8 +403,8 @@ fn lab_profile_golden_encoding_and_identity() {
     assert_eq!(
         Profile::lab().id().as_bytes(),
         &[
-            135, 31, 98, 217, 112, 108, 81, 6, 141, 230, 107, 32, 142, 118, 216, 250, 188, 150,
-            248, 45, 94, 84, 66, 29, 177, 67, 80, 102, 190, 193, 28, 30
+            8, 33, 57, 100, 64, 38, 147, 100, 33, 82, 121, 175, 201, 190, 255, 207, 125, 115, 109,
+            44, 236, 91, 161, 189, 209, 207, 99, 13, 45, 246, 205, 91
         ]
     );
 }
