@@ -17,6 +17,9 @@ mod lifecycle;
 #[path = "cases/state_safety.rs"]
 mod state_safety;
 
+#[path = "cases/admission.rs"]
+mod admission;
+
 fn process_guard() -> std::sync::MutexGuard<'static, ()> {
     static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     ACTIVE

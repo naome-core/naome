@@ -68,7 +68,7 @@ impl StateRuntime {
         self.enqueue_periodic()?;
         Ok(())
     }
-    fn prepare_record(&mut self) -> Result<Option<Vec<u8>>> {
+    pub(super) fn prepare_record(&mut self) -> Result<Option<Vec<u8>>> {
         if self.time_reports.len() < 3 || self.node.signer_key().is_none() {
             return Ok(None);
         }
@@ -86,15 +86,42 @@ impl StateRuntime {
         let mut operations = Vec::new();
         let mut rejected = Vec::new();
         let mut best = state.prepare_record(certificate.clone(), Vec::new()).ok();
-        for operation in self
+        // Protected phase work consumes or establishes an attempt reservation.
+        // Registration must never poison that automatic progress, nor a valid
+        // pending vote, commitment, or reveal, through operation-ID ordering.
+        let mut protected = best.as_ref().is_some_and(|transition| {
+            transition.state().reserved_records() != state.reserved_records()
+        });
+        let mut pending = self
             .pending
             .values()
-            .take(state.genesis().profile().limits().operations_per_record as usize)
-        {
+            .map(|operation| {
+                let body = naome_ledger::operations::OperationBody::decode(
+                    operation.payload(),
+                    state.genesis(),
+                )?;
+                let priority = match body {
+                    naome_ledger::operations::OperationBody::Register => 2,
+                    naome_ledger::operations::OperationBody::Submit { .. } => 1,
+                    _ => 0,
+                };
+                Ok((priority, operation))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        pending.sort_by_key(|(priority, _)| *priority);
+        for (priority, operation) in pending {
+            if operations.len() >= state.genesis().profile().limits().operations_per_record as usize
+            {
+                break;
+            }
+            if priority == 2 && protected {
+                continue;
+            }
             let mut candidate = operations.clone();
             candidate.push(operation.clone());
             match state.prepare_record(certificate.clone(), candidate.clone()) {
                 Ok(transition) => {
+                    protected |= transition.state().reserved_records() != state.reserved_records();
                     operations = candidate;
                     best = Some(transition);
                 }

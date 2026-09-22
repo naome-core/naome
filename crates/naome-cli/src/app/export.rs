@@ -42,7 +42,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 let original = originals
                     .get(&receipt.original_hash)
                     .ok_or("winning original absent from replayed history")?;
-                original.verify(genesis, receipt.round, receipt.author)?;
+                original.verify_signature(genesis, receipt.round, receipt.author)?;
                 if original.original_hash() != receipt.original_hash {
                     return Err("winning original hash mismatch".into());
                 }

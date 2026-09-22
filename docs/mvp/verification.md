@@ -1,11 +1,27 @@
 # Trusted research MVP verification
 
-The trusted MVP uses one canonical `state-v1` history through `naome`,
+The current account-admission extension uses canonical `state-v2` history through `naome`,
 `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
 proof-library component of that complete state. The [qualification report](evidence/final-integration.json)
 records source identities, commands, output hashes, the real-agent lab, and CI.
 The requirement and acceptance mappings below refer to the current executable
 tests; every recorded run establishes evidence only for its named snapshot.
+
+The recorded lab and CI reports below qualify their historical v1 snapshots. They do not qualify the v2 self-registration extension or a migration; earlier runs require their original executable.
+
+## Local account-admission qualification
+
+The 22 September 2026 local v2 check used Rust 1.97.1 and `CARGO_INCREMENTAL=0`.
+Both complete workspace profiles (`test` and `release`) passed 564 tests, each
+after its own `--all-targets --all-features --locked --no-run` build barrier.
+Formatting, Clippy with warnings denied, rustdoc with warnings denied, and the
+workspace doctest command passed. The seven process scenarios include a fresh
+researcher creating a key, registering with zero balance, earning a proof reward,
+independently verifying its archive, and surviving all four validators' cold
+restart. Registry exhaustion, fixed voting authority, protected intake, original
+and citation rewards, and journal replay have separate component coverage below.
+This is local qualification; v2 platform CI and separate-machine acceptance are
+not established by these results.
 
 ## Recorded qualification
 
@@ -80,6 +96,7 @@ See the [Kev runbook](kev.md) for repeatable software and integration checks.
 | Label | Source and scope |
 |---|---|
 | Profile | [Profile/genesis tests](../../crates/naome-ledger/src/profile/tests.rs) |
+| Account admission | [Registration, capacity and authority](../../crates/naome-chain/src/state/tests/admission.rs), [protected intake](../../crates/naome-runtime/src/state/tests/intake_priority.rs), [four-process join, reward and restart](../../crates/naome-cli/tests/cases/admission.rs) |
 | Questions | [Question compilation tests](../../crates/naome-ledger/src/question/tests.rs) |
 | State | [Canonical state transitions](../../crates/naome-chain/src/state/tests.rs), [wire/replay vectors](../../crates/naome-chain/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-chain/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-chain/src/state/tests/capacity_sixteen.rs) |
 | Library | [Mathematical normalization/reuse tests](../../crates/naome-ledger/src/library/tests.rs), [workload qualification](../../crates/naome-ledger/src/library/tests/qualification.rs), [older-depth boundary](../../crates/naome-ledger/src/library/tests/depth_boundary.rs) |
@@ -105,7 +122,7 @@ identify runner actions and fields in the recorded acceptance report.
 | MVP-02 | Process test and LAB start four executables with separate configured histories, anchors, signer stores and keys. LAB records custody and agreement. |
 | MVP-03 | State: `complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuance`; Consensus: `verified_control_record_finality_binds_full_state_and_preserves_empty_library`; LAB compares complete state/accounts/claims/library. |
 | MVP-04 | Consensus control-record test above; Storage: `complete_control_history_reopens_and_observer_uses_same_full_state`; Process finalizes an unapproved question without a proof. |
-| MVP-05 | State: `complete_v1_wire_and_identifier_vectors`, `streaming_state_commitment_matches_materialized_canonical_bytes`; Profile and Protocol golden vectors; Process/LAB observer agreement. Target-platform agreement also requires completed CI. |
+| MVP-05 | State: `complete_v2_wire_and_identifier_vectors`, `streaming_state_commitment_matches_materialized_canonical_bytes`; Profile and Protocol golden vectors; Process/LAB observer agreement. Target-platform agreement also requires completed CI. |
 | MVP-06 | Questions: `rejects_free_variables_assumptions_imports_and_bad_syntax`, `profile_smaller_bounds_are_enforced_for_both_targets`, canonical/orientation tests. Receipts: `rendered_closed_targets_round_trip_without_changing_canonical_formula`. CLI `compile-question` and submission preview are exercised through operating procedures/LAB submission. |
 | MVP-07 | State: `actual_queue_limit_and_exact_expiry_preserve_state_on_rejection`, `default_queue_accepts_32_in_finalized_order_and_rejects_33_without_mutation`; Runtime: `queue_receipt_is_not_finality_and_duplicate_identity_is_idempotent`. |
 | MVP-08 | State A/H/B/C workflow; Library: `real_a_group_then_b_refutation_preserves_h_attribution_and_known_c`; LAB `helper_normalization_citation_known`. |

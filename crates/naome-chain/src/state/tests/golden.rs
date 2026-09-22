@@ -3,7 +3,7 @@ use super::*;
 // Fixed public test seeds and secrets only. These bytes are regression vectors,
 // never credentials for an operational genesis.
 #[test]
-fn complete_v1_wire_and_identifier_vectors() {
+fn complete_v2_wire_and_identifier_vectors() {
     let mut output = String::new();
     fn vector(out: &mut String, name: &str, bytes: &[u8]) {
         use std::fmt::Write;
@@ -21,12 +21,27 @@ fn complete_v1_wire_and_identifier_vectors() {
         SignedTimeReport::sign(state.genesis(), state.head(), 1, 100, &validator(0)).unwrap();
     vector(&mut output, "signed-time", &report.encode());
     vector(&mut output, "time-certificate", &time(&state, 100).encode());
+    let registration = OperationBody::Register
+        .sign(state.genesis(), 1, &account(6))
+        .unwrap();
+    vector(&mut output, "signed-registration", &registration.encode());
+    let record = apply(&mut state, 100, vec![registration]);
+    vector(
+        &mut output,
+        "registration-record",
+        &record.encode().unwrap(),
+    );
+    vector(
+        &mut output,
+        "registered-state",
+        state.commitment().as_bytes(),
+    );
     let body = OperationBody::Submit {
         purpose: "test a formal target".into(),
         question: question(&state, "forall(x,equal(x,x))"),
     };
     vector(&mut output, "submit-body", &body.encode().unwrap());
-    let action = signed(&state, 4, body);
+    let action = signed(&state, 6, body);
     vector(&mut output, "signed-submit", &action.encode());
     vector(&mut output, "submit-id", action.id().as_bytes());
     let record = apply(&mut state, 100, vec![action]);
@@ -34,32 +49,32 @@ fn complete_v1_wire_and_identifier_vectors() {
     vector(&mut output, "submit-record-id", record.id().as_bytes());
     let round = open_and_approve(&mut state);
     vector(&mut output, "solution-round", round.as_bytes());
-    let package = root_package(&state, 4);
+    let package = root_package(&state, 6);
     vector(&mut output, "original-package", &package.encode().unwrap());
     vector(
         &mut output,
         "original-hash",
         package.original_hash().as_bytes(),
     );
-    let original = SignedOriginal::sign(state.genesis(), round, package, &account(4)).unwrap();
+    let original = SignedOriginal::sign(state.genesis(), round, package, &account(6)).unwrap();
     vector(&mut output, "signed-original", &original.encode().unwrap());
     let secret = [7; 32];
     let commitment = CommitmentId::for_original(
         state.genesis(),
         round,
-        author(4),
+        author(6),
         original.original_hash(),
         &secret,
     );
     vector(&mut output, "commitment-id", commitment.as_bytes());
-    let commit = signed(&state, 4, OperationBody::Commit { round, commitment });
+    let commit = signed(&state, 6, OperationBody::Commit { round, commitment });
     vector(&mut output, "signed-commit", &commit.encode());
     let utc = state.time();
     apply(&mut state, utc, vec![commit]);
     start_reveal(&mut state);
     let reveal = signed(
         &state,
-        4,
+        6,
         OperationBody::Reveal {
             round,
             secret,
@@ -90,7 +105,7 @@ fn complete_v1_wire_and_identifier_vectors() {
         std::fs::write(path, &output).unwrap();
         return;
     }
-    assert_eq!(output, include_str!("golden-v1.txt"));
+    assert_eq!(output, include_str!("golden-v2.txt"));
 }
 
 #[test]
@@ -125,7 +140,7 @@ fn signed_old_attempt_reveal_never_resolves_new_attempt() {
     assert!(state.library().is_empty());
 }
 
-// Archived bytes are intentionally immutable: a fresh state-v1 genesis is
+// Archived bytes are intentionally immutable: a fresh state-v2 genesis is
 // required. Prefix substitution is not an authorized migration of signatures.
 fn legacy_vector(name: &str) -> Vec<u8> {
     let line = include_str!("legacy-research-v1.txt")
@@ -158,8 +173,7 @@ fn legacy_research_authority_is_not_reinterpreted_as_state_history() {
         bytes[..4].copy_from_slice(b"NSUA");
         assert!(
             SignedOperation::decode(&bytes)
-                .unwrap()
-                .verify(state.genesis())
+                .and_then(|operation| operation.verify_signature(state.genesis()))
                 .is_err()
         );
     }
@@ -173,4 +187,28 @@ fn legacy_research_authority_is_not_reinterpreted_as_state_history() {
             .is_err()
     );
     assert!(SignedOriginal::decode(&legacy_vector("signed-original"), state.genesis()).is_err());
+}
+
+#[test]
+fn protocol_v1_genesis_and_actions_are_not_reinterpreted() {
+    let state = LedgerState::new(genesis());
+    for line in include_str!("golden-v1.txt").lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let bytes: Vec<_> = fields[2]
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        match fields[0] {
+            "genesis" => assert!(Genesis::decode(&bytes).is_err()),
+            "signed-submit" | "signed-commit" | "signed-reveal" => {
+                assert!(SignedOperation::decode(&bytes).is_err())
+            }
+            "signed-original" => assert!(SignedOriginal::decode(&bytes, state.genesis()).is_err()),
+            "submit-record" | "settlement-record" => {
+                assert!(StateRecord::decode(&bytes, state.genesis()).is_err())
+            }
+            _ => {}
+        }
+    }
 }

@@ -1,5 +1,6 @@
 //! Bounded inspection of normalization receipts. Decoding establishes neither
-//! mathematical validity nor finality; obtain authority through full replay.
+//! account registration, mathematical validity nor finality; obtain authority
+//! through full replay.
 
 use crate::{
     AccountId, CommitmentId, GenesisId, LedgerError, OperationId, PackageHash, ProfileId,
@@ -84,11 +85,7 @@ impl NormalizationReceipt {
             ProofPackage::decode(r.bytes(limits.package_bytes as usize)?, genesis.profile())?;
         let root = ProofId::from_bytes(r.fixed()?);
         let author = AccountId::from_bytes(r.fixed()?);
-        if package.root() != root
-            || package.author() != author
-            || winning_commit.author != author
-            || genesis.account_key(author).is_none()
-        {
+        if package.root() != root || package.author() != author || winning_commit.author != author {
             return Err(LedgerError::Invalid("normalization package identity"));
         }
         let count = read_count(&mut r, limits.new_helpers + 1)?;
@@ -111,7 +108,6 @@ impl NormalizationReceipt {
             let proof = ProofId::from_bytes(r.fixed()?);
             let recipient = AccountId::from_bytes(r.fixed()?);
             if previous.is_some_and(|id| id >= proof)
-                || genesis.account_key(recipient).is_none()
                 || new_proofs.iter().any(|(id, _)| *id == proof)
             {
                 return Err(LedgerError::Invalid("normalization citation identity"));

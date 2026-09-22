@@ -43,7 +43,7 @@ fn round(status: &Value, phase: &str) -> Result<SolutionRoundId> {
     )?))
 }
 async fn send(config: &NodeConfig, operation: &SignedOperation) -> Result<()> {
-    operation.verify(&config.genesis()?)?;
+    operation.verify_signature(&config.genesis()?)?;
     let response = control::call(
         config,
         Request::Submit {
@@ -120,8 +120,8 @@ impl SecretBundle {
         if c.position() != bytes.len() as u64 {
             return Err("trailing secret bundle content".into());
         }
-        original.verify(genesis, round, author)?;
-        commit.verify(genesis)?;
+        original.verify_signature(genesis, round, author)?;
+        commit.verify_signature(genesis)?;
         let expected =
             CommitmentId::for_original(genesis, round, author, original.original_hash(), &secret);
         if commit.author() != author
@@ -138,6 +138,27 @@ impl SecretBundle {
             original,
             commit,
         })
+    }
+}
+pub async fn account(args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("create") if args.len() == 2 => {
+            let key = files::write_key(Path::new(&args[1]), 1)?;
+            println!(
+                "{}",
+                json!({"status":"account_key_created","account":files::hex(AccountId::for_key(key.verifying_key().as_bytes()).as_bytes()),"key":args[1]})
+            );
+            Ok(())
+        }
+        Some("register") if args.len() == 4 => {
+            let config = NodeConfig::read(Path::new(&args[1]))?;
+            let key = files::key(Path::new(&args[2]), 1)?;
+            // Nonce one and an empty body make retries byte-identical, even
+            // after registration finalizes or later account nonces are used.
+            let operation = OperationBody::Register.sign(&config.genesis()?, 1, &key)?;
+            save_send(&config, &args[3], &operation).await
+        }
+        _ => Err("usage: account create KEY; account register CONFIG KEY ACTION".into()),
     }
 }
 pub async fn run(args: &[String]) -> Result<()> {
@@ -172,7 +193,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             genesis.profile().limits().record_bytes as usize,
             true,
         )?)?;
-        operation.verify(&genesis)?;
+        operation.verify_signature(&genesis)?;
         if operation.author() != author
             || !matches!(OperationBody::decode(operation.payload(),&genesis)?,OperationBody::Reveal{round,secret,original} if round==bundle.round && secret==*bundle.secret && original.encode()?==bundle.original.encode()?)
         {

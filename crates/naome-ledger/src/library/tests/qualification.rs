@@ -458,7 +458,7 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
         profile.clone(),
         fixture.foundation().into(),
         fixture.checker_profile().into(),
-        1,
+        crate::profile::STATE_PROTOCOL_VERSION,
         100,
         [17; 32],
         keys.iter().map(|k| k.verifying_key().to_bytes()).collect(),
@@ -548,7 +548,7 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
         let author = AccountId::for_key(key.verifying_key().as_bytes());
         let package = ProofPackage::new(author, previous, new_nodes.clone(), &profile).unwrap();
         let original = SignedOriginal::sign(&genesis, round, package.clone(), key).unwrap();
-        original.verify(&genesis, round, author).unwrap();
+        original.verify_signature(&genesis, round, author).unwrap();
         let action = OperationBody::Reveal {
             round,
             secret: [index as u8; 32],
@@ -556,7 +556,7 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
         }
         .sign(&genesis, 1, key)
         .unwrap();
-        action.verify(&genesis).unwrap();
+        action.verify_signature(&genesis).unwrap();
         actions.push(action);
         packages.push(package);
     }

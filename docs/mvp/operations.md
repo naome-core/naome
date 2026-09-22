@@ -13,10 +13,10 @@ This qualification does not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The current integration format is `state-v1`. Existing research-v1 runs cannot
+The account-admission format is `state-v2`. Existing state-v1 and research-v1 runs cannot
 be reopened or converted with this executable. Retain their directories and use
 the original executable for historical inspection. Start a new directory and
-genesis for state-v1; see the [format boundary](../../specs/ownership.md#canonical-state-formats).
+genesis for state-v2; see the [format boundary](../../specs/ownership.md#canonical-state-formats).
 Node configuration version 2 uses `agenda_profile` and `agenda-profile.txt`.
 The canonical journal names are `state.journal`, `state.lock`,
 `state-finality.anchor`, and `state-signer-KEY.*`. Earlier state-v1 builds used
@@ -129,10 +129,14 @@ C3="$RUN/node-3/node.json"
 
 Status reports finalized height, head/state/library commitments, certified time,
 active phase and deadline, account balances/nonces, claims, and remaining/reserved
-record capacity. Pending operations are local intake, not finality. A submission
+record capacity. `registered_accounts`, `remaining_account_slots`, and
+`registration_available` describe the canonical registry and current ordinary
+capacity. Pending operations are local intake, not finality. A submission
 response of `transported` does not promise eventual admission. Query its operation
-ID using `receipt`; responses distinguish `finalized`, `not_finalized`, and
-`rejected` with a reason. Identical saved actions can be resent with `send`.
+ID using `receipt`; responses distinguish `finalized`, `not_finalized`,
+`deferred`, and `rejected` with a reason. `deferred` means the bounded local queue
+yielded to an active vote, commitment, or reveal; resubmit the saved action.
+Identical saved actions can be resent with `send`.
 
 ```sh
 "$BIN" receipt "$C0" "$OPERATION_ID"
@@ -147,6 +151,33 @@ anchor. Complete corruption, missing/mismatched anchors, conflicting verified
 finality, or uncertain live writes halt the affected path. Do not delete anchors
 or regenerate keys to clear an error. Preserve the failed run for diagnosis;
 `setup` at a different unused directory creates a new run with a new identity.
+
+## Register a researcher account
+
+A researcher can create an account key and register through a running node:
+
+```sh
+"$BIN" account create "$RUN/accounts/researcher.key"
+"$BIN" account register "$C0" "$RUN/accounts/researcher.key" "$RUN/register.bin"
+"$BIN" receipt "$C0" "$OPERATION_ID"
+```
+
+Use the operation ID printed by `account register`, and wait for `finalized`
+before submitting research. Registration starts with zero balance and consumes
+nonce 1; the first ordinary operation uses nonce 2. Genesis accounts already
+start registered with ordinary nonce 1. Up to 256 total accounts, including the
+genesis accounts, can register in one run. Admission uses unreserved record
+capacity and may wait behind protected attempt progress. The 16-entry local
+pending queue remains separate from this registry limit.
+
+Retry `account register` with the same key and action path, or `send` the saved
+action. Both preserve the exact signed registration and return its original
+receipt after finalization, including after restart. Creating a key never
+overwrites an existing file. A researcher may prepare a proof package before
+registering, but submissions, commitments, and reveals require finalized
+registration. Registration grants no validator, consensus, transport, or agenda
+voting rights; validator consensus and transport keys cannot become researcher
+accounts. Use the new account key in the research commands below.
 
 ## Local research preferences and agent votes
 

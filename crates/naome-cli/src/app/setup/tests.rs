@@ -151,7 +151,7 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
         profile,
         "naome:zfc".into(),
         STATE_CHECKER_PROFILE.into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         100,
         [42; 32],
         accounts,

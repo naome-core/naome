@@ -66,7 +66,7 @@ fn genesis() -> Genesis {
         Profile::with_limits(TimingKind::ShortTest, limits).unwrap(),
         "naome:zfc".into(),
         STATE_CHECKER_PROFILE.into(),
-        1,
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
         100,
         [9; 32],
         (0..6)
@@ -98,7 +98,9 @@ fn operation(g: &Genesis, nonce: u64) -> SignedOperation {
     .unwrap()
 }
 fn runtime() -> (Directory, Directory, StateRuntime) {
-    let g = genesis();
+    runtime_with_genesis(genesis())
+}
+fn runtime_with_genesis(g: Genesis) -> (Directory, Directory, StateRuntime) {
     let branch = StateBranch::from_genesis(LedgerState::new(g.clone())).unwrap();
     let index = (0..4)
         .find(|i| {
@@ -457,7 +459,9 @@ async fn action_for_unopened_phase_does_not_occupy_the_next_nonce() {
     assert_eq!(runtime.state().unwrap().next_nonce(author), Some(1));
 }
 
+mod intake_priority;
 mod proof_fetch;
+mod registration;
 
 #[tokio::test]
 async fn refreshing_time_reports_preserves_delivery_order_under_backpressure() {

@@ -104,7 +104,7 @@ pub(crate) fn message(stream: Stream, value: &str, budget: Duration) -> Result<(
 }
 
 /// Complete checked status reports are bounded separately from diagnostic
-/// events: at most 8192 passive claims, 16 accounts, four endpoint strings and
+/// events: at most 8192 passive claims, 256 accounts, four endpoint strings and
 /// one active attempt fit within the same 3 MiB bound as local control replies.
 pub(crate) fn report(value: &str) -> Result<()> {
     let output = Output::start(Stream::Out)?;
@@ -116,8 +116,9 @@ pub(crate) fn report(value: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn full_report_preserves_every_bounded_claim_beyond_diagnostic_limit() {
-        let maximum = naome_ledger::profile::Limits::default().run_records;
+    fn full_report_preserves_every_bounded_claim_and_registered_account() {
+        let limits = naome_ledger::profile::Limits::default();
+        let maximum = limits.run_records;
         // Conservatively allow one claim per record at the profile ceiling. IDs and
         // ordinals have their full serialized widths; no report truncation.
         let claims = (0..maximum)
@@ -127,8 +128,12 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        let body = serde_json::json!({"claims":claims}).to_string();
+        let accounts = (0..limits.registered_accounts).map(|n| serde_json::json!({
+            "account":format!("{n:064x}"), "balance_atoms":u128::MAX.to_string(), "next_nonce":u64::MAX,
+        })).collect::<Vec<_>>();
+        let body = serde_json::json!({"claims":claims,"accounts":accounts,"registered_accounts":limits.registered_accounts,"remaining_account_slots":0,"registration_available":false}).to_string();
         assert!(body.len() > 16_384);
+        assert!(body.len() < 3 * 1024 * 1024);
         let (sender, receiver) = mpsc::sync_channel(2);
         let output = Output {
             sender,
@@ -143,6 +148,10 @@ mod tests {
         assert_eq!(
             recovered["claims"].as_array().unwrap().len(),
             maximum as usize
+        );
+        assert_eq!(
+            recovered["accounts"].as_array().unwrap().len(),
+            limits.registered_accounts as usize
         );
     }
 }
