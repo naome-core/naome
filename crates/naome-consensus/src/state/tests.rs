@@ -4,8 +4,8 @@ use crate::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget, ProposalSignin
 use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_ledger::{
-    AccountId, LedgerState,
-    operations::OperationBody,
+    AccountId, LedgerState, ResolutionId,
+    operations::{JoinIntent, OperationBody},
     profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
@@ -280,6 +280,55 @@ fn two_votes_never_finalize_and_duplicate_signers_never_add_weight() {
             .verify_finality(&p, &wrong_target, MAX_ROUND)
             .is_err()
     );
+}
+
+#[test]
+fn well_formed_join_candidate_has_no_consensus_authority() {
+    let branch = branch();
+    let genesis = branch.state().genesis();
+    let candidate_consensus = SigningKey::from_bytes(&[71; 32]);
+    let candidate_transport = SigningKey::from_bytes(&[72; 32]);
+    let intent = JoinIntent::new(
+        genesis,
+        AccountId::for_key(account(4).verifying_key().as_bytes()),
+        1,
+        ResolutionId::from_bytes([88; 32]),
+        1,
+        &candidate_consensus,
+        &candidate_transport,
+        "127.0.0.1:43000".into(),
+    )
+    .unwrap();
+    let candidate = ConsensusKey::from_bytes(*intent.consensus_key());
+    assert!(matches!(
+        StateLockState::new(&branch, candidate),
+        Err(StateConsensusError::Invalid("inactive state signer"))
+    ));
+    let body = VoteBody {
+        genesis: genesis.id(),
+        profile: genesis.profile().id(),
+        height: branch.next_height().unwrap(),
+        round: 0,
+        role: ConsensusVoteRole::Precommit,
+        target: ConsensusVoteTarget::Nil,
+    };
+    let signature = candidate_consensus
+        .sign(&body.signing_bytes(candidate))
+        .to_bytes();
+    assert!(matches!(
+        StateVote::complete(body, candidate, signature, genesis),
+        Err(StateConsensusError::Invalid("inactive consensus signer"))
+    ));
+    assert!(matches!(
+        branch.proposal_intent(
+            record(&branch, "candidate proposal"),
+            0,
+            candidate,
+            None,
+            MAX_ROUND
+        ),
+        Err(StateConsensusError::Invalid("not scheduled state proposer"))
+    ));
 }
 
 #[test]

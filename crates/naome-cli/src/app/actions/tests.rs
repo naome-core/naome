@@ -228,6 +228,126 @@ async fn registration_persists_exact_retry_before_send_and_recovers_a_finalized_
 }
 
 #[tokio::test]
+async fn join_intent_requires_own_claim_and_saves_a_pending_action_for_send() {
+    let fixture = Fixture::new();
+    let author_path = fixture.root.join("joining-author.key");
+    let author_key = files::write_key(&author_path, 1).unwrap();
+    let author = AccountId::for_key(author_key.verifying_key().as_bytes());
+    let consensus_path = fixture.root.join("joining-consensus.key");
+    files::write_key(&consensus_path, 2).unwrap();
+    let transport_path = fixture.root.join("joining-transport.key");
+    files::write_key(&transport_path, 3).unwrap();
+    let family = ResolutionId::from_bytes([31; 32]);
+    let action = fixture.root.join("join.action");
+    let args = vec![
+        "join-intent".into(),
+        fixture.config_path.to_str().unwrap().into(),
+        author_path.to_str().unwrap().into(),
+        files::hex(family.as_bytes()),
+        consensus_path.to_str().unwrap().into(),
+        transport_path.to_str().unwrap().into(),
+        "127.0.0.1:45555".into(),
+        action.to_str().unwrap().into(),
+    ];
+    let status = json!({
+        "status":"finalized",
+        "genesis":files::hex(fixture.genesis.id().as_bytes()),
+        "accounts":[{"account":files::hex(author.as_bytes()),"next_nonce":7}],
+        "claims":[{"family":files::hex(family.as_bytes()),"author":files::hex(fixture.author().as_bytes()),"ordinal":3}],
+    });
+    let listener = fixture.listener();
+    let server = tokio::spawn(async move {
+        let (mut stream, message) = request(&listener).await;
+        assert!(matches!(message, Request::Status {}));
+        respond(&mut stream, status).await;
+    });
+    assert!(run(&args).await.is_err());
+    server.await.unwrap();
+    assert!(!action.exists());
+
+    let status = json!({
+        "status":"finalized",
+        "genesis":files::hex(fixture.genesis.id().as_bytes()),
+        "accounts":[{"account":files::hex(author.as_bytes()),"next_nonce":7}],
+        "claims":[{"family":files::hex(family.as_bytes()),"author":files::hex(author.as_bytes()),"ordinal":3}],
+    });
+    let listener = fixture.listener();
+    let server = tokio::spawn(async move {
+        let (mut stream, message) = request(&listener).await;
+        assert!(matches!(message, Request::Status {}));
+        respond(&mut stream, status).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "preparation must not submit or activate the intent"
+        );
+    });
+    run(&args).await.unwrap();
+    server.await.unwrap();
+    assert_eq!(
+        fs::metadata(&action).unwrap().permissions().mode() & 0o077,
+        0
+    );
+    let encoded = fs::read(&action).unwrap();
+    let operation = SignedOperation::decode(&encoded).unwrap();
+    operation.verify_signature(&fixture.genesis).unwrap();
+    assert_eq!(operation.author(), author);
+    assert_eq!(operation.nonce(), 7);
+    let OperationBody::JoinIntent(intent) =
+        OperationBody::decode(operation.payload(), &fixture.genesis).unwrap()
+    else {
+        panic!("join intent action")
+    };
+    intent.verify(&fixture.genesis, author, 7).unwrap();
+    assert_eq!(intent.family(), family);
+    assert_eq!(intent.completion_ordinal(), 3);
+    assert_eq!(intent.endpoint(), "127.0.0.1:45555");
+
+    let listener = fixture.listener();
+    let server = tokio::spawn(async move {
+        let (mut stream, message) = request(&listener).await;
+        let Request::Submit { bytes } = message else {
+            panic!("saved intent must use ordinary send")
+        };
+        assert_eq!(bytes, files::hex(&encoded));
+        respond(
+            &mut stream,
+            json!({"status":"finalized","height":9,"operation_index":0}),
+        )
+        .await;
+    });
+    run(&[
+        "send".into(),
+        fixture.config_path.to_str().unwrap().into(),
+        action.to_str().unwrap().into(),
+    ])
+    .await
+    .unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn join_keys_are_private_role_specific_and_never_overwritten() {
+    let fixture = Fixture::new();
+    for (command, role) in [("create-consensus", 2), ("create-transport", 3)] {
+        let path = fixture.root.join(format!("{command}.key"));
+        let args = vec![
+            "join-key".into(),
+            command.into(),
+            path.to_str().unwrap().into(),
+        ];
+        super::super::run(args.clone()).await.unwrap();
+        let original = fs::read(&path).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        files::key(&path, role).unwrap();
+        assert!(files::key(&path, if role == 2 { 3 } else { 2 }).is_err());
+        assert!(super::super::run(args).await.is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+}
+
+#[tokio::test]
 async fn commit_secret_precedes_transmission_and_missing_action_or_lost_ack_reuses_exact_intent() {
     let fixture = Fixture::new();
     // The separate action directory deliberately does not exist. The new

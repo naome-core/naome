@@ -13,10 +13,11 @@ This qualification does not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The account-admission format is `state-v2`. Existing state-v1 and research-v1 runs cannot
-be reopened or converted with this executable. Retain their directories and use
-the original executable for historical inspection. Start a new directory and
-genesis for state-v2; see the [format boundary](../../specs/ownership.md#canonical-state-formats).
+The join-intent format is `state-v3`. Existing state-v2, state-v1, and
+research-v1 runs cannot be reopened or converted with this executable. Retain
+their directories and use the original executable for historical inspection.
+Start a new directory and genesis for state-v3; see the
+[format boundary](../../specs/ownership.md#canonical-state-formats).
 Node configuration version 2 uses `agenda_profile` and `agenda-profile.txt`.
 The canonical journal names are `state.journal`, `state.lock`,
 `state-finality.anchor`, and `state-signer-KEY.*`. Earlier state-v1 builds used
@@ -178,6 +179,42 @@ registering, but submissions, commitments, and reveals require finalized
 registration. Registration grants no validator, consensus, transport, or agenda
 voting rights; validator consensus and transport keys cannot become researcher
 accounts. Use the new account key in the research commands below.
+
+## Prepare an earned validator join intent
+
+After a checked paid completion has finalized, its author may prepare a single
+claim-backed intent. First create separate candidate keys; these private files
+are new and are never overwritten:
+
+```sh
+"$BIN" join-key create-consensus "$RUN/candidate-consensus.key"
+"$BIN" join-key create-transport "$RUN/candidate-transport.key"
+"$BIN" join-intent "$C0" "$RUN/accounts/researcher.key" "$FAMILY_ID" \
+  "$RUN/candidate-consensus.key" "$RUN/candidate-transport.key" \
+  127.0.0.1:45100 "$RUN/join-intent.bin"
+"$BIN" send "$C0" "$RUN/join-intent.bin"
+"$BIN" receipt "$C0" "$JOIN_INTENT_OPERATION_ID"
+"$BIN" question "$C0" "$SUBMISSION_ID"
+```
+
+Use the family ID of the author's completed question and the operation ID
+printed by `join-intent`. The author key signs the action; both candidate keys
+separately prove possession over the same genesis, claim, nonce, and endpoint.
+`join-intent` durably prepares the action, while `send` submits its exact bytes.
+Wait for the receipt to be finalized. `question` then shows the recorded
+`PENDING_NO_AUTHORITY` intent; an independently verified archive reports the
+same canonical state. A duplicate send returns the original receipt. A later
+signed action with the account's next nonce may replace the current keys and
+endpoint before any future activation rule exists; use a new action
+path and retain the earlier receipt as historical evidence. A changed action
+under an already consumed nonce is rejected.
+
+This intent does **not** install a validator or consume the eligibility claim.
+The fixed four validators continue to control research votes, consensus, time
+reports, peer access, and service rewards. It creates no join-service queue or
+promise of eventual activation. The initial retirement order, ordered and
+expiring join service, incoming READY evidence, outgoing TERMINAL seal, and
+effective retirement of old signing capability remain separate protocol work.
 
 ## Local research preferences and agent votes
 

@@ -16,8 +16,8 @@ use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
 pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
-/// Research protocol with bounded self-registration under the fixed validators.
-pub const STATE_PROTOCOL_VERSION: u16 = 2;
+/// Research protocol with bounded self-registration and passive join intents under fixed validators.
+pub const STATE_PROTOCOL_VERSION: u16 = 3;
 
 /// Reserved space around one maximum user payload for canonical record headers,
 /// four time reports, operation authentication, and finality signatures. The
@@ -41,8 +41,8 @@ pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;
 /// Terminal signer stop plus its chained frame header/footer.
 pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
 
-const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF2";
-const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS2";
+const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF3";
+const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS3";
 const MAX_PROFILE_BYTES: usize = 4096;
 const MAX_GENESIS_BYTES: usize = 16384;
 
@@ -252,9 +252,9 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "state-v2-lab",
-            TimingKind::Research => "state-v2-research",
-            TimingKind::ShortTest => "state-v2-short-test",
+            TimingKind::Lab => "state-v3-lab",
+            TimingKind::Research => "state-v3-research",
+            TimingKind::ShortTest => "state-v3-short-test",
         }
     }
     fn validate(&self) -> Result<(), LedgerError> {
@@ -414,7 +414,7 @@ impl Profile {
         Ok(result)
     }
     pub fn id(&self) -> ProfileId {
-        ProfileId::from_bytes(hash(b"naome:state:profile:v2\0", &[&self.encode()]))
+        ProfileId::from_bytes(hash(b"naome:state:profile:v3\0", &[&self.encode()]))
     }
 }
 
@@ -686,7 +686,7 @@ impl Genesis {
         Ok(result)
     }
     pub fn id(&self) -> GenesisId {
-        GenesisId::from_bytes(hash(b"naome:state:genesis:v2\0", &[&self.encode()]))
+        GenesisId::from_bytes(hash(b"naome:state:genesis:v3\0", &[&self.encode()]))
     }
 }
 

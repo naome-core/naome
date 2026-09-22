@@ -3,7 +3,7 @@ use super::*;
 // Fixed public test seeds and secrets only. These bytes are regression vectors,
 // never credentials for an operational genesis.
 #[test]
-fn complete_v2_wire_and_identifier_vectors() {
+fn complete_v3_wire_and_identifier_vectors() {
     let mut output = String::new();
     fn vector(out: &mut String, name: &str, bytes: &[u8]) {
         use std::fmt::Write;
@@ -105,7 +105,7 @@ fn complete_v2_wire_and_identifier_vectors() {
         std::fs::write(path, &output).unwrap();
         return;
     }
-    assert_eq!(output, include_str!("golden-v2.txt"));
+    assert_eq!(output, include_str!("golden-v3.txt"));
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn signed_old_attempt_reveal_never_resolves_new_attempt() {
     assert!(state.library().is_empty());
 }
 
-// Archived bytes are intentionally immutable: a fresh state-v2 genesis is
+// Archived bytes are intentionally immutable: a fresh state-v3 genesis is
 // required. Prefix substitution is not an authorized migration of signatures.
 fn legacy_vector(name: &str) -> Vec<u8> {
     let line = include_str!("legacy-research-v1.txt")

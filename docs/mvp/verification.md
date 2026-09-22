@@ -1,27 +1,54 @@
 # Trusted research MVP verification
 
-The current account-admission extension uses canonical `state-v2` history through `naome`,
-`naome-validator`, and `naome-verifier`. The checked artifact DAG is the
-proof-library component of that complete state. The [qualification report](evidence/final-integration.json)
-records source identities, commands, output hashes, the real-agent lab, and CI.
-The requirement and acceptance mappings below refer to the current executable
-tests; every recorded run establishes evidence only for its named snapshot.
+The current join-intent implementation uses canonical `state-v3` history through
+`naome`, `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
+proof-library component of that complete state. The historical
+[qualification report](evidence/final-integration.json) records source identities,
+commands, output hashes, the real-agent lab, and CI for `state-v1`. The mappings
+below identify executable test sources; a source pointer is not a passing run.
+Every recorded run establishes evidence only for its named snapshot.
 
-The recorded lab and CI reports below qualify their historical v1 snapshots. They do not qualify the v2 self-registration extension or a migration; earlier runs require their original executable.
+The recorded lab and CI reports below qualify their historical v1 snapshots.
+The merged v2 account-admission result is separate. Neither qualifies the v3
+join-intent extension or a migration; earlier runs require their original
+executable.
+
+## Local join-intent qualification
+
+The 22 September 2026 local v3 check on the merged v2 base used Rust 1.97.1 and
+`CARGO_INCREMENTAL=0`. Both complete workspace profiles (`test` and `release`)
+passed 583 tests with zero failures, each after its own
+`--workspace --all-targets --all-features --locked --no-run` build barrier.
+Formatting, Clippy with warnings denied, rustdoc with warnings denied, and
+doctests passed. All 54 Kev and 18 devnet Python tests passed. The seven local
+process scenarios include a four-validator join-intent case that passed in
+35.46 s. Component tests cover
+claim binding, candidate key possession, role and endpoint collisions, nonce
+conflicts, replay, and direct rejection of candidate research votes, consensus
+signing and votes, proposals, time reports, and transport identity. The
+qualified implementation and test source is
+`e236914`.
+This is local qualification only: v3 platform CI and physical-machine
+qualification have not run, and overall v3 acceptance remains pending. A
+join intent neither activates a validator nor consumes its eligibility claim;
+full activation requires separate policy and handoff work.
 
 ## Local account-admission qualification
 
-The 22 September 2026 local v2 check used Rust 1.97.1 and `CARGO_INCREMENTAL=0`.
-Both complete workspace profiles (`test` and `release`) passed 564 tests, each
-after its own `--all-targets --all-features --locked --no-run` build barrier.
-Formatting, Clippy with warnings denied, rustdoc with warnings denied, and the
-workspace doctest command passed. The seven process scenarios include a fresh
+The original 22 September 2026 local v2 check passed 564 tests per profile.
+After integration with Kev, the merged v2 head `b5f0207` passed both complete
+Rust 1.97.1 workspace profiles with 572 tests each, their separate
+`--all-targets --all-features --locked --no-run` build barriers, formatting,
+Clippy with warnings denied, rustdoc with warnings denied, doctests, and 54 Kev
+Python tests. [CI run 35781130410](https://github.com/naome-core/naome/actions/runs/35781130410)
+passed all six platform test/release jobs, quality, devnet, and the required
+aggregate checks on that exact head. The squash merge `68e9f7d` has the same
+feature tree. The seven local process scenarios include a fresh
 researcher creating a key, registering with zero balance, earning a proof reward,
 independently verifying its archive, and surviving all four validators' cold
 restart. Registry exhaustion, fixed voting authority, protected intake, original
 and citation rewards, and journal replay have separate component coverage below.
-This is local qualification; v2 platform CI and separate-machine acceptance are
-not established by these results.
+Physical multi-machine acceptance remains separate.
 
 ## Recorded qualification
 
@@ -96,7 +123,8 @@ See the [Kev runbook](kev.md) for repeatable software and integration checks.
 | Label | Source and scope |
 |---|---|
 | Profile | [Profile/genesis tests](../../crates/naome-ledger/src/profile/tests.rs) |
-| Account admission | [Registration, capacity and authority](../../crates/naome-chain/src/state/tests/admission.rs), [protected intake](../../crates/naome-runtime/src/state/tests/intake_priority.rs), [four-process join, reward and restart](../../crates/naome-cli/tests/cases/admission.rs) |
+| Account admission | [Registration, capacity and authority](../../crates/naome-chain/src/state/tests/admission.rs), [protected intake](../../crates/naome-runtime/src/state/tests/intake_priority.rs), [four-process registration, reward and restart](../../crates/naome-cli/tests/cases/admission.rs) |
+| Join intent | [Canonical intent and key possession](../../crates/naome-ledger/src/operations/join_intent/tests.rs), [claim and state admission](../../crates/naome-ledger/src/state/tests.rs), [candidate consensus exclusion](../../crates/naome-consensus/src/state/tests.rs), [candidate transport exclusion](../../crates/naome-network/src/transport/state_exchange/tests.rs), [CLI action custody](../../crates/naome-cli/src/app/actions/tests.rs), [four-process prepare, replay and restart](../../crates/naome-cli/tests/cases/admission.rs) — local v3 checks passed; platform CI pending |
 | Questions | [Question compilation tests](../../crates/naome-ledger/src/question/tests.rs) |
 | State | [Canonical state transitions](../../crates/naome-chain/src/state/tests.rs), [wire/replay vectors](../../crates/naome-chain/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-chain/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-chain/src/state/tests/capacity_sixteen.rs) |
 | Library | [Mathematical normalization/reuse tests](../../crates/naome-ledger/src/library/tests.rs), [workload qualification](../../crates/naome-ledger/src/library/tests/qualification.rs), [older-depth boundary](../../crates/naome-ledger/src/library/tests/depth_boundary.rs) |
@@ -122,7 +150,7 @@ identify runner actions and fields in the recorded acceptance report.
 | MVP-02 | Process test and LAB start four executables with separate configured histories, anchors, signer stores and keys. LAB records custody and agreement. |
 | MVP-03 | State: `complete_a_h_b_c_workflow_preserves_attribution_citation_and_once_only_issuance`; Consensus: `verified_control_record_finality_binds_full_state_and_preserves_empty_library`; LAB compares complete state/accounts/claims/library. |
 | MVP-04 | Consensus control-record test above; Storage: `complete_control_history_reopens_and_observer_uses_same_full_state`; Process finalizes an unapproved question without a proof. |
-| MVP-05 | State: `complete_v2_wire_and_identifier_vectors`, `streaming_state_commitment_matches_materialized_canonical_bytes`; Profile and Protocol golden vectors; Process/LAB observer agreement. Target-platform agreement also requires completed CI. |
+| MVP-05 | State: `complete_v3_wire_and_identifier_vectors`, `streaming_state_commitment_matches_materialized_canonical_bytes`; Profile and Protocol golden vectors; Process/LAB observer agreement. Target-platform agreement also requires completed CI. |
 | MVP-06 | Questions: `rejects_free_variables_assumptions_imports_and_bad_syntax`, `profile_smaller_bounds_are_enforced_for_both_targets`, canonical/orientation tests. Receipts: `rendered_closed_targets_round_trip_without_changing_canonical_formula`. CLI `compile-question` and submission preview are exercised through operating procedures/LAB submission. |
 | MVP-07 | State: `actual_queue_limit_and_exact_expiry_preserve_state_on_rejection`, `default_queue_accepts_32_in_finalized_order_and_rejects_33_without_mutation`; Runtime: `queue_receipt_is_not_finality_and_duplicate_identity_is_idempotent`. |
 | MVP-08 | State A/H/B/C workflow; Library: `real_a_group_then_b_refutation_preserves_h_attribution_and_known_c`; LAB `helper_normalization_citation_known`. |
@@ -153,6 +181,8 @@ identify runner actions and fields in the recorded acceptance report.
 | MVP-33 | State queue/capacity tests, `minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement`, and `multiple_reveals_share_budget_before_any_additional_checker_call`; Library count/byte/step/depth tests; Transport exact bounds/retention; Storage: `exhausted_signing_bytes_or_frames_never_use_key_and_pending_intent_recovers`. |
 | MVP-34 | Library `qualification_actual_4096_steps_and_near_64k_certificate`, `qualification_17_used_nodes_near_compact_and_default_package_bounds`, `qualification_64_verified_older_citations_and_65th_reject_before_checker`, `qualification_near_2mib_older_closure_sixteen_authenticated_candidates`; exact queue/depth/frame tests; minimum 65/66-record state tests; LAB resource/timing report. Preserve measured output from both pinned profiles. |
 | MVP-35 | Storage observer/full cold replay, `historical_conflicting_finality_is_verified_and_persistently_halts`; journal complete-corruption rejection; Process/LAB independent replay and corrupted export rejection. |
+| MVP-36 | Account-admission State `registration_is_zero_starting_nonce_bound_and_idempotent_without_validator_rights`, `full_registry_preserves_existing_research_and_rejects_new_keys_atomically`, `registration_cannot_ride_on_reserved_progress_or_automatic_opening`; Process `new_researcher_registers_proves_receives_reward_and_survives_replay_and_restart`. These sources have local v2 evidence and passed in both v3 workspace profiles; v3 platform CI remains pending. |
+| MVP-37 | Join-intent format `exact_join_intent_roundtrip_and_context_bound_key_possession`, `all_join_intent_bytes_are_bound_or_rejected`, `possession_roles_and_claim_fields_cannot_be_exchanged`; State `only_earlier_paid_claim_author_can_finalize_an_intent`, `author_can_replace_current_intent_without_gaining_authority`, `another_pending_intent_reserves_its_keys_and_endpoint`; CLI `join_intent_requires_own_claim_and_saves_a_pending_action_for_send`, `join_keys_are_private_role_specific_and_never_overwritten`; Process researcher flow. Both v3 workspace profiles and local quality checks passed; v3 platform CI remains pending. |
 
 ## Acceptance scenario mapping
 
@@ -165,6 +195,8 @@ identify runner actions and fields in the recorded acceptance report.
 | AB-05 | LAB C ends KnownUnpaid without completion payment; State A/H/B/C verifies unchanged issuance/claim count. |
 | AB-06 | Component negative matrix: unapproved/expired attempt and late/old reveal (State); wrong target/invalid original/new duplicate (Library); mutated final effects/receipt (State/Receipts); chain/signature/role mutation (Authentication/Transport); queue/operation/package/work overload (State/Library/Transport). These are not all injected over the LAB network. |
 | AB-07 | Actual settlement journal/anchor fault tests, including crash images; Process/LAB one node unavailable, partition, reconnect, catch-up, all-node cold start and independent complete-state replay; exact issuance and claim counts. |
+| AB-08 | The researcher-registration Process scenario and component negatives have local v2 evidence. The extended v3 process scenario includes the same registration, checked completion, reward, replay, and cold restart; its focused run and both complete workspace profiles passed. Full v3 acceptance remains pending. |
+| AB-09 | The extended Process source prepares and sends a join intent after a paid completion, compares four validators and an independent replay, checks unchanged validator assignments, and restarts all four; its focused v3 run passed. Join-intent format and State sources test attribution, proofs, wrong genesis, role keys, conflicting consumed nonce, pending-intent key/endpoint collisions, later replacement, and direct candidate research-vote and time-report rejection. Consensus `well_formed_join_candidate_has_no_consensus_authority` directly rejects candidate signer initialization, consensus vote, and proposal; Network `state_unknown_local_identity_fails_closed` rejects the candidate transport identity. Complete v3 acceptance remains pending. |
 
 ## Measurement and reporting boundaries
 

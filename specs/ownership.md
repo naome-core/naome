@@ -59,20 +59,23 @@ Setup initializes fresh consensus authority while generating new keys and genesi
 
 ## Canonical state formats
 
-The `state-v2` account-admission profile uses a fresh genesis and rejects earlier genesis versions. Mathematical proof and Foundation
-encodings are independent of this state-format family.
+The `state-v3` passive join-intent profile uses a fresh genesis and rejects
+`state-v2` account-admission and earlier genesis versions. It keeps the same
+four active validators; the new intent is canonical preparation, not a
+membership handoff. Mathematical proof and Foundation encodings are independent
+of this state-format family.
 
 | Surface | Encoding and owner |
 | --- | --- |
-| Profile and genesis | `NAOPROF2`, `NAOGENS2`, `state-v2`; ledger profile |
+| Profile and genesis | `NAOPROF3`, `NAOGENS3`, `state-v3`; ledger profile |
 | Complete application record | `NSRC` plus version 1; `naome-chain::StateRecord` |
-| Signed actions, originals, certified time reports | `NSUA`/`NSOR` version 2 with signer keys; `NSTM` unchanged; ledger authentication/operations/time |
+| Signed actions, originals, certified time reports | `NSUA`/`NSOR` version 3 with signer keys; `NSTM` unchanged; ledger authentication/operations/time |
 | Consensus value, proposal, vote, finality | `NSCB1`, `NSCP1`, `NSCV1`; consensus; `NSCF1` outer framing in chain, authenticated by consensus |
 | Lock events and checked snapshots | `NSCE1`, `NSCS1`; consensus |
 | History, signing journal, external anchor | `NAOSHIS1`, `NAOSSIG1`, `NAOSANC1`; storage |
 | Authenticated exchange | `/naome/state-v1`, envelope version 2; network/protocol |
 | Private key and durable commitment bundle | `NSKEY001`, `NSSEC001`; CLI |
-| State hash and signature domains | Profile, genesis, action, original and application-state domains use v2; unchanged components retain v1 and bind the v2 genesis |
+| State hash and signature domains | Profile, genesis, action, original, commitment and application-state domains use v3; unchanged components retain v1 and bind the v3 genesis |
 
 Storage uses `state.journal`, `state.lock`, `state-finality.anchor`, and
 `state-signer-KEY.*`. Node configuration version 2 uses `agenda_profile`.

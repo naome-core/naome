@@ -10,11 +10,11 @@ separate-machine qualification and its evidence requirements.
 
 **Goal:** Four known, trusted validators jointly operate a small research network with openly registered researchers. They submit formal questions, select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
 
-This is the implementation and acceptance contract: 36 requirements, eight
+This is the implementation and acceptance contract: 37 requirements, nine
 acceptance scenarios, five implementation stages, and rules R1–R11. The first
 35 requirements and seven scenarios were accepted for the historical `state-v1`
-trusted, bounded local simulation; the `state-v2` account-admission extension
-remains pending. [Verification evidence](verification.md) separates component
+trusted, bounded local simulation; the `state-v2` account-admission and
+`state-v3` join-intent extensions each require separate acceptance. [Verification evidence](verification.md) separates component
 checks, storage faults, process and lab execution, and cross-platform CI, with
 the source snapshot for each result.
 
@@ -32,7 +32,7 @@ The trusted participant group, “Survival of the first,” and command-line int
 | Area | Scope |
 |---|---|
 | Validators | Four fixed validators with equal weight; three votes form a quorum of strictly more than two-thirds. |
-| Users | Research accounts supplied in genesis or admitted by signed self-registration; no starting balance is required. |
+| Users | Research accounts supplied in genesis or admitted by signed self-registration; no starting balance is required. A paid author may record one claim-backed validator join intent, which grants no authority. |
 | Research operation | One active question throughout its attempt until settlement; other questions wait. Multiple authors may work on the active question simultaneously. MVP acceptance uses the explicitly identified lab profile with 5 minutes of voting and 2 minutes each for commitments and reveals. |
 | Results | An actual proof **or** an actual refutation of the approved target. An unsuccessful attempt remains unresolved. |
 | Proof groups | One root and a bounded set of helper proofs that are actually used; reuse of older proofs with their original attribution. |
@@ -42,7 +42,7 @@ The trusted participant group, “Survival of the first,” and command-line int
 | Operation | Independent processes and data stores on macOS/Linux; fixed peer addresses, shared genesis, restart, and catch-up of missing history. |
 | Interface | A CLI with readable messages and machine-readable output; no graphical interface is required. |
 
-Initial acceptance does not include identity-flooding resistance, automatic membership rotation, periodic key destruction, market value or redemption of the test currency, transfers, reserve spending, joint authorship, recipient delegation, standalone publication of definitions, live protocol upgrades, general mathematical equivalence detection, or an autonomous solver for arbitrary research questions. Agent-assisted **selection** of questions is part of the MVP. Existing notation expansion and mathematical checking capabilities are reused.
+Initial acceptance does not include identity-flooding resistance, validator activation or automatic membership rotation, periodic key destruction, market value or redemption of the test currency, transfers, reserve spending, joint authorship, recipient delegation, standalone publication of definitions, live protocol upgrades, general mathematical equivalence detection, or an autonomous solver for arbitrary research questions. Agent-assisted **selection** of questions is part of the MVP. Existing notation expansion and mathematical checking capabilities are reused.
 
 <a id="checklist"></a>
 
@@ -96,6 +96,7 @@ Initial acceptance does not include identity-flooding resistance, automatic memb
 - [x] **MVP-34 – Qualify the limits.** The proposed starting values are measured against the actual example proofs, target machines, and delays. Minimum and maximum cases and exhausted capacity are part of acceptance. This plan claims no throughput or storage performance has already been measured.
 - [x] **MVP-35 – Complete verification.** An observer without signing keys replays the finalized history and compares all research and monetary state, not only artifacts. Corrupt complete data or conflicting verified finality produces a visible halt.
 - [ ] **MVP-36 – Bounded research self-registration.** A new researcher can create a key, sign `Register` with nonce 1 and zero starting balance, then submit with nonce 2, publish a checked result, and receive its reward. Registration grants no validator authority. Exact retries retain the original receipt; reused validator keys, over-cap registrations, and registrations consuming protected attempt capacity are rejected without changing state. All four validators, a cold restart, and independent replay agree on the account registry. Local v2 checks cover these behaviors, but v2 platform CI remains pending.
+- [ ] **MVP-37 – Claim-backed join intent.** After a paid completion is sealed, its signing author can finalize a current intent bound to that exact family and completion ordinal, fresh candidate consensus and transport keys with separate possession proofs, and a canonical endpoint. The intent and receipt survive replay and restart. A foreign author, absent claim, conflicting same-nonce intent, reused role key, bad proof, wrong genesis, or conflicting nonce changes no state. This preparation grants no validator, time-reporting, transport, proposer, reward-share, or voting authority and does not consume the claim. Full admission and activation require separate policy and handoff work.
 
 <a id="acceptance"></a>
 
@@ -109,6 +110,7 @@ Initial acceptance does not include identity-flooding resistance, automatic memb
 - [x] **AB-06 – Negative paths.** An unapproved question, wrong target, invalid original, invalid final form, late reveal, duplicate package, other chain, old attempt, disallowed new duplicates, invalid signature, and overload are handled according to the rules. An unsuccessful attempt is never presented as a refutation.
 - [x] **AB-07 – Interruption and independent verification.** A crash around settlement, one failed instance, a 2:2 partition, recovery of connectivity, and a complete cold start are checked. All four state commitments and the independent verification agree; N paid families have exactly N issuances and N passive eligibility claims.
 - [ ] **AB-08 – New researcher admission.** In four independent local validator processes, a researcher absent from genesis creates a key, registers without a balance, submits a question, publishes a checked solution, receives the author reward, and remains in identical replayed state after all validators cold-restart. Component cases reject unregistered actions, validator-role keys, exhausted registry capacity, and registration that would consume protected attempt capacity. The local v2 run passed; v2 platform CI is still required for extension acceptance.
+- [ ] **AB-09 – Earned join intent without authority.** A registered researcher earns a checked paid completion and later finalizes its join intent in a separate record. Four validators and an independent archive replay agree on the intent, receipt, claim, and unchanged four-owner authority. Tests reject a foreign or absent claim, a conflicting same-nonce intent, key/endpoint collisions, invalid possession proofs, wrong genesis and nonce, and any candidate attempt to vote or sign consensus or time reports. A later signed revision replaces the current keys and endpoint without changing the claim or four-owner authority.
 
 The mathematical example certificates must be verified with the actual checker before the integration test. That H can actually be used for B's refutation target is a requirement for the fixtures; the abstract rule model does not establish it. Initial acceptance uses the lab profile and additional automated boundary cases. A later complete run of the seven-day research profile is a separate long-term qualification and is not a prerequisite for this MVP.
 
@@ -122,7 +124,7 @@ The mathematical example certificates must be verified with the actual checker b
 | 2 | Research state and atomic local transitions | Questions, phases, priority, normalization, and monetary entries satisfy the local positive and negative acceptance cases. |
 | 3 | Consensus, durable storage, and catch-up | Actual validators jointly finalize the complete state, which is independently replayed; control-only records work. |
 | 4 | CLI, signed intake, and agent integration | Genesis and newly registered users can complete the entire workflow without manual data changes. |
-| 5 | Acceptance in the authorized local network simulation and operating instructions | AB-01 through AB-08 and the appropriate repository checks pass with traceable evidence; real multi-machine qualification is listed separately as deferred. |
+| 5 | Acceptance in the authorized local network simulation and operating instructions | AB-01 through AB-09 and the appropriate repository checks pass with traceable evidence; real multi-machine qualification is listed separately as deferred. |
 
 The existing mathematical core libraries, transport components, and operational components are reused. Proposal/finality formats, research state, and their replay require substantial extensions. Existing fee arithmetic and selection of the candidate with the lowest ID must not be adopted as the new reward or priority rule without checking them. This code review belongs to the preparatory research status described below.
 
@@ -138,9 +140,9 @@ The following rules make the preceding requirements concrete for the proposed MV
 
 ### R1. A separate, immutable test configuration
 
-The account-admission profile is named `state-v2` and starts with a new genesis. Earlier `state-v1` and `research-mvp-v1` genesis bytes are rejected; no history or signing authority is automatically converted. It neither reinterprets old V0 messages nor migrates existing production balances. Four distinct known owners each hold one fixed vote. Both the research quorum and the consensus quorum require strictly more than two thirds, meaning three of four; absent participants remain in the denominator. No registration or reward changes these weights.
+The join-intent profile is named `state-v3` and starts with a new genesis. Earlier `state-v2`, `state-v1`, and `research-mvp-v1` genesis bytes are rejected; no history or signing authority is automatically converted. It neither reinterprets old V0 messages nor migrates existing production balances. Four distinct known owners each hold one fixed vote. Both the research quorum and the consensus quorum require strictly more than two thirds, meaning three of four; absent participants remain in the denominator. No registration, reward, or join intent changes these weights.
 
-Genesis binds the Foundation and checker profile, the four validators and their account assignments, at most 16 initial research accounts, transport assignments, timing profile, limits, and reward rules. Initial balances and the reserve are zero. Research accounts need no balance to submit a question, vote, commitment, or reveal. Account keys and consensus/transport keys are handled separately by role; representing the same operator more than once does not grant an additional vote. Key rotation and changes to genesis or parameters during a run are outside the MVP.
+Genesis binds the Foundation and checker profile, the four validators and their account assignments, at most 16 initial research accounts, transport assignments, timing profile, limits, and reward rules. Initial balances and the reserve are zero. Research accounts need no balance to submit a question, vote, commitment, or reveal. Account keys and consensus/transport keys are handled separately by role; representing the same operator more than once does not grant an additional vote. Key rotation, validator installation, and changes to genesis or parameters during a run are outside this slice.
 
 A new test genesis starts a new test run with its own identifier. It is explicitly displayed as such; it does not repair or overwrite any earlier history. Existing histories and key states remain traceable. Normal restarts use the same genesis and the same durable state.
 
@@ -212,6 +214,8 @@ Registration uses unreserved record capacity. A record admitting a new account c
 
 The canonical original package contains the root, helper certificates, dependency edges, and unambiguous authorship of the new material. Its hash binds unchanged bytes. A commitment binds genesis, version, `SolutionRoundId`, author, policy, original hash, and 32 cryptographically random secret bytes. The account signs the commitment operation. The reveal supplies the secret and the complete signed original with matching context. At most one valid reveal may be finalized per commitment; a second reveal with a new nonce is rejected. Identical redelivery returns only the existing receipt. Before publication, the CLI stores the secret and original bytes durably and locally; it can resend the same action after a restart.
 
+An earned eligibility claim remains passive. A `JoinIntent` action signed by its registered author may refer only to a claim already present in the sealed parent; its family and original completion ordinal must match. The candidate consensus and transport keys separately prove possession over the genesis, author, nonce, claim, both keys, and canonical endpoint. Candidate keys must be distinct and must not reuse registered account keys, genesis validator keys, or other pending intent keys. An endpoint must be canonical and must not collide with an existing validator or intent. At most one current intent is recorded per claim. An exact retry returns its original receipt; a later signed action with the next nonce may replace the current intent while earlier receipts remain historical. The intent is preparation only: it does not consume the claim, create a join-service queue or reservation, or confer any live authority.
+
 Every user action has a nonce used monotonically by the account holder and a content identifier. A nonce value that has never been applied must equal the exact next expected value. Invalid actions consume no nonce. Identical already finalized actions return the existing receipt; different content under a consumed nonce is rejected. Subsequent actions prepared offline wait for their predecessors. Additional domain rules prevent second votes per owner/voting attempt and second commitments per author/solution round.
 
 After finalized reveal closure, the smallest commitment coordinate pair `(admission height, operation index)` wins among valid timely reveals. The receipt binds its content. This does not establish who first discovered the result outside the network; the rank is a recorded submission priority. A missing or invalid reveal skips that candidate, not verification of other authors. PROVED and REFUTED compete for the same one-time completion.
@@ -262,7 +266,7 @@ The binding record content includes genesis/profile, height, parent identifier, 
 
 Implementation will use the existing strict binary-encoding style: role-specific hash/signature domains, unambiguous lengths, fixed field order, canonical integers, explicit tags, and rejection of unknown variants, duplicate entries, and trailing bytes. Sets are sorted by their defined raw-byte identifiers; actual operation sequences retain their bound order. JSON serves CLI output, not unchecked consensus identity. Complete tags, decoders, and golden vectors belong to implementation step 1; the meanings fixed here must not be reinterpreted during that work.
 
-Mathematical artifact identifiers remain reusable. A complete research-state commitment additionally covers questions, attempts, phases, receipts, nonces, original attributions, known/unpaid and paid families, eligibility claims, accounts, the monetary reserve, and queues. Remaining record/byte budgets and the still-reserved active completion capacity are separate state fields, also stored canonically and replayed; they are not the monetary reserve. An artifact Merkle tree alone is insufficient.
+Mathematical artifact identifiers remain reusable. A complete research-state commitment additionally covers questions, attempts, phases, receipts, nonces, original attributions, known/unpaid and paid families, eligibility claims, join intents, accounts, the monetary reserve, and queues. Remaining record/byte budgets and the still-reserved active completion capacity are separate state fields, also stored canonically and replayed; they are not the monetary reserve. An artifact Merkle tree alone is insufficient.
 
 <a id="r9"></a>
 
@@ -272,7 +276,7 @@ Candidates are evaluated completely on temporary state. Only a valid finalized r
 
 A confirmed reveal requires durable, available bytes, not merely a hash or transport receipt. A crash after durable storage but before the response is resolved through identity and replay. An uncertain write situation stops the affected path until verified recovery. Incorrectly decoded complete journal frames, anchor mismatches, or verified conflicting finality are not automatically “repaired.”
 
-The four fixed keys require no periodic destruction in this MVP. Persisted signing intents must nevertheless prevent conflicting new signatures after a restart. Historical key compromise, simultaneous malicious rollback of all anchors, and a public adversary model remain outside the MVP's promised protection. A lost quorum is not replaced with a smaller denominator or unverified new validators.
+The four fixed keys require no periodic destruction in this MVP. Persisted signing intents must nevertheless prevent conflicting new signatures after a restart. Historical key compromise, simultaneous malicious rollback of all anchors, and a public adversary model remain outside the MVP's promised protection. A lost quorum is not replaced with a smaller denominator or unverified new validators. A finalized join intent leaves every genesis-derived owner, signer, time reporter, peer, proposer, and service recipient unchanged.
 
 <a id="r10"></a>
 
@@ -285,6 +289,7 @@ The following values are fully specified **starting proposals**, not yet measure
 | Active attempts | 1, including pending settlement |
 | Queued questions | 32 in total; at most 1 per ResolutionId |
 | Research accounts | At most 16 initial accounts; at most 256 total after self-registration |
+| Join intents | At most one current intent per paid eligibility claim, hence bounded by the 8,192-record run; revisions consume ordinary record capacity and none consumes the active-attempt reserve |
 | Commitments | At most 16 per attempt, and at most 1 per account and attempt |
 | Formal question | 16 KiB of source; both expanded targets limited to 1,024 nodes and depth 32 each |
 | Proof group | At most 16 new helper proofs plus the root; original and final version limited to 256 KiB each |
@@ -317,7 +322,7 @@ The first MVP acceptance uses the Lab profile; its shorter voting window is an e
 
 ### R11. Sources and remaining implementation work
 
-The v2 self-registration extension is qualified separately from the historical v1 lab and CI snapshots below. The 20 September whitepaper describes the earlier MVP and the broader public-network proposal; bounded self-registration does not establish public-network admission security.
+The v2 self-registration and v3 passive join-intent extensions require separate qualification from the historical v1 lab and CI snapshots below. The 20 September whitepaper describes the earlier MVP and the broader public-network proposal; bounded self-registration and passive intent do not establish public-network admission or validator activation. Genesis retirement order, bounded ordered join-request service and expiry, incoming READY preparation, outgoing TERMINAL sealing, and effective signing-capability retirement remain open implementation and operating requirements.
 
 During the preparatory research, the rules were checked against the whitepaper, actual code paths, and three separate specialist reviews. The static code review identified reusable foundations and missing integration. Isolated rule models examined distribution, duplicate/parent selection, and commitment priority; a lifecycle model examined deadline boundaries, serial opening, unpaid known helper proofs, and atomic model states. Those individual reports and scripts are not part of this starting package.
 
@@ -325,4 +330,4 @@ The preparatory models used abstract identity and validity values. They were not
 
 The separation of a deterministic state machine from consensus and the prohibition of external side effects during replay are also described in the official [CometBFT application requirements](https://raw.githubusercontent.com/cometbft/cometbft/main/spec/abci/abci%2B%2B_app_requirements.md). This is an architectural comparison, not a recommendation to replace the existing consensus system. [RFC 8949, section 4.2](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2) shows why deterministic serialization requires explicit rules; CBOR is not selected here as an additional dependency. The [SQLite documentation on atomic commit](https://www.sqlite.org/atomiccommit.html) explains all-or-nothing behavior and the necessary storage assumptions; merely trusting users does not replace these properties. Nor does this establish a decision to migrate to SQLite.
 
-Acceptance of the **trusted, bounded local `state-v1` MVP** is complete for its recorded source snapshot: the verification record includes the complete pinned workspace checks, required platform CI, measured boundary workloads, and real lab-window execution with actual agent provenance. The `state-v2` self-registration extension has separate local workspace and four-process evidence, but its platform CI and overall extension acceptance remain pending. The user-authorized four-process local simulation is the network acceptance target; a real multi-machine run and the long research-window profile remain separate later qualifications. Removing the trusted MVP restrictions would reopen the corresponding protocol questions.
+Acceptance of the **trusted, bounded local `state-v1` MVP** is complete for its recorded source snapshot: the verification record includes the complete pinned workspace checks, required platform CI, measured boundary workloads, and real lab-window execution with actual agent provenance. The `state-v2` self-registration extension has separate local workspace and four-process evidence, but its platform CI and overall extension acceptance remain pending. The `state-v3` join-intent slice has local workspace and four-process evidence, while its platform CI and extension acceptance remain pending; it is not active validator joining. The user-authorized four-process local simulation is the network acceptance target; a real multi-machine run and the long research-window profile remain separate later qualifications. Removing the trusted MVP restrictions would reopen the corresponding protocol questions.

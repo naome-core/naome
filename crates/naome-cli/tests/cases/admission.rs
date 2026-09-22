@@ -103,6 +103,39 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     assert_eq!(researcher["next_nonce"], 5);
     assert_eq!(settled["claims"][0]["author"], author);
     assert_eq!(settled["validators"], initial["validators"]);
+    assert_eq!(settled["join_intents_count"], 0);
+    let family = settled["claims"][0]["family"].as_str().unwrap().to_owned();
+    let consensus_key = lab.file("candidate-consensus.key");
+    let transport_key = lab.file("candidate-transport.key");
+    command(&[
+        "join-key".into(),
+        "create-consensus".into(),
+        consensus_key.clone(),
+    ]);
+    command(&[
+        "join-key".into(),
+        "create-transport".into(),
+        transport_key.clone(),
+    ]);
+    let intent_action = lab.file("researcher-join.action");
+    let prepared = command(&[
+        "join-intent".into(),
+        lab.config(0),
+        lab.key(6),
+        family,
+        consensus_key,
+        transport_key,
+        format!("127.0.0.1:{}", lab.base + 10),
+        intent_action.clone(),
+    ]);
+    assert_eq!(prepared["status"], "join_intent_prepared");
+    assert_eq!(prepared["active_voting_rights"], false);
+    command(&["send".into(), lab.config(0), intent_action.clone()]);
+    let settled = lab.wait(0, |s| s["join_intents_count"] == 1);
+    lab.assert_same(&[0, 1, 2, 3], &settled);
+    assert_eq!(settled["validators"], initial["validators"]);
+    let exact_retry = command(&["send".into(), lab.config(0), intent_action]);
+    assert_eq!(exact_retry["result"]["status"], "finalized");
     let archive = lab.file("researcher-archive");
     command(&["export".into(), lab.config(0), archive.clone()]);
     let replayed = command(&["verify".into(), lab.file("genesis.bin"), archive.clone()]);
@@ -113,17 +146,20 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
         "accounts",
         "registered_accounts",
         "claims",
+        "join_intents_count",
         "validators",
     ] {
         assert_eq!(replayed[field], settled[field], "archive {field}");
     }
-    command(&[
+    let inspected = command(&[
         "inspect".into(),
         lab.file("genesis.bin"),
         archive,
         submission,
         lab.file("researcher-inspection"),
     ]);
+    assert_eq!(inspected["join_intent"]["status"], "PENDING_NO_AUTHORITY");
+    assert_eq!(inspected["join_intent"]["active_voting_rights"], false);
     for index in 0..4 {
         lab.stop(index);
     }

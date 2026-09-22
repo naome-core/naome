@@ -258,6 +258,9 @@ impl StateRuntime {
             return Err(StateRuntimeError::Rejected(reason.clone()));
         }
         let state = self.state()?;
+        if let naome_ledger::operations::OperationBody::JoinIntent(intent) = &body {
+            intent.verify(state.genesis(), operation.author(), operation.nonce())?;
+        }
         if matches!(body, naome_ledger::operations::OperationBody::Register) {
             if state.account_key(operation.author()).is_some() {
                 return Err(StateRuntimeError::Rejected(
@@ -318,7 +321,9 @@ impl StateRuntime {
         let ordinary = |op: &SignedOperation| {
             matches!(
                 OperationBody::decode(op.payload(), genesis),
-                Ok(OperationBody::Register | OperationBody::Submit { .. })
+                Ok(OperationBody::Register
+                    | OperationBody::JoinIntent(_)
+                    | OperationBody::Submit { .. })
             )
         };
         let mut evicted = Vec::new();
@@ -391,6 +396,9 @@ impl StateRuntime {
         let active = state.active();
         let valid = match body {
             OperationBody::Register => state.registration_available(),
+            OperationBody::JoinIntent(intent) => {
+                state.can_submit_join_intent(author, intent.family(), intent.completion_ordinal())
+            }
             OperationBody::Submit { question, .. } => {
                 let family = question.resolution_id();
                 !state.families().contains_key(&family)

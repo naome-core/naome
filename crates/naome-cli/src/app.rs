@@ -16,7 +16,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         None | Some("--help" | "help") => {
             println!(
-                "Trusted research MVP commands:\n  setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [standard|compact [ENDPOINTS_JSON]]\n  profile-info GENESIS\n  start|status|shutdown CONFIG\n  profile CONFIG TEXT_FILE\n  compile-question GENESIS SOURCE\n  account create KEY\n  account register CONFIG KEY ACTION\n  submit CONFIG KEY SOURCE PURPOSE ACTION\n  vote CONFIG KEY YES|NO ACTION\n  agent-vote CONFIG KEY ACTION REPORT PROVIDER [--provider-config FILE]\n  agent-review CONFIG KEY REPORT PROVIDER [--provider-config FILE]\n  package GENESIS KEY OUTPUT ROOT_SOURCE [--reference PROOF|--helper SOURCE]...\n  commit CONFIG KEY PACKAGE SECRET ACTION\n  reveal CONFIG KEY SECRET ACTION\n  send CONFIG ACTION\n  receipt|question CONFIG ID\n  fetch-proof CONFIG PROOF_ID OUTPUT\n  fetch-proof-from CONFIG VALIDATOR_INDEX PROOF_ID OUTPUT\n  check-proof GENESIS ROOT_PROOF [DEPENDENCY_PROOF...]\n  export CONFIG DIRECTORY\n  verify GENESIS DIRECTORY\n  inspect GENESIS DIRECTORY SUBMISSION_ID OUTPUT_DIRECTORY\n  peer CONFIG VALIDATOR_INDEX on|off"
+                "Trusted research MVP commands:\n  setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT [standard|compact [ENDPOINTS_JSON]]\n  profile-info GENESIS\n  start|status|shutdown CONFIG\n  profile CONFIG TEXT_FILE\n  compile-question GENESIS SOURCE\n  account create KEY\n  account register CONFIG KEY ACTION\n  join-key create-consensus KEY\n  join-key create-transport KEY\n  submit CONFIG KEY SOURCE PURPOSE ACTION\n  vote CONFIG KEY YES|NO ACTION\n  agent-vote CONFIG KEY ACTION REPORT PROVIDER [--provider-config FILE]\n  agent-review CONFIG KEY REPORT PROVIDER [--provider-config FILE]\n  package GENESIS KEY OUTPUT ROOT_SOURCE [--reference PROOF|--helper SOURCE]...\n  commit CONFIG KEY PACKAGE SECRET ACTION\n  reveal CONFIG KEY SECRET ACTION\n  join-intent CONFIG AUTHOR_KEY FAMILY_HEX CONSENSUS_KEY TRANSPORT_KEY ENDPOINT ACTION\n  send CONFIG ACTION\n  receipt|question CONFIG ID\n  fetch-proof CONFIG PROOF_ID OUTPUT\n  fetch-proof-from CONFIG VALIDATOR_INDEX PROOF_ID OUTPUT\n  check-proof GENESIS ROOT_PROOF [DEPENDENCY_PROOF...]\n  export CONFIG DIRECTORY\n  verify GENESIS DIRECTORY\n  inspect GENESIS DIRECTORY SUBMISSION_ID OUTPUT_DIRECTORY\n  peer CONFIG VALIDATOR_INDEX on|off"
             );
             Ok(())
         }
@@ -41,6 +41,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Some("account") => actions::account(&args[1..]).await,
+        Some("join-key") => actions::join_key(&args[1..]),
         Some("package") => package::run(&args[1..]),
         Some("check-proof") => package::check(&args[1..]),
         Some("agent-vote") => agent::run(&args[1..]).await,
@@ -64,7 +65,9 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             "export" | "verify" | "inspect" | "fetch-proof" | "fetch-proof-from" | "receipt"
             | "question" | "peer",
         ) => export::run(&args).await,
-        Some("submit" | "vote" | "commit" | "reveal" | "send") => actions::run(&args).await,
+        Some("submit" | "vote" | "commit" | "reveal" | "join-intent" | "send") => {
+            actions::run(&args).await
+        }
         Some("status" | "shutdown") if args.len() == 2 => {
             let config = setup::NodeConfig::read(std::path::Path::new(&args[1]))?;
             let request = if args[0] == "status" {

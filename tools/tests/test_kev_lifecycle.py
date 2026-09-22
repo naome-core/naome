@@ -44,11 +44,12 @@ class LifecycleTests(unittest.TestCase):
             self.assertTrue(kwargs['start_new_session'])
             self.process = popen([sys.executable, '-c', 'import time; time.sleep(30)'], **kwargs)
             return self.process
-        with patch.object(runtime, '_running', return_value=None), \
-             patch.object(runtime.subprocess, 'Popen', side_effect=spawn):
+        # Interrupt status polling without also interrupting subprocess.wait cleanup.
+        status = (patch.object(runtime, '_running', side_effect=[None, None, KeyboardInterrupt()])
+                  if interrupt else patch.object(runtime, '_running', return_value=None))
+        with status, patch.object(runtime.subprocess, 'Popen', side_effect=spawn):
             if interrupt:
-                with patch.object(runtime.time, 'sleep', side_effect=KeyboardInterrupt), \
-                     self.assertRaises(KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
                     runtime._ensure(self.settings, time.monotonic() + 1)
             else:
                 with self.assertRaises(runtime.RuntimeFailure) as result:

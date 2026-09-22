@@ -5,10 +5,10 @@ use super::{
     setup::NodeConfig,
 };
 use naome_ledger::{
-    AccountId, CommitmentId, QuestionId, SolutionRoundId,
+    AccountId, CommitmentId, QuestionId, ResolutionId, SolutionRoundId,
     authentication::SignedOperation,
     library::ProofPackage,
-    operations::{OperationBody, SignedOriginal},
+    operations::{JoinIntent, OperationBody, SignedOriginal},
     profile::Genesis,
     question::CompiledQuestion,
 };
@@ -31,6 +31,23 @@ fn nonce(status: &Value, author: AccountId) -> Result<u64> {
         })
         .and_then(|a| a["next_nonce"].as_u64())
         .ok_or_else(|| "registered account nonce unavailable".into())
+}
+fn earned_claim_ordinal(status: &Value, author: AccountId, family: ResolutionId) -> Result<u64> {
+    if status["status"] != "finalized" {
+        return Err("join intent requires finalized node status".into());
+    }
+    status["claims"]
+        .as_array()
+        .and_then(|claims| {
+            claims.iter().find(|claim| {
+                claim["family"] == files::hex(family.as_bytes())
+                    && claim["author"] == files::hex(author.as_bytes())
+            })
+        })
+        .and_then(|claim| claim["ordinal"].as_u64())
+        .ok_or_else(|| {
+            "no finalized eligibility claim earned by this account for the family".into()
+        })
 }
 fn round(status: &Value, phase: &str) -> Result<SolutionRoundId> {
     if status["active"]["phase"] != phase {
@@ -161,6 +178,23 @@ pub async fn account(args: &[String]) -> Result<()> {
         _ => Err("usage: account create KEY; account register CONFIG KEY ACTION".into()),
     }
 }
+pub fn join_key(args: &[String]) -> Result<()> {
+    let (role, label) = match args {
+        [command, _] if command == "create-consensus" => (2, "consensus"),
+        [command, _] if command == "create-transport" => (3, "transport"),
+        _ => {
+            return Err(
+                "usage: join-key create-consensus KEY; join-key create-transport KEY".into(),
+            );
+        }
+    };
+    let key = files::write_key(Path::new(&args[1]), role)?;
+    println!(
+        "{}",
+        json!({"status":"join_candidate_key_created","role":label,"public_key":files::hex(key.verifying_key().as_bytes()),"active_voting_rights":false,"notice":"candidate key only; no validator authority"})
+    );
+    Ok(())
+}
 pub async fn run(args: &[String]) -> Result<()> {
     let command = args[0].as_str();
     let expected = match command {
@@ -168,11 +202,12 @@ pub async fn run(args: &[String]) -> Result<()> {
         "vote" => 5,
         "commit" => 6,
         "reveal" => 5,
+        "join-intent" => 8,
         "send" => 3,
         _ => return Err("unknown action command".into()),
     };
     if args.len() != expected {
-        return Err("usage: submit CONFIG KEY SOURCE PURPOSE ACTION; vote CONFIG KEY YES|NO ACTION; commit CONFIG KEY PACKAGE SECRET ACTION; reveal CONFIG KEY SECRET ACTION; send CONFIG ACTION".into());
+        return Err("usage: submit CONFIG KEY SOURCE PURPOSE ACTION; vote CONFIG KEY YES|NO ACTION; commit CONFIG KEY PACKAGE SECRET ACTION; reveal CONFIG KEY SECRET ACTION; join-intent CONFIG AUTHOR_KEY FAMILY_HEX CONSENSUS_KEY TRANSPORT_KEY ENDPOINT ACTION; send CONFIG ACTION".into());
     }
     let config = NodeConfig::read(Path::new(&args[1]))?;
     let genesis = config.genesis()?;
@@ -302,6 +337,29 @@ pub async fn run(args: &[String]) -> Result<()> {
                 },
                 &args[4],
             )
+        }
+        "join-intent" => {
+            let family = ResolutionId::from_bytes(files::unhex(&args[3])?);
+            let ordinal = earned_claim_ordinal(&status, author, family)?;
+            let consensus = files::key(Path::new(&args[4]), 2)?;
+            let transport = files::key(Path::new(&args[5]), 3)?;
+            let intent = JoinIntent::new(
+                &genesis,
+                author,
+                next,
+                family,
+                ordinal,
+                &consensus,
+                &transport,
+                args[6].clone(),
+            )?;
+            let operation = OperationBody::JoinIntent(intent).sign(&genesis, next, &key)?;
+            files::create_or_match(Path::new(&args[7]), &operation.encode(), true)?;
+            println!(
+                "{}",
+                json!({"status":"join_intent_prepared","operation":files::hex(operation.id().as_bytes()),"family":files::hex(family.as_bytes()),"completion_ordinal":ordinal,"action":args[7],"active_voting_rights":false,"notice":"pending submission; this intent grants no validator authority"})
+            );
+            return Ok(());
         }
         _ => return Err("unknown signed operation".into()),
     };
