@@ -9,9 +9,9 @@ below identify executable test sources; a source pointer is not a passing run.
 Every recorded run establishes evidence only for its named snapshot.
 
 The recorded lab and CI reports below qualify their historical v1 snapshots.
-The merged v2 account-admission result is separate. Neither qualifies the v3
-join-intent extension or a migration; earlier runs require their original
-executable.
+The merged v2 account-admission and v3 join-intent results are separate. None
+qualifies the v4 retirement-order extension or a migration; earlier runs
+require their original executable.
 
 ## Explicit retirement-order qualification
 
@@ -19,9 +19,18 @@ The v4 genesis and profile are incompatible with v3. The new genesis field is an
 exact four-validator-ID permutation selected through a required setup JSON plan;
 `profile-info` exposes it. Ledger tests cover missing, duplicate and foreign IDs,
 order identity, strict wire decoding and stable state replay. CLI setup tests
-cover rejection before provisioning. Focused, full-workspace, platform and
-process evidence for this new source snapshot must be recorded separately from
-the v3 results below. The order has no effect on live authority.
+cover rejection before provisioning. The 22 September 2026 local check used
+Rust 1.97.1 and `CARGO_INCREMENTAL=0`: both complete workspace profiles passed
+585 tests with zero failures, each after its own
+`--workspace --all-targets --all-features --locked --no-run` build barrier.
+Formatting, Clippy with warnings denied, rustdoc with warnings denied,
+doctests, 54 Kev Python tests, and 18 devnet Python tests passed. Release
+binaries passed a one-host four-process relocated-bundle rehearsal through 12
+heights, with offline catch-up, cold reopen, and four agreeing independent
+archive replays. The tested `fb21c8e` tree is identical to the rebased v4
+implementation `d91675a`. Platform CI, physical multi-machine qualification,
+and the long research-window profile remain unverified for v4. The order has
+no effect on live authority.
 
 ## Local join-intent qualification
 
@@ -38,9 +47,13 @@ conflicts, replay, and direct rejection of candidate research votes, consensus
 signing and votes, proposals, time reports, and transport identity. The
 qualified implementation and test source is
 `e236914`.
-This is local qualification only: v3 platform CI and physical-machine
-qualification have not run, and overall v3 acceptance remains pending. A
-join intent neither activates a validator nor consumes its eligibility claim;
+The [v3 CI run 35784893448](https://github.com/naome-core/naome/actions/runs/35784893448)
+passed all required platform and quality checks, plus Devnet qualification, on
+head `754bec4`; squash merge `92353ca` has the same feature tree. Physical
+multi-machine qualification and the long research-window profile have not
+run. The v3 four-process run used the accelerated short-test profile, so
+Lab-profile extension acceptance remains pending. A join intent neither
+activates a validator nor consumes its eligibility claim;
 full activation requires separate policy and handoff work.
 
 ## Local account-admission qualification
@@ -134,7 +147,7 @@ See the [Kev runbook](kev.md) for repeatable software and integration checks.
 |---|---|
 | Profile | [Profile/genesis tests](../../crates/naome-ledger/src/profile/tests.rs) |
 | Account admission | [Registration, capacity and authority](../../crates/naome-chain/src/state/tests/admission.rs), [protected intake](../../crates/naome-runtime/src/state/tests/intake_priority.rs), [four-process registration, reward and restart](../../crates/naome-cli/tests/cases/admission.rs) |
-| Join intent | [Canonical intent and key possession](../../crates/naome-ledger/src/operations/join_intent/tests.rs), [claim and state admission](../../crates/naome-ledger/src/state/tests.rs), [candidate consensus exclusion](../../crates/naome-consensus/src/state/tests.rs), [candidate transport exclusion](../../crates/naome-network/src/transport/state_exchange/tests.rs), [CLI action custody](../../crates/naome-cli/src/app/actions/tests.rs), [four-process prepare, replay and restart](../../crates/naome-cli/tests/cases/admission.rs) — local v3 checks passed; platform CI pending |
+| Join intent | [Canonical intent and key possession](../../crates/naome-ledger/src/operations/join_intent/tests.rs), [claim and state admission](../../crates/naome-ledger/src/state/tests.rs), [candidate consensus exclusion](../../crates/naome-consensus/src/state/tests.rs), [candidate transport exclusion](../../crates/naome-network/src/transport/state_exchange/tests.rs), [CLI action custody](../../crates/naome-cli/src/app/actions/tests.rs), [four-process prepare, replay and restart](../../crates/naome-cli/tests/cases/admission.rs) — local v3 checks and platform CI passed; Lab-profile acceptance pending |
 | Questions | [Question compilation tests](../../crates/naome-ledger/src/question/tests.rs) |
 | State | [Canonical state transitions](../../crates/naome-chain/src/state/tests.rs), [wire/replay vectors](../../crates/naome-chain/src/state/tests/golden.rs), [default queue boundary](../../crates/naome-chain/src/state/tests/queue_boundary.rs), [all-sixteen-author reservation](../../crates/naome-chain/src/state/tests/capacity_sixteen.rs) |
 | Library | [Mathematical normalization/reuse tests](../../crates/naome-ledger/src/library/tests.rs), [workload qualification](../../crates/naome-ledger/src/library/tests/qualification.rs), [older-depth boundary](../../crates/naome-ledger/src/library/tests/depth_boundary.rs) |
@@ -191,8 +204,8 @@ identify runner actions and fields in the recorded acceptance report.
 | MVP-33 | State queue/capacity tests, `minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement`, and `multiple_reveals_share_budget_before_any_additional_checker_call`; Library count/byte/step/depth tests; Transport exact bounds/retention; Storage: `exhausted_signing_bytes_or_frames_never_use_key_and_pending_intent_recovers`. |
 | MVP-34 | Library `qualification_actual_4096_steps_and_near_64k_certificate`, `qualification_17_used_nodes_near_compact_and_default_package_bounds`, `qualification_64_verified_older_citations_and_65th_reject_before_checker`, `qualification_near_2mib_older_closure_sixteen_authenticated_candidates`; exact queue/depth/frame tests; minimum 65/66-record state tests; LAB resource/timing report. Preserve measured output from both pinned profiles. |
 | MVP-35 | Storage observer/full cold replay, `historical_conflicting_finality_is_verified_and_persistently_halts`; journal complete-corruption rejection; Process/LAB independent replay and corrupted export rejection. |
-| MVP-36 | Account-admission State `registration_is_zero_starting_nonce_bound_and_idempotent_without_validator_rights`, `full_registry_preserves_existing_research_and_rejects_new_keys_atomically`, `registration_cannot_ride_on_reserved_progress_or_automatic_opening`; Process `new_researcher_registers_proves_receives_reward_and_survives_replay_and_restart`. These sources have local v2 evidence and passed in both v3 workspace profiles; v3 platform CI remains pending. |
-| MVP-37 | Join-intent format `exact_join_intent_roundtrip_and_context_bound_key_possession`, `all_join_intent_bytes_are_bound_or_rejected`, `possession_roles_and_claim_fields_cannot_be_exchanged`; State `only_earlier_paid_claim_author_can_finalize_an_intent`, `author_can_replace_current_intent_without_gaining_authority`, `another_pending_intent_reserves_its_keys_and_endpoint`; CLI `join_intent_requires_own_claim_and_saves_a_pending_action_for_send`, `join_keys_are_private_role_specific_and_never_overwritten`; Process researcher flow. Both v3 workspace profiles and local quality checks passed; v3 platform CI remains pending. |
+| MVP-36 | Account-admission State `registration_is_zero_starting_nonce_bound_and_idempotent_without_validator_rights`, `full_registry_preserves_existing_research_and_rejects_new_keys_atomically`, `registration_cannot_ride_on_reserved_progress_or_automatic_opening`; Process `new_researcher_registers_proves_receives_reward_and_survives_replay_and_restart`. These sources have local v2 evidence and passed in both v3 workspace profiles and v3 platform CI; Lab-profile acceptance remains pending. |
+| MVP-37 | Join-intent format `exact_join_intent_roundtrip_and_context_bound_key_possession`, `all_join_intent_bytes_are_bound_or_rejected`, `possession_roles_and_claim_fields_cannot_be_exchanged`; State `only_earlier_paid_claim_author_can_finalize_an_intent`, `author_can_replace_current_intent_without_gaining_authority`, `another_pending_intent_reserves_its_keys_and_endpoint`; CLI `join_intent_requires_own_claim_and_saves_a_pending_action_for_send`, `join_keys_are_private_role_specific_and_never_overwritten`; Process researcher flow. Both v3 workspace profiles, local quality checks, and v3 platform CI passed; Lab-profile acceptance remains pending. |
 
 ## Acceptance scenario mapping
 
