@@ -9,24 +9,25 @@ below identify executable test sources; a source pointer is not a passing run.
 Every recorded run establishes evidence only for its named snapshot.
 
 The recorded lab and CI reports below qualify their historical v1 snapshots.
-The local v2 account-admission result is separate. Neither qualifies the v3
+The merged v2 account-admission result is separate. Neither qualifies the v3
 join-intent extension or a migration; earlier runs require their original
 executable.
 
 ## Local join-intent qualification
 
-The 22 September 2026 local v3 check used Rust 1.97.1 and
+The 22 September 2026 local v3 check on the merged v2 base used Rust 1.97.1 and
 `CARGO_INCREMENTAL=0`. Both complete workspace profiles (`test` and `release`)
-passed 575 tests with zero failures, each after its own
+passed 583 tests with zero failures, each after its own
 `--workspace --all-targets --all-features --locked --no-run` build barrier.
 Formatting, Clippy with warnings denied, rustdoc with warnings denied, and
-doctests passed. The seven local process scenarios include a four-validator
-join-intent case that passed in 35.42 s. Component tests cover
+doctests passed. All 54 Kev and 18 devnet Python tests passed. The seven local
+process scenarios include a four-validator join-intent case that passed in
+35.46 s. Component tests cover
 claim binding, candidate key possession, role and endpoint collisions, nonce
 conflicts, replay, and direct rejection of candidate research votes, consensus
 signing and votes, proposals, time reports, and transport identity. The
 qualified implementation and test source is
-`c3d4a6708409afd87ea154f6b761ce8453bb4ecc`.
+`e236914`.
 This is local qualification only: v3 platform CI and physical-machine
 qualification have not run, and overall v3 acceptance remains pending. A
 join intent neither activates a validator nor consumes its eligibility claim;
@@ -34,17 +35,20 @@ full activation requires separate policy and handoff work.
 
 ## Local account-admission qualification
 
-The 22 September 2026 local v2 check used Rust 1.97.1 and `CARGO_INCREMENTAL=0`.
-Both complete workspace profiles (`test` and `release`) passed 564 tests, each
-after its own `--all-targets --all-features --locked --no-run` build barrier.
-Formatting, Clippy with warnings denied, rustdoc with warnings denied, and the
-workspace doctest command passed. The seven process scenarios include a fresh
+The original 22 September 2026 local v2 check passed 564 tests per profile.
+After integration with Kev, the merged v2 head `b5f0207` passed both complete
+Rust 1.97.1 workspace profiles with 572 tests each, their separate
+`--all-targets --all-features --locked --no-run` build barriers, formatting,
+Clippy with warnings denied, rustdoc with warnings denied, doctests, and 54 Kev
+Python tests. [CI run 35781130410](https://github.com/naome-core/naome/actions/runs/35781130410)
+passed all six platform test/release jobs, quality, devnet, and the required
+aggregate checks on that exact head. The squash merge `68e9f7d` has the same
+feature tree. The seven local process scenarios include a fresh
 researcher creating a key, registering with zero balance, earning a proof reward,
 independently verifying its archive, and surviving all four validators' cold
 restart. Registry exhaustion, fixed voting authority, protected intake, original
 and citation rewards, and journal replay have separate component coverage below.
-This is local qualification; v2 platform CI and separate-machine acceptance are
-not established by these results.
+Physical multi-machine acceptance remains separate.
 
 ## Recorded qualification
 
