@@ -84,12 +84,17 @@ evaluation. Known arithmetic and instruction-handling errors remain.
 
 The [verification summary](verification.md#local-kev-voting-prototype) records
 local results and their limits. Keep generated reports under ignored `.local/kev`.
-Run the offline regressions and the actual four-validator integration check with:
+Select a retirement-order permutation for this disposable run; the example uses
+node indices `[2,0,3,1]`. Run the offline regressions and the actual
+four-validator integration check with:
 
 ```sh
 python3 -m unittest discover -s tools/tests -v
+printf '[2,0,3,1]\n' > .local/kev/retirement-order.json
 python3 tools/kev_mvp_smoke.py --binary target/release/naome \
   --validator target/release/naome-validator \
   --verifier target/release/naome-verifier \
-  --config "$PWD/.local/kev/kev.json" --scenario require-yes
+  --config "$PWD/.local/kev/kev.json" \
+  --retirement-order "$PWD/.local/kev/retirement-order.json" \
+  --scenario require-yes
 ```

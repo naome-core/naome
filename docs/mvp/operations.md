@@ -429,14 +429,18 @@ umask 077
 QUALIFICATION=$(mktemp -d /tmp/naome-qualification.XXXXXX)
 cp target/release/naome target/release/naome-validator target/release/naome-verifier "$QUALIFICATION/"
 chmod 500 "$QUALIFICATION/naome" "$QUALIFICATION/naome-validator" "$QUALIFICATION/naome-verifier"
+printf '[2,0,3,1]\n' > "$QUALIFICATION/retirement-order.json"
 python3 tools/state_lab_acceptance.py \
   --binary "$QUALIFICATION/naome" \
   --validator "$QUALIFICATION/naome-validator" \
   --verifier "$QUALIFICATION/naome-verifier" \
   --provider "$PWD/tools/agenda_agent_codex.py" \
+  --retirement-order "$QUALIFICATION/retirement-order.json" \
   >"$QUALIFICATION/progress.jsonl" 2>&1
 ```
 
+Select the four generated node indices for this run and review the resulting
+validator IDs in the runner's public report before treating it as evidence.
 This takes approximately three nine-minute research attempts, plus startup,
 network recovery, checking and export. It uses actual 300/120/120-second lab
 windows and a real agent invocation. The actual agent's YES or NO is retained;
