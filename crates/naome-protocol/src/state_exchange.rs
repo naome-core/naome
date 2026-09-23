@@ -10,6 +10,7 @@ pub const STATE_MAX_FRAME_BYTES: usize = 1024 * 1024 + 64 * 1024;
 pub const STATE_FRAME_HEADER_BYTES: usize = 72;
 pub const STATE_MAX_HISTORY_RECORDS: usize = 16;
 pub const STATE_MAX_CONTROL_BYTES: usize = 4096;
+pub const STATE_RECOVERY_HELLO_BYTES: usize = 224;
 pub const STATE_MAX_PROOF_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,8 +38,31 @@ pub enum StateRequestBody {
     Proposal(Arc<[u8]>),
     Vote(Arc<[u8]>),
     Finalized(Arc<[u8]>),
-    History { from: u64, max_records: u16 },
-    Proof { proof_id: ProofId },
+    History {
+        from: u64,
+        max_records: u16,
+    },
+    Proof {
+        proof_id: ProofId,
+    },
+    /// Parent-bound fresh keys from a current unit; payload authority is checked by the node.
+    Offer(Arc<[u8]>),
+    /// Claim-holder preparation for one selected successor.
+    CandidateOffer(Arc<[u8]>),
+    /// Outgoing agreement evidence for the exact successor under preparation.
+    Agreement(Arc<[u8]>),
+    /// Incoming preparation certificate or signature.
+    ReadySignature(Arc<[u8]>),
+    /// Saved outgoing terminal signature or certificate.
+    TerminalSignature(Arc<[u8]>),
+    /// Requests an unpredictable, recipient-issued nonce for recovery admission.
+    RecoveryChallenge,
+    /// Owner and fresh-transport possession proofs bound to the issued nonce.
+    RecoveryHello(Arc<[u8]>),
+    /// Fetches unsealed agreement evidence; the recipient must verify it against its parent.
+    PendingAgreement {
+        height: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +90,8 @@ pub enum StateResponseBody {
         certificate: Arc<[u8]>,
     },
     Unavailable,
+    RecoveryNonce([u8; 32]),
+    Agreement(Option<Arc<[u8]>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,6 +157,26 @@ fn request_shape(body: &StateRequestBody) -> Result<(u8, usize), StateWireError>
             (6, 10)
         }
         StateRequestBody::Proof { .. } => (7, 32),
+        StateRequestBody::Offer(bytes) => (8, payload(bytes, STATE_MAX_CONTROL_BYTES)?),
+        StateRequestBody::CandidateOffer(bytes) => (9, payload(bytes, STATE_MAX_CONTROL_BYTES)?),
+        StateRequestBody::Agreement(bytes) => (10, payload(bytes, STATE_MAX_FRAME_BYTES)?),
+        StateRequestBody::ReadySignature(bytes) => (11, payload(bytes, STATE_MAX_CONTROL_BYTES)?),
+        StateRequestBody::TerminalSignature(bytes) => {
+            (12, payload(bytes, STATE_MAX_CONTROL_BYTES)?)
+        }
+        StateRequestBody::RecoveryChallenge => (13, 0),
+        StateRequestBody::RecoveryHello(bytes) => {
+            if bytes.len() != STATE_RECOVERY_HELLO_BYTES {
+                return Err(StateWireError::Length);
+            }
+            (14, bytes.len())
+        }
+        StateRequestBody::PendingAgreement { height } => {
+            if *height == 0 {
+                return Err(StateWireError::Range);
+            }
+            (15, 8)
+        }
     })
 }
 fn response_shape(body: &StateResponseBody) -> Result<(u8, usize), StateWireError> {
@@ -163,12 +209,19 @@ fn response_shape(body: &StateResponseBody) -> Result<(u8, usize), StateWireErro
             (5, 32 + payload(certificate, STATE_MAX_PROOF_BYTES)?)
         }
         StateResponseBody::Unavailable => (6, 0),
+        StateResponseBody::RecoveryNonce(_) => (7, 32),
+        StateResponseBody::Agreement(bytes) => (
+            8,
+            1 + bytes
+                .as_ref()
+                .map_or(Ok(0), |bytes| payload(bytes, STATE_MAX_FRAME_BYTES))?,
+        ),
     })
 }
 
 fn header(context: StateContext, response: bool, tag: u8, body_length: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(STATE_FRAME_HEADER_BYTES + body_length);
-    out.extend_from_slice(&2u16.to_be_bytes());
+    out.extend_from_slice(&3u16.to_be_bytes());
     out.push(u8::from(response));
     out.extend_from_slice(&context.genesis);
     out.extend_from_slice(&context.profile);
@@ -187,7 +240,7 @@ pub fn state_frame_length(
     if header.len() != STATE_FRAME_HEADER_BYTES {
         return Err(StateWireError::Length);
     }
-    if header[..2] != 2u16.to_be_bytes() {
+    if header[..2] != 3u16.to_be_bytes() {
         return Err(StateWireError::Version);
     }
     if header[2] != u8::from(response) {
@@ -197,7 +250,7 @@ pub fn state_frame_length(
         return Err(StateWireError::Context);
     }
     let tag = header[67];
-    if tag > if response { 6 } else { 7 } {
+    if tag > if response { 8 } else { 15 } {
         return Err(StateWireError::Tag);
     }
     let body = u32::from_be_bytes(header[68..72].try_into().expect("fixed length")) as usize;
@@ -216,6 +269,8 @@ pub fn state_frame_length(
             3 => length == 1,
             4 => length >= 2,
             5 => (33..=32 + STATE_MAX_PROOF_BYTES).contains(&length),
+            7 => length == 32,
+            8 => length >= 1,
             _ => false,
         }
     } else {
@@ -225,6 +280,11 @@ pub fn state_frame_length(
             2 | 3 | 5 => length > 0,
             6 => length == 10,
             7 => length == 32,
+            8 | 9 | 11 | 12 => (1..=STATE_MAX_CONTROL_BYTES).contains(&length),
+            10 => length > 0,
+            13 => length == 0,
+            14 => length == STATE_RECOVERY_HELLO_BYTES,
+            15 => length == 8,
             _ => false,
         }
     };
@@ -257,17 +317,26 @@ impl StateRequest {
         let (tag, length) = request_shape(&self.body).expect("validated request");
         let mut out = header(self.context, false, tag, length);
         match &self.body {
-            StateRequestBody::Handshake => {}
+            StateRequestBody::Handshake | StateRequestBody::RecoveryChallenge => {}
             StateRequestBody::TimeReport(b)
             | StateRequestBody::UserAction(b)
             | StateRequestBody::Proposal(b)
             | StateRequestBody::Vote(b)
-            | StateRequestBody::Finalized(b) => out.extend_from_slice(b),
+            | StateRequestBody::Finalized(b)
+            | StateRequestBody::Offer(b)
+            | StateRequestBody::CandidateOffer(b)
+            | StateRequestBody::Agreement(b)
+            | StateRequestBody::ReadySignature(b)
+            | StateRequestBody::TerminalSignature(b)
+            | StateRequestBody::RecoveryHello(b) => out.extend_from_slice(b),
             StateRequestBody::History { from, max_records } => {
                 out.extend_from_slice(&from.to_be_bytes());
                 out.extend_from_slice(&max_records.to_be_bytes());
             }
             StateRequestBody::Proof { proof_id } => out.extend_from_slice(proof_id.as_bytes()),
+            StateRequestBody::PendingAgreement { height } => {
+                out.extend_from_slice(&height.to_be_bytes())
+            }
         }
         out
     }
@@ -296,6 +365,16 @@ impl StateRequest {
             },
             7 => StateRequestBody::Proof {
                 proof_id: ProofId::from_bytes(b.try_into().expect("checked proof ID width")),
+            },
+            8 => StateRequestBody::Offer(b.into()),
+            9 => StateRequestBody::CandidateOffer(b.into()),
+            10 => StateRequestBody::Agreement(b.into()),
+            11 => StateRequestBody::ReadySignature(b.into()),
+            12 => StateRequestBody::TerminalSignature(b.into()),
+            13 => StateRequestBody::RecoveryChallenge,
+            14 => StateRequestBody::RecoveryHello(b.into()),
+            15 => StateRequestBody::PendingAgreement {
+                height: u64::from_be_bytes(b.try_into().expect("checked height width")),
             },
             _ => return Err(StateWireError::Tag),
         };
@@ -355,6 +434,13 @@ impl StateResponse {
                 out.extend_from_slice(proof_id.as_bytes());
                 out.extend_from_slice(certificate);
             }
+            StateResponseBody::RecoveryNonce(nonce) => out.extend_from_slice(nonce),
+            StateResponseBody::Agreement(bytes) => {
+                out.push(u8::from(bytes.is_some()));
+                if let Some(bytes) = bytes {
+                    out.extend_from_slice(bytes);
+                }
+            }
             _ => {}
         }
         out
@@ -409,6 +495,12 @@ impl StateResponse {
                 }
             }
             6 => StateResponseBody::Unavailable,
+            7 => StateResponseBody::RecoveryNonce(r.take(32)?.try_into().expect("nonce width")),
+            8 => StateResponseBody::Agreement(match r.take(1)?[0] {
+                0 => None,
+                1 => Some(r.take(r.0.len())?.into()),
+                _ => return Err(StateWireError::Tag),
+            }),
             _ => return Err(StateWireError::Tag),
         };
         if !r.0.is_empty() {
@@ -425,12 +517,20 @@ impl StateResponse {
         match (&request.body, &self.body) {
             (_, StateResponseBody::Busy | StateResponseBody::Rejected(_)) => true,
             (StateRequestBody::Handshake, StateResponseBody::Ready) => true,
+            (StateRequestBody::RecoveryChallenge, StateResponseBody::RecoveryNonce(_)) => true,
+            (StateRequestBody::PendingAgreement { .. }, StateResponseBody::Agreement(_)) => true,
             (
                 StateRequestBody::TimeReport(_)
                 | StateRequestBody::UserAction(_)
                 | StateRequestBody::Proposal(_)
                 | StateRequestBody::Vote(_)
-                | StateRequestBody::Finalized(_),
+                | StateRequestBody::Finalized(_)
+                | StateRequestBody::Offer(_)
+                | StateRequestBody::CandidateOffer(_)
+                | StateRequestBody::Agreement(_)
+                | StateRequestBody::ReadySignature(_)
+                | StateRequestBody::TerminalSignature(_)
+                | StateRequestBody::RecoveryHello(_),
                 StateResponseBody::Accepted,
             ) => true,
             (

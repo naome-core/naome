@@ -16,8 +16,8 @@ use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
 pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
-/// Research protocol with an explicit bootstrap retirement order under fixed validators.
-pub const STATE_PROTOCOL_VERSION: u16 = 4;
+/// Research protocol with sealed authority periods and four stable voting slots.
+pub const STATE_PROTOCOL_VERSION: u16 = 5;
 
 /// Reserved space around one maximum user payload for canonical record headers,
 /// four time reports, operation authentication, and finality signatures. The
@@ -30,8 +30,8 @@ pub const TRANSPORT_ENVELOPE_OVERHEAD_BYTES: u64 = 65536;
 /// Fixed v1 signer checkpoint and unsigned transcript ceilings.
 pub const SIGNER_SNAPSHOT_MAX_BYTES: u64 = 8192;
 pub const SIGNER_TRANSCRIPT_MAX_BYTES: u64 = 1024;
-/// Four full fixed-width research votes plus the quorum count byte.
-pub const STATE_QUORUM_BYTES_BOUND: u64 = 1 + 4 * (5 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
+/// Four fixed-width consensus votes, including their authority IDs, plus the count byte.
+pub const STATE_QUORUM_BYTES_BOUND: u64 = 1 + 4 * (5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
 /// Journal preparation metadata outside one complete research record.
 pub const SIGNER_FRAME_OVERHEAD_BYTES: u64 = 16384;
 /// Covers the genesis-bound signer prefix, initial anchor and their metadata.
@@ -40,6 +40,8 @@ pub const SIGNER_HEADER_BYTES_BOUND: u64 = 32768;
 pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;
 /// Terminal signer stop plus its chained frame header/footer.
 pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
+/// One parent-bound offer journal, optional candidate import, secret files and anchors.
+pub const PERIOD_CUSTODY_BYTES_BOUND: u64 = 8192;
 
 const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF4";
 const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS4";
@@ -55,6 +57,8 @@ pub enum TimingKind {
     Research,
     /// Explicitly accelerated testing only; never lab acceptance evidence.
     ShortTest,
+    /// Dedicated, shorter CI qualification windows; never lab acceptance evidence.
+    CiTest,
 }
 
 /// All durations are integer seconds of certified time.
@@ -206,6 +210,9 @@ impl Profile {
     pub fn short_test() -> Self {
         Self::preset(TimingKind::ShortTest)
     }
+    pub fn ci_test() -> Self {
+        Self::preset(TimingKind::CiTest)
+    }
 
     fn preset(kind: TimingKind) -> Self {
         let (voting_seconds, commitment_seconds, reveal_seconds, queue_seconds) = match kind {
@@ -214,6 +221,9 @@ impl Profile {
             // Leave room for independent CLI commands and durable quorum
             // delivery under concurrent CI compilation and process scheduling.
             TimingKind::ShortTest => (15, 8, 8, 120),
+            // This qualification submits no approval ballots. Keep a complete
+            // nonzero certified window while minimizing its CI-only floor.
+            TimingKind::CiTest => (1, 8, 8, 120),
         };
         Self {
             kind,
@@ -252,9 +262,10 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "state-v4-lab",
-            TimingKind::Research => "state-v4-research",
-            TimingKind::ShortTest => "state-v4-short-test",
+            TimingKind::Lab => "state-v5-lab",
+            TimingKind::Research => "state-v5-research",
+            TimingKind::ShortTest => "state-v5-short-test",
+            TimingKind::CiTest => "state-v5-ci-test",
         }
     }
     fn validate(&self) -> Result<(), LedgerError> {
@@ -324,11 +335,25 @@ impl Profile {
             .and_then(|v| v.checked_add(advance))
             .ok_or(LedgerError::Overflow)
     }
-    /// Full finite-run signer capacity, including a final stop and bounded header.
-    pub fn signer_journal_bytes(&self) -> Result<u64, LedgerError> {
+    /// One period's signer file, including its own header and durable stop.
+    pub fn signer_period_bytes(&self) -> Result<u64, LedgerError> {
         self.signer_height_bytes()?
+            .checked_add(SIGNER_HEADER_BYTES_BOUND + SIGNER_STOP_FRAME_BYTES)
+            .ok_or(LedgerError::Overflow)
+    }
+    /// Complete finite-run signer capacity across separate period journals.
+    pub fn signer_journal_bytes(&self) -> Result<u64, LedgerError> {
+        self.signer_period_bytes()?
             .checked_mul(self.limits.run_records)
-            .and_then(|v| v.checked_add(SIGNER_HEADER_BYTES_BOUND + SIGNER_STOP_FRAME_BYTES))
+            .ok_or(LedgerError::Overflow)
+    }
+    /// Six bounded handoff journal frames plus its genesis, height and round prefix.
+    pub fn handoff_journal_bytes(&self) -> Result<u64, LedgerError> {
+        self.limits
+            .transport_frame_bytes
+            .checked_add(36)
+            .and_then(|frame| frame.checked_mul(6))
+            .and_then(|bytes| bytes.checked_add(8 + 32 + 8 + 8))
             .ok_or(LedgerError::Overflow)
     }
     /// Full finite archive AND worst-case signer history, staged original/final
@@ -350,10 +375,18 @@ impl Profile {
             .and_then(|v| v.checked_add(l.dependency_bytes.checked_mul(2)?))
             .and_then(|v| v.checked_mul(l.commitments_per_attempt))
             .ok_or(LedgerError::Overflow)?;
+        // Each height has independent handoff and fresh-key custody. The extra
+        // 4 KiB reserves signer/handoff anchor files separately from journal data.
+        let handoff = self
+            .handoff_journal_bytes()?
+            .checked_add(PERIOD_CUSTODY_BYTES_BOUND + 4096)
+            .and_then(|bytes| bytes.checked_mul(l.run_records))
+            .ok_or(LedgerError::Overflow)?;
         archive
             .checked_mul(2)
             .and_then(|v| v.checked_add(self.signer_journal_bytes().ok()?))
             .and_then(|v| v.checked_add(reveal))
+            .and_then(|v| v.checked_add(handoff))
             .and_then(|v| v.checked_mul(2))
             .ok_or(LedgerError::Overflow)
     }
@@ -369,6 +402,7 @@ impl Profile {
             TimingKind::Lab => 0,
             TimingKind::Research => 1,
             TimingKind::ShortTest => 2,
+            TimingKind::CiTest => 3,
         });
         for value in [
             self.timing.voting_seconds,
@@ -393,6 +427,7 @@ impl Profile {
             0 => TimingKind::Lab,
             1 => TimingKind::Research,
             2 => TimingKind::ShortTest,
+            3 => TimingKind::CiTest,
             _ => return Err(LedgerError::Invalid("timing kind")),
         };
         let timing = Timing {

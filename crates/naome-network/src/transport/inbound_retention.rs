@@ -1,12 +1,13 @@
 //! Shared custody accounting for separately budgeted opaque inbound exchanges.
 
 use super::PeerId;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub(super) struct InboundRetentionBudget {
     max_events: usize,
     max_bytes: usize,
+    max_per_peer: usize,
     retained: Mutex<InboundRetentionState>,
 }
 
@@ -14,14 +15,27 @@ pub(super) struct InboundRetentionBudget {
 struct InboundRetentionState {
     events: usize,
     bytes: usize,
-    peers: HashSet<PeerId>,
+    peers: HashMap<PeerId, PeerRetention>,
+}
+
+struct PeerRetention {
+    count: usize,
+    exclusive: bool,
 }
 
 impl InboundRetentionBudget {
     pub(super) fn new(max_events: usize, max_bytes: usize) -> Self {
+        Self::with_peer_limit(max_events, max_bytes, 1)
+    }
+    pub(super) fn with_peer_limit(
+        max_events: usize,
+        max_bytes: usize,
+        max_per_peer: usize,
+    ) -> Self {
         Self {
             max_events,
             max_bytes,
+            max_per_peer,
             retained: Mutex::default(),
         }
     }
@@ -50,15 +64,32 @@ pub(super) struct InboundRetentionPermit {
 
 impl InboundRetentionPermit {
     pub(super) fn bind_peer(&mut self, peer_id: PeerId) -> bool {
+        self.bind_peer_with_limit(peer_id, self.budget.max_per_peer, false)
+    }
+    pub(super) fn bind_peer_exclusive(&mut self, peer_id: PeerId) -> bool {
+        self.bind_peer_with_limit(peer_id, 1, true)
+    }
+    fn bind_peer_with_limit(&mut self, peer_id: PeerId, limit: usize, exclusive: bool) -> bool {
         if self.peer_id.is_some() {
             return false;
         }
         let Ok(mut retained) = self.budget.retained.lock() else {
             return false;
         };
-        if !retained.peers.insert(peer_id) {
+        let current = retained.peers.get(&peer_id);
+        let active = current.map_or(0, |slot| slot.count);
+        if active >= limit
+            || active >= self.budget.max_per_peer
+            || current.is_some_and(|slot| slot.exclusive)
+        {
             return false;
         }
+        let Some(count) = active.checked_add(1) else {
+            return false;
+        };
+        retained
+            .peers
+            .insert(peer_id, PeerRetention { count, exclusive });
         self.peer_id = Some(peer_id);
         true
     }
@@ -74,7 +105,14 @@ impl Drop for InboundRetentionPermit {
         retained.events = retained.events.saturating_sub(1);
         retained.bytes = retained.bytes.saturating_sub(self.bytes);
         if let Some(peer_id) = self.peer_id {
-            retained.peers.remove(&peer_id);
+            let slot = retained
+                .peers
+                .get_mut(&peer_id)
+                .expect("bound peer retains its slot");
+            slot.count -= 1;
+            if slot.count == 0 {
+                retained.peers.remove(&peer_id);
+            }
         }
     }
 }

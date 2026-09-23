@@ -49,23 +49,27 @@ fn profile_presets_and_storage_reservation() {
     let lab = Profile::lab();
     let research = Profile::research();
     let short = Profile::short_test();
+    let ci = Profile::ci_test();
     assert_eq!(lab.timing().voting_seconds, 300);
     assert_eq!(lab.timing().commitment_seconds, 120);
     assert_eq!(lab.timing().reveal_seconds, 120);
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
-    assert_eq!(short.name(), "state-v4-short-test");
+    assert_eq!(short.name(), "state-v5-short-test");
+    assert_eq!(ci.timing().voting_seconds, 1);
+    assert_eq!(ci.name(), "state-v5-ci-test");
     assert_ne!(lab.id(), research.id());
     assert_ne!(lab.id(), short.id());
+    assert_ne!(short.id(), ci.id());
     assert_eq!(
         lab.limits.record_bytes * lab.limits.run_records,
         8 * 1024 * 1024 * 1024
     );
     // Full 8192-record run, all 65 consensus rounds per height, complete signer
-    // journal, two archive allocations, reveal staging, and a 100% margin.
-    assert_eq!(lab.required_storage_bytes().unwrap(), 3_453_995_466_906);
+    // journals, per-height handoff/custody, two archives, reveal staging and 100% margin.
+    assert_eq!(lab.required_storage_bytes().unwrap(), 3_564_533_612_544);
     assert_eq!(lab.maximum_issuance_atoms().unwrap(), 8_192_000_000_000);
-    for p in [lab, research, short] {
+    for p in [lab, research, short, ci] {
         assert_eq!(Profile::decode(&p.encode()).unwrap(), p);
     }
 }
@@ -231,7 +235,7 @@ fn old_profile_and_genesis_versions_are_not_reinterpreted() {
             Err(LedgerError::Invalid("genesis version"))
         );
     }
-    for protocol_version in [1, 2, 3, 5] {
+    for protocol_version in [1, 2, 3, 4] {
         let mut unsupported = genesis.clone();
         unsupported.protocol_version = protocol_version;
         assert!(Genesis::decode(&unsupported.encode()).is_err());
@@ -516,8 +520,8 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
     let p = Profile::lab();
     assert_eq!(p.limits().consensus_rounds, 64); // Inclusive: 65 rounds.
     assert_eq!(p.signer_height_frames().unwrap(), 456);
-    assert_eq!(p.signer_height_bytes().unwrap(), 208577429);
-    assert_eq!(p.signer_journal_bytes().unwrap(), 1708666331213);
+    assert_eq!(p.signer_height_bytes().unwrap(), 208594069);
+    assert_eq!(p.signer_journal_bytes().unwrap(), 1709071679488);
     let reduced = Profile::with_limits(
         TimingKind::Lab,
         Limits {
@@ -530,7 +534,7 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
         },
     )
     .unwrap();
-    assert_eq!(reduced.required_storage_bytes().unwrap(), 2_441_919_130);
+    assert_eq!(reduced.required_storage_bytes().unwrap(), 3_070_260_224);
     assert!(reduced.required_storage_bytes().unwrap() < p.required_storage_bytes().unwrap());
     assert!(reduced.signer_journal_bytes().unwrap() > reduced.signer_height_bytes().unwrap() * 256);
     assert_eq!(Profile::decode(&reduced.encode()).unwrap(), reduced);

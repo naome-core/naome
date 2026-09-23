@@ -17,6 +17,7 @@ from state_backend import Backend, BINARIES, command
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+OBSERVATION_POLL_SECONDS = 0.2
 
 
 def atomic(path, value):
@@ -40,6 +41,31 @@ def require(condition, reason):
         raise RuntimeError(reason)
 
 
+def public_wait_status(value):
+    """Keep liveness evidence from public status without keys or endpoints."""
+    active = value.get('active')
+    authority = value.get('authority')
+    return {
+        key: value.get(key) for key in (
+            'status', 'height', 'head', 'state', 'time', 'queued',
+            'pending_operations', 'consensus_position', 'remaining_records',
+            'reserved_records', 'terminated',
+        )
+    } | {
+        'active': None if active is None else {
+            key: active.get(key) for key in ('submission', 'attempt', 'phase', 'deadline')
+        },
+        'authority': None if authority is None else {
+            key: authority.get(key) for key in (
+                'id', 'effective_height', 'active_slots', 'terminated',
+            )
+        },
+        'validator_slots': [{key: unit.get(key) for key in (
+            'index', 'slot', 'unit', 'available',
+        )} for unit in value.get('validators', [])],
+    }
+
+
 class Qualification:
     def __init__(self, args):
         self.args = args
@@ -49,10 +75,16 @@ class Qualification:
         self.started = time.monotonic()
         self.deadline = self.started + args.deadline_seconds
         self.latest, self.resources = {}, {}
+        self.current_attempt = None
         self.isolated = None
         self.report = {'schema_version': 1, 'outcome': 'running', 'backend': args.backend,
-            'scope': 'four fixed validators; canonical records, authenticated operations and certified phase transitions; accelerated qualification',
-            'requested_minimum_heights': args.heights, 'genesis_run_records': 256, 'delay_ms_each_direction_per_chunk': args.delay_ms,
+            'scope': 'four stable authority slots with sealed key rotation; canonical records, authenticated operations and certified phase transitions; accelerated qualification',
+            'requested_minimum_heights': args.heights, 'genesis_run_records': 256, 'timing_profile': args.timing,
+            'voting_observation': {'method': 'per-node finalized status for exact submission',
+                                   'certified_start': 'deadline minus actual genesis profile voting seconds'},
+            'delay_ms_each_direction_per_chunk': args.delay_ms,
+            'delay_proxy_prefetched_chunks_per_direction': 1,
+            'observation_poll_seconds': OBSERVATION_POLL_SECONDS,
             'deadline_seconds': args.deadline_seconds, 'consensus_commands_sent': 0,
             'workload': 'alternating independent owner submissions and full-window NotApproved settlement; proof publication/citation separately qualified by the four-process Rust suite',
             'limits': {'sampled_role_disk_bytes': 512 * 1024 * 1024, 'container_memory_bytes': 512 * 1024 * 1024},
@@ -71,16 +103,25 @@ class Qualification:
     def prepare(self):
         endpoints = self.root / 'endpoints.json'
         endpoints.write_text(json.dumps(self.backend.fronts))
+        handoff_endpoints = self.root / 'handoff-endpoints.json'
+        handoff_endpoints.write_text(json.dumps(self.backend.handoff_fronts))
         retirement = self.root / 'retirement-order.json'
         retirement.write_text(json.dumps([2, 0, 3, 1]))
-        command([self.args.bin_dir / 'naome', 'setup', self.root / 'run', 'short-test', 256, 44100, retirement, 'compact', endpoints])
+        command([self.args.bin_dir / 'naome', 'setup', self.root / 'run', self.args.timing, 256, 44100, retirement, 'compact', endpoints, handoff_endpoints])
+        profile = json.loads(command([self.args.bin_dir / 'naome', 'profile-info',
+                                      self.root / 'run/genesis.bin']).stdout)
+        self.voting_seconds = profile['timing']['voting_seconds']
+        require(isinstance(self.voting_seconds, int) and self.voting_seconds > 0,
+                'genesis voting duration unavailable')
+        self.report['profile_info'] = {key: profile[key] for key in ('genesis', 'profile', 'kind', 'timing')}
         anchors = self.root / 'anchors'
         anchors.mkdir(mode=0o700)
         for i in range(4):
             (anchors / str(i)).mkdir(mode=0o700)
             config = json.loads(self.backend.config(i).read_text())
             config['listen_address'] = self.backend.backs[i]
-            for field, name in (('history_anchor', 'history'), ('signer_anchor', 'signer')):
+            config['handoff_listen_address'] = self.backend.handoff_backs[i]
+            for field, name in (('history_anchor', 'history'), ('signer_anchor', 'signer'), ('custody_anchor', 'custody'), ('handoff_anchor', 'handoff')):
                 source = Path(config[field])
                 destination = anchors / str(i) / name
                 source.rename(destination)
@@ -97,7 +138,7 @@ class Qualification:
             atomic(self.backend.config(i), config)
             shutil.copy2(REPO / 'examples/state-workflow/question-a.nao', self.backend.node(i) / 'question.nao')
             require(all(Path(config[field]).is_dir() and any(Path(config[field]).iterdir())
-                        for field in ('history', 'signer', 'history_anchor', 'signer_anchor')),
+                        for field in ('history', 'signer', 'custody', 'handoff', 'history_anchor', 'signer_anchor', 'custody_anchor', 'handoff_anchor')),
                     'setup must initialize all four authority stores')
         self.report['authority_stores_initialized_by_setup'] = True
         if self.args.backend == 'docker':
@@ -120,22 +161,35 @@ class Qualification:
         self.save()
 
     def observe(self, indices, starting=False):
+        started = time.monotonic()
         result = {}
-        for i in indices:
+        def sample(i):
+            if self.args.backend == 'docker':
+                observed = self.backend.status_memory(i, tolerate=starting)
+                if observed is None:
+                    require(self.backend.alive(i), f'validator {i} unexpectedly exited')
+                    return None
+                value, memory_bytes = observed
+                return value, self.backend.resources(i, memory_bytes=memory_bytes)
             require(self.backend.alive(i), f'validator {i} unexpectedly exited')
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {i: pool.submit(self.backend.cli, i, 'status', self.backend.config(i), tolerate=starting) for i in indices}
-        for i, future in futures.items():
-            value = future.result()
+            value = self.backend.cli(i, 'status', self.backend.config(i), tolerate=starting)
             if value is None:
+                return None
+            return value, self.backend.resources(i)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {i: pool.submit(sample, i) for i in indices}
+        for i, future in futures.items():
+            observed = future.result()
+            if observed is None:
                 continue
+            value, resources = observed
             require(value['status'] == 'finalized', 'status must represent finalized authority')
             prior = self.latest.get(i)
             require(prior is None or value['height'] >= prior['height'], 'finalized height regressed')
             if prior and value['height'] == prior['height']:
                 require(value['head'] == prior['head'] and value['state'] == prior['state'], 'same-height authority changed')
             self.latest[i] = result[i] = value
-            resources = self.backend.resources(i)
             require(resources['disk_bytes'] <= self.report['limits']['sampled_role_disk_bytes'], 'sampled role disk cap exceeded')
             if self.args.backend == 'docker':
                 require(resources['memory_bytes'] is not None, 'container memory sample absent')
@@ -150,6 +204,8 @@ class Qualification:
             identity = (value['head'], value['state'], value['library_root'])
             require(value['height'] not in seen or seen[value['height']] == identity, 'validators disagree at equal finalized height')
             seen[value['height']] = identity
+        timings = self.report.setdefault('timing_seconds', {})
+        timings['observation'] = timings.get('observation', 0) + time.monotonic() - started
         return result
 
     def service_fault(self):
@@ -166,51 +222,145 @@ class Qualification:
                                          'height_at_cut': before['height'], 'survivor_heights_before_heal': survivor_heights})
             require(any(height > before['height'] for height in survivor_heights.values()), 'surviving quorum made no progress while isolated')
 
+    def wait_timeout(self, label, indices, observed, retained=None):
+        retained = retained or {}
+        self.report['wait_timeout'] = {
+            'label': label,
+            'required_indices': indices,
+            'missing_indices': [i for i in indices if i not in observed],
+            'missing_voting_indices': [i for i in indices if i not in retained]
+                                      if label == 'full voting window opens' else None,
+            'current_attempt': dict(self.current_attempt) if getattr(self, 'current_attempt', None) else None,
+            'last_observed': {str(i): public_wait_status(value)
+                              for i, value in sorted(observed.items())},
+            'last_known': {str(i): public_wait_status(value)
+                           for i, value in sorted(self.latest.items())},
+            'retained_voting': {str(i): public_wait_status(value)
+                                for i, value in sorted(retained.items())},
+        }
+        attempt = getattr(self, 'current_attempt', None)
+        if label == 'full voting window opens' and attempt and 'operation' in attempt:
+            try:
+                receipt = self.backend.cli(attempt['owner'], 'receipt',
+                                           self.backend.config(attempt['owner']),
+                                           attempt['operation'], tolerate=True, timeout=5)
+                status = receipt.get('status') if isinstance(receipt, dict) else None
+            except Exception:
+                status = None
+            self.report['wait_timeout']['owner_receipt_status'] = status
+        self.save()
+        raise RuntimeError(f'deadline: {label}')
+
     def wait(self, label, indices, predicate, starting=False):
         indices = list(indices)
         until = min(self.deadline, time.monotonic() + self.args.height_timeout)
+        observed = {}
         while time.monotonic() < until:
             self.service_fault()
-            values = self.observe(indices, starting=starting)
-            if len(values) == len(indices) and predicate(values):
-                return values
-            time.sleep(.5)
-        raise RuntimeError(f'deadline: {label}')
+            observed = self.observe(indices, starting=starting)
+            if len(observed) == len(indices) and predicate(observed):
+                return observed
+            time.sleep(OBSERVATION_POLL_SECONDS)
+        self.wait_timeout(label, indices, observed)
+
+    def wait_voting_window(self, indices, operation):
+        """Retain each node's real Voting observation across different polls."""
+        indices = list(indices)
+        until = min(self.deadline, time.monotonic() + self.args.height_timeout)
+        observed, retained = {}, {}
+        expected = None
+        while time.monotonic() < until:
+            self.service_fault()
+            observed = self.observe(indices)
+            for index, value in observed.items():
+                active = value['active']
+                if active is None or active['phase'] != 'Voting' or active['submission'] != operation:
+                    continue
+                identity = (active['submission'], active['attempt'], active['deadline'])
+                if expected is None:
+                    expected = identity
+                require(identity == expected, 'certified voting window disagreement')
+                retained.setdefault(index, value)
+            if len(retained) == len(indices):
+                return retained
+            time.sleep(OBSERVATION_POLL_SECONDS)
+        self.wait_timeout('full voting window opens', indices, observed, retained)
 
     def converge(self, indices, height):
         return self.wait('same finalized tip', indices, lambda values: all(v['height'] >= height for v in values.values()) and
                          len({(v['height'], v['head'], v['state']) for v in values.values()}) == 1)
 
     def attempt(self, number, indices):
+        started = time.monotonic()
+        checkpoint = started
+        phases = {}
+        def record(name):
+            nonlocal checkpoint
+            now = time.monotonic()
+            phases[name] = round(now - checkpoint, 3)
+            checkpoint = now
         owner = number % 2
+        self.current_attempt = {'number': number, 'owner': owner, 'checkpoint': 'before_submission'}
         config, node = self.backend.config(owner), self.backend.node(owner)
         before = self.backend.cli(owner, 'status', config)
+        self.current_attempt['before_height'] = before['height']
         require(before['active'] is None and before['queued'] == 0, 'previous attempt not settled')
         submitted = self.backend.cli(owner, 'submit', config, node / 'account.key', node / 'question.nao',
                                      f'Canonical qualification attempt {number}', node / f'action-{number}.bin')
+        if before['consensus_position'] is None:
+            # The alternating account still signs its own action. A vacant
+            # slot has only recovery access, so deliver those exact signed
+            # bytes through a currently active validator's ordinary ingress.
+            live = self.wait('active submission ingress', indices,
+                             lambda values: any(v['consensus_position'] is not None for v in values.values()))
+            ingress = next(i for i, value in live.items() if value['consensus_position'] is not None)
+            response = self.backend.control(ingress, {
+                'command': 'submit', 'bytes': (node / f'action-{number}.bin').read_bytes().hex()})
+            require('error' not in response, 'active ingress rejected authenticated owner submission')
+        record('submit')
         operation = submitted['operation']
+        # Poll immediately after submission: a complete certified Voting
+        # window can open and close while a separate receipt request waits.
+        self.current_attempt.update(operation=operation, checkpoint='await_voting')
+        active = self.wait_voting_window(indices, operation)
+        record('voting_open')
+        self.current_attempt['checkpoint'] = 'await_receipt'
         self.wait('authenticated submission receipt', [owner], lambda _: self.backend.cli(owner, 'receipt', config, operation)['status'] == 'finalized')
-        active = self.wait('full voting window opens', indices,
-                           lambda values: all(v['active'] is not None and v['active']['phase'] == 'Voting' for v in values.values()))
+        record('receipt')
+        self.current_attempt['checkpoint'] = 'await_settlement'
         submission = active[owner]['active']['submission']
         deadline = active[owner]['active']['deadline']
+        certified_start = deadline - self.voting_seconds
         require(all(v['active']['submission'] == submission and v['active']['deadline'] == deadline for v in active.values()), 'active attempt or deadline disagreement')
         finished = self.wait('full-window NotApproved settlement', indices,
             lambda values: all(v['height'] > before['height'] and v['active'] is None and v['queued'] == 0 for v in values.values()))
+        record('settlement')
         height = max(v['height'] for v in finished.values())
+        self.current_attempt['checkpoint'] = 'await_convergence'
         finished = self.converge(indices, height)
+        record('converge')
         require(all(v['time'] >= deadline for v in finished.values()), 'voting closed before its certified deadline')
         question = self.backend.cli(owner, 'question', config, submission)
+        record('question')
         require(question['status'] == 'NotApproved', 'unexpected agenda outcome')
         self.report['attempts'].append({'number': number, 'owner': owner, 'operation': operation,
             'submission': submission, 'height': height, 'head': finished[owner]['head'], 'state': finished[owner]['state'],
-            'voting_deadline': deadline, 'certified_start': active[owner]['time'], 'certified_end': finished[owner]['time']})
+            'voting_deadline': deadline, 'certified_start': certified_start, 'certified_end': finished[owner]['time'],
+            'voting_observations': {str(i): {'height': value['height'], 'head': value['head'],
+                                            'state': value['state'], 'time': value['time'],
+                                            'attempt': value['active']['attempt']}
+                                    for i, value in sorted(active.items())},
+            'elapsed_seconds': round(time.monotonic() - started, 3), 'phase_seconds': phases,
+            'active_slots_at_settlement': {str(i): value['authority']['active_slots'] for i, value in finished.items()}})
         self.save()
         print(json.dumps({'event': 'canonical_devnet_progress', 'attempt': number, 'height': height}), flush=True)
+        self.current_attempt = None
         return height
 
     def restart(self, index, force):
+        started = time.monotonic()
         before = self.backend.cli(index, 'status', self.backend.config(index))
+        require(before['consensus_position'] is not None, 'restart target is not an active signer')
         prefix = self.backend.node(index) / f'before-restart-{self.backend.generations[index]}'
         self.backend.cli(index, 'export', self.backend.config(index), prefix, timeout=180)
         self.backend.stop(index, force=force)
@@ -222,15 +372,21 @@ class Qualification:
         for height in range(1, before['height'] + 1):
             name = f'{height:08}.finality'
             require((prefix / name).read_bytes() == (reopened / name).read_bytes(), 'restart replaced selected finality evidence')
-        self.report['faults'].append({'operation': 'sigkill_restart' if force else 'graceful_restart', 'validator': index, 'height': before['height']})
+        self.report['faults'].append({'operation': 'sigkill_restart' if force else 'graceful_restart', 'validator': index, 'height': before['height'],
+                                     'active_signer_before_restart': True,
+                                     'elapsed_seconds': round(time.monotonic() - started, 3)})
 
     def verify(self):
         tip = self.converge(range(4), self.args.heights)[0]
         consensus = None
         for i in range(4):
             archive = self.backend.node(i) / 'export'
+            started = time.monotonic()
             self.backend.cli(i, 'export', self.backend.config(i), archive, timeout=180)
+            export_seconds = time.monotonic() - started
+            started = time.monotonic()
             result = json.loads(command([self.args.bin_dir / 'naome-verifier', 'verify', self.root / 'run/genesis.bin', archive], timeout=180).stdout)
+            replay_seconds = time.monotonic() - started
             require((result['height'], result['head'], result['state']) == (tip['height'], tip['head'], tip['state']), 'independent replay differs from live state')
             frames = [hashlib.sha256((archive / f'{height:08}.finality').read_bytes()).hexdigest() for height in range(1, tip['height'] + 1)]
             # Each verified head binds the full record ancestry. Different sufficient
@@ -238,7 +394,8 @@ class Qualification:
             require(consensus is None or consensus == result['consensus_commitment'], 'independent consensus history differs')
             consensus = result['consensus_commitment']
             self.report['verified'].append({'validator': i, 'height': result['height'], 'head': result['head'], 'state': result['state'],
-                'consensus_commitment': result['consensus_commitment'], 'retained_finality_frame_sha256': frames})
+                'consensus_commitment': result['consensus_commitment'], 'retained_finality_frame_sha256': frames,
+                'export_seconds': round(export_seconds, 3), 'replay_seconds': round(replay_seconds, 3)})
         # A corrupt export must be rejected by the actual independent executable.
         path = self.backend.node(0) / 'export/00000001.finality'
         original = path.read_bytes()
@@ -251,33 +408,83 @@ class Qualification:
         path.write_bytes(original)
         self.report['corrupt_export_rejected_without_repair'] = True
 
+    @staticmethod
+    def partition_ready(values):
+        return (set(values) == set(range(4))
+                and len({(v['height'], v['head'], v['state']) for v in values.values()}) == 1
+                and all(v['authority']['active_slots'] == 4
+                        and v['consensus_position'] is not None for v in values.values()))
+
     def run(self):
+        started = time.monotonic()
         self.prepare()
-        height, attempt = 0, 0
+        self.report.setdefault('timing_seconds', {})['startup'] = round(time.monotonic() - started, 3)
+        height, attempt, fault_stage = 0, 0, 0
         partitioned = False
-        while height < self.args.heights:
-            if self.args.faults and attempt == 1:
-                old = self.latest[3]
-                kind = self.backend.cut(3)
-                partitioned = True
-                cut_at = time.monotonic()
-                self.isolated = (3, old, cut_at + self.args.partition_seconds)
-                self.report['faults'].append({'operation': kind, 'validator': 3, 'height': old['height']})
+        partition_prepare_until = None
+        last_restart_height = None
+        while (height < self.args.heights or (self.args.faults and fault_stage < 3)
+               or (last_restart_height is not None and height <= last_restart_height)):
+            if self.args.faults and attempt >= 1 and fault_stage == 0:
+                if partition_prepare_until is None:
+                    partition_prepare_until = min(self.deadline, time.monotonic() + self.args.height_timeout)
+                require(time.monotonic() < partition_prepare_until,
+                        'four available slots were not restored before partition deadline')
+                # A legal vacant slot already consumes the one-fault allowance.
+                # Continue genuine measured workload until all four selected
+                # slots are available, then remove one actual signer. Never
+                # weaken this into cutting an already vacant slot.
+                ready = self.observe(range(4))
+                if self.partition_ready(ready):
+                    old = ready[3]
+                    kind = self.backend.cut(3)
+                    partitioned = True
+                    cut_at = time.monotonic()
+                    self.isolated = (3, old, cut_at + self.args.partition_seconds)
+                    self.report['faults'].append({'operation': kind, 'validator': 3, 'height': old['height'],
+                                                 'active_slots_before_cut': 4})
             height = self.attempt(attempt, range(3) if partitioned else range(4))
             if partitioned:
+                repair_started = time.monotonic()
                 while self.isolated is not None:
                     self.service_fault()
                     require(time.monotonic() < self.deadline, 'overall deadline during outage')
                     time.sleep(.5)
                 partitioned = False
                 self.converge(range(4), height)
-                self.report['faults'].append({'operation': 'healed_and_caught_up', 'validator': 3, 'height': height})
-            if self.args.faults and attempt == 2:
-                self.restart(0, force=True)
-            if self.args.faults and attempt == 3:
-                self.restart(1, force=False)
+                self.report['faults'].append({'operation': 'healed_and_caught_up', 'validator': 3, 'height': height,
+                                             'wait_and_catchup_seconds': round(time.monotonic() - repair_started, 3)})
+                fault_stage = 1
+            elif self.args.faults and fault_stage in (1, 2):
+                live = self.observe(range(4))
+                preferred = fault_stage - 1
+                candidates = [preferred] + [i for i in range(4) if i != preferred]
+                index = next((i for i in candidates if live[i]['consensus_position'] is not None), None)
+                require(index is not None, 'no active signer available for restart fault')
+                self.restart(index, force=fault_stage == 1)
+                last_restart_height = height
+                fault_stage += 1
             attempt += 1
         self.verify()
+        if self.args.faults:
+            require(last_restart_height is not None and height > last_restart_height,
+                    'no finalized progress after final restart')
+            self.report['post_restart_progress'] = {'restart_height': last_restart_height,
+                                                    'verified_height': height}
+        self.report['timing_seconds']['attempts'] = round(sum(a['elapsed_seconds'] for a in self.report['attempts']), 3)
+        self.report['timing_seconds']['certified_voting_windows'] = sum(
+            a['voting_deadline'] - a['certified_start'] for a in self.report['attempts'])
+        # Observation and certified windows overlap the attempt phases. They
+        # are attribution counters, not additive portions of elapsed time.
+        self.report['timing_seconds']['attempt_phases'] = {
+            phase: round(sum(a['phase_seconds'][phase] for a in self.report['attempts']), 3)
+            for phase in ('submit', 'voting_open', 'receipt', 'settlement', 'converge', 'question')}
+        phases = self.report['timing_seconds']['attempt_phases']
+        self.report['timing_seconds']['consensus_and_delivery_before_voting_observed'] = round(
+            phases['voting_open'], 3)
+        self.report['timing_seconds']['settlement_including_voting_wait'] = phases['settlement']
+        self.report['timing_seconds']['fault_restarts'] = round(sum(
+            fault.get('elapsed_seconds', 0) for fault in self.report['faults']), 3)
         for i in range(4):
             self.backend.stop(i)
         self.report['outcome'] = 'passed'
@@ -292,6 +499,7 @@ def main():
     parser.add_argument('--image', default='naome-devnet:local')
     parser.add_argument('--subnet', default='172.30.88.0/24')
     parser.add_argument('--heights', type=int, default=100)
+    parser.add_argument('--timing', choices=('short-test', 'ci-test'), default='short-test')
     parser.add_argument('--height-timeout', type=int, default=180)
     parser.add_argument('--deadline-seconds', type=int, default=2400)
     parser.add_argument('--delay-ms', type=int, default=50)

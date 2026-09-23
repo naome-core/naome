@@ -1,7 +1,7 @@
 use super::codec::{Reader, Writer};
 use naome_ledger::LedgerError;
 
-const MAGIC: &[u8; 5] = b"NSCF1";
+const MAGIC: &[u8; 5] = b"NSCF5";
 
 /// Canonical wire record binding a complete state proposal to finality evidence.
 ///
@@ -14,6 +14,7 @@ const MAGIC: &[u8; 5] = b"NSCF1";
 pub struct FinalizedStateRecord<'a> {
     proposal: &'a [u8],
     quorum: &'a [u8],
+    seal: &'a [u8],
 }
 impl<'a> FinalizedStateRecord<'a> {
     pub fn decode(
@@ -27,8 +28,13 @@ impl<'a> FinalizedStateRecord<'a> {
         }
         let proposal = reader.bytes(maximum_bytes)?;
         let quorum = reader.bytes(maximum_quorum_bytes)?;
+        let seal = reader.bytes(4096)?;
         reader.finish()?;
-        Ok(Self { proposal, quorum })
+        Ok(Self {
+            proposal,
+            quorum,
+            seal,
+        })
     }
     pub const fn proposal(&self) -> &'a [u8] {
         self.proposal
@@ -36,13 +42,21 @@ impl<'a> FinalizedStateRecord<'a> {
     pub const fn quorum(&self) -> &'a [u8] {
         self.quorum
     }
+    pub const fn seal(&self) -> &'a [u8] {
+        self.seal
+    }
 
     /// Frames exact evidence bytes; this does not authenticate their content.
-    pub fn encode_evidence(proposal: &[u8], quorum: &[u8]) -> Result<Vec<u8>, LedgerError> {
+    pub fn encode_evidence(
+        proposal: &[u8],
+        quorum: &[u8],
+        seal: &[u8],
+    ) -> Result<Vec<u8>, LedgerError> {
         let mut writer = Writer::new();
         writer.fixed(MAGIC);
         writer.bytes(proposal)?;
         writer.bytes(quorum)?;
+        writer.bytes(seal)?;
         Ok(writer.finish())
     }
 }

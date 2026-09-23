@@ -4,12 +4,13 @@ use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey,
     state::{
-        StateBranch, StateFinality, StateIntent, StateLockEvent, StateLockState,
+        StateAgreement, StateSeal, SealRole, SealSignature, StateBranch, StateFinality, StateIntent, StateLockEvent, StateLockState,
         StateProposal, StatePublication, StateQuorum, StateVote,
     },
 };
 use naome_ledger::{
     AccountId, CommitmentId, LedgerState,
+    authority::{HandoffPlan, NextPeriodKeys},
     authentication::SignedOperation,
     library::ProofPackage,
     operations::{OperationBody, SignedOriginal},
@@ -53,17 +54,91 @@ fn account(i: u8) -> SigningKey {
 fn validator(i: u8) -> SigningKey {
     SigningKey::from_bytes(&[i + 101; 32])
 }
-fn key(i: u8) -> ConsensusKey {
-    ConsensusKey::from_bytes(validator(i).verifying_key().to_bytes())
-}
+
 fn author(i: u8) -> AccountId {
     AccountId::for_key(account(i).verifying_key().as_bytes())
 }
 fn signing_key(key: ConsensusKey) -> SigningKey {
-    (0..4)
-        .map(validator)
+    (1..65)
+        .flat_map(|height| (0..4).map(move |i| period_key(i, height)))
         .find(|sk| sk.verifying_key().as_bytes() == key.as_bytes())
         .unwrap()
+}
+fn period_key(i: u8, height: u64) -> SigningKey {
+    if height == 1 {
+        return validator(i);
+    }
+    let mut seed = [42; 32];
+    seed[0] = i;
+    seed[1..9].copy_from_slice(&height.to_be_bytes());
+    SigningKey::from_bytes(&seed)
+}
+fn period_transport(i: u8, height: u64) -> SigningKey {
+    let mut seed = [43; 32];
+    seed[0] = i;
+    seed[1..9].copy_from_slice(&height.to_be_bytes());
+    SigningKey::from_bytes(&seed)
+}
+fn plan(branch: &StateBranch) -> HandoffPlan {
+    let state = branch.state();
+    let mut offers: Vec<_> = state
+        .authority()
+        .units()
+        .iter()
+        .map(|unit| {
+            let i = (0..4).find(|i| author(*i) == unit.owner()).unwrap();
+            let height = state.authority().effective_height() + 1;
+            NextPeriodKeys::sign(
+                state.authority(),
+                state.head(),
+                state.commitment(),
+                unit.id(),
+                &account(i),
+                &period_key(i, height),
+                &period_transport(i, height),
+                format!("127.0.0.1:{}", 43000 + u16::from(i)),
+            )
+            .unwrap()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    HandoffPlan::new(offers, None).unwrap()
+}
+fn seal_signature(agreement: &StateAgreement, role: SealRole, key: ConsensusKey) -> SealSignature {
+    let context = agreement.seal_context();
+    let signature = signing_key(key)
+        .sign(&SealSignature::signing_bytes(role, context, key))
+        .to_bytes();
+    SealSignature::complete(
+        role,
+        context,
+        key,
+        signature,
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
+}
+fn seal(agreement: &StateAgreement) -> StateSeal {
+    let signatures = |role, authority: &naome_ledger::authority::AuthoritySnapshot| {
+        authority
+            .units()
+            .iter()
+            .filter_map(|unit| unit.keys())
+            .take(3)
+            .map(|keys| {
+                seal_signature(agreement, role, ConsensusKey::from_bytes(*keys.consensus()))
+            })
+            .collect()
+    };
+    StateSeal::new(
+        signatures(SealRole::Ready, agreement.incoming()),
+        signatures(SealRole::Terminal, agreement.outgoing()),
+        agreement.seal_context(),
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
 }
 fn genesis() -> Genesis {
     let retirement_registrations: Vec<_> = (0..4)
@@ -94,19 +169,21 @@ fn genesis() -> Genesis {
 }
 fn time(state: &LedgerState, now: u64) -> TimeCertificate {
     TimeCertificate::new(
-        (0..3)
+        (0..4)
             .map(|i| {
                 SignedTimeReport::sign(
                     state.genesis(),
+                    state.authority(),
                     state.head(),
                     state.height() + 1,
                     now,
-                    &validator(i),
+                    &period_key(i, state.authority().effective_height()),
                 )
                 .unwrap()
             })
             .collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         state.height() + 1,
         state.time(),
@@ -136,7 +213,7 @@ fn submission(state: &LedgerState, purpose: &str) -> SignedOperation {
     )
 }
 fn proposal(branch: &StateBranch, record: Vec<u8>) -> StateProposal {
-    let proposer = branch.proposer(0, MAX_ROUND).unwrap();
+    let proposer = branch.proposer(0, MAX_ROUND).unwrap().unwrap();
     let mut kernel = StateLockState::new(branch, proposer).unwrap();
     let intent = kernel
         .apply(
@@ -156,7 +233,7 @@ fn proposal(branch: &StateBranch, record: Vec<u8>) -> StateProposal {
     }
 }
 fn finish_vote(intent: StateIntent, branch: &StateBranch, i: u8) -> StateVote {
-    let signature = validator(i)
+    let signature = period_key(i, branch.authority().effective_height())
         .sign(&intent.signing_bytes().unwrap())
         .to_bytes();
     match intent.complete(signature, branch, MAX_ROUND).unwrap() {
@@ -175,7 +252,14 @@ fn certify_with_signers(
     let proposal = proposal(branch, record);
     let encoded = proposal.encode().unwrap();
     let mut kernels: Vec<_> = (0..3)
-        .map(|i| StateLockState::new(branch, key(i + first)).unwrap())
+        .map(|i| {
+            let key = ConsensusKey::from_bytes(
+                period_key(i + first, branch.authority().effective_height())
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            StateLockState::new(branch, key).unwrap()
+        })
         .collect();
     let votes = (0..3)
         .map(|i| {
@@ -191,7 +275,8 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let prevotes = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let prevotes =
+        StateQuorum::from_votes(votes, branch.state().genesis(), branch.authority()).unwrap();
     let votes = (0..3)
         .map(|i| {
             let intent = kernels[i]
@@ -207,10 +292,14 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let precommits = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let precommits =
+        StateQuorum::from_votes(votes, branch.state().genesis(), branch.authority()).unwrap();
+    let agreement = branch
+        .verify_agreement(&proposal, &precommits, MAX_ROUND)
+        .unwrap();
     (
         branch
-            .verify_finality(&proposal, &precommits, MAX_ROUND)
+            .verify_finality(&proposal, &precommits, &seal(&agreement), MAX_ROUND)
             .unwrap(),
         prevotes,
     )
@@ -218,7 +307,7 @@ fn certify_with_signers(
 fn record(branch: &StateBranch, now: u64, operations: Vec<SignedOperation>) -> Vec<u8> {
     branch
         .state()
-        .prepare_record(time(branch.state(), now), operations)
+        .prepare_record(time(branch.state(), now), operations, plan(branch))
         .unwrap()
         .record()
         .encode()

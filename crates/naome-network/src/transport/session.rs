@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -26,13 +26,24 @@ use super::{
 
 pub(super) struct Behaviour {
     peers: Vec<PeerSession>,
+    recovery_enabled: bool,
+    recovery_dials: HashMap<ConnectionId, Multiaddr>,
+    recovery_connected: HashMap<PeerId, ConnectionId>,
     inbound_budget: TokenBucket,
     pending_events: VecDeque<PeerSessionEvent>,
     retry_timer: Option<Pin<Box<Sleep>>>,
 }
 
 impl Behaviour {
+    #[cfg(test)]
     pub(super) fn new(local_peer_id: PeerId, peers: impl IntoIterator<Item = StaticPeer>) -> Self {
+        Self::new_with_recovery(local_peer_id, peers, false)
+    }
+    pub(super) fn new_with_recovery(
+        local_peer_id: PeerId,
+        peers: impl IntoIterator<Item = StaticPeer>,
+        recovery_enabled: bool,
+    ) -> Self {
         let now = Instant::now();
         let local_peer_bytes = local_peer_id.to_bytes();
         let mut peers = peers
@@ -53,6 +64,9 @@ impl Behaviour {
         peers.sort_unstable_by_key(|peer| peer.peer_id);
         Self {
             peers,
+            recovery_enabled,
+            recovery_dials: HashMap::new(),
+            recovery_connected: HashMap::new(),
             inbound_budget: TokenBucket::new(INBOUND_AUTH_BURST, INBOUND_AUTH_REFILL_INTERVAL, now),
             pending_events: VecDeque::new(),
             retry_timer: None,
@@ -81,6 +95,30 @@ impl Behaviour {
 
     pub(super) fn peer_index(&self, peer_id: &PeerId) -> Option<usize> {
         self.peers.iter().position(|peer| peer.peer_id == *peer_id)
+    }
+    pub(super) fn peer_address(&self, peer_id: &PeerId) -> Option<&Multiaddr> {
+        self.peer(peer_id).map(|peer| &peer.address)
+    }
+    pub(super) fn is_recovery_connected(&self, peer_id: &PeerId) -> bool {
+        self.recovery_connected.contains_key(peer_id)
+    }
+    pub(super) fn recovery_idle(&self) -> bool {
+        self.recovery_dials.is_empty() && self.recovery_connected.is_empty()
+    }
+    pub(super) fn recovery_dial(&mut self, address: Multiaddr) -> Option<DialOpts> {
+        if !self.recovery_enabled || self.recovery_dials.len() + self.recovery_connected.len() >= 2
+        {
+            return None;
+        }
+        let options = DialOpts::unknown_peer_id()
+            .address(address.clone())
+            .allocate_new_port()
+            .build();
+        self.recovery_dials.insert(options.connection_id(), address);
+        Some(options)
+    }
+    pub(super) fn cancel_recovery_dial(&mut self, connection_id: ConnectionId) {
+        self.recovery_dials.remove(&connection_id);
     }
 
     fn peer(&self, peer_id: &PeerId) -> Option<&PeerSession> {
@@ -252,7 +290,11 @@ impl NetworkBehaviour for Behaviour {
         _: Endpoint,
     ) -> Result<Vec<Multiaddr>, ConnectionDenied> {
         let Some(peer_id) = maybe_peer else {
-            return Err(ConnectionDenied::new(SessionDenied::UnmanagedDial));
+            return self
+                .recovery_dials
+                .contains_key(&connection_id)
+                .then(Vec::new)
+                .ok_or_else(|| ConnectionDenied::new(SessionDenied::UnmanagedDial));
         };
         let Some(peer) = self.peer(&peer_id) else {
             return Err(ConnectionDenied::new(SessionDenied::UnmanagedDial));
@@ -278,6 +320,9 @@ impl NetworkBehaviour for Behaviour {
         _: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         let Some(peer) = self.peer(&peer_id) else {
+            if self.recovery_enabled && self.recovery_connected.len() < 2 {
+                return Ok(dummy::ConnectionHandler);
+            }
             return Err(ConnectionDenied::new(SessionDenied::UnknownPeer));
         };
         if peer.owns_dial || !matches!(peer.link, Link::Down { .. }) {
@@ -295,6 +340,10 @@ impl NetworkBehaviour for Behaviour {
         _: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         let Some(peer) = self.peer(&peer_id) else {
+            if self.recovery_dials.contains_key(&connection_id) && self.recovery_connected.len() < 2
+            {
+                return Ok(dummy::ConnectionHandler);
+            }
             return Err(ConnectionDenied::new(SessionDenied::UnknownPeer));
         };
         if !peer.owns_dial
@@ -313,6 +362,14 @@ impl NetworkBehaviour for Behaviour {
     fn on_swarm_event(&mut self, event: FromSwarm<'_>) {
         match event {
             FromSwarm::ConnectionEstablished(established) => {
+                if self.peer(&established.peer_id).is_none() {
+                    if self.recovery_enabled {
+                        self.recovery_dials.remove(&established.connection_id);
+                        self.recovery_connected
+                            .insert(established.peer_id, established.connection_id);
+                    }
+                    return;
+                }
                 if self.record_established(
                     established.peer_id,
                     established.connection_id,
@@ -326,6 +383,10 @@ impl NetworkBehaviour for Behaviour {
                 }
             }
             FromSwarm::ConnectionClosed(closed) => {
+                if self.recovery_connected.get(&closed.peer_id) == Some(&closed.connection_id) {
+                    self.recovery_connected.remove(&closed.peer_id);
+                    return;
+                }
                 if self.record_closed(
                     closed.peer_id,
                     closed.connection_id,
@@ -339,6 +400,9 @@ impl NetworkBehaviour for Behaviour {
                 }
             }
             FromSwarm::DialFailure(failure) => {
+                if self.recovery_dials.remove(&failure.connection_id).is_some() {
+                    return;
+                }
                 let Some(peer_id) = failure.peer_id else {
                     return;
                 };

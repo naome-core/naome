@@ -5,6 +5,7 @@ use naome_ledger::{
 };
 use serde::{Deserialize, Serialize};
 
+pub(super) mod candidate;
 #[cfg(test)]
 mod tests;
 use std::{
@@ -21,6 +22,10 @@ pub struct NodeConfig {
     pub history_anchor: PathBuf,
     pub signer: PathBuf,
     pub signer_anchor: PathBuf,
+    pub custody: PathBuf,
+    pub custody_anchor: PathBuf,
+    pub handoff: PathBuf,
+    pub handoff_anchor: PathBuf,
     pub consensus_key: PathBuf,
     pub transport_key: PathBuf,
     pub account_key: PathBuf,
@@ -28,14 +33,20 @@ pub struct NodeConfig {
     pub control_socket: PathBuf,
     pub maximum_round: u64,
     pub simulation: bool,
+    pub primary_endpoint: String,
+    pub candidate_family: Option<String>,
+    pub recovery_endpoints: Vec<String>,
     /// Local bind override for an explicitly provisioned proxy or NAT endpoint.
     #[serde(default)]
     pub listen_address: Option<std::net::SocketAddr>,
+    pub handoff_endpoint: String,
+    #[serde(default)]
+    pub handoff_listen_address: Option<std::net::SocketAddr>,
 }
 impl NodeConfig {
     pub fn read(path: &Path) -> Result<Self> {
         let mut config: Self = serde_json::from_slice(&files::read(path, 16384, true)?)?;
-        if config.version != 2 || config.maximum_round == 0 {
+        if config.version != 5 || config.maximum_round == 0 {
             return Err("unsupported node configuration".into());
         }
         // Portable bundles resolve paths beside their configuration, never
@@ -54,6 +65,10 @@ impl NodeConfig {
             &mut config.history_anchor,
             &mut config.signer,
             &mut config.signer_anchor,
+            &mut config.custody,
+            &mut config.custody_anchor,
+            &mut config.handoff,
+            &mut config.handoff_anchor,
             &mut config.consensus_key,
             &mut config.transport_key,
             &mut config.account_key,
@@ -72,11 +87,10 @@ impl NodeConfig {
 }
 fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
     if !(args.len() == 5
-        || ((args.len() == 6 || args.len() == 7)
-            && matches!(args[5].as_str(), "compact" | "standard")))
+        || ((6..=8).contains(&args.len()) && matches!(args[5].as_str(), "compact" | "standard")))
     {
         return Err(
-            "usage: setup DIRECTORY lab|research|short-test RUN_RECORDS BASE_PORT RETIREMENT_ORDER_JSON [standard|compact [ENDPOINTS_JSON]]".into(),
+            "usage: setup DIRECTORY lab|research|short-test|ci-test RUN_RECORDS BASE_PORT RETIREMENT_ORDER_JSON [standard|compact [ENDPOINTS_JSON [HANDOFF_ENDPOINTS_JSON]]]".into(),
         );
     }
     // The plan names generated node indices, not the canonical validator list.
@@ -97,7 +111,8 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
         "lab" => TimingKind::Lab,
         "research" => TimingKind::Research,
         "short-test" => TimingKind::ShortTest,
-        _ => return Err("choose lab, research, or explicitly accelerated short-test".into()),
+        "ci-test" => TimingKind::CiTest,
+        _ => return Err("choose lab, research, short-test, or ci-test".into()),
     };
     let mut limits = Limits {
         run_records: args[2].parse()?,
@@ -111,10 +126,10 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
     }
     let profile = Profile::with_limits(timing, limits)?;
     let base: u16 = args[3].parse()?;
-    if !(1024..=65532).contains(&base) {
-        return Err("base port must be 1024 through 65532".into());
+    if !(1024..=65528).contains(&base) {
+        return Err("base port must be 1024 through 65528".into());
     }
-    let endpoints: [String; 4] = if args.len() == 7 {
+    let endpoints: [String; 4] = if args.len() >= 7 {
         let values: [String; 4] =
             serde_json::from_slice(&files::read(Path::new(&args[6]), 4096, false)?)?;
         let parsed = values
@@ -141,11 +156,55 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
     } else {
         std::array::from_fn(|index| format!("127.0.0.1:{}", base + index as u16))
     };
+    configured_handoff_endpoints(args, &endpoints)?;
     Ok((profile, endpoints, retirement_order))
+}
+
+fn handoff_endpoints(endpoints: &[String; 4]) -> Result<[String; 4]> {
+    let mut all: std::collections::BTreeSet<_> = endpoints.iter().cloned().collect();
+    let mut next = std::array::from_fn(|_| String::new());
+    for (index, value) in endpoints.iter().enumerate() {
+        let mut address: std::net::SocketAddr = value.parse()?;
+        address.set_port(
+            address
+                .port()
+                .checked_add(4)
+                .ok_or("peer endpoint leaves no handoff port")?,
+        );
+        next[index] = address.to_string();
+        if !all.insert(next[index].clone()) {
+            return Err("handoff endpoints overlap configured endpoints".into());
+        }
+    }
+    Ok(next)
+}
+
+fn configured_handoff_endpoints(args: &[String], primary: &[String; 4]) -> Result<[String; 4]> {
+    let Some(path) = args.get(7) else {
+        return handoff_endpoints(primary);
+    };
+    let values: [String; 4] = serde_json::from_slice(&files::read(Path::new(path), 4096, false)?)?;
+    let mut seen: std::collections::BTreeSet<_> = primary.iter().cloned().collect();
+    for value in &values {
+        let address: std::net::SocketAddr = value.parse()?;
+        if value.len() > 128
+            || address.port() == 0
+            || address.ip().is_unspecified()
+            || address.ip().is_multicast()
+            || address.to_string() != *value
+            || matches!(address, std::net::SocketAddr::V6(ip) if ip.scope_id() != 0 || ip.flowinfo() != 0)
+            || matches!(address.ip(), std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some())
+            || !seen.insert(value.clone())
+        {
+            return Err("distinct canonical literal handoff endpoints required".into());
+        }
+    }
+    Ok(values)
 }
 
 pub fn run(args: &[String]) -> Result<()> {
     let (profile, endpoints, retirement_indices) = parameters(args)?;
+    let handoff_endpoints = configured_handoff_endpoints(args, &endpoints)?;
     let maximum_round = profile.limits().consensus_rounds;
     let requested = Path::new(&args[0]);
     files::directory(requested)?;
@@ -180,12 +239,16 @@ pub fn run(args: &[String]) -> Result<()> {
         let agenda_profile = dir.join("agenda-profile.txt");
         files::create(&agenda_profile,b"Prioritize precise, checker-expressible foundational mathematics. Approve small reusable helper results and questions that develop a reusable formal library. Reject unclear or unrelated targets.\n",true)?;
         configs.push(NodeConfig {
-            version: 2,
+            version: 5,
             genesis: root.join("genesis.bin"),
             history: dir.join("history"),
             history_anchor: root.join(format!("anchor-history-{index}")),
             signer: dir.join("signer"),
             signer_anchor: root.join(format!("anchor-signer-{index}")),
+            custody: dir.join("custody"),
+            custody_anchor: root.join(format!("anchor-custody-{index}")),
+            handoff: dir.join("handoff"),
+            handoff_anchor: root.join(format!("anchor-handoff-{index}")),
             consensus_key,
             transport_key,
             account_key: keys.join(format!("account-{index}.key")),
@@ -193,7 +256,16 @@ pub fn run(args: &[String]) -> Result<()> {
             control_socket: dir.join("control.sock"),
             maximum_round,
             simulation: true,
+            primary_endpoint: endpoints[index].clone(),
+            candidate_family: None,
+            recovery_endpoints: endpoints
+                .iter()
+                .chain(handoff_endpoints.iter())
+                .cloned()
+                .collect(),
             listen_address: None,
+            handoff_endpoint: handoff_endpoints[index].clone(),
+            handoff_listen_address: None,
         });
     }
     let retirement_order = retirement_indices
@@ -222,6 +294,10 @@ pub fn run(args: &[String]) -> Result<()> {
             &config.history_anchor,
             &config.signer,
             &config.signer_anchor,
+            &config.custody,
+            &config.custody_anchor,
+            &config.handoff,
+            &config.handoff_anchor,
         ] {
             files::directory(directory)?;
         }
@@ -238,6 +314,29 @@ pub fn run(args: &[String]) -> Result<()> {
             files::key(&config.consensus_key, 2)?,
             maximum_round,
         )?;
+        let owner = files::key(&config.account_key, 1)?;
+        let parent = history.head()?;
+        let unit = parent
+            .authority()
+            .owner(AccountId::for_key(owner.verifying_key().as_bytes()))
+            .ok_or("configured owner has no authority slot")?;
+        let staged = naome_storage::state::StatePeriodCustody::stage_offer(
+            &config.custody,
+            &config.custody_anchor,
+            parent.state(),
+            unit.id(),
+            &owner,
+            config.handoff_endpoint.clone(),
+        )?;
+        let handoff = naome_storage::state::StateHandoffJournal::create(
+            &config.handoff,
+            &config.handoff_anchor,
+            genesis.clone(),
+            1,
+            maximum_round,
+        )?;
+        drop(handoff);
+        drop(staged);
         drop(signer);
         drop(history);
         files::create(

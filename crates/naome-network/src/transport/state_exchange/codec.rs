@@ -11,7 +11,7 @@ use libp2p::{
 };
 use std::{io, sync::Arc};
 pub(in crate::transport) const STATE_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/naome/state-v1");
+    StreamProtocol::new("/naome/state-v5");
 #[derive(Clone)]
 pub(in crate::transport) struct StateCodec {
     pub(super) context: Option<StateContext>,

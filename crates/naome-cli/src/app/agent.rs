@@ -167,30 +167,6 @@ fn retained(
     Ok(operation)
 }
 
-fn save_report(
-    path: &Path,
-    report: &serde_json::Value,
-    operation: Option<&SignedOperation>,
-) -> Result<()> {
-    if path.try_exists()?
-        && let Some(operation) = operation
-    {
-        let bytes = files::read(path, 16384, true)?;
-        let mut legacy: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if legacy["operation"] == files::hex(operation.id().as_bytes()) {
-            if let Some(object) = legacy.as_object_mut() {
-                object.remove("operation");
-            }
-            if &legacy == report {
-                // A pre-upgrade crash could retain its report and budget.action
-                // before the caller's ACTION_FILE. Preserve that exact evidence.
-                return files::create_or_match(path, &bytes, true);
-            }
-        }
-    }
-    files::create_or_match(path, &serde_json::to_vec_pretty(report)?, true)
-}
-
 pub async fn run(args: &[String]) -> Result<()> {
     execute(args, false).await
 }
@@ -217,10 +193,8 @@ async fn execute(args: &[String], review_only: bool) -> Result<()> {
     let key = files::key(Path::new(&args[1]), 1)?;
     let author = AccountId::for_key(key.verifying_key().as_bytes());
     let configured_key = files::key(&config.account_key, 1)?;
-    if configured_key.verifying_key() != key.verifying_key()
-        || !genesis.validators().iter().any(|v| v.owner == author)
-    {
-        return Err("agent review requires this node's registered validator owner".into());
+    if configured_key.verifying_key() != key.verifying_key() {
+        return Err("agent review requires this node's configured owner".into());
     }
     // A retained signed vote is an exact retry and needs no fresh inference.
     let action_path = Path::new(&args[2]);
@@ -242,6 +216,17 @@ async fn execute(args: &[String], review_only: bool) -> Result<()> {
         return Ok(());
     }
     let status = control::call(&config, Request::Status {}).await?;
+    let author_hex = files::hex(author.as_bytes());
+    if !status["active"]["electorate"]
+        .as_array()
+        .is_some_and(|owners| {
+            owners
+                .iter()
+                .any(|owner| owner.as_str() == Some(&author_hex))
+        })
+    {
+        return Err("configured owner is outside this attempt's frozen electorate".into());
+    }
     let question_id = status["active"]["question"]
         .as_str()
         .ok_or("question ID unavailable")?
@@ -361,7 +346,11 @@ async fn execute(args: &[String], review_only: bool) -> Result<()> {
         files::create(&retained_path, &operation.encode(), true)?;
         operation
     };
-    save_report(Path::new(&args[3]), &report, Some(&operation))?;
+    files::create_or_match(
+        Path::new(&args[3]),
+        &serde_json::to_vec_pretty(&report)?,
+        true,
+    )?;
     files::create_or_match(action_path, &operation.encode(), true)?;
     report["operation"] = json!(files::hex(operation.id().as_bytes()));
     let result = control::call(

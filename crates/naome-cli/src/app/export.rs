@@ -35,7 +35,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 ..
             }) = branch.state().families().get(&q.question().resolution_id())
             {
-                let receipt = naome_ledger::receipt::NormalizationReceipt::decode(
+                let receipt = naome_ledger::receipt::NormalizationReceipt::decode_recorded(
                     normalization_receipt,
                     genesis,
                 )?;

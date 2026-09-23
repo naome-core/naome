@@ -1,4 +1,4 @@
-use super::test_support::{account, genesis, validator};
+use super::test_support::{account, genesis, handoff_plan, period_key};
 use super::*;
 use naome_checker::{ArtifactState, check_normal_form_with_state};
 use naome_foundation::{Formula, FreeVariable};
@@ -29,21 +29,26 @@ fn apply(state: &mut LedgerState, ops: Vec<SignedOperation>, deadline: bool) {
             .map(|i| {
                 SignedTimeReport::sign(
                     state.genesis(),
+                    state.authority(),
                     state.head(),
                     state.height() + 1,
                     utc,
-                    &validator(i),
+                    &period_key(i, state.authority().effective_height(), 1),
                 )
                 .unwrap()
             })
             .collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         state.height() + 1,
         state.time(),
     )
     .unwrap();
-    *state = state.prepare_record(time, ops).unwrap().into_state();
+    *state = state
+        .prepare_record(time, ops, handoff_plan(state))
+        .unwrap()
+        .into_state();
 }
 fn action(state: &LedgerState, index: u8, body: OperationBody) -> SignedOperation {
     body.sign(
@@ -178,7 +183,13 @@ fn receipt_reads_actual_settlements_and_rejects_truncation_and_reward_mutations(
         vec![h.clone(), a.clone()],
         a.0,
     );
-    let receipt = NormalizationReceipt::decode(&bytes, state.genesis()).unwrap();
+    let receipt = NormalizationReceipt::decode_recorded(&bytes, state.genesis()).unwrap();
+    assert_ne!(&receipt.service_authority, state.authority());
+    assert!(NormalizationReceipt::decode(&bytes, state.genesis(), state.authority()).is_err());
+    assert_eq!(
+        NormalizationReceipt::decode(&bytes, state.genesis(), &receipt.service_authority).unwrap(),
+        receipt
+    );
     assert_eq!(receipt.original_hash, original_hash);
     assert_eq!(receipt.author, author(4));
     assert_eq!(receipt.root, a.0);
@@ -187,19 +198,19 @@ fn receipt_reads_actual_settlements_and_rejects_truncation_and_reward_mutations(
     assert_eq!(receipt.rewards.credits()[&author(4)], 700_000_000);
     for cut in 0..bytes.len() {
         assert!(
-            NormalizationReceipt::decode(&bytes[..cut], state.genesis()).is_err(),
+            NormalizationReceipt::decode_recorded(&bytes[..cut], state.genesis()).is_err(),
             "cut {cut}"
         );
     }
     let mut trailing = bytes.clone();
     trailing.push(0);
-    assert!(NormalizationReceipt::decode(&trailing, state.genesis()).is_err());
+    assert!(NormalizationReceipt::decode_recorded(&trailing, state.genesis()).is_err());
     let mut bad = bytes.clone();
     bad[2] ^= 1;
-    assert!(NormalizationReceipt::decode(&bad, state.genesis()).is_err());
+    assert!(NormalizationReceipt::decode_recorded(&bad, state.genesis()).is_err());
     let mut bad = bytes.clone();
     bad[278..282].copy_from_slice(&u32::MAX.to_be_bytes());
-    assert!(NormalizationReceipt::decode(&bad, state.genesis()).is_err());
+    assert!(NormalizationReceipt::decode_recorded(&bad, state.genesis()).is_err());
     let mut context = ArtifactState::new();
     let equality = Formula::equal(x, x);
     let duplicate = checked(
@@ -249,17 +260,24 @@ fn receipt_reads_actual_settlements_and_rejects_truncation_and_reward_mutations(
         vec![duplicate.clone(), b.clone()],
         b.0,
     );
-    let receipt = NormalizationReceipt::decode(&bytes, state.genesis()).unwrap();
+    let receipt = NormalizationReceipt::decode_recorded(&bytes, state.genesis()).unwrap();
     // Canonical substitution ordering rejects duplicate old IDs before any
     // attacker-supplied package length is considered.
     let mut duplicate_mapping = bytes.clone();
-    duplicate_mapping[278..282].copy_from_slice(&2u32.to_be_bytes());
-    duplicate_mapping.splice(282..282, bytes[282..346].iter().copied());
-    assert!(NormalizationReceipt::decode(&duplicate_mapping, state.genesis()).is_err());
-    for offset in [98, 246] {
+    let authority_bytes = 4 + receipt.service_authority.encode().len();
+    duplicate_mapping[278 + authority_bytes..282 + authority_bytes]
+        .copy_from_slice(&2u32.to_be_bytes());
+    duplicate_mapping.splice(
+        282 + authority_bytes..282 + authority_bytes,
+        bytes[282 + authority_bytes..346 + authority_bytes]
+            .iter()
+            .copied(),
+    );
+    assert!(NormalizationReceipt::decode_recorded(&duplicate_mapping, state.genesis()).is_err());
+    for offset in [98 + authority_bytes, 246 + authority_bytes] {
         let mut altered = bytes.clone();
         altered[offset] ^= 1;
-        assert!(NormalizationReceipt::decode(&altered, state.genesis()).is_err());
+        assert!(NormalizationReceipt::decode_recorded(&altered, state.genesis()).is_err());
     }
     assert_eq!(receipt.substitutions.get(&duplicate.0), Some(&h.0));
     assert_ne!(receipt.root, b.0);
@@ -280,7 +298,7 @@ fn receipt_reads_actual_settlements_and_rejects_truncation_and_reward_mutations(
         let mut mutated = bytes.clone();
         mutated[offset] ^= 1;
         assert!(
-            NormalizationReceipt::decode(&mutated, state.genesis()).is_err(),
+            NormalizationReceipt::decode_recorded(&mutated, state.genesis()).is_err(),
             "reward offset {offset}"
         );
     }

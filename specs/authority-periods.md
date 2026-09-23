@@ -1,46 +1,119 @@
-# Authority periods: v5 data contract
+# Authority periods and sealed handoff (state-v5)
 
-This specifies the public authority snapshot and next-period key offer data
-used by a future sealed validator handoff. The current `state-v4` run still
-uses its genesis validators. Constructing, decoding, or verifying these v5
-objects does not select a new authority or grant signing rights.
+A selected parent at height `h-1` contains the authority snapshot `S_h` for
+record `h`. It has four equal-weight slots. A vacant slot has no signing key but
+still counts in the denominator: agreement, time, READY, and TERMINAL each need
+at least three distinct eligible signatures. The slot identifier survives owner changes;
+its occupant has a unit identity, owner account, origin, and period keys.
+Distinct owners are distinct accounts, not evidence of distinct people.
 
-An authority snapshot has exactly four equal-weight slots and an effective
-height. The slot identifier remains fixed when its occupant changes. A unit
-has a stable identity, owner account, origin, and optional period keys. An
-absent key binding makes the slot vacant for that period; the slot still
-counts in the four-unit quorum denominator. Consensus and transport keys
-must be distinct valid non-weak Ed25519 keys. A bound endpoint is a canonical
-literal TCP socket address. Keys and endpoints cannot collide within one
-snapshot. The four units must have distinct owner account IDs; this does not
-prove that four different people control those accounts.
+The initial units and their retirement order come from genesis. Bootstrap age
+uses that explicit order; an earned unit's age is its original paid-completion
+ordinal. A candidate derives its unit identity from the completed family and
+inherits the oldest unit's slot when installed. At most one earned claimant
+replaces one unit per record. The lowest paid-completion ordinal among eligible finalized intents has priority.
+An absent candidate offer selects a no-join rotation and leaves the queued
+claim in place, subject to its original expiry. A revised intent keeps its
+original queue position and expiry. An expired, consumed, or stale claim grants
+no admission. An intent alone grants no signing or voting weight.
 
-Bootstrap units derive their identity and slot from the original validator
-identity. Their relative age is the explicit genesis retirement order. An
-earned unit derives its identity from its paid completion family and inherits
-a slot when a later handoff installs it. Bootstrap units are older than earned
-units; earned units are ordered by their original completion ordinal. The
-snapshot codec binds the genesis, effective height, slot, unit identity,
-owner, origin, keys, and endpoint. Structural decoding does not prove that a
-snapshot was selected by finalized history.
+## Exact record and successor
 
-A next-period offer binds one existing unit, the current snapshot identity,
-caller-supplied parent record and state commitments, and the immediately
-following effective height. Selected history must separately establish that
-the parent was finalized. Its owner account signs the offer. The proposed
-consensus and transport keys each sign a separate possession transcript over
-the same body. All three signatures must verify under their declared roles.
-Both the consensus and transport keys rotate at every period boundary, even
-when the same owner retains the unit.
-An offer cannot be moved to another parent, height, owner, unit, endpoint, or
-key pair.
+Every record carries a bounded `HandoffPlan`: three or four owner-authorized
+`NextPeriodKeys` offers from current units, plus at most one
+`CandidateAdmissionOffer`. Each offer binds genesis, the exact selected parent
+record and state, outgoing snapshot, immediately following effective height,
+unit or claim, new consensus and transport keys, and a canonical literal
+endpoint. The current owner signs a rotation offer; the candidate owner signs
+an admission offer tied to the exact finalized intent receipt. Both proposed
+keys prove possession in distinct signing domains. The selected parent's
+account registry and complete used-key history reject reused keys, including
+owner keys. All active consensus and transport keys rotate every height.
 
-A no-join successor is derived from three or four distinct offers in ascending
-unit-identity order. The four slot identities and occupants remain fixed;
-every unit without an offer becomes vacant. The derivation rejects reused
-current-period keys, owner account keys, and keys in the selected state's
-complete historical and registered-key set. The caller must provide that full
-set and the selected account registry; a structurally valid successor alone
-does not prove either input complete. Future join selection, READY and
-TERMINAL certificates, key retirement, seal selection, and live activation
-are separate contracts and are not implemented by this data layer.
+Admission rejects an endpoint occupied in either the outgoing roster or the
+proposed successor, as well as another pending intent. A retired genesis
+endpoint is reusable once neither live roster occupies it; historical keys
+remain permanently ineligible for reuse.
+
+The plan is part of the agreed record and its resulting state commitment. It
+is never added after agreement. Deterministic execution derives `S_(h+1)`
+from the exact plan, preserving four stable slots and making a missing rotation
+slot vacant. At least three valid rotation offers are required even if a
+candidate joins. The candidate must match the oldest eligible queued intent's
+owner, keys, endpoint, receipt, and unconsumed claim. The record at `h` is
+agreed under `S_h`; its successor is not selected until sealed.
+
+Before proposing or prevoting a fresh record, a configured live node requires
+its exact locally anchored rotation offer in the plan, unless a valid candidate
+replaces its unit. A proposal carrying a verified earlier prevote quorum follows
+the ordinary lock rules. Otherwise a locally unready proposal takes the normal
+no-proposal transition: a locked signer supports its locked value and an unlocked
+signer votes NIL. The verified proposal remains retained for quorum processing
+and conflict detection. This local policy changes neither record validity nor
+agreement acceptance. It prevents a cached offline offer from displacing a late
+live owner's offer before agreement; it cannot restore a lost incoming quorum
+after the record is agreed.
+
+## Two quorums and local retirement
+
+A verified agreement yields a seal context that binds genesis, height, record,
+previous and next state commitments, and both snapshot IDs. Incoming members
+verify the predecessor history and agreed record, durably stage this exact
+context, then at least three members of `S_(h+1)` sign READY. Outgoing members verify
+READY, durably save exact TERMINAL signatures, stop old consensus and TIME
+signing, retire their locally controlled old period secret capabilities, and
+release the saved bytes. At least three members of `S_h` sign TERMINAL. Only a finality
+envelope containing the agreed proposal, precommit quorum, and both seal
+quorums installs the selected successor.
+
+After durably staging agreement, a node pauses ordinary proposals, votes,
+time reports, and round timeouts while it exchanges preparation and retirement
+evidence. The saved agreement survives restart and remains bound to its exact
+parent. This pause does not retire the outgoing key; durable retirement still
+requires the READY quorum and the TERMINAL sequence.
+
+A restart may resend saved READY or TERMINAL bytes. It cannot select a competing
+prepared offer set or recover an old signer after retirement. An anchored
+period offer never regenerates missing secret keys. The active signer opens
+only for a fully selected history state; an agreed but unsealed state grants
+no ordinary next-period signing. A missing slot can block progress without
+reducing the quorum threshold. A failed handoff never silently rolls back
+finalized history.
+
+Transport keys rotate with consensus keys. A bounded staged transport can
+relay HANDOFF and REPLAY before selection; it has no ordinary voting authority.
+Old transport identity is closed before TERMINAL release. The local custody
+claim covers files controlled by this implementation; external backups and
+regenerating seeds require operator attestation and are part of the exposure
+assumption, not something the software can erase remotely.
+
+An outgoing owner whose fresh offer is omitted still owes its outgoing terminal
+signature when a READY quorum exists. After retiring the old transport it can
+deliver that saved signature over fresh owner-authenticated recovery transport.
+Recovery challenge responses bind the chain, recipient, nonce, owner and fresh
+transport key. They permit bounded history and handoff exchange, including
+pending agreement retrieval, and grant no ordinary consensus or time authority.
+A node that alone selects a seal may itself become vacant in that successor.
+It continues relaying the complete finalized proof over these authenticated
+recovery connections, in either direction, so prepared peers can select the
+same history. Each receiver verifies the proof against its selected parent.
+
+After the finite run's terminal record, live and restarted nodes bind their
+configured primary address using a fresh recovery-only identity. This bounded
+owner-authenticated history service lets a cold peer fetch the terminal proof
+after all period signing keys and old Noise sessions have been retired.
+
+## Candidate provisioning and evidence boundary
+
+`naome candidate-setup` takes an existing owner key and the exact candidate
+consensus and transport keys used by a finalized join intent. It independently
+replays a finalized export, checks the live claim and exact intent, creates a
+private observer history and anchored candidate custody, and records primary,
+handoff, and explicit recovery endpoints. Source candidate key files are
+removed after durable import. The owner key remains separate. Candidate
+startup has no ordinary signer until a sealed selected period installs it.
+
+The v5 code and local tests implement these checks. A local replay or
+four-process rehearsal does not demonstrate separate-machine operation,
+long-running availability, or erasure of external backups. The verification
+record must report test, CI, Docker, and physical-host evidence separately.

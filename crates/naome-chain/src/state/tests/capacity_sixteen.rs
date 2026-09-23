@@ -78,7 +78,11 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
     let nonce = state.next_nonce(author(4));
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![excess])
+            .prepare_record(
+                time(&state, state.time()),
+                vec![excess],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     assert_eq!(state.commitment(), before);
@@ -135,7 +139,11 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
     );
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![unrelated])
+            .prepare_record(
+                time(&state, state.time()),
+                vec![unrelated],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     assert_eq!(state.commitment(), settled);
@@ -145,5 +153,9 @@ fn minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement() 
     assert_eq!(state.balances().paid_completions(), 1);
     assert_eq!(state.claims().len(), 1);
     assert!(state.library().lookup(winning_root).is_some());
-    assert!(state.prepare_record(time(&state, now), vec![]).is_err());
+    assert!(
+        state
+            .prepare_record(time(&state, now), vec![], handoff_plan(&state))
+            .is_err()
+    );
 }

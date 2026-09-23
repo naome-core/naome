@@ -6,7 +6,7 @@ use super::{
     evidence::{STATE_QUORUM_MAX_BYTES, StateQuorum, StateVote, StateVoteSet, VoteBody},
 };
 use crate::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget};
-use naome_ledger::profile::Genesis;
+use naome_ledger::{authority::AuthoritySnapshot, profile::Genesis};
 
 /// Distinct live phases. Local timeout availability never changes canonical time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub enum StateLockEvent {
 }
 impl StateLockEvent {
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let mut out = b"NSCE1".to_vec();
+        let mut out = b"NSCE5".to_vec();
         match self {
             Self::Author { record } => {
                 out.push(0);
@@ -90,7 +90,7 @@ impl StateLockEvent {
     pub fn decode(input: &[u8], genesis: &Genesis) -> Result<Self> {
         let maximum = genesis.profile().limits().transport_frame_bytes as usize;
         let mut r = Reader::new(input, maximum + STATE_QUORUM_MAX_BYTES + 32)?;
-        if r.fixed::<5>()? != *b"NSCE1" {
+        if r.fixed::<5>()? != *b"NSCE5" {
             return Err(Error::Invalid("state event version"));
         }
         let event = match r.u8()? {
@@ -197,7 +197,13 @@ impl StateVoteIntent {
         if self.body.height != branch.next_height()? || self.parent != branch.commitment() {
             return Err(Error::Invalid("vote intent branch height"));
         }
-        StateVote::complete(self.body, self.signer, signature, branch.state().genesis())
+        StateVote::complete(
+            self.body,
+            self.signer,
+            signature,
+            branch.state().genesis(),
+            branch.authority(),
+        )
     }
 }
 
@@ -281,13 +287,10 @@ pub struct StateLockState {
 }
 impl StateLockState {
     pub fn new(branch: &StateBranch, signer: ConsensusKey) -> Result<Self> {
-        if !branch
-            .state()
-            .genesis()
-            .validators()
-            .iter()
-            .any(|v| v.consensus_key == *signer.as_bytes())
-        {
+        if !branch.authority().units().iter().any(|unit| {
+            unit.keys()
+                .is_some_and(|keys| keys.consensus() == signer.as_bytes())
+        }) {
             return Err(Error::Invalid("inactive state signer"));
         }
         Ok(Self {
@@ -367,6 +370,7 @@ impl StateLockState {
         maximum_round: u64,
     ) -> Result<StateIntent> {
         let genesis = branch.state().genesis();
+        let authority = branch.authority();
         match event {
             StateLockEvent::Author { record } => {
                 self.require_phase(StatePhase::Proposal)?;
@@ -442,7 +446,7 @@ impl StateLockState {
                         })
                 };
                 self.phase = StatePhase::Prevote;
-                Ok(self.vote(genesis, ConsensusVoteRole::Prevote, target))
+                Ok(self.vote(genesis, authority, ConsensusVoteRole::Prevote, target))
             }
             StateLockEvent::ProposalTimeout => {
                 self.require_phase(StatePhase::Proposal)?;
@@ -453,11 +457,11 @@ impl StateLockState {
                         ConsensusVoteTarget::Proposal(lock.value.signing_root())
                     });
                 self.phase = StatePhase::Prevote;
-                Ok(self.vote(genesis, ConsensusVoteRole::Prevote, target))
+                Ok(self.vote(genesis, authority, ConsensusVoteRole::Prevote, target))
             }
             StateLockEvent::Precommit { proposal, quorum } => {
                 self.require_phase(StatePhase::Prevote)?;
-                let qc = StateQuorum::decode(quorum, genesis)?;
+                let qc = StateQuorum::decode(quorum, genesis, authority)?;
                 let proposal = proposal
                     .as_ref()
                     .map(|bytes| branch.verify_proposal(bytes, maximum_round))
@@ -467,6 +471,7 @@ impl StateLockState {
                     let target = ConsensusVoteTarget::Proposal(proposal.value().signing_root());
                     qc.check(
                         genesis,
+                        authority,
                         self.height,
                         self.round,
                         ConsensusVoteRole::Prevote,
@@ -486,6 +491,7 @@ impl StateLockState {
                 } else {
                     qc.check(
                         genesis,
+                        authority,
                         self.height,
                         self.round,
                         ConsensusVoteRole::Prevote,
@@ -495,33 +501,34 @@ impl StateLockState {
                     ConsensusVoteTarget::Nil
                 };
                 self.phase = StatePhase::Precommit;
-                Ok(self.vote(genesis, ConsensusVoteRole::Precommit, target))
+                Ok(self.vote(genesis, authority, ConsensusVoteRole::Precommit, target))
             }
             StateLockEvent::PrevoteTimeout { votes } => {
                 self.require_phase(StatePhase::Prevote)?;
-                self.progress_votes(votes, genesis, ConsensusVoteRole::Prevote)?;
+                self.progress_votes(votes, genesis, authority, ConsensusVoteRole::Prevote)?;
                 self.phase = StatePhase::Precommit;
                 Ok(self.vote(
                     genesis,
+                    authority,
                     ConsensusVoteRole::Precommit,
                     ConsensusVoteTarget::Nil,
                 ))
             }
             StateLockEvent::PrecommitTimeout { votes } => {
                 self.require_phase(StatePhase::Precommit)?;
-                self.progress_votes(votes, genesis, ConsensusVoteRole::Precommit)?;
+                self.progress_votes(votes, genesis, authority, ConsensusVoteRole::Precommit)?;
                 self.next_round(maximum_round)?;
                 Ok(StateIntent::Checkpoint)
             }
             StateLockEvent::HigherRound { votes } => {
-                let votes = StateVoteSet::decode(votes, genesis)?;
+                let votes = StateVoteSet::decode(votes, genesis, authority)?;
                 if votes.height() != self.height || votes.round() <= self.round {
                     return Err(Error::Invalid("higher state round"));
                 }
                 if votes.round() > maximum_round {
                     return Err(Error::Limit("higher state round"));
                 }
-                if !votes.has_one_third(genesis)? {
+                if !votes.has_one_third(genesis, authority)? {
                     return Err(Error::Invalid("higher state round authority"));
                 }
                 // Derive bounded scheduled state as a reachability check, but do
@@ -533,9 +540,10 @@ impl StateLockState {
                 Ok(StateIntent::Checkpoint)
             }
             StateLockEvent::NilPrecommit { quorum } => {
-                let qc = StateQuorum::decode(quorum, genesis)?;
+                let qc = StateQuorum::decode(quorum, genesis, authority)?;
                 qc.check(
                     genesis,
+                    authority,
                     self.height,
                     self.round,
                     ConsensusVoteRole::Precommit,
@@ -558,6 +566,7 @@ impl StateLockState {
     fn vote(
         &self,
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         role: ConsensusVoteRole,
         target: ConsensusVoteTarget,
     ) -> StateIntent {
@@ -565,6 +574,7 @@ impl StateLockState {
             body: VoteBody {
                 genesis: genesis.id(),
                 profile: genesis.profile().id(),
+                authority: authority.id(),
                 height: self.height,
                 round: self.round,
                 role,
@@ -578,13 +588,14 @@ impl StateLockState {
         &self,
         input: &[u8],
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         role: ConsensusVoteRole,
     ) -> Result<()> {
-        let votes = StateVoteSet::decode(input, genesis)?;
+        let votes = StateVoteSet::decode(input, genesis, authority)?;
         if votes.height() != self.height
             || votes.round() != self.round
             || votes.role() != role
-            || !votes.has_supermajority(genesis)?
+            || !votes.has_supermajority(genesis, authority)?
         {
             return Err(Error::Invalid("state phase progress quorum"));
         }
@@ -634,7 +645,7 @@ impl StateLockState {
     /// Raw snapshot bytes alone intentionally have no restoration constructor.
     pub fn snapshot(&self) -> Result<Vec<u8>> {
         self.check_invariants()?;
-        let mut out = b"NSCS1".to_vec();
+        let mut out = b"NSCS5".to_vec();
         out.extend_from_slice(&self.parent);
         out.extend_from_slice(self.signer.as_bytes());
         out.extend_from_slice(&self.height.to_be_bytes());
@@ -682,13 +693,13 @@ impl StateLockState {
     }
     /// Reset only for an exact verified direct child. Storage must durably select
     /// that finality before making this height handoff available for new signing.
-    pub fn advance_height(&mut self, finality: &StateFinality) -> Result<()> {
+    pub fn advance_height(&mut self, finality: &StateFinality, signer: ConsensusKey) -> Result<()> {
         if finality.proposal().parent_commitment() != &self.parent
             || finality.proposal().value().height() != self.height
         {
             return Err(Error::Invalid("state height handoff"));
         }
-        *self = Self::new(finality.branch(), self.signer)?;
+        *self = Self::new(finality.branch(), signer)?;
         Ok(())
     }
 }

@@ -6,6 +6,7 @@ impl LedgerState {
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
+        plan: HandoffPlan,
     ) -> Result<LedgerExecution, LedgerError> {
         if self.terminated {
             return Err(LedgerError::Invalid("research run terminated"));
@@ -22,18 +23,47 @@ impl LedgerState {
             return Err(LedgerError::Limit("record operation bytes"));
         }
         let height = self.height.checked_add(1).ok_or(LedgerError::Overflow)?;
-        let certificate =
-            TimeCertificate::decode(&time.encode(), &self.genesis, self.head, height, self.time)?;
+        let certificate = TimeCertificate::decode(
+            &time.encode(),
+            &self.genesis,
+            &self.authority,
+            self.head,
+            height,
+            self.time,
+        )?;
+        let terminal_due = self.active.is_none() && !self.capacity.can_open(self.genesis.profile());
+        if terminal_due && plan.candidate().is_some() {
+            return Err(LedgerError::Invalid("terminal record cannot install join"));
+        }
+        let successor = self.prepare_handoff_at(&plan, certificate.time())?;
         let mut next = self.clone();
         next.height = height;
         next.time = certificate.time();
+        for unit in successor.units() {
+            if let Some(keys) = unit.keys() {
+                next.used_period_keys.insert(*keys.consensus());
+                next.used_period_keys.insert(*keys.transport());
+            }
+        }
+        for offer in plan.offers() {
+            next.used_period_keys.insert(*offer.keys().consensus());
+            next.used_period_keys.insert(*offer.keys().transport());
+        }
+        next.authority = successor;
         let mut effects = Vec::new();
         let mut work = VerificationWork::default();
-        let mut productive = next.expire_queue(&mut effects)?;
+        next.expire_queue(&mut effects)?;
+        next.expire_join_queue(&mut effects)?;
+        if let Some(candidate) = plan.candidate() {
+            next.consumed_claims.insert(candidate.family());
+            next.join_queue
+                .retain(|family| *family != candidate.family());
+            effect(&mut effects, 18, |w| w.fixed(candidate.family().as_bytes()));
+        }
         let mut active_progress = false;
         let mut opened = false;
         let mut ordinary_admission = false;
-        if self.active.is_none() && !self.capacity.can_open(self.genesis.profile()) {
+        if terminal_due {
             if !operations.is_empty() {
                 return Err(LedgerError::Invalid(
                     "terminal record contains user actions",
@@ -45,16 +75,12 @@ impl LedgerState {
             }
             next.capacity.terminate(self.genesis.profile())?;
             next.terminated = true;
-            productive = true;
             effect(&mut effects, 12, |_| {});
         } else {
             if self.active.is_none() {
-                let (did_open, did_work) = next.open_next(&mut effects)?;
-                opened = did_open;
-                productive |= did_work;
+                opened = next.open_next(&self.authority, &mut effects)?;
             } else {
                 active_progress = next.advance_phase(self, &mut effects, &mut work)?;
-                productive |= active_progress;
             }
             for (index, operation) in operations.iter().enumerate() {
                 let coordinate = AdmissionCoordinate {
@@ -68,11 +94,7 @@ impl LedgerState {
                         OperationBody::decode(operation.payload(), &self.genesis)?,
                         OperationBody::Register | OperationBody::JoinIntent(_)
                     );
-                productive |= accepted;
                 active_progress |= active;
-            }
-            if !productive {
-                return Err(LedgerError::Invalid("unproductive research record"));
             }
             // New identities never consume the protected completion reservation,
             // including when bundled with a vote, reveal or automatic transition.
@@ -92,9 +114,6 @@ impl LedgerState {
                 next.capacity.release();
             }
         }
-        if !productive {
-            return Err(LedgerError::Invalid("unproductive research record"));
-        }
         next.balances
             .verify_conservation(&self.genesis, &next.accounts)?;
         if !next.accounts.keys().eq(next.next_nonce.keys()) {
@@ -106,6 +125,13 @@ impl LedgerState {
         if next.join_intents.len() > next.claims.len() {
             return Err(LedgerError::Invalid("join intent without claim"));
         }
+        if !next
+            .consumed_claims
+            .iter()
+            .all(|family| next.claims.contains_key(family))
+        {
+            return Err(LedgerError::Invalid("consumed claim missing"));
+        }
         let mut derived = Writer::new();
         derived.u16(1);
         derived.u32(effects.len() as u32);
@@ -116,6 +142,7 @@ impl LedgerState {
             next,
             time: certificate,
             operations,
+            plan,
             effects: derived.finish(),
         })
     }
@@ -132,9 +159,8 @@ impl LedgerState {
         Arc::make_mut(entry).status = status;
         Ok(())
     }
-    fn expire_queue(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<bool, LedgerError> {
+    fn expire_queue(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<(), LedgerError> {
         let mut retained = VecDeque::new();
-        let mut changed = false;
         while let Some(id) = self.queue.pop_front() {
             let entry = self
                 .questions
@@ -143,16 +169,48 @@ impl LedgerState {
             if self.time >= entry.expires {
                 self.set_question_status(id, QuestionStatus::Expired)?;
                 effect(effects, 1, |w| w.fixed(id.as_bytes()));
-                changed = true;
             } else {
                 retained.push_back(id);
             }
         }
         self.queue = retained;
-        Ok(changed)
+        Ok(())
     }
-    fn open_next(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<(bool, bool), LedgerError> {
-        let mut changed = false;
+    fn expire_join_queue(&mut self, effects: &mut Vec<Vec<u8>>) -> Result<(), LedgerError> {
+        let mut retained = VecDeque::new();
+        while let Some(family) = self.join_queue.pop_front() {
+            let entry = self
+                .join_intents
+                .get(&family)
+                .ok_or(LedgerError::Invalid("queued join missing"))?;
+            let claim = self
+                .claims
+                .get(&family)
+                .ok_or(LedgerError::Invalid("queued join claim"))?;
+            if entry.expires <= self.time
+                || self.consumed_claims.contains(&family)
+                || !self
+                    .authority
+                    .oldest()
+                    .origin()
+                    .older_than(UnitOrigin::Earned {
+                        family,
+                        completion_ordinal: claim.completion_ordinal,
+                    })
+            {
+                effect(effects, 19, |w| w.fixed(family.as_bytes()));
+            } else {
+                retained.push_back(family);
+            }
+        }
+        self.join_queue = retained;
+        Ok(())
+    }
+    fn open_next(
+        &mut self,
+        electorate: &AuthoritySnapshot,
+        effects: &mut Vec<Vec<u8>>,
+    ) -> Result<bool, LedgerError> {
         while let Some(submission) = self.queue.pop_front() {
             let entry = self
                 .questions
@@ -176,7 +234,6 @@ impl LedgerState {
                     w.fixed(family.as_bytes());
                     w.fixed(proof.as_bytes());
                 });
-                changed = true;
                 continue;
             }
             let number = self
@@ -215,6 +272,7 @@ impl LedgerState {
                 deadline: Some(deadline),
                 round: None,
                 votes: BTreeMap::new(),
+                electorate: std::array::from_fn(|i| electorate.units()[i].owner()),
                 commitments: BTreeMap::new(),
             });
             effect(effects, 3, |w| {
@@ -223,9 +281,9 @@ impl LedgerState {
                 w.u64(number);
                 w.u64(deadline);
             });
-            return Ok((true, true));
+            return Ok(true);
         }
-        Ok((false, changed))
+        Ok(false)
     }
 
     fn advance_phase(
@@ -346,10 +404,7 @@ impl LedgerState {
             if self.accounts.len() as u64 >= self.genesis.profile().limits().registered_accounts {
                 return Err(LedgerError::Limit("registered accounts"));
             }
-            if self.genesis.validators().iter().any(|validator| {
-                &validator.consensus_key == operation.public_key()
-                    || &validator.transport_key == operation.public_key()
-            }) {
+            if self.used_period_keys.contains(operation.public_key()) {
                 return Err(LedgerError::Invalid("key roles overlap"));
             }
             1
@@ -412,17 +467,25 @@ impl LedgerState {
                 }
                 let consensus_key = intent.consensus_key();
                 let transport_key = intent.transport_key();
+                if self.consumed_claims.contains(&family)
+                    || !self
+                        .authority
+                        .oldest()
+                        .origin()
+                        .older_than(UnitOrigin::Earned {
+                            family,
+                            completion_ordinal: claim.completion_ordinal,
+                        })
+                {
+                    return Err(LedgerError::Invalid("stale or consumed join claim"));
+                }
                 if consensus_key == transport_key
                     || self
                         .accounts
                         .values()
                         .any(|key| key == consensus_key || key == transport_key)
-                    || self.genesis.validators().iter().any(|validator| {
-                        &validator.consensus_key == consensus_key
-                            || &validator.transport_key == consensus_key
-                            || &validator.consensus_key == transport_key
-                            || &validator.transport_key == transport_key
-                    })
+                    || self.used_period_keys.contains(consensus_key)
+                    || self.used_period_keys.contains(transport_key)
                     || self.join_intents.iter().any(|(other_family, pending)| {
                         let other = &pending.intent;
                         *other_family != family
@@ -434,17 +497,31 @@ impl LedgerState {
                 {
                     return Err(LedgerError::Invalid("join intent key roles overlap"));
                 }
-                if self
-                    .genesis
-                    .validators()
+                if parent
+                    .authority
+                    .units()
                     .iter()
-                    .any(|validator| validator.endpoint == intent.endpoint())
+                    .chain(self.authority.units())
+                    .any(|unit| {
+                        unit.keys()
+                            .is_some_and(|keys| keys.endpoint() == intent.endpoint())
+                    })
                     || self.join_intents.iter().any(|(other_family, pending)| {
                         *other_family != family && pending.intent.endpoint() == intent.endpoint()
                     })
                 {
                     return Err(LedgerError::Invalid(
                         "join intent endpoint already reserved",
+                    ));
+                }
+                let pending = self.join_queue.contains(&family);
+                if self
+                    .join_intents
+                    .get(&family)
+                    .is_some_and(|entry| !pending || entry.expires <= self.time)
+                {
+                    return Err(LedgerError::Invalid(
+                        "join intent admission expired or closed",
                     ));
                 }
                 let previous = self
@@ -461,11 +538,38 @@ impl LedgerState {
                         w.u8(0);
                     }
                 });
+                let first_receipt = self
+                    .join_intents
+                    .get(&family)
+                    .map_or(receipt, |old| old.first_receipt);
+                let expires = self.join_intents.get(&family).map_or_else(
+                    || {
+                        self.time
+                            .checked_add(self.genesis.profile().timing().queue_seconds)
+                            .ok_or(LedgerError::Overflow)
+                    },
+                    |old| Ok(old.expires),
+                )?;
+                if !pending {
+                    if self.join_queue.len() >= 32 {
+                        return Err(LedgerError::Limit("join queue"));
+                    }
+                    let position = self
+                        .join_queue
+                        .iter()
+                        .position(|queued| {
+                            self.claims[queued].completion_ordinal > claim.completion_ordinal
+                        })
+                        .unwrap_or(self.join_queue.len());
+                    self.join_queue.insert(position, family);
+                }
                 self.join_intents.insert(
                     family,
                     JoinIntentEntry {
                         intent,
                         receipt,
+                        first_receipt,
+                        expires,
                         signed_operation: Arc::from(operation.encode()),
                     },
                 );
@@ -513,18 +617,13 @@ impl LedgerState {
                 yes,
             } => {
                 self.require_parent_phase(parent, Phase::Voting)?;
-                if !self
-                    .genesis
-                    .validators()
-                    .iter()
-                    .any(|v| v.owner == operation.author())
-                {
-                    return Err(LedgerError::Invalid("vote requires validator owner"));
-                }
                 let active = self
                     .active
                     .as_mut()
                     .ok_or(LedgerError::Invalid("vote without attempt"))?;
+                if !active.electorate.contains(&operation.author()) {
+                    return Err(LedgerError::Invalid("vote requires opening owner"));
+                }
                 if active.question_id != question || active.number != attempt {
                     return Err(LedgerError::Invalid("ballot attempt"));
                 }
@@ -700,7 +799,12 @@ impl LedgerState {
                     .ok_or(LedgerError::Invalid("citation not in sealed parent"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let rewards = RewardPlan::new(&self.genesis, normalized.author(), citations)?;
+        let rewards = RewardPlan::new(
+            &self.genesis,
+            &parent.authority,
+            normalized.author(),
+            citations,
+        )?;
         let receipt = normalization_receipt(parent, attempt, winner, &normalized, &rewards)?;
         // System settlement has a separate fixed coordinate after the bounded
         // ordinary-operation index range, so it cannot collide with a user receipt.
@@ -756,8 +860,9 @@ fn normalization_receipt(
     rewards: &RewardPlan,
 ) -> Result<Vec<u8>, LedgerError> {
     let mut w = Writer::new();
-    w.u16(1);
+    w.u16(2);
     w.fixed(parent.genesis.id().as_bytes());
+    w.bytes(&parent.authority.encode())?;
     w.fixed(
         attempt
             .round

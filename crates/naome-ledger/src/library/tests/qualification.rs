@@ -624,6 +624,7 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
             .map(|i| {
                 SignedTimeReport::sign(
                     state.genesis(),
+                    state.authority(),
                     state.head(),
                     1,
                     100,
@@ -633,13 +634,14 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
             })
             .collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         1,
         100,
     )
     .unwrap();
     assert!(matches!(
-        state.execute(time, actions),
+        state.execute(time, actions, crate::test_support::handoff_plan(&state)),
         Err(LedgerError::Limit("operations per record"))
     ));
     // The real default aggregate checker-call ceiling is now exhausted. The

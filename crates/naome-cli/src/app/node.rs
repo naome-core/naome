@@ -5,9 +5,7 @@ use super::{
     setup::NodeConfig,
 };
 use naome_ledger::{OperationId, authentication::SignedOperation};
-use naome_network::{Keypair, StateNetwork, state_peer_id};
 use naome_runtime::state::{StateRuntime, StateRuntimeConfig, StateRuntimeEvent};
-use naome_storage::state::{StateHistory, StateSigner};
 use serde_json::{Value, json};
 use std::{
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
@@ -19,7 +17,7 @@ use tokio::{
     net::UnixListener,
     sync::{Semaphore, mpsc, oneshot},
 };
-use zeroize::Zeroizing;
+mod bootstrap;
 
 struct Message {
     request: Request,
@@ -108,21 +106,15 @@ async fn run_owned(
     if config.maximum_round > genesis.profile().limits().consensus_rounds {
         return Err("maximum round exceeds the immutable profile".into());
     }
-    let key = files::key(&config.consensus_key, 2)?;
-    let transport_key = files::key(&config.transport_key, 3)?;
-    if !genesis.validators().iter().any(|validator| {
-        validator.consensus_key == key.verifying_key().to_bytes()
-            && validator.transport_key == transport_key.verifying_key().to_bytes()
-    }) {
-        return Err(
-            "consensus and transport keys must belong to the same registered validator".into(),
-        );
-    }
     for directory in [
         &config.history,
         &config.history_anchor,
         &config.signer,
         &config.signer_anchor,
+        &config.custody,
+        &config.custody_anchor,
+        &config.handoff,
+        &config.handoff_anchor,
     ] {
         let metadata = std::fs::symlink_metadata(directory)?;
         if !metadata.is_dir()
@@ -152,56 +144,29 @@ async fn run_owned(
     if files::available(&config.history)? < genesis.profile().required_storage_bytes()? {
         return Err("insufficient free storage for this immutable profile".into());
     }
-    let mut seed = Zeroizing::new(transport_key.to_bytes());
-    let identity = Keypair::ed25519_from_bytes(&mut *seed)?;
-    let mut network = StateNetwork::new_state(identity, &genesis)?;
-    let peers = genesis
-        .validators()
-        .iter()
-        .map(|v| state_peer_id(v.transport_key))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let remote = peers
-        .iter()
-        .copied()
-        .filter(|p| *p != network.local_peer_id())
-        .collect();
-    let listen = match config.listen_address {
-        Some(address) => {
-            let family = if address.is_ipv4() { "ip4" } else { "ip6" };
-            format!("/{family}/{}/tcp/{}", address.ip(), address.port()).parse()?
-        }
-        None => network
-            .state_listen_address()
-            .ok_or("state endpoint unavailable")?
-            .clone(),
-    };
-    network.listen_on(listen)?;
-    // Missing stores, anchors, or an unsupported format are fatal. In
-    // particular, losing every store never recreates a signer with old keys.
-    let history = StateHistory::open(
-        &config.history,
-        &config.history_anchor,
-        genesis.clone(),
-        config.maximum_round,
-    )?;
-    let signer = StateSigner::open(
-        &config.signer,
-        &config.signer_anchor,
-        genesis.clone(),
-        key,
-        config.maximum_round,
-    )?;
     let mut runtime_config = StateRuntimeConfig {
         allow_simulation_controls: config.simulation,
         ..StateRuntimeConfig::default()
     };
-    if genesis.profile().kind() == naome_ledger::profile::TimingKind::ShortTest {
+    if matches!(
+        genesis.profile().kind(),
+        naome_ledger::profile::TimingKind::ShortTest | naome_ledger::profile::TimingKind::CiTest
+    ) {
         runtime_config.tick_interval = Duration::from_millis(50);
-        runtime_config.proposal_timeout = Duration::from_millis(350);
-        runtime_config.prevote_timeout = Duration::from_millis(350);
-        runtime_config.precommit_timeout = Duration::from_millis(350);
+        // With 50 ms of delay on each TCP chunk, the 350 ms short-test round
+        // often times out before authenticated votes arrive. CI gets more
+        // finalized heights per minute with a longer first round.
+        let round_timeout = if genesis.profile().kind() == naome_ledger::profile::TimingKind::CiTest
+        {
+            1200
+        } else {
+            350
+        };
+        runtime_config.proposal_timeout = Duration::from_millis(round_timeout);
+        runtime_config.prevote_timeout = Duration::from_millis(round_timeout);
+        runtime_config.precommit_timeout = Duration::from_millis(round_timeout);
     }
-    let mut runtime = StateRuntime::new(history, Some(signer), network, remote, runtime_config)?;
+    let mut runtime = bootstrap::open(&config, runtime_config)?;
     // The signer/history locks above prove that no other owning process is live.
     // Only a same-user socket at the configured exact path may be removed.
     if let Ok(metadata) = std::fs::symlink_metadata(&config.control_socket) {
@@ -240,7 +205,7 @@ async fn run_owned(
             message=receiver.recv()=>{
                 let Some(message)=message else{break Err("control listener stopped".into());};
                 let shutdown=matches!(message.request,Request::Shutdown {});
-                let response=handle(&mut runtime,&peers,message.request).unwrap_or_else(|error|json!({"error":error.to_string()}));
+                let response=handle(&mut runtime,message.request).unwrap_or_else(|error|json!({"error":error.to_string()}));
                 let _=message.response.send(response);
                 if shutdown {tokio::time::sleep(Duration::from_millis(50)).await;break Ok(());}
             },
@@ -257,11 +222,7 @@ async fn run_owned(
     drop(server);
     outcome
 }
-fn handle(
-    runtime: &mut StateRuntime,
-    peers: &[naome_network::PeerId],
-    request: Request,
-) -> Result<Value> {
+fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
     Ok(match request {
         Request::Status {} => {
             let mut value = control::status(runtime.state()?);
@@ -318,15 +279,29 @@ fn handle(
             json!({"status":"finalized_library","proof":id,"bytes":files::hex(proof.canonical_bytes()),"author":files::hex(proof.author().as_bytes()),"recipient":files::hex(proof.recipient().as_bytes()),"height":proof.coordinate().height,"operation_index":proof.coordinate().operation_index})
         }
         Request::StartProofFetch { validator, id } => {
-            let peer = *peers.get(validator).ok_or("validator index out of range")?;
-            runtime
-                .start_proof_fetch(peer, naome_proof::ProofId::from_bytes(files::unhex(&id)?))?;
+            let slot = runtime
+                .state()?
+                .authority()
+                .units()
+                .get(validator)
+                .ok_or("validator index out of range")?
+                .slot();
+            runtime.start_proof_fetch_slot(
+                slot,
+                naome_proof::ProofId::from_bytes(files::unhex(&id)?),
+            )?;
             json!({"status":"network_fetch_started","validator":validator,"proof":id})
         }
         Request::ProofFetch { validator, id } => {
-            let peer = *peers.get(validator).ok_or("validator index out of range")?;
+            let slot = runtime
+                .state()?
+                .authority()
+                .units()
+                .get(validator)
+                .ok_or("validator index out of range")?
+                .slot();
             match runtime
-                .take_proof_fetch(peer, naome_proof::ProofId::from_bytes(files::unhex(&id)?))?
+                .take_proof_fetch_slot(slot, naome_proof::ProofId::from_bytes(files::unhex(&id)?))?
             {
                 None => json!({"status":"pending"}),
                 Some(bytes) => {
@@ -335,10 +310,14 @@ fn handle(
             }
         }
         Request::SetPeer { validator, enabled } => {
-            runtime.set_peer_enabled(
-                *peers.get(validator).ok_or("validator index out of range")?,
-                enabled,
-            )?;
+            let slot = runtime
+                .state()?
+                .authority()
+                .units()
+                .get(validator)
+                .ok_or("validator index out of range")?
+                .slot();
+            runtime.set_slot_enabled(slot, enabled)?;
             json!({"status":"simulation_link_updated","validator":validator,"enabled":enabled})
         }
     })

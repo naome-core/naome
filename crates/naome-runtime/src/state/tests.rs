@@ -4,10 +4,14 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget,
-    state::{StateBranch, StateLockEvent, StateLockState, StatePublication, StateQuorum},
+    state::{
+        SealRole, SealSignature, StateAgreement, StateBranch, StateLockEvent, StateLockState,
+        StatePublication, StateQuorum, StateSeal,
+    },
 };
 use naome_ledger::{
     AccountId,
+    authority::{AuthoritySnapshot, HandoffPlan, NextPeriodKeys},
     operations::OperationBody,
     profile::{Genesis, Limits, Profile, STATE_CHECKER_PROFILE, TimingKind, ValidatorRegistration},
     question::CompiledQuestion,
@@ -52,6 +56,193 @@ fn consensus(i: u8) -> SigningKey {
 }
 fn transport(i: u8) -> Keypair {
     Keypair::ed25519_from_bytes([i + 201; 32]).unwrap()
+}
+fn period_key(i: u8, height: u64, role: u8) -> SigningKey {
+    if height == 1 {
+        return if role == 1 {
+            consensus(i)
+        } else {
+            SigningKey::from_bytes(&[i + 201; 32])
+        };
+    }
+    let mut seed = [55; 32];
+    seed[0] = i;
+    seed[1] = role;
+    seed[2..10].copy_from_slice(&height.to_be_bytes());
+    SigningKey::from_bytes(&seed)
+}
+fn owner_index(owner: AccountId) -> u8 {
+    (0..4)
+        .find(|i| AccountId::for_key(account(*i).verifying_key().as_bytes()) == owner)
+        .unwrap()
+}
+fn handoff_plan(state: &LedgerState) -> HandoffPlan {
+    let height = state.authority().effective_height() + 1;
+    let mut offers: Vec<_> = state
+        .authority()
+        .units()
+        .iter()
+        .map(|unit| {
+            let i = owner_index(unit.owner());
+            NextPeriodKeys::sign(
+                state.authority(),
+                state.head(),
+                state.commitment(),
+                unit.id(),
+                &account(i),
+                &period_key(i, height, 1),
+                &period_key(i, height, 2),
+                unit.keys().unwrap().endpoint().to_owned(),
+            )
+            .unwrap()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    HandoffPlan::new(offers, None).unwrap()
+}
+fn seed_offers(runtime: &mut StateRuntime) {
+    let plan = handoff_plan(runtime.state().unwrap());
+    runtime.offers.clear();
+    for offer in plan.offers() {
+        runtime.accept_offer(&offer.encode()).unwrap();
+    }
+}
+#[test]
+fn exact_offer_retry_is_idempotent_but_conflicting_valid_offer_keeps_original() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let original = runtime.offers.values().next().unwrap().clone();
+    let unit = original.unit();
+    let state = runtime.state().unwrap();
+    let owner = owner_index(state.authority().unit(unit).unwrap().owner());
+    let parent_head = state.head();
+    let parent_commitment = state.commitment();
+    let authority = state.authority().clone();
+    let conflicting = NextPeriodKeys::sign(
+        &authority,
+        parent_head,
+        parent_commitment,
+        unit,
+        &account(owner),
+        &period_key(owner, 3, 1),
+        &period_key(owner, 3, 2),
+        original.keys().endpoint().to_owned(),
+    )
+    .unwrap();
+    assert_ne!(conflicting, original);
+    conflicting
+        .verify(
+            &authority,
+            parent_head,
+            parent_commitment,
+            authority.effective_height() + 1,
+            account(owner).verifying_key().to_bytes(),
+        )
+        .unwrap();
+
+    let offers = runtime.offers.clone();
+    runtime.accept_offer(&original.encode()).unwrap();
+    assert_eq!(runtime.offers, offers);
+    assert!(matches!(
+        runtime.accept_offer(&conflicting.encode()),
+        Err(StateRuntimeError::Rejected(message))
+            if message == "different offer for same unit and parent"
+    ));
+    assert_eq!(runtime.offers, offers);
+    assert_eq!(runtime.offers.get(&unit), Some(&original));
+    let selected = runtime.state().unwrap();
+    assert_eq!(selected.head(), parent_head);
+    assert_eq!(selected.commitment(), parent_commitment);
+    assert_eq!(selected.authority(), &authority);
+    assert!(runtime.node.handoff_agreement().is_none());
+}
+#[test]
+fn round_zero_waits_boundedly_for_fourth_offer_then_three_can_progress() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    runtime.config.proposal_timeout = Duration::from_millis(350);
+    let state = runtime.state().unwrap();
+    let genesis = state.genesis().clone();
+    let reports: Vec<_> = (0..3)
+        .map(|index| {
+            SignedTimeReport::sign(
+                &genesis,
+                state.authority(),
+                state.head(),
+                1,
+                101,
+                &consensus(index),
+            )
+            .unwrap()
+        })
+        .collect();
+    for report in reports.iter().take(2) {
+        runtime
+            .time_reports
+            .insert(report.validator(), report.clone());
+    }
+    runtime.submit_operation(operation(&genesis, 1)).unwrap();
+    let missing = *runtime.offers.keys().last().unwrap();
+    let fourth = runtime.offers.remove(&missing).unwrap();
+    runtime.last_selected_at = Instant::now() - runtime.config.proposal_timeout;
+    assert!(runtime.offers_ready_at.is_none());
+    assert!(runtime.prepare_record().unwrap().is_none());
+    assert!(runtime.offers_ready_at.is_none());
+    let third_report = reports[2].clone();
+    runtime
+        .time_reports
+        .insert(third_report.validator(), third_report);
+    assert!(runtime.prepare_record().unwrap().is_none());
+    assert!(runtime.offers_ready_at.is_some());
+    runtime.offers_ready_at = Some(Instant::now() - runtime.config.proposal_timeout);
+    assert!(runtime.prepare_record().unwrap().is_none());
+
+    runtime.accept_offer(&fourth.encode()).unwrap();
+    let all = runtime.prepare_record().unwrap().unwrap();
+    let record = naome_chain::StateRecord::decode(&all, &genesis).unwrap();
+    assert_eq!(record.handoff_plan().offers().len(), 4);
+
+    runtime.offers.remove(&missing);
+    runtime.offers_ready_at = Some(Instant::now() - Duration::from_secs(2));
+    let bounded = runtime.prepare_record().unwrap().unwrap();
+    let record = naome_chain::StateRecord::decode(&bounded, &genesis).unwrap();
+    assert_eq!(record.handoff_plan().offers().len(), 3);
+}
+fn seal(agreement: &StateAgreement) -> StateSeal {
+    let signatures = |role: SealRole, authority: &AuthoritySnapshot| {
+        authority
+            .units()
+            .iter()
+            .filter_map(|unit| unit.keys().map(|keys| (unit, keys)))
+            .take(3)
+            .map(|(unit, keys)| {
+                let key = ConsensusKey::from_bytes(*keys.consensus());
+                let signer = period_key(owner_index(unit.owner()), authority.effective_height(), 1);
+                let signature = signer
+                    .sign(&SealSignature::signing_bytes(
+                        role,
+                        agreement.seal_context(),
+                        key,
+                    ))
+                    .to_bytes();
+                SealSignature::complete(
+                    role,
+                    agreement.seal_context(),
+                    key,
+                    signature,
+                    agreement.outgoing(),
+                    agreement.incoming(),
+                )
+                .unwrap()
+            })
+            .collect()
+    };
+    StateSeal::new(
+        signatures(SealRole::Ready, agreement.incoming()),
+        signatures(SealRole::Terminal, agreement.outgoing()),
+        agreement.seal_context(),
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
 }
 fn genesis() -> Genesis {
     let limits = Limits {
@@ -110,7 +301,7 @@ fn runtime_with_genesis(g: Genesis) -> (Directory, Directory, StateRuntime) {
     let index = (0..4)
         .find(|i| {
             let signer = ConsensusKey::from_bytes(consensus(*i).verifying_key().to_bytes());
-            (0..=1).all(|round| branch.proposer(round, 8).unwrap() != signer)
+            (0..=1).all(|round| branch.proposer(round, 8).unwrap() != Some(signer))
         })
         .unwrap();
     let directory = Directory::new();
@@ -123,7 +314,7 @@ fn runtime_with_genesis(g: Genesis) -> (Directory, Directory, StateRuntime) {
         .filter(|i| *i != index)
         .map(|i| transport(i).public().to_peer_id())
         .collect();
-    let runtime = StateRuntime::new(
+    let mut runtime = StateRuntime::new(
         history,
         Some(signer),
         network,
@@ -131,9 +322,11 @@ fn runtime_with_genesis(g: Genesis) -> (Directory, Directory, StateRuntime) {
         StateRuntimeConfig::default(),
     )
     .unwrap();
+    seed_offers(&mut runtime);
     (directory, anchors, runtime)
 }
 fn ready_work(runtime: &mut StateRuntime) {
+    seed_offers(runtime);
     let g = runtime.state().unwrap().genesis().clone();
     let state = runtime.state().unwrap();
     let utc = SystemTime::now()
@@ -141,7 +334,10 @@ fn ready_work(runtime: &mut StateRuntime) {
         .unwrap()
         .as_secs();
     let reports: Vec<_> = (0..4)
-        .map(|i| SignedTimeReport::sign(&g, state.head(), 1, utc, &consensus(i)).unwrap())
+        .map(|i| {
+            SignedTimeReport::sign(&g, state.authority(), state.head(), 1, utc, &consensus(i))
+                .unwrap()
+        })
         .collect();
     for report in reports {
         runtime.time_reports.insert(report.validator(), report);
@@ -178,7 +374,7 @@ fn enter_round_one(runtime: &mut StateRuntime) -> Vec<StateLockState> {
             }
         })
         .collect();
-    let quorum = StateQuorum::from_votes(prevotes, &g).unwrap();
+    let quorum = StateQuorum::from_votes(prevotes, &g, branch.authority()).unwrap();
     let mut precommits = Vec::new();
     for (i, kernel) in kernels.iter_mut().enumerate() {
         let intent = kernel
@@ -200,7 +396,7 @@ fn enter_round_one(runtime: &mut StateRuntime) -> Vec<StateLockState> {
         runtime.node.accept_vote(&vote.encode()).unwrap();
         precommits.push(vote);
     }
-    let quorum = StateQuorum::from_votes(precommits, &g).unwrap();
+    let quorum = StateQuorum::from_votes(precommits, &g, branch.authority()).unwrap();
     for kernel in &mut kernels {
         kernel
             .apply(
@@ -249,6 +445,7 @@ async fn later_consensus_round_after_restart_waits_longer_without_duplicate_rese
         StateRuntimeConfig::default(),
     )
     .unwrap();
+    seed_offers(&mut runtime);
     assert_eq!(
         runtime.position().unwrap().unwrap(),
         (1, 1, StatePhase::Proposal)
@@ -288,13 +485,18 @@ fn authored_proposal(
     let certificate = naome_ledger::time::TimeCertificate::new(
         runtime.time_reports.values().cloned().collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         1,
         state.time(),
     )
     .unwrap();
     let record = state
-        .prepare_record(certificate, vec![operation(state.genesis(), 1)])
+        .prepare_record(
+            certificate,
+            vec![operation(state.genesis(), 1)],
+            handoff_plan(state),
+        )
         .unwrap()
         .record()
         .encode()
@@ -322,8 +524,9 @@ async fn valid_proposal_after_old_interval_is_accepted_within_grown_round() {
     let branch = StateBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
     let index = (0..4)
         .find(|i| {
-            ConsensusKey::from_bytes(consensus(*i).verifying_key().to_bytes())
-                == branch.proposer(1, 8).unwrap()
+            Some(ConsensusKey::from_bytes(
+                consensus(*i).verifying_key().to_bytes(),
+            )) == branch.proposer(1, 8).unwrap()
         })
         .unwrap();
     let proposal = authored_proposal(&runtime, &mut kernels[index as usize], index);
@@ -349,7 +552,7 @@ async fn retained_proposal_is_driven_before_an_elapsed_timeout_can_emit_nil() {
     let (_directory, _anchors, mut runtime) = runtime();
     ready_work(&mut runtime);
     let branch = StateBranch::from_genesis(runtime.state().unwrap().clone()).unwrap();
-    let scheduled = branch.proposer(0, 8).unwrap();
+    let scheduled = branch.proposer(0, 8).unwrap().unwrap();
     let index = (0..4)
         .find(|i| ConsensusKey::from_bytes(consensus(*i).verifying_key().to_bytes()) == scheduled)
         .unwrap();
@@ -393,7 +596,10 @@ async fn productive_work_after_long_idle_gets_a_complete_proposal_interval() {
         .unwrap()
         .as_secs();
     let reports: Vec<_> = (0..4)
-        .map(|i| SignedTimeReport::sign(&g, state.head(), 1, utc, &consensus(i)).unwrap())
+        .map(|i| {
+            SignedTimeReport::sign(&g, state.authority(), state.head(), 1, utc, &consensus(i))
+                .unwrap()
+        })
         .collect();
     for report in reports {
         runtime.time_reports.insert(report.validator(), report);
@@ -464,6 +670,8 @@ async fn action_for_unopened_phase_does_not_occupy_the_next_nonce() {
     assert_eq!(runtime.state().unwrap().next_nonce(author), Some(1));
 }
 
+mod delivery_cache;
+mod handoff_lifecycle;
 mod intake_priority;
 mod proof_fetch;
 mod registration;
@@ -474,12 +682,28 @@ async fn refreshing_time_reports_preserves_delivery_order_under_backpressure() {
     let g = runtime.state().unwrap().genesis().clone();
     let parent = runtime.state().unwrap().head();
     let peer = runtime.peers[0];
-    let first = SignedTimeReport::sign(&g, parent, 1, 101, &consensus(0)).unwrap();
+    let first = SignedTimeReport::sign(
+        &g,
+        runtime.state().unwrap().authority(),
+        parent,
+        1,
+        101,
+        &consensus(0),
+    )
+    .unwrap();
     runtime.own_time = Some(first.encode().into());
     runtime.enqueue_periodic().unwrap();
     let initial_len = runtime.outbox.len();
     for utc in 102..202 {
-        let report = SignedTimeReport::sign(&g, parent, 1, utc, &consensus(0)).unwrap();
+        let report = SignedTimeReport::sign(
+            &g,
+            runtime.state().unwrap().authority(),
+            parent,
+            1,
+            utc,
+            &consensus(0),
+        )
+        .unwrap();
         let bytes: Arc<[u8]> = report.encode().into();
         runtime.own_time = Some(bytes.clone());
         runtime.enqueue_periodic().unwrap();

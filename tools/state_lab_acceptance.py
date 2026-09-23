@@ -29,7 +29,8 @@ REPO = Path(__file__).resolve().parents[1]
 EXAMPLES = REPO / "examples/state-workflow"
 HELPER = "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
 AGREEMENT_FIELDS = ("state", "head", "height", "accounts", "reserve_atoms",
-                    "claims", "library_root", "paid_completions")
+                    "claims", "library_root", "paid_completions", "authority",
+                    "validators", "join_queue", "consumed_claims")
 
 
 def require(condition, message):
@@ -94,7 +95,7 @@ class Lab:
             base = 20000 + int.from_bytes(os.urandom(2), "big") % 40000
             held = []
             try:
-                for index in range(4):
+                for index in range(8):
                     s = socket.socket()
                     held.append(s)
                     s.bind(("127.0.0.1", base + index))
@@ -104,7 +105,7 @@ class Lab:
             finally:
                 for s in held:
                     s.close()
-        raise RuntimeError("cannot reserve four local TCP endpoints")
+        raise RuntimeError("cannot reserve eight local TCP endpoints")
 
     def file(self, name):
         if name == "genesis.bin":
@@ -288,7 +289,7 @@ class Lab:
             "node_indices": self.args.retirement_indices, "validator_ids": selected,
         }
         configs = [json.loads(self.config(i).read_text()) for i in range(4)]
-        for field in ("history", "history_anchor", "signer", "signer_anchor", "consensus_key", "transport_key", "control_socket"):
+        for field in ("history", "history_anchor", "signer", "signer_anchor", "custody", "custody_anchor", "handoff", "handoff_anchor", "consensus_key", "transport_key", "control_socket"):
             require(len({config[field] for config in configs}) == 4, f"nodes share a {field} path")
         self.report["checks"]["independent_process_custody"] = {
             "validators": 4, "separate_histories": True, "separate_signer_journals": True,
@@ -383,7 +384,10 @@ proof:
         settled = self.status(1)
         self.agreement(range(4), settled)
         validators = settled["validators"]
-        canonical = [next(v["index"] for v in validators if v["endpoint"] == f"127.0.0.1:{self.base + n}") for n in range(4)]
+        canonical = [next(v["index"] for v in validators
+                          if v["endpoint"] in (f"127.0.0.1:{self.base + n}",
+                                                f"127.0.0.1:{self.base + n + 4}"))
+                     for n in range(4)]
         for local in range(4):
             for remote in range(4):
                 if local // 2 != remote // 2:

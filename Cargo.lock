@@ -1871,6 +1871,7 @@ name = "naome-runtime"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "getrandom 0.3.4",
  "naome-chain",
  "naome-checker",
  "naome-consensus",
@@ -1883,6 +1884,7 @@ dependencies = [
  "naome-storage",
  "sha2 0.11.0",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -1891,14 +1893,18 @@ version = "0.1.0"
 dependencies = [
  "atomicwrites",
  "ed25519-dalek",
+ "getrandom 0.3.4",
+ "libc",
  "naome-chain",
  "naome-checker",
  "naome-consensus",
  "naome-foundation",
  "naome-ledger",
  "naome-proof",
+ "rustix 1.1.4",
  "sha2 0.11.0",
  "winsafe",
+ "zeroize",
 ]
 
 [[package]]

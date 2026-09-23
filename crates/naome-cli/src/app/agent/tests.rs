@@ -205,12 +205,19 @@ impl Fixture {
         )
         .unwrap();
         let config = NodeConfig {
-            version: 2,
+            version: 5,
+            primary_endpoint: "127.0.0.1:44000".into(),
+            candidate_family: None,
+            recovery_endpoints: vec!["127.0.0.1:44000".into(), "127.0.0.1:44004".into()],
             genesis: root.join("genesis.bin"),
             history: root.join("history"),
             history_anchor: root.join("history-anchor"),
             signer: root.join("signer"),
             signer_anchor: root.join("signer-anchor"),
+            custody: root.join("custody"),
+            custody_anchor: root.join("custody-anchor"),
+            handoff: root.join("handoff"),
+            handoff_anchor: root.join("handoff-anchor"),
             consensus_key: root.join("consensus.key"),
             transport_key: root.join("transport.key"),
             account_key: key.clone(),
@@ -219,6 +226,8 @@ impl Fixture {
             maximum_round: 64,
             simulation: true,
             listen_address: None,
+            handoff_endpoint: "127.0.0.1:44004".into(),
+            handoff_listen_address: None,
         };
         files::directory(&config.signer).unwrap();
         files::create(&config.genesis, &genesis.encode(), false).unwrap();
@@ -231,6 +240,7 @@ impl Fixture {
         let config_file = root.join("node.json");
         files::create(&config_file, &serde_json::to_vec(&config).unwrap(), true).unwrap();
         let status = json!({"genesis":files::hex(genesis.id().as_bytes()),"active":{
+            "electorate":[files::hex(AccountId::for_key(owner.verifying_key().as_bytes()).as_bytes())],
             "phase":"Voting","question":"11".repeat(32),"submission":"22".repeat(32),"attempt":1,
             "deadline":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()+60},
             "accounts":[{"account":files::hex(AccountId::for_key(owner.verifying_key().as_bytes()).as_bytes()),"next_nonce":1}]});
@@ -660,11 +670,11 @@ async fn configured_request_rejects_legacy_response_downgrade() {
 }
 
 #[tokio::test]
-async fn legacy_report_survives_interruption_before_action_copy() {
+async fn interrupted_action_copy_requires_the_current_report_without_legacy_conversion() {
     let fixture = Fixture::new();
     let marker = fixture.directory.0.join("calls");
     let executable = fixture.directory.executable(
-        "legacy",
+        "report-recovery",
         &format!(
             "printf x >> {}\n{}",
             quoted(marker.to_str().unwrap()),
@@ -680,16 +690,15 @@ async fn legacy_report_survives_interruption_before_action_copy() {
         question_fixture(),
         fixture.status.clone(),
         json!({"status":"pending"}),
+        fixture.status.clone(),
+        question_fixture(),
+        fixture.status.clone(),
     ]);
     let args = fixture.args(&executable);
     run(&args).await.unwrap();
     let action = files::read(Path::new(&args[2]), 65536, true).unwrap();
     let operation = SignedOperation::decode(&action).unwrap();
-    let mut report: serde_json::Value =
-        serde_json::from_slice(&files::read(Path::new(&args[3]), 16384, true).unwrap()).unwrap();
-    report["operation"] = json!(files::hex(operation.id().as_bytes()));
-    let legacy = serde_json::to_vec_pretty(&report).unwrap();
-    files::replace_private(Path::new(&args[3]), &legacy).unwrap();
+    let current = files::read(Path::new(&args[3]), 16384, true).unwrap();
     fs::remove_file(&args[2]).unwrap();
     run(&args).await.unwrap();
     assert_eq!(
@@ -698,10 +707,22 @@ async fn legacy_report_survives_interruption_before_action_copy() {
     );
     assert_eq!(
         files::read(Path::new(&args[3]), 16384, true).unwrap(),
+        current
+    );
+    let mut report: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    report["operation"] = json!(files::hex(operation.id().as_bytes()));
+    let legacy = serde_json::to_vec_pretty(&report).unwrap();
+    files::replace_private(Path::new(&args[3]), &legacy).unwrap();
+    fs::remove_file(&args[2]).unwrap();
+    assert_eq!(
+        run(&args).await.unwrap_err().to_string(),
+        "existing output is not the expected bounded private file"
+    );
+    assert!(!Path::new(&args[2]).exists());
+    assert_eq!(
+        files::read(Path::new(&args[3]), 16384, true).unwrap(),
         legacy
     );
     assert_eq!(fs::read(marker).unwrap(), b"x");
-    assert_eq!(server.await.unwrap().len(), 8);
-    report["question_id"] = json!("wrong");
-    assert!(save_report(Path::new(&args[3]), &report, Some(&operation)).is_err());
+    assert_eq!(server.await.unwrap().len(), 11);
 }

@@ -1,11 +1,14 @@
-# Fixed-set proposer selection
+# Stable-slot proposer selection
 
 `naome-consensus::proposer_selection` owns deterministic fixed-set arithmetic.
-The canonical `StateBranch` derives its set from the immutable genesis: four
-validators, each with weight one. The general arithmetic accepts larger weighted
-sets for reference tests; it does not enable dynamic membership or weighted
-voting in the MVP. [MVP requirements](../docs/mvp/requirements.md) define the
-operational authority and [component ownership](ownership.md) maps its layers.
+The canonical `StateBranch` feeds it four immutable slot identifiers with
+weight one each. A slot retains its arithmetic identity when its owner and
+period keys change. The selected parent snapshot resolves a selected slot to
+its current consensus key; a vacant slot returns no proposer for that round.
+Its turn is still consumed, and the four-slot quorum denominator is unchanged.
+The general arithmetic accepts larger weighted sets for reference tests; the
+state-v5 authority transition remains four equal slots. [Authority periods](authority-periods.md)
+defines installation and [component ownership](ownership.md) maps its layers.
 
 The hash domains below retain their literal `v0` spelling. They remain part of
 the current arithmetic identity and are not permission to accept old history,
@@ -19,10 +22,12 @@ The fixed set contains at most 256 entries. Every entry is:
 ConsensusKey[32] || AgreementWeight_u128_be[16]
 ```
 
-Keys are sorted by their raw 32 bytes in ascending order. Duplicate keys,
+Entries are sorted by their raw 32 bytes in ascending order. Duplicate keys,
 zero-weight entries, and a total weight above `u128::MAX` are rejected. Input
-order has no semantic effect. The reference arithmetic can represent an empty set but cannot select a proposer
-from it; the MVP requires its fixed four validators.
+order has no semantic effect. The reference arithmetic can represent an empty
+set but cannot select a proposer from it. The canonical branch always supplies
+four stable slot IDs through the same 32-byte arithmetic key type; these bytes
+are not the rotating consensus public keys.
 
 The trailing-NUL identity domain is:
 
@@ -120,8 +125,9 @@ p[i] = p[i] + weight[i]
 ```
 
 The entry with maximum resulting priority is the proposer. Equal priorities
-select the lowest raw `ConsensusKey`. This raw-key rule is part of the canonical
-arithmetic; it must not be silently replaced by a derived-address ordering.
+select the lowest raw arithmetic entry. For the canonical branch this means
+the lowest stable slot ID, even when that slot is vacant; it must not be
+replaced by a rotating consensus key or derived-address ordering.
 
 ### 4. Subtract total weight
 
@@ -172,18 +178,24 @@ before deriving its proposer from that branch's base.
 ## Canonical branch integration
 
 `StateBranch::from_genesis` accepts only the height-zero `LedgerState` and
-constructs zero priorities from its fixed consensus keys. A later branch arises
-only from verified finality for a complete record against the exact parent.
-`StateValue` binds genesis, profile, height, parent and child record identities,
-previous and next ledger commitments, fixed-set identity, and next-height
-proposer identity. The scheduled proposer is derived from the branch and round;
-callers cannot substitute a priority vector.
+constructs zero priorities from its four stable slots. A later branch arises
+only from verified agreement, READY and TERMINAL seals for a complete record
+against the exact selected parent. `StateValue` binds genesis, profile,
+outgoing authority ID, height, parent and child record identities, previous and
+next ledger commitments, stable fixed-set identity, and next-height proposer
+identity. The scheduled slot is derived from the branch and round, then
+resolved under the selected parent snapshot. Callers cannot substitute a
+priority vector or a current key for a vacant slot.
 
-Finality authenticates the scheduled proposal and a non-nil three-of-four
-precommit quorum before full mathematical/state replay. The successor carries
-the once-advanced height base, including when finality arrived in a later round.
-Storage owns durable selection and conflict halt; proposer arithmetic alone
-supplies no signing, selection, persistence, or network authority.
+Agreement authenticates the scheduled proposal and a non-nil three-of-four
+precommit quorum before full mathematical/state replay. It yields a provisional
+`StateAgreement`, not a selectable successor. The exact agreed record and
+successor snapshot need at least three incoming READY and three outgoing TERMINAL
+signatures before `StateFinality` permits durable selection. The successor
+carries the once-advanced height base, including when agreement arrived in a
+later round. Key rotation does not reset those priorities. Storage owns
+durable selection and conflict halt; proposer arithmetic alone supplies no
+signing, selection, persistence, or network authority.
 
 ## Verification
 
@@ -192,5 +204,6 @@ cover exact identities, priority normalization and ordering.
 [Weighted reference tests](../crates/naome-consensus/src/weight_oracle.rs)
 cover full-width arithmetic and threshold classes.
 [Canonical consensus tests](../crates/naome-consensus/src/state/tests.rs)
-exercise branch-relative selection and finality. These bounded tests are not
-qualification of a dynamic or weighted validator network.
+exercise branch-relative slot selection, vacancy, rotation, and sealed
+finality. These bounded tests are not qualification of physical multi-machine
+handoff or a weighted validator network.

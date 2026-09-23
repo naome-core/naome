@@ -5,8 +5,8 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_consensus::{
     ConsensusKey,
     state::{
-        STATE_QUORUM_MAX_BYTES, StateBranch, StateIntent, StateLockEvent, StateLockState,
-        StatePhase, StatePublication,
+        STATE_QUORUM_MAX_BYTES, SealSignature, StateAgreement, StateBranch, StateIntent,
+        StateLockEvent, StateLockState, StatePhase, StatePublication,
     },
 };
 use naome_ledger::{
@@ -21,14 +21,14 @@ use std::path::Path;
 use super::{
     StateStorageError as Error,
     codec::{Reader, bytes},
+    handoff::StateHandoffJournal,
     history::StateHistory,
     log::{FileLog, Limits},
 };
 
-const MAGIC: &[u8; 8] = b"NAOSSIG1";
+const MAGIC: &[u8; 8] = b"NAOSSIG5";
 const PREPARE: u8 = 1;
 const COMPLETE: u8 = 2;
-const ADVANCE: u8 = 3;
 const STOP: u8 = 4;
 const STOP_BYTES: usize = 1 + 8 + 32;
 const SNAPSHOT_MAX: usize = SIGNER_SNAPSHOT_MAX_BYTES as usize;
@@ -48,7 +48,7 @@ pub enum StatePreparation {
 /// exposed through a Debug implementation. Secret-key drop zeroization comes
 /// from the storage crate's ed25519-dalek `zeroize` feature.
 pub struct StateSigner {
-    key: SigningKey,
+    key: Option<SigningKey>,
     #[cfg(test)]
     key_uses: usize,
     state: Replay,
@@ -58,6 +58,7 @@ pub struct StateSigner {
 struct Context {
     genesis: Genesis,
     signer: ConsensusKey,
+    start_branch: StateBranch,
     maximum_round: u64,
     prefix: Vec<u8>,
     limits: Limits,
@@ -89,7 +90,7 @@ struct Completed {
 
 impl Replay {
     fn new(context: &Context) -> Result<Self, Error> {
-        let branch = StateBranch::from_genesis(LedgerState::new(context.genesis.clone()))?;
+        let branch = context.start_branch.clone();
         let lock = StateLockState::new(&branch, context.signer)?;
         Ok(Self {
             branch,
@@ -173,27 +174,6 @@ impl Replay {
                 });
                 self.pending = None;
             }
-            ADVANCE => {
-                if self.pending.is_some() {
-                    return Err(Error::Invalid("height change with pending signature"));
-                }
-                let finality = self.branch.decode_finality(
-                    r.bytes(context.genesis.profile().limits().transport_frame_bytes as usize)?,
-                    context.maximum_round,
-                )?;
-                let snapshot = r.bytes(SNAPSHOT_MAX)?;
-                r.finish()?;
-                let mut next = self.lock.clone();
-                next.advance_height(&finality)?;
-                if snapshot != next.snapshot()? {
-                    return Err(Error::Invalid("height checkpoint differs from replay"));
-                }
-                self.branch = finality.into_branch();
-                self.lock = next;
-                self.completed = None;
-                self.publications.clear();
-                self.previous_votes.clear();
-            }
             STOP => {
                 // This only removes signing rights. The operational API requires
                 // durable selected-history conflict; replay never treats these
@@ -250,15 +230,84 @@ impl Replay {
         {
             return Err(Error::Limit("height signing reservation"));
         }
-        if kind == ADVANCE {
-            Ok((0, 0))
-        } else {
-            Ok((used_bytes, used_frames))
-        }
+        Ok((used_bytes, used_frames))
     }
 }
 
 impl StateSigner {
+    /// Retire every locally owned predecessor after selected sealed history
+    /// has advanced past it. This recovery path uses only public consensus
+    /// keys: an unfinished old signing intent is discarded by an anchored STOP,
+    /// never completed with a resurrected secret. Each journal remains locked
+    /// only until its caller-supplied secret cleanup finishes.
+    pub fn retire_predecessors(
+        directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        history: &StateHistory,
+        owner: naome_ledger::AccountId,
+        maximum_round: u64,
+        mut cleanup: impl FnMut(
+            Option<&Self>,
+            Option<&StateBranch>,
+            &StateBranch,
+            &StateBranch,
+        ) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        signing_platform()?;
+        history.visit_selected_transitions(|preceding, branch, selected_successor| {
+            let Some(keys) = branch.authority().owner(owner).and_then(|unit| unit.keys()) else {
+                return Ok(());
+            };
+            let signer = ConsensusKey::from_bytes(*keys.consensus());
+            let context = context_for_branch(
+                branch.state().genesis().clone(),
+                branch.clone(),
+                signer,
+                maximum_round,
+            )?;
+            let journal_path = directory.as_ref().join(&context.file_name);
+            let anchor_path = anchor_directory.as_ref().join(&context.anchor_name);
+            let journal_exists = journal_path.exists();
+            let anchor_exists = anchor_path.exists();
+            if !journal_exists && !anchor_exists {
+                // READY can anchor incoming custody before the ordinary
+                // signer is ever opened. The caller must inspect and retire
+                // that selected custody even when no signer journal exists.
+                return cleanup(None, preceding, branch, selected_successor);
+            }
+            if !journal_exists || !anchor_exists {
+                return Err(Error::Invalid(
+                    "predecessor signer journal or anchor missing",
+                ));
+            }
+            let mut state = Replay::new(&context)?;
+            let log = FileLog::open(
+                directory.as_ref(),
+                anchor_directory.as_ref(),
+                &context.file_name,
+                &context.lock_name,
+                &context.anchor_name,
+                &context.prefix,
+                context.limits,
+                |body| state.apply(body, &context),
+            )?;
+            let mut old = Self {
+                key: None,
+                #[cfg(test)]
+                key_uses: 0,
+                state,
+                context,
+                log,
+            };
+            if !old.stopped()? {
+                old.stop(
+                    selected_successor.state().height(),
+                    selected_successor.commitment(),
+                )?;
+            }
+            cleanup(Some(&old), preceding, branch, selected_successor)
+        })
+    }
     /// Provision a new genesis signer. Existing journal/anchor paths are never
     /// replaced or inferred safe to reset.
     pub fn create(
@@ -281,7 +330,7 @@ impl StateSigner {
             context.limits,
         )?;
         Ok(Self {
-            key,
+            key: Some(key),
             #[cfg(test)]
             key_uses: 0,
             state,
@@ -310,6 +359,79 @@ impl StateSigner {
             |body| state.apply(body, &context),
         )?;
         Ok(Self {
+            key: (!state.stopped).then_some(key),
+            #[cfg(test)]
+            key_uses: 0,
+            state,
+            context,
+            log,
+        })
+    }
+    /// Start a fresh period key only from the selected sealed parent. The
+    /// journal prefix binds that exact parent, so another replay lineage cannot
+    /// reopen the same signing key under different authority.
+    pub fn create_for_selected(
+        directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        history: &StateHistory,
+        key: SigningKey,
+        maximum_round: u64,
+    ) -> Result<Self, Error> {
+        signing_platform()?;
+        let branch = history.head()?.clone();
+        let context = context_for_branch(
+            branch.state().genesis().clone(),
+            branch,
+            ConsensusKey::from_bytes(key.verifying_key().to_bytes()),
+            maximum_round,
+        )?;
+        let state = Replay::new(&context)?;
+        let log = FileLog::create(
+            directory.as_ref(),
+            anchor_directory.as_ref(),
+            &context.file_name,
+            &context.lock_name,
+            &context.anchor_name,
+            &context.prefix,
+            context.limits,
+        )?;
+        Ok(Self {
+            key: Some(key),
+            #[cfg(test)]
+            key_uses: 0,
+            state,
+            context,
+            log,
+        })
+    }
+    pub fn open_for_selected(
+        directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        history: &StateHistory,
+        key: SigningKey,
+        maximum_round: u64,
+    ) -> Result<Self, Error> {
+        signing_platform()?;
+        let branch = history.head()?.clone();
+        let context = context_for_branch(
+            branch.state().genesis().clone(),
+            branch,
+            ConsensusKey::from_bytes(key.verifying_key().to_bytes()),
+            maximum_round,
+        )?;
+        let mut state = Replay::new(&context)?;
+        let log = FileLog::open(
+            directory.as_ref(),
+            anchor_directory.as_ref(),
+            &context.file_name,
+            &context.lock_name,
+            &context.anchor_name,
+            &context.prefix,
+            context.limits,
+            |body| state.apply(body, &context),
+        )?;
+        let key = (!state.stopped).then_some(key);
+        Ok(Self {
             key,
             #[cfg(test)]
             key_uses: 0,
@@ -317,6 +439,74 @@ impl StateSigner {
             context,
             log,
         })
+    }
+    /// Reopen an already retired journal with only the public period key. The
+    /// old secret must be absent; replay rejects an incomplete terminal stop.
+    pub fn open_retired_for_selected(
+        directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        history: &StateHistory,
+        signer: ConsensusKey,
+        maximum_round: u64,
+    ) -> Result<Self, Error> {
+        signing_platform()?;
+        let branch = history.head()?.clone();
+        let context = context_for_branch(
+            branch.state().genesis().clone(),
+            branch,
+            signer,
+            maximum_round,
+        )?;
+        let mut state = Replay::new(&context)?;
+        let log = FileLog::open(
+            directory.as_ref(),
+            anchor_directory.as_ref(),
+            &context.file_name,
+            &context.lock_name,
+            &context.anchor_name,
+            &context.prefix,
+            context.limits,
+            |body| state.apply(body, &context),
+        )?;
+        if !state.stopped {
+            return Err(Error::KeyRequired);
+        }
+        Ok(Self {
+            key: None,
+            #[cfg(test)]
+            key_uses: 0,
+            state,
+            context,
+            log,
+        })
+    }
+    /// Probe public journal custody before loading a secret. An active journal
+    /// returns a typed KeyRequired; a STOP journal reopens with no old key.
+    pub fn restore_for_selected(
+        directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        history: &StateHistory,
+        signer: ConsensusKey,
+        key: Option<SigningKey>,
+        maximum_round: u64,
+    ) -> Result<Self, Error> {
+        match key {
+            Some(key) => {
+                if key.verifying_key().as_bytes() != signer.as_bytes() {
+                    return Err(Error::Invalid(
+                        "selected signer secret differs from public key",
+                    ));
+                }
+                Self::open_for_selected(directory, anchor_directory, history, key, maximum_round)
+            }
+            None => Self::open_retired_for_selected(
+                directory,
+                anchor_directory,
+                history,
+                signer,
+                maximum_round,
+            ),
+        }
     }
     fn ensure(&self) -> Result<(), Error> {
         self.log.core.ensure()?;
@@ -352,10 +542,13 @@ impl StateSigner {
         self.ensure()?;
         Ok(naome_ledger::time::SignedTimeReport::sign(
             &self.context.genesis,
+            self.state.branch.authority(),
             self.state.branch.state().head(),
             self.state.lock.height(),
             utc_seconds,
-            &self.key,
+            self.key
+                .as_ref()
+                .ok_or(Error::Invalid("retired consensus key"))?,
         )?)
     }
     pub fn signer(&self) -> ConsensusKey {
@@ -374,7 +567,9 @@ impl StateSigner {
         Ok(self.state.lock.phase())
     }
     pub fn branch(&self) -> Result<&StateBranch, Error> {
-        self.ensure()?;
+        // Retirement and restart still need the selected parent commitment
+        // after STOP; reading it cannot use the retired signing key.
+        self.log.core.ensure()?;
         Ok(&self.state.branch)
     }
     pub fn snapshot(&self) -> Result<Vec<u8>, Error> {
@@ -424,25 +619,19 @@ impl StateSigner {
         Ok(self.state.lock.retained_quorum())
     }
 
-    /// Confirms the remaining journal covers every permitted consensus round
-    /// for this many protected records, accounting for work already persisted
-    /// at the current height, plus the separately reserved terminal stop.
-    pub fn ensure_completion_capacity(&self, records: u64) -> Result<(), Error> {
+    /// This key has authority for exactly one height. Reserve every permitted
+    /// round at that height and its terminal stop before using the key.
+    pub fn ensure_completion_capacity(&self) -> Result<(), Error> {
         self.ensure()?;
-        if records == 0 || records > self.context.genesis.profile().limits().run_records {
-            return Err(Error::Limit("protected signing record count"));
-        }
         let profile = self.context.genesis.profile();
         let bytes = profile
             .signer_height_bytes()?
-            .checked_mul(records)
-            .and_then(|v| v.checked_sub(self.state.used_height_bytes))
+            .checked_sub(self.state.used_height_bytes)
             .and_then(|v| v.checked_add(SIGNER_STOP_FRAME_BYTES))
             .ok_or(Error::Limit("protected signing bytes"))?;
         let frames = profile
             .signer_height_frames()?
-            .checked_mul(records)
-            .and_then(|v| v.checked_sub(self.state.used_height_frames))
+            .checked_sub(self.state.used_height_frames)
             .and_then(|v| v.checked_add(1))
             .ok_or(Error::Limit("protected signing frames"))?;
         let available = self.log.core.remaining_capacity()?;
@@ -450,17 +639,6 @@ impl StateSigner {
             return Err(Error::Limit("protected signing completion capacity"));
         }
         Ok(())
-    }
-    fn protected_records(&self) -> u64 {
-        let state = self.state.branch.state();
-        let limits = self.context.genesis.profile().limits();
-        if state.reserved_records() > 0 {
-            state.reserved_records() + limits.terminal_records
-        } else if state.remaining_records() >= limits.completion_records + limits.terminal_records {
-            limits.completion_records + limits.terminal_records
-        } else {
-            limits.terminal_records
-        }
     }
     /// Durably record the exact event, post-checkpoint, and unsigned transcript.
     /// This performs no signing-key operation. A pending intent admits only its
@@ -470,7 +648,7 @@ impl StateSigner {
         if self.state.branch.state().terminated() {
             return Err(Error::Invalid("state run terminated"));
         }
-        self.ensure_completion_capacity(self.protected_records())?;
+        self.ensure_completion_capacity()?;
         event_bounds(event, &self.context.genesis)?;
         let event_bytes = event.encode()?;
         if let Some(pending) = &self.state.pending {
@@ -558,7 +736,7 @@ impl StateSigner {
             .intent
             .signing_bytes()
             .ok_or(Error::Invalid("checkpoint cannot sign"))?;
-        self.ensure_completion_capacity(self.protected_records())?;
+        self.ensure_completion_capacity()?;
         self.log
             .core
             .reserve_batch(&[SIGNER_COMPLETION_BYTES as usize, STOP_BYTES])?;
@@ -569,7 +747,12 @@ impl StateSigner {
         {
             self.key_uses += 1;
         }
-        let signature = self.key.sign(&transcript).to_bytes();
+        let signature = self
+            .key
+            .as_ref()
+            .ok_or(Error::Invalid("retired consensus key"))?
+            .sign(&transcript)
+            .to_bytes();
         let publication =
             pending
                 .intent
@@ -602,6 +785,39 @@ impl StateSigner {
             }
         }
     }
+    /// Finish this period's outgoing seal and durably remove ordinary signing
+    /// capability. The terminal bytes remain private in the handoff journal
+    /// until the runtime closes the outgoing transport and calls release.
+    pub fn terminal_handoff(
+        &mut self,
+        journal: &mut StateHandoffJournal,
+        ready: &[SealSignature],
+    ) -> Result<(), Error> {
+        self.ensure()?;
+        if self.state.pending.is_some() {
+            return Err(Error::Invalid(
+                "complete pending ordinary signature before TERMINAL",
+            ));
+        }
+        let agreement: &StateAgreement = journal
+            .agreement()
+            .ok_or(Error::Invalid("handoff agreement missing"))?;
+        if agreement.seal_context().height() != self.state.lock.height()
+            || agreement.proposal().parent_commitment() != &self.state.branch.commitment()
+            || agreement
+                .outgoing()
+                .consensus_unit(self.context.signer.as_bytes())
+                .is_none()
+        {
+            return Err(Error::Invalid("TERMINAL signer parent or authority"));
+        }
+        let key = self
+            .key
+            .as_ref()
+            .ok_or(Error::Invalid("retired consensus key"))?;
+        journal.sign_terminal(key, ready)?;
+        self.stop(self.state.lock.height(), self.state.branch.commitment())
+    }
     /// Advance only through the sole selected durable history. Raw finality
     /// tokens and caller snapshots are intentionally not accepted as authority.
     pub fn advance_to_history(&mut self, history: &mut StateHistory) -> Result<(), Error> {
@@ -631,38 +847,20 @@ impl StateSigner {
                 "selected history conflicts with signer lineage",
             ));
         }
+        if history.head()?.state().height() > self.state.branch.state().height() {
+            // Every sealed successor rotates consensus keys. This journal is
+            // permanently retired. A previously prepared ordinary intent is
+            // discarded by STOP without using the now-expired key.
+            self.stop(
+                history.head()?.state().height(),
+                history.head()?.commitment(),
+            )?;
+            return Ok(());
+        }
         if self.state.pending.is_some() {
             return Err(Error::Invalid(
                 "complete pending signature before height handoff",
             ));
-        }
-        while self.state.branch.state().height() < history.head()?.state().height() {
-            let next_height = self.state.lock.height();
-            let encoded = history.finality_bytes(next_height)?;
-            let finality = self
-                .state
-                .branch
-                .decode_finality(&encoded, self.context.maximum_round)?;
-            let mut next = self.state.lock.clone();
-            next.advance_height(&finality)?;
-            let mut body = vec![ADVANCE];
-            bytes(&mut body, &encoded)?;
-            let snapshot = next.snapshot()?;
-            if snapshot.len() > SNAPSHOT_MAX {
-                return Err(Error::Limit("signer height checkpoint"));
-            }
-            bytes(&mut body, &snapshot)?;
-            self.log.core.reserve_batch(&[body.len(), STOP_BYTES])?;
-            let usage = self.state.frame_usage(ADVANCE, body.len(), &self.context)?;
-            let position = self.log.core.append(&body)?;
-            self.state.used_height_bytes = usage.0;
-            self.state.used_height_frames = usage.1;
-            self.state.branch = finality.into_branch();
-            self.state.lock = next;
-            self.state.completed = None;
-            self.state.publications.clear();
-            self.state.previous_votes.clear();
-            self.state.sequence = position.sequence;
         }
         Ok(())
     }
@@ -676,6 +874,7 @@ impl StateSigner {
         self.state.publications.clear();
         self.state.previous_votes.clear();
         self.state.stopped = true;
+        self.key.take();
         self.state.sequence = position.sequence;
         Ok(())
     }
@@ -694,20 +893,35 @@ fn signing_platform() -> Result<(), Error> {
     }
 }
 fn context(genesis: Genesis, key: &SigningKey, maximum_round: u64) -> Result<Context, Error> {
+    let branch = StateBranch::from_genesis(LedgerState::new(genesis.clone()))?;
+    context_for_branch(
+        genesis,
+        branch,
+        ConsensusKey::from_bytes(key.verifying_key().to_bytes()),
+        maximum_round,
+    )
+}
+fn context_for_branch(
+    genesis: Genesis,
+    branch: StateBranch,
+    signer: ConsensusKey,
+    maximum_round: u64,
+) -> Result<Context, Error> {
     if maximum_round > genesis.profile().limits().consensus_rounds {
         return Err(Error::Limit("signer round ceiling"));
     }
-    let signer = ConsensusKey::from_bytes(key.verifying_key().to_bytes());
-    if !genesis
-        .validators()
-        .iter()
-        .any(|v| v.consensus_key == *signer.as_bytes())
+    if branch.state().genesis().id() != genesis.id()
+        || branch
+            .authority()
+            .consensus_unit(signer.as_bytes())
+            .is_none()
     {
-        return Err(Error::Invalid("unregistered consensus signing key"));
+        return Err(Error::Invalid("signer outside selected authority"));
     }
     let mut prefix = MAGIC.to_vec();
     prefix.extend_from_slice(signer.as_bytes());
     prefix.extend_from_slice(&maximum_round.to_be_bytes());
+    prefix.extend_from_slice(&branch.commitment());
     bytes(&mut prefix, &genesis.encode())?;
     let limits = Limits {
         payload_bytes: u32::try_from(
@@ -717,10 +931,9 @@ fn context(genesis: Genesis, key: &SigningKey, maximum_round: u64) -> Result<Con
         frames: genesis
             .profile()
             .signer_height_frames()?
-            .checked_mul(genesis.profile().limits().run_records)
-            .and_then(|v| v.checked_add(1))
+            .checked_add(1)
             .ok_or(Error::Limit("signer frames"))?,
-        file_bytes: genesis.profile().signer_journal_bytes()?,
+        file_bytes: genesis.profile().signer_period_bytes()?,
     };
     let name: String = signer
         .as_bytes()
@@ -730,6 +943,7 @@ fn context(genesis: Genesis, key: &SigningKey, maximum_round: u64) -> Result<Con
     Ok(Context {
         genesis,
         signer,
+        start_branch: branch,
         maximum_round,
         prefix,
         limits,

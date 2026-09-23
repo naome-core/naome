@@ -5,6 +5,7 @@ use super::{
 use naome_ledger::{
     GenesisId, LedgerError, LedgerState, RecordId, StateCommitment,
     authentication::SignedOperation,
+    authority::{HANDOFF_PLAN_MAX_BYTES, HandoffPlan},
     profile::Genesis,
     time::{TIME_CERTIFICATE_MAX_BYTES, TimeCertificate},
 };
@@ -23,6 +24,7 @@ pub struct StateRecord {
     time: u64,
     pub(super) time_certificate: TimeCertificate,
     pub(super) operations: Vec<SignedOperation>,
+    plan: HandoffPlan,
     effects: Vec<u8>,
 }
 impl StateRecord {
@@ -31,6 +33,7 @@ impl StateRecord {
         next: &LedgerState,
         time_certificate: TimeCertificate,
         operations: Vec<SignedOperation>,
+        plan: HandoffPlan,
         effects: Vec<u8>,
     ) -> Result<Self, LedgerError> {
         let record = Self {
@@ -42,6 +45,7 @@ impl StateRecord {
             time: next.time(),
             time_certificate,
             operations,
+            plan,
             effects,
         };
         if record.encode()?.len() as u64 > parent.genesis().profile().limits().record_bytes {
@@ -73,19 +77,22 @@ impl StateRecord {
     pub fn operations(&self) -> &[SignedOperation] {
         &self.operations
     }
+    pub fn handoff_plan(&self) -> &HandoffPlan {
+        &self.plan
+    }
     pub fn effects(&self) -> &[u8] {
         &self.effects
     }
     pub fn id(&self) -> RecordId {
         RecordId::from_bytes(hash(
-            b"naome:state:record:v1\0",
+            b"naome:state:record:v5\0",
             &[&self.encode().expect("private bounded record content")],
         ))
     }
     pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut w = Writer::new();
         w.fixed(MAGIC);
-        w.u16(1);
+        w.u16(5);
         w.fixed(self.genesis.as_bytes());
         w.u64(self.height);
         w.fixed(self.parent.as_bytes());
@@ -93,6 +100,7 @@ impl StateRecord {
         w.fixed(self.next.as_bytes());
         w.u64(self.time);
         w.bytes(&self.time_certificate.encode())?;
+        w.bytes(&self.plan.encode())?;
         w.u32(self.operations.len() as u32);
         for operation in &self.operations {
             w.bytes(&operation.encode())?;
@@ -104,7 +112,7 @@ impl StateRecord {
     /// The selected parent is still needed to verify time, effects and state.
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let mut r = Reader::new(bytes, genesis.profile().limits().record_bytes as usize)?;
-        if r.fixed::<4>()? != *MAGIC || r.u16()? != 1 {
+        if r.fixed::<4>()? != *MAGIC || r.u16()? != 5 {
             return Err(LedgerError::Invalid("state record version"));
         }
         let context = GenesisId::from_bytes(r.fixed()?);
@@ -118,16 +126,9 @@ impl StateRecord {
         }
         // The declared time restores the wire object's cache, but grants no
         // authority. State validation recomputes time against the actual parent.
-        let time_certificate = TimeCertificate::decode(
-            r.bytes(TIME_CERTIFICATE_MAX_BYTES)?,
-            genesis,
-            parent,
-            height,
-            time,
-        )?;
-        if time_certificate.time() != time {
-            return Err(LedgerError::Invalid("record time below report median"));
-        }
+        let time_certificate =
+            TimeCertificate::decode_structure(r.bytes(TIME_CERTIFICATE_MAX_BYTES)?)?;
+        let plan = HandoffPlan::decode(r.bytes(HANDOFF_PLAN_MAX_BYTES)?)?;
         let count = r.u32()?;
         if u64::from(count) > genesis.profile().limits().operations_per_record {
             return Err(LedgerError::Limit("record operations"));
@@ -151,6 +152,7 @@ impl StateRecord {
             time,
             time_certificate,
             operations,
+            plan,
             effects,
         })
     }

@@ -4,17 +4,20 @@ use super::{
     digest,
     evidence::{STATE_QUORUM_MAX_BYTES, StateQuorum, verify_signer},
 };
+use super::{SealContext, StateSeal};
 use crate::{
     ActiveAgreementEntry, AgreementWeight, ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget,
     ProposalSigningRoot, proposer_selection::FixedProposerState,
 };
 use naome_chain::StateRecordExecution;
 use naome_chain::{FinalizedStateRecord, StateRecord};
-use naome_ledger::{GenesisId, LedgerState, ProfileId, RecordId, StateCommitment};
+use naome_ledger::{
+    GenesisId, LedgerState, ProfileId, RecordId, StateCommitment, authority::AuthoritySnapshot,
+};
 
-const VALUE_MAGIC: &[u8; 5] = b"NSCB1";
-const VALUE_BYTES: usize = 5 + 8 * 32 + 8;
-const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP1";
+const VALUE_MAGIC: &[u8; 5] = b"NSCB5";
+const VALUE_BYTES: usize = 5 + 9 * 32 + 8;
+const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP5";
 
 /// Evidence-free header binding a complete state record and proposer state.
 /// Neither observing nor decoding this header grants application authority.
@@ -22,6 +25,7 @@ const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP1";
 pub struct StateValue {
     genesis: GenesisId,
     profile: ProfileId,
+    authority: [u8; 32],
     height: u64,
     parent: RecordId,
     record: RecordId,
@@ -63,6 +67,7 @@ impl StateValue {
         let mut out = VALUE_MAGIC.to_vec();
         out.extend_from_slice(self.genesis.as_bytes());
         out.extend_from_slice(self.profile.as_bytes());
+        out.extend_from_slice(&self.authority);
         out.extend_from_slice(&self.height.to_be_bytes());
         for field in [
             self.parent.as_bytes(),
@@ -84,6 +89,7 @@ impl StateValue {
         let result = Self {
             genesis: GenesisId::from_bytes(r.fixed()?),
             profile: ProfileId::from_bytes(r.fixed()?),
+            authority: r.fixed()?,
             height: r.u64()?,
             parent: RecordId::from_bytes(r.fixed()?),
             record: RecordId::from_bytes(r.fixed()?),
@@ -100,7 +106,7 @@ impl StateValue {
     }
     pub fn signing_root(&self) -> ProposalSigningRoot {
         ProposalSigningRoot::from_bytes(digest(
-            b"naome:state:consensus-value:v1\0",
+            b"naome:state:consensus-value:v5\0",
             &[&self.encode()],
         ))
     }
@@ -128,23 +134,14 @@ impl StateBranch {
         if state.height() != 0 {
             return Err(Error::Invalid("state branch requires genesis"));
         }
-        let entries: Vec<_> = state
-            .genesis()
-            .validators()
-            .iter()
-            .map(|v| {
-                ActiveAgreementEntry::new(
-                    ConsensusKey::from_bytes(v.consensus_key),
-                    AgreementWeight::new(1),
-                )
-            })
-            .collect();
-        let proposer = FixedProposerState::try_from_preselected(&entries)
-            .map_err(|_| Error::Invalid("state fixed set"))?;
+        let proposer = stable_proposer(state.authority())?;
         Ok(Self { state, proposer })
     }
     pub fn state(&self) -> &LedgerState {
         &self.state
+    }
+    pub fn authority(&self) -> &AuthoritySnapshot {
+        self.state.authority()
     }
     pub fn commitment(&self) -> [u8; 32] {
         branch_commitment(
@@ -157,10 +154,21 @@ impl StateBranch {
         )
     }
     pub fn next_height(&self) -> Result<u64> {
+        if self.state.terminated() {
+            return Err(Error::Invalid("terminated state has no successor"));
+        }
         self.state.height().checked_add(1).ok_or(Error::Overflow)
     }
-    pub fn proposer(&self, round: u64, maximum_round: u64) -> Result<ConsensusKey> {
-        Ok(self.round_state(round, maximum_round)?.0)
+    pub fn proposer(&self, round: u64, maximum_round: u64) -> Result<Option<ConsensusKey>> {
+        self.next_height()?;
+        let slot = self.round_state(round, maximum_round)?.0;
+        Ok(self
+            .authority()
+            .units()
+            .iter()
+            .find(|u| u.slot().as_bytes() == slot.as_bytes())
+            .and_then(|u| u.keys())
+            .map(|keys| ConsensusKey::from_bytes(*keys.consensus())))
     }
     fn round_state(
         &self,
@@ -209,6 +217,7 @@ impl StateBranch {
         let value = StateValue {
             genesis: self.state.genesis().id(),
             profile: self.state.genesis().profile().id(),
+            authority: self.authority().id(),
             height: record.height(),
             parent: record.parent(),
             record: record.id(),
@@ -231,11 +240,17 @@ impl StateBranch {
         valid: Option<StateQuorum>,
         maximum_round: u64,
     ) -> Result<StateProposalIntent> {
-        if self.proposer(round, maximum_round)? != signer {
+        if self.proposer(round, maximum_round)? != Some(signer) {
             return Err(Error::Invalid("not scheduled state proposer"));
         }
         let value = self.value_for_record(&record_bytes)?;
-        validate_valid_quorum(&valid, &value, round, self.state.genesis())?;
+        validate_valid_quorum(
+            &valid,
+            &value,
+            round,
+            self.state.genesis(),
+            self.authority(),
+        )?;
         Ok(StateProposalIntent {
             value,
             record_bytes,
@@ -268,11 +283,12 @@ impl StateBranch {
         let round = r.u64()?;
         let proposer = ConsensusKey::from_bytes(r.fixed()?);
         let signature = r.fixed()?;
-        if self.proposer(round, maximum_round)? != proposer {
+        if self.proposer(round, maximum_round)? != Some(proposer) {
             return Err(Error::Invalid("state proposer"));
         }
         verify_signer(
             self.state.genesis(),
+            self.authority(),
             proposer,
             &proposal_signing_bytes(value, round, proposer),
             signature,
@@ -281,9 +297,19 @@ impl StateBranch {
         let valid = if qc_bytes.is_empty() {
             None
         } else {
-            Some(StateQuorum::decode(qc_bytes, self.state.genesis())?)
+            Some(StateQuorum::decode(
+                qc_bytes,
+                self.state.genesis(),
+                self.authority(),
+            )?)
         };
-        validate_valid_quorum(&valid, &value, round, self.state.genesis())?;
+        validate_valid_quorum(
+            &valid,
+            &value,
+            round,
+            self.state.genesis(),
+            self.authority(),
+        )?;
         let record_bytes = r
             .bytes(self.state.genesis().profile().limits().record_bytes as usize)?
             .to_vec();
@@ -304,20 +330,20 @@ impl StateBranch {
             signature,
         })
     }
-    pub fn verify_finality(
+    pub fn verify_agreement(
         &self,
         proposal: &StateProposal,
         quorum: &StateQuorum,
         maximum_round: u64,
-    ) -> Result<StateFinality> {
+    ) -> Result<StateAgreement> {
         quorum.check(
             self.state.genesis(),
+            self.authority(),
             proposal.value().height(),
             proposal.round(),
             ConsensusVoteRole::Precommit,
             ConsensusVoteTarget::Proposal(proposal.value().signing_root()),
         )?;
-        // A verified token from another branch cannot bypass exact-parent checking.
         let proposal = self.verify_proposal(&proposal.encode()?, maximum_round)?;
         let (_, state) = self.validate_record_bytes(proposal.record_bytes())?;
         let child = Self {
@@ -327,15 +353,54 @@ impl StateBranch {
         if child.commitment() != proposal.value().next_consensus_commitment() {
             return Err(Error::Invalid("state branch successor"));
         }
-        Ok(StateFinality {
+        let context = SealContext::new(proposal.value(), self.authority(), child.authority())?;
+        Ok(StateAgreement {
             proposal,
             quorum: quorum.clone(),
+            outgoing: self.authority().clone(),
             child,
+            context,
+        })
+    }
+    pub fn decode_agreement(&self, input: &[u8], maximum_round: u64) -> Result<StateAgreement> {
+        let maximum = self
+            .state
+            .genesis()
+            .profile()
+            .limits()
+            .transport_frame_bytes as usize;
+        let mut r = Reader::new(input, maximum)?;
+        if r.fixed::<5>()? != *b"NSAG5" {
+            return Err(Error::Invalid("agreement format"));
+        }
+        let proposal_bytes = r.bytes(maximum)?;
+        let quorum_bytes = r.bytes(STATE_QUORUM_MAX_BYTES)?;
+        r.finish()?;
+        authenticate_parts(proposal_bytes, quorum_bytes, &self.state, maximum_round)?;
+        let proposal = self.verify_proposal(proposal_bytes, maximum_round)?;
+        let quorum = StateQuorum::decode(quorum_bytes, self.state.genesis(), self.authority())?;
+        self.verify_agreement(&proposal, &quorum, maximum_round)
+    }
+    pub fn verify_finality(
+        &self,
+        proposal: &StateProposal,
+        quorum: &StateQuorum,
+        seal: &StateSeal,
+        maximum_round: u64,
+    ) -> Result<StateFinality> {
+        let agreement = self.verify_agreement(proposal, quorum, maximum_round)?;
+        seal.verify(
+            agreement.seal_context(),
+            agreement.outgoing(),
+            agreement.incoming(),
+        )?;
+        Ok(StateFinality {
+            agreement,
+            seal: seal.clone(),
         })
     }
     pub fn decode_finality(&self, input: &[u8], maximum_round: u64) -> Result<StateFinality> {
-        // Do not start application replay on an unauthenticated finality claim.
-        let _ = StateFinality::authenticate(input, self.state.genesis(), maximum_round)?;
+        StateFinality::authenticate(input, &self.state, maximum_round)?;
         let maximum = self
             .state
             .genesis()
@@ -344,10 +409,29 @@ impl StateBranch {
             .transport_frame_bytes as usize;
         let record = FinalizedStateRecord::decode(input, maximum, STATE_QUORUM_MAX_BYTES)?;
         let proposal = self.verify_proposal(record.proposal(), maximum_round)?;
-        let quorum = StateQuorum::decode(record.quorum(), self.state.genesis())?;
-        self.verify_finality(&proposal, &quorum, maximum_round)
+        let quorum = StateQuorum::decode(record.quorum(), self.state.genesis(), self.authority())?;
+        let seal = StateSeal::decode(record.seal())?;
+        self.verify_finality(&proposal, &quorum, &seal, maximum_round)
     }
 }
+
+// Arithmetic identities are stable slots, never the keys currently occupying
+// them. A missing slot still consumes its proposer turn and quorum weight.
+fn stable_proposer(authority: &AuthoritySnapshot) -> Result<FixedProposerState> {
+    let entries: Vec<_> = authority
+        .units()
+        .iter()
+        .map(|unit| {
+            ActiveAgreementEntry::new(
+                ConsensusKey::from_bytes(*unit.slot().as_bytes()),
+                AgreementWeight::new(1),
+            )
+        })
+        .collect();
+    FixedProposerState::try_from_preselected(&entries)
+        .map_err(|_| Error::Invalid("stable proposer slots"))
+}
+
 fn branch_commitment(
     genesis: GenesisId,
     height: u64,
@@ -357,7 +441,7 @@ fn branch_commitment(
     proposer: [u8; 32],
 ) -> [u8; 32] {
     digest(
-        b"naome:state:consensus-state:v1\0",
+        b"naome:state:consensus-state:v5\0",
         &[
             genesis.as_bytes(),
             &height.to_be_bytes(),
@@ -373,6 +457,7 @@ fn validate_valid_quorum(
     value: &StateValue,
     round: u64,
     genesis: &naome_ledger::profile::Genesis,
+    authority: &AuthoritySnapshot,
 ) -> Result<()> {
     if let Some(qc) = valid {
         if qc.round() >= round {
@@ -380,6 +465,7 @@ fn validate_valid_quorum(
         }
         qc.check(
             genesis,
+            authority,
             value.height,
             qc.round(),
             ConsensusVoteRole::Prevote,
@@ -389,7 +475,7 @@ fn validate_valid_quorum(
     Ok(())
 }
 fn proposal_signing_bytes(value: StateValue, round: u64, proposer: ConsensusKey) -> Vec<u8> {
-    let mut bytes = b"naome:state:proposal:v1\0".to_vec();
+    let mut bytes = b"naome:state:proposal:v5\0".to_vec();
     bytes.extend(value.encode());
     bytes.extend_from_slice(&round.to_be_bytes());
     bytes.extend_from_slice(proposer.as_bytes());
@@ -485,27 +571,78 @@ impl StateProposal {
     }
 }
 
-/// Sealed state successor and sufficient finality evidence. Durable selection
-/// is storage's responsibility; this token establishes only verified transition.
-pub struct StateFinality {
+/// Agreed record with a provisional child. It cannot yield a signing branch:
+/// selected authority activation additionally requires the complete seal.
+#[derive(Clone)]
+pub struct StateAgreement {
     proposal: StateProposal,
     quorum: StateQuorum,
+    outgoing: AuthoritySnapshot,
     child: StateBranch,
+    context: SealContext,
+}
+impl StateAgreement {
+    pub fn state(&self) -> &LedgerState {
+        self.child.state()
+    }
+    pub fn incoming(&self) -> &AuthoritySnapshot {
+        self.child.authority()
+    }
+    pub fn outgoing(&self) -> &AuthoritySnapshot {
+        &self.outgoing
+    }
+    pub const fn seal_context(&self) -> SealContext {
+        self.context
+    }
+    pub fn proposal(&self) -> &StateProposal {
+        &self.proposal
+    }
+    pub fn quorum(&self) -> &StateQuorum {
+        &self.quorum
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let mut out = b"NSAG5".to_vec();
+        bytes(&mut out, &self.proposal.encode()?)?;
+        bytes(&mut out, &self.quorum.encode())?;
+        Ok(out)
+    }
+}
+
+/// Sealed successor. Storage must durably select it before activating keys.
+pub struct StateFinality {
+    agreement: StateAgreement,
+    seal: StateSeal,
 }
 impl StateFinality {
-    /// Bounded evidence authentication before historical or mathematical replay.
-    /// The result remains an observed header, not a selected/verified successor:
-    /// exact parent, scheduled proposer and application effects need the branch.
+    /// Authenticate bounded evidence under the exact selected parent before
+    /// application/proof replay. Observed headers never supply an electorate.
     pub fn authenticate(
         input: &[u8],
-        genesis: &naome_ledger::profile::Genesis,
+        parent: &LedgerState,
         maximum_round: u64,
     ) -> Result<StateValue> {
+        let maximum = parent.genesis().profile().limits().transport_frame_bytes as usize;
+        let envelope = FinalizedStateRecord::decode(input, maximum, STATE_QUORUM_MAX_BYTES)?;
+        let (value, record) = authenticate_parts(
+            envelope.proposal(),
+            envelope.quorum(),
+            parent,
+            maximum_round,
+        )?;
+        let incoming =
+            parent.prepare_handoff_certified(record.handoff_plan(), record.time_certificate())?;
+        let context = SealContext::new(value, parent.authority(), &incoming)?;
+        StateSeal::decode(envelope.seal())?.verify(context, parent.authority(), &incoming)?;
+        Ok(value)
+    }
+    /// Untrusted routing hint. It may select a historical lookup only.
+    pub fn peek_header(
+        input: &[u8],
+        genesis: &naome_ledger::profile::Genesis,
+    ) -> Result<StateValue> {
         let maximum = genesis.profile().limits().transport_frame_bytes as usize;
-        let record = FinalizedStateRecord::decode(input, maximum, STATE_QUORUM_MAX_BYTES)?;
-        let proposal = record.proposal();
-        let finality_quorum = record.quorum();
-        let mut p = Reader::new(proposal, maximum)?;
+        let envelope = FinalizedStateRecord::decode(input, maximum, STATE_QUORUM_MAX_BYTES)?;
+        let mut p = Reader::new(envelope.proposal(), maximum)?;
         if p.fixed::<5>()? != *PROPOSAL_MAGIC {
             return Err(Error::Invalid("state proposal version"));
         }
@@ -513,93 +650,111 @@ impl StateFinality {
         if value.genesis != genesis.id() || value.profile != genesis.profile().id() {
             return Err(Error::Invalid("state evidence context"));
         }
-        let entries: Vec<_> = genesis
-            .validators()
-            .iter()
-            .map(|v| {
-                ActiveAgreementEntry::new(
-                    ConsensusKey::from_bytes(v.consensus_key),
-                    AgreementWeight::new(1),
-                )
-            })
-            .collect();
-        let fixed = FixedProposerState::try_from_preselected(&entries)
-            .map_err(|_| Error::Invalid("state fixed set"))?;
-        if value.fixed_set != *fixed.fixed_set_id().as_bytes() {
-            return Err(Error::Invalid("state evidence fixed set"));
-        }
-        let round = p.u64()?;
-        if round > maximum_round || round > genesis.profile().limits().consensus_rounds {
-            return Err(Error::Limit("state evidence round"));
-        }
-        let proposer = ConsensusKey::from_bytes(p.fixed()?);
-        let signature = p.fixed()?;
-        verify_signer(
-            genesis,
-            proposer,
-            &proposal_signing_bytes(value, round, proposer),
-            signature,
-        )?;
-        let valid_bytes = p.bytes(STATE_QUORUM_MAX_BYTES)?;
-        let valid = if valid_bytes.is_empty() {
-            None
-        } else {
-            Some(StateQuorum::decode(valid_bytes, genesis)?)
-        };
-        validate_valid_quorum(&valid, &value, round, genesis)?;
-        let record_bytes = p.bytes(genesis.profile().limits().record_bytes as usize)?;
-        p.finish()?;
-        let quorum = StateQuorum::decode(finality_quorum, genesis)?;
-        quorum.check(
-            genesis,
-            value.height,
-            round,
-            ConsensusVoteRole::Precommit,
-            ConsensusVoteTarget::Proposal(value.signing_root()),
-        )?;
-        // Only quorum-authenticated content reaches even the bounded record
-        // decoder. This performs no proof checking or historical reconstruction.
-        let record = StateRecord::decode(record_bytes, genesis)?;
-        if record.encode()?.as_slice() != record_bytes
-            || record.id() != value.record
-            || record.height() != value.height
-            || record.parent() != value.parent
-            || record.previous_state() != value.previous
-            || record.next_state() != value.next
-        {
-            return Err(Error::Invalid("state evidence record binding"));
-        }
         Ok(value)
     }
-
-    /// Untrusted routing hint only. The receiver must still verify the complete
-    /// proof against the selected parent at this height before using any field.
     pub fn claimed_height(input: &[u8], maximum_bytes: usize) -> Result<u64> {
         let record = FinalizedStateRecord::decode(input, maximum_bytes, STATE_QUORUM_MAX_BYTES)?;
-        let proposal = record.proposal();
-        let mut p = Reader::new(proposal, maximum_bytes)?;
+        let mut p = Reader::new(record.proposal(), maximum_bytes)?;
         if p.fixed::<5>()? != *PROPOSAL_MAGIC {
             return Err(Error::Invalid("state proposal version"));
         }
         Ok(StateValue::decode(p.take(VALUE_BYTES)?)?.height())
     }
-
     pub fn proposal(&self) -> &StateProposal {
-        &self.proposal
+        self.agreement.proposal()
     }
     pub fn quorum(&self) -> &StateQuorum {
-        &self.quorum
+        self.agreement.quorum()
+    }
+    pub fn seal(&self) -> &StateSeal {
+        &self.seal
+    }
+    pub fn agreement(&self) -> &StateAgreement {
+        &self.agreement
     }
     pub fn branch(&self) -> &StateBranch {
-        &self.child
+        &self.agreement.child
     }
     pub fn into_branch(self) -> StateBranch {
-        self.child
+        self.agreement.child
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         Ok(FinalizedStateRecord::encode_evidence(
-            &self.proposal.encode()?,
-            &self.quorum.encode(),
+            &self.proposal().encode()?,
+            &self.quorum().encode(),
+            &self.seal.encode(),
         )?)
     }
+}
+
+fn authenticate_parts(
+    proposal_bytes: &[u8],
+    quorum_bytes: &[u8],
+    parent: &LedgerState,
+    maximum_round: u64,
+) -> Result<(StateValue, StateRecord)> {
+    if parent.terminated() {
+        return Err(Error::Invalid("terminated parent"));
+    }
+    let genesis = parent.genesis();
+    let authority = parent.authority();
+    let maximum = genesis.profile().limits().transport_frame_bytes as usize;
+    let mut p = Reader::new(proposal_bytes, maximum)?;
+    if p.fixed::<5>()? != *PROPOSAL_MAGIC {
+        return Err(Error::Invalid("state proposal version"));
+    }
+    let value = StateValue::decode(p.take(VALUE_BYTES)?)?;
+    if value.genesis != genesis.id()
+        || value.profile != genesis.profile().id()
+        || value.authority != authority.id()
+        || value.height != authority.effective_height()
+        || value.height != parent.height().checked_add(1).ok_or(Error::Overflow)?
+        || value.parent != parent.head()
+        || value.previous != parent.commitment()
+        || value.fixed_set != *stable_proposer(authority)?.fixed_set_id().as_bytes()
+    {
+        return Err(Error::Invalid("state evidence parent or authority"));
+    }
+    let round = p.u64()?;
+    if round > maximum_round || round > genesis.profile().limits().consensus_rounds {
+        return Err(Error::Limit("state evidence round"));
+    }
+    let proposer = ConsensusKey::from_bytes(p.fixed()?);
+    let signature = p.fixed()?;
+    verify_signer(
+        genesis,
+        authority,
+        proposer,
+        &proposal_signing_bytes(value, round, proposer),
+        signature,
+    )?;
+    let valid_bytes = p.bytes(STATE_QUORUM_MAX_BYTES)?;
+    let valid = if valid_bytes.is_empty() {
+        None
+    } else {
+        Some(StateQuorum::decode(valid_bytes, genesis, authority)?)
+    };
+    validate_valid_quorum(&valid, &value, round, genesis, authority)?;
+    let record_bytes = p.bytes(genesis.profile().limits().record_bytes as usize)?;
+    p.finish()?;
+    let quorum = StateQuorum::decode(quorum_bytes, genesis, authority)?;
+    quorum.check(
+        genesis,
+        authority,
+        value.height,
+        round,
+        ConsensusVoteRole::Precommit,
+        ConsensusVoteTarget::Proposal(value.signing_root()),
+    )?;
+    let record = StateRecord::decode(record_bytes, genesis)?;
+    if record.encode()?.as_slice() != record_bytes
+        || record.id() != value.record
+        || record.height() != value.height
+        || record.parent() != value.parent
+        || record.previous_state() != value.previous
+        || record.next_state() != value.next
+    {
+        return Err(Error::Invalid("state evidence record binding"));
+    }
+    Ok((value, record))
 }

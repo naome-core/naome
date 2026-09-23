@@ -144,7 +144,9 @@ fn weak_duplicate_or_reused_keys_and_noncanonical_endpoints_fail() {
     assert!(make(&account(4), &account(51), "127.0.0.1:42000").is_err());
     assert!(make(&account(5), &account(51), "127.0.0.1:42000").is_err());
     assert!(make(&validator(0), &account(51), "127.0.0.1:42000").is_err());
-    assert!(make(&account(50), &account(51), "127.0.0.1:41000").is_err());
+    // Address ownership is checked against the selected handoff rosters at
+    // admission. A genesis endpoint is not reserved forever by syntax checks.
+    assert!(make(&account(50), &account(51), "127.0.0.1:41000").is_ok());
     for endpoint in [
         "",
         "127.0.0.1:0",

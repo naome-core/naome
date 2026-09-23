@@ -87,7 +87,7 @@ impl Lab {
         let base = (0..1000)
             .find_map(|offset| {
                 let base = 20000 + ((u32::from_ne_bytes(random) + offset) % 40000) as u16;
-                (0..4)
+                (0..12)
                     .map(|i| std::net::TcpListener::bind(("127.0.0.1", base + i)))
                     .collect::<std::io::Result<Vec<_>>>()
                     .ok()
@@ -113,7 +113,7 @@ impl Lab {
         );
         Self {
             root,
-            nodes: (0..4).map(|_| None).collect(),
+            nodes: (0..5).map(|_| None).collect(),
             base,
         }
     }
@@ -146,6 +146,7 @@ impl Lab {
             .success()
             .then(|| serde_json::from_slice(&output.stdout).unwrap())
     }
+    #[track_caller]
     fn wait(&self, index: usize, predicate: impl Fn(&Value) -> bool) -> Value {
         let start = Instant::now();
         loop {
@@ -154,13 +155,36 @@ impl Lab {
             {
                 return status;
             }
-            assert!(
-                start.elapsed() < Duration::from_secs(90),
-                "node {index} timeout; status={:?}; errors={}",
-                self.status(index),
-                fs::read_to_string(self.root.join(format!("node-{index}.errors")))
-                    .unwrap_or_default()
-            );
+            if start.elapsed() >= Duration::from_secs(90) {
+                let nodes: Vec<_> = (0..self.nodes.len())
+                    .map(|peer| {
+                        let status = self.status(peer);
+                        let errors =
+                            fs::read_to_string(self.root.join(format!("node-{peer}.errors")))
+                                .unwrap_or_default();
+                        let recent_errors: Vec<_> = errors.lines().rev().take(6).collect();
+                        serde_json::json!({
+                            "node": peer,
+                            "running": self.nodes[peer].is_some(),
+                            "height": status.as_ref().map(|s| &s["height"]),
+                            "head": status.as_ref().map(|s| &s["head"]),
+                            "authority": status.as_ref().map(|s| &s["authority"]),
+                            "position": status.as_ref().map(|s| &s["consensus_position"]),
+                            "active": status.as_ref().map(|s| &s["active"]),
+                            "queued": status.as_ref().map(|s| &s["queued"]),
+                            "pending": status.as_ref().map(|s| &s["pending_operations"]),
+                            "paid": status.as_ref().map(|s| &s["paid_completions"]),
+                            "recent_errors": recent_errors,
+                        })
+                    })
+                    .collect();
+                let caller = std::panic::Location::caller();
+                panic!(
+                    "node {index} timeout at {}:{}; public node diagnostics={nodes:?}",
+                    caller.file(),
+                    caller.line()
+                );
+            }
             thread::sleep(Duration::from_millis(40));
         }
     }
@@ -185,9 +209,21 @@ impl Lab {
         }
     }
     fn submit(&self, node: usize, author: usize, source: PathBuf, label: &str) -> String {
+        // An account stays eligible after its local validator loses a slot, but
+        // new work needs an ingress that can still relay to the current quorum.
+        let ingress = match self.status(node) {
+            Some(status) if status["consensus_position"].is_null() => (0..self.nodes.len())
+                .filter(|&index| self.nodes[index].is_some())
+                .find(|&index| {
+                    self.status(index)
+                        .is_some_and(|status| !status["consensus_position"].is_null())
+                })
+                .unwrap_or(node),
+            _ => node,
+        };
         let result = command(&[
             "submit".into(),
-            self.config(node),
+            self.config(ingress),
             self.key(author),
             path(source),
             format!("Research target {label}"),
@@ -214,35 +250,87 @@ impl Lab {
             false
         });
     }
-    fn wait_receipt(&self, node: usize, submission: &str, operation: &Value) {
+    fn wait_active_phase(&self, submission: &str, phase: &str) -> usize {
+        let start = Instant::now();
+        loop {
+            for index in 0..self.nodes.len() {
+                if self.nodes[index].is_none() {
+                    continue;
+                }
+                let Some(status) = self.status(index) else {
+                    continue;
+                };
+                // A research owner may remain in the frozen vote electorate
+                // while its validator is vacant after a 3-of-4 handoff.
+                if status["consensus_position"].is_null() {
+                    continue;
+                }
+                if status["active"]["submission"] == submission
+                    && status["active"]["phase"] == phase
+                {
+                    return index;
+                }
+                self.assert_question_can_progress(index, submission);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(90),
+                "no active validator reached {phase} for question {submission}"
+            );
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
+    fn wait_receipt(
+        &self,
+        node: usize,
+        submission: &str,
+        operation: &Value,
+        kind: &str,
+        label: &str,
+    ) {
         let id = operation["operation"]
             .as_str()
             .expect("signed operation ID");
-        self.wait(node, |_| {
+        self.wait(node, |status| {
             let receipt = command(&["receipt".into(), self.config(node), id.into()]);
             if receipt["status"] == "finalized" {
                 return true;
             }
-            assert_ne!(receipt["status"], "rejected", "operation {id}: {receipt}");
-            self.assert_question_can_progress(node, submission);
+            let context = format!(
+                "{kind} {label} operation {id} on node {node}: receipt={receipt}; height={}; active_submission={}; active_phase={}; active_deadline={}; consensus_position={}",
+                status["height"],
+                status["active"]["submission"],
+                status["active"]["phase"],
+                status["active"]["deadline"],
+                status["consensus_position"],
+            );
+            assert_ne!(receipt["status"], "rejected", "{context}");
+            let output = raw(&["question".into(), self.config(node), submission.into()]);
+            if output.status.success() {
+                let question: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert!(
+                    matches!(question["status"].as_str(), Some("Queued" | "Active")),
+                    "{context}; question {submission}: {question}"
+                );
+            }
             false
         });
     }
     fn approve(&self, owners: &[usize], label: &str, submission: &str) {
-        for &index in owners {
-            self.wait_phase(index, submission, "Voting");
-        }
         let votes = thread::scope(|scope| {
             let mut handles = Vec::new();
             for &index in owners {
-                let args = [
-                    "vote".into(),
-                    self.config(index),
-                    self.key(index),
-                    "YES".into(),
-                    self.file(&format!("{label}-vote-{index}")),
-                ];
-                handles.push(scope.spawn(move || (index, command(&args))));
+                handles.push(scope.spawn(move || {
+                    let ingress = self.wait_active_phase(submission, "Voting");
+                    let args = [
+                        "vote".into(),
+                        self.config(ingress),
+                        self.key(index),
+                        "YES".into(),
+                        self.file(&format!("{label}-vote-{index}")),
+                    ];
+                    let vote = command(&args);
+                    (ingress, vote)
+                }));
             }
             handles
                 .into_iter()
@@ -252,29 +340,35 @@ impl Lab {
         // Every intended YES must be finalized, not merely accepted by a
         // transport socket, before the test claims successful approval.
         for (index, vote) in votes {
-            self.wait_receipt(index, submission, &vote);
+            self.wait_receipt(
+                index,
+                submission,
+                &vote,
+                "vote",
+                &format!("{label}-{index}"),
+            );
         }
     }
-    fn solve(&self, node: usize, author: usize, package: &str, label: &str, submission: &str) {
-        self.wait_phase(node, submission, "Commit");
+    fn solve(&self, _node: usize, author: usize, package: &str, label: &str, submission: &str) {
+        let commit_ingress = self.wait_active_phase(submission, "Commit");
         let commit = command(&[
             "commit".into(),
-            self.config(node),
+            self.config(commit_ingress),
             self.key(author),
             package.into(),
             self.file(&format!("{label}.secret")),
             self.file(&format!("{label}.commit")),
         ]);
-        self.wait_receipt(node, submission, &commit);
-        self.wait_phase(node, submission, "Reveal");
+        self.wait_receipt(commit_ingress, submission, &commit, "commit", label);
+        let reveal_ingress = self.wait_active_phase(submission, "Reveal");
         let reveal = command(&[
             "reveal".into(),
-            self.config(node),
+            self.config(reveal_ingress),
             self.key(author),
             self.file(&format!("{label}.secret")),
             self.file(&format!("{label}.reveal")),
         ]);
-        self.wait_receipt(node, submission, &reveal);
+        self.wait_receipt(reveal_ingress, submission, &reveal, "reveal", label);
     }
     fn assert_same(&self, indices: &[usize], expected: &Value) {
         for &index in indices {
@@ -292,6 +386,78 @@ impl Lab {
                 assert_eq!(status[field], expected[field], "node {index}: {field}");
             }
         }
+    }
+    fn restore_four_keyed_slots(&self, phase: &str, first_quantifiers: usize) -> Value {
+        let started = Instant::now();
+        let mut settled = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| child.is_some())
+            .find_map(|(index, _)| self.status(index))
+            .expect("running validator status");
+        for attempt in 0..=3 {
+            if settled["active"].is_null()
+                && settled["queued"] == 0
+                && settled["authority"]["active_slots"] == 4
+            {
+                break;
+            }
+            assert!(
+                attempt < 3,
+                "{phase}: four keyed slots did not return after three periods"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(90),
+                "{phase}: four keyed reentry exceeded 90 seconds"
+            );
+            // Each distinct unpaid question must pass a real vote and handoff.
+            // Vary the statement as well as the file name so a known question
+            // cannot silently skip a period.
+            let mut statement = "forall(x,equal(x,x))".to_owned();
+            for variable in ["a", "b", "c", "d", "e", "f", "g", "h"]
+                .iter()
+                .take(first_quantifiers + attempt)
+            {
+                statement = format!("forall({variable},{statement})");
+            }
+            let label = format!("{phase}-reentry-{attempt}");
+            let source = self.root.join(format!("{label}.nao"));
+            fs::write(
+                &source,
+                format!("foundation = \"naome:zfc\"\nstatement = {statement}\n"),
+            )
+            .unwrap();
+            let ingress = (0..self.nodes.len())
+                .filter(|&index| self.nodes[index].is_some())
+                .find(|&index| {
+                    self.status(index)
+                        .is_some_and(|status| !status["consensus_position"].is_null())
+                })
+                .expect("active ingress for reentry question");
+            let submission = self.submit(ingress, 4, source, &label);
+            settled = self.wait(ingress, |status| {
+                assert!(
+                    started.elapsed() < Duration::from_secs(90),
+                    "{phase}: four keyed reentry exceeded 90 seconds"
+                );
+                if !status["active"].is_null() || status["queued"] != 0 {
+                    return false;
+                }
+                let question = raw(&["question".into(), self.config(ingress), submission.clone()]);
+                question.status.success()
+                    && serde_json::from_slice::<Value>(&question.stdout)
+                        .is_ok_and(|result| result["status"] == "NotApproved")
+            });
+        }
+        assert_eq!(settled["authority"]["active_slots"], 4);
+        self.assert_same(&[0, 1, 2, 3], &settled);
+        for index in 0..4 {
+            self.wait(index, |status| {
+                status["height"] == settled["height"] && !status["consensus_position"].is_null()
+            });
+        }
+        settled
     }
 }
 impl Drop for Lab {
@@ -326,25 +492,78 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         "--helper".into(),
         path(example("helper-h.nao")),
     ]);
-    for index in 0..4 {
+    // Leave the fourth owner offline through A's handoff so the later
+    // reentry path has a genuine vacant slot to restore.
+    for index in 0..3 {
         lab.start(index);
     }
-    for index in 0..4 {
+    let initial = lab.wait(0, |s| s["height"] == 0);
+    for index in 1..3 {
         lab.wait(index, |s| s["height"] == 0);
     }
+    let canonical = (0..4)
+        .map(|node| {
+            initial["validators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["endpoint"] == format!("127.0.0.1:{}", lab.base + node as u16))
+                .unwrap()["index"]
+                .as_u64()
+                .unwrap() as usize
+        })
+        .collect::<Vec<_>>();
     let a = lab.submit(0, 4, example("question-a.nao"), "a");
     lab.approve(&[0, 1, 2], "a", &a);
     lab.solve(0, 4, &a_package, "a", &a);
     let first = lab.wait(0, |s| s["paid_completions"] == 1);
+    assert_eq!(first["authority"]["active_slots"], 3);
+    lab.start(3);
+    lab.wait(3, |s| {
+        s["state"] == first["state"] && s["consensus_position"].is_null()
+    });
     lab.assert_same(&[0, 1, 2, 3], &first);
     assert_eq!(
         command(&["question".into(), lab.config(0), a])["status"],
         "Completed"
     );
 
+    // A's final handoff left the offline owner's slot vacant. Drive a
+    // bounded genuine period before B so that owner can offer a new key:
+    // B's Voting window can close while a fourth offer is still pending.
+    let before_b = lab.restore_four_keyed_slots("before-b", 3);
+    assert_eq!(before_b["paid_completions"], 1);
+    // Stop the first provider at the quiet four-slot tip. A following period
+    // can lawfully have only three active slots, so do not make B depend on
+    // preserving the fourth slot through its Voting window.
+    lab.stop(0);
+    for index in 1..4 {
+        let status = lab.wait(index, |status| status["state"] == before_b["state"]);
+        assert_eq!(status["head"], before_b["head"], "node {index} head");
+        assert_eq!(
+            status["authority"], before_b["authority"],
+            "node {index} authority"
+        );
+        assert!(status["active"].is_null(), "node {index} active question");
+        assert_eq!(status["queued"], 0, "node {index} queued questions");
+        assert!(
+            !status["consensus_position"].is_null(),
+            "node {index} has no active position"
+        );
+    }
+    // B exercises proof fetch and approval with the provider offline.
+    let b_ingress = (1..4)
+        .find(|&index| {
+            lab.status(index)
+                .is_some_and(|status| !status["consensus_position"].is_null())
+        })
+        .unwrap();
+    let b = lab.submit(b_ingress, 5, example("question-b.nao"), "b");
+    lab.wait(b_ingress, |status| {
+        status["active"]["submission"] == b && status["active"]["phase"] == "Voting"
+    });
     // H is requested from another independently persisted node while the first
     // submission provider is unavailable. All remaining nodes retain quorum.
-    lab.stop(0);
     let helper =
         naome_authoring::compile(&fs::read_to_string(example("helper-h.nao")).unwrap()).unwrap();
     let helper_id = helper
@@ -353,21 +572,22 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let remote = first["validators"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["endpoint"] == format!("127.0.0.1:{}", lab.base + 2))
-        .unwrap()["index"]
-        .as_u64()
-        .unwrap();
-    let h = command(&[
-        "fetch-proof-from".into(),
-        lab.config(1),
-        remote.to_string(),
-        helper_id.clone(),
-        lab.file("h.proof"),
-    ]);
+    let remote = canonical[2] as u64;
+    // Start the independent proof fetch while the saved ballots enter the
+    // short Voting window; both are required before building the package.
+    let h = thread::scope(|scope| {
+        let fetch = scope.spawn(|| {
+            command(&[
+                "fetch-proof-from".into(),
+                lab.config(1),
+                remote.to_string(),
+                helper_id.clone(),
+                lab.file("h.proof"),
+            ])
+        });
+        lab.approve(&[1, 2, 3], "b", &b);
+        fetch.join().unwrap()
+    });
     assert_eq!(h["retrieval"], "authenticated peer-to-peer network");
     command(&[
         "check-proof".into(),
@@ -386,8 +606,6 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         "--helper".into(),
         path(example("helper-h-duplicate.nao")),
     ]);
-    let b = lab.submit(1, 5, example("question-b.nao"), "b");
-    lab.approve(&[1, 2, 3], "b", &b);
     lab.solve(1, 5, &b_package, "b", &b);
     let second = lab.wait(1, |s| s["paid_completions"] == 2);
     lab.assert_same(&[1, 2, 3], &second);
@@ -415,7 +633,7 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         "800000000"
     );
     let c = lab.submit(1, 4, example("question-c.nao"), "c");
-    lab.wait(1, |s| {
+    let post_c = lab.wait(1, |s| {
         s["active"].is_null()
             && s["queued"] == 0
             && s["height"].as_u64().unwrap() > second["height"].as_u64().unwrap()
@@ -425,23 +643,24 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         "KnownUnpaid"
     );
     lab.start(0);
-    let settled = lab.wait(1, |s| s["active"].is_null() && s["queued"] == 0);
-    lab.assert_same(&[0, 1, 2, 3], &settled);
+    // A returning owner must first catch up to the paid record before it can
+    // offer fresh keys for that selected parent. Each distinct unpaid question
+    // then drives one genuine period; at most three may be needed for reentry.
+    lab.wait(0, |s| {
+        s["height"].as_u64().unwrap() >= post_c["height"].as_u64().unwrap()
+            && s["paid_completions"] == 2
+    });
+    let settled = lab.restore_four_keyed_slots("after-b", 6);
     assert_eq!(settled["paid_completions"], 2);
     assert_eq!(settled["claims"].as_array().unwrap().len(), 2);
 
     // A 2:2 partition must not finalize even an otherwise admissible submission.
-    let validators = settled["validators"].as_array().unwrap();
-    let canonical = (0..4)
-        .map(|node| {
-            validators
-                .iter()
-                .find(|v| v["endpoint"] == format!("127.0.0.1:{}", lab.base + node as u16))
-                .unwrap()["index"]
-                .as_u64()
-                .unwrap() as usize
-        })
-        .collect::<Vec<_>>();
+    for &index in &canonical {
+        assert_eq!(
+            settled["validators"][index]["owner"],
+            initial["validators"][index]["owner"]
+        );
+    }
     for local in 0..4 {
         for (remote, &index) in canonical.iter().enumerate() {
             if local / 2 != remote / 2 {

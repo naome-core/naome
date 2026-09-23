@@ -67,12 +67,19 @@ impl Fixture {
         )
         .unwrap();
         let config = NodeConfig {
-            version: 2,
+            version: 5,
+            primary_endpoint: "127.0.0.1:44000".into(),
+            candidate_family: None,
+            recovery_endpoints: vec!["127.0.0.1:44000".into(), "127.0.0.1:44004".into()],
             genesis: root.join("genesis.bin"),
             history: root.join("history"),
             history_anchor: root.join("history-anchor"),
             signer: root.join("signer"),
             signer_anchor: root.join("signer-anchor"),
+            custody: root.join("custody"),
+            custody_anchor: root.join("custody-anchor"),
+            handoff: root.join("handoff"),
+            handoff_anchor: root.join("handoff-anchor"),
             consensus_key: root.join("consensus.key"),
             transport_key: root.join("transport.key"),
             account_key,
@@ -81,6 +88,8 @@ impl Fixture {
             maximum_round: 64,
             simulation: true,
             listen_address: None,
+            handoff_endpoint: "127.0.0.1:44004".into(),
+            handoff_listen_address: None,
         };
         files::create(&config.genesis, &genesis.encode(), false).unwrap();
         let config_path = root.join("node.json");

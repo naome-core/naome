@@ -11,7 +11,11 @@ fn register(state: &mut LedgerState, index: u8) -> SignedOperation {
 
 fn rejects_unchanged(state: &LedgerState, utc: u64, operations: Vec<SignedOperation>) {
     let before = state.canonical_bytes();
-    assert!(state.prepare_record(time(state, utc), operations).is_err());
+    assert!(
+        state
+            .prepare_record(time(state, utc), operations, handoff_plan(state))
+            .is_err()
+    );
     assert_eq!(state.canonical_bytes(), before);
 }
 
@@ -162,9 +166,11 @@ fn full_registry_preserves_existing_research_and_rejects_new_keys_atomically() {
     else {
         panic!("completion")
     };
-    let receipt =
-        naome_ledger::receipt::NormalizationReceipt::decode(normalization_receipt, state.genesis())
-            .unwrap();
+    let receipt = naome_ledger::receipt::NormalizationReceipt::decode_recorded(
+        normalization_receipt,
+        state.genesis(),
+    )
+    .unwrap();
     assert_eq!(receipt.author, author(6));
 }
 

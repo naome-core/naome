@@ -4,13 +4,17 @@ use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey,
     state::{
-        StateBranch, StateFinality, StateIntent, StateLockEvent, StateLockState, StateProposal,
-        StatePublication, StateQuorum, StateVote,
+        SealRole, SealSignature, StateAgreement, StateBranch, StateFinality, StateIntent,
+        StateLockEvent, StateLockState, StateProposal, StatePublication, StateQuorum, StateSeal,
+        StateVote,
     },
 };
+#[cfg(unix)]
+use naome_ledger::operations::JoinIntent;
 use naome_ledger::{
     AccountId, CommitmentId, LedgerState,
     authentication::SignedOperation,
+    authority::{HandoffPlan, NextPeriodKeys},
     library::ProofPackage,
     operations::{OperationBody, SignedOriginal},
     profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
@@ -54,17 +58,94 @@ fn account(i: u8) -> SigningKey {
 fn validator(i: u8) -> SigningKey {
     SigningKey::from_bytes(&[i + 101; 32])
 }
+#[cfg(unix)]
 fn key(i: u8) -> ConsensusKey {
     ConsensusKey::from_bytes(validator(i).verifying_key().to_bytes())
+}
+fn period_key(i: u8, height: u64) -> SigningKey {
+    if height == 1 {
+        return validator(i);
+    }
+    let mut seed = [42; 32];
+    seed[0] = i;
+    seed[1..9].copy_from_slice(&height.to_be_bytes());
+    SigningKey::from_bytes(&seed)
+}
+fn period_transport(i: u8, height: u64) -> SigningKey {
+    let mut seed = [43; 32];
+    seed[0] = i;
+    seed[1..9].copy_from_slice(&height.to_be_bytes());
+    SigningKey::from_bytes(&seed)
 }
 fn author(i: u8) -> AccountId {
     AccountId::for_key(account(i).verifying_key().as_bytes())
 }
 fn signing_key(key: ConsensusKey) -> SigningKey {
-    (0..4)
-        .map(validator)
+    (1..65)
+        .flat_map(|height| (0..4).map(move |i| period_key(i, height)))
         .find(|sk| sk.verifying_key().as_bytes() == key.as_bytes())
         .unwrap()
+}
+fn plan(branch: &StateBranch) -> HandoffPlan {
+    let state = branch.state();
+    let mut offers: Vec<_> = state
+        .authority()
+        .units()
+        .iter()
+        .map(|unit| {
+            let i = (0..4).find(|i| author(*i) == unit.owner()).unwrap();
+            let height = state.authority().effective_height() + 1;
+            NextPeriodKeys::sign(
+                state.authority(),
+                state.head(),
+                state.commitment(),
+                unit.id(),
+                &account(i),
+                &period_key(i, height),
+                &period_transport(i, height),
+                format!("127.0.0.1:{}", 43000 + u16::from(i)),
+            )
+            .unwrap()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    HandoffPlan::new(offers, None).unwrap()
+}
+fn seal_signature(agreement: &StateAgreement, role: SealRole, key: ConsensusKey) -> SealSignature {
+    let context = agreement.seal_context();
+    let signature = signing_key(key)
+        .sign(&SealSignature::signing_bytes(role, context, key))
+        .to_bytes();
+    SealSignature::complete(
+        role,
+        context,
+        key,
+        signature,
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
+}
+fn seal(agreement: &StateAgreement) -> StateSeal {
+    let signatures = |role, authority: &naome_ledger::authority::AuthoritySnapshot| {
+        authority
+            .units()
+            .iter()
+            .filter_map(|unit| unit.keys())
+            .take(3)
+            .map(|keys| {
+                seal_signature(agreement, role, ConsensusKey::from_bytes(*keys.consensus()))
+            })
+            .collect()
+    };
+    StateSeal::new(
+        signatures(SealRole::Ready, agreement.incoming()),
+        signatures(SealRole::Terminal, agreement.outgoing()),
+        agreement.seal_context(),
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
 }
 fn genesis() -> Genesis {
     let retirement_registrations: Vec<_> = (0..4)
@@ -97,19 +178,21 @@ fn genesis() -> Genesis {
 }
 fn time(state: &LedgerState, now: u64) -> TimeCertificate {
     TimeCertificate::new(
-        (0..3)
+        (0..4)
             .map(|i| {
                 SignedTimeReport::sign(
                     state.genesis(),
+                    state.authority(),
                     state.head(),
                     state.height() + 1,
                     now,
-                    &validator(i),
+                    &period_key(i, state.authority().effective_height()),
                 )
                 .unwrap()
             })
             .collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         state.height() + 1,
         state.time(),
@@ -142,7 +225,7 @@ fn submission_by(state: &LedgerState, researcher: u8, purpose: &str) -> SignedOp
     )
 }
 fn proposal(branch: &StateBranch, record: Vec<u8>) -> StateProposal {
-    let proposer = branch.proposer(0, MAX_ROUND).unwrap();
+    let proposer = branch.proposer(0, MAX_ROUND).unwrap().unwrap();
     let mut kernel = StateLockState::new(branch, proposer).unwrap();
     let intent = kernel
         .apply(
@@ -162,7 +245,7 @@ fn proposal(branch: &StateBranch, record: Vec<u8>) -> StateProposal {
     }
 }
 fn finish_vote(intent: StateIntent, branch: &StateBranch, i: u8) -> StateVote {
-    let signature = validator(i)
+    let signature = period_key(i, branch.authority().effective_height())
         .sign(&intent.signing_bytes().unwrap())
         .to_bytes();
     match intent.complete(signature, branch, MAX_ROUND).unwrap() {
@@ -181,7 +264,14 @@ fn certify_with_signers(
     let proposal = proposal(branch, record);
     let encoded = proposal.encode().unwrap();
     let mut kernels: Vec<_> = (0..3)
-        .map(|i| StateLockState::new(branch, key(i + first)).unwrap())
+        .map(|i| {
+            let key = ConsensusKey::from_bytes(
+                period_key(i + first, branch.authority().effective_height())
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            StateLockState::new(branch, key).unwrap()
+        })
         .collect();
     let votes = (0..3)
         .map(|i| {
@@ -197,7 +287,8 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let prevotes = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let prevotes =
+        StateQuorum::from_votes(votes, branch.state().genesis(), branch.authority()).unwrap();
     let votes = (0..3)
         .map(|i| {
             let intent = kernels[i]
@@ -213,10 +304,14 @@ fn certify_with_signers(
             finish_vote(intent, branch, i as u8 + first)
         })
         .collect();
-    let precommits = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let precommits =
+        StateQuorum::from_votes(votes, branch.state().genesis(), branch.authority()).unwrap();
+    let agreement = branch
+        .verify_agreement(&proposal, &precommits, MAX_ROUND)
+        .unwrap();
     (
         branch
-            .verify_finality(&proposal, &precommits, MAX_ROUND)
+            .verify_finality(&proposal, &precommits, &seal(&agreement), MAX_ROUND)
             .unwrap(),
         prevotes,
     )
@@ -224,7 +319,7 @@ fn certify_with_signers(
 fn record(branch: &StateBranch, now: u64, operations: Vec<SignedOperation>) -> Vec<u8> {
     branch
         .state()
-        .prepare_record(time(branch.state(), now), operations)
+        .prepare_record(time(branch.state(), now), operations, plan(branch))
         .unwrap()
         .record()
         .encode()
@@ -237,6 +332,595 @@ fn first_finality(branch: &StateBranch, purpose: &str) -> StateFinality {
     )
     .0
 }
+
+#[cfg(unix)]
+#[test]
+fn handoff_journal_cold_reopen_preserves_exact_ready_and_private_terminal() {
+    let dir = Directory::new();
+    let anchors = Directory::new();
+    let g = genesis();
+    let history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let branch = history.head().unwrap();
+    let finality = first_finality(branch, "durable seal stages");
+    let agreement = finality.agreement();
+    let mut journal =
+        StateHandoffJournal::create(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND).unwrap();
+    journal.stage(agreement, &history).unwrap();
+    let other = first_finality(branch, "different durable seal");
+    assert!(journal.stage(other.agreement(), &history).is_err());
+    drop(journal);
+    let mut journal =
+        StateHandoffJournal::open(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND, &history).unwrap();
+    assert_eq!(
+        journal.agreement().unwrap().encode().unwrap(),
+        agreement.encode().unwrap()
+    );
+
+    let incoming = period_key(0, 2);
+    let incoming_signer = ConsensusKey::from_bytes(incoming.verifying_key().to_bytes());
+    let transcript = journal.prepare_ready(incoming_signer).unwrap();
+    drop(journal);
+    let mut journal =
+        StateHandoffJournal::open(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND, &history).unwrap();
+    assert!(journal.ready().is_none());
+    assert_eq!(journal.prepare_ready(incoming_signer).unwrap(), transcript);
+    assert!(
+        journal
+            .prepare_ready(ConsensusKey::from_bytes(
+                period_key(1, 2).verifying_key().to_bytes()
+            ))
+            .is_err()
+    );
+    let ready = journal
+        .complete_ready(incoming.sign(&transcript).to_bytes())
+        .unwrap();
+    drop(journal);
+    let mut journal =
+        StateHandoffJournal::open(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND, &history).unwrap();
+    assert_eq!(journal.ready(), Some(&ready));
+    assert_eq!(journal.sign_ready(&incoming).unwrap(), ready);
+
+    let ready_quorum = seal(agreement).ready().to_vec();
+    let outgoing_signer = key(0);
+    let terminal_transcript = journal
+        .prepare_terminal(outgoing_signer, &ready_quorum)
+        .unwrap();
+    drop(journal);
+    let mut journal =
+        StateHandoffJournal::open(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND, &history).unwrap();
+    assert!(journal.terminal_prepared());
+    assert_eq!(journal.ready_quorum(), Some(ready_quorum.as_slice()));
+    assert_eq!(
+        journal
+            .prepare_terminal(outgoing_signer, &ready_quorum)
+            .unwrap(),
+        terminal_transcript
+    );
+    assert!(journal.terminal().is_none());
+    let mut signer =
+        StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap();
+    assert!(journal.release_terminal(&signer).is_err());
+    signer
+        .terminal_handoff(&mut journal, &ready_quorum)
+        .unwrap();
+    assert!(signer.stopped().unwrap());
+    assert_eq!(
+        signer.branch().unwrap().commitment(),
+        history.head().unwrap().commitment()
+    );
+    assert!(signer.sign_time_report(101).is_err());
+    assert!(
+        signer
+            .apply_and_sign(&StateLockEvent::ProposalTimeout)
+            .is_err()
+    );
+    assert!(journal.terminal().is_none());
+    drop((signer, journal));
+
+    let signer = StateSigner::open(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap();
+    let mut journal =
+        StateHandoffJournal::open(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND, &history).unwrap();
+    assert!(signer.stopped().unwrap());
+    assert_eq!(
+        signer.branch().unwrap().commitment(),
+        history.head().unwrap().commitment()
+    );
+    assert!(signer.sign_time_report(102).is_err());
+    assert!(journal.terminal().is_none());
+    let terminal = journal.release_terminal(&signer).unwrap();
+    assert_eq!(terminal.role(), SealRole::Terminal);
+    assert_eq!(journal.release_terminal(&signer).unwrap(), terminal);
+    drop(journal);
+    let journal = StateHandoffJournal::open(&dir.0, &anchors.0, g, 1, MAX_ROUND, &history).unwrap();
+    assert_eq!(journal.terminal(), Some(&terminal));
+}
+#[cfg(unix)]
+#[test]
+fn selected_period_reuses_anchored_keys_and_missing_signer_cannot_regenerate() {
+    let history_dir = Directory::new();
+    let history_anchors = Directory::new();
+    let g = genesis();
+    let mut history =
+        StateHistory::create(&history_dir.0, &history_anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let branch = history.head().unwrap();
+    let mut custody = Vec::new();
+    for i in 0..4 {
+        let directory = Directory::new();
+        let anchors = Directory::new();
+        let unit = branch.authority().owner(author(i)).unwrap();
+        let saved = StatePeriodCustody::stage_offer(
+            &directory.0,
+            &anchors.0,
+            branch.state(),
+            unit.id(),
+            &account(i),
+            format!("127.0.0.1:{}", 43000 + u16::from(i)),
+        )
+        .unwrap();
+        custody.push((directory, anchors, saved));
+    }
+    let mut offers: Vec<_> = custody
+        .iter()
+        .map(|(_, _, saved)| saved.offer().unwrap().clone())
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    let plan = HandoffPlan::new(offers, None).unwrap();
+    let record = branch
+        .state()
+        .prepare_record(time(branch.state(), 100), Vec::new(), plan)
+        .unwrap()
+        .record()
+        .encode()
+        .unwrap();
+    let proposal = proposal(branch, record);
+    let encoded = proposal.encode().unwrap();
+    let mut kernels: Vec<_> = (0..3)
+        .map(|i| StateLockState::new(branch, key(i)).unwrap())
+        .collect();
+    let prevotes = StateQuorum::from_votes(
+        (0..3)
+            .map(|i| {
+                finish_vote(
+                    kernels[i]
+                        .apply(
+                            branch,
+                            &StateLockEvent::Prevote {
+                                proposal: Some(encoded.clone()),
+                            },
+                            MAX_ROUND,
+                        )
+                        .unwrap(),
+                    branch,
+                    i as u8,
+                )
+            })
+            .collect(),
+        &g,
+        branch.authority(),
+    )
+    .unwrap();
+    let precommits = StateQuorum::from_votes(
+        (0..3)
+            .map(|i| {
+                finish_vote(
+                    kernels[i]
+                        .apply(
+                            branch,
+                            &StateLockEvent::Precommit {
+                                proposal: Some(encoded.clone()),
+                                quorum: prevotes.encode(),
+                            },
+                            MAX_ROUND,
+                        )
+                        .unwrap(),
+                    branch,
+                    i as u8,
+                )
+            })
+            .collect(),
+        &g,
+        branch.authority(),
+    )
+    .unwrap();
+    let agreement = branch
+        .verify_agreement(&proposal, &precommits, MAX_ROUND)
+        .unwrap();
+    let signature = |role: SealRole, key: &SigningKey| {
+        let signer = ConsensusKey::from_bytes(key.verifying_key().to_bytes());
+        let context = agreement.seal_context();
+        SealSignature::complete(
+            role,
+            context,
+            signer,
+            key.sign(&SealSignature::signing_bytes(role, context, signer))
+                .to_bytes(),
+            agreement.outgoing(),
+            agreement.incoming(),
+        )
+        .unwrap()
+    };
+    let seal = StateSeal::new(
+        custody[..3]
+            .iter()
+            .map(|(_, _, saved)| signature(SealRole::Ready, saved.consensus_key()))
+            .collect(),
+        (0..3)
+            .map(|i| signature(SealRole::Terminal, &validator(i)))
+            .collect(),
+        agreement.seal_context(),
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap();
+    let finality = branch
+        .verify_finality(&proposal, &precommits, &seal, MAX_ROUND)
+        .unwrap();
+    assert_eq!(
+        history
+            .append_finality(&finality.encode().unwrap())
+            .unwrap(),
+        StateAppendOutcome::Finalized
+    );
+    let (dir, anchors, saved) = custody.remove(0);
+    let original_offer = saved.offer().unwrap().clone();
+    let original_consensus = saved.consensus_key().verifying_key().to_bytes();
+    drop(saved);
+    let mut selected =
+        StatePeriodCustody::open_for_selected(&dir.0, &anchors.0, &history, &account(0))
+            .unwrap()
+            .unwrap();
+    assert_eq!(selected.offer().unwrap(), &original_offer);
+    assert_eq!(
+        selected.consensus_key().verifying_key().to_bytes(),
+        original_consensus
+    );
+    let signer = selected
+        .open_or_create_selected_signer(&dir.0, &anchors.0, &history, MAX_ROUND)
+        .unwrap();
+    assert_eq!(signer.height().unwrap(), 2);
+    let signer_file = dir.0.join(signer.journal_file_name());
+    drop((signer, selected));
+    let mut selected =
+        StatePeriodCustody::open_for_selected(&dir.0, &anchors.0, &history, &account(0))
+            .unwrap()
+            .unwrap();
+    let signer = selected
+        .open_or_create_selected_signer(&dir.0, &anchors.0, &history, MAX_ROUND)
+        .unwrap();
+    assert_eq!(signer.signer().as_bytes(), &original_consensus);
+    drop((signer, selected));
+    fs::remove_file(signer_file).unwrap();
+    let mut selected =
+        StatePeriodCustody::open_for_selected(&dir.0, &anchors.0, &history, &account(0))
+            .unwrap()
+            .unwrap();
+    assert!(
+        selected
+            .open_or_create_selected_signer(&dir.0, &anchors.0, &history, MAX_ROUND)
+            .is_err()
+    );
+    drop(selected);
+    fs::remove_file(dir.0.join("state-period-0.secret")).unwrap();
+    assert!(
+        StatePeriodCustody::stage_offer(
+            &dir.0,
+            &anchors.0,
+            history.branch_at(0).unwrap().state(),
+            original_offer.unit(),
+            &account(0),
+            "127.0.0.1:43000".into()
+        )
+        .is_err()
+    );
+}
+#[cfg(unix)]
+#[test]
+fn candidate_import_retries_exact_pair_and_fails_closed_on_mismatch_or_lost_secret() {
+    let directory = Directory::new();
+    let anchors = Directory::new();
+    let genesis = genesis();
+    let owner = account(5);
+    let family = naome_ledger::ResolutionId::from_bytes([91; 32]);
+    let consensus = validator(5);
+    let transport = period_transport(5, 1);
+    let import = || {
+        StatePeriodCustody::import_candidate(
+            &directory.0,
+            &anchors.0,
+            &genesis,
+            family,
+            &owner,
+            &consensus,
+            &transport,
+        )
+    };
+    import().unwrap();
+    import().unwrap();
+    assert!(
+        StatePeriodCustody::import_candidate(
+            &directory.0,
+            &anchors.0,
+            &genesis,
+            family,
+            &owner,
+            &validator(6),
+            &transport,
+        )
+        .is_err()
+    );
+    assert!(
+        StatePeriodCustody::stage_candidate(
+            &directory.0,
+            &anchors.0,
+            &LedgerState::new(genesis.clone()),
+            family,
+            &owner,
+        )
+        .is_err()
+    );
+    fs::remove_file(directory.0.join(format!(
+        "state-candidate-{}.secret",
+        family.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )))
+    .unwrap();
+    assert!(import().is_err());
+}
+#[cfg(unix)]
+#[test]
+fn cold_restart_retires_closed_candidate_import_without_recreating_it() {
+    let directory = Directory::new();
+    let anchors = Directory::new();
+    let genesis = genesis();
+    let owner = account(5);
+    let family = naome_ledger::ResolutionId::from_bytes([92; 32]);
+    let consensus = validator(5);
+    let transport = period_transport(5, 1);
+    StatePeriodCustody::import_candidate(
+        &directory.0,
+        &anchors.0,
+        &genesis,
+        family,
+        &owner,
+        &consensus,
+        &transport,
+    )
+    .unwrap();
+    let family_hex: String = family
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let secret = directory
+        .0
+        .join(format!("state-candidate-{family_hex}.secret"));
+    assert!(secret.exists());
+    let selected = LedgerState::new(genesis.clone());
+    for _ in 0..2 {
+        StatePeriodCustody::retire_closed_candidate_import(
+            &directory.0,
+            &anchors.0,
+            &selected,
+            family,
+            &owner,
+        )
+        .unwrap();
+        assert!(!secret.exists());
+    }
+    assert!(
+        StatePeriodCustody::import_candidate(
+            &directory.0,
+            &anchors.0,
+            &genesis,
+            family,
+            &owner,
+            &consensus,
+            &transport,
+        )
+        .is_err()
+    );
+}
+#[cfg(unix)]
+#[test]
+fn live_unselected_candidate_rebinds_import_to_next_parent_then_expires_closed() {
+    let (directory, anchors, genesis, mut history, settlement) = pending_two_proof_settlement();
+    history.append_finality(&settlement).unwrap();
+    let owner = account(4);
+    let family = *history
+        .head()
+        .unwrap()
+        .state()
+        .claims()
+        .keys()
+        .next()
+        .unwrap();
+    let consensus = validator(5);
+    let transport = period_transport(5, 1);
+    let parent = history.head().unwrap().state();
+    let intent = JoinIntent::new(
+        &genesis,
+        author(4),
+        parent.next_nonce(author(4)).unwrap(),
+        family,
+        1,
+        &consensus,
+        &transport,
+        "127.0.0.1:44005".into(),
+    )
+    .unwrap();
+    let operation = signed(parent, 4, OperationBody::JoinIntent(intent));
+    let now = parent.time();
+    append(&mut history, now, vec![operation]);
+    let parent = history.head().unwrap().state();
+    assert_eq!(parent.join_queue().front(), Some(&family));
+
+    StatePeriodCustody::import_candidate(
+        &directory.0,
+        &anchors.0,
+        &genesis,
+        family,
+        &owner,
+        &consensus,
+        &transport,
+    )
+    .unwrap();
+    let secret = directory.0.join(format!(
+        "state-candidate-{}.secret",
+        family
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ));
+    let staged =
+        StatePeriodCustody::stage_candidate(&directory.0, &anchors.0, parent, family, &owner)
+            .unwrap();
+    let first_offer = staged.candidate_offer().unwrap().clone();
+    first_offer
+        .verify(
+            parent.authority(),
+            parent.head(),
+            parent.commitment(),
+            owner.verifying_key().to_bytes(),
+        )
+        .unwrap();
+    let now = parent.time();
+    append(&mut history, now, vec![]);
+    let selected = history.head().unwrap().state();
+    assert!(selected.join_queue().contains(&family));
+    assert!(!selected.consumed_claims().contains(&family));
+    staged.abandon_unselected_candidate(selected).unwrap();
+    assert!(
+        secret.exists(),
+        "a live queued claimant keeps its imported keys"
+    );
+
+    let restaged =
+        StatePeriodCustody::stage_candidate(&directory.0, &anchors.0, selected, family, &owner)
+            .unwrap();
+    let next_offer = restaged.candidate_offer().unwrap().clone();
+    assert_ne!(next_offer, first_offer, "a new parent needs a new offer");
+    assert_eq!(next_offer.keys(), first_offer.keys());
+    next_offer
+        .verify(
+            selected.authority(),
+            selected.head(),
+            selected.commitment(),
+            owner.verifying_key().to_bytes(),
+        )
+        .unwrap();
+    assert!(
+        first_offer
+            .verify(
+                selected.authority(),
+                selected.head(),
+                selected.commitment(),
+                owner.verifying_key().to_bytes(),
+            )
+            .is_err()
+    );
+
+    let expired_at = selected.join_intent(family).unwrap().expires();
+    append(&mut history, expired_at, vec![]);
+    let expired = history.head().unwrap().state();
+    assert!(!expired.join_queue().contains(&family));
+    restaged.abandon_unselected_candidate(expired).unwrap();
+    assert!(!secret.exists(), "expired import must be retired");
+    assert!(
+        StatePeriodCustody::stage_candidate(&directory.0, &anchors.0, expired, family, &owner,)
+            .is_err()
+    );
+    assert!(
+        StatePeriodCustody::import_candidate(
+            &directory.0,
+            &anchors.0,
+            &genesis,
+            family,
+            &owner,
+            &consensus,
+            &transport,
+        )
+        .is_err()
+    );
+}
+#[cfg(unix)]
+#[test]
+fn ready_anchor_failures_never_expose_unacknowledged_signature() {
+    for point in faults::POINTS {
+        let dir = Directory::new();
+        let anchors = Directory::new();
+        let g = genesis();
+        let history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+        let agreement = first_finality(history.head().unwrap(), "ready anchor fault");
+        let mut journal =
+            StateHandoffJournal::create(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND).unwrap();
+        journal.stage(agreement.agreement(), &history).unwrap();
+        let incoming = period_key(0, 2);
+        let signer = ConsensusKey::from_bytes(incoming.verifying_key().to_bytes());
+        let transcript = journal.prepare_ready(signer).unwrap();
+        let injection = faults::inject(&anchors.0.join("state-handoff-1.anchor"), point);
+        assert!(
+            journal
+                .complete_ready(incoming.sign(&transcript).to_bytes())
+                .is_err()
+        );
+        injection.assert_fired();
+        assert!(journal.ready().is_none());
+        drop(injection);
+        drop(journal);
+        let reopened = StateHandoffJournal::open(&dir.0, &anchors.0, g, 1, MAX_ROUND, &history);
+        if point == faults::Point::DirectorySync {
+            let recovered = reopened.unwrap();
+            assert_eq!(recovered.ready().unwrap().role(), SealRole::Ready);
+        } else {
+            assert!(reopened.is_err());
+        }
+    }
+}
+#[cfg(unix)]
+#[test]
+fn terminal_anchor_failures_keep_signature_private_until_recovered_stop() {
+    for point in faults::POINTS {
+        let dir = Directory::new();
+        let anchors = Directory::new();
+        let g = genesis();
+        let history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+        let finality = first_finality(history.head().unwrap(), "terminal anchor fault");
+        let agreement = finality.agreement();
+        let mut journal =
+            StateHandoffJournal::create(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND).unwrap();
+        journal.stage(agreement, &history).unwrap();
+        let ready = seal(agreement).ready().to_vec();
+        let transcript = journal.prepare_terminal(key(0), &ready).unwrap();
+        let signer =
+            StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap();
+        let injection = faults::inject(&anchors.0.join("state-handoff-1.anchor"), point);
+        assert!(
+            journal
+                .complete_terminal(validator(0).sign(&transcript).to_bytes())
+                .is_err()
+        );
+        injection.assert_fired();
+        assert!(journal.terminal().is_none());
+        assert!(!signer.stopped().unwrap());
+        drop(injection);
+        drop((journal, signer));
+        let reopened =
+            StateHandoffJournal::open(&dir.0, &anchors.0, g.clone(), 1, MAX_ROUND, &history);
+        if point == faults::Point::DirectorySync {
+            let mut journal = reopened.unwrap();
+            let mut signer =
+                StateSigner::open(&dir.0, &anchors.0, g, validator(0), MAX_ROUND).unwrap();
+            assert!(journal.terminal().is_none());
+            assert!(journal.release_terminal(&signer).is_err());
+            signer.terminal_handoff(&mut journal, &ready).unwrap();
+            assert!(signer.stopped().unwrap());
+            let released = journal.release_terminal(&signer).unwrap();
+            assert_eq!(released.role(), SealRole::Terminal);
+        } else {
+            assert!(reopened.is_err());
+        }
+    }
+}
 fn append(history: &mut StateHistory, now: u64, ops: Vec<SignedOperation>) -> Vec<u8> {
     let encoded = record(history.head().unwrap(), now, ops);
     let (finality, _) = certify(history.head().unwrap(), encoded);
@@ -248,6 +932,271 @@ fn append(history: &mut StateHistory, now: u64, ops: Vec<SignedOperation>) -> Ve
     );
     assert_eq!(history.head().unwrap().commitment(), expected);
     bytes
+}
+
+#[test]
+fn selected_transition_visit_replays_each_height_once_with_exact_neighbors() {
+    let dir = Directory::new();
+    let anchors = Directory::new();
+    let g = genesis();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    #[cfg(unix)]
+    drop(StateSigner::create(&dir.0, &anchors.0, g.clone(), validator(0), MAX_ROUND).unwrap());
+    for _ in 0..12 {
+        append(&mut history, 100, vec![]);
+    }
+    let head = history.head().unwrap().commitment();
+    let mut visited = 0u64;
+    history
+        .visit_selected_transitions(|preceding, parent, child| {
+            assert_eq!(parent.state().height(), visited);
+            assert_eq!(child.state().height(), visited + 1);
+            assert_eq!(
+                preceding.map(|branch| branch.state().height()),
+                visited.checked_sub(1)
+            );
+            visited += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(visited, 12);
+    assert_eq!(history.historical_replay_count(), 0);
+    assert_eq!(history.head().unwrap().commitment(), head);
+    drop(history);
+
+    let history = StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let mut reopened_visits = 0;
+    history
+        .visit_selected_transitions(|_, _, _| {
+            reopened_visits += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(reopened_visits, 12);
+    assert_eq!(history.historical_replay_count(), 0);
+    assert_eq!(history.head().unwrap().commitment(), head);
+
+    #[cfg(unix)]
+    {
+        let mut cleanup_calls = 0;
+        assert!(
+            StateSigner::retire_predecessors(
+                &dir.0,
+                &anchors.0,
+                &history,
+                author(0),
+                MAX_ROUND,
+                |retired, preceding, selected, _successor| {
+                    let Some(retired) = retired else {
+                        return Ok(());
+                    };
+                    assert!(preceding.is_none());
+                    assert_eq!(selected.state().height(), 0);
+                    assert!(retired.stopped()?);
+                    cleanup_calls += 1;
+                    Err(StateStorageError::Invalid("simulated cleanup failure"))
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(cleanup_calls, 1);
+        let retired = StateSigner::open(
+            &dir.0,
+            &anchors.0,
+            history.head().unwrap().state().genesis().clone(),
+            validator(0),
+            MAX_ROUND,
+        )
+        .unwrap();
+        assert!(retired.stopped().unwrap());
+        assert!(retired.sign_time_report(100).is_err());
+        drop(retired);
+        StateSigner::retire_predecessors(
+            &dir.0,
+            &anchors.0,
+            &history,
+            author(0),
+            MAX_ROUND,
+            |retired, _, selected, _successor| {
+                let Some(retired) = retired else {
+                    return Ok(());
+                };
+                assert_eq!(selected.state().height(), 0);
+                assert!(retired.stopped()?);
+                cleanup_calls += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(cleanup_calls, 2);
+        assert_eq!(history.historical_replay_count(), 0);
+    }
+}
+
+#[cfg(unix)]
+fn selected_period_without_ordinary_signer(
+    activated: bool,
+) -> (Directory, Directory, StateHistory, PathBuf) {
+    let dir = Directory::new();
+    let anchors = Directory::new();
+    let g = genesis();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    let parent = history.head().unwrap().state();
+    let unit = parent.authority().owner(author(3)).unwrap().id();
+    let mut custody = StatePeriodCustody::stage_offer_with_keys_for_test(
+        &dir.0,
+        &anchors.0,
+        parent,
+        unit,
+        &account(3),
+        &period_key(3, 2),
+        &period_transport(3, 2),
+        "127.0.0.1:43003".into(),
+    )
+    .unwrap();
+    let secret = dir.0.join("state-period-0.secret");
+    assert!(secret.exists());
+    append(&mut history, 100, vec![]);
+    if activated {
+        let signer = custody
+            .open_or_create_selected_signer(&dir.0, &anchors.0, &history, MAX_ROUND)
+            .unwrap();
+        drop(signer);
+    }
+    drop(custody);
+    append(&mut history, 100, vec![]);
+    assert_eq!(history.head().unwrap().state().height(), 2);
+    drop(history);
+    let history = StateHistory::open(&dir.0, &anchors.0, genesis(), MAX_ROUND).unwrap();
+    (dir, anchors, history, secret)
+}
+
+#[cfg(unix)]
+#[test]
+fn cold_catchup_retires_selected_custody_without_an_ordinary_signer() {
+    let (dir, anchors, history, secret) = selected_period_without_ordinary_signer(false);
+    for _ in 0..2 {
+        StateSigner::retire_predecessors(
+            &dir.0,
+            &anchors.0,
+            &history,
+            author(3),
+            MAX_ROUND,
+            |retired, preceding, selected, _successor| {
+                if selected.state().height() == 0 {
+                    assert!(retired.is_none());
+                    return Ok(());
+                }
+                assert!(retired.is_none());
+                StatePeriodCustody::retire_unactivated_for_selected_branch(
+                    &dir.0,
+                    &anchors.0,
+                    selected,
+                    preceding.unwrap().state(),
+                    &account(3),
+                )
+            },
+        )
+        .unwrap();
+        assert!(!secret.exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cold_catchup_retires_outgoing_offer_when_successor_did_not_select_it() {
+    let dir = Directory::new();
+    let anchors = Directory::new();
+    let g = genesis();
+    let mut history = StateHistory::create(&dir.0, &anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let parent = history.head().unwrap();
+    let unit = parent.authority().owner(author(3)).unwrap().id();
+    let custody = StatePeriodCustody::stage_offer(
+        &dir.0,
+        &anchors.0,
+        parent.state(),
+        unit,
+        &account(3),
+        "127.0.0.1:43003".into(),
+    )
+    .unwrap();
+    let secret = dir.0.join("state-period-0.secret");
+    assert!(secret.exists());
+    drop(custody);
+    let offers = plan(parent)
+        .offers()
+        .iter()
+        .filter(|offer| offer.unit() != unit)
+        .cloned()
+        .collect();
+    let no_offer = HandoffPlan::new(offers, None).unwrap();
+    let record = parent
+        .state()
+        .prepare_record(time(parent.state(), 100), vec![], no_offer)
+        .unwrap()
+        .record()
+        .encode()
+        .unwrap();
+    let (finality, _) = certify(parent, record);
+    history
+        .append_finality(&finality.encode().unwrap())
+        .unwrap();
+    drop(history);
+    let history = StateHistory::open(&dir.0, &anchors.0, g, MAX_ROUND).unwrap();
+    for _ in 0..2 {
+        StateSigner::retire_predecessors(
+            &dir.0,
+            &anchors.0,
+            &history,
+            author(3),
+            MAX_ROUND,
+            |_retired, _preceding, outgoing, selected| {
+                StatePeriodCustody::retire_unselected_offer_for_transition(
+                    &dir.0,
+                    &anchors.0,
+                    outgoing.state(),
+                    selected,
+                    &account(3),
+                )
+            },
+        )
+        .unwrap();
+        assert!(!secret.exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_signer_marker_rejects_missing_signer_journal_during_catchup() {
+    let (dir, anchors, history, secret) = selected_period_without_ordinary_signer(true);
+    assert!(secret.exists());
+    let key = period_key(3, 2).verifying_key().to_bytes();
+    let key_hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    fs::remove_file(dir.0.join(format!("state-signer-{key_hex}.journal"))).unwrap();
+    assert!(
+        StateSigner::retire_predecessors(
+            &dir.0,
+            &anchors.0,
+            &history,
+            author(3),
+            MAX_ROUND,
+            |retired, preceding, selected, _successor| {
+                if selected.state().height() == 0 {
+                    return Ok(());
+                }
+                assert!(retired.is_none());
+                StatePeriodCustody::retire_unactivated_for_selected_branch(
+                    &dir.0,
+                    &anchors.0,
+                    selected,
+                    preceding.unwrap().state(),
+                    &account(3),
+                )
+            },
+        )
+        .is_err()
+    );
+    assert!(secret.exists());
 }
 
 #[test]
@@ -811,9 +1760,10 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     // A complete outer envelope containing only an unsigned proposal header
     // used to pass claimed_height and trigger historical mathematical replay.
     let header_length = 5 + value_bytes;
-    let mut unsigned = b"NSCF1".to_vec();
+    let mut unsigned = b"NSCF5".to_vec();
     unsigned.extend_from_slice(&(header_length as u32).to_be_bytes());
     unsigned.extend_from_slice(&valid[9..9 + header_length]);
+    unsigned.extend_from_slice(&0u32.to_be_bytes());
     unsigned.extend_from_slice(&0u32.to_be_bytes());
     assert_eq!(
         StateFinality::claimed_height(&unsigned, valid.len()).unwrap(),
@@ -824,35 +1774,38 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     let mut bad_quorum = valid.clone();
     *bad_quorum.last_mut().unwrap() ^= 1;
     let mut stale_signature = valid.clone();
-    let height_offset = 9 + 5 + 5 + 32 + 32;
+    let height_offset = 9 + 5 + 5 + 32 + 32 + 32;
     stale_signature[height_offset..height_offset + 8].copy_from_slice(&2u64.to_be_bytes());
-    for bad in [
-        unsigned,
-        valid[..300].to_vec(),
-        bad_producer,
-        bad_quorum,
-        stale_signature,
-    ] {
+    // Framing errors fail before historical parent lookup.
+    let bad = valid[..300].to_vec();
+    assert!(history.receive_finality(3, &bad).is_err());
+    assert!(history.report_conflict(3, &bad).is_err());
+    assert_eq!(history.historical_replay_count(), 0);
+    assert_eq!(history.head().unwrap().commitment(), head);
+    assert_eq!(fs::metadata(&journal).unwrap().len(), length);
+    // Cryptographic checks need the selected parent and its authority, so a
+    // bounded historical replay can precede rejection.
+    for bad in [unsigned, bad_producer, bad_quorum, stale_signature] {
         assert!(history.receive_finality(3, &bad).is_err());
         assert!(history.report_conflict(3, &bad).is_err());
-        assert_eq!(history.historical_replay_count(), 0);
         assert_eq!(history.head().unwrap().commitment(), head);
         assert_eq!(fs::metadata(&journal).unwrap().len(), length);
     }
+    let verified_lookup_count = history.historical_replay_count();
     assert!(history.receive_finality(2, &valid).is_err());
-    assert_eq!(history.historical_replay_count(), 0);
+    assert_eq!(history.historical_replay_count(), verified_lookup_count);
     assert_eq!(
         history.receive_finality(3, &valid).unwrap(),
         StateAppendOutcome::AlreadyFinalized
     );
-    assert_eq!(history.historical_replay_count(), 0);
+    assert_eq!(history.historical_replay_count(), verified_lookup_count);
     let alternative = alternative.unwrap();
     assert_ne!(alternative, valid);
     assert_eq!(
         history.receive_finality(3, &alternative).unwrap(),
         StateAppendOutcome::AlreadyFinalized
     );
-    assert_eq!(history.historical_replay_count(), 1);
+    assert_eq!(history.historical_replay_count(), verified_lookup_count + 1);
     assert_eq!(history.head().unwrap().commitment(), head);
     assert_eq!(fs::metadata(&journal).unwrap().len(), length);
 }
@@ -1065,12 +2018,8 @@ fn signer_height_handoff_uses_selected_durable_finality_and_conflict_preempts_pe
     let op = submission(history.head().unwrap().state(), "selected value");
     append(&mut history, 100, vec![op]);
     signer.advance_to_history(&mut history).unwrap();
-    assert_eq!(signer.height().unwrap(), 2);
-    assert_eq!(
-        signer.branch().unwrap().commitment(),
-        history.head().unwrap().commitment()
-    );
-    let snapshot = signer.snapshot().unwrap();
+    assert!(signer.stopped().unwrap());
+    assert!(signer.snapshot().is_err());
     drop(signer);
     let mut signer = StateSigner::open(
         &signer_dir.0,
@@ -1080,22 +2029,85 @@ fn signer_height_handoff_uses_selected_durable_finality_and_conflict_preempts_pe
         MAX_ROUND,
     )
     .unwrap();
-    assert_eq!(signer.snapshot().unwrap(), snapshot);
+    assert!(signer.stopped().unwrap());
+    assert!(signer.prepare(&StateLockEvent::ProposalTimeout).is_err());
+    drop(signer);
+    let pending_dir = Directory::new();
+    let pending_anchors = Directory::new();
+    let mut signer = StateSigner::create(
+        &pending_dir.0,
+        &pending_anchors.0,
+        g.clone(),
+        validator(1),
+        MAX_ROUND,
+    )
+    .unwrap();
     signer.prepare(&StateLockEvent::ProposalTimeout).unwrap();
-    assert!(signer.pending().unwrap());
     history.report_conflict(1, &conflict).unwrap();
     assert!(signer.advance_to_history(&mut history).is_err());
     assert!(signer.stopped().unwrap());
     assert!(signer.sign_prepared().is_err());
     drop(signer);
-    let mut reopened =
-        StateSigner::open(&signer_dir.0, &signer_anchors.0, g, validator(0), MAX_ROUND).unwrap();
+    let mut reopened = StateSigner::open(
+        &pending_dir.0,
+        &pending_anchors.0,
+        g,
+        validator(1),
+        MAX_ROUND,
+    )
+    .unwrap();
     assert!(reopened.stopped().unwrap());
     assert!(
         reopened
             .apply_and_sign(&StateLockEvent::ProposalTimeout)
             .is_err()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_seal_discards_recovered_old_intent_without_using_retired_key() {
+    let history_dir = Directory::new();
+    let history_anchors = Directory::new();
+    let signer_dir = Directory::new();
+    let signer_anchors = Directory::new();
+    let g = genesis();
+    let mut history =
+        StateHistory::create(&history_dir.0, &history_anchors.0, g.clone(), MAX_ROUND).unwrap();
+    let mut signer = StateSigner::create(
+        &signer_dir.0,
+        &signer_anchors.0,
+        g.clone(),
+        validator(0),
+        MAX_ROUND,
+    )
+    .unwrap();
+    signer.prepare(&StateLockEvent::ProposalTimeout).unwrap();
+    assert!(signer.pending().unwrap());
+    assert_eq!(signer.key_use_count(), 0);
+    drop(signer);
+
+    let mut signer = StateSigner::open(
+        &signer_dir.0,
+        &signer_anchors.0,
+        g.clone(),
+        validator(0),
+        MAX_ROUND,
+    )
+    .unwrap();
+    assert!(signer.pending().unwrap());
+    append(&mut history, 100, vec![]);
+    signer.advance_to_history(&mut history).unwrap();
+    assert_eq!(signer.key_use_count(), 0);
+    assert!(signer.stopped().unwrap());
+    assert!(signer.sign_prepared().is_err());
+    drop(signer);
+
+    let signer =
+        StateSigner::open(&signer_dir.0, &signer_anchors.0, g, validator(0), MAX_ROUND).unwrap();
+    assert!(signer.stopped().unwrap());
+    assert!(signer.pending().is_err());
+    assert!(signer.last_publication().is_err());
 }
 
 #[cfg(unix)]
@@ -1111,7 +2123,7 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
         vec![submission(branch.state(), "resend proposal")],
     );
     let (finality, prevotes) = certify(&branch, record.clone());
-    let scheduled = branch.proposer(0, MAX_ROUND).unwrap();
+    let scheduled = branch.proposer(0, MAX_ROUND).unwrap().unwrap();
     let mut signer = StateSigner::create(
         &dir.0,
         &anchors.0,
@@ -1183,13 +2195,14 @@ fn proposal_and_both_votes_replay_for_exact_resend_until_round_changes() {
         .append_finality(&finality.encode().unwrap())
         .unwrap();
     recovered.advance_to_history(&mut history).unwrap();
-    assert!(recovered.retry_publications().unwrap().is_empty());
+    assert!(recovered.stopped().unwrap());
+    assert!(recovered.retry_publications().is_err());
     assert_eq!(recovered.key_use_count(), 0);
     drop(recovered);
     let recovered =
         StateSigner::open(&dir.0, &anchors.0, g, signing_key(scheduled), MAX_ROUND).unwrap();
-    assert_eq!(recovered.height().unwrap(), 2);
-    assert!(recovered.retry_publications().unwrap().is_empty());
+    assert!(recovered.stopped().unwrap());
+    assert!(recovered.retry_publications().is_err());
 }
 
 #[cfg(unix)]
@@ -1206,7 +2219,7 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
     );
     let (finality, prevotes) = certify(&branch, record.clone());
     let proposal = finality.proposal().encode().unwrap();
-    let scheduled = branch.proposer(1, MAX_ROUND).unwrap();
+    let scheduled = branch.proposer(1, MAX_ROUND).unwrap().unwrap();
     let mut signer = StateSigner::create(
         &dir.0,
         &anchors.0,
@@ -1316,7 +2329,8 @@ fn locked_valid_body_and_quorum_survive_restart_and_reproposal() {
             .unwrap();
         round_one_votes.push(finish_vote(intent, &branch, i));
     }
-    let round_one_quorum = StateQuorum::from_votes(round_one_votes, &g).unwrap();
+    let round_one_quorum =
+        StateQuorum::from_votes(round_one_votes, &g, branch.authority()).unwrap();
     signer
         .apply_and_sign(&StateLockEvent::Precommit {
             proposal: Some(round_one_proposal),

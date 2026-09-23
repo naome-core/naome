@@ -43,7 +43,7 @@ def styles(lang):
 class Figure(Flowable):
     def __init__(self,kind,lang):
         super().__init__();self.kind=kind;self.lang=lang;self.width=CW
-        self.height={'system':234,'question':152,'graph':157,'membership':116,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
+        self.height={'system':320,'question':152,'graph':157,'membership':116,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
         self.spaceBefore=3;self.spaceAfter=7
     def label(self,x,y,t,size=10.5,bold=False,left=False,color=INK):
         self.canv.setFont('NMath' if '∀' in t else ('NSerifBold' if bold else 'NSerif'),size);self.canv.setFillColor(color)
@@ -71,16 +71,74 @@ class Figure(Flowable):
     def draw(self):
         c=self.canv;de=self.lang=='de';k=self.kind
         if k=='system':
-            self.stages(['Frage<br/>vorschlagen','Forschung<br/>genehmigen','Beweis<br/>einreichen','Gültigen Abschluss<br/>verzeichnen'] if de else ['Propose<br/>a question','Authorize<br/>research','Submit<br/>a proof','Record a<br/>valid completion'],174)
-            self.label(CW/2,137,'Folgen einer erfolgreichen Abrechnung' if de else 'Effects of a successful settlement',10.7,True)
-            gap=12;bw=(CW-3*gap)/4
-            labels=(['<b>Bibliothek</b><br/>zitierbare Beweise','<b>Fragenfamilie</b><br/>dauerhaft abgeschlossen','<b>Geldzuteilung</b><br/>1 NAO verteilen','<b>Autorenanspruch</b><br/>späterer Beitritt möglich'] if de else ['<b>Library</b><br/>reusable proofs','<b>Question family</b><br/>permanently completed','<b>Payments</b><br/>allocate 1 NAO','<b>Author claim</b><br/>optional later joining'])
-            for i,label in enumerate(labels):self.box(i*(bw+gap),61,bw,61,label,size=10.1)
-            self.arrow([(CW/2,161),(CW/2,148)])
-            x=3*(bw+gap)+bw/2
-            self.arrow([(x,58),(x,39),(CW/2+97,39)])
-            self.box(CW/2-128,15,222,46,'<b>Versiegelter Validatorbeitritt</b><br/>ändert das künftige Wahlgremium' if de else '<b>Sealed validator admission</b><br/>changes the future electorate',size=10.2)
-            self.label(CW/2,0,'Die installierten Validatoren entscheiden über weitere Forschung und Datensätze.' if de else 'Installed validators decide on later research and records.',9.6)
+            cx=CW/2;cy=160;outer=146;inner=75;middle=(outer+inner)/2
+            shades=[colors.HexColor('#e7e7e3'),colors.HexColor('#dedfda')]
+            accent=colors.HexColor('#333b36')
+            def point(radius,degrees):
+                a=math.radians(degrees)
+                return cx+radius*math.cos(a),cy+radius*math.sin(a)
+            def join(degrees):
+                a=math.radians(degrees)
+                radial=(math.cos(a),math.sin(a))
+                tangent=(math.sin(a),-math.cos(a))
+                def at(r,t):return cx+r*radial[0]+t*tangent[0],cy+r*radial[1]+t*tangent[1]
+                outer_base=at(outer,0);tip=at(middle,25);inner_base=at(inner,0)
+                def sub(p,q):return p[0]-q[0],p[1]-q[1]
+                def add(p,q):return p[0]+q[0],p[1]+q[1]
+                def scale(p,s):return p[0]*s,p[1]*s
+                def cross(p,q):return p[0]*q[1]-p[1]*q[0]
+                def unit(p):
+                    length=math.hypot(*p)
+                    return scale(p,1/length)
+                d1=unit(sub(tip,outer_base));d2=unit(sub(inner_base,tip))
+                n1=(-d1[1],d1[0]);n2=(-d2[1],d2[0])
+                def circle_end(base,d,radius):
+                    x,y=sub(base,(cx,cy))
+                    b=x*d[0]+y*d[1]
+                    discriminant=b*b-(x*x+y*y-radius*radius)
+                    roots=(-b+math.sqrt(discriminant),-b-math.sqrt(discriminant))
+                    return add(base,scale(d,min(roots,key=abs)))
+                def contour(distance):
+                    a1=add(outer_base,scale(n1,distance))
+                    b2=add(tip,scale(n2,distance))
+                    miter=add(a1,scale(d1,cross(sub(b2,a1),d2)/cross(d1,d2)))
+                    a0=circle_end(a1,d1,outer)
+                    c0=circle_end(add(inner_base,scale(n2,distance)),d2,inner)
+                    return a0,miter,c0
+                sides=[contour(-2.6),contour(2.6)]
+                sides.sort(key=lambda side:sub(side[0],(cx,cy))[0]*tangent[0]+sub(side[0],(cx,cy))[1]*tangent[1])
+                return sides
+            def near_angle(p,reference):
+                degrees=math.degrees(math.atan2(p[1]-cy,p[0]-cx))
+                while degrees-reference>180:degrees-=360
+                while degrees-reference< -180:degrees+=360
+                return degrees
+            labels=([('Frage','aufnehmen / öffnen'),('Eigentümerwahl','feste Bedingungen'),('Einreichung','binden / offenlegen'),('Prüfung','Beweis / Widerlegung'),('Abschluss','Zahlung bei Annahme'),('Siegel / Fortsetzung','Beitritt optional')] if de else [('Question','admit / open'),('Owner vote','frozen terms'),('Submission','commit / disclose'),('Verification','proof / refutation'),('Settlement','pay if accepted'),('Seal and continue','handoff optional')])
+            angles=(150,90,30,-30,-90,-150)
+            for i,degrees in enumerate(angles):
+                incoming=degrees+30;outgoing=degrees-30
+                tail=join(incoming)[1]
+                head=join(outgoing)[0]
+                p=c.beginPath();p.moveTo(*tail[0])
+                start=near_angle(tail[0],incoming)
+                end=near_angle(head[0],outgoing)
+                for j in range(1,49):p.lineTo(*point(outer,start+(end-start)*j/48))
+                p.lineTo(*head[1]);p.lineTo(*head[2])
+                start=near_angle(head[2],outgoing)
+                end=near_angle(tail[2],incoming)
+                for j in range(1,49):p.lineTo(*point(inner,start+(end-start)*j/48))
+                p.lineTo(*tail[1]);p.close()
+                c.setFillColor(shades[i%2]);c.setStrokeColor(colors.HexColor('#b5b9b3'))
+                c.setLineWidth(.45);c.drawPath(p,stroke=1,fill=1)
+            for degrees,(title,detail) in zip(angles,labels):
+                x,y=point(middle,degrees)
+                assert max(stringWidth(title,'NSerifBold',9.4),stringWidth(detail,'NSerif',8.6))<85
+                self.label(x,y+2,title,9.4,True,color=accent)
+                self.label(x,y-11,detail,8.6,color=accent)
+            self.label(cx,169,'EIN NETZWERKZYKLUS' if de else 'ONE NETWORK CYCLE',10.8,True,color=accent)
+            c.setStrokeColor(colors.HexColor('#b6bbb5'));c.setLineWidth(.45)
+            c.line(cx-53,158,cx+53,158)
+            self.label(cx,139,'Über versiegelte Datensätze' if de else 'Across sealed records',9.2,color=accent)
         elif k=='question':
             gap=18;bw=(CW-gap)/2
             for i,title in enumerate(['question.nao','solution.nao']):
@@ -112,15 +170,14 @@ class Figure(Flowable):
             self.arrow([(CW/2,73),(CW/2,67),((CW-20)/4,67),((CW-20)/4,64)])
             self.arrow([(CW/2,73),(CW/2,67),((3*CW+20)/4,67),((3*CW+20)/4,64)])
         elif k=='membership':
-            self.label(CW/2,102,'Beispiel K = 6: sechs gleich gewichtete aktive Einheiten' if de else 'Example K = 6: six equal active voting units',10.8,True)
-            start=70;gap=7;bw=(CW-start-5*gap)/6
-            for y,values in [(61,[10,13,17,21,24,27]),(5,[13,17,19,21,24,27])]:
+            self.label(CW/2,102,'Vier stabile Sitze; Schlüssel wechseln in jeder Periode' if de else 'Four stable slots; keys rotate every period',10.7,True)
+            start=74;gap=11;bw=(CW-start-3*gap)/4
+            before=['10','13','17','21'];after=['19','13','17','21']
+            for y,values in [(61,before),(5,after)]:
                 self.label(4,y+9,('Vorher' if y==61 else 'Nachher') if de else ('Before' if y==61 else 'After'),10.2,True,True)
                 for i,value in enumerate(values):
-                    self.box(start+i*(bw+gap),y,bw,28,str(value),shade=(y==5 and value==19),size=11)
-            self.label(CW/2,43,'Anspruch 19 tritt bei; die älteste Einheit 10 scheidet aus' if de else 'Claim 19 joins; the oldest unit 10 retires',10.2)
-            x=start+2*(bw+gap)+bw/2
-            self.arrow([(x,40),(x,35)])
+                    self.box(start+i*(bw+gap),y,bw,28,f'<b>S{i+1}</b>  {value}',shade=(y==5 and i==0),size=10.3)
+            self.label(CW/2,43,'Anspruch 19 ersetzt die älteste Einheit 10 in Sitz S1' if de else 'Claim 19 replaces oldest unit 10 in slot S1',10.0)
         elif k=='agenda':
             self.box(0,42,123,39,'<b>Forschungsprofil</b><br/>Eigentümerinteressen' if de else '<b>Research Profile</b><br/>Owner’s interests',size=10)
             self.box((CW-146)/2,42,146,39,'<b>KI-Entscheidung</b><br/>YES / NO' if de else '<b>AI decision</b><br/>YES / NO',size=10)
@@ -129,20 +186,20 @@ class Figure(Flowable):
             self.label(CW/2,19,'Bei Fristende: 67 YES von 100 → genehmigt' if de else 'At the deadline: 67 YES out of 100 → approved',10.5,True)
             self.label(CW/2,3,'T: Eröffnung | volle sieben Tage | D: Abschluss' if de else 'T: opening | full seven days | D: closure',10)
         elif k=='agreement':
-            self.label(CW/2,210,'Versiegelung eines Nachfolgers' if de else 'Sealing a successor',11,True)
+            self.label(CW/2,210,'Datensatz h enthält den exakten Plan für S(h+1)' if de else 'Agreed record h contains the exact plan for S(h+1)',10.8,True)
             self.label(0,166,'Eingehend' if de else 'Incoming',9.8,True,True)
             self.box(76,139,154,51,'<b>Historie prüfen</b><br/>Nachfolger dauerhaft vorbereiten' if de else '<b>Verify history</b><br/>prepare successor durably',size=10.1)
-            self.box(273,139,CW-273,51,'<b>READY signieren</b><br/>ausreichendes eingehendes Gewicht' if de else '<b>Sign READY</b><br/>sufficient incoming weight',size=10.1)
+            self.box(273,139,CW-273,51,'<b>READY 3/4</b><br/>exakter Datensatz und Zustand' if de else '<b>READY 3/4</b><br/>exact record and state',size=10.1)
             self.arrow([(233,164),(270,164)])
             self.label(0,85,'Ausgehend' if de else 'Outgoing',9.8,True,True)
-            self.box(76,57,102,62,'<b>TERMINAL</b><br/>exakte Signaturen speichern' if de else '<b>TERMINAL</b><br/>save exact signatures',size=9.9)
-            self.box(194,57,115,62,'<b>Fähigkeit stilllegen</b><br/>alle Signierwege der Periode' if de else '<b>Retire capability</b><br/>all period-signing paths',size=9.9)
-            self.box(325,57,CW-325,62,'<b>TERMINAL freigeben</b><br/>gespeicherte Signaturen' if de else '<b>Release TERMINAL</b><br/>saved signatures',size=9.9)
+            self.box(76,57,102,62,'<b>TERMINAL</b><br/>Signatur speichern' if de else '<b>TERMINAL</b><br/>save signature',size=9.9)
+            self.box(194,57,115,62,'<b>Fähigkeit stilllegen</b><br/>alte Periode' if de else '<b>Retire capability</b><br/>old period',size=9.9)
+            self.box(325,57,CW-325,62,'<b>TERMINAL 3/4</b><br/>freigeben und versiegeln' if de else '<b>TERMINAL 3/4</b><br/>release and seal',size=9.9)
             self.arrow([(181,88),(191,88)]);self.arrow([(312,88),(322,88)])
             self.arrow([(354,136),(354,128),(127,128),(127,121)])
             self.arrow([(389,54),(389,43)])
-            self.label(CW/2,29,'Mehr als zwei Drittel ausgehendes Gewicht versiegeln den Übergang.' if de else 'More than two thirds of outgoing weight seal the transition.',10.1,True)
-            self.label(CW/2,9,'READY belegt Vorbereitung; fortdauernde Verfügbarkeit bleibt eine Bedingung.' if de else 'READY establishes preparation; continued availability remains a condition.',9.4)
+            self.label(CW/2,29,'Erst der vollständige Siegelbeleg installiert S(h+1).' if de else 'Only complete seal evidence installs S(h+1).',10.1,True)
+            self.label(CW/2,9,'Leere Sitze zählen weiter; externe Schlüsselkopien erfordern Betreiberkontrolle.' if de else 'Vacant slots still count; external key copies require operator control.',9.4)
         elif k=='delivery':
             self.label(CW/2,98,'Lösungsphase nach versiegelter Genehmigung' if de else 'Solution phase after sealed approval',10.7,True)
             gap=12;bw=(CW-4*gap)/5

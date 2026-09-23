@@ -6,6 +6,7 @@ use crate::{
     AccountId, CommitmentId, GenesisId, LedgerError, OperationId, PackageHash, ProfileId,
     SolutionRoundId, StateCommitment,
     accounting::{CitationRecipient, RewardPlan},
+    authority::AuthoritySnapshot,
     codec::{Reader, Writer},
     library::{AdmissionCoordinate, ProofPackage},
     profile::Genesis,
@@ -18,6 +19,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NormalizationReceipt {
     pub genesis: GenesisId,
+    pub service_authority: AuthoritySnapshot,
     pub round: SolutionRoundId,
     pub winning_commit: Receipt,
     pub commitment: CommitmentId,
@@ -34,17 +36,35 @@ pub struct NormalizationReceipt {
 }
 
 impl NormalizationReceipt {
-    /// Reads the exact v1 settlement format. IDs and certificate contents remain
+    /// Reads the canonical settlement format against its selected service authority. IDs and certificate contents remain
     /// untrusted claims until the containing history has been fully replayed.
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
+    pub fn decode(
+        bytes: &[u8],
+        genesis: &Genesis,
+        authority: &AuthoritySnapshot,
+    ) -> Result<Self, LedgerError> {
+        let receipt = Self::decode_recorded(bytes, genesis)?;
+        if &receipt.service_authority != authority {
+            return Err(LedgerError::Invalid("normalization service authority"));
+        }
+        Ok(receipt)
+    }
+    /// Inspect a receipt already selected by full history replay. The recorded
+    /// authority lets historical rewards remain readable after later handoffs;
+    /// decoding alone does not establish that this authority was selected.
+    pub fn decode_recorded(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let limits = genesis.profile().limits();
         let mut r = Reader::new(bytes, limits.record_bytes as usize)?;
-        if r.u16()? != 1 {
+        if r.u16()? != 2 {
             return Err(LedgerError::Invalid("normalization receipt version"));
         }
         let genesis_id = GenesisId::from_bytes(r.fixed()?);
         if genesis_id != genesis.id() {
             return Err(LedgerError::Invalid("normalization receipt genesis"));
+        }
+        let authority = AuthoritySnapshot::decode(r.bytes(2048)?)?;
+        if authority.genesis() != genesis.id() {
+            return Err(LedgerError::Invalid("normalization service genesis"));
         }
         let round = SolutionRoundId::from_bytes(r.fixed()?);
         let winning_commit = Receipt {
@@ -117,6 +137,7 @@ impl NormalizationReceipt {
         }
         let rewards = RewardPlan::new(
             genesis,
+            &authority,
             author,
             citations
                 .iter()
@@ -134,6 +155,7 @@ impl NormalizationReceipt {
         r.finish()?;
         Ok(Self {
             genesis: genesis_id,
+            service_authority: authority,
             round,
             winning_commit,
             commitment,

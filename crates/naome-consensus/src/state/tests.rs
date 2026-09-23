@@ -5,6 +5,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_ledger::{
     AccountId, LedgerState, ResolutionId,
+    authority::{HandoffPlan, NextPeriodKeys},
     operations::{JoinIntent, OperationBody},
     profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
     question::CompiledQuestion,
@@ -53,11 +54,110 @@ fn genesis() -> Genesis {
 fn branch() -> StateBranch {
     StateBranch::from_genesis(LedgerState::new(genesis())).unwrap()
 }
+fn period_key(i: u8, height: u64) -> SigningKey {
+    if height == 1 {
+        return validator(i);
+    }
+    let mut seed = [42; 32];
+    seed[0] = i;
+    seed[1..9].copy_from_slice(&height.to_be_bytes());
+    SigningKey::from_bytes(&seed)
+}
+fn period_transport(i: u8, height: u64) -> SigningKey {
+    let mut seed = [43; 32];
+    seed[0] = i;
+    seed[1..9].copy_from_slice(&height.to_be_bytes());
+    SigningKey::from_bytes(&seed)
+}
 fn signer_for(key: ConsensusKey) -> SigningKey {
-    (0..4)
-        .map(validator)
+    (1..8)
+        .flat_map(|height| (0..4).map(move |i| period_key(i, height)))
         .find(|sk| sk.verifying_key().as_bytes() == key.as_bytes())
         .unwrap()
+}
+fn plan(branch: &StateBranch) -> HandoffPlan {
+    let state = branch.state();
+    let mut offers: Vec<_> = state
+        .authority()
+        .units()
+        .iter()
+        .map(|unit| {
+            let i = (0..4)
+                .find(|i| {
+                    AccountId::for_key(account(*i).verifying_key().as_bytes()) == unit.owner()
+                })
+                .unwrap();
+            let height = state.authority().effective_height() + 1;
+            NextPeriodKeys::sign(
+                state.authority(),
+                state.head(),
+                state.commitment(),
+                unit.id(),
+                &account(i),
+                &period_key(i, height),
+                &period_transport(i, height),
+                format!("127.0.0.1:{}", 42000 + u16::from(i)),
+            )
+            .unwrap()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    HandoffPlan::new(offers, None).unwrap()
+}
+fn seal_signature(agreement: &StateAgreement, role: SealRole, key: ConsensusKey) -> SealSignature {
+    let context = agreement.seal_context();
+    let signature = signer_for(key)
+        .sign(&SealSignature::signing_bytes(role, context, key))
+        .to_bytes();
+    SealSignature::complete(
+        role,
+        context,
+        key,
+        signature,
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
+}
+fn seal(agreement: &StateAgreement) -> StateSeal {
+    let signatures = |role, authority: &naome_ledger::authority::AuthoritySnapshot| {
+        authority
+            .units()
+            .iter()
+            .filter_map(|unit| unit.keys())
+            .take(3)
+            .map(|keys| {
+                seal_signature(agreement, role, ConsensusKey::from_bytes(*keys.consensus()))
+            })
+            .collect()
+    };
+    StateSeal::new(
+        signatures(SealRole::Ready, agreement.incoming()),
+        signatures(SealRole::Terminal, agreement.outgoing()),
+        agreement.seal_context(),
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
+}
+trait FinalizeFixture {
+    fn finalize(
+        &self,
+        proposal: &StateProposal,
+        quorum: &StateQuorum,
+        maximum: u64,
+    ) -> Result<StateFinality>;
+}
+impl FinalizeFixture for StateBranch {
+    fn finalize(
+        &self,
+        proposal: &StateProposal,
+        quorum: &StateQuorum,
+        maximum: u64,
+    ) -> Result<StateFinality> {
+        let agreement = self.verify_agreement(proposal, quorum, maximum)?;
+        self.verify_finality(proposal, quorum, &seal(&agreement), maximum)
+    }
 }
 fn record(branch: &StateBranch, purpose: &str) -> Vec<u8> {
     let state = branch.state();
@@ -66,10 +166,11 @@ fn record(branch: &StateBranch, purpose: &str) -> Vec<u8> {
         .map(|i| {
             SignedTimeReport::sign(
                 genesis,
+                state.authority(),
                 state.head(),
                 state.height() + 1,
                 state.time(),
-                &validator(i),
+                &period_key(i, state.authority().effective_height()),
             )
             .unwrap()
         })
@@ -77,6 +178,7 @@ fn record(branch: &StateBranch, purpose: &str) -> Vec<u8> {
     let time = TimeCertificate::new(
         reports,
         genesis,
+        state.authority(),
         state.head(),
         state.height() + 1,
         state.time(),
@@ -91,10 +193,16 @@ fn record(branch: &StateBranch, purpose: &str) -> Vec<u8> {
         purpose: purpose.into(),
         question,
     }
-    .sign(genesis, 1, &account(4))
+    .sign(
+        genesis,
+        state
+            .next_nonce(AccountId::for_key(account(4).verifying_key().as_bytes()))
+            .unwrap(),
+        &account(4),
+    )
     .unwrap();
     state
-        .prepare_record(time, vec![operation])
+        .prepare_record(time, vec![operation], plan(branch))
         .unwrap()
         .record()
         .encode()
@@ -106,7 +214,7 @@ fn proposal(
     round: u64,
     valid: Option<StateQuorum>,
 ) -> StateProposal {
-    let signer = branch.proposer(round, MAX_ROUND).unwrap();
+    let signer = branch.proposer(round, MAX_ROUND).unwrap().unwrap();
     let intent = branch
         .proposal_intent(record, round, signer, valid, MAX_ROUND)
         .unwrap();
@@ -123,16 +231,23 @@ fn vote(
     let body = VoteBody {
         genesis: branch.state().genesis().id(),
         profile: branch.state().genesis().profile().id(),
+        authority: branch.authority().id(),
         height: branch.next_height().unwrap(),
         round,
         role,
         target,
     };
-    let signer = validator_key(index);
-    let signature = validator(index)
-        .sign(&body.signing_bytes(signer))
-        .to_bytes();
-    StateVote::complete(body, signer, signature, branch.state().genesis()).unwrap()
+    let key = period_key(index, branch.authority().effective_height());
+    let signer = ConsensusKey::from_bytes(key.verifying_key().to_bytes());
+    let signature = key.sign(&body.signing_bytes(signer)).to_bytes();
+    StateVote::complete(
+        body,
+        signer,
+        signature,
+        branch.state().genesis(),
+        branch.authority(),
+    )
+    .unwrap()
 }
 fn quorum(
     branch: &StateBranch,
@@ -145,6 +260,7 @@ fn quorum(
             .map(|i| vote(branch, round, role, target, i))
             .collect(),
         branch.state().genesis(),
+        branch.authority(),
     )
     .unwrap()
 }
@@ -189,6 +305,7 @@ fn higher(branch: &StateBranch, state: &mut StateLockState, round: u64) {
             })
             .collect(),
         branch.state().genesis(),
+        branch.authority(),
     )
     .unwrap();
     state
@@ -215,7 +332,7 @@ fn verified_control_record_finality_binds_full_state_and_preserves_empty_library
     assert_eq!(p.value().previous_state(), branch.state().commitment());
     assert_ne!(p.value().next_state(), branch.state().commitment());
     let qc = quorum(&branch, 0, ConsensusVoteRole::Precommit, target(&p));
-    let finality = branch.verify_finality(&p, &qc, MAX_ROUND).unwrap();
+    let finality = branch.finalize(&p, &qc, MAX_ROUND).unwrap();
     assert_eq!(finality.branch().state().height(), 1);
     assert_eq!(finality.branch().state().library().len(), 0);
     assert_eq!(finality.branch().state().questions().count(), 1);
@@ -244,14 +361,15 @@ fn finality_evidence_subset_and_consensus_round_do_not_change_value_or_successor
             .map(|i| vote(&branch, 0, ConsensusVoteRole::Precommit, target, i))
             .collect(),
         branch.state().genesis(),
+        branch.authority(),
     )
     .unwrap();
-    let a = branch.verify_finality(&p0, &q3, MAX_ROUND).unwrap();
-    let b = branch.verify_finality(&p0, &q4, MAX_ROUND).unwrap();
+    let a = branch.finalize(&p0, &q3, MAX_ROUND).unwrap();
+    let b = branch.finalize(&p0, &q4, MAX_ROUND).unwrap();
     assert_ne!(a.encode().unwrap(), b.encode().unwrap());
     assert_eq!(a.branch().commitment(), b.branch().commitment());
     let late = branch
-        .verify_finality(
+        .finalize(
             &p3,
             &quorum(&branch, 3, ConsensusVoteRole::Precommit, target),
             MAX_ROUND,
@@ -268,23 +386,23 @@ fn two_votes_never_finalize_and_duplicate_signers_never_add_weight() {
     let two: Vec<_> = (0..2)
         .map(|i| vote(&branch, 0, ConsensusVoteRole::Precommit, t, i))
         .collect();
-    assert!(StateQuorum::from_votes(two.clone(), branch.state().genesis()).is_err());
+    assert!(
+        StateQuorum::from_votes(two.clone(), branch.state().genesis(), branch.authority()).is_err()
+    );
     let mut duplicates = two;
     duplicates.push(duplicates[0].clone());
-    assert!(StateQuorum::from_votes(duplicates, branch.state().genesis()).is_err());
+    assert!(
+        StateQuorum::from_votes(duplicates, branch.state().genesis(), branch.authority()).is_err()
+    );
     let wrong_role = quorum(&branch, 0, ConsensusVoteRole::Prevote, t);
-    assert!(branch.verify_finality(&p, &wrong_role, MAX_ROUND).is_err());
+    assert!(branch.finalize(&p, &wrong_role, MAX_ROUND).is_err());
     let wrong_target = quorum(
         &branch,
         0,
         ConsensusVoteRole::Precommit,
         ConsensusVoteTarget::Nil,
     );
-    assert!(
-        branch
-            .verify_finality(&p, &wrong_target, MAX_ROUND)
-            .is_err()
-    );
+    assert!(branch.finalize(&p, &wrong_target, MAX_ROUND).is_err());
 }
 
 #[test]
@@ -312,6 +430,7 @@ fn well_formed_join_candidate_has_no_consensus_authority() {
     let body = VoteBody {
         genesis: genesis.id(),
         profile: genesis.profile().id(),
+        authority: branch.authority().id(),
         height: branch.next_height().unwrap(),
         round: 0,
         role: ConsensusVoteRole::Precommit,
@@ -321,7 +440,7 @@ fn well_formed_join_candidate_has_no_consensus_authority() {
         .sign(&body.signing_bytes(candidate))
         .to_bytes();
     assert!(matches!(
-        StateVote::complete(body, candidate, signature, genesis),
+        StateVote::complete(body, candidate, signature, genesis, branch.authority()),
         Err(StateConsensusError::Invalid("inactive consensus signer"))
     ));
     assert!(matches!(
@@ -437,7 +556,7 @@ fn retained_proposal_is_mandatory_and_keeps_exact_body_and_valid_qc() {
     let branch = branch();
     let bytes = record(&branch, "retained");
     let a = proposal(&branch, bytes.clone(), 0, None);
-    let signer = branch.proposer(1, MAX_ROUND).unwrap();
+    let signer = branch.proposer(1, MAX_ROUND).unwrap().unwrap();
     let mut state = lock(&branch, &a, signer);
     higher(&branch, &mut state, 1);
     let before = state.snapshot().unwrap();
@@ -476,7 +595,7 @@ fn retained_proposal_is_mandatory_and_keeps_exact_body_and_valid_qc() {
 #[test]
 fn author_intent_cannot_conflict_or_use_unscheduled_signer() {
     let branch = branch();
-    let signer = branch.proposer(0, MAX_ROUND).unwrap();
+    let signer = branch.proposer(0, MAX_ROUND).unwrap().unwrap();
     let mut state = StateLockState::new(&branch, signer).unwrap();
     let event = StateLockEvent::Author {
         record: Some(record(&branch, "a")),
@@ -529,6 +648,7 @@ fn quorum_progress_timers_require_correct_role_position_and_denominator() {
                 })
                 .collect(),
             branch.state().genesis(),
+            branch.authority(),
         )
         .unwrap()
         .encode()
@@ -596,6 +716,7 @@ fn higher_round_needs_two_distinct_signers_and_bounded_work() {
             0,
         )],
         branch.state().genesis(),
+        branch.authority(),
     )
     .unwrap();
     let before = state.snapshot().unwrap();
@@ -624,6 +745,7 @@ fn higher_round_needs_two_distinct_signers_and_bounded_work() {
             })
             .collect(),
         branch.state().genesis(),
+        branch.authority(),
     )
     .unwrap();
     assert!(
@@ -690,21 +812,21 @@ fn strict_evidence_and_proposal_decoders_reject_mutation_truncation_and_reorderi
         let mut bad = wire.clone();
         bad[index] ^= 1;
         assert!(
-            StateVote::decode(&bad, genesis).is_err(),
+            StateVote::decode(&bad, genesis, branch.authority()).is_err(),
             "vote byte {index}"
         );
     }
     let qc = quorum(&branch, 0, ConsensusVoteRole::Prevote, target(&p));
     let wire = qc.encode();
     for end in 0..wire.len() {
-        assert!(StateQuorum::decode(&wire[..end], genesis).is_err());
+        assert!(StateQuorum::decode(&wire[..end], genesis, branch.authority()).is_err());
     }
     let mut reordered = wire.clone();
     let a = reordered[1..1 + STATE_VOTE_BYTES].to_vec();
     let b = reordered[1 + STATE_VOTE_BYTES..1 + 2 * STATE_VOTE_BYTES].to_vec();
     reordered[1..1 + STATE_VOTE_BYTES].copy_from_slice(&b);
     reordered[1 + STATE_VOTE_BYTES..1 + 2 * STATE_VOTE_BYTES].copy_from_slice(&a);
-    assert!(StateQuorum::decode(&reordered, genesis).is_err());
+    assert!(StateQuorum::decode(&reordered, genesis, branch.authority()).is_err());
     let wire = p.encode().unwrap();
     for end in 0..wire.len() {
         assert!(branch.verify_proposal(&wire[..end], MAX_ROUND).is_err());
@@ -769,19 +891,31 @@ fn height_handoff_requires_exact_verified_parent_and_clears_prior_lock() {
     let p = proposal(&branch, record(&branch, "q"), 0, None);
     let mut state = lock(&branch, &p, validator_key(0));
     let finality = branch
-        .verify_finality(
+        .finalize(
             &p,
             &quorum(&branch, 0, ConsensusVoteRole::Precommit, target(&p)),
             MAX_ROUND,
         )
         .unwrap();
-    state.advance_height(&finality).unwrap();
+    state
+        .advance_height(
+            &finality,
+            ConsensusKey::from_bytes(period_key(0, 2).verifying_key().to_bytes()),
+        )
+        .unwrap();
     assert_eq!(state.height(), 2);
     assert_eq!(state.round(), 0);
     assert_eq!(state.locked_value(), None);
     assert_eq!(state.valid_value(), None);
     let before = state.snapshot().unwrap();
-    assert!(state.advance_height(&finality).is_err());
+    assert!(
+        state
+            .advance_height(
+                &finality,
+                ConsensusKey::from_bytes(period_key(0, 2).verifying_key().to_bytes())
+            )
+            .is_err()
+    );
     assert_eq!(state.snapshot().unwrap(), before);
     assert!(
         state
@@ -796,12 +930,12 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
     let p = proposal(&branch, record(&branch, "authenticated header"), 0, None);
     let qc = quorum(&branch, 0, ConsensusVoteRole::Precommit, target(&p));
     let proof = branch
-        .verify_finality(&p, &qc, MAX_ROUND)
+        .finalize(&p, &qc, MAX_ROUND)
         .unwrap()
         .encode()
         .unwrap();
     assert_eq!(
-        StateFinality::authenticate(&proof, branch.state().genesis(), MAX_ROUND).unwrap(),
+        StateFinality::authenticate(&proof, branch.state(), MAX_ROUND).unwrap(),
         p.value()
     );
     let mut proposal = p.encode().unwrap();
@@ -809,18 +943,20 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
     let record_length = p.record_bytes().len();
     let first = proposal.len() - record_length;
     proposal[first] ^= 1;
-    let mut bytes = b"NSCF1".to_vec();
+    let mut bytes = b"NSCF5".to_vec();
     super::codec::bytes(&mut bytes, &proposal).unwrap();
     super::codec::bytes(&mut bytes, &[0]).unwrap();
+    super::codec::bytes(&mut bytes, &[]).unwrap();
     assert_eq!(
-        StateFinality::authenticate(&bytes, branch.state().genesis(), MAX_ROUND),
+        StateFinality::authenticate(&bytes, branch.state(), MAX_ROUND),
         Err(StateConsensusError::Limit("vote set"))
     );
-    let mut authenticated_bad = b"NSCF1".to_vec();
+    let mut authenticated_bad = b"NSCF5".to_vec();
     super::codec::bytes(&mut authenticated_bad, &proposal).unwrap();
     super::codec::bytes(&mut authenticated_bad, &qc.encode()).unwrap();
+    super::codec::bytes(&mut authenticated_bad, &[]).unwrap();
     assert!(matches!(
-        StateFinality::authenticate(&authenticated_bad, branch.state().genesis(), MAX_ROUND),
+        StateFinality::authenticate(&authenticated_bad, branch.state(), MAX_ROUND),
         Err(StateConsensusError::Ledger(_))
     ));
 }
@@ -837,6 +973,7 @@ fn provisional_ledger_execution_cannot_initialize_a_finalized_branch() {
         .execute(
             record.time_certificate().clone(),
             record.operations().to_vec(),
+            record.handoff_plan().clone(),
         )
         .unwrap();
     // Even an arbitrary externally bound identity cannot manufacture a selected
@@ -846,3 +983,5 @@ fn provisional_ledger_execution_cannot_initialize_a_finalized_branch() {
     assert_eq!(branch.state().height(), 0);
     assert_eq!(branch.state().library().len(), 0);
 }
+
+mod handoff;

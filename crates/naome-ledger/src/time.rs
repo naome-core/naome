@@ -2,6 +2,7 @@
 
 use crate::{
     GenesisId, LedgerError, RecordId, ValidatorId,
+    authority::AuthoritySnapshot,
     codec::{Reader, Writer},
     profile::Genesis,
 };
@@ -32,13 +33,19 @@ impl SignedTimeReport {
     /// proposals keep their original reports unchanged.
     pub fn sign(
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         parent: RecordId,
         height: u64,
         utc_seconds: u64,
         key: &SigningKey,
     ) -> Result<Self, LedgerError> {
         let validator = ValidatorId::for_key(key.verifying_key().as_bytes());
-        if genesis.validator(validator).is_none() {
+        if authority.genesis() != genesis.id()
+            || authority.effective_height() != height
+            || authority
+                .consensus_unit(key.verifying_key().as_bytes())
+                .is_none()
+        {
             return Err(LedgerError::Invalid("unregistered time signer"));
         }
         if height == 0 {
@@ -59,6 +66,7 @@ impl SignedTimeReport {
     pub fn verify(
         &self,
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         parent: RecordId,
         height: u64,
     ) -> Result<(), LedgerError> {
@@ -69,11 +77,23 @@ impl SignedTimeReport {
         {
             return Err(LedgerError::Invalid("time report context"));
         }
-        let registration = genesis
-            .validator(self.validator)
+        if authority.genesis() != genesis.id() || authority.effective_height() != height {
+            return Err(LedgerError::Invalid("time report authority"));
+        }
+        let unit = authority
+            .units()
+            .iter()
+            .find(|unit| {
+                unit.keys()
+                    .is_some_and(|keys| ValidatorId::for_key(keys.consensus()) == self.validator)
+            })
             .ok_or(LedgerError::Invalid("time report validator"))?;
-        let key = VerifyingKey::from_bytes(&registration.consensus_key)
-            .map_err(|_| LedgerError::Invalid("time signer key"))?;
+        let key = VerifyingKey::from_bytes(
+            unit.keys()
+                .ok_or(LedgerError::Invalid("vacant time signer"))?
+                .consensus(),
+        )
+        .map_err(|_| LedgerError::Invalid("time signer key"))?;
         key.verify_strict(
             &self.signing_bytes(),
             &Signature::from_bytes(&self.signature),
@@ -148,6 +168,7 @@ impl TimeCertificate {
     pub fn new(
         mut reports: Vec<SignedTimeReport>,
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         parent: RecordId,
         height: u64,
         parent_time: u64,
@@ -163,7 +184,7 @@ impl TimeCertificate {
         }
         let mut seconds = Vec::with_capacity(reports.len());
         for report in &reports {
-            report.verify(genesis, parent, height)?;
+            report.verify(genesis, authority, parent, height)?;
             seconds.push(report.utc_seconds);
         }
         seconds.sort_unstable();
@@ -191,6 +212,7 @@ impl TimeCertificate {
     pub fn decode(
         bytes: &[u8],
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         parent: RecordId,
         height: u64,
         parent_time: u64,
@@ -212,6 +234,27 @@ impl TimeCertificate {
             reports.push(report);
         }
         reader.finish()?;
-        Self::new(reports, genesis, parent, height, parent_time)
+        Self::new(reports, genesis, authority, parent, height, parent_time)
+    }
+    /// Bounded syntax only. The ledger must reverify against a selected snapshot.
+    pub fn decode_structure(bytes: &[u8]) -> Result<Self, LedgerError> {
+        let mut reader = Reader::new(bytes, TIME_CERTIFICATE_MAX_BYTES)?;
+        let count = reader.u8()?;
+        if !(3..=4).contains(&count) {
+            return Err(LedgerError::Invalid("time quorum"));
+        }
+        let mut reports = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let report = SignedTimeReport::decode(reader.take(TIME_REPORT_BYTES)?)?;
+            if reports
+                .last()
+                .is_some_and(|last: &SignedTimeReport| last.validator >= report.validator)
+            {
+                return Err(LedgerError::Invalid("time report order"));
+            }
+            reports.push(report);
+        }
+        reader.finish()?;
+        Ok(Self { reports, time: 0 })
     }
 }

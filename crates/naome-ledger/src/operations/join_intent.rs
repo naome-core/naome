@@ -179,13 +179,6 @@ impl JoinIntent {
                 return Err(LedgerError::Invalid("join key already has another role"));
             }
         }
-        if genesis
-            .validators()
-            .iter()
-            .any(|validator| validator.endpoint == self.endpoint)
-        {
-            return Err(LedgerError::Invalid("join endpoint already assigned"));
-        }
         Ok(())
     }
 

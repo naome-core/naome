@@ -46,7 +46,11 @@ fn default_queue_accepts_32_in_finalized_order_and_rejects_33_without_mutation()
     let before = state.commitment();
     let nonce = state.next_nonce(author(4));
     assert!(matches!(
-        state.prepare_record(time(&state, state.time()), vec![excess]),
+        state.prepare_record(
+            time(&state, state.time()),
+            vec![excess],
+            handoff_plan(&state)
+        ),
         Err(LedgerError::Limit(_))
     ));
     assert_eq!(state.commitment(), before);

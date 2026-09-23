@@ -127,6 +127,96 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn status(state: &LedgerState) -> Value {
-    let active=state.active().map(|a|json!({"submission":hex(a.submission.as_bytes()),"question":hex(a.question.as_bytes()),"family":hex(a.family.as_bytes()),"attempt":a.number,"phase":format!("{:?}",a.phase),"deadline":a.deadline,"round":a.solution_round.map(|r|hex(r.as_bytes())),"votes":a.votes.iter().map(|(id,yes)|json!({"owner":hex(id.as_bytes()),"yes":yes})).collect::<Vec<_>>(),"commitments":a.commitments,"reveals":a.reveals}));
-    json!({"status":"finalized","genesis":hex(state.genesis().id().as_bytes()),"profile":hex(state.genesis().profile().id().as_bytes()),"height":state.height(),"head":hex(state.head().as_bytes()),"state":hex(state.commitment().as_bytes()),"time":state.time(),"active":active,"library_root":hex(&state.library().root()),"proof_count":state.library().len(),"queued":state.queued().count(),"registered_accounts":state.accounts().len(),"remaining_account_slots":state.genesis().profile().limits().registered_accounts.saturating_sub(state.accounts().len() as u64),"registration_available":state.registration_available(),"accounts":state.balances().accounts().iter().map(|(id,balance)|json!({"account":hex(id.as_bytes()),"balance_atoms":balance.to_string(),"next_nonce":state.next_nonce(*id)})).collect::<Vec<_>>(),"validators":state.genesis().validators().iter().enumerate().map(|(i,v)|json!({"index":i,"owner":hex(v.owner.as_bytes()),"endpoint":v.endpoint})).collect::<Vec<_>>(),"reserve_atoms":state.balances().reserve().to_string(),"paid_completions":state.balances().paid_completions(),"join_intents_count":state.join_intents().len(),"claims":state.claims().values().map(|c|json!({"family":hex(c.family.as_bytes()),"author":hex(c.author.as_bytes()),"ordinal":c.completion_ordinal})).collect::<Vec<_>>(),"remaining_records":state.remaining_records(),"reserved_records":state.reserved_records(),"remaining_bytes":state.remaining_bytes(),"reserved_bytes":state.reserved_bytes(),"terminated":state.terminated()})
+    let active = state.active().map(|attempt| json!({
+        "submission": hex(attempt.submission.as_bytes()),
+        "question": hex(attempt.question.as_bytes()),
+        "family": hex(attempt.family.as_bytes()),
+        "attempt": attempt.number,
+        "phase": format!("{:?}", attempt.phase),
+        "deadline": attempt.deadline,
+        "round": attempt.solution_round.map(|round| hex(round.as_bytes())),
+        "electorate": attempt.electorate.iter().map(|owner| hex(owner.as_bytes())).collect::<Vec<_>>(),
+        "votes": attempt.votes.iter().map(|(owner, yes)| json!({
+            "owner": hex(owner.as_bytes()), "yes": yes,
+        })).collect::<Vec<_>>(),
+        "commitments": attempt.commitments,
+        "reveals": attempt.reveals,
+    }));
+    let validators = state
+        .authority()
+        .units()
+        .iter()
+        .enumerate()
+        .map(|(index, unit)| {
+            json!({
+                "index": index,
+                "slot": hex(unit.slot().as_bytes()),
+                "unit": hex(unit.id().as_bytes()),
+                "owner": hex(unit.owner().as_bytes()),
+                "endpoint": unit.keys().map(|keys| keys.endpoint()),
+                "consensus_key": unit.keys().map(|keys| hex(keys.consensus())),
+                "transport_key": unit.keys().map(|keys| hex(keys.transport())),
+                "available": unit.keys().is_some() && !state.terminated(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let accounts = state
+        .balances()
+        .accounts()
+        .iter()
+        .map(|(account, balance)| {
+            json!({
+                "account": hex(account.as_bytes()),
+                "balance_atoms": balance.to_string(),
+                "next_nonce": state.next_nonce(*account),
+            })
+        })
+        .collect::<Vec<_>>();
+    let claims = state
+        .claims()
+        .values()
+        .map(|claim| {
+            json!({
+                "family": hex(claim.family.as_bytes()),
+                "author": hex(claim.author.as_bytes()),
+                "ordinal": claim.completion_ordinal,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "status": "finalized",
+        "genesis": hex(state.genesis().id().as_bytes()),
+        "profile": hex(state.genesis().profile().id().as_bytes()),
+        "height": state.height(),
+        "head": hex(state.head().as_bytes()),
+        "state": hex(state.commitment().as_bytes()),
+        "time": state.time(),
+        "active": active,
+        "library_root": hex(&state.library().root()),
+        "proof_count": state.library().len(),
+        "queued": state.queued().count(),
+        "registered_accounts": state.accounts().len(),
+        "remaining_account_slots": state.genesis().profile().limits().registered_accounts
+            .saturating_sub(state.accounts().len() as u64),
+        "registration_available": state.registration_available(),
+        "accounts": accounts,
+        "authority": {
+            "id": hex(&state.authority().id()),
+            "effective_height": state.authority().effective_height(),
+            "active_slots": state.authority().active_count(),
+            "terminated": state.terminated(),
+        },
+        "validators": validators,
+        "reserve_atoms": state.balances().reserve().to_string(),
+        "paid_completions": state.balances().paid_completions(),
+        "join_intents_count": state.join_intents().len(),
+        "join_queue": state.join_queue().iter().map(|family| hex(family.as_bytes())).collect::<Vec<_>>(),
+        "consumed_claims": state.consumed_claims().iter().map(|family| hex(family.as_bytes())).collect::<Vec<_>>(),
+        "claims": claims,
+        "remaining_records": state.remaining_records(),
+        "reserved_records": state.reserved_records(),
+        "remaining_bytes": state.remaining_bytes(),
+        "reserved_bytes": state.reserved_bytes(),
+        "terminated": state.terminated(),
+    })
 }

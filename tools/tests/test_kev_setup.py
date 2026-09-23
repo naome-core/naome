@@ -131,6 +131,56 @@ class SetupTests(unittest.TestCase):
         with setup.setup_lock(self.root):
             pass
 
+    def test_interruption_after_waitpid_reaps_without_claiming_success(self):
+        children = []
+        real_popen = subprocess.Popen
+        real_waitpid = os.waitpid
+        interrupted = False
+
+        def spawn(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        def interrupt_after_reap(pid, options):
+            nonlocal interrupted
+            result = real_waitpid(pid, options)
+            if not interrupted and result[0] == children[0].pid:
+                interrupted = True
+                raise KeyboardInterrupt('after owned waitpid reaped the child')
+            return result
+
+        with patch.object(setup.subprocess, 'Popen', side_effect=spawn), \
+             patch.object(runtime.os, 'waitpid', side_effect=interrupt_after_reap):
+            with self.assertRaises(KeyboardInterrupt):
+                setup._run(self.root, [sys.executable, '-c', 'pass'],
+                           os.environ.copy(), 'models_failed')
+        self.assertTrue(interrupted)
+        self.assertEqual(len(children), 1)
+        # The exit status was lost to the interrupt; it must not become success.
+        self.assertEqual(children[0].returncode, 125)
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(children[0].pid, os.WNOHANG)
+
+    def test_nonzero_owned_child_exit_remains_setup_failure(self):
+        with self.assertRaises(setup.SetupError) as error:
+            setup._run(self.root, [sys.executable, '-c', 'import sys; sys.exit(7)'],
+                       os.environ.copy(), 'models_failed')
+        self.assertEqual(error.exception.code, 'models_failed')
+
+    def test_owned_cleanup_reaps_with_poisoned_popen_wait_lock(self):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                 start_new_session=True)
+        child._waitpid_lock.acquire()
+        try:
+            runtime._terminate_owned(child)
+            self.assertEqual(child.returncode, -signal.SIGTERM)
+        finally:
+            child._waitpid_lock.release()
+            if child.returncode is None:
+                child.kill()
+                child.wait(timeout=2)
+
     def test_sigterm_reaps_installation_before_releasing_setup_lock(self):
         launcher = '''
 import os, sys

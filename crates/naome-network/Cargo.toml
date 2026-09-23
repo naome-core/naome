@@ -20,6 +20,7 @@ libp2p = { version = "0.56.0", default-features = false, features = [
 ] }
 naome-protocol = { path = "../naome-protocol" }
 naome-ledger = { path = "../naome-ledger" }
+ed25519-dalek.workspace = true
 sha2.workspace = true
 tokio = { version = "1", default-features = false, features = ["macros", "time"] }
 

@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
 naome-chain = { path = "../naome-chain" }
 naome-consensus = { path = "../naome-consensus" }
 naome-network = { path = "../naome-network" }
@@ -17,11 +18,12 @@ naome-proof = { path = "../naome-proof" }
 naome-ledger = { path = "../naome-ledger" }
 naome-storage = { path = "../naome-storage" }
 sha2.workspace = true
+zeroize = "1.9"
+getrandom = "0.3"
 tokio = { version = "1", default-features = false, features = ["macros", "time"] }
 
 [dev-dependencies]
 naome-checker = { path = "../naome-checker" }
-ed25519-dalek.workspace = true
 naome-foundation = { path = "../naome-foundation" }
 tokio = { version = "1", default-features = false, features = ["rt", "test-util"] }
 

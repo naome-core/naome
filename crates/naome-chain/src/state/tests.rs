@@ -1,4 +1,4 @@
-use super::test_support::{account, genesis, validator};
+use super::test_support::{account, genesis, handoff_plan, period_key, validator};
 use super::*;
 use naome_checker::{ArtifactState, check_normal_form_with_state};
 use naome_foundation::FreeVariable;
@@ -22,15 +22,17 @@ fn time(state: &LedgerState, utc: u64) -> TimeCertificate {
             .map(|i| {
                 SignedTimeReport::sign(
                     state.genesis(),
+                    state.authority(),
                     state.head(),
                     state.height() + 1,
                     utc,
-                    &validator(i),
+                    &period_key(i, state.authority().effective_height(), 1),
                 )
                 .unwrap()
             })
             .collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         state.height() + 1,
         state.time(),
@@ -39,7 +41,9 @@ fn time(state: &LedgerState, utc: u64) -> TimeCertificate {
 }
 fn apply(state: &mut LedgerState, utc: u64, ops: Vec<SignedOperation>) -> StateRecord {
     let before = state.commitment();
-    let transition = state.prepare_record(time(state, utc), ops).unwrap();
+    let transition = state
+        .prepare_record(time(state, utc), ops, handoff_plan(state))
+        .unwrap();
     assert_eq!(state.commitment(), before);
     let record = transition.record().clone();
     let decoded = StateRecord::decode(&record.encode().unwrap(), state.genesis()).unwrap();
@@ -196,10 +200,64 @@ fn complete_real_proof_settlement_and_replay_are_atomic() {
     let before = state.commitment();
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![duplicate])
+            .prepare_record(
+                time(&state, state.time()),
+                vec![duplicate],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     assert_eq!(state.commitment(), before);
+}
+
+#[test]
+fn every_timing_profile_preserves_complete_certified_phase_windows() {
+    use naome_ledger::profile::Profile;
+    for (profile, voting, commitment, reveal) in [
+        (Profile::lab(), 300, 120, 120),
+        (Profile::research(), 604800, 86400, 86400),
+        (Profile::short_test(), 15, 8, 8),
+        (Profile::ci_test(), 1, 8, 8),
+    ] {
+        let mut state = LedgerState::new(super::test_support::genesis_with_profile(profile));
+        submit(&mut state, "forall(x,equal(x,x))");
+        apply(&mut state, 100, vec![]);
+        let active = state.active().unwrap();
+        assert_eq!(active.deadline, Some(100 + voting));
+        let votes = (0..3)
+            .map(|i| {
+                signed(
+                    &state,
+                    i,
+                    OperationBody::Vote {
+                        question: active.question,
+                        attempt: active.number,
+                        yes: true,
+                    },
+                )
+            })
+            .collect();
+        apply(&mut state, 100, votes);
+        assert_eq!(state.active().unwrap().phase, Phase::Voting);
+        apply(&mut state, 100 + voting - 1, vec![]);
+        assert_eq!(state.active().unwrap().phase, Phase::Voting);
+        apply(&mut state, 100 + voting, vec![]);
+        assert_eq!(state.active().unwrap().phase, Phase::ApprovedWait);
+        apply(&mut state, 100 + voting, vec![]);
+        let commit_deadline = 100 + voting + commitment;
+        assert_eq!(state.active().unwrap().deadline, Some(commit_deadline));
+        apply(&mut state, commit_deadline - 1, vec![]);
+        assert_eq!(state.active().unwrap().phase, Phase::Commit);
+        apply(&mut state, commit_deadline, vec![]);
+        assert_eq!(state.active().unwrap().phase, Phase::CommitClosedWait);
+        apply(&mut state, commit_deadline, vec![]);
+        let reveal_deadline = commit_deadline + reveal;
+        assert_eq!(state.active().unwrap().deadline, Some(reveal_deadline));
+        apply(&mut state, reveal_deadline - 1, vec![]);
+        assert_eq!(state.active().unwrap().phase, Phase::Reveal);
+        apply(&mut state, reveal_deadline, vec![]);
+        assert_eq!(state.active().unwrap().phase, Phase::SettlementPending);
+    }
 }
 
 #[test]
@@ -218,7 +276,7 @@ fn phase_start_deadline_and_nonce_rejections_leave_parent_unchanged() {
     );
     assert!(
         state
-            .prepare_record(time(&state, 100), vec![fabricated])
+            .prepare_record(time(&state, 100), vec![fabricated], handoff_plan(&state))
             .is_err()
     );
     assert_eq!(state.commitment(), before);
@@ -236,7 +294,11 @@ fn phase_start_deadline_and_nonce_rejections_leave_parent_unchanged() {
     let before = state.commitment();
     assert!(
         state
-            .prepare_record(time(&state, active.deadline.unwrap()), vec![late])
+            .prepare_record(
+                time(&state, active.deadline.unwrap()),
+                vec![late],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     assert_eq!(state.commitment(), before);
@@ -249,7 +311,7 @@ fn phase_start_deadline_and_nonce_rejections_leave_parent_unchanged() {
     .unwrap();
     assert!(
         state
-            .prepare_record(time(&state, 100), vec![wrong])
+            .prepare_record(time(&state, 100), vec![wrong], handoff_plan(&state))
             .is_err()
     );
     assert_eq!(state.next_nonce(author(0)), Some(1));
@@ -265,12 +327,15 @@ fn phase_start_deadline_and_nonce_rejections_leave_parent_unchanged() {
     let id = valid.id();
     apply(&mut state, 100, vec![valid.clone()]);
     let before = state.commitment();
-    assert!(
-        state
-            .prepare_record(time(&state, 100), vec![valid])
-            .is_err()
-    );
+    let replay = state
+        .prepare_record(time(&state, 100), vec![valid], handoff_plan(&state))
+        .unwrap();
     assert_eq!(state.commitment(), before);
+    assert_eq!(
+        replay.state().next_nonce(author(0)),
+        state.next_nonce(author(0))
+    );
+    assert_eq!(replay.state().receipt(id), state.receipt(id));
     assert!(state.receipt(id).is_some());
 }
 
@@ -322,11 +387,19 @@ fn supplied_time_cache_is_recomputed_against_actual_parent() {
     let cert = TimeCertificate::new(
         (0..3)
             .map(|i| {
-                SignedTimeReport::sign(state.genesis(), state.head(), 1, 100, &validator(i))
-                    .unwrap()
+                SignedTimeReport::sign(
+                    state.genesis(),
+                    state.authority(),
+                    state.head(),
+                    1,
+                    100,
+                    &period_key(i, 1, 1),
+                )
+                .unwrap()
             })
             .collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         1,
         u64::MAX,
@@ -341,7 +414,9 @@ fn supplied_time_cache_is_recomputed_against_actual_parent() {
             question: question(&state, "forall(x,equal(x,x))"),
         },
     );
-    let transition = state.prepare_record(cert, vec![op]).unwrap();
+    let transition = state
+        .prepare_record(cert, vec![op], handoff_plan(&state))
+        .unwrap();
     assert_eq!(transition.state().time(), 100);
 }
 
@@ -481,7 +556,7 @@ fn invalid_or_missing_earlier_reveal_does_not_block_later_eligible_commitment() 
             let before = state.commitment();
             assert!(
                 state
-                    .prepare_record(time(&state, state.time()), vec![op])
+                    .prepare_record(time(&state, state.time()), vec![op], handoff_plan(&state))
                     .is_err()
             );
             assert_eq!(state.commitment(), before);
@@ -524,7 +599,11 @@ fn reveal_at_exact_deadline_and_wrong_original_author_are_rejected() {
     );
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![wrong])
+            .prepare_record(
+                time(&state, state.time()),
+                vec![wrong],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     let valid = signed(
@@ -540,7 +619,7 @@ fn reveal_at_exact_deadline_and_wrong_original_author_are_rejected() {
     let before = state.commitment();
     assert!(
         state
-            .prepare_record(time(&state, deadline), vec![valid])
+            .prepare_record(time(&state, deadline), vec![valid], handoff_plan(&state))
             .is_err()
     );
     assert_eq!(state.commitment(), before);
@@ -552,12 +631,22 @@ fn reveal_at_exact_deadline_and_wrong_original_author_are_rejected() {
 fn record_roundtrip_preserves_parent_time_clamp_and_rejects_claimed_effect_tampering() {
     let mut state = LedgerState::new(genesis());
     submit(&mut state, "forall(x,equal(x,x))");
-    let transition = state.prepare_record(time(&state, 50), vec![]).unwrap();
+    let transition = state
+        .prepare_record(time(&state, 50), vec![], handoff_plan(&state))
+        .unwrap();
     let record = transition.record();
     assert_eq!(record.time(), 100);
+    let decoded = StateRecord::decode(&record.encode().unwrap(), state.genesis()).unwrap();
+    assert_eq!(decoded.encode().unwrap(), record.encode().unwrap());
+    assert_eq!(decoded.time(), record.time());
     assert_eq!(
-        &StateRecord::decode(&record.encode().unwrap(), state.genesis()).unwrap(),
-        record
+        state
+            .validate_record(&decoded)
+            .unwrap()
+            .record()
+            .encode()
+            .unwrap(),
+        record.encode().unwrap()
     );
     let mut changed = record.encode().unwrap();
     *changed.last_mut().unwrap() ^= 1;
@@ -603,7 +692,7 @@ fn streaming_state_commitment_matches_materialized_canonical_bytes() {
         let bytes = snapshot.canonical_bytes();
         assert_eq!(
             snapshot.commitment().as_bytes(),
-            &hash(b"naome:state:state:v4\0", &[&bytes])
+            &hash(b"naome:state:state:v5\0", &[&bytes])
         );
     }
 }
@@ -839,7 +928,8 @@ fn multiple_reveals_share_budget_before_any_additional_checker_call() {
         state
             .prepare_record(
                 time(&state, state.time()),
-                vec![first.clone(), second.clone()]
+                vec![first.clone(), second.clone()],
+                handoff_plan(&state),
             )
             .is_err()
     );
@@ -881,7 +971,11 @@ fn minimum_65_record_run_terminates_before_unfunded_opening_and_preserves_reads(
     let before = state.commitment();
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![new_action.clone()])
+            .prepare_record(
+                time(&state, state.time()),
+                vec![new_action.clone()],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     assert_eq!(state.commitment(), before);
@@ -907,7 +1001,7 @@ fn minimum_65_record_run_terminates_before_unfunded_opening_and_preserves_reads(
     for operations in [vec![], vec![new_action]] {
         assert!(
             state
-                .prepare_record(time(&state, state.time()), operations)
+                .prepare_record(time(&state, state.time()), operations, handoff_plan(&state))
                 .is_err()
         );
         assert_eq!(state.commitment(), terminal);
@@ -953,7 +1047,7 @@ fn minimum_66_record_run_protects_active_slots_and_settles_timely_reveal_after_p
     let nonce = state.next_nonce(author(5));
     assert!(
         state
-            .prepare_record(time(&state, now), vec![unrelated])
+            .prepare_record(time(&state, now), vec![unrelated], handoff_plan(&state))
             .is_err()
     );
     assert_eq!(state.commitment(), before);
@@ -1021,7 +1115,11 @@ fn minimum_66_record_run_protects_active_slots_and_settles_timely_reveal_after_p
     let before = state.commitment();
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![new_action])
+            .prepare_record(
+                time(&state, state.time()),
+                vec![new_action],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     assert_eq!(state.commitment(), before);
@@ -1031,7 +1129,11 @@ fn minimum_66_record_run_protects_active_slots_and_settles_timely_reveal_after_p
     assert!(state.library().lookup(root).is_some());
     assert_eq!(state.balances().account(author(4)), Some(700_000_000));
     assert_eq!(state.claims().len(), 1);
-    assert!(state.prepare_record(time(&state, now), vec![]).is_err());
+    assert!(
+        state
+            .prepare_record(time(&state, now), vec![], handoff_plan(&state))
+            .is_err()
+    );
 }
 
 #[test]
@@ -1065,7 +1167,11 @@ fn actual_queue_limit_and_exact_expiry_preserve_state_on_rejection() {
     let nonce = state.next_nonce(author(5));
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![excess])
+            .prepare_record(
+                time(&state, state.time()),
+                vec![excess],
+                handoff_plan(&state)
+            )
             .is_err()
     );
     assert_eq!(state.commitment(), before);

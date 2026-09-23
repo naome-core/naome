@@ -1,6 +1,15 @@
 use super::*;
 use crate::test_support::{account, genesis};
 
+fn genesis_rewards(
+    genesis: &Genesis,
+    author: AccountId,
+    citations: Vec<CitationRecipient>,
+) -> Result<RewardPlan, LedgerError> {
+    let authority = AuthoritySnapshot::from_genesis(genesis)?;
+    RewardPlan::new(genesis, &authority, author, citations)
+}
+
 fn author(i: u8) -> AccountId {
     AccountId::for_key(account(i).verifying_key().as_bytes())
 }
@@ -17,7 +26,7 @@ fn registry(genesis: &Genesis) -> BTreeMap<AccountId, [u8; 32]> {
 fn no_citations_preserves_exact_supply() {
     let genesis = genesis();
     let registry = registry(&genesis);
-    let plan = RewardPlan::new(&genesis, author(4), vec![]).unwrap();
+    let plan = genesis_rewards(&genesis, author(4), vec![]).unwrap();
     assert_eq!(plan.credits()[&author(4)], 700_000_000);
     for i in 0..4 {
         assert_eq!(plan.credits()[&author(i)], 50_000_000);
@@ -49,7 +58,7 @@ fn division_precedes_shared_recipient_aggregation() {
             recipient: author(4),
         },
     ];
-    let plan = RewardPlan::new(&genesis, author(4), citations).unwrap();
+    let plan = genesis_rewards(&genesis, author(4), citations).unwrap();
     assert_eq!(
         plan.citations().iter().map(|x| x.2).collect::<Vec<_>>(),
         vec![33_333_334, 33_333_333, 33_333_333]
@@ -69,10 +78,10 @@ fn duplicate_or_unknown_recipients_cannot_gain_payments() {
         proof: ProofId::from_bytes([1; 32]),
         recipient: author(4),
     };
-    assert!(RewardPlan::new(&genesis, author(4), vec![citation, citation]).is_err());
+    assert!(genesis_rewards(&genesis, author(4), vec![citation, citation]).is_err());
     let plans = [
-        RewardPlan::new(&genesis, author(9), vec![]).unwrap(),
-        RewardPlan::new(
+        genesis_rewards(&genesis, author(9), vec![]).unwrap(),
+        genesis_rewards(
             &genesis,
             author(4),
             vec![CitationRecipient {
@@ -94,7 +103,7 @@ fn duplicate_or_unknown_recipients_cannot_gain_payments() {
 fn arithmetic_failure_keeps_all_balances_unchanged() {
     let genesis = genesis();
     let registry = registry(&genesis);
-    let plan = RewardPlan::new(&genesis, author(4), vec![]).unwrap();
+    let plan = genesis_rewards(&genesis, author(4), vec![]).unwrap();
     let mut balances = Balances::new(&genesis);
     balances.accounts.insert(author(4), u128::MAX);
     let before = balances.clone();
@@ -120,9 +129,9 @@ fn new_registered_accounts_start_empty_and_receive_author_and_citation_rewards()
     balances.verify_conservation(&genesis, &registry).unwrap();
     assert_eq!(balances.paid_completions(), 0);
     assert_eq!(balances.reserve(), 0);
-    let first = RewardPlan::new(&genesis, author(8), vec![]).unwrap();
+    let first = genesis_rewards(&genesis, author(8), vec![]).unwrap();
     balances.apply(&first, &genesis, &registry).unwrap();
-    let second = RewardPlan::new(
+    let second = genesis_rewards(
         &genesis,
         author(9),
         vec![CitationRecipient {
@@ -147,7 +156,7 @@ fn exact_registry_membership_is_required_even_for_zero_balances() {
     let mut balances = Balances::new(&genesis);
     balances.register(author(9)).unwrap();
     assert!(balances.verify_conservation(&genesis, &registry).is_err());
-    let plan = RewardPlan::new(&genesis, author(9), vec![]).unwrap();
+    let plan = genesis_rewards(&genesis, author(9), vec![]).unwrap();
     let before = balances.clone();
     assert!(balances.apply(&plan, &genesis, &registry).is_err());
     assert_eq!(balances, before);

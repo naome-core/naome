@@ -19,34 +19,37 @@ pub(super) fn finality(
     operations: Vec<SignedOperation>,
 ) -> Vec<u8> {
     let state = branch.state();
+    let period = state.authority().effective_height();
     let time = TimeCertificate::new(
         (0..3)
             .map(|i| {
                 SignedTimeReport::sign(
                     state.genesis(),
+                    state.authority(),
                     state.head(),
                     state.height() + 1,
                     now,
-                    &consensus(i),
+                    &period_key(i, period, 1),
                 )
                 .unwrap()
             })
             .collect(),
         state.genesis(),
+        state.authority(),
         state.head(),
         state.height() + 1,
         state.time(),
     )
     .unwrap();
     let record = state
-        .prepare_record(time, operations)
+        .prepare_record(time, operations, handoff_plan(state))
         .unwrap()
         .record()
         .encode()
         .unwrap();
-    let proposer = branch.proposer(0, 8).unwrap();
+    let proposer = branch.proposer(0, 8).unwrap().unwrap();
     let signer = (0..4)
-        .map(consensus)
+        .map(|i| period_key(i, period, 1))
         .find(|key| key.verifying_key().as_bytes() == proposer.as_bytes())
         .unwrap();
     let mut kernel = StateLockState::new(branch, proposer).unwrap();
@@ -69,7 +72,7 @@ pub(super) fn finality(
         .map(|i| {
             StateLockState::new(
                 branch,
-                ConsensusKey::from_bytes(consensus(i).verifying_key().to_bytes()),
+                ConsensusKey::from_bytes(period_key(i, period, 1).verifying_key().to_bytes()),
             )
             .unwrap()
         })
@@ -85,7 +88,7 @@ pub(super) fn finality(
                 8,
             )
             .unwrap();
-        let signature = consensus(i as u8)
+        let signature = period_key(i as u8, period, 1)
             .sign(&intent.signing_bytes().unwrap())
             .to_bytes();
         let StatePublication::Vote(vote) = intent.complete(signature, branch, 8).unwrap() else {
@@ -93,7 +96,7 @@ pub(super) fn finality(
         };
         votes.push(vote);
     }
-    let prevotes = StateQuorum::from_votes(votes, state.genesis()).unwrap();
+    let prevotes = StateQuorum::from_votes(votes, state.genesis(), state.authority()).unwrap();
     let mut votes = Vec::new();
     for (i, kernel) in kernels.iter_mut().enumerate() {
         let intent = kernel
@@ -106,7 +109,7 @@ pub(super) fn finality(
                 8,
             )
             .unwrap();
-        let signature = consensus(i as u8)
+        let signature = period_key(i as u8, period, 1)
             .sign(&intent.signing_bytes().unwrap())
             .to_bytes();
         let StatePublication::Vote(vote) = intent.complete(signature, branch, 8).unwrap() else {
@@ -114,9 +117,10 @@ pub(super) fn finality(
         };
         votes.push(vote);
     }
-    let precommits = StateQuorum::from_votes(votes, state.genesis()).unwrap();
+    let precommits = StateQuorum::from_votes(votes, state.genesis(), state.authority()).unwrap();
+    let agreement = branch.verify_agreement(&proposal, &precommits, 8).unwrap();
     branch
-        .verify_finality(&proposal, &precommits, 8)
+        .verify_finality(&proposal, &precommits, &seal(&agreement), 8)
         .unwrap()
         .encode()
         .unwrap()
@@ -321,8 +325,12 @@ async fn pair() -> (
     .unwrap();
     drop(listeners);
     let (directory, anchors, history, proof, root, bytes) = selected_history(g.clone());
-    let mut a = StateNetwork::new_state(transport(0), &g).unwrap();
-    let mut b = StateNetwork::new_state(transport(1), &g).unwrap();
+    let selected = history.head().unwrap().state();
+    let period = selected.authority().effective_height();
+    let identity =
+        |index: u8| Keypair::ed25519_from_bytes(period_key(index, period, 2).to_bytes()).unwrap();
+    let mut a = StateNetwork::new_for_parent(identity(0), selected).unwrap();
+    let mut b = StateNetwork::new_for_parent(identity(1), selected).unwrap();
     a.listen_on(a.state_listen_address().unwrap().clone())
         .unwrap();
     b.listen_on(b.state_listen_address().unwrap().clone())
@@ -337,7 +345,12 @@ async fn pair() -> (
         history,
         None,
         a,
-        (1..4).map(|i| transport(i).public().to_peer_id()).collect(),
+        (1..4)
+            .map(|i| {
+                naome_network::state_peer_id(period_key(i, period, 2).verifying_key().to_bytes())
+                    .unwrap()
+            })
+            .collect(),
         StateRuntimeConfig {
             allow_simulation_controls: true,
             ..StateRuntimeConfig::default()
@@ -355,13 +368,127 @@ async fn respond(
     let mut response = Some(response);
     tokio::time::timeout(Duration::from_secs(10),async {loop {tokio::select! {
         event=runtime.network.next_event()=>{
-            let done=matches!(event,NetworkEvent::OutboundState(_));runtime.network_event(event).unwrap();if done {break;}
+            if let Some(StateTransportEvent::Active(event)) = event {
+                let done=matches!(event,NetworkEvent::OutboundState(_));
+                runtime.network_event(event,naome_network::StateLane::Active).unwrap();
+                if done {break;}
+            }
         },
         event=server.next_event()=>if let NetworkEvent::InboundState(inbound)=event {
             assert_eq!(inbound.peer_id(),runtime.local_peer_id());assert!(matches!(inbound.request().body(),StateRequestBody::Proof{..}));
             server.respond_state(inbound,response.take().unwrap()).unwrap();
         },
     }}}).await.unwrap();
+}
+
+#[tokio::test]
+async fn ordinary_deliveries_share_two_slots_without_leapfrogging_a_seal() {
+    let (_directory, _anchors, mut runtime, server, ..) = pair().await;
+    let peer = server.local_peer_id();
+    runtime
+        .enqueue(peer, StateRequestBody::Proposal(vec![1; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        1
+    );
+
+    runtime
+        .enqueue(peer, StateRequestBody::Agreement(vec![2; 80].into()))
+        .unwrap();
+    runtime
+        .enqueue(peer, StateRequestBody::Vote(vec![3; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        1
+    );
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .any(|d| matches!(d.body, StateRequestBody::Agreement(_)))
+    );
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .any(|d| matches!(d.body, StateRequestBody::Vote(_)))
+    );
+
+    // With no serial item ahead, the ordinary vote can take the second slot.
+    runtime
+        .outbox
+        .retain(|d| !matches!(d.body, StateRequestBody::Agreement(_)));
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        2
+    );
+    runtime
+        .enqueue(peer, StateRequestBody::TimeReport(vec![4; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        2
+    );
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .any(|d| matches!(d.body, StateRequestBody::TimeReport(_)))
+    );
+}
+
+#[tokio::test]
+async fn waiting_proof_fetch_keeps_a_second_ordinary_delivery_queued() {
+    let (_directory, _anchors, mut runtime, server, proof, ..) = pair().await;
+    let peer = server.local_peer_id();
+    runtime
+        .enqueue(peer, StateRequestBody::Proposal(vec![1; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    runtime.start_proof_fetch(peer, proof).unwrap();
+    runtime
+        .enqueue(peer, StateRequestBody::Vote(vec![2; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert!(
+        runtime
+            .proof_fetches
+            .iter()
+            .any(|fetch| fetch.peer == peer && fetch.ticket.is_none())
+    );
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        1
+    );
+    assert!(runtime.outbox.iter().any(|delivery| {
+        delivery.peer == peer && matches!(delivery.body, StateRequestBody::Vote(_))
+    }));
 }
 #[tokio::test]
 async fn actual_noise_proof_fetch_checks_selected_bytes_and_bounds_retention() {
