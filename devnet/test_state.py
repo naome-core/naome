@@ -2,9 +2,11 @@
 import json
 import os
 import signal
+import struct
 import subprocess
 import sys
 import threading
+import time
 import socket
 from proxy import Proxy
 from pathlib import Path
@@ -13,8 +15,46 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from state_backend import Backend
+from state_backend import Backend, MAX_PROBE_RESPONSE, STATUS_MEMORY, StatusProbe
 from state_qualify import Qualification, atomic
+
+
+class StatusSocket:
+    """Serve actual framed control requests to a local persistent probe."""
+    def __init__(self, path, responses):
+        self.responses = responses
+        self.requests = []
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(path))
+        self.listener.listen()
+        self.listener.settimeout(3)
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    @staticmethod
+    def exact(connection, size):
+        result = bytearray()
+        while len(result) < size:
+            part = connection.recv(size - len(result))
+            if not part:
+                raise RuntimeError('short test control request')
+            result.extend(part)
+        return bytes(result)
+
+    def serve(self):
+        try:
+            for response in self.responses:
+                with self.listener.accept()[0] as connection:
+                    size = struct.unpack('>I', self.exact(connection, 4))[0]
+                    self.requests.append(json.loads(self.exact(connection, size)))
+                    connection.sendall(response())
+        finally:
+            self.listener.close()
+
+    def join(self):
+        self.thread.join(timeout=4)
+        if self.thread.is_alive():
+            raise AssertionError('control test server did not finish')
 
 
 class CanonicalQualification(unittest.TestCase):
@@ -146,11 +186,161 @@ class CanonicalQualification(unittest.TestCase):
             args = SimpleNamespace(backend='docker', subnet='172.30.88.0/24')
             backend = Backend(args, Path(tmp))
             backend.containers[0] = 'container-0'
-            output = json.dumps({'status': self.state(), 'memory_bytes': 12})
-            with patch('state_backend.command', return_value=SimpleNamespace(returncode=0, stdout=output)) as run:
+            root = Path(tmp)
+            memory = root / 'memory.current'
+            memory.write_text('12')
+            control = root / 'control.sock'
+            backend.config(0).parent.mkdir(parents=True)
+            backend.config(0).write_text(json.dumps({'control_socket': str(control)}))
+            def frame(status, used):
+                def response():
+                    memory.write_text(str(used))
+                    body = json.dumps(status).encode()
+                    return struct.pack('>I', len(body)) + body
+                return response
+            server = StatusSocket(control, [frame(self.state(height=3), 12),
+                                            frame(self.state(height=4), 13)])
+            probe = StatusProbe([sys.executable, '-u', '-c', STATUS_MEMORY,
+                                 str(backend.config(0)), str(memory)])
+            backend.probes[0] = probe
+            try:
+                self.assertEqual(backend.status_memory(0), (self.state(height=3), 12))
+                pid = probe.process.pid
+                self.assertEqual(backend.status_memory(0), (self.state(height=4), 13))
+                self.assertIs(backend.probes[0], probe)
+                self.assertEqual(probe.process.pid, pid)
+                self.assertEqual(server.requests, [{'command': 'status'}] * 2)
+            finally:
+                backend.cleanup()
+                server.join()
+            self.assertIsNotNone(probe.process.poll())
+
+    def test_docker_probe_creation_uses_one_interactive_exec(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = Backend(SimpleNamespace(backend='docker', subnet='172.30.88.0/24'), Path(tmp))
+            backend.containers[0] = 'container-0'
+            fake = Mock()
+            fake.request.return_value = (self.state(), 12)
+            with patch('state_backend.StatusProbe', return_value=fake) as constructor:
                 self.assertEqual(backend.status_memory(0), (self.state(), 12))
-            self.assertEqual(run.call_count, 1)
-            self.assertEqual(run.call_args.args[0][:3], ['docker', 'exec', 'container-0'])
+                self.assertEqual(backend.status_memory(0), (self.state(), 12))
+            constructor.assert_called_once()
+            argv = constructor.call_args.args[0]
+            self.assertEqual(argv[:4], ['docker', 'exec', '-i', 'container-0'])
+            self.assertEqual(argv[4:7], ['python3', '-u', '-c'])
+            self.assertEqual(argv[-1], str(backend.config(0)))
+            backend.cleanup()
+
+    def test_status_probe_rejects_control_errors_and_oversize_and_resets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = Backend(SimpleNamespace(backend='docker', subnet='172.30.88.0/24'), root)
+            backend.containers[0] = 'container-0'
+            control = root / 'control.sock'
+            memory = root / 'memory.current'
+            memory.write_text('17')
+            backend.config(0).parent.mkdir(parents=True)
+            backend.config(0).write_text(json.dumps({'control_socket': str(control)}))
+            error = json.dumps({'error': 'denied'}).encode()
+            server = StatusSocket(control, [lambda: struct.pack('>I', len(error)) + error,
+                                            lambda: struct.pack('>I', 3 * 1024 * 1024 + 1)])
+            try:
+                for _ in range(2):
+                    probe = StatusProbe([sys.executable, '-u', '-c', STATUS_MEMORY,
+                                         str(backend.config(0)), str(memory)])
+                    backend.probes[0] = probe
+                    self.assertIsNone(backend.status_memory(0, tolerate=True))
+                    self.assertNotIn(0, backend.probes)
+                    self.assertIsNotNone(probe.process.poll())
+                self.assertEqual(server.requests, [{'command': 'status'}] * 2)
+            finally:
+                backend.cleanup()
+                server.join()
+
+    def test_status_probe_early_closed_pipe_retries_without_hiding_hard_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = Backend(SimpleNamespace(backend='docker', subnet='172.30.88.0/24'), root)
+            backend.containers[0] = 'container-0'
+            def closed_stdin():
+                marker = root / 'stdin-closed'
+                marker.unlink(missing_ok=True)
+                probe = StatusProbe([sys.executable, '-u', '-c',
+                    "import os,sys,time;os.close(0);open(sys.argv[1],'w').close();time.sleep(30)",
+                    str(marker)])
+                deadline = time.monotonic() + 2
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(marker.exists(), 'test child did not close stdin')
+                return probe
+            first = closed_stdin()
+            backend.probes[0] = first
+            self.assertIsNone(backend.status_memory(0, tolerate=True))
+            self.assertNotIn(0, backend.probes)
+            self.assertIsNotNone(first.process.poll())
+            second = closed_stdin()
+            backend.probes[0] = second
+            with self.assertRaisesRegex(RuntimeError, 'pipe failed'):
+                backend.status_memory(0)
+            self.assertNotIn(0, backend.probes)
+            self.assertIsNotNone(second.process.poll())
+
+            control = root / 'control.sock'
+            memory = root / 'memory.current'
+            memory.write_text('19')
+            backend.config(0).parent.mkdir(parents=True)
+            backend.config(0).write_text(json.dumps({'control_socket': str(control)}))
+            body = json.dumps(self.state(height=5)).encode()
+            server = StatusSocket(control, [lambda: struct.pack('>I', len(body)) + body])
+            third = StatusProbe([sys.executable, '-u', '-c', STATUS_MEMORY,
+                                 str(backend.config(0)), str(memory)])
+            backend.probes[0] = third
+            try:
+                self.assertEqual(backend.status_memory(0), (self.state(height=5), 19))
+                self.assertEqual(server.requests, [{'command': 'status'}])
+            finally:
+                backend.cleanup()
+                server.join()
+            self.assertIsNotNone(third.process.poll())
+
+    def test_status_probe_bounds_pipe_response_and_timeout(self):
+        oversized = StatusProbe([sys.executable, '-u', '-c',
+            "import struct,sys;sys.stdin.buffer.readline();sys.stdout.buffer.write(struct.pack('>I',int(sys.argv[1])));sys.stdout.buffer.flush();sys.stdin.buffer.read()",
+            str(MAX_PROBE_RESPONSE + 1)])
+        with self.assertRaisesRegex(RuntimeError, 'oversized'):
+            oversized.request(timeout=2)
+        self.assertTrue(oversized.closed)
+        self.assertIsNotNone(oversized.process.poll())
+        stalled = StatusProbe([sys.executable, '-u', '-c',
+            'import sys,time;sys.stdin.buffer.readline();time.sleep(30)'])
+        with self.assertRaisesRegex(TimeoutError, 'timed out'):
+            stalled.request(timeout=0.1)
+        self.assertTrue(stalled.closed)
+        self.assertIsNotNone(stalled.process.poll())
+
+    def test_status_probe_closes_on_restart_stop_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = Backend(SimpleNamespace(backend='docker', subnet='172.30.88.0/24'), Path(tmp))
+            backend.containers[0] = 'container-0'
+            def idle_probe():
+                return StatusProbe([sys.executable, '-u', '-c',
+                                    'import sys;sys.stdin.buffer.read()'])
+            first = idle_probe()
+            backend.probes[0] = first
+            backend.compose = Mock(return_value='')
+            backend.start(0)
+            self.assertIsNotNone(first.process.poll())
+            second = idle_probe()
+            backend.probes[0] = second
+            state = SimpleNamespace(stdout=json.dumps([{'State': {
+                'Running': False, 'ExitCode': 0, 'OOMKilled': False}}]))
+            with patch('state_backend.command', return_value=state):
+                backend.stop(0)
+            self.assertIsNotNone(second.process.poll())
+            third = idle_probe()
+            backend.probes[0] = third
+            backend.cleanup()
+            self.assertIsNotNone(third.process.poll())
 
     def test_dead_wrapper_cleanup_stops_descendants(self):
         import select

@@ -78,6 +78,15 @@ impl StateRuntime {
         let maximum = state.genesis().profile().limits().transport_frame_bytes as usize;
         let capacity = state.genesis().profile().limits().transport_buffer_frames as usize;
         let height = state.height();
+        if matches!(&body, StateRequestBody::Finalized(_))
+            && self.network.active().is_some()
+            && self.confirmed_parent.get(&peer) == Some(&height)
+        {
+            // An accepted offer was checked against this exact selected
+            // parent by the peer. Its already-durable finality need not
+            // occupy the one outbound flight to that peer again.
+            return Ok(());
+        }
         if matches!(&body, StateRequestBody::UserAction(_)) {
             // Candidate couriers have no ordinary relay authority. Keep most
             // of the bounded queue available for consensus and sealing even
@@ -180,6 +189,34 @@ impl StateRuntime {
             }
             self.acknowledged.push_back(id);
         }
+        Ok(())
+    }
+    /// The remote runtime accepts an Offer only after verifying its signed
+    /// current authority, head, and state commitment. Keep this proof only
+    /// for configured selected peers; recovery and prepared peers still need
+    /// explicit finality while they catch up.
+    pub(super) fn remember_confirmed_parent(&mut self, delivery: &Delivery) -> Result<()> {
+        if !matches!(&delivery.body, StateRequestBody::Offer(_))
+            || delivery.height != self.state()?.height()
+            || !self.peers.contains(&delivery.peer)
+            || self.recovery_clients.contains(&delivery.peer)
+            || self.recovery_authenticated.contains(&delivery.peer)
+            || !self
+                .network
+                .active()
+                .is_some_and(|network| network.is_configured_peer(&delivery.peer))
+        {
+            return Ok(());
+        }
+        self.confirmed_parent.insert(delivery.peer, delivery.height);
+        self.outbox.retain(|queued| {
+            !(queued.peer == delivery.peer
+                && queued.height == delivery.height
+                && matches!(
+                    &queued.body,
+                    StateRequestBody::Finalized(_) | StateRequestBody::History { .. }
+                ))
+        });
         Ok(())
     }
     fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
@@ -365,6 +402,15 @@ impl StateRuntime {
                 .staged()
                 .is_some_and(|net| net.local_peer_id() == peer)
             {
+                continue;
+            }
+            if self.network.active().is_some()
+                && self.confirmed_parent.get(&peer) == Some(&self.state()?.height())
+                && self.last_selected_at.elapsed() < Duration::from_secs(5)
+            {
+                // An accepted offer proves this peer has our parent. Defer
+                // speculative empty history only during healthy progress;
+                // a stalled height resumes repair after the fixed bound.
                 continue;
             }
             self.enqueue(

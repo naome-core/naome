@@ -92,6 +92,12 @@ Only `report.json` is intended for publication. Containers, their internal netwo
 probe containers and native process groups are owned by the run and cleaned up on
 success, failure and handled interruption. Cleanup failures fail qualification.
 
+Docker observations reuse one bounded read-only probe per container. Each sample
+requests fresh status from the actual local control socket and reads current
+cgroup memory; it does not cache progress. Probe failures, oversized responses,
+restarts and cleanup close the owned pipe. Authenticated submissions, exports
+and independent verification continue through the normal executables.
+
 The timed partition starts only after all four nodes agree on a selected state
 with four available signers. If a rotation temporarily leaves a slot vacant,
 the harness continues genuine workload within the normal height deadline until
@@ -125,6 +131,16 @@ fault recovery, and each independent export and replay. Observation and certifie
 voting-window counters overlap the attempt phases; they must not be added to
 those phases as separate elapsed time. Build time remains separate in the
 preceding release compilation step.
+
+The first sealed-handoff [measurement](../docs/mvp/evidence/handoff-initial-ci.json)
+on `40546f7`, in [CI run 35893100165](https://github.com/naome-core/naome/actions/runs/35893100165),
+passed all 102-height Docker correctness checks in 661.884 seconds (1.668x).
+It failed the required 2x gate. Receipt, voting-open and settlement phases
+accounted for 618.675 seconds; the nested observation counter was 152.253 seconds.
+The following optimization removes redundant same-parent finality and healthy
+history requests only after an authenticated peer accepts an exact-parent offer,
+and reuses status probes. Unconfirmed peers and stalled heights retain repair.
+The full CI speed gate remains mandatory.
 
 ## Authority setup and supervision
 

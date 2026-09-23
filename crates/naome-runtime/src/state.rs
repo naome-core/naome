@@ -192,6 +192,9 @@ pub struct StateRuntime {
     proof_fetches: Vec<ProofFetch>,
     sent: BTreeSet<(PeerId, [u8; 32])>,
     acknowledged: VecDeque<(PeerId, [u8; 32])>,
+    /// An accepted current-period offer proves this configured peer already
+    /// selected the same parent. Entries are bounded by the selected roster.
+    confirmed_parent: BTreeMap<PeerId, u64>,
     last_rebroadcast: Instant,
     disabled: Vec<PeerId>,
     next_tick: Instant,
@@ -203,7 +206,7 @@ pub struct StateRuntime {
     work_ready: bool,
 }
 impl StateRuntime {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn new(
         history: StateHistory,
         signer: Option<StateSigner>,
@@ -524,6 +527,7 @@ impl StateRuntime {
             proof_fetches: Vec::new(),
             sent: BTreeSet::new(),
             acknowledged: VecDeque::new(),
+            confirmed_parent: BTreeMap::new(),
             last_rebroadcast: now,
             disabled: Vec::new(),
             next_tick: now,
@@ -1153,6 +1157,7 @@ impl StateRuntime {
         self.outbox.clear();
         self.sent.clear();
         self.acknowledged.clear();
+        self.confirmed_parent.clear();
         let state = self.node.state()?;
         let consumed: Vec<_> = self
             .pending

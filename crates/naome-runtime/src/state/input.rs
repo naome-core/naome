@@ -46,6 +46,7 @@ impl StateRuntime {
                 self.outbox.retain(|delivery| delivery.peer != peer_id);
                 self.sent.retain(|(peer, _)| *peer != peer_id);
                 self.acknowledged.retain(|(peer, _)| *peer != peer_id);
+                self.confirmed_parent.remove(&peer_id);
                 Ok(StateRuntimeEvent::Network)
             }
             NetworkEvent::PeerSession(
@@ -54,6 +55,7 @@ impl StateRuntime {
             ) => {
                 self.sent.retain(|(peer, _)| *peer != peer_id);
                 self.acknowledged.retain(|(peer, _)| *peer != peer_id);
+                self.confirmed_parent.remove(&peer_id);
                 Ok(StateRuntimeEvent::Network)
             }
             NetworkEvent::InboundState(inbound) => {
@@ -172,6 +174,7 @@ impl StateRuntime {
                 match received.response().body() {
                     StateResponseBody::Accepted => {
                         self.remember_acknowledged(&delivery)?;
+                        self.remember_confirmed_parent(&delivery)?;
                     }
                     StateResponseBody::History(items) => {
                         for item in items {

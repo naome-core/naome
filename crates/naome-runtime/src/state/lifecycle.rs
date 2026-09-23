@@ -575,6 +575,7 @@ impl StateRuntime {
         self.outbox.clear();
         self.sent.clear();
         self.acknowledged.clear();
+        self.confirmed_parent.clear();
         self.recovery_clients.clear();
         self.proof_fetches
             .iter_mut()

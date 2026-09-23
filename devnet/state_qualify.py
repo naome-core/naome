@@ -248,7 +248,8 @@ class Qualification:
         self.report['attempts'].append({'number': number, 'owner': owner, 'operation': operation,
             'submission': submission, 'height': height, 'head': finished[owner]['head'], 'state': finished[owner]['state'],
             'voting_deadline': deadline, 'certified_start': active[owner]['time'], 'certified_end': finished[owner]['time'],
-            'elapsed_seconds': round(time.monotonic() - started, 3), 'phase_seconds': phases})
+            'elapsed_seconds': round(time.monotonic() - started, 3), 'phase_seconds': phases,
+            'active_slots_at_settlement': {str(i): value['authority']['active_slots'] for i, value in finished.items()}})
         self.save()
         print(json.dumps({'event': 'canonical_devnet_progress', 'attempt': number, 'height': height}), flush=True)
         return height
