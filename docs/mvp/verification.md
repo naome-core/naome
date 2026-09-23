@@ -21,12 +21,53 @@ transport and replay. Research attempts retain their frozen owner electorate.
 Four stable slots retain their quorum weight through unavailability; admission
 consumes the oldest eligible claim only when its successor is sealed.
 
-The 23 September integration is undergoing complete workspace, process, recovery
-and CI qualification. Final validation evidence and measured Docker speedup must
-be recorded here before milestone acceptance. Historical results below are not
-substitutes for these checks. Physical multi-machine acceptance and the long
-research profile remain separate qualifications. Managed signer retirement
-assumes operator-attested destruction of external secret copies and seeds.
+The 23 September 2026 qualification passed on clean implementation commit
+`1554fcac6d39dcbf9eba4c43c4767e078856cf51`. The [local qualification record](evidence/handoff-final-local.json)
+contains the source fingerprint, commands, elapsed times, output hashes,
+architecture review and paper checks. Documentation and evidence added after
+that run do not change the qualified implementation fingerprint.
+
+| Evidence | Current result |
+|---|---|
+| Complete local workspace | Rust 1.97.1, `CARGO_INCREMENTAL=0`; 639 tests in `test` and 639 in `release`, zero failures. Each complete all-target, all-feature, locked execution followed its own complete `--no-run` build barrier. Profiles ran sequentially. |
+| Local timing | Test compilation 3.134 s and execution 494.290 s; release compilation 14.424 s and execution 441.244 s. |
+| Quality | Formatting, Clippy and rustdoc with warnings denied, workspace doctest command, 32 devnet Python tests and 54 Kev Python tests passed. |
+| Platform CI | [Run 35905106571](https://github.com/naome-core/naome/actions/runs/35905106571) passed both profiles on Linux x86_64, macOS ARM64 and Windows x86_64, plus quality, devnet and all aggregate gates on the named commit. |
+| Earned installation | The process scenario registers a new account, verifies its paid proof and claim, installs its prepared candidate, requires its signature in a later ordinary quorum with only two bootstrap signers online, verifies the future service payment, cold-restarts peers and independently replays four distinct stores. |
+| Delayed native network | [Four-process report](evidence/handoff-final-native.json): 15 matching heights in 98.565 s with 50 ms delay in each direction, timed isolation with surviving-quorum progress, catch-up, SIGKILL, graceful restart, four replays and corrupt-export rejection. |
+| Portable bundles | [CI rehearsal](evidence/handoff-final-pilot.json): relocated private bundles, real proof/helper settlement with one node offline, catch-up, cold reopen and four agreeing archive replays; all nine checks passed. |
+| Independent review | Selected authority, seal binding, signer custody, recovery, transport retention and priority, obsolete paths, operating commands and process evidence were reviewed; substantive findings were fixed and no blocking findings remained. |
+| Whitepaper | The updated source, diagrams and generated 20-page English PDF passed structural checks and manual rendered-page inspection. Hashes are retained in the qualification record. |
+
+The [final Docker report](evidence/handoff-final-ci.json) reached 102 matching
+canonical heights in 34 attempts in **483.476 seconds**, compared with
+**1103.819 seconds** in the [baseline](evidence/handoff-baseline-ci.json):
+**2.283 times faster**. Both runs used the GitHub-hosted Ubuntu 24.04
+x86_64 runner class with the same container CPU/memory limits. The image changed
+from `20260907.300.1` to `20260920.314.1`. The authorized timing
+profile changed from 15-second to 1-second voting windows, all committed in
+genesis and completed under certified time (510 versus 34 required seconds).
+The profile, proxy and observation changes are part of this observed end-to-end
+result; their individual contributions are not apportioned, and this is not a
+protocol throughput claim. Separate signed-time tests preserve every complete
+Lab, research, short-test and CI phase boundary.
+
+The final Docker run retained 50 ms bidirectional delay, alternating authenticated
+owners, the timed partition with surviving-quorum progress and catch-up, active
+signer SIGKILL and graceful restarts, post-restart progress, bounded resources,
+four independent archive replays, 32 rejected malformed ingress attempts and
+corrupted-export rejection. The CI job separately recorded 95 s for the release
+build barrier, 154 s for the publication/recovery scenario, 73 s for the portable
+rehearsal and 16 s for image packaging. Those steps are outside the Docker
+qualification measurement. Observation and certified-window counters overlap
+the attempt phases and must not be added to them.
+
+These results accept MVP-36 through MVP-38 and AB-08 through AB-10 under the
+explicit accelerated authority-period qualification. A new real-agent Lab run,
+physical multi-machine acceptance and the complete seven-day research run remain
+separate and unqualified. Operational handoff requires operator attestation that
+external secret backups and regeneration seeds are destroyed; the implementation
+retires managed local signing capability. Finite run and journal limits remain.
 
 ## Historical retirement-order qualification
 

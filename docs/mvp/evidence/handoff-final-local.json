@@ -1,0 +1,294 @@
+{
+  "schema_version": 1,
+  "qualification": "canonical state-v5 sealed authority handoff",
+  "date": "2026-09-23",
+  "source_commit": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+  "implementation_sha256": "aa02689e74782798dedcda96e9c807c2dfe585503cd3f8d91f4277cf98080686",
+  "source_manifest_scope": "Tracked and nonignored files under crates, devnet, tools and .github, plus Cargo.toml, Cargo.lock, rust-toolchain.toml and .gitattributes. Sorted path, NUL, raw SHA256 pairs; SHA256 over the complete stream.",
+  "local_workspace": {
+    "source_commit": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+    "worktree_dirty": false,
+    "implementation_sha256": "aa02689e74782798dedcda96e9c807c2dfe585503cd3f8d91f4277cf98080686",
+    "toolchain": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "CARGO_INCREMENTAL": 0,
+    "execution_schedule": "Each profile runs alone, after its own complete all-target build barrier.",
+    "profiles": {
+      "test": {
+        "compilation": {
+          "command": [
+            "cargo",
+            "test",
+            "--workspace",
+            "--profile",
+            "test",
+            "--all-targets",
+            "--all-features",
+            "--locked",
+            "--no-run"
+          ],
+          "started_at_utc": "2026-09-23T18:52:01Z",
+          "elapsed_seconds": 3.134,
+          "exit_code": 0,
+          "log_sha256": "5f171fbe0c7a0801b46064e9bbc649b7839551f6fe31ec07373184c22eb3451a",
+          "log_name": "naome-final-serial-test-compilation.log"
+        },
+        "execution": {
+          "command": [
+            "cargo",
+            "test",
+            "--workspace",
+            "--profile",
+            "test",
+            "--all-targets",
+            "--all-features",
+            "--locked",
+            "--no-fail-fast"
+          ],
+          "started_at_utc": "2026-09-23T18:52:04Z",
+          "elapsed_seconds": 494.29,
+          "exit_code": 0,
+          "log_sha256": "bfde419a078426a7246cdfafe2bc6edf2341368d2df5fcd2ac8e2e4dcdc168fc",
+          "passed": 639,
+          "failed": 0,
+          "log_name": "naome-final-serial-test-execution.log"
+        }
+      },
+      "release": {
+        "compilation": {
+          "command": [
+            "cargo",
+            "test",
+            "--workspace",
+            "--profile",
+            "release",
+            "--all-targets",
+            "--all-features",
+            "--locked",
+            "--no-run"
+          ],
+          "started_at_utc": "2026-09-23T19:00:18Z",
+          "elapsed_seconds": 14.424,
+          "exit_code": 0,
+          "log_sha256": "f4e7f3e83388af21823a62f9f46e7aa9209c243501fed9797d9557ceceedd8fe",
+          "log_name": "naome-final-serial-release-compilation.log"
+        },
+        "execution": {
+          "command": [
+            "cargo",
+            "test",
+            "--workspace",
+            "--profile",
+            "release",
+            "--all-targets",
+            "--all-features",
+            "--locked",
+            "--no-fail-fast"
+          ],
+          "started_at_utc": "2026-09-23T19:00:33Z",
+          "elapsed_seconds": 441.244,
+          "exit_code": 0,
+          "log_sha256": "6567b1856cbdd73c91bf17f9d02e94610161adf3e62a9adf16afee334656dffa",
+          "passed": 639,
+          "failed": 0,
+          "log_name": "naome-final-serial-release-execution.log"
+        }
+      }
+    },
+    "finished_at_utc": "2026-09-23T19:07:54Z",
+    "implementation_unchanged": true,
+    "success": true,
+    "log_retention": "Detailed logs remain local; log_name identifies the hashed log and is not a repository link."
+  },
+  "quality": {
+    "format": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "elapsed_seconds": 0.398,
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "elapsed_seconds": 0.294,
+      "exit_code": 0,
+      "log_sha256": "f2066ca264b9a8598ecd436c70919e1efe1acea4098ad2a13b5d82d67bc049ec"
+    },
+    "rustdoc": {
+      "command": [
+        "cargo",
+        "doc",
+        "--workspace",
+        "--no-deps",
+        "--all-features",
+        "--locked"
+      ],
+      "elapsed_seconds": 0.156,
+      "exit_code": 0,
+      "log_sha256": "7b5775a0e675b0033480b22d5fb0ee06b577f6cf9b101b70648cd76135e7e2f7"
+    },
+    "doctest": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--doc",
+        "--all-features",
+        "--locked"
+      ],
+      "elapsed_seconds": 0.83,
+      "exit_code": 0,
+      "log_sha256": "8cdb49e2f650bbf11b5bb731d854f8232ce30ed795ee61420d9ced80c5c6be00"
+    },
+    "devnet-python": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "devnet",
+        "-p",
+        "test_*.py"
+      ],
+      "elapsed_seconds": 0.543,
+      "exit_code": 0,
+      "log_sha256": "5e0351922fbad6177ec73566d92fa5991587dfb9b64ac13ef829a3bc7fb219ac"
+    },
+    "tools-python": {
+      "command": [
+        "python3",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools/tests",
+        "-v"
+      ],
+      "elapsed_seconds": 6.837,
+      "exit_code": 0,
+      "log_sha256": "291141255d2e5dba8d0e67102b816f3973af02779411d74ff1a54a9bfd76fc5f"
+    },
+    "diff": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "elapsed_seconds": 0.014,
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "ci": {
+    "run_id": 35905106571,
+    "url": "https://github.com/naome-core/naome/actions/runs/35905106571",
+    "head_sha": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+    "event": "workflow_dispatch",
+    "conclusion": "success",
+    "platforms": [
+      "Linux x86_64 test and release",
+      "macOS ARM64 test and release",
+      "Windows x86_64 test and release"
+    ],
+    "quality": "passed",
+    "devnet": "passed",
+    "measurement": {
+      "run_id": 35905106571,
+      "head": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+      "run_status": "completed",
+      "run_outcome": "success",
+      "runner_image_label": "ubuntu-24.04",
+      "runner_image": "20260920.314.1",
+      "devnet_job_id": 107330718400,
+      "devnet_job_outcome": "success",
+      "devnet_step_seconds": {
+        "build": 95,
+        "process": 154,
+        "pilot": 73,
+        "image": 16,
+        "docker": 484
+      },
+      "devnet_step_names": {
+        "build": "Build release test targets and devnet binaries",
+        "process": "Qualify canonical publication, citation, outage, partition, and cold replay",
+        "pilot": "Rehearse portable pilot bundles and independent archive collection",
+        "image": "Package exact Linux binaries",
+        "docker": "Qualify 100 canonical state heights with isolation, delay, and faults"
+      },
+      "source": {
+        "run_snapshot": "ci-run.json",
+        "runner_log": "devnet-job.log"
+      }
+    }
+  },
+  "docker_comparison": {
+    "baseline_run_id": 35863331752,
+    "current_run_id": 35905106571,
+    "baseline_seconds": 1103.819,
+    "current_seconds": 483.476,
+    "speedup": 2.28309,
+    "required_speedup": 2,
+    "runner_class": "GitHub-hosted ubuntu-24.04 x86_64",
+    "baseline_runner_image": "20260907.300.1",
+    "current_runner_image": "20260920.314.1",
+    "runner_image_changed": true,
+    "current_timing_profile": "ci-test",
+    "baseline_certified_voting_seconds": 510,
+    "current_certified_voting_seconds": 34,
+    "scope": "Qualification execution only; compilation and other job steps are separate. The profile, harness and runner image changed between measurements; their individual contributions are not apportioned. This observed end-to-end result is not a protocol throughput guarantee.",
+    "baseline_report": "handoff-baseline-ci.json",
+    "current_report": "handoff-final-ci.json"
+  },
+  "native_network": {
+    "report": "handoff-final-native.json",
+    "elapsed_seconds": 98.565,
+    "verified_heights": [
+      15,
+      15,
+      15,
+      15
+    ],
+    "scope": "Four processes on one macOS ARM64 host with 50 ms bidirectional delay; all five fault observations, four replays and corrupt-export rejection."
+  },
+  "architecture_review": {
+    "result": "No unresolved blocking findings after fixes",
+    "scope": "Independent read-only reviews of selected authority, seal binding, signer custody, recovery, transport retention and priority, obsolete paths, operating commands and process evidence. Reviewers did not claim independent full workspace runs."
+  },
+  "whitepaper": {
+    "structural_checks": "passed",
+    "pages": 20,
+    "source_sha256": "62de0d4fa0f87606f47a1fdd121d0f62144877f98cf9a6c7d4733ff5c152aa3f",
+    "pdf_sha256": "974b825552ed1639e5a925fdd04f7f0d578f39ff360946257a53e6564e4c5ac6",
+    "visual_review": "Passed manual rendered-page review of all 20 pages, with final finite-terminal wording rechecked on affected pages."
+  },
+  "limitations": [
+    "Operational handoff requires operator attestation that external secret backups and regeneration seeds are destroyed; the implementation retires managed local signing capability.",
+    "Network evidence is a one-host simulation; separate physical machines remain unqualified.",
+    "Current end-to-end scenarios use explicit accelerated profiles; signed-time tests cover full Lab and research boundaries, but a new real-window Lab and seven-day research run remain unqualified.",
+    "Finite MVP run and journal limits remain; customer ingress APIs and proof discovery/generation are outside this milestone."
+  ],
+  "quality_environment": {
+    "RUSTDOCFLAGS": "-D warnings",
+    "CARGO_INCREMENTAL": "0",
+    "toolchain": "1.97.1",
+    "source_commit": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+    "implementation_sha256": "aa02689e74782798dedcda96e9c807c2dfe585503cd3f8d91f4277cf98080686"
+  }
+}
