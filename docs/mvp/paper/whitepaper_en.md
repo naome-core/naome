@@ -9,11 +9,11 @@
 
 NAOME coordinates three decisions in shared mathematical research: which questions receive resources, which answers satisfy their formal obligations, and which history assigns the resulting rights. The agenda directs finite attention, checking and storage capacity. The public library preserves checked results for later use. Agreement establishes submission order, completed question families, payments and validator membership.
 
-NAOME's research path can span many sealed records. An unapproved or expired attempt produces no paid result. A solution author's join request is optional and grants no voting weight until a separate handoff is sealed.
-
 [FIG:system]
 
 [CAPTION] Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. A terminal seal ends the bounded run.
+
+NAOME's research path can span many sealed records. An unapproved or expired attempt produces no paid result. A solution author's join request is optional and grants no voting weight until a separate handoff is sealed.
 
 A proposal combines a readable purpose with an exact mathematical task. Validator owners judge whether to authorize it; contributors seek a proof of an approved conclusion under the declared Foundation, or formal rulebook. Approval expresses a research preference, while checking establishes derivability. The shared history records both without treating either as evidence for the other.
 

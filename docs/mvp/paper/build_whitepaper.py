@@ -43,7 +43,7 @@ def styles(lang):
 class Figure(Flowable):
     def __init__(self,kind,lang):
         super().__init__();self.kind=kind;self.lang=lang;self.width=CW
-        self.height={'system':254,'question':152,'graph':157,'membership':116,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
+        self.height={'system':320,'question':152,'graph':157,'membership':116,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
         self.spaceBefore=3;self.spaceAfter=7
     def label(self,x,y,t,size=10.5,bold=False,left=False,color=INK):
         self.canv.setFont('NMath' if '∀' in t else ('NSerifBold' if bold else 'NSerif'),size);self.canv.setFillColor(color)
@@ -71,38 +71,74 @@ class Figure(Flowable):
     def draw(self):
         c=self.canv;de=self.lang=='de';k=self.kind
         if k=='system':
-            accent=colors.HexColor('#41566b')
-            cx= CW/2;cy=127;rx=175;ry=85
-            c.setStrokeColor(accent);c.setLineWidth(1.2)
-            c.ellipse(cx-rx,cy-ry,cx+rx,cy+ry,stroke=1,fill=0)
-            for degrees in (120,60,0,-60,-120,-180):
+            cx=CW/2;cy=160;outer=146;inner=75;middle=(outer+inner)/2
+            shades=[colors.HexColor('#e7e7e3'),colors.HexColor('#dedfda')]
+            accent=colors.HexColor('#333b36')
+            def point(radius,degrees):
                 a=math.radians(degrees)
-                x=cx+rx*math.cos(a);y=cy+ry*math.sin(a)
-                dx=rx*math.sin(a);dy=-ry*math.cos(a)
-                length=math.hypot(dx,dy);tx=dx/length;ty=dy/length
-                nx=-ty;ny=tx
-                c.setFillColor(accent)
-                p=c.beginPath();p.moveTo(x,y)
-                p.lineTo(x-8*tx+3.5*nx,y-8*ty+3.5*ny)
-                p.lineTo(x-8*tx-3.5*nx,y-8*ty-3.5*ny)
-                p.close();c.drawPath(p,stroke=0,fill=1)
-            labels=(['<b>Frage</b><br/>aufnehmen, öffnen','<b>Eigentümerwahl</b><br/>feste Bedingungen','<b>Einreichung</b><br/>binden, offenlegen','<b>Prüfung</b><br/>Beweis oder Widerlegung','<b>Abschluss</b><br/>nur bei Annahme zahlen','<b>Siegel und Fortsetzung</b><br/>Beitritt optional'] if de else ['<b>Question</b><br/>admit and open','<b>Owner vote</b><br/>frozen terms','<b>Submission</b><br/>commit, disclose','<b>Verification</b><br/>proof or refutation','<b>Settlement</b><br/>pay only if accepted','<b>Seal and continue</b><br/>handoff optional'])
+                return cx+radius*math.cos(a),cy+radius*math.sin(a)
+            def join(degrees):
+                a=math.radians(degrees)
+                radial=(math.cos(a),math.sin(a))
+                tangent=(math.sin(a),-math.cos(a))
+                def at(r,t):return cx+r*radial[0]+t*tangent[0],cy+r*radial[1]+t*tangent[1]
+                outer_base=at(outer,0);tip=at(middle,25);inner_base=at(inner,0)
+                def sub(p,q):return p[0]-q[0],p[1]-q[1]
+                def add(p,q):return p[0]+q[0],p[1]+q[1]
+                def scale(p,s):return p[0]*s,p[1]*s
+                def cross(p,q):return p[0]*q[1]-p[1]*q[0]
+                def unit(p):
+                    length=math.hypot(*p)
+                    return scale(p,1/length)
+                d1=unit(sub(tip,outer_base));d2=unit(sub(inner_base,tip))
+                n1=(-d1[1],d1[0]);n2=(-d2[1],d2[0])
+                def circle_end(base,d,radius):
+                    x,y=sub(base,(cx,cy))
+                    b=x*d[0]+y*d[1]
+                    discriminant=b*b-(x*x+y*y-radius*radius)
+                    roots=(-b+math.sqrt(discriminant),-b-math.sqrt(discriminant))
+                    return add(base,scale(d,min(roots,key=abs)))
+                def contour(distance):
+                    a1=add(outer_base,scale(n1,distance))
+                    b2=add(tip,scale(n2,distance))
+                    miter=add(a1,scale(d1,cross(sub(b2,a1),d2)/cross(d1,d2)))
+                    a0=circle_end(a1,d1,outer)
+                    c0=circle_end(add(inner_base,scale(n2,distance)),d2,inner)
+                    return a0,miter,c0
+                sides=[contour(-2.6),contour(2.6)]
+                sides.sort(key=lambda side:sub(side[0],(cx,cy))[0]*tangent[0]+sub(side[0],(cx,cy))[1]*tangent[1])
+                return sides
+            def near_angle(p,reference):
+                degrees=math.degrees(math.atan2(p[1]-cy,p[0]-cx))
+                while degrees-reference>180:degrees-=360
+                while degrees-reference< -180:degrees+=360
+                return degrees
+            labels=([('Frage','aufnehmen / öffnen'),('Eigentümerwahl','feste Bedingungen'),('Einreichung','binden / offenlegen'),('Prüfung','Beweis / Widerlegung'),('Abschluss','Zahlung bei Annahme'),('Siegel / Fortsetzung','Beitritt optional')] if de else [('Question','admit / open'),('Owner vote','frozen terms'),('Submission','commit / disclose'),('Verification','proof / refutation'),('Settlement','pay if accepted'),('Seal and continue','handoff optional')])
             angles=(150,90,30,-30,-90,-150)
-            label_bottoms=(187,227,187,42,4,42)
-            label_width=130
-            for i,(degrees,label,bottom) in enumerate(zip(angles,labels,label_bottoms),1):
-                a=math.radians(degrees)
-                x=cx+rx*math.cos(a);y=cy+ry*math.sin(a)
-                c.setFillColor(accent);c.circle(x,y,12.5,stroke=0,fill=1)
-                c.setFillColor(colors.white);c.setFont('NSerifBold',10)
-                c.drawCentredString(x,y-3.4,str(i))
-                p=Paragraph(rich(label),ParagraphStyle('cycle-label',fontName='NSerif',fontSize=9.8,leading=12.2,alignment=TA_CENTER,textColor=INK))
-                _,ph=p.wrap(label_width,999);assert ph<=27,(label,ph)
-                p.drawOn(c,x-label_width/2,bottom)
-            self.label(CW/2,149,'EIN NETZWERKZYKLUS' if de else 'ONE NETWORK CYCLE',11.5,True,color=accent)
-            c.setStrokeColor(colors.HexColor('#c4cbd1'));c.setLineWidth(.45)
-            c.line(165,139,CW-165,139)
-            self.label(CW/2,120,'Über mehrere vereinbarte und versiegelte Datensätze' if de else 'Across multiple agreed and sealed records',9.5)
+            for i,degrees in enumerate(angles):
+                incoming=degrees+30;outgoing=degrees-30
+                tail=join(incoming)[1]
+                head=join(outgoing)[0]
+                p=c.beginPath();p.moveTo(*tail[0])
+                start=near_angle(tail[0],incoming)
+                end=near_angle(head[0],outgoing)
+                for j in range(1,49):p.lineTo(*point(outer,start+(end-start)*j/48))
+                p.lineTo(*head[1]);p.lineTo(*head[2])
+                start=near_angle(head[2],outgoing)
+                end=near_angle(tail[2],incoming)
+                for j in range(1,49):p.lineTo(*point(inner,start+(end-start)*j/48))
+                p.lineTo(*tail[1]);p.close()
+                c.setFillColor(shades[i%2]);c.setStrokeColor(colors.HexColor('#b5b9b3'))
+                c.setLineWidth(.45);c.drawPath(p,stroke=1,fill=1)
+            for degrees,(title,detail) in zip(angles,labels):
+                x,y=point(middle,degrees)
+                assert max(stringWidth(title,'NSerifBold',9.4),stringWidth(detail,'NSerif',8.6))<85
+                self.label(x,y+2,title,9.4,True,color=accent)
+                self.label(x,y-11,detail,8.6,color=accent)
+            self.label(cx,169,'EIN NETZWERKZYKLUS' if de else 'ONE NETWORK CYCLE',10.8,True,color=accent)
+            c.setStrokeColor(colors.HexColor('#b6bbb5'));c.setLineWidth(.45)
+            c.line(cx-53,158,cx+53,158)
+            self.label(cx,139,'Über versiegelte Datensätze' if de else 'Across sealed records',9.2,color=accent)
         elif k=='question':
             gap=18;bw=(CW-gap)/2
             for i,title in enumerate(['question.nao','solution.nao']):
