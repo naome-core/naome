@@ -126,7 +126,7 @@ pub struct StatePeriodCustody {
     _journal: FileLog,
 }
 impl StatePeriodCustody {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn stage_offer_with_keys_for_test(
         directory: impl AsRef<Path>,

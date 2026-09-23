@@ -9,12 +9,14 @@ use naome_consensus::{
         StateVote,
     },
 };
+#[cfg(unix)]
+use naome_ledger::operations::JoinIntent;
 use naome_ledger::{
     AccountId, CommitmentId, LedgerState,
     authentication::SignedOperation,
     authority::{HandoffPlan, NextPeriodKeys},
     library::ProofPackage,
-    operations::{JoinIntent, OperationBody, SignedOriginal},
+    operations::{OperationBody, SignedOriginal},
     profile::{Genesis, Profile, STATE_CHECKER_PROFILE, ValidatorRegistration},
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
@@ -56,6 +58,7 @@ fn account(i: u8) -> SigningKey {
 fn validator(i: u8) -> SigningKey {
     SigningKey::from_bytes(&[i + 101; 32])
 }
+#[cfg(unix)]
 fn key(i: u8) -> ConsensusKey {
     ConsensusKey::from_bytes(validator(i).verifying_key().to_bytes())
 }
