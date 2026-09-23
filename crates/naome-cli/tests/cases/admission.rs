@@ -525,6 +525,70 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     assert!(resumed["consensus_position"].is_object());
     assert!(!std::path::Path::new(&consensus_key).exists());
     assert!(!std::path::Path::new(&transport_key).exists());
+
+    // The earned-installation result must independently replay from four
+    // distinct restarted stores, including the claimant. Wait for their
+    // existing research work to settle so each export names the same tip.
+    let common = {
+        let start = Instant::now();
+        loop {
+            if let Some(statuses) = restart
+                .iter()
+                .map(|index| lab.status(*index))
+                .collect::<Option<Vec<_>>>()
+            {
+                let first = &statuses[0];
+                if first["height"].as_u64() >= paid["height"].as_u64()
+                    && first["paid_completions"] == 2
+                    && first["active"].is_null()
+                    && first["queued"] == 0
+                    && statuses.iter().all(|status| {
+                        status["height"] == first["height"]
+                            && status["head"] == first["head"]
+                            && status["state"] == first["state"]
+                            && status["consumed_claims"] == first["consumed_claims"]
+                    })
+                {
+                    break first.clone();
+                }
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(90),
+                "earned claimant and three peers did not reach one quiet tip"
+            );
+            thread::sleep(Duration::from_millis(40));
+        }
+    };
+    assert!(
+        common["consumed_claims"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|claim| claim == &family)
+    );
+    for index in &restart {
+        let archive = lab.file(&format!("earned-replay-node-{index}"));
+        command(&["export".into(), lab.config(*index), archive.clone()]);
+        let replay = command(&["verify".into(), lab.file("genesis.bin"), archive]);
+        for field in [
+            "height",
+            "head",
+            "state",
+            "authority",
+            "accounts",
+            "reserve_atoms",
+            "claims",
+            "consumed_claims",
+            "paid_completions",
+        ] {
+            assert_eq!(replay[field], common[field], "node {index} replay {field}");
+        }
+        assert_eq!(
+            stable_validator_slots(&replay),
+            stable_validator_slots(&common),
+            "node {index} replay roster"
+        );
+    }
     for index in restart {
         lab.stop(index);
     }
