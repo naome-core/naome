@@ -1,48 +1,25 @@
 # NAOME
 # A Public Network for Formal Research
 
-[META] Whitepaper · Public-network proposal and state-v5 pilot · 23 September 2026
+[META] Whitepaper · Public-network design and four-slot handoff profile
 
-[ABSTRACT] NAOME is a proposed protocol for selecting mathematical research questions, checking answers and maintaining a public library of reusable results. Validator owners authorize research; contributors submit certificates under a declared formal rulebook. Settlement publishes the solution and its used helpers, completes the question family once, allocates a bounded reward and gives the solution author an eligibility claim. Approved reuse rules preserve older proofs and their attribution. Eligible authors may request entry to a finite validator electorate through contribution-ordered replacement. The protocol separates research judgment, mathematical verification and agreement on history. Its trusted four-slot state-v5 pilot adds a record-bound authority plan, per-height key rotation and incoming READY plus outgoing TERMINAL seals to the research workflow. The broader public-network proposal retains explicit assumptions about authority, availability and signing capabilities.
-
-## Implementation status: trusted pilot and evidence boundary
-
-The executable state-v5 pilot has four equal-weight authority slots, a bounded
-research workflow, claim-backed join intents, contribution-ordered replacement,
-per-height consensus and transport key rotation, and an exact-record handoff
-plan. A record is agreed by three current units, then needs three incoming
-READY and three outgoing TERMINAL signatures before its successor is selected.
-A vacant slot keeps its weight, and an unsealed agreement grants no voting
-rights. The run remains finite, uses test balances and a command-line operator
-surface, and begins from a trusted genesis.
-
-Earlier fixed-validator qualification included local test and release runs,
-Linux/macOS/Windows CI, four-process fault and replay tests, and a real-window
-lab with bounded agenda-agent review. That lab used 300-second voting and
-120-second commitment and reveal windows. These results belong to the earlier
-revision. The repository verification record carries exact-head
-state-v5 test, CI, Docker, restart and runtime evidence separately. A local
-multi-process or Docker rehearsal cannot establish physical multi-machine
-acceptance. Neither the full seven-day research window nor erasure of external
-secret backups is established by local tests.
-
-Portable per-node bundles, independent archive replay and candidate
-provisioning support a multi-machine pilot. Operators must still demonstrate
-real placement, clock and network behavior, research completion with later
-citation, outages, restart, handoff and matching replay on the target hosts.
-Sections 7, 8.2 and Appendix D describe the v5 handoff contract. Public-network
-amendments and continuing operation remain separate work. Section 9.2
-separates adopted pilot rules from remaining public-network decisions.
+[ABSTRACT] NAOME is a proposed protocol for selecting mathematical research questions, checking answers and maintaining a public library of reusable results. Validator owners authorize research; contributors submit certificates under a declared formal rulebook. Settlement publishes the solution and its used helpers, completes the question family once, allocates a bounded reward and gives the solution author an eligibility claim. Approved reuse rules preserve older proofs and their attribution. Eligible authors may request entry to a finite validator electorate through contribution-ordered replacement. The protocol separates research judgment, mathematical verification and agreement on history. A four-slot profile specifies record-bound authority plans, rotating keys and incoming READY plus outgoing TERMINAL seals. Public-network operation depends on explicit assumptions about authority, availability and signing capabilities.
 
 ## 1. Purpose and scope
 
 NAOME coordinates three decisions in shared mathematical research: which questions receive resources, which answers satisfy their formal obligations, and which history assigns the resulting rights. The agenda directs finite attention, checking and storage capacity. The public library preserves checked results for later use. Agreement establishes submission order, completed question families, payments and validator membership.
 
+NAOME's research path can span many sealed records. An unapproved or expired attempt produces no paid result. A solution author's join request is optional and grants no voting weight until a separate handoff is sealed.
+
+[FIG:system]
+
+[CAPTION] The research path feeds a reusable library and can create a later join claim. Every record follows agreement and sealing. A nonterminal seal selects the next electorate; only an admitted join changes its owners.
+
 A proposal combines a readable purpose with an exact mathematical task. Validator owners judge whether to authorize it; contributors seek a proof of an approved conclusion under the declared Foundation, or formal rulebook. Approval expresses a research preference, while checking establishes derivability. The shared history records both without treating either as evidence for the other.
 
 A paid completion allocates currency to designated recipients and creates a nontransferable eligibility claim for its authenticated solution author. This claim provides a possible route to validation; currency holdings confer no voting weight.
 
-Unless explicitly labelled as implemented MVP behavior, the following sections describe the broader public-network proposal. It contains specified mechanisms and material open rules, collected in Section 9.2. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
+This paper describes the public-network design through a bounded four-slot handoff profile. Material rules still requiring definition are collected in Section 9.2. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
 
 ## 2. Network model and research lifecycle
 
@@ -52,13 +29,13 @@ A <i>question author</i> proposes a task. A <i>solution author</i> authenticates
 
 The installed electorate contains <i>K</i> equal voting units. Its owners authorize research and membership handoffs. Section 7 describes the initial allocation and how qualifying authors may request replacement of the oldest unit. Equal units do not by themselves establish dispersed ownership.
 
-A solution author may designate a separate <i>research-payment recipient</i>. Each reusable proof block records authenticated <i>proof authorship</i> and payment attribution; eligible later use may generate a citation payment to the recorded beneficiary. These roles may differ within one submission. A <i>record proposer</i> packages operations for agreement and acquires no authorship merely by including them.
+In the broader network design, a solution author may designate a separate <i>research-payment recipient</i>. Each reusable proof block records authenticated <i>proof authorship</i> and payment attribution; eligible later use may generate a citation payment to the recorded beneficiary. These roles may differ within one submission. A <i>record proposer</i> packages operations for agreement and acquires no authorship merely by including them.
 
 <i>NAO</i> is the accounting unit; one NAO equals one billion indivisible atoms. Proposing questions, enrolling, committing, disclosing and receiving rewards require no mandatory NAO prepayment. Admission and reservations bound the shared processing these activities can consume.
 
 The history consists of ordered <i>consensus records</i>, or blockchain blocks, at successive <i>heights</i>. A <i>seal</i> authorizes an agreed record's successor. The selected sealed parent provides the historical state against which a proposed successor's use of older proofs is evaluated.
 
-A <i>proof block</i> is an independently addressable library object containing a proof and its references. Several may enter through one consensus record, without separate consensus steps or heights. Agreement may use several <i>rounds</i> at one height. A research <i>attempt</i> includes voting and, if approved, a solution phase, potentially spanning many records and membership changes. Voting duration and the number of installed units are independent parameters; Section 9.2 addresses the separate round field in commitments.
+A <i>proof block</i> is an independently addressable library object containing a proof and its references. Several may enter through one consensus record, without separate consensus steps or heights. Agreement may use several <i>rounds</i> at one height. A research <i>attempt</i> includes voting and, if approved, a solution phase, potentially spanning many records and membership changes. It is distinct from an agreement round; voting duration and the number of installed units are independent parameters.
 
 ### 2.2. From a question to a settled result
 
@@ -66,11 +43,7 @@ A well-formed question enters a bounded queue. When capacity is available, a sea
 
 Contributors commit to concealed proof bundles before disclosing them. The earliest eligible receipt with a valid disclosure wins across the approved outcomes. Acceptance checks the original submission, applies permitted reuse and pruning, and checks the final proof. Sections 4 and 5 explain this path.
 
-[FIG:system]
-
-[CAPTION] The research path runs from authorization to checked settlement. Published proofs support later research; the author's voluntary join request follows a separate membership installation.
-
-For example, a certificate may prove the refutation target and cause the original question to be labelled REFUTED. Its author may designate a different research-payment recipient, who can be paid without the author operating a validator. The author may request admission later while the eligibility claim remains usable.
+For example, a certificate may prove the refutation target and cause the original question to be labelled REFUTED. Under the broader recipient rule, its author may designate another person for research payment without that person operating a validator. The author may request admission later while the eligibility claim remains usable.
 
 ## 3. Formal questions and proof objects
 
@@ -92,7 +65,7 @@ The permanent <i>ResolutionId</i> identifies the Foundation and canonical core. 
 
 [CAPTION] The library records the conclusion actually proved. Reversing the question's wording preserves its ResolutionId and cannot create another completion.
 
-The library admits one selected solution of either target for a resolution family. Settlement, rather than validation alone, completes that family permanently. Another solution or author cannot create a second paid completion or eligibility claim. Repackaging an existing proof adds no proof block. Section 9.2 specifies the MVP treatment of later questions already answered by unpaid helpers.
+The library admits one selected solution of either target for a resolution family. Settlement, rather than validation alone, completes that family permanently. Another solution or author cannot create a second paid completion or eligibility claim. Repackaging an existing proof adds no proof block. Section 9.2 specifies the treatment of later questions already answered by unpaid helpers.
 
 After refutation, the rejected claim is not entered as a theorem. If certificates for both targets validate under the same Foundation, the conflicting evidence is retained for investigation. A second settlement is prohibited, and the earlier outcome remains in the recorded history.
 
@@ -166,7 +139,7 @@ Other valid records may carry research, transfers and maintenance without issuin
 
 Each paid research completion issues exactly one NAO, equally for proof and refutation: 0.20 NAO funds validator service, 0.10 NAO enters the reserve, and 0.70 NAO funds the solution recipient and a citation pool of <i>P</i> NAO. The solution recipient receives 0.70 NAO minus <i>P</i>. Each completion has one pool within this budget; helper admission adds no issuance.
 
-Section 9.2 records the implemented MVP citation terms and separates them from the broader proposal. The applicable terms must be fixed before the affected question is approved.
+Section 9.2 gives the bounded profile's citation terms and identifies remaining allocation choices. The applicable terms must be fixed before the affected question is approved.
 
 [FIG:payments]
 
@@ -194,14 +167,14 @@ Genesis records the initial monetary allocation <i>S<sub>0</sub></i>. For <i>N</
 
 There is no fixed lifetime supply cap. Resource bounds limit admitted work, while approved questions may finish at different times or in clusters. Validators can authorize easy tasks; the approval rule alone provides no economic scarcity or measure of scientific value.
 
-An empty reserve does not invalidate control transitions. Operators nevertheless need resources for review, agreement, storage and delivery, including periods without paid completions. Launch operators bear or separately fund these costs before the first discovery. Issuance, accumulated reserves and voluntary external support are possible funding sources; sustainable service depends on their actual value and availability. Appendix E.3 governs reserve spending.
+An empty reserve does not invalidate control transitions. Review, agreement, storage and delivery still need resources during periods without paid completions. Before the first discovery, these costs need separate funding. Issuance, accumulated reserves and voluntary external support are possible funding sources; sustainable service depends on their actual value and availability. Appendix E.3 governs reserve spending.
 
 ## 7. Validator membership
 
 ### 7.1. Contribution-ordered replacement
 
-The electorate has a fixed number <i>K</i> of equal voting slots; the trusted
-pilot fixes <i>K = 4</i>. A slot keeps its identity when its occupant or keys
+The electorate has a fixed number <i>K</i> of equal voting slots; the concrete
+handoff profile fixes <i>K = 4</i>. A slot keeps its identity when its occupant or keys
 change. Each unit has an owner account and an immutable age: a genesis
 retirement rank for a bootstrap unit or the original contribution-completion
 ordinal for an earned unit. Installed units have distinct owner account IDs.
@@ -292,33 +265,23 @@ ordinary voting rights. Old transport identity closes before TERMINAL
 release. A saved signature can be resent after a crash; the old signing
 capability cannot be reconstructed to repair a failed seal.
 
-The implementation can remove secrets from its controlled local stores.
-Backups, copied keys and regenerating seeds require operator attestation; a
-height label on an Ed25519 signature does not erase them. A vacant or
-unavailable slot keeps its quorum weight. Handoffs need no membership overlap,
-but the transition still needs three reachable incoming and three reachable
-outgoing signers.
+Deleting a local secret does not retire copied keys, backups or regenerating
+seeds. Effective retirement must cover every signing path; a height label on
+an Ed25519 signature cannot enforce it. Vacant and unavailable slots retain
+their quorum weight. Handoffs need no membership overlap, but still need three
+reachable incoming and three reachable outgoing signers.
 
-An outgoing unit whose fresh rotation offer is omitted remains in the outgoing
-TERMINAL electorate even though its next slot is vacant or replaced. It closes
-its old Noise identity before releasing its saved TERMINAL bytes. A separate,
-fresh owner-authorized recovery transport can carry that signature and bounded
-replay after retirement; it grants no incoming vote or ordinary signing right.
-If that owner alone selects a complete seal and becomes vacant, it can relay
-the finalized proof to prepared peers over the same owner-authenticated fresh
-Noise connection. Complete proofs may travel in either direction, and each
-receiver verifies them against its selected parent before installing history.
+An outgoing unit remains responsible for TERMINAL even if its next slot is
+vacant or replaced. After old-period transport closes, a separately authorized
+recovery channel may relay saved signatures and finality evidence without
+granting an incoming vote or reviving old signing power. Peers verify a
+complete seal against their selected parent before adopting its successor.
+Late recovery also depends on continued access to that sealed history.
 
-The final sealed record of the finite run opens no further consensus period.
-Completed pilot nodes retire their locally controlled outgoing and unused
-incoming period secrets while retaining the public finality proof in durable
-history. A completed node can keep a listener at its stable primary endpoint
-under a separate, fresh recovery identity. After authenticating the late
-node's owner, it serves bounded history; the late node verifies the terminal
-seal before selecting that state. This recovery lane grants no ordinary
-consensus, TIME or research-submission authority. Network catch-up after
-termination requires at least one completed history holder to remain online
-or restart; otherwise the late node needs a separately verified history export.
+A configured terminal record seals final history without opening another
+ordinary signing period. Late readers still need a reachable history holder or
+an independently verified export; evidence transport grants no new voting
+authority.
 
 ### 8.3. Safety and progress assumptions
 
@@ -346,17 +309,19 @@ Sections 4 and 6 specify the voting interval and completion budget. The strict q
 
 Genesis and the adopted policy supply <i>K</i>, the initial authority and retirement order, <i>C</i>, queue and execution bounds, phase expiries, join limits, clock-error bounds and monetary allocations. These values determine capacity and operating costs and must support Appendix E.1's reservations and service conditions.
 
-### 9.2. Adopted pilot rules and remaining public-network decisions
+### 9.2. Bounded profile and open rules
 
-For the trusted MVP, parent-proof selection is deterministic: earliest admission height, operation order, then raw ProofId. Distinct new certificates with the same exact statement in one package are rejected, including a root/helper collision. Permitted identical aliases are checked and removed before publication. Reuse substitutes an eligible older proof with its existing attribution, prunes unused material and checks the normalized group. A concrete versioned normalization receipt binds the original submission, selected parent and final result. The MVP has one author, who is also the recipient, for all new proofs in a package; it does not implement joint authorship or recipient delegation.
+Within the bounded four-slot profile, parent-proof selection is deterministic: earliest admission height, operation order, then raw ProofId. Distinct new certificates with the same exact statement in one package are rejected, including a root/helper collision. Permitted identical aliases are checked and removed before publication. Reuse substitutes an eligible older proof with its existing attribution, prunes unused material and checks the normalized group. A versioned normalization receipt binds the original submission, selected parent and final result. New proofs in one package have one author who is also their recipient; joint authorship and separate-recipient authorization require further rules.
 
-Each first completion issues 1,000,000,000 Test-NAO atoms. Without citations, the author receives 700,000,000 atoms. With citations, the author receives 600,000,000 and the distinct first older boundary proofs share a 100,000,000-atom pool. Integer division precedes aggregation by recipient; remainder atoms follow the canonical boundary order. Each of the four outgoing unit owners under the selected parent receives 50,000,000 atoms and the reserve receives 100,000,000. This conserves issuance independently of the agreement and seal signature subsets, even if a successor owner joins in the same record. Test balances have no promised market value or redemption.
+Each first completion issues one NAO, or 1,000,000,000 atoms. Without eligible citations, the solution recipient receives 0.70 NAO. With citations, the recipient receives 0.60 NAO and the distinct first older boundary proofs share a 0.10 NAO pool. Integer division precedes aggregation by beneficiary; remainder atoms follow canonical boundary order. Each of the four outgoing unit owners under the selected parent receives 0.05 NAO, and the reserve receives 0.10 NAO. Issuance is independent of the agreement and seal signature subsets, including when a successor joins in the same record.
 
-At opening, an exact target already answered by an admitted unpaid helper closes as KNOWN_UNPAID, with no retrospective reward or claim. A paid family remains completed. Commitments bind the genesis, research attempt, author and authenticated original submission with secret randomness; that attempt is distinct from a consensus agreement round. The active attempt protects its reserved reveal and settlement capacity. Expiry without a valid timely reveal remains unresolved. These are adopted pilot rules, not open choices within that implementation.
+The bounded profile's balances are Test-NAO accounting units and carry no market value or redemption promise.
 
-The state-v5 pilot adds bounded account self-registration, claim-backed finalized join intent, one contribution-ordered replacement, stable four-slot proposer priorities, per-height key rotation and two-quorum handoff sealing. Local custody durably stages preparation and retires locally controlled period secrets. Public-network work still needs decisions and evidence for multiple simultaneous research attempts, joint authorship and separate recipients, historical-key security across external backups, sustainable recovery and live amendments. Weighted service balances and reserve spending in Appendix E.3 are not implemented. The exposure-service cycle and amendment-cycle duration and boundaries remain undefined. They must not be equated with an agreement round, research attempt, voting window or signing period.
+At opening, an exact target already answered by an admitted unpaid helper closes as KNOWN_UNPAID, with no retrospective reward or claim. A paid family remains completed. Commitments bind the genesis, research attempt, author and authenticated original submission with secret randomness; the attempt differs from a consensus agreement round. Its reservation protects disclosure and settlement capacity. Expiry without a valid timely disclosure leaves the family unresolved.
 
-The trusted pilot also remains finite: genesis bounds records, storage and consensus retries. Restart cannot reset those bounds. Continuous operation needs an explicit, safe storage, synchronization and upgrade design. Proof validity and a working trusted pilot do not establish resistance to cheap-proof farming, manufactured citations, agenda censorship, concentrated ownership or historical-key compromise.
+The four-slot handoff profile includes bounded account registration, claim-backed finalized join intent, one contribution-ordered replacement per sealed transition, stable-slot proposer priorities, per-height key rotation and incoming READY plus outgoing TERMINAL quorums. Broader public-network rules remain to be defined for multiple simultaneous research attempts, joint authorship and separate recipients, historical-key security across external backups, sustainable recovery, reserve spending and live amendments. The exposure-service cycle and amendment-cycle duration and boundaries also remain undefined; neither is an agreement round, research attempt, voting window or signing period.
+
+Finite bounds on records, storage and consensus retries do not establish continuous operation. That requires safe storage, synchronization and upgrade rules. Formal proof validity and the membership rule alone do not establish resistance to cheap-proof farming, manufactured citations, agenda censorship, concentrated ownership or historical-key compromise.
 
 ### 9.3. Required operating properties
 
@@ -366,7 +331,7 @@ The safety, progress and recovery conditions in Section 8 and Appendices C throu
 
 Amendments preserve sealed history, selected proofs and approved obligations. Changing the Foundation or identity rules requires an explicit mapping of historical completions that preserves their once-only effects and records conflicting polarities. A change cannot erase an earlier completion or issue a replacement eligibility claim. Voting-duration changes apply only to later openings; changes to question terms and reward shares apply prospectively and cannot reprice an approved obligation.
 
-Amendments require greater-than-two-thirds frozen-snapshot approval, two full intervening cycles, more-than-two-thirds outgoing migration readiness and the READY/TERMINAL gates. Section 9.2 records the undefined cycle boundaries. The account and policy consent rules in Appendix E.3 also apply.
+The proposed amendment gate calls for greater-than-two-thirds frozen-snapshot approval, two full intervening cycles, more-than-two-thirds outgoing migration readiness and the READY/TERMINAL gates. Its delay cannot be applied until the cycle boundaries noted in Section 9.2 are defined. The account and policy consent rules in Appendix E.3 also apply.
 
 <!-- APPENDICES -->
 
@@ -388,7 +353,7 @@ Versioned identities preserve exact sealed references; historical migration foll
 
 ### B.1. Original submission and authorization
 
-A commitment binds the solution author, research recipient, chain, round, task and a canonical hash of the complete original submission, together with secret randomness. It covers the root, every helper, dependency edges and authenticated authorship and payment attribution. Its finalized receipt reserves a disclosure slot and the capacity defined in Appendix E.1. Section 9.2 identifies the MVP field as the research attempt. Section 4.4 governs disclosure and selection.
+A commitment binds the solution author, research recipient, chain, research attempt, task and a canonical hash of the complete original submission, together with secret randomness. It covers the root, every helper, dependency edges and authenticated authorship and payment attribution. Its finalized receipt reserves a disclosure slot and the capacity defined in Appendix E.1. Section 4.4 governs disclosure and selection.
 
 The original authenticated submission must satisfy its original well-formedness rules: its graph must be acyclic, helpers canonically ordered before their uses, every certificate and dependency valid, and its root a proof of an approved target. Lookup may precede costly checking, but substitution and pruning cannot repair an invalid original submission.
 
@@ -396,7 +361,7 @@ The approved context fixes targets, Foundation, assumptions, permitted reference
 
 ### B.2. Exact replacement and pruning
 
-Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the same Foundation and assumption context. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. Where the frozen policy permits, replace the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 records the deterministic MVP selector and single-author restriction.
+Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the same Foundation and assumption context. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. Where the frozen policy permits, replace the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 gives the bounded profile's deterministic selector and single-author restriction.
 
 After replacement, recursively remove every helper, dependency and citation no longer reachable from the root through actual proof uses. Recompute the surviving graph, canonical order and affected identities before checking it.
 
@@ -408,7 +373,7 @@ After replacement, recursively remove every helper, dependency and citation no l
 
 The normalized graph must be acyclic, with each surviving helper ordered before its uses and reachable from the root through checked dependencies. Validate the root, every surviving helper and all actual final dependencies, including replaced references and their validity evidence. All required bytes must be available. Both this validation and B.1 are required within the capacity reserved under E.1; any failure prevents publication and settlement of the whole group.
 
-A deterministic <i>normalization receipt</i> binds the original commitment receipt and submission hash, selected sealed parent, frozen policy version, helper-to-existing-proof replacement map, final normalized bundle and recomputed identities. The state-v5 receipt format also embeds the complete outgoing service-authority snapshot used to calculate service rewards. This permits historical receipt inspection after later key and membership changes; the embedded snapshot is a claim until full history replay proves that it matches the selected parent. It records an authorized derivation from the authenticated original while leaving its commitment, signed bytes and signatures intact. An original signature does not authorize the rewritten bytes. Validators reproduce the transformation and check both forms. Section 9.2 distinguishes the implemented MVP receipt from unimplemented joint authorization.
+A deterministic <i>normalization receipt</i> binds the original commitment receipt and submission hash, selected sealed parent, frozen policy version, helper-to-existing-proof replacement map, final normalized bundle and recomputed identities. It also embeds the outgoing service-authority snapshot used to calculate service rewards. This permits historical inspection after later key and membership changes; the embedded snapshot is a claim until full history replay proves that it matches the selected parent. The receipt records an authorized derivation from the authenticated original while leaving its commitment, signed bytes and signatures intact. An original signature does not authorize the rewritten bytes. Validators reproduce the transformation and check both forms. Joint authorization needs the further rules identified in Section 9.2.
 
 If the proposed settlement parent changes, recompute and revalidate lookup, normalization, receipt, identities, citation eligibility and bounds against that parent. Timely valid disclosures remain eligible for later settlement subject to these checks; replacements, identities, beneficiaries and resource use may change.
 
@@ -416,7 +381,7 @@ If the proposed settlement parent changes, recompute and revalidate lookup, norm
 
 Follow validated dependencies from the normalized root through surviving helpers and every reached proof absent from the sealed parent. Stop each path at the first proof selected in that parent: these proofs form the <i>direct bundle boundary</i>. Traversal also crosses permitted intermediate proofs admitted earlier in the current record. Deduplicate by selected proof identity once per completion pool; repeated references and multiple paths add no entitlement. Ancestors behind the boundary receive no automatic payment, although dependencies required for validity still need checking. No proof admitted anywhere in the current record earns a citation payment anywhere in that record; eligibility uses the selected sealed parent before the entire record.
 
-Replacement by an eligible old proof directs the citation allocation to its recorded beneficiary within <i>P</i>. Pruned helpers and discarded citations receive nothing. Section 6 defines the pool's funding; Section 9.2 lists its open allocation terms.
+Replacement by an eligible old proof directs the citation allocation to its recorded beneficiary within <i>P</i>. Pruned helpers and discarded citations receive nothing. Section 6 defines the pool's funding; Section 9.2 gives the bounded allocation and identifies remaining choices.
 
 ### B.5. Publication and attribution
 
@@ -454,7 +419,7 @@ Outgoing signers and weights are fixed throughout a height. Proposer priorities 
 
 A proposer reuses its retained valid value and round, if any, or proposes a fresh value. An unlocked signer can prevote a valid proposal. A locked signer prevotes the proposed value if it matches the lock, or unlocks for matching verified quorum evidence strictly newer than its lock and below the current round. Otherwise it prevotes its locked value.
 
-Pilot nodes with prepared fresh keys decline an unconstrained new proposal that omits their continuing owner's offer; valid candidate replacement is permitted. Existing locks and proposals carrying verified earlier quorums follow the ordinary lock rules. This preserves the late live owner's opportunity to prepare the next period, but cannot recover an agreed transition after its incoming quorum is lost.
+A continuing owner with prepared fresh keys declines an unconstrained new proposal that omits its offer; valid candidate replacement is permitted. Existing locks and proposals carrying verified earlier quorums follow the ordinary lock rules. This preserves a late owner's opportunity to prepare the next period, but cannot recover an agreed transition after its incoming quorum is lost.
 
 From prevoting onward, current-round quorum prevotes that match a valid current proposal update the retained value and round. While the signer is prevoting, they also establish its lock and permit precommit. Evidence received after a NIL precommit updates retention but permits no second precommit. Without a proposal, including on proposal timeout, a signer prevotes its locked value or NIL if unlocked. Quorum NIL prevotes or timeout while prevoting cause NIL precommit.
 
@@ -484,24 +449,18 @@ the seal. The context binds genesis, height, record, previous and next state
 commitments, and both snapshot IDs. Only the complete envelope selects the
 successor and activates ordinary incoming signing.
 
-After a crash, saved signatures can be resent, but no old signing capability
-may be restored to repair a failed seal. The software can retire only its local
-controlled files. External backups, seeds and alternative signing routes must
-be managed by operators; height labels on Ed25519 signatures do not enforce
-retirement. If sufficient reachable weight is absent, transition and later
-progress can halt. Time does not reduce the denominator or roll back a sealed
-history.
+After a crash, saved signatures can be resent, but an old signing capability
+may not be restored to repair a failed seal. Retirement includes external
+copies, seeds and alternative signing routes; deleting local files or labeling
+signatures with heights is insufficient. If sufficient reachable weight is
+absent, transition and later progress can halt. Time does not reduce the
+denominator or roll back sealed history.
 
-An omitted rotation offer does not remove the outgoing unit's TERMINAL duty.
-Its incoming slot may be vacant, yet its saved signature can travel over a
-fresh owner-authorized recovery connection after old Noise sessions are closed.
-That connection carries handoff and replay evidence only; it cannot sign or
-vote for the incoming snapshot. The three-of-four TERMINAL threshold still
-requires three reachable outgoing signers.
-The sole holder of a complete seal may itself be vacant in the successor. Its
-fresh owner-authenticated Noise connection can carry the finalized proof to
-prepared peers in either direction; receivers check the exact selected parent
-before selecting that successor.
+A vacant or replaced incoming slot does not remove its outgoing owner's
+TERMINAL duty. Authenticated evidence transport may carry that owner's saved
+signature or a complete seal to peers without granting incoming voting
+authority. Recipients verify the selected parent and seal before adopting the
+successor.
 
 ## Appendix E. Capacity, persistence and authorization
 
@@ -515,7 +474,7 @@ Join intents enter a bounded queue of at most 32 families at finalized receipt o
 
 ### E.2. Durable history
 
-Authenticated encrypted transport bounds connections, bytes and work. Selected history, signer state, period offers, candidate import and READY/TERMINAL preparation use separate anchored journals. A receiver journals data and evidence, updates a separate anchor, then acknowledges. On restart it verifies the prefix before discarding an incomplete final frame. Complete corruption or an anchor mismatch causes a halt. Joint rollback of journal and anchor remains undetected. Addresses, indexes and storage receipts confer no authority.
+Authenticated encrypted transport bounds connections, bytes and work. Selected history, signer state, offers and handoff preparation require durable storage with an independent anchor. A receiver persists data and evidence, updates that anchor, then acknowledges; on restart it verifies the stored prefix before discarding an incomplete tail. Corruption or an anchor mismatch causes a halt. Coordinated rollback of both data and anchor remains undetected. Addresses, indexes and storage receipts confer no authority.
 
 Archive and handoff evidence require continuing storage and funding. Section 8.4 states the reader's independent-anchor and current-state requirements.
 

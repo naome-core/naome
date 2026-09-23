@@ -14,13 +14,16 @@ assert re.findall(r'^## (\d+)\.', raw, re.M) == [str(i) for i in range(1, 10)]
 assert re.findall(r'^## Appendix ([A-E])\.', raw, re.M) == list('ABCDE')
 assert re.findall(r'^\[FIG:([^\]]+)\]', raw, re.M) == [
     'system', 'graph', 'agenda', 'delivery', 'helpers', 'payments', 'citation', 'membership', 'agreement', 'reuse']
+assert raw.index('[FIG:system]') < raw.index('## 2.')
+assert all(term not in raw for term in ('Implementation status', 'state-v5 pilot'))
 reader = PdfReader(pdf)
 assert reader.outline
 with pdfplumber.open(pdf) as document:
     text = '\n'.join(page.extract_text() or '' for page in document.pages)
-    for term in ('Implementation status', 'KNOWN_UNPAID', 'Test-NAO', 'READY', 'TERMINAL',
+    for term in ('Purpose and scope', 'Bounded profile and open rules', 'KNOWN_UNPAID', 'Test-NAO', 'READY', 'TERMINAL',
                  'ProofId', 'QuestionId', 'ResolutionId', 'source', 'seven-day'):
         assert term in text, term
+    assert 'Implementation status' not in text
     for n, page in enumerate(document.pages, 1):
         text = page.extract_text() or ''
         assert len(text.split()) > 50 and '\ufffd' not in text and '\u25a0' not in text, n

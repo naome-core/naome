@@ -43,7 +43,7 @@ def styles(lang):
 class Figure(Flowable):
     def __init__(self,kind,lang):
         super().__init__();self.kind=kind;self.lang=lang;self.width=CW
-        self.height={'system':234,'question':152,'graph':157,'membership':116,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
+        self.height={'system':258,'question':152,'graph':157,'membership':116,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
         self.spaceBefore=3;self.spaceAfter=7
     def label(self,x,y,t,size=10.5,bold=False,left=False,color=INK):
         self.canv.setFont('NMath' if '∀' in t else ('NSerifBold' if bold else 'NSerif'),size);self.canv.setFillColor(color)
@@ -71,16 +71,22 @@ class Figure(Flowable):
     def draw(self):
         c=self.canv;de=self.lang=='de';k=self.kind
         if k=='system':
-            self.stages(['Frage<br/>vorschlagen','Forschung<br/>genehmigen','Beweis<br/>einreichen','Gültigen Abschluss<br/>verzeichnen'] if de else ['Propose<br/>a question','Authorize<br/>research','Submit<br/>a proof','Record a<br/>valid completion'],174)
-            self.label(CW/2,137,'Folgen einer erfolgreichen Abrechnung' if de else 'Effects of a successful settlement',10.7,True)
-            gap=12;bw=(CW-3*gap)/4
-            labels=(['<b>Bibliothek</b><br/>zitierbare Beweise','<b>Fragenfamilie</b><br/>dauerhaft abgeschlossen','<b>Geldzuteilung</b><br/>1 NAO verteilen','<b>Autorenanspruch</b><br/>späterer Beitritt möglich'] if de else ['<b>Library</b><br/>reusable proofs','<b>Question family</b><br/>permanently completed','<b>Payments</b><br/>allocate 1 NAO','<b>Author claim</b><br/>optional later joining'])
-            for i,label in enumerate(labels):self.box(i*(bw+gap),61,bw,61,label,size=10.1)
-            self.arrow([(CW/2,161),(CW/2,148)])
-            x=3*(bw+gap)+bw/2
-            self.arrow([(x,58),(x,39),(CW/2+97,39)])
-            self.box(CW/2-128,15,222,46,'<b>Versiegelter Validatorbeitritt</b><br/>ändert das künftige Wahlgremium' if de else '<b>Sealed validator admission</b><br/>changes the future electorate',size=10.2)
-            self.label(CW/2,0,'Die installierten Validatoren entscheiden über weitere Forschung und Datensätze.' if de else 'Installed validators decide on later research and records.',9.6)
+            self.label(CW/2,246,'Forschungspfad über mehrere versiegelte Datensätze' if de else 'Research path across multiple sealed records',10.7,True)
+            gap=10;bw=(CW-3*gap)/4
+            research=(['Frage in<br/>begrenzte Warteschlange','Bedingungen fixieren;<br/>Eigentümer stimmen ab','Binden, dann<br/>offenlegen','Prüfen und<br/>abrechnen'] if de else ['Admit question<br/>to bounded queue','Freeze terms;<br/>owners vote','Commit, then<br/>disclose','Check and<br/>settle'])
+            for i,label in enumerate(research):
+                self.box(i*(bw+gap),190,bw,42,label,size=9.8)
+                if i<3:self.arrow([(i*(bw+gap)+bw+2,211),((i+1)*(bw+gap)-2,211)])
+            self.label(CW/2,177,'Ein erfolgreicher Abschluss bewirkt' if de else 'A successful settlement provides',10.4,True)
+            gap=12;bw=(CW-2*gap)/3
+            effects=(['<b>Bibliothek</b><br/>Beweise für spätere Fragen','<b>Abschluss</b><br/>Familie und Zahlung','<b>Autorenanspruch</b><br/>Beitritt optional'] if de else ['<b>Library</b><br/>proofs for later questions','<b>Completion</b><br/>family and payment','<b>Author claim</b><br/>optional join intent'])
+            for i,label in enumerate(effects):self.box(i*(bw+gap),122,bw,43,label,size=10)
+            self.label(CW/2,105,'Jeder fortlaufende Datensatz nutzt den Übergang' if de else 'Each continuing record follows the handoff path',10.4,True)
+            authority=(['Ausgehende Einheiten<br/>einigen sich auf Plan','Eingehend READY;<br/>ausgehend TERMINAL','Siegel wählt Zustand;<br/>bei Fortsetzung erneut'] if de else ['Outgoing electorate<br/>agrees record + plan','Incoming READY;<br/>outgoing TERMINAL','Seal selects next state;<br/>if continuing, repeat'])
+            for i,label in enumerate(authority):
+                self.box(i*(bw+gap),35,bw,51,label,size=9.8)
+                if i<2:self.arrow([(i*(bw+gap)+bw+2,60.5),((i+1)*(bw+gap)-2,60.5)])
+            self.label(CW/2,12,'Nur ein Beitritt ändert Eigentümer; ein Abschlusssiegel beendet den Lauf.' if de else 'Only an admitted join changes owners; a terminal seal ends the run.',9.5)
         elif k=='question':
             gap=18;bw=(CW-gap)/2
             for i,title in enumerate(['question.nao','solution.nao']):
