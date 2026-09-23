@@ -1,8 +1,8 @@
 {
   "binary_sha256": {
-    "naome": "5b62808684bbc048c4cf659fec5c7fb9b1f0899ac8a53257a8fd53477b24f6fc",
-    "naome-validator": "6f16c536acf7a5d40273d1bb37f9dc57c981020a1aa3a0fadf4190db2b93b319",
-    "naome-verifier": "12e63ba7e3a17b44519f18dd06766165c58ec74f34ef2b00074ad25bb52bf556"
+    "naome": "d4712058807f7d20aa8425223f2d0127c8cc67aa355099fb4e3a0517e7e72304",
+    "naome-validator": "2d781e5c9655e96676f4a0a665b3368ada49bd7015dc4b1a899cf89384ac4cfa",
+    "naome-verifier": "9b8785e76d807f850f4790350e6ce7d2c442fbc4a20aaedcf62abfa640a3cb16"
   },
   "checks": {
     "all_nodes_cold_reopened_same_state": true,
@@ -16,7 +16,7 @@
     "simulation_controls_disabled": true
   },
   "cleanup_complete": true,
-  "elapsed_seconds": 72.979,
+  "elapsed_seconds": 66.654,
   "height": 11,
   "lab_or_research_windows": false,
   "multi_machine": false,
@@ -25,9 +25,9 @@
   "real_agent": false,
   "scope": "one-host, four-process relocated-bundle rehearsal; compact short-test profile; manual agenda votes",
   "source": {
-    "git_head": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+    "git_head": "2f0609ada04d5969e55ca34a278c3b898a888ad5",
     "scope": "Cargo manifests, lockfile, pinned toolchain, Rust sources and pilot tooling; includes working changes",
-    "source_sha256": "f78e8a0f54d82256abe9e38b56e8c153e4110570e1de760a1e01737964d474d1"
+    "source_sha256": "5bf859d3d77d7ffb1f05c6d6b1d5aa281cc932691cb2f6233edffe908a914537"
   },
   "version": 1
 }

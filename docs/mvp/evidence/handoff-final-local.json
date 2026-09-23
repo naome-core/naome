@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
-  "qualification": "canonical state-v5 sealed authority handoff",
+  "evidence_preflight": "passed",
+  "qualification": "canonical state-v5 sealed authority handoff including prepared-offer voting guard",
   "date": "2026-09-23",
-  "source_commit": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
-  "implementation_sha256": "aa02689e74782798dedcda96e9c807c2dfe585503cd3f8d91f4277cf98080686",
-  "source_manifest_scope": "Tracked and nonignored files under crates, devnet, tools and .github, plus Cargo.toml, Cargo.lock, rust-toolchain.toml and .gitattributes. Sorted path, NUL, raw SHA256 pairs; SHA256 over the complete stream.",
+  "source_commit": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+  "implementation_sha256": "6db79dc4611e28792eaa9c6c3f5043bf2d13fc8c5ff5f13a8d01e96bfaf2cd86",
+  "source_manifest_scope": "Tracked and nonignored files under crates, devnet, tools, .github, examples and tests, plus Cargo.toml, Cargo.lock, rust-toolchain.toml and .gitattributes. Sorted path, NUL, raw SHA256 pairs; SHA256 over the complete stream.",
   "local_workspace": {
-    "source_commit": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+    "source_commit": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
     "worktree_dirty": false,
-    "implementation_sha256": "aa02689e74782798dedcda96e9c807c2dfe585503cd3f8d91f4277cf98080686",
+    "implementation_sha256": "6db79dc4611e28792eaa9c6c3f5043bf2d13fc8c5ff5f13a8d01e96bfaf2cd86",
     "toolchain": "cargo 1.97.1 (c980f4866 2026-06-30)",
     "CARGO_INCREMENTAL": 0,
     "execution_schedule": "Each profile runs alone, after its own complete all-target build barrier.",
@@ -26,10 +27,10 @@
             "--locked",
             "--no-run"
           ],
-          "started_at_utc": "2026-09-23T18:52:01Z",
-          "elapsed_seconds": 3.134,
+          "started_at_utc": "2026-09-23T20:24:15Z",
+          "elapsed_seconds": 1.563,
           "exit_code": 0,
-          "log_sha256": "5f171fbe0c7a0801b46064e9bbc649b7839551f6fe31ec07373184c22eb3451a",
+          "log_sha256": "6e1554cbbdf2577a4dd9d8b7e86baca8da99d42a8b7033776e83f670f79e976d",
           "log_name": "naome-final-serial-test-compilation.log"
         },
         "execution": {
@@ -44,11 +45,11 @@
             "--locked",
             "--no-fail-fast"
           ],
-          "started_at_utc": "2026-09-23T18:52:04Z",
-          "elapsed_seconds": 494.29,
+          "started_at_utc": "2026-09-23T20:24:16Z",
+          "elapsed_seconds": 493.323,
           "exit_code": 0,
-          "log_sha256": "bfde419a078426a7246cdfafe2bc6edf2341368d2df5fcd2ac8e2e4dcdc168fc",
-          "passed": 639,
+          "log_sha256": "89baac5b1234b8128b17787c89db537d8692bd82312fbaae000594e687858aa9",
+          "passed": 642,
           "failed": 0,
           "log_name": "naome-final-serial-test-execution.log"
         }
@@ -66,10 +67,10 @@
             "--locked",
             "--no-run"
           ],
-          "started_at_utc": "2026-09-23T19:00:18Z",
-          "elapsed_seconds": 14.424,
+          "started_at_utc": "2026-09-23T20:32:30Z",
+          "elapsed_seconds": 4.461,
           "exit_code": 0,
-          "log_sha256": "f4e7f3e83388af21823a62f9f46e7aa9209c243501fed9797d9557ceceedd8fe",
+          "log_sha256": "9e1ad4871e0286782233c1be0f5aeb12e76ae47a97d8d21d809d49d885d4d813",
           "log_name": "naome-final-serial-release-compilation.log"
         },
         "execution": {
@@ -84,123 +85,153 @@
             "--locked",
             "--no-fail-fast"
           ],
-          "started_at_utc": "2026-09-23T19:00:33Z",
-          "elapsed_seconds": 441.244,
+          "started_at_utc": "2026-09-23T20:32:34Z",
+          "elapsed_seconds": 482.275,
           "exit_code": 0,
-          "log_sha256": "6567b1856cbdd73c91bf17f9d02e94610161adf3e62a9adf16afee334656dffa",
-          "passed": 639,
+          "log_sha256": "e9e1e56911410e879fa12539206ed875c6070afeec5ce7952c7054a869138489",
+          "passed": 642,
           "failed": 0,
           "log_name": "naome-final-serial-release-execution.log"
         }
       }
     },
-    "finished_at_utc": "2026-09-23T19:07:54Z",
+    "finished_at_utc": "2026-09-23T20:40:36Z",
     "implementation_unchanged": true,
     "success": true,
     "log_retention": "Detailed logs remain local; log_name identifies the hashed log and is not a repository link."
   },
   "quality": {
-    "format": {
-      "command": [
-        "cargo",
-        "fmt",
-        "--all",
-        "--",
-        "--check"
-      ],
-      "elapsed_seconds": 0.398,
-      "exit_code": 0,
-      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    "source_commit": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+    "worktree_dirty": false,
+    "implementation_sha256": "6db79dc4611e28792eaa9c6c3f5043bf2d13fc8c5ff5f13a8d01e96bfaf2cd86",
+    "toolchain": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "CARGO_INCREMENTAL": 0,
+    "checks": {
+      "format": {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "elapsed_seconds": 0.521,
+        "exit_code": 0,
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "environment": {},
+        "log_name": "naome-frozen-format.log"
+      },
+      "clippy": {
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--all-features",
+          "--locked",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "elapsed_seconds": 1.344,
+        "exit_code": 0,
+        "log_sha256": "0c1492bd88c9cc823fd42573e6fb55e6b6ad14aeb52c0abc09a35135c2e245c3",
+        "environment": {},
+        "log_name": "naome-frozen-clippy.log"
+      },
+      "rustdoc": {
+        "command": [
+          "cargo",
+          "doc",
+          "--workspace",
+          "--no-deps",
+          "--all-features",
+          "--locked"
+        ],
+        "elapsed_seconds": 0.964,
+        "exit_code": 0,
+        "log_sha256": "22d3413da80660d7a816496de558205a088d10defaa157d8da3a85aaecd50228",
+        "environment": {
+          "RUSTDOCFLAGS": "-D warnings"
+        },
+        "log_name": "naome-frozen-rustdoc.log"
+      },
+      "doctest": {
+        "command": [
+          "cargo",
+          "test",
+          "--workspace",
+          "--doc",
+          "--all-features",
+          "--locked"
+        ],
+        "elapsed_seconds": 0.842,
+        "exit_code": 0,
+        "log_sha256": "6933d03d9e061da7ff9ac38127b0641da2e82060567c7c06bf26cd59cfba22bc",
+        "environment": {},
+        "log_name": "naome-frozen-doctest.log"
+      },
+      "devnet-python": {
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "devnet",
+          "-p",
+          "test_*.py"
+        ],
+        "elapsed_seconds": 0.567,
+        "exit_code": 0,
+        "log_sha256": "1182c5b6bce87b9b607e2741af3d2ef181aefecb8c0d4ca2cb032045e36482bf",
+        "environment": {},
+        "tests_passed": 36,
+        "log_name": "naome-frozen-devnet-python.log"
+      },
+      "tools-python": {
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tools/tests",
+          "-v"
+        ],
+        "elapsed_seconds": 6.848,
+        "exit_code": 0,
+        "log_sha256": "3ae8e11eff9d7ae2a36ea78546ba9bd95959cf60f4e47c5471f5af67ec89598a",
+        "environment": {},
+        "tests_passed": 54,
+        "log_name": "naome-frozen-tools-python.log"
+      },
+      "diff": {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "elapsed_seconds": 0.01,
+        "exit_code": 0,
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "environment": {},
+        "log_name": "naome-frozen-diff.log"
+      }
     },
-    "clippy": {
-      "command": [
-        "cargo",
-        "clippy",
-        "--workspace",
-        "--all-targets",
-        "--all-features",
-        "--locked",
-        "--",
-        "-D",
-        "warnings"
-      ],
-      "elapsed_seconds": 0.294,
-      "exit_code": 0,
-      "log_sha256": "f2066ca264b9a8598ecd436c70919e1efe1acea4098ad2a13b5d82d67bc049ec"
-    },
-    "rustdoc": {
-      "command": [
-        "cargo",
-        "doc",
-        "--workspace",
-        "--no-deps",
-        "--all-features",
-        "--locked"
-      ],
-      "elapsed_seconds": 0.156,
-      "exit_code": 0,
-      "log_sha256": "7b5775a0e675b0033480b22d5fb0ee06b577f6cf9b101b70648cd76135e7e2f7"
-    },
-    "doctest": {
-      "command": [
-        "cargo",
-        "test",
-        "--workspace",
-        "--doc",
-        "--all-features",
-        "--locked"
-      ],
-      "elapsed_seconds": 0.83,
-      "exit_code": 0,
-      "log_sha256": "8cdb49e2f650bbf11b5bb731d854f8232ce30ed795ee61420d9ced80c5c6be00"
-    },
-    "devnet-python": {
-      "command": [
-        "python3",
-        "-B",
-        "-m",
-        "unittest",
-        "discover",
-        "-s",
-        "devnet",
-        "-p",
-        "test_*.py"
-      ],
-      "elapsed_seconds": 0.543,
-      "exit_code": 0,
-      "log_sha256": "5e0351922fbad6177ec73566d92fa5991587dfb9b64ac13ef829a3bc7fb219ac"
-    },
-    "tools-python": {
-      "command": [
-        "python3",
-        "-B",
-        "-m",
-        "unittest",
-        "discover",
-        "-s",
-        "tools/tests",
-        "-v"
-      ],
-      "elapsed_seconds": 6.837,
-      "exit_code": 0,
-      "log_sha256": "291141255d2e5dba8d0e67102b816f3973af02779411d74ff1a54a9bfd76fc5f"
-    },
-    "diff": {
-      "command": [
-        "git",
-        "diff",
-        "--check"
-      ],
-      "elapsed_seconds": 0.014,
-      "exit_code": 0,
-      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    }
+    "success": true,
+    "implementation_unchanged": true
   },
   "ci": {
-    "run_id": 35905106571,
-    "url": "https://github.com/naome-core/naome/actions/runs/35905106571",
-    "head_sha": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
-    "event": "workflow_dispatch",
+    "run_id": 35915474813,
+    "url": "https://github.com/naome-core/naome/actions/runs/35915474813",
+    "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+    "checkout_commit": "2f0609ada04d5969e55ca34a278c3b898a888ad5",
+    "checkout_tree": "97775ad6987191853f680c9567a986b2b0a8d888",
+    "checkout_tree_matches_local_source": true,
+    "event": "pull_request",
     "conclusion": "success",
     "platforms": [
       "Linux x86_64 test and release",
@@ -210,20 +241,20 @@
     "quality": "passed",
     "devnet": "passed",
     "measurement": {
-      "run_id": 35905106571,
-      "head": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
+      "run_id": 35915474813,
+      "head": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
       "run_status": "completed",
       "run_outcome": "success",
       "runner_image_label": "ubuntu-24.04",
       "runner_image": "20260920.314.1",
-      "devnet_job_id": 107330718400,
+      "devnet_job_id": 107365728879,
       "devnet_job_outcome": "success",
       "devnet_step_seconds": {
         "build": 95,
-        "process": 154,
-        "pilot": 73,
+        "process": 201,
+        "pilot": 66,
         "image": 16,
-        "docker": 484
+        "docker": 508
       },
       "devnet_step_names": {
         "build": "Build release test targets and devnet binaries",
@@ -232,19 +263,112 @@
         "image": "Package exact Linux binaries",
         "docker": "Qualify 100 canonical state heights with isolation, delay, and faults"
       },
+      "source_provenance": {
+        "event": "pull_request",
+        "checkout_commit": "2f0609ada04d5969e55ca34a278c3b898a888ad5",
+        "checkout_parents": [
+          "132fccc2dadae5514f89a7d1aaae8154208a4d8e",
+          "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c"
+        ],
+        "base_commit": "132fccc2dadae5514f89a7d1aaae8154208a4d8e",
+        "head_commit": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "checkout_tree": "97775ad6987191853f680c9567a986b2b0a8d888",
+        "head_tree": "97775ad6987191853f680c9567a986b2b0a8d888",
+        "checkout_tree_matches_head": true,
+        "docker_report_source_commit": "2f0609ada04d5969e55ca34a278c3b898a888ad5",
+        "pilot_report_source_commit": "2f0609ada04d5969e55ca34a278c3b898a888ad5",
+        "report_source_worktree_clean": true
+      },
       "source": {
         "run_snapshot": "ci-run.json",
-        "runner_log": "devnet-job.log"
+        "jobs_snapshot": "ci-jobs.json",
+        "runner_log": "devnet.log",
+        "checkout_commit_snapshot": "checkout-commit.json",
+        "head_commit_snapshot": "head-commit.json"
       }
-    }
+    },
+    "verified_jobs": [
+      {
+        "id": 107365728879,
+        "name": "Devnet qualification",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107365729216,
+        "name": "Rust tests (Windows x86_64, release) / Full workspace",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107365729249,
+        "name": "Rust quality",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107365729442,
+        "name": "Rust tests (Linux x86_64, release) / Full workspace",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107365729614,
+        "name": "Rust tests (macOS ARM64, test) / Full workspace",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107365729916,
+        "name": "Rust tests (Linux x86_64, test) / Full workspace",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107365730038,
+        "name": "Rust tests (macOS ARM64, release) / Full workspace",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107365730042,
+        "name": "Rust tests (Windows x86_64, test) / Full workspace",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107366987792,
+        "name": "Rust platform (Windows x86_64)",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107369580492,
+        "name": "Rust platform (Linux x86_64)",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107369876199,
+        "name": "Rust platform (macOS ARM64)",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      },
+      {
+        "id": 107371657003,
+        "name": "Rust CI",
+        "head_sha": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+        "conclusion": "success"
+      }
+    ]
   },
   "docker_comparison": {
     "baseline_run_id": 35863331752,
-    "current_run_id": 35905106571,
+    "current_run_id": 35915474813,
     "baseline_seconds": 1103.819,
-    "current_seconds": 483.476,
-    "speedup": 2.28309,
-    "required_speedup": 2,
+    "current_seconds": 508.743,
+    "speedup": 2.169699,
+    "milestone_target_speedup": 2,
     "runner_class": "GitHub-hosted ubuntu-24.04 x86_64",
     "baseline_runner_image": "20260907.300.1",
     "current_runner_image": "20260920.314.1",
@@ -252,13 +376,13 @@
     "current_timing_profile": "ci-test",
     "baseline_certified_voting_seconds": 510,
     "current_certified_voting_seconds": 34,
-    "scope": "Qualification execution only; compilation and other job steps are separate. The profile, harness and runner image changed between measurements; their individual contributions are not apportioned. This observed end-to-end result is not a protocol throughput guarantee.",
+    "scope": "Qualification execution only; compilation and other job steps are separate. The profile and harness changed between measurements; runner-image equality is recorded separately. Individual contributions are not apportioned. This observed end-to-end result is not a protocol throughput guarantee.",
     "baseline_report": "handoff-baseline-ci.json",
     "current_report": "handoff-final-ci.json"
   },
   "native_network": {
     "report": "handoff-final-native.json",
-    "elapsed_seconds": 98.565,
+    "elapsed_seconds": 105.431,
     "verified_heights": [
       15,
       15,
@@ -269,14 +393,29 @@
   },
   "architecture_review": {
     "result": "No unresolved blocking findings after fixes",
-    "scope": "Independent read-only reviews of selected authority, seal binding, signer custody, recovery, transport retention and priority, obsolete paths, operating commands and process evidence. Reviewers did not claim independent full workspace runs."
+    "scope": "Independent read-only reviews of selected authority, seal binding, signer custody, recovery, transport retention and priority, local readiness voting, obsolete paths, operating commands and process evidence. Reviewers did not claim independent full workspace runs."
   },
   "whitepaper": {
     "structural_checks": "passed",
     "pages": 20,
-    "source_sha256": "62de0d4fa0f87606f47a1fdd121d0f62144877f98cf9a6c7d4733ff5c152aa3f",
-    "pdf_sha256": "974b825552ed1639e5a925fdd04f7f0d578f39ff360946257a53e6564e4c5ac6",
-    "visual_review": "Passed manual rendered-page review of all 20 pages, with final finite-terminal wording rechecked on affected pages."
+    "source_sha256": "49b7ec70151ebe9e08f2a1f3cea37e04cf95f8e6e956adc9eee5892a67c20749",
+    "pdf_sha256": "31b0a34a843e7f088a932c965736502735d72671bd9702eaabf347aa84c8d358",
+    "visual_review": {
+      "status": "passed",
+      "method": "The paper revision task inspected the first page and affected pages 10-13 and 18-20 after rendering the final PDF; the milestone task independently inspected the final first-page preview and reran structural checks on the exact published paper commit. Prior rendered-page review covers unchanged pages.",
+      "render_directory": "/private/tmp/naome-paper-review-241",
+      "reviewed_changed_pages": [
+        1,
+        10,
+        11,
+        12,
+        13,
+        18,
+        19,
+        20
+      ]
+    },
+    "source_commit": "42ec4c7ae13c1919dbb7a3ff48f2921a456e7d2d"
   },
   "limitations": [
     "Operational handoff requires operator attestation that external secret backups and regeneration seeds are destroyed; the implementation retires managed local signing capability.",
@@ -284,11 +423,24 @@
     "Current end-to-end scenarios use explicit accelerated profiles; signed-time tests cover full Lab and research boundaries, but a new real-window Lab and seven-day research run remain unqualified.",
     "Finite MVP run and journal limits remain; customer ingress APIs and proof discovery/generation are outside this milestone."
   ],
-  "quality_environment": {
-    "RUSTDOCFLAGS": "-D warnings",
-    "CARGO_INCREMENTAL": "0",
-    "toolchain": "1.97.1",
-    "source_commit": "1554fcac6d39dcbf9eba4c43c4767e078856cf51",
-    "implementation_sha256": "aa02689e74782798dedcda96e9c807c2dfe585503cd3f8d91f4277cf98080686"
+  "post_qualification_changes": {
+    "qualified_software_commit": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
+    "paper_commit": "42ec4c7ae13c1919dbb7a3ff48f2921a456e7d2d",
+    "reviewed_paths": [
+      ".github/workflows/ci.yml",
+      "devnet/OPERATIONS.md",
+      "docs/mvp/evidence/handoff-final-ci.json",
+      "docs/mvp/evidence/handoff-final-local.json",
+      "docs/mvp/evidence/handoff-final-native.json",
+      "docs/mvp/evidence/handoff-final-pilot.json",
+      "docs/mvp/paper/build_whitepaper.py",
+      "docs/mvp/paper/check_paper.py",
+      "docs/mvp/paper/whitepaper_en.md",
+      "docs/mvp/requirements.md",
+      "docs/mvp/verification.md",
+      "docs/mvp/whitepaper-en.pdf"
+    ],
+    "software_and_test_fixtures_unchanged": true,
+    "scope": "Only the listed workflow, operating documentation, paper and evidence paths changed after software qualification. The stored implementation fingerprint identifies the qualification snapshot and includes its earlier workflow and operating notes. The final PR head requires its own complete CI run with the recurring historical speed assertion removed."
   }
 }

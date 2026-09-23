@@ -21,59 +21,79 @@ transport and replay. Research attempts retain their frozen owner electorate.
 Four stable slots retain their quorum weight through unavailability; admission
 consumes the oldest eligible claim only when its successor is sealed.
 
-The initial 23 September 2026 qualification passed on clean implementation commit
-`1554fcac6d39dcbf9eba4c43c4767e078856cf51`. The [local qualification record](evidence/handoff-final-local.json)
+The 23 September 2026 qualification passed on clean implementation commit
+`66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c`. The [local qualification record](evidence/handoff-final-local.json)
 contains the source fingerprint, commands, elapsed times, output hashes,
-architecture review and paper checks. Documentation and evidence added after
-that run do not change the qualified implementation fingerprint.
+architecture review and separately identified paper checks. The final paper
+revision is `42ec4c7ae13c1919dbb7a3ff48f2921a456e7d2d`; its hashes and review are
+recorded separately from the qualified software snapshot. Later paper, evidence
+and workflow updates preserve the qualified software and fixtures; the workflow removes the recurring
+historical speed assertion at the user's request. The final PR commit must pass
+CI using the revised workflow and full correctness qualification. The measured comparison
+below remains milestone evidence. The qualification runner checked out
+`2f0609ada04d5969e55ca34a278c3b898a888ad5`; its tree was independently verified to match the
+qualified source tree, rather than assuming that a synthetic merge SHA equals
+the feature head.
+
+An earlier [PR CI run](https://github.com/naome-core/naome/actions/runs/35907476236)
+reported two macOS release process-test timeouts. Investigation made vacant-slot
+reentry deterministic before the dependent question and reproduced a roster
+that could receive three outgoing votes with only two live incoming signers.
+A configured live node now requires its exact prepared offer before choosing a
+fresh proposal vote, with the verified candidate-replacement and earlier-quorum
+exceptions. It retains all verified proposal evidence and preserves the normal
+locked-value fallback. The focused regression failed before that fix and passed
+after it; the complete qualification below includes the fix.
+
+A later [CI run](https://github.com/naome-core/naome/actions/runs/35912269549)
+exposed a provider-outage fixture ordering error and a timeout in simultaneous
+Voting observation. The fixture now establishes the outage at a quiet four-slot
+tip before submitting its dependent question. The harness observes Voting from
+immediately after submission and retains each node's actual finalized evidence
+for the same operation, attempt and deadline. It reads the full voting duration
+from genesis, requires every participating node's observation, and keeps the
+settlement, fault, resource and independent replay checks. Timeout reports retain
+bounded public diagnostics; no failed run is counted as qualification.
 
 | Evidence | Current result |
 |---|---|
-| Complete local workspace | Rust 1.97.1, `CARGO_INCREMENTAL=0`; 639 tests in `test` and 639 in `release`, zero failures. Each complete all-target, all-feature, locked execution followed its own complete `--no-run` build barrier. Profiles ran sequentially. |
-| Local timing | Test compilation 3.134 s and execution 494.290 s; release compilation 14.424 s and execution 441.244 s. |
-| Quality | Formatting, Clippy and rustdoc with warnings denied, workspace doctest command, 32 devnet Python tests and 54 Kev Python tests passed. |
-| Platform CI | [Run 35905106571](https://github.com/naome-core/naome/actions/runs/35905106571) passed both profiles on Linux x86_64, macOS ARM64 and Windows x86_64, plus quality, devnet and all aggregate gates on the named commit. |
+| Complete local workspace | Rust 1.97.1, `CARGO_INCREMENTAL=0`; 642 tests in `test` and 642 in `release`, zero failures. Each complete all-target, all-feature, locked execution followed its own complete `--no-run` build barrier. Profiles ran sequentially. |
+| Local timing | Test compilation 1.563 s and execution 493.323 s; release compilation 4.461 s and execution 482.275 s. |
+| Quality | Formatting, Clippy and rustdoc with warnings denied, workspace doctest command, 36 devnet Python tests and 54 Kev Python tests passed. |
+| Platform CI | [Run 35915474813](https://github.com/naome-core/naome/actions/runs/35915474813) passed both profiles on Linux x86_64, macOS ARM64 and Windows x86_64, plus quality, devnet and all aggregate gates. |
 | Earned installation | The process scenario registers a new account, verifies its paid proof and claim, installs its prepared candidate, requires its signature in a later ordinary quorum with only two bootstrap signers online, verifies the future service payment, cold-restarts peers and independently replays four distinct stores. |
-| Delayed native network | [Four-process report](evidence/handoff-final-native.json): 15 matching heights in 98.565 s with 50 ms delay in each direction, timed isolation with surviving-quorum progress, catch-up, SIGKILL, graceful restart, four replays and corrupt-export rejection. |
+| Vacant-slot recovery | The four-process scenario starts with one owner offline, completes a genuine three-slot handoff, catches the owner up with a vacant slot, and requires a real reentry period before testing provider-offline proof retrieval and three approvals. |
+| Delayed native network | [Four-process report](evidence/handoff-final-native.json): 15 matching heights in 105.431 s with 50 ms delay in each direction, timed isolation with surviving-quorum progress, catch-up, SIGKILL, graceful restart, four replays and corrupt-export rejection. |
 | Portable bundles | [CI rehearsal](evidence/handoff-final-pilot.json): relocated private bundles, real proof/helper settlement with one node offline, catch-up, cold reopen and four agreeing archive replays; all nine checks passed. |
-| Independent review | Selected authority, seal binding, signer custody, recovery, transport retention and priority, obsolete paths, operating commands and process evidence were reviewed; substantive findings were fixed and no blocking findings remained. |
-| Whitepaper | The updated source, diagrams and generated 20-page English PDF passed structural checks and manual rendered-page inspection. Hashes are retained in the qualification record. |
+| Independent review | Selected authority, seal binding, signer custody, recovery, transport retention and priority, obsolete paths, operating commands, process evidence and the local readiness policy were reviewed. Substantive findings were fixed and no blocking findings remained. |
+| Whitepaper | The updated source, diagrams and generated 20-page English PDF passed structural checks and rendered-page inspection. Hashes are retained in the qualification record. |
 
 The [final Docker report](evidence/handoff-final-ci.json) reached 102 matching
-canonical heights in 34 attempts in **483.476 seconds**, compared with
+canonical heights in 34 attempts in **508.743 seconds**, compared with
 **1103.819 seconds** in the [baseline](evidence/handoff-baseline-ci.json):
-**2.283 times faster**. Both runs used the GitHub-hosted Ubuntu 24.04
-x86_64 runner class with the same container CPU/memory limits. The image changed
-from `20260907.300.1` to `20260920.314.1`. The authorized timing
-profile changed from 15-second to 1-second voting windows, all committed in
-genesis and completed under certified time (510 versus 34 required seconds).
-The profile, proxy and observation changes are part of this observed end-to-end
-result; their individual contributions are not apportioned, and this is not a
+**2.170 times faster**. Both runs used the GitHub-hosted Ubuntu 24.04
+x86_64 runner class and the same container CPU/memory limits. The baseline image
+was `20260907.300.1`; the current image was `20260920.314.1`.
+The authorized timing profile changed from 15-second to 1-second voting windows,
+all committed in genesis and completed under certified time
+(510 versus 34 required seconds).
+The profile, proxy and observation changes are part of this measured end-to-end
+result; their individual contributions are not apportioned. It is not a
 protocol throughput claim. Separate signed-time tests preserve every complete
 Lab, research, short-test and CI phase boundary.
 
-The final Docker run retained 50 ms bidirectional delay, alternating authenticated
+The Docker run retained 50 ms bidirectional delay, alternating authenticated
 owners, the timed partition with surviving-quorum progress and catch-up, active
 signer SIGKILL and graceful restarts, post-restart progress, bounded resources,
 four independent archive replays, 32 rejected malformed ingress attempts and
 corrupted-export rejection. The CI job separately recorded 95 s for the release
-build barrier, 154 s for the publication/recovery scenario, 73 s for the portable
+build barrier, 201 s for the publication/recovery scenario, 66 s for the portable
 rehearsal and 16 s for image packaging. Those steps are outside the Docker
 qualification measurement. Observation and certified-window counters overlap
 the attempt phases and must not be added to them.
 
-A subsequent [PR CI run](https://github.com/naome-core/naome/actions/runs/35907476236)
-reported two macOS release process-test timeouts on the same implementation
-tree. The passing runs above retain their named-snapshot evidence, but milestone
-acceptance is pending resolution and new exact-source validation.
-[Run 35912269549](https://github.com/naome-core/naome/actions/runs/35912269549)
-then exposed a provider-outage test ordering error and a Docker timeout while
-waiting to observe all nodes in Voting. That Docker report completed 87 heights
-and does not qualify the 100-height target or speedup. The fixture now stops the
-provider at the quiet four-slot tip before submitting the dependent question;
-qualification also retains per-node finalized Voting observations and public
-timeout diagnostics. These corrections still require complete validation.
-A new real-agent Lab run,
+These results accept MVP-36 through MVP-38 and AB-08 through AB-10 under the
+explicit accelerated authority-period qualification. A new real-agent Lab run,
 physical multi-machine acceptance and the complete seven-day research run remain
 separate and unqualified. Operational handoff requires operator attestation that
 external secret backups and regeneration seeds are destroyed; the implementation
