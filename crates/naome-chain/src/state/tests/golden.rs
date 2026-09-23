@@ -3,7 +3,7 @@ use super::*;
 // Fixed public test seeds and secrets only. These bytes are regression vectors,
 // never credentials for an operational genesis.
 #[test]
-fn complete_v4_wire_and_identifier_vectors() {
+fn canonical_wire_and_identifier_vectors() {
     let mut output = String::new();
     fn vector(out: &mut String, name: &str, bytes: &[u8]) {
         use std::fmt::Write;
@@ -17,8 +17,15 @@ fn complete_v4_wire_and_identifier_vectors() {
     vector(&mut output, "genesis", &state.genesis().encode());
     vector(&mut output, "genesis-id", state.genesis().id().as_bytes());
     vector(&mut output, "initial-state", state.commitment().as_bytes());
-    let report =
-        SignedTimeReport::sign(state.genesis(), state.head(), 1, 100, &validator(0)).unwrap();
+    let report = SignedTimeReport::sign(
+        state.genesis(),
+        state.authority(),
+        state.head(),
+        1,
+        100,
+        &validator(0),
+    )
+    .unwrap();
     vector(&mut output, "signed-time", &report.encode());
     vector(&mut output, "time-certificate", &time(&state, 100).encode());
     let registration = OperationBody::Register
@@ -105,7 +112,7 @@ fn complete_v4_wire_and_identifier_vectors() {
         std::fs::write(path, &output).unwrap();
         return;
     }
-    assert_eq!(output, include_str!("golden-v4.txt"));
+    assert_eq!(output, include_str!("golden-current.txt"));
 }
 
 #[test]
@@ -133,15 +140,15 @@ fn signed_old_attempt_reveal_never_resolves_new_attempt() {
     let before = state.commitment();
     assert!(
         state
-            .prepare_record(time(&state, state.time()), vec![old])
+            .prepare_record(time(&state, state.time()), vec![old], handoff_plan(&state))
             .is_err()
     );
     assert_eq!(state.commitment(), before);
     assert!(state.library().is_empty());
 }
 
-// Archived bytes are intentionally immutable: a fresh state-v4 genesis is
-// required. Prefix substitution is not an authorized migration of signatures.
+// Archived bytes remain outside the current canonical model. Prefix
+// substitution cannot turn old signatures into valid current evidence.
 fn legacy_vector(name: &str) -> Vec<u8> {
     let line = include_str!("legacy-research-v1.txt")
         .lines()
@@ -183,7 +190,7 @@ fn legacy_research_authority_is_not_reinterpreted_as_state_history() {
     assert!(
         SignedTimeReport::decode(&report)
             .unwrap()
-            .verify(state.genesis(), state.head(), 1)
+            .verify(state.genesis(), state.authority(), state.head(), 1)
             .is_err()
     );
     assert!(SignedOriginal::decode(&legacy_vector("signed-original"), state.genesis()).is_err());
@@ -214,7 +221,7 @@ fn protocol_v1_genesis_and_actions_are_not_reinterpreted() {
 }
 
 #[test]
-fn state_v3_history_is_not_reinterpreted_as_v4() {
+fn archived_state_history_is_not_reinterpreted_as_current() {
     let state = LedgerState::new(genesis());
     for line in include_str!("golden-v3.txt").lines() {
         let fields: Vec<_> = line.split_whitespace().collect();

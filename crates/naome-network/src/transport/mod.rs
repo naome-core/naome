@@ -1,6 +1,8 @@
 //! Managed authenticated transport, request custody, and exchange lifecycles.
 
 mod inbound_retention;
+mod pair;
+pub use pair::{StateTransportEvent, StateTransportPair, StateTransportPairError};
 pub(crate) mod rate_limit;
 pub(crate) mod session;
 pub(crate) mod state_exchange;
@@ -19,6 +21,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
+use tokio::time::Instant;
 const MANAGED_SESSION_IDLE_TIMEOUT: Duration = Duration::MAX;
 pub(crate) const MAX_NEGOTIATING_INBOUND_STREAMS_PER_CONNECTION: usize = 2;
 const DIAL_RETRY_DELAYS: [Duration; 7] = [
@@ -31,7 +34,7 @@ const DIAL_RETRY_DELAYS: [Duration; 7] = [
     Duration::from_secs(60),
 ];
 
-/// Maximum number of peers configured in one static transport.
+/// Maximum number of peers configured in the base static transport.
 pub const MAX_STATIC_PEERS: usize = 8;
 /// Maximum established connections with one authenticated peer.
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
@@ -55,6 +58,32 @@ pub const STABLE_SESSION_DURATION: Duration = Duration::from_secs(60);
 pub const INBOUND_AUTH_BURST: u32 = 8;
 /// Sustained pre-authentication inbound connection refill interval.
 pub const INBOUND_AUTH_REFILL_INTERVAL: Duration = Duration::from_secs(1);
+pub const RECOVERY_AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+/// An authenticated recovery connection must make useful progress to retain
+/// one of the two scarce nonstatic transport slots.
+pub const RECOVERY_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Even a busy recovery connection must periodically release its slot.
+pub const RECOVERY_SESSION_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Copy)]
+struct RecoveryLease {
+    idle_deadline: Instant,
+    absolute_deadline: Instant,
+}
+impl RecoveryLease {
+    fn new(now: Instant) -> Self {
+        Self {
+            idle_deadline: now + RECOVERY_IDLE_TIMEOUT,
+            absolute_deadline: now + RECOVERY_SESSION_TIMEOUT,
+        }
+    }
+    fn deadline(self) -> Instant {
+        self.idle_deadline.min(self.absolute_deadline)
+    }
+    fn useful_response(&mut self, now: Instant) {
+        self.idle_deadline = (now + RECOVERY_IDLE_TIMEOUT).min(self.absolute_deadline);
+    }
+}
 
 /// One manually authorized peer and its complete dial address.
 ///
@@ -86,7 +115,7 @@ impl StaticPeer {
 #[derive(NetworkBehaviour)]
 struct Behaviour {
     limits: connection_limits::Behaviour,
-    allowed: allow_block_list::Behaviour<allow_block_list::AllowedPeers>,
+    allowed: allow_block_list::Behaviour<allow_block_list::BlockedPeers>,
     sessions: SessionBehaviour,
     state_exchange: state_exchange::Behaviour,
 }
@@ -98,6 +127,13 @@ pub struct StateNetwork {
     pending: HashMap<(PeerId, request_response::OutboundRequestId), state_exchange::PendingState>,
     pending_budget: Arc<PendingBudget>,
     state_exchange: Option<state_exchange::StateConfig>,
+    recovery_dials: std::collections::HashSet<libp2p::swarm::ConnectionId>,
+    recovery_challenges: HashMap<PeerId, [u8; 32]>,
+    recovery_grants: HashMap<PeerId, naome_ledger::AccountId>,
+    recovery_remote_grants: std::collections::HashSet<PeerId>,
+    recovery_rates: HashMap<PeerId, rate_limit::TokenBucket>,
+    recovery_pending_auth: HashMap<PeerId, Instant>,
+    recovery_leases: HashMap<PeerId, RecoveryLease>,
 }
 
 impl StateNetwork {
@@ -110,12 +146,21 @@ impl StateNetwork {
             .is_some()
     }
 
+    #[cfg(test)]
     fn build(
         identity: Keypair,
         peers: impl IntoIterator<Item = StaticPeer>,
     ) -> Result<Self, BuildError> {
+        Self::build_with_limit(identity, peers, MAX_STATIC_PEERS, false)
+    }
+    fn build_with_limit(
+        identity: Keypair,
+        peers: impl IntoIterator<Item = StaticPeer>,
+        maximum_peers: usize,
+        recovery_enabled: bool,
+    ) -> Result<Self, BuildError> {
         let local_peer_id = identity.public().to_peer_id();
-        let mut static_peers = Vec::with_capacity(MAX_STATIC_PEERS);
+        let mut static_peers = Vec::with_capacity(maximum_peers);
         for peer in peers {
             if peer.peer_id == local_peer_id {
                 return Err(BuildError::LocalPeer(local_peer_id));
@@ -126,16 +171,16 @@ impl StateNetwork {
             {
                 return Err(BuildError::DuplicatePeer(peer.peer_id));
             }
-            if static_peers.len() == MAX_STATIC_PEERS {
+            if static_peers.len() == maximum_peers {
                 return Err(BuildError::TooManyPeers {
                     actual: static_peers.len() + 1,
-                    maximum: MAX_STATIC_PEERS,
+                    maximum: maximum_peers,
                 });
             }
             static_peers.push(peer);
         }
 
-        let peers_u32 = u32::try_from(MAX_STATIC_PEERS).expect("MAX_STATIC_PEERS fits u32");
+        let peers_u32 = u32::try_from(maximum_peers).expect("bounded peer limit fits u32");
         let connection_limits = connection_limits::ConnectionLimits::default()
             .with_max_pending_incoming(Some(peers_u32))
             .with_max_pending_outgoing(Some(peers_u32))
@@ -143,13 +188,11 @@ impl StateNetwork {
             .with_max_established_per_peer(Some(MAX_CONNECTIONS_PER_PEER));
         let limits = connection_limits::Behaviour::new(connection_limits);
 
-        let mut allowed = allow_block_list::Behaviour::default();
-        for peer in &static_peers {
-            allowed.allow_peer(peer.peer_id);
-        }
+        let allowed = allow_block_list::Behaviour::default();
         let state_exchange =
             state_exchange::Behaviour::new(static_peers.iter().map(StaticPeer::peer_id), None);
-        let sessions = SessionBehaviour::new(local_peer_id, static_peers);
+        let sessions =
+            SessionBehaviour::new_with_recovery(local_peer_id, static_peers, recovery_enabled);
         let behaviour = Behaviour {
             limits,
             allowed,
@@ -180,6 +223,13 @@ impl StateNetwork {
             swarm,
             pending: HashMap::new(),
             state_exchange: None,
+            recovery_dials: std::collections::HashSet::new(),
+            recovery_challenges: HashMap::new(),
+            recovery_grants: HashMap::new(),
+            recovery_remote_grants: std::collections::HashSet::new(),
+            recovery_rates: HashMap::new(),
+            recovery_pending_auth: HashMap::new(),
+            recovery_leases: HashMap::new(),
             pending_budget: Arc::new(PendingBudget::default()),
         })
     }
@@ -218,7 +268,7 @@ impl StateNetwork {
         if self
             .pending
             .values()
-            .any(|pending| pending.peer_index == peer_index)
+            .any(|pending| pending.peer_index == Some(peer_index))
         {
             return Err(RequestStartError::AlreadyPending(peer_id));
         }
@@ -247,7 +297,46 @@ impl StateNetwork {
                 suppressed = 0;
             }
             suppressed += 1;
-            match self.swarm.select_next_some().await {
+            let auth_deadline = self
+                .recovery_pending_auth
+                .iter()
+                .min_by_key(|(_, when)| *when)
+                .map(|(peer, when)| (*peer, *when));
+            let lease_deadline = self
+                .recovery_leases
+                .iter()
+                .min_by_key(|(_, lease)| lease.deadline())
+                .map(|(peer, lease)| (*peer, lease.deadline()));
+            let deadline = match (auth_deadline, lease_deadline) {
+                (Some(auth), Some(lease)) if auth.1 <= lease.1 => Some((auth.0, auth.1, false)),
+                (Some(_), Some(lease)) => Some((lease.0, lease.1, true)),
+                (Some(auth), None) => Some((auth.0, auth.1, false)),
+                (None, Some(lease)) => Some((lease.0, lease.1, true)),
+                (None, None) => None,
+            };
+            let swarm_event = if let Some((peer_id, at, leased)) = deadline {
+                tokio::select! {
+                    event = self.swarm.select_next_some() => Some(event),
+                    _ = tokio::time::sleep_until(at) => {
+                        self.recovery_pending_auth.remove(&peer_id);
+                        self.recovery_leases.remove(&peer_id);
+                        self.recovery_challenges.remove(&peer_id);
+                        self.recovery_grants.remove(&peer_id);
+                        self.recovery_remote_grants.remove(&peer_id);
+                        self.recovery_rates.remove(&peer_id);
+                        self.pending.retain(|(pending, _), _| *pending != peer_id);
+                        let _ = self.swarm.disconnect_peer_id(peer_id);
+                        return if leased {
+                            NetworkEvent::RecoveryDisconnected { peer_id }
+                        } else {
+                            NetworkEvent::RecoveryAuthTimeout { peer_id }
+                        };
+                    },
+                }
+            } else {
+                Some(self.swarm.select_next_some().await)
+            };
+            match swarm_event.expect("swarm event or recovery timeout") {
                 SwarmEvent::Behaviour(BehaviourEvent::StateExchange(event)) => {
                     if let Some(event) = self.handle_state_event(event) {
                         return event;
@@ -255,6 +344,45 @@ impl StateNetwork {
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Sessions(event)) => {
                     return NetworkEvent::PeerSession(event);
+                }
+                SwarmEvent::ConnectionEstablished {
+                    peer_id,
+                    connection_id,
+                    ..
+                } if self
+                    .swarm
+                    .behaviour()
+                    .sessions
+                    .is_recovery_connected(&peer_id) =>
+                {
+                    let initiated_by_us = self.recovery_dials.remove(&connection_id);
+                    self.recovery_pending_auth
+                        .insert(peer_id, Instant::now() + RECOVERY_AUTH_TIMEOUT);
+                    return NetworkEvent::RecoveryConnected {
+                        connection_id,
+                        peer_id,
+                        initiated_by_us,
+                    };
+                }
+                SwarmEvent::ConnectionClosed { peer_id, .. }
+                    if self.recovery_grants.contains_key(&peer_id)
+                        || self.recovery_remote_grants.contains(&peer_id)
+                        || self.recovery_leases.contains_key(&peer_id)
+                        || self.recovery_challenges.contains_key(&peer_id)
+                        || self.recovery_pending_auth.contains_key(&peer_id) =>
+                {
+                    self.recovery_grants.remove(&peer_id);
+                    self.recovery_remote_grants.remove(&peer_id);
+                    self.recovery_challenges.remove(&peer_id);
+                    self.recovery_rates.remove(&peer_id);
+                    self.recovery_pending_auth.remove(&peer_id);
+                    self.recovery_leases.remove(&peer_id);
+                    return NetworkEvent::RecoveryDisconnected { peer_id };
+                }
+                SwarmEvent::OutgoingConnectionError { connection_id, .. }
+                    if self.recovery_dials.remove(&connection_id) =>
+                {
+                    return NetworkEvent::RecoveryDialFailed { connection_id };
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {
                     return NetworkEvent::Listening { address };
@@ -295,6 +423,24 @@ pub enum NetworkEvent {
     InboundState(state_exchange::InboundState),
     OutboundState(state_exchange::StateEvent),
     PeerSession(PeerSessionEvent),
+    RecoveryConnected {
+        connection_id: libp2p::swarm::ConnectionId,
+        peer_id: PeerId,
+        initiated_by_us: bool,
+    },
+    RecoveryAuthenticated {
+        peer_id: PeerId,
+        owner: naome_ledger::AccountId,
+    },
+    RecoveryDisconnected {
+        peer_id: PeerId,
+    },
+    RecoveryDialFailed {
+        connection_id: libp2p::swarm::ConnectionId,
+    },
+    RecoveryAuthTimeout {
+        peer_id: PeerId,
+    },
     ListenerError {
         listener_id: ListenerId,
         error: std::io::Error,

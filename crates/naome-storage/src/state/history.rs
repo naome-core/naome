@@ -14,7 +14,9 @@ const FINALITY: u8 = 1;
 const CONFLICT: u8 = 2;
 
 fn authenticate_height(height: u64, bytes: &[u8], context: &Context) -> Result<(), Error> {
-    let value = StateFinality::authenticate(bytes, &context.genesis, context.maximum_round)?;
+    // A header is only a routing hint. The caller must authenticate the
+    // envelope against this height's exact selected parent before accepting it.
+    let value = StateFinality::peek_header(bytes, &context.genesis)?;
     if value.height() != height {
         return Err(Error::Invalid(
             "authenticated finality height differs from hint",
@@ -262,6 +264,60 @@ impl StateHistory {
                 .ok_or(Error::Limit("history height"))?,
             &self.context,
         )
+    }
+    /// Visit every selected predecessor and its sealed successor in one
+    /// authenticated pass. The preceding branch is supplied for period-custody
+    /// retirement; no untrusted header or cached authority grants selection.
+    pub(super) fn visit_selected_transitions(
+        &self,
+        mut visit: impl FnMut(Option<&StateBranch>, &StateBranch, &StateBranch) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let selected = self.head()?;
+        let (position, end) = *self
+            .replay
+            .coordinates
+            .last()
+            .ok_or(Error::Invalid("selected history coordinate"))?;
+        let mut previous = None;
+        let mut branch = StateBranch::from_genesis(LedgerState::new(self.context.genesis.clone()))?;
+        let mut height = 0usize;
+        log::prefix_replay(
+            &self.context.directory,
+            crate::JOURNAL_FILE_NAME,
+            &self.context.prefix,
+            self.context.limits,
+            end,
+            position,
+            |body| {
+                if body.first() != Some(&FINALITY) {
+                    return Err(Error::Invalid("non-finality in selected prefix"));
+                }
+                let child = branch
+                    .decode_finality(&body[1..], self.context.maximum_round)?
+                    .into_branch();
+                height = height
+                    .checked_add(1)
+                    .ok_or(Error::Limit("selected height"))?;
+                if child.commitment()
+                    != *self
+                        .replay
+                        .commitments
+                        .get(height)
+                        .ok_or(Error::Invalid("selected history commitment"))?
+                {
+                    return Err(Error::Invalid("selected history commitment"));
+                }
+                visit(previous.as_ref(), &branch, &child)?;
+                previous = Some(std::mem::replace(&mut branch, child));
+                Ok(())
+            },
+        )?;
+        if height as u64 != selected.state().height()
+            || branch.commitment() != selected.commitment()
+        {
+            return Err(Error::Invalid("selected history extent"));
+        }
+        Ok(())
     }
     pub fn maximum_round(&self) -> u64 {
         self.context.maximum_round

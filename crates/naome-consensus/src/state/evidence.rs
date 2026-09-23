@@ -1,14 +1,11 @@
 use super::{Result, StateConsensusError as Error, codec::Reader};
-use crate::{
-    ActiveAgreementEntry, ActiveAgreementSnapshot, AgreementWeight, ConsensusHeight, ConsensusKey,
-    ConsensusPosition, ConsensusRound, ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot,
-};
+use crate::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot};
 use ed25519_dalek::{Signature, VerifyingKey};
-use naome_ledger::{GenesisId, ProfileId, profile::Genesis};
+use naome_ledger::{GenesisId, ProfileId, authority::AuthoritySnapshot, profile::Genesis};
 
-const MAGIC: &[u8; 5] = b"NSCV1";
+const MAGIC: &[u8; 5] = b"NSCV5";
 /// Fixed width of one versioned state vote, including key and signature.
-pub const STATE_VOTE_BYTES: usize = 5 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64;
+pub const STATE_VOTE_BYTES: usize = 5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64;
 /// A state quorum carries at most four complete signed votes.
 pub const STATE_QUORUM_MAX_BYTES: usize = 1 + 4 * STATE_VOTE_BYTES;
 
@@ -16,6 +13,7 @@ pub const STATE_QUORUM_MAX_BYTES: usize = 1 + 4 * STATE_VOTE_BYTES;
 pub(super) struct VoteBody {
     pub(super) genesis: GenesisId,
     pub(super) profile: ProfileId,
+    pub(super) authority: [u8; 32],
     pub(super) height: u64,
     pub(super) round: u64,
     pub(super) role: ConsensusVoteRole,
@@ -26,6 +24,7 @@ impl VoteBody {
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(self.genesis.as_bytes());
         bytes.extend_from_slice(self.profile.as_bytes());
+        bytes.extend_from_slice(&self.authority);
         bytes.extend_from_slice(&self.height.to_be_bytes());
         bytes.extend_from_slice(&self.round.to_be_bytes());
         bytes.push(match self.role {
@@ -46,17 +45,24 @@ impl VoteBody {
     }
     pub(super) fn signing_bytes(self, signer: ConsensusKey) -> Vec<u8> {
         let domain: &[u8] = match self.role {
-            ConsensusVoteRole::Prevote => b"naome:state:prevote:v1\0",
-            ConsensusVoteRole::Precommit => b"naome:state:precommit:v1\0",
+            ConsensusVoteRole::Prevote => b"naome:state:prevote:v5\0",
+            ConsensusVoteRole::Precommit => b"naome:state:precommit:v5\0",
         };
         let mut bytes = domain.to_vec();
         bytes.extend(self.encode());
         bytes.extend_from_slice(signer.as_bytes());
         bytes
     }
-    pub(super) fn verify_context(self, genesis: &Genesis) -> Result<()> {
+    pub(super) fn verify_context(
+        self,
+        genesis: &Genesis,
+        authority: &AuthoritySnapshot,
+    ) -> Result<()> {
         if self.genesis != genesis.id()
             || self.profile != genesis.profile().id()
+            || authority.genesis() != genesis.id()
+            || self.authority != authority.id()
+            || self.height != authority.effective_height()
             || self.height == 0
         {
             return Err(Error::Invalid("vote context"));
@@ -78,22 +84,30 @@ impl StateVote {
         signer: ConsensusKey,
         signature: [u8; 64],
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
     ) -> Result<Self> {
-        body.verify_context(genesis)?;
-        verify_signer(genesis, signer, &body.signing_bytes(signer), signature)?;
+        body.verify_context(genesis, authority)?;
+        verify_signer(
+            genesis,
+            authority,
+            signer,
+            &body.signing_bytes(signer),
+            signature,
+        )?;
         Ok(Self {
             body,
             signer,
             signature,
         })
     }
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self> {
+    pub fn decode(bytes: &[u8], genesis: &Genesis, authority: &AuthoritySnapshot) -> Result<Self> {
         let mut reader = Reader::new(bytes, STATE_VOTE_BYTES)?;
         if reader.fixed::<5>()? != *MAGIC {
             return Err(Error::Invalid("vote version"));
         }
         let genesis_id = GenesisId::from_bytes(reader.fixed()?);
         let profile = ProfileId::from_bytes(reader.fixed()?);
+        let authority_id = reader.fixed()?;
         let height = reader.u64()?;
         let round = reader.u64()?;
         let role = match reader.u8()? {
@@ -115,6 +129,7 @@ impl StateVote {
             VoteBody {
                 genesis: genesis_id,
                 profile,
+                authority: authority_id,
                 height,
                 round,
                 role,
@@ -123,6 +138,7 @@ impl StateVote {
             signer,
             signature,
             genesis,
+            authority,
         )
     }
     pub fn encode(&self) -> Vec<u8> {
@@ -153,14 +169,16 @@ impl StateVote {
 
 pub(super) fn verify_signer(
     genesis: &Genesis,
+    authority: &AuthoritySnapshot,
     signer: ConsensusKey,
     transcript: &[u8],
     signature: [u8; 64],
 ) -> Result<()> {
-    if !genesis
-        .validators()
-        .iter()
-        .any(|v| v.consensus_key == *signer.as_bytes())
+    if authority.genesis() != genesis.id()
+        || !authority.units().iter().any(|unit| {
+            unit.keys()
+                .is_some_and(|keys| keys.consensus() == signer.as_bytes())
+        })
     {
         return Err(Error::Invalid("inactive consensus signer"));
     }
@@ -169,28 +187,6 @@ pub(super) fn verify_signer(
     key.verify_strict(transcript, &Signature::from_bytes(&signature))
         .map_err(|_| Error::Invalid("consensus signature"))
 }
-pub(super) fn snapshot(
-    genesis: &Genesis,
-    height: u64,
-    round: u64,
-) -> Result<ActiveAgreementSnapshot> {
-    let entries: Vec<_> = genesis
-        .validators()
-        .iter()
-        .map(|v| {
-            ActiveAgreementEntry::new(
-                ConsensusKey::from_bytes(v.consensus_key),
-                AgreementWeight::new(1),
-            )
-        })
-        .collect();
-    ActiveAgreementSnapshot::try_from_preselected(
-        ConsensusPosition::new(ConsensusHeight::new(height), ConsensusRound::new(round)),
-        &entries,
-    )
-    .map_err(|_| Error::Invalid("agreement set"))
-}
-
 /// Distinct, same-position and same-role votes; their targets may differ.
 /// Quorum progress and matching-target finality are deliberately separate.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,7 +194,11 @@ pub struct StateVoteSet {
     votes: Vec<StateVote>,
 }
 impl StateVoteSet {
-    pub fn new(mut votes: Vec<StateVote>, genesis: &Genesis) -> Result<Self> {
+    pub fn new(
+        mut votes: Vec<StateVote>,
+        genesis: &Genesis,
+        authority: &AuthoritySnapshot,
+    ) -> Result<Self> {
         if votes.is_empty() || votes.len() > 4 {
             return Err(Error::Limit("vote set"));
         }
@@ -208,18 +208,24 @@ impl StateVoteSet {
         }
         let first = votes[0].body;
         for vote in &votes {
-            vote.body.verify_context(genesis)?;
+            vote.body.verify_context(genesis, authority)?;
             if vote.height() != first.height
                 || vote.round() != first.round
                 || vote.role() != first.role
             {
                 return Err(Error::Invalid("mixed vote positions or roles"));
             }
-            verify_signer(genesis, vote.signer, &vote.signing_bytes(), vote.signature)?;
+            verify_signer(
+                genesis,
+                authority,
+                vote.signer,
+                &vote.signing_bytes(),
+                vote.signature,
+            )?;
         }
         Ok(Self { votes })
     }
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self> {
+    pub fn decode(bytes: &[u8], genesis: &Genesis, authority: &AuthoritySnapshot) -> Result<Self> {
         let mut reader = Reader::new(bytes, STATE_QUORUM_MAX_BYTES)?;
         let count = reader.u8()?;
         if !(1..=4).contains(&count) {
@@ -227,7 +233,7 @@ impl StateVoteSet {
         }
         let mut votes = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            let vote = StateVote::decode(reader.take(STATE_VOTE_BYTES)?, genesis)?;
+            let vote = StateVote::decode(reader.take(STATE_VOTE_BYTES)?, genesis, authority)?;
             if votes
                 .last()
                 .is_some_and(|previous: &StateVote| previous.signer >= vote.signer)
@@ -237,7 +243,7 @@ impl StateVoteSet {
             votes.push(vote);
         }
         reader.finish()?;
-        Self::new(votes, genesis)
+        Self::new(votes, genesis, authority)
     }
     pub fn encode(&self) -> Vec<u8> {
         let mut bytes = vec![self.votes.len() as u8];
@@ -258,22 +264,24 @@ impl StateVoteSet {
     pub fn votes(&self) -> &[StateVote] {
         &self.votes
     }
-    pub fn has_supermajority(&self, genesis: &Genesis) -> Result<bool> {
-        self.check_genesis(genesis)?;
-        let keys: Vec<_> = self.votes.iter().map(StateVote::signer).collect();
-        snapshot(genesis, self.height(), self.round())?
-            .has_strict_supermajority(&keys)
-            .map_err(|_| Error::Invalid("quorum signer set"))
+    pub fn has_supermajority(
+        &self,
+        genesis: &Genesis,
+        authority: &AuthoritySnapshot,
+    ) -> Result<bool> {
+        self.check_genesis(genesis, authority)?;
+        Ok(self.votes.len() >= 3)
     }
-    pub fn has_one_third(&self, genesis: &Genesis) -> Result<bool> {
-        self.check_genesis(genesis)?;
-        let keys: Vec<_> = self.votes.iter().map(StateVote::signer).collect();
-        snapshot(genesis, self.height(), self.round())?
-            .has_strict_one_third(&keys)
-            .map_err(|_| Error::Invalid("round signer set"))
+    pub fn has_one_third(&self, genesis: &Genesis, authority: &AuthoritySnapshot) -> Result<bool> {
+        self.check_genesis(genesis, authority)?;
+        Ok(self.votes.len() >= 2)
     }
-    pub(super) fn check_genesis(&self, genesis: &Genesis) -> Result<()> {
-        self.votes[0].body.verify_context(genesis)
+    pub(super) fn check_genesis(
+        &self,
+        genesis: &Genesis,
+        authority: &AuthoritySnapshot,
+    ) -> Result<()> {
+        self.votes[0].body.verify_context(genesis, authority)
     }
 }
 
@@ -283,11 +291,23 @@ pub struct StateQuorum {
     set: StateVoteSet,
 }
 impl StateQuorum {
-    pub fn from_votes(votes: Vec<StateVote>, genesis: &Genesis) -> Result<Self> {
-        Self::from_set(StateVoteSet::new(votes, genesis)?, genesis)
+    pub fn from_votes(
+        votes: Vec<StateVote>,
+        genesis: &Genesis,
+        authority: &AuthoritySnapshot,
+    ) -> Result<Self> {
+        Self::from_set(
+            StateVoteSet::new(votes, genesis, authority)?,
+            genesis,
+            authority,
+        )
     }
-    fn from_set(set: StateVoteSet, genesis: &Genesis) -> Result<Self> {
-        if !set.has_supermajority(genesis)? {
+    fn from_set(
+        set: StateVoteSet,
+        genesis: &Genesis,
+        authority: &AuthoritySnapshot,
+    ) -> Result<Self> {
+        if !set.has_supermajority(genesis, authority)? {
             return Err(Error::Invalid("insufficient quorum"));
         }
         let target = set.votes[0].target();
@@ -296,8 +316,12 @@ impl StateQuorum {
         }
         Ok(Self { set })
     }
-    pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self> {
-        Self::from_set(StateVoteSet::decode(bytes, genesis)?, genesis)
+    pub fn decode(bytes: &[u8], genesis: &Genesis, authority: &AuthoritySnapshot) -> Result<Self> {
+        Self::from_set(
+            StateVoteSet::decode(bytes, genesis, authority)?,
+            genesis,
+            authority,
+        )
     }
     pub fn encode(&self) -> Vec<u8> {
         self.set.encode()
@@ -320,12 +344,13 @@ impl StateQuorum {
     pub(super) fn check(
         &self,
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         height: u64,
         round: u64,
         role: ConsensusVoteRole,
         target: ConsensusVoteTarget,
     ) -> Result<()> {
-        self.set.check_genesis(genesis)?;
+        self.set.check_genesis(genesis, authority)?;
         if self.height() != height
             || self.round() != round
             || self.role() != role

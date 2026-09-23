@@ -25,7 +25,10 @@ impl StateRuntime {
             ));
         }
         self.last_utc = Some(utc);
-        if !self.state()?.terminated() {
+        if !self.state()?.terminated()
+            && self.node.position()?.is_some()
+            && self.node.handoff_agreement().is_none()
+        {
             if let Some(report) = self.node.sign_time_report(utc)? {
                 self.own_time = Some(report.encode().into());
                 self.time_reports.insert(report.validator(), report);
@@ -66,16 +69,37 @@ impl StateRuntime {
             }
         }
         self.enqueue_periodic()?;
+        self.probe_recovery()?;
         Ok(())
     }
     pub(super) fn prepare_record(&mut self) -> Result<Option<Vec<u8>>> {
-        if self.time_reports.len() < 3 || self.node.signer_key().is_none() {
+        if self.time_reports.len() < 3 || self.node.position()?.is_none() {
+            return Ok(None);
+        }
+        if self.offers.len() < 3 {
+            return Ok(None);
+        }
+        let offers_ready_at = *self.offers_ready_at.get_or_insert_with(Instant::now);
+        // An ordinary round-zero proposer gives a healthy fourth owner time
+        // for a first static Noise reconnect after the third offer and time
+        // report are ready. The short-test round timeout alone is shorter
+        // than the network's initial one-second retry. Three offers still
+        // progress after this fixed bound when a unit is offline or vacant.
+        let fourth_offer_grace = self.config.proposal_timeout.max(Duration::from_secs(2));
+        if self.offers.len() == 3
+            && self
+                .node
+                .position()?
+                .is_some_and(|(_, round, _)| round == 0)
+            && offers_ready_at.elapsed() < fourth_offer_grace
+        {
             return Ok(None);
         }
         let state = self.state()?;
         let certificate = TimeCertificate::new(
             self.time_reports.values().cloned().collect(),
             state.genesis(),
+            state.authority(),
             state.head(),
             state
                 .height()
@@ -83,9 +107,23 @@ impl StateRuntime {
                 .ok_or(StateRuntimeError::Configuration("height overflow"))?,
             state.time(),
         )?;
+        let Some(plan) = self.handoff_plan(&certificate)? else {
+            return Ok(None);
+        };
         let mut operations = Vec::new();
         let mut rejected = Vec::new();
-        let mut best = state.prepare_record(certificate.clone(), Vec::new()).ok();
+        let mut best = state
+            .prepare_record(certificate.clone(), Vec::new(), plan.clone())
+            .ok()
+            .filter(|transition| {
+                // Fresh period keys alone are valid when a height is needed,
+                // but they must not consume the finite run while idle. The
+                // canonical effects stream starts with version u16 and count
+                // u32; any research, queue, admission, or terminal effect is
+                // substantive work that may drive the next record.
+                transition.record().effects().len() > 6
+                    || transition.record().handoff_plan().candidate().is_some()
+            });
         // Protected phase work consumes or establishes an attempt reservation.
         // Registration must never poison that automatic progress, nor a valid
         // pending vote, commitment, or reveal, through operation-ID ordering.
@@ -120,7 +158,7 @@ impl StateRuntime {
             }
             let mut candidate = operations.clone();
             candidate.push(operation.clone());
-            match state.prepare_record(certificate.clone(), candidate.clone()) {
+            match state.prepare_record(certificate.clone(), candidate.clone(), plan.clone()) {
                 Ok(transition) => {
                     protected |= transition.state().reserved_records() != state.reserved_records();
                     operations = candidate;
@@ -133,7 +171,11 @@ impl StateRuntime {
                         Some(error)
                     } else {
                         state
-                            .prepare_record(certificate.clone(), vec![operation.clone()])
+                            .prepare_record(
+                                certificate.clone(),
+                                vec![operation.clone()],
+                                plan.clone(),
+                            )
                             .err()
                     };
                     if let Some(error) = individual_error {

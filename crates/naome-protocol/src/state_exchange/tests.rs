@@ -18,6 +18,14 @@ fn every_state_envelope_roundtrips_and_rejects_all_truncations() {
             max_records: 2,
         },
         StateRequestBody::Proof { proof_id: id },
+        StateRequestBody::Offer(vec![8].into()),
+        StateRequestBody::CandidateOffer(vec![9].into()),
+        StateRequestBody::Agreement(vec![10].into()),
+        StateRequestBody::ReadySignature(vec![11].into()),
+        StateRequestBody::TerminalSignature(vec![12].into()),
+        StateRequestBody::RecoveryChallenge,
+        StateRequestBody::RecoveryHello(vec![13; STATE_RECOVERY_HELLO_BYTES].into()),
+        StateRequestBody::PendingAgreement { height: 1 },
     ];
     for body in requests {
         let request = StateRequest::new(context(), body, MAX).unwrap();
@@ -55,6 +63,9 @@ fn every_state_envelope_roundtrips_and_rejects_all_truncations() {
             certificate: vec![9].into(),
         },
         StateResponseBody::Unavailable,
+        StateResponseBody::RecoveryNonce([15; 32]),
+        StateResponseBody::Agreement(None),
+        StateResponseBody::Agreement(Some(vec![16].into())),
     ];
     for body in responses {
         let response = StateResponse::new(context(), [4; 32], body, MAX).unwrap();
@@ -76,7 +87,7 @@ fn header_rejects_wrong_context_direction_version_tag_and_excess_before_body() {
     let bytes = StateRequest::new(context(), StateRequestBody::Handshake, MAX)
         .unwrap()
         .to_wire_bytes();
-    assert_eq!(&bytes[..3], &[0, 2, 0]);
+    assert_eq!(&bytes[..3], &[0, 3, 0]);
     assert_eq!(&bytes[3..35], &[1; 32]);
     assert_eq!(&bytes[35..67], &[2; 32]);
     assert_eq!(&bytes[67..], &[0, 0, 0, 0, 0]);
@@ -183,11 +194,11 @@ fn bounded_history_and_response_correlation() {
 }
 
 #[test]
-fn fixed_v2_proof_and_history_wire_vectors() {
-    // Explicit byte layouts independent of the production writer: v1, request,
+fn fixed_v3_proof_and_history_wire_vectors() {
+    // Explicit byte layouts independent of the production writer: v3, request,
     // genesis/profile, Proof tag, 32-byte body length, concrete ProofId.
     let expected = [
-        &[0, 2, 0][..],
+        &[0, 3, 0][..],
         &[1; 32],
         &[2; 32],
         &[7, 0, 0, 0, 32],
@@ -210,7 +221,7 @@ fn fixed_v2_proof_and_history_wire_vectors() {
     // Response body includes its exact 32-byte request digest, followed by ID
     // and the opaque three-byte test certificate. Decoding grants no authority.
     let expected = [
-        &[0, 2, 1][..],
+        &[0, 3, 1][..],
         &[1; 32],
         &[2; 32],
         &[5, 0, 0, 0, 67],
@@ -235,7 +246,7 @@ fn fixed_v2_proof_and_history_wire_vectors() {
         response
     );
     let expected = [
-        &[0, 2, 1][..],
+        &[0, 3, 1][..],
         &[1; 32],
         &[2; 32],
         &[4, 0, 0, 0, 47],
@@ -269,4 +280,58 @@ fn legacy_research_frame_version_is_rejected_before_body() {
         .to_wire_bytes();
     bytes[..2].copy_from_slice(&1u16.to_be_bytes());
     assert!(state_frame_length(&bytes, false, context(), MAX).is_err());
+}
+
+#[test]
+fn pending_agreement_rejects_wrong_response_and_malformed_optional_payload() {
+    assert!(
+        StateRequest::new(
+            context(),
+            StateRequestBody::PendingAgreement { height: 0 },
+            MAX
+        )
+        .is_err()
+    );
+    let request = StateRequest::new(
+        context(),
+        StateRequestBody::PendingAgreement { height: 8 },
+        MAX,
+    )
+    .unwrap();
+    for body in [
+        StateResponseBody::Agreement(None),
+        StateResponseBody::Agreement(Some(vec![1, 2].into())),
+    ] {
+        let response = StateResponse::new(context(), [0; 32], body, MAX).unwrap();
+        assert!(response.matches_request(&request));
+        assert!(!response.matches_request(
+            &StateRequest::new(context(), StateRequestBody::Handshake, MAX).unwrap()
+        ));
+    }
+    assert!(
+        !StateResponse::new(context(), [0; 32], StateResponseBody::Accepted, MAX)
+            .unwrap()
+            .matches_request(&request)
+    );
+    assert!(
+        StateResponse::new(
+            context(),
+            [0; 32],
+            StateResponseBody::Agreement(Some(Vec::new().into())),
+            MAX
+        )
+        .is_err()
+    );
+    let valid = StateResponse::new(context(), [0; 32], StateResponseBody::Agreement(None), MAX)
+        .unwrap()
+        .to_wire_bytes();
+    for invalid_tag in [1, 2, 255] {
+        let mut bad = valid.clone();
+        bad[STATE_FRAME_HEADER_BYTES + 32] = invalid_tag;
+        assert!(StateResponse::from_wire_bytes(&bad, context(), MAX).is_err());
+    }
+    let mut bad = valid;
+    bad.push(9);
+    bad[68..72].copy_from_slice(&34u32.to_be_bytes());
+    assert!(StateResponse::from_wire_bytes(&bad, context(), MAX).is_err());
 }

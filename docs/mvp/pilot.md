@@ -1,6 +1,6 @@
 # Trusted multi-machine pilot
 
-This is the next qualification milestone for the fixed-validator MVP. Tooling is
+This is the physical-host qualification for the four-slot authority-period MVP. Tooling is
 prepared locally; a successful local rehearsal is not a multi-machine result.
 Use four Linux/macOS hosts where possible, or at least two physical machines.
 Two validators on one machine share its failure domain: losing that machine
@@ -17,7 +17,8 @@ cargo test --workspace --profile release --all-targets --all-features --locked -
 ```
 
 Use reachable, canonical literal IP addresses on a private network or VPN, with
-one fixed TCP endpoint per validator. Hostnames, wildcard advertised addresses,
+two fixed TCP endpoints per operator, alternating with each signing period.
+Hostnames, wildcard advertised addresses,
 duplicate endpoints, and IPv4-mapped IPv6 addresses are rejected. Permit inbound
 connections from the four participants to those ports. The local Unix control
 socket must never be exposed over the network. Synchronize host clocks and
@@ -28,6 +29,10 @@ Create `endpoints.json` with the real addresses, in node-bundle order:
 ```json
 ["10.77.0.11:4100", "10.77.0.12:4100", "10.77.0.13:4100", "10.77.0.14:4100"]
 ```
+
+Create `handoff-endpoints.json` in the same order using a second reachable port
+on each host, for example port 4104. Both sets must be reachable throughout the
+run; fresh transport identities use the next endpoint before the old one retires.
 
 On a trusted provisioning machine, choose a new unused output directory:
 
@@ -40,6 +45,7 @@ any validator or change the four active signers.
 ```sh
 python3 -B devnet/pilot.py --bin-dir target/release prepare \
   --endpoints /absolute/path/endpoints.json \
+  --handoff-endpoints /absolute/path/handoff-endpoints.json \
   --retirement-order /absolute/path/retirement-order.json --directory /private/pilot \
   --timing lab --records 128 --limits standard
 ```
@@ -55,7 +61,8 @@ separate long-running qualification; no local rehearsal proves it.
 
 The provisioner creates one shared genesis and fresh private keys. Each
 `node-0` through `node-3` bundle contains only that node's account, consensus and
-transport keys, its initialized history and signer stores, and separate anchor
+transport keys, its initialized history, signer, period-custody and handoff
+stores, and four separate anchor
 directories. `authors/` contains only the two independent research accounts
 4 and 5 plus public genesis. Keep these accounts with the research participants;
 do not distribute all roles to every validator. Provisioning is centrally trusted
@@ -76,9 +83,12 @@ which source produced an executable.
 Retain only one active copy of each signing identity. Never start a coordinator
 copy after transferring its bundle, clone a running signer to another host, or
 restore an older signer/anchor snapshot to clear an error. Anchors must remain
-outside the history/signer data directories; arrange their durable storage and
-backup against the rollback failures in your deployment. Separate directories
-alone do not protect against whole-machine rollback. A failed preparation leaves
+outside the corresponding data directories; arrange their durable storage
+against the rollback failures in your deployment. Separate directories
+alone do not protect against whole-machine rollback. Retiring a managed key
+does not erase external backups, snapshots, copied secrets or regenerating seeds.
+The pilot requires operators to attest that no such signing capability remains.
+A failed preparation leaves
 its private directory for diagnosis and cannot be resumed by overwriting it.
 
 ## Preflight and start on each host
@@ -93,9 +103,11 @@ profile, path length and disk capacity. Native startup then checks registered ke
 roles, anchored replay and exclusive signing custody. Neither command initializes
 missing authority. Simulation controls are disabled. No service is installed and
 no automatic restart policy is added; keep the foreground process supervised.
-For an explicit proxy/NAT arrangement, the existing `listen_address` field may
-name a local bind address; the immutable advertised endpoint must still reach it.
-Changing advertised endpoints requires a new genesis/run.
+For an explicit proxy/NAT arrangement, `listen_address` and
+`handoff_listen_address` may name local bind addresses; both configured advertised
+endpoints must still reach them. This pilot keeps both endpoints fixed for the
+run. Startup after a sealed handoff uses anchored fresh period custody; initial
+consensus and transport files have been durably removed and must not be restored.
 
 Use `naome status`, `shutdown`, `profile`, `submit`, `vote`, `agent-vote`,
 `package`, `commit`, `reveal`, `receipt` and library commands from the
@@ -125,7 +137,9 @@ using actual wall-clock LAB windows:
    earlier commitment wins; separately omit the earlier reveal and verify the
    later eligible author can win. Record outcomes and once-only accounting.
 4. Stop one validator during live work, demonstrate progress with three, restart
-   it with its original stores and anchors, and verify catch-up. For a 2:2 network
+   it with its original stores and anchors, and verify catch-up and later
+   preparation with fresh keys. Its unavailable slot retains quorum weight.
+   For a 2:2 network
    split, neither side may finalize; restore connectivity and compare full state.
    Apply network faults at the hosts/VPN under operator control, not the disabled
    simulation interface. Record actual start/end times and affected links.
@@ -134,7 +148,14 @@ using actual wall-clock LAB windows:
    claim that graceful shutdown demonstrates a settlement-crash boundary.
 6. Stop new submissions, wait for the active attempt and queue to settle, then
    collect four exports at the same finalized tip. Check exact balances, reserve,
-   library, claims and paid-family count by independent replay.
+   library, claims, selected authority, admission order and paid-family count by
+   independent replay.
+7. Use an earned finalized claim and authenticated join intent to prepare an
+   incoming operator with the `candidate-setup` command in the operating guide.
+   Observe oldest-claim selection, three incoming READY signatures, three
+   outgoing TERMINAL signatures, retirement and activation. Confirm the original
+   open research attempt still accepts its frozen owner electorate, and that an
+   old consensus or transport key cannot exercise new-period authority.
 
 The milestone passes only with scenario evidence and at least two actual
 machines, preferably four. Archive equality alone proves neither independent

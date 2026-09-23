@@ -20,12 +20,16 @@ fn exit(child: &mut Child, budget: Duration) -> ExitStatus {
         thread::sleep(Duration::from_millis(10));
     }
 }
-fn directories(lab: &Lab, node: usize) -> [PathBuf; 4] {
+fn directories(lab: &Lab, node: usize) -> [PathBuf; 8] {
     [
         format!("node-{node}/history"),
         format!("node-{node}/signer"),
+        format!("node-{node}/custody"),
+        format!("node-{node}/handoff"),
         format!("anchor-history-{node}"),
         format!("anchor-signer-{node}"),
+        format!("anchor-custody-{node}"),
+        format!("anchor-handoff-{node}"),
     ]
     .map(|p| lab.root.join(p))
 }

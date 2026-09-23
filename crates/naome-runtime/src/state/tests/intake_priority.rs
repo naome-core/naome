@@ -59,7 +59,11 @@ fn fill_registrations(runtime: &mut StateRuntime, start: u8) -> Vec<SignedOperat
     operations
 }
 
-fn start_commit(runtime: &mut StateRuntime) -> SolutionRoundId {
+fn start_commit(
+    runtime: &mut StateRuntime,
+    directory: &Directory,
+    anchors: &Directory,
+) -> SolutionRoundId {
     let genesis = runtime.state().unwrap().genesis().clone();
     let registrations = (6..22)
         .map(|index| {
@@ -68,9 +72,15 @@ fn start_commit(runtime: &mut StateRuntime) -> SolutionRoundId {
                 .unwrap()
         })
         .collect();
-    finalize(runtime, 101, registrations);
-    finalize(runtime, 102, vec![operation(&genesis, 1)]);
-    finalize(runtime, 103, vec![]);
+    finalize(runtime, directory, anchors, 101, registrations);
+    finalize(
+        runtime,
+        directory,
+        anchors,
+        102,
+        vec![operation(&genesis, 1)],
+    );
+    finalize(runtime, directory, anchors, 103, vec![]);
     let active = runtime.state().unwrap().active().unwrap();
     let votes = (0..3)
         .map(|index| {
@@ -85,10 +95,10 @@ fn start_commit(runtime: &mut StateRuntime) -> SolutionRoundId {
             )
         })
         .collect();
-    finalize(runtime, 104, votes);
+    finalize(runtime, directory, anchors, 104, votes);
     let deadline = active.deadline.unwrap();
-    finalize(runtime, deadline, vec![]);
-    finalize(runtime, deadline, vec![]);
+    finalize(runtime, directory, anchors, deadline, vec![]);
+    finalize(runtime, directory, anchors, deadline, vec![]);
     runtime
         .state()
         .unwrap()
@@ -127,8 +137,14 @@ fn original(runtime: &StateRuntime, index: u8, round: SolutionRoundId) -> Signed
 async fn ballot_displaces_registration_and_exact_deferred_bytes_can_retry() {
     let (_directory, _anchors, mut runtime) = registration_runtime();
     let genesis = runtime.state().unwrap().genesis().clone();
-    finalize(&mut runtime, 101, vec![operation(&genesis, 1)]);
-    finalize(&mut runtime, 102, vec![]);
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        101,
+        vec![operation(&genesis, 1)],
+    );
+    finalize(&mut runtime, &_directory, &_anchors, 102, vec![]);
     let registrations = fill_registrations(&mut runtime, 6);
     let active = runtime.state().unwrap().active().unwrap();
     let vote = sign(
@@ -179,7 +195,13 @@ async fn ballot_displaces_registration_and_exact_deferred_bytes_can_retry() {
     assert_bounded(&runtime);
     let record = prepare(&mut runtime, 103);
     assert_eq!(record.operations(), &[vote]);
-    finalize(&mut runtime, 103, record.operations().to_vec());
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        103,
+        record.operations().to_vec(),
+    );
     assert_eq!(
         runtime.submit_operation(displaced.clone()).unwrap(),
         displaced.id()
@@ -188,7 +210,13 @@ async fn ballot_displaces_registration_and_exact_deferred_bytes_can_retry() {
     let record = prepare(&mut runtime, 104);
     assert_eq!(record.operations().len(), MAX_PENDING_OPERATIONS);
     let reserved = runtime.state().unwrap().reserved_records();
-    finalize(&mut runtime, 104, record.operations().to_vec());
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        104,
+        record.operations().to_vec(),
+    );
     assert_eq!(runtime.state().unwrap().reserved_records(), reserved);
     assert_eq!(
         runtime.state().unwrap().next_nonce(displaced.author()),
@@ -209,7 +237,7 @@ async fn ballot_displaces_registration_and_exact_deferred_bytes_can_retry() {
 #[tokio::test]
 async fn commit_and_reserved_reveal_survive_full_ordinary_pools_and_settle() {
     let (_directory, _anchors, mut runtime) = registration_runtime();
-    let round = start_commit(&mut runtime);
+    let round = start_commit(&mut runtime, &_directory, &_anchors);
     let genesis = runtime.state().unwrap().genesis().clone();
     let original = original(&runtime, 4, round);
     let secret = [4; 32];
@@ -251,7 +279,13 @@ async fn commit_and_reserved_reveal_survive_full_ordinary_pools_and_settle() {
     let now = runtime.state().unwrap().time();
     let record = prepare(&mut runtime, now);
     assert!(record.operations().contains(&commit));
-    finalize(&mut runtime, now, record.operations().to_vec());
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        now,
+        record.operations().to_vec(),
+    );
     assert_eq!(runtime.state().unwrap().next_nonce(author(4)), Some(3));
     assert!(!runtime.operation_deferred(replaced.id()));
     assert!(
@@ -262,8 +296,8 @@ async fn commit_and_reserved_reveal_survive_full_ordinary_pools_and_settle() {
     );
     assert!(runtime.submit_operation(replaced).is_err());
     let deadline = runtime.state().unwrap().active().unwrap().deadline.unwrap();
-    finalize(&mut runtime, deadline, vec![]);
-    finalize(&mut runtime, deadline, vec![]);
+    finalize(&mut runtime, &_directory, &_anchors, deadline, vec![]);
+    finalize(&mut runtime, &_directory, &_anchors, deadline, vec![]);
     assert_eq!(runtime.pending_operations(), 0);
     fill_registrations(&mut runtime, 32);
     let before = runtime.pending.clone();
@@ -303,7 +337,13 @@ async fn commit_and_reserved_reveal_survive_full_ordinary_pools_and_settle() {
     assert_bounded(&runtime);
     let record = prepare(&mut runtime, deadline);
     assert_eq!(record.operations(), &[reveal]);
-    finalize(&mut runtime, deadline, record.operations().to_vec());
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        deadline,
+        record.operations().to_vec(),
+    );
     let repeated = sign(
         &runtime,
         4,
@@ -315,8 +355,8 @@ async fn commit_and_reserved_reveal_survive_full_ordinary_pools_and_settle() {
     );
     assert!(runtime.submit_operation(repeated).is_err());
     let deadline = runtime.state().unwrap().active().unwrap().deadline.unwrap();
-    finalize(&mut runtime, deadline, vec![]);
-    finalize(&mut runtime, deadline, vec![]);
+    finalize(&mut runtime, &_directory, &_anchors, deadline, vec![]);
+    finalize(&mut runtime, &_directory, &_anchors, deadline, vec![]);
     assert_eq!(runtime.state().unwrap().balances().paid_completions(), 1);
     assert_eq!(
         runtime.state().unwrap().balances().account(author(4)),
@@ -329,7 +369,7 @@ async fn commit_and_reserved_reveal_survive_full_ordinary_pools_and_settle() {
 #[tokio::test]
 async fn active_entries_are_never_evicted_when_no_ordinary_slot_can_make_room() {
     let (_directory, _anchors, mut runtime) = registration_runtime();
-    let round = start_commit(&mut runtime);
+    let round = start_commit(&mut runtime, &_directory, &_anchors);
     for index in 6..22 {
         let commit = sign(
             &runtime,

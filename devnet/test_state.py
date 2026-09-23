@@ -33,6 +33,19 @@ class CanonicalQualification(unittest.TestCase):
     def state(height=3, head='head'):
         return {'status': 'finalized', 'height': height, 'head': head, 'state': 'state', 'library_root': 'library'}
 
+    def test_partition_requires_four_converged_available_signers(self):
+        values = {i: {**self.state(), 'authority': {'active_slots': 4},
+                      'consensus_position': {'height': 4}} for i in range(4)}
+        self.assertTrue(Qualification.partition_ready(values))
+        values[0]['authority']['active_slots'] = 3
+        self.assertFalse(Qualification.partition_ready(values))
+        values[0]['authority']['active_slots'] = 4
+        values[0]['consensus_position'] = None
+        self.assertFalse(Qualification.partition_ready(values))
+        values[0]['consensus_position'] = {'height': 4}
+        values[0]['head'] = 'another'
+        self.assertFalse(Qualification.partition_ready(values))
+
     def test_equal_height_conflict_and_restart_regression_fail(self):
         q = self.qualification()
         q.backend.cli.side_effect = [self.state(), self.state(head='conflicting')]
@@ -111,6 +124,33 @@ class CanonicalQualification(unittest.TestCase):
         failing.add(3)
         with self.assertRaisesRegex(RuntimeError, 'failed node'):
             q.observe(range(4))
+
+    def test_docker_probe_preserves_liveness_and_memory_bounds(self):
+        q = self.qualification()
+        q.args.backend = 'docker'
+        q.backend.status_memory.return_value = (self.state(), 12)
+        q.observe([0])
+        q.backend.resources.assert_called_once_with(0, memory_bytes=12)
+        q.backend.alive.assert_not_called()
+        q.backend.status_memory.return_value = None
+        q.backend.alive.return_value = False
+        with self.assertRaisesRegex(RuntimeError, 'exited'):
+            q.observe([0], starting=True)
+        q.backend.status_memory.return_value = (self.state(), 101)
+        q.backend.resources.return_value = {'disk_bytes': 1, 'memory_bytes': 101}
+        with self.assertRaisesRegex(RuntimeError, 'memory cap'):
+            q.observe([0])
+
+    def test_docker_status_and_cgroup_use_share_one_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(backend='docker', subnet='172.30.88.0/24')
+            backend = Backend(args, Path(tmp))
+            backend.containers[0] = 'container-0'
+            output = json.dumps({'status': self.state(), 'memory_bytes': 12})
+            with patch('state_backend.command', return_value=SimpleNamespace(returncode=0, stdout=output)) as run:
+                self.assertEqual(backend.status_memory(0), (self.state(), 12))
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0][:3], ['docker', 'exec', 'container-0'])
 
     def test_dead_wrapper_cleanup_stops_descendants(self):
         import select

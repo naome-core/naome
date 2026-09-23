@@ -1,16 +1,82 @@
 use super::*;
+use naome_consensus::state::{SealRole, SealSignature};
 use naome_ledger::time::SignedTimeReport;
 use naome_network::NetworkEvent;
 use naome_protocol::state_exchange::{StateHistoryItem, StateRejection, StateResponseBody};
 use naome_storage::state::StateAppendOutcome;
 
 impl StateRuntime {
-    pub(super) fn network_event(&mut self, event: NetworkEvent) -> Result<StateRuntimeEvent> {
+    pub(super) fn network_event(
+        &mut self,
+        event: NetworkEvent,
+        lane: naome_network::StateLane,
+    ) -> Result<StateRuntimeEvent> {
         match event {
+            NetworkEvent::RecoveryConnected {
+                peer_id,
+                initiated_by_us,
+                ..
+            } => {
+                if self.all_remote_slots_disabled()? {
+                    return Ok(StateRuntimeEvent::Network);
+                }
+                if initiated_by_us {
+                    self.start_recovery_challenge(peer_id);
+                }
+                Ok(StateRuntimeEvent::Network)
+            }
+            NetworkEvent::RecoveryAuthenticated { peer_id, owner } => {
+                if !self.recovery_owner_disabled(owner)? {
+                    self.recovery_clients.insert(peer_id);
+                }
+                Ok(StateRuntimeEvent::Network)
+            }
+            NetworkEvent::RecoveryDisconnected { peer_id }
+            | NetworkEvent::RecoveryAuthTimeout { peer_id } => {
+                self.recovery_authenticated.remove(&peer_id);
+                self.recovery_clients.remove(&peer_id);
+                self.recovery_flights
+                    .retain(|flight| flight.peer != peer_id);
+                // A recovery transport may discard its pending tickets while
+                // closing a bounded session. Drop matching runtime deliveries
+                // too, or their old tickets can block all later handoff
+                // attempts to the same fresh identity after reauthentication.
+                self.flights
+                    .retain(|flight| flight.delivery.peer != peer_id);
+                self.outbox.retain(|delivery| delivery.peer != peer_id);
+                self.sent.retain(|(peer, _)| *peer != peer_id);
+                self.acknowledged.retain(|(peer, _)| *peer != peer_id);
+                Ok(StateRuntimeEvent::Network)
+            }
+            NetworkEvent::PeerSession(
+                naome_network::PeerSessionEvent::Established { peer_id }
+                | naome_network::PeerSessionEvent::Disconnected { peer_id },
+            ) => {
+                self.sent.retain(|(peer, _)| *peer != peer_id);
+                self.acknowledged.retain(|(peer, _)| *peer != peer_id);
+                Ok(StateRuntimeEvent::Network)
+            }
             NetworkEvent::InboundState(inbound) => {
                 let peer = inbound.peer_id();
+                let blocked_recovery_owner = inbound
+                    .recovery_owner()
+                    .map(|owner| self.recovery_owner_disabled(owner))
+                    .transpose()?
+                    .unwrap_or(false);
+                if inbound.recovery_owner().is_some() && !blocked_recovery_owner {
+                    // The network has verified the owner's challenge response.
+                    // This connection can receive the same bounded handoff
+                    // evidence as an ordinary peer without voting authority.
+                    self.recovery_clients.insert(peer);
+                }
                 let body = inbound.request().body().clone();
-                let (response, event) = match self.request_body(&body) {
+                let (response, event) = match if blocked_recovery_owner {
+                    Err(StateRuntimeError::Rejected(
+                        "simulated authority slot disabled".into(),
+                    ))
+                } else {
+                    self.request_body(&body)
+                } {
                     Ok(response) => (response, StateRuntimeEvent::Network),
                     Err(error) if is_rejection(&error) => (
                         StateResponseBody::Rejected(StateRejection::Invalid),
@@ -23,10 +89,24 @@ impl StateRuntime {
                 };
                 // A dropped/broken response channel does not undo an anchored
                 // finality or make queued user input into a finalized receipt.
-                let _ = self.network.respond_state(inbound, response);
+                let network = match lane {
+                    naome_network::StateLane::Active => self.network.active_mut(),
+                    naome_network::StateLane::Handoff => self.network.staged_mut(),
+                    naome_network::StateLane::Recovery => self.network.recovery_mut(),
+                };
+                if let Some(network) = network {
+                    let _ = network.respond_state(inbound, response);
+                }
                 Ok(event)
             }
             NetworkEvent::OutboundState(event) => {
+                if let Some(index) = self
+                    .recovery_flights
+                    .iter()
+                    .position(|flight| flight.ticket.accepts_event(&event))
+                {
+                    return self.handle_recovery_outbound(index, event);
+                }
                 self.expire_proof_fetches();
                 if let Some(index) = self.proof_fetches.iter().position(|fetch| {
                     fetch
@@ -90,6 +170,9 @@ impl StateRuntime {
                 let peer = delivery.peer;
                 self.sent.insert((peer, delivery.id));
                 match received.response().body() {
+                    StateResponseBody::Accepted => {
+                        self.remember_acknowledged(&delivery)?;
+                    }
                     StateResponseBody::History(items) => {
                         for item in items {
                             match self.receive_finality(&item.evidence) {
@@ -164,6 +247,7 @@ impl StateRuntime {
                 let report = SignedTimeReport::decode(bytes)?;
                 report.verify(
                     self.state()?.genesis(),
+                    self.state()?.authority(),
                     self.state()?.head(),
                     self.state()?
                         .height()
@@ -199,6 +283,57 @@ impl StateRuntime {
             }
             StateRequestBody::Vote(bytes) => {
                 self.node.accept_vote(bytes)?;
+                Ok(StateResponseBody::Accepted)
+            }
+            StateRequestBody::Offer(bytes) => {
+                self.accept_offer(bytes)?;
+                Ok(StateResponseBody::Accepted)
+            }
+            StateRequestBody::CandidateOffer(bytes) => {
+                self.accept_candidate_offer(bytes)?;
+                Ok(StateResponseBody::Accepted)
+            }
+            StateRequestBody::RecoveryChallenge | StateRequestBody::RecoveryHello(_) => Err(
+                StateRuntimeError::Rejected("recovery lane not authenticated".into()),
+            ),
+            StateRequestBody::PendingAgreement { height } => {
+                let bytes = self
+                    .node
+                    .handoff_agreement()
+                    .filter(|agreement| agreement.seal_context().height() == *height)
+                    .map(|agreement| agreement.encode().map(|bytes| bytes.into()))
+                    .transpose()
+                    .map_err(StateNodeError::from)?;
+                Ok(StateResponseBody::Agreement(bytes))
+            }
+            StateRequestBody::Agreement(bytes) => {
+                self.node.accept_agreement(bytes)?;
+                Ok(StateResponseBody::Accepted)
+            }
+            StateRequestBody::ReadySignature(bytes) => {
+                if SealSignature::decode(bytes)
+                    .map_err(StateNodeError::from)?
+                    .role()
+                    != SealRole::Ready
+                {
+                    return Err(StateRuntimeError::Rejected(
+                        "READY frame has wrong seal role".into(),
+                    ));
+                }
+                self.node.accept_seal_signature(bytes)?;
+                Ok(StateResponseBody::Accepted)
+            }
+            StateRequestBody::TerminalSignature(bytes) => {
+                if SealSignature::decode(bytes)
+                    .map_err(StateNodeError::from)?
+                    .role()
+                    != SealRole::Terminal
+                {
+                    return Err(StateRuntimeError::Rejected(
+                        "TERMINAL frame has wrong seal role".into(),
+                    ));
+                }
+                self.node.accept_seal_signature(bytes)?;
                 Ok(StateResponseBody::Accepted)
             }
             StateRequestBody::Finalized(bytes) => {
@@ -248,7 +383,7 @@ impl StateRuntime {
             }
         }
     }
-    fn receive_finality(&mut self, bytes: &[u8]) -> Result<StateAppendOutcome> {
+    pub(super) fn receive_finality(&mut self, bytes: &[u8]) -> Result<StateAppendOutcome> {
         let before = self.state()?.height();
         let result = self.node.accept_finality(bytes)?;
         if self.state()?.height() != before {
@@ -257,7 +392,7 @@ impl StateRuntime {
         Ok(result)
     }
 }
-fn is_rejection(error: &StateRuntimeError) -> bool {
+pub(super) fn is_rejection(error: &StateRuntimeError) -> bool {
     matches!(
         error,
         StateRuntimeError::Rejected(_) | StateRuntimeError::Node(StateNodeError::Rejected(_))

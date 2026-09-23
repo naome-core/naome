@@ -205,12 +205,19 @@ impl Fixture {
         )
         .unwrap();
         let config = NodeConfig {
-            version: 2,
+            version: 5,
+            primary_endpoint: "127.0.0.1:44000".into(),
+            candidate_family: None,
+            recovery_endpoints: vec!["127.0.0.1:44000".into(), "127.0.0.1:44004".into()],
             genesis: root.join("genesis.bin"),
             history: root.join("history"),
             history_anchor: root.join("history-anchor"),
             signer: root.join("signer"),
             signer_anchor: root.join("signer-anchor"),
+            custody: root.join("custody"),
+            custody_anchor: root.join("custody-anchor"),
+            handoff: root.join("handoff"),
+            handoff_anchor: root.join("handoff-anchor"),
             consensus_key: root.join("consensus.key"),
             transport_key: root.join("transport.key"),
             account_key: key.clone(),
@@ -219,6 +226,8 @@ impl Fixture {
             maximum_round: 64,
             simulation: true,
             listen_address: None,
+            handoff_endpoint: "127.0.0.1:44004".into(),
+            handoff_listen_address: None,
         };
         files::directory(&config.signer).unwrap();
         files::create(&config.genesis, &genesis.encode(), false).unwrap();
@@ -231,6 +240,7 @@ impl Fixture {
         let config_file = root.join("node.json");
         files::create(&config_file, &serde_json::to_vec(&config).unwrap(), true).unwrap();
         let status = json!({"genesis":files::hex(genesis.id().as_bytes()),"active":{
+            "electorate":[files::hex(AccountId::for_key(owner.verifying_key().as_bytes()).as_bytes())],
             "phase":"Voting","question":"11".repeat(32),"submission":"22".repeat(32),"attempt":1,
             "deadline":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()+60},
             "accounts":[{"account":files::hex(AccountId::for_key(owner.verifying_key().as_bytes()).as_bytes()),"next_nonce":1}]});

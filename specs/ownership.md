@@ -7,12 +7,12 @@ implementation, local checks, CI, and runtime evidence.
 
 | Responsibility | Owning crate | Normative contracts |
 | --- | --- | --- |
-| Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, and passive claims | `naome-ledger` | [MVP requirements and R1–R11](../docs/mvp/requirements.md) |
-| Canonical complete state record, finalized envelope framing, exact-parent replay and provisional successor binding | `naome-chain::state` | [Canonical state formats](#canonical-state-formats) |
-| Full state-record agreement, deterministic proposer selection, and bounded round transitions | `naome-consensus` | [MVP full state records](../docs/mvp/requirements.md#r8), [Proposer selection](proposer-selection.md) |
-| Canonical history, independent replay, exclusive signer custody, and anchored crash recovery | `naome-storage::state`, `naome-node::state` | [MVP operational rules](../docs/mvp/requirements.md), [Recovery procedures](../docs/mvp/operations.md) |
-| Authenticated complete records, history and proof transfer, bounded request custody, and live scheduling | `naome-protocol::state_exchange`, `naome-network::transport::state_exchange`, `naome-runtime::state` | [MVP authentication and limits](../docs/mvp/requirements.md) |
-| Operator CLI, durable local actions, bounded operator-agent review, inspection and portable offline archive replay | `naome-cli`; `naome-validator start` and `naome-verifier verify` | [Operating guide](../docs/mvp/operations.md), [Acceptance evidence](../docs/mvp/verification.md) |
+| Immutable research profile/genesis, questions, deterministic phases, normalized proof library, settlement, rewards, claims, join queue, and authority transition | `naome-ledger` | [MVP requirements and R1–R11](../docs/mvp/requirements.md), [Authority periods](authority-periods.md) |
+| Canonical complete state record with its handoff plan, finalized envelope framing, exact-parent replay and provisional successor binding | `naome-chain::state` | [Canonical state formats](#canonical-state-formats) |
+| Full state-record agreement, stable-slot proposer selection, bounded rounds, and two-quorum seal verification | `naome-consensus` | [Proposer selection](proposer-selection.md), [Authority periods](authority-periods.md) |
+| Canonical history, independent replay, exclusive period signer and candidate custody, READY/TERMINAL journal, and anchored crash recovery | `naome-storage::state`, `naome-node::state` | [Authority periods](authority-periods.md), [Recovery procedures](../docs/mvp/operations.md) |
+| Authenticated complete records, handoff/recovery messages, history and proof transfer, bounded request custody, staged transports, and live scheduling | `naome-protocol::state_exchange`, `naome-network::transport::state_exchange`, `naome-runtime::state` | [Authority periods](authority-periods.md), [MVP authentication and limits](../docs/mvp/requirements.md) |
+| Operator CLI, candidate provisioning, durable local actions, bounded operator-agent review, inspection and portable offline archive replay | `naome-cli`; `naome-validator start` and `naome-verifier verify` | [Operating guide](../docs/mvp/operations.md), [Acceptance evidence](../docs/mvp/verification.md) |
 | Primitive language, axioms, and proof rules | `naome-foundation` | [Foundation](foundation.md) |
 | Proof and definition representations, canonical bytes, and identities | `naome-proof` | [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
 | Foundation-relative proof checking and conservative definition checking | `naome-checker` | [Foundation](foundation.md), [Proof Protocol](proof-protocol.md), [Mathematical Definitions](mathematical-definitions.md) |
@@ -37,66 +37,72 @@ provenance. Its immutable resolver serves authoring through the sealed selected
 full-history interface. Standalone DAG and definition authoring support offline
 checking without extending MVP publication rules.
 
-`LedgerState::execute` returns provisional `LedgerExecution`. Only
-`naome-chain::StateRecordExecution` constructs a complete record, enforces its
-total byte limit, replays it against the exact parent, and compares every encoded
-effect and state commitment. Binding an identifier onto provisional output grants
-no finality: consensus branches cannot be initialized from a non-genesis
-successor. Consensus authenticates `FinalizedStateRecord` evidence before
-mathematical replay; storage installs only the verified result.
+`LedgerState::execute` derives a provisional successor from certified time,
+ordered operations, and an exact `HandoffPlan`.
+`naome-chain::StateRecordExecution` constructs the complete record, enforces its
+total byte limit, replays it against the exact selected parent, and compares
+every encoded effect and state commitment. Consensus agreement produces
+`StateAgreement`, which exposes a provisional state but no selectable branch.
+A verified incoming READY quorum and outgoing TERMINAL quorum produce
+`StateFinality`. Only its sealed branch may be durably selected; observing a
+record or agreement grants no signing authority. Historical evidence is
+authenticated against its exact selected parent, not a header or peer hint.
 
-Within `naome-network`, `transport` owns canonical state exchange, fixed genesis
-sessions, request permits, and terminal correlation. `naome-protocol` owns the
-bounded state envelope. `naome-runtime::state` owns live scheduling, delivery,
-proof fetch, and history catch-up. The node owns bounded lock/round state; storage
-owns history, its separately anchored signer, and strict replay.
+Within `naome-network`, `transport` owns canonical state exchange, selected
+period identities, staged handoff and recovery sessions, request permits, and
+terminal correlation. `naome-protocol` owns the bounded state envelope.
+`naome-runtime::state` owns live scheduling, delivery, proof fetch, history
+catch-up, and period transition. The node owns bounded lock/round state;
+storage owns selected history, separately anchored signer/custody/handoff
+journals, and strict replay.
 
 The repository root is a virtual Cargo workspace. `naome-author` is the offline
 source-authoring CLI in `naome-authoring`; `naome` is the operator CLI in
-`naome-cli`. `naome-validator start` reopens existing signing authority.
-`naome-verifier verify` reads public archives with no network or signing command.
-Setup initializes fresh consensus authority while generating new keys and genesis. Research keys may be created separately and gain account authority only through finalized registration.
+`naome-cli`. `naome-validator start` reopens existing selected signing
+authority. `naome-verifier verify` reads public archives with no network or
+signing command. Initial setup creates fresh genesis keys and private authority
+stores. `naome candidate-setup` independently replays finalized history and
+imports the exact keys from a claim holder's finalized intent into separate
+private custody; it creates no active signer. Research keys gain account
+authority only through finalized registration.
 
 ## Canonical state formats
 
-The `state-v4` explicit bootstrap retirement-order profile uses a fresh genesis
-and rejects `state-v3` passive join-intent and earlier genesis versions. Its
-retirement order is a separate exact permutation of the four validator IDs,
-committed in genesis; no order is inferred from sorted membership. It keeps
-the same four active validators and passive intents. The order is preparation,
-not a membership handoff. Mathematical proof and Foundation encodings are independent
-of this state-format family.
+The `state-v5` handoff run requires a fresh genesis with protocol version 5.
+The profile and genesis framing retain `NAOPROF4` and `NAOGENS4`; their
+versioned contents and IDs reject the previous state run. Genesis commits an
+exact permutation of the four bootstrap validator IDs as their retirement
+order. No order is inferred from sorted keys. Mathematical proof and
+Foundation encodings are independent of this state-format family.
 
 | Surface | Encoding and owner |
 | --- | --- |
-| Profile and genesis | `NAOPROF4`, `NAOGENS4`, `state-v4`; ledger profile |
-| Complete application record | `NSRC` plus version 1; `naome-chain::StateRecord` |
-| Signed actions, originals, certified time reports | `NSUA`/`NSOR` version 4 with signer keys; `NSTM` unchanged; ledger authentication/operations/time |
-| Consensus value, proposal, vote, finality | `NSCB1`, `NSCP1`, `NSCV1`; consensus; `NSCF1` outer framing in chain, authenticated by consensus |
-| Lock events and checked snapshots | `NSCE1`, `NSCS1`; consensus |
-| History, signing journal, external anchor | `NAOSHIS1`, `NAOSSIG1`, `NAOSANC1`; storage |
-| Authenticated exchange | `/naome/state-v1`, envelope version 2; network/protocol |
+| Profile and genesis | `NAOPROF4`, `NAOGENS4`, protocol version 5; ledger profile |
+| Authority snapshot and handoff plan | `NSAU5`, `NSHP5`; owner/period offers and candidate readiness `NSCA5`; ledger authority |
+| Complete application record | `NSRC` plus version 5, including certified time and handoff plan; `naome-chain::StateRecord` |
+| Signed actions, originals, certified time reports | `NSUA`/`NSOR` version 4 and `NSTM` version 1, bound to v5 genesis and selected authority where required; ledger authentication/operations/time |
+| Consensus value, proposal, vote, agreement and sealed finality | `NSCB5`, `NSCP5`, `NSCV5`, `NSAG5`; consensus; `NSCF5` outer proposal/QC/seal envelope in chain |
+| Seal signature, seal, lock events and checked snapshots | `NSSG5`, `NSSL5`, `NSCE5`, `NSCS5`; consensus |
+| History, period signer, handoff, period offer and candidate import journals | `NAOSHIS1` with v5 genesis context, `NAOSSIG5`, `NAOSHOF5`, `NAOSOFJ5`, `NAOCAND5`; storage; external anchor `NAOSANC1` |
+| Authenticated exchange | `/naome/state-v5`, envelope version 3; network/protocol |
 | Private key and durable commitment bundle | `NSKEY001`, `NSSEC001`; CLI |
-| State hash and signature domains | Profile, genesis, action, original, commitment and application-state domains use v4; unchanged components retain v1 and bind the v4 genesis |
+| Normalization receipt | Version 2 includes the exact outgoing service authority used for reward recomputation; ledger receipt; archive inspection reads it only after full selected-history replay |
+| State hash and signature domains | Authority, application state, record and consensus use v5 domains; unchanged profile, genesis, action, original and commitment identities retain v4 domains and bind the new genesis |
 
-Storage uses `state.journal`, `state.lock`, `state-finality.anchor`, and
-`state-signer-KEY.*`. Node configuration version 2 uses `agenda_profile`.
-Relative configuration paths resolve beside the configuration file; absolute
-paths retain their meaning. This permits private [pilot bundles](../docs/mvp/pilot.md)
-to move before startup without changing genesis or creating new signing state.
-Explicit peer endpoints may use either standard or compact pre-genesis limits.
-Unsupported artifact/research/V0 authority filenames, old framing, and version-1
-configuration are rejected before locks or writes, including during read-only
-observation. No old directory, history, or signing authority is automatically
-converted. Historical data requires its original executable; a fresh run uses a
-new directory and genesis.
+Storage uses `state.journal`, `state.lock`, `state-finality.anchor`,
+`state-signer-KEY.*`, plus exact-height handoff and period custody journals.
+Node configuration version 5 records independent primary/handoff endpoints,
+recovery endpoints and an optional candidate family. Relative configuration
+paths resolve beside the configuration file; absolute paths retain their
+meaning. A candidate's owner key is separate from its imported consensus and
+transport custody. Startup reopens selected authority and never initializes a
+missing store. Old framing, journals, or genesis contents are rejected rather
+than migrated. A fresh run uses a new directory and genesis.
 
-The former research-v1 golden bytes remain immutable negative fixtures in
-chain and consensus tests. Renamed headers, filenames, or imported snapshots must
-not grant them authority. The [codec contract](codec-conformance.md) inventories
-current formats, limits, and malformed-input evidence. Mathematical and proposer
-hash domains with literal `v0` suffixes remain current where their owning
-contracts specify them; changing those bytes would change identity.
+The [codec contract](codec-conformance.md) inventories current formats,
+limits, and malformed-input evidence. Mathematical and proposer hash domains
+with literal `v0` suffixes remain current where their owning contracts
+specify them; changing those bytes changes identity.
 
 ## Safety and recovery verification
 
@@ -113,5 +119,5 @@ qualification.
 Canonical process tests cover strict custody, retransmission, conflict halt,
 bounded control framing, output backpressure, SIGINT/SIGTERM, and independent
 archive replay. The [verification map](../docs/mvp/verification.md) links the
-actual tests and measured process/lab runs. Bounded tests and fixed trusted
-membership do not establish permissionless-network security.
+actual tests and measured process/lab runs. Bounded tests and the trusted four-slot pilot do not establish
+permissionless-network security or physical multi-machine acceptance.

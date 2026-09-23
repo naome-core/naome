@@ -13,21 +13,16 @@ This qualification does not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The explicit retirement-order format is `state-v4`. Existing state-v3, state-v2, state-v1, and
-research-v1 runs cannot be reopened or converted with this executable. Retain
-their directories and use the original executable for historical inspection.
-Start a new directory and genesis for state-v4; see the
-[format boundary](../../specs/ownership.md#canonical-state-formats).
-Node configuration version 2 uses `agenda_profile` and `agenda-profile.txt`.
-The canonical journal names are `state.journal`, `state.lock`,
-`state-finality.anchor`, and `state-signer-KEY.*`. Earlier state-v1 builds used
-legacy filenames and configuration version 1; those directories also require
-their original executable. Do not manually rename authority files or edit a
-configuration version to resume an earlier run.
-The [integration evidence](evidence/final-integration.json) records the exact source,
-three executable hashes, local checks, real-window lab and CI results. The final
-handoff separately verifies all CI gates on the exact publication commit.
-Earlier MVP reports remain historical evidence for their original executables.
+The current canonical protocol is `state-v5` and node configuration version 5.
+Use a fresh genesis and run directory. Incompatible earlier development data is
+rejected; this executable provides one current implementation and no migration.
+The current files include `state.journal`, `state-finality.anchor`, per-period
+`state-signer-KEY.*`, `state-period-HEIGHT.*` custody, and `state-handoff-HEIGHT.*`.
+Each store has an independent anchor directory. Do not rename authority files,
+copy old keys into a new store, or edit format identifiers to bypass rejection.
+The [verification record](verification.md) separates current checks from
+historical Lab and CI evidence. Physical multi-machine qualification remains
+separate from local four-process runs.
 
 ## Build and choose an immutable run
 
@@ -45,7 +40,7 @@ printf '[2,0,3,1]\n' > /tmp/bootstrap-retirement-order.json
 The JSON order lists generated `node-0` through `node-3` indices, in the
 operator-selected retirement sequence. Setup resolves them to consensus validator
 IDs, commits the four IDs in genesis, and prints them. Review that sequence before
-startup with `profile-info`; it does not retire any key or change active membership.
+startup with `profile-info`. It determines which bootstrap slot is replaced first when a claim-backed candidate is sealed into authority.
 An omitted, repeated, or unknown index is rejected before provisioning.
 
 Run this from the repository root. `RUN` must name a new directory; setup never
@@ -57,14 +52,17 @@ The validator accepts only `start CONFIG`; the verifier accepts only `verify`
 and help. Former V0 commands and the `state` prefix are unsupported and fail
 without creating or converting authority.
 A short absolute path also leaves room for Unix
-control-socket path limits. The four ports beginning at `44100` must be available.
+control-socket path limits. The eight ports beginning at `44100` must be available: four primary endpoints
+and four handoff endpoints.
 
-Setup accepts `lab`, `research`, or `short-test`. `lab` uses 300-second voting,
+Setup accepts `lab`, `research`, `short-test`, or `ci-test`. `lab` uses 300-second voting,
 120-second commitment, 120-second reveal, and 1,800-second queue windows.
 `research` uses seven days of voting, one day for commitments, one day for
 reveals, and a 30-day queue lifetime. That long-running profile is a separate
 later qualification; the initial MVP acceptance uses `lab`. `short-test` uses
-15/8/8/120 seconds and must be labeled accelerated testing. `compact` changes
+15/8/8/120 seconds; `ci-test` uses 1/8/8/120 seconds. Both must be labeled
+accelerated testing, and neither qualifies the full Lab or research windows.
+Their timing is committed in genesis. `compact` changes
 resource limits before genesis, while preserving the selected timing windows and reward rules:
 
 | Bound | Default, 8,192 records | Compact, 256 records |
@@ -73,11 +71,11 @@ resource limits before genesis, while preserving the selected timing windows and
 | Original/final package | 256 KiB each | 64 KiB each |
 | Transport frame | 1,088 KiB | 192 KiB |
 | Maximum consensus round index | 64, allowing 65 rounds | 8, allowing 9 rounds |
-| Conservative storage floor per node | 3,453,995,466,906 bytes | 2,441,919,130 bytes |
+| Conservative storage floor per node | 3,564,533,612,544 bytes | 3,070,260,224 bytes |
 
-The compact example requires 9,767,676,520 free bytes across its four node
-reservations, approximately 9.10 GiB. The calculation includes worst-case
-signing history, archives, staged reveals, metadata, and a safety margin; it is
+The compact example requires 12,281,040,896 free bytes across its four node
+reservations, approximately 11.44 GiB. The calculation includes worst-case
+period signing history, handoff and key custody journals, archives, staged reveals, metadata, and a safety margin; it is
 not a measured storage-consumption or throughput claim. Different record counts
 produce a different calculation. Setup prints the actual genesis/profile IDs
 and required bytes and rejects insufficient space. Nodes also halt visibly if
@@ -85,18 +83,18 @@ free space later falls below their profile floor.
 
 Setup creates six account keys, four consensus keys, four separate transport
 keys, public `genesis.bin`, and `node-0` through `node-3` configurations. It also
-initializes each node’s empty canonical history, signing journal, and two separate
-anchors before publishing its configuration. Accounts
-0–3 are the fixed validator owners; accounts 4–5 are available for independent
+initializes canonical history, signing, period custody and handoff stores, each with a separate anchor directory, before publishing its configuration. The first fresh key offer is already durable. Accounts
+0–3 are the bootstrap validator owners; accounts 4–5 are available for independent
 research authors. Private files use owner-only permissions. Keep the entire run
-directory, including retained commitment secrets, private and backed up.
+directory, including retained commitment secrets, private. Backups must preserve retirement records; restoring old signing seeds or rollback-capable copies violates the custody assumption.
 
-Validator startup only reopens existing stores. A missing journal, anchor, or
-authority directory is a fatal error, even if all stores are missing. Startup
-never recreates signing history with existing keys. Restore the complete correct
-run from its durable backup or provision a new run with fresh keys and genesis;
-do not copy old keys into a new authority store. SIGINT, SIGTERM, and the shutdown
+Startup validates selected history and retirement before reading a secret. An anchored offer or active signer cannot be recreated after its secret, journal or anchor is lost. A selected incoming period opens its signer exactly once through its durable custody marker. A stopped signer restarts with public evidence and fresh handoff/recovery transport. Missing authority directories are fatal; use a verified consistent backup that preserves all stops, or provision a new run with fresh keys and genesis. SIGINT, SIGTERM, and the shutdown
 command release custody. Stalled diagnostic output cannot retain signing locks.
+
+After the finite run ends, keep at least one completed node online for late
+catch-up. It serves authenticated history on its configured primary address
+using a fresh recovery identity, including after restart. Period signing keys
+remain retired, and no further ordinary records can be created.
 
 Consensus retries also have a finite per-height round and journal budget. A
 partition without a quorum cannot consume rounds merely through elapsed time.
@@ -153,7 +151,7 @@ Identical saved actions can be resent with `send`.
 "$VALIDATOR" start "$C0" >>"$RUN/node-0.log" 2>&1 &
 ```
 
-Restart with the same configuration, keys, history, and independent anchors.
+Restart with the same configuration, history, custody stores and independent anchors. The original consensus and transport key files disappear after their first TERMINAL retirement; do not restore them.
 Incomplete final writes are recovered only when the complete prefix matches its
 anchor. Complete corruption, missing/mismatched anchors, conflicting verified
 finality, or uncertain live writes halt the affected path. Do not delete anchors
@@ -209,19 +207,55 @@ printed by `join-intent`. The author key signs the action; both candidate keys
 separately prove possession over the same genesis, claim, nonce, and endpoint.
 `join-intent` durably prepares the action, while `send` submits its exact bytes.
 Wait for the receipt to be finalized. `question` then shows the recorded
-`PENDING_NO_AUTHORITY` intent; an independently verified archive reports the
+`QUEUED` intent; an independently verified archive reports the
 same canonical state. A duplicate send returns the original receipt. A later
 signed action with the account's next nonce may replace the current keys and
-endpoint before any future activation rule exists; use a new action
+endpoint while the claim remains queued; use a new action
 path and retain the earlier receipt as historical evidence. A changed action
 under an already consumed nonce is rejected.
 
-This intent does **not** install a validator or consume the eligibility claim.
-The fixed four validators continue to control research votes, consensus, time
-reports, peer access, and service rewards. It creates no join-service queue or
-promise of eventual activation. The initial retirement order, ordered and
-expiring join service, incoming READY evidence, outgoing TERMINAL seal, and
-effective retirement of old signing capability remain separate protocol work.
+The intent itself grants no consensus signing or research vote. It enters the
+bounded queue by earned-claim order. A revision preserves the original queue
+admission and expiry. The oldest candidate needs an exact-parent offer; if it is
+unready, the next useful record rotates incumbent keys without skipping its place.
+
+### Start the earned candidate
+
+Export the sealed history after the intent receipt. Supply a JSON array of
+reachable current peer endpoints, including both configured ports of bootstrap
+peers where applicable. `node.json` exposes this list as `recovery_endpoints`.
+Keep it current if operators move; automatic endpoint discovery is outside this
+pilot. The candidate's primary endpoint must exactly match its finalized intent.
+
+```sh
+"$BIN" export "$C0" "$RUN/candidate-history"
+"$BIN" candidate-setup "$RUN/candidate" "$RUN/genesis.bin" \
+  "$RUN/candidate-history" "$RUN/accounts/researcher.key" "$FAMILY_ID" \
+  "$RUN/candidate-consensus.key" "$RUN/candidate-transport.key" \
+  127.0.0.1:45100 127.0.0.1:45104 "$RUN/recovery-endpoints.json"
+"$VALIDATOR" "$RUN/candidate/node.json"
+```
+
+Provisioning verifies the paid claim, current intent, keys, endpoint and archive.
+It imports the two private candidate keys into anchored custody, publishes the
+configuration, then removes the source key files. The owner account key remains
+separate. Retrying a completed setup safely finishes interrupted source-file
+cleanup. Keep the candidate process running so it can stage the agreed record
+and issue READY. A three-of-four READY quorum and three-of-four outgoing TERMINAL
+quorum seal the replacement. Only selected sealed history opens ordinary signing.
+Use `status` and `question` to inspect the selected slot and `CONSUMED` claim.
+
+Each node needs two distinct reachable literal endpoints. Setup defaults to the
+primary port plus four for handoff; pass both endpoint JSON files after `compact`
+for explicit addresses. With proxies or NAT, configure matching `listen_address`
+and `handoff_listen_address`. The two fresh-key transports overlap only during
+handoff; old sessions close before local TERMINAL evidence is released.
+
+Period secrets are removed from locally controlled stores. This does not erase
+external backups, hostile host memory or seeds retained by an operator. A
+retired operator must not reconstruct those capabilities. A vacant slot retains
+its weight; a fresh owner-authorized recovery transport can fetch verified
+history but cannot sign as that slot until a later sealed offer installs it.
 
 ## Local research preferences and agent votes
 
@@ -399,14 +433,21 @@ listing dependencies before their dependents. Mathematical checking alone does
 not establish authorship, payment, or finality; archive replay supplies those
 additional checks.
 
+Submit signed research actions through a validator whose selected slot is
+available. An owner's account key remains independent of that validator's
+consensus key, including for a frozen ballot after the owner's slot retires.
+A vacant or retired process can recover history and exchange handoff evidence;
+its recovery connection does not relay ordinary research actions.
+
 ## Simulation controls and qualification
 
 `peer CONFIG VALIDATOR_INDEX on|off` changes one local simulated peer link. The
-index is the **genesis-sorted index printed by `status.validators`**, not necessarily
-the `node-N` directory number; match its endpoint before changing a link. A 2:2
+index is the **stable slot index printed by `status.validators`**, not necessarily
+the `node-N` directory number. Match its current owner and endpoint before changing
+a link; the same slot remains selected when its period keys rotate. A 2:2
 partition requires disabling every cross-group link in both groups. Restore those
 same links with `on`. Two validators must never finalize; no command reduces the
-four-owner denominator. Shutdown/restart uses the existing durable state.
+four-slot denominator. Shutdown/restart uses the existing durable state.
 
 The process test is
 `crates/naome-cli/tests/state_process.rs`. Its accelerated execution,

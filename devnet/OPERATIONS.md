@@ -3,16 +3,19 @@
 For trusted hosts on separate machines, use the [pilot runbook](../docs/mvp/pilot.md).
 The local devnet and portable-bundle rehearsal remain single-machine evidence.
 
-This harness starts four trusted fixed validators with separate keys, histories,
-signer journals, independent anchor directories, and authenticated TCP sessions.
+This harness starts four trusted operators in four stable slots, with fresh keys
+at each sealed record, separate histories, signer and handoff journals, period
+custody, independent anchor directories, and authenticated TCP sessions.
 The operator uses `naome`, validators use `naome-validator start`, and exported
 history is independently replayed by `naome-verifier verify`. No artifact-chain
 publisher or alternate history authority is involved.
 
 The default workload finalizes at least 100 complete state records. Two distinct
 registered owners alternate authenticated question submissions. Each attempt must
-open its full 15-second short-test voting window and close as `NotApproved` only
-after the certified deadline. The qualifier sends no consensus commands. This is
+open its full voting window and close as `NotApproved` only after the certified
+deadline. The default `short-test` profile has a 15-second voting window;
+`--timing ci-test` explicitly selects a 1-second window for the Docker CI run.
+The qualifier sends no consensus commands. This is
 accelerated state/transport qualification. Proof publication, helper retrieval,
 citation payment, commitment/reveal and settlement remain mandatory in the
 separate Rust four-process suite and real-window lab; the 100-record run does not
@@ -28,15 +31,16 @@ CARGO_INCREMENTAL=0 cargo test -p naome-cli -p naome-validator -p naome-verifier
 CARGO_INCREMENTAL=0 cargo test -p naome-cli -p naome-validator -p naome-verifier --profile release --all-targets --all-features --locked --no-fail-fast four_process_state_recovery_partition_and_independent_replay
 python3 -B -m unittest discover -s devnet -p 'test_*.py'
 python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:local
-python3 -B devnet/qualify.py --backend docker --image naome-devnet:local --bin-dir target/release --directory /tmp/naome-devnet-run-1 --heights 100 --delay-ms 50 --deadline-seconds 2400
+python3 -B devnet/qualify.py --backend docker --image naome-devnet:local --bin-dir target/release --directory /tmp/naome-devnet-run-1 --heights 100 --timing ci-test --delay-ms 50 --deadline-seconds 2400
 ```
 
 The output directory must be new and should remain outside the repository.
 `--heights` accepts 4–128; fault qualification requires at least 12. The target is
 a minimum: a complete attempt can finish up to two records beyond it. Genesis
 allows 256 records so the maximum requested height leaves the ledger's protected
-attempt capacity intact. All other limits and short-test timing rules are
-unchanged. A failed run is retained for inspection and is never repaired or reset.
+attempt capacity intact. The `ci-test` profile is committed in fresh genesis;
+existing profiles and all non-voting bounds are unchanged. A failed run is
+retained for inspection and is never repaired or reset.
 
 For native smoke testing on Unix without Docker:
 
@@ -63,9 +67,10 @@ per-role disk use against 512 MiB and records peak process/container memory. Nat
 memory samples are observations; Docker supplies memory enforcement.
 
 A bounded proxy delays each TCP chunk by 50 ms in each direction by default.
-Genesis binds each advertised endpoint. The local bind override directs the same
-authenticated peer identity through the proxy; it changes no consensus or ledger
-rule. The fault schedule includes malformed operation intake, one validator's
+Genesis binds the initial advertised endpoints; each sealed handoff binds the
+next endpoints and identities. Two delay proxies per operator cover both sides
+of every rotation. Local bind overrides direct those authenticated identities
+through the proxies; they change no consensus or ledger rule. The fault schedule includes malformed operation intake, one validator's
 30-second network isolation, SIGKILL and strict reopen, and graceful restart.
 Healing occurs at a fixed deadline even if finality has stopped. The run fails
 unless the isolated validator stays at its old head and the surviving quorum
@@ -86,6 +91,40 @@ are both required. Process logs, keys, signed actions and journals remain privat
 Only `report.json` is intended for publication. Containers, their internal network,
 probe containers and native process groups are owned by the run and cleaned up on
 success, failure and handled interruption. Cleanup failures fail qualification.
+
+The timed partition starts only after all four nodes agree on a selected state
+with four available signers. If a rotation temporarily leaves a slot vacant,
+the harness continues genuine workload within the normal height deadline until
+that owner returns. Those extra heights and their elapsed time count toward the
+qualification. Failure to restore four slots, or failure to progress with the
+surviving three during the fixed partition, fails the run. SIGKILL and graceful
+restart follow on separate completed attempts, each targeting a currently active signer.
+
+## CI timing baseline
+
+The exact-main [CI run 35863331752](https://github.com/naome-core/naome/actions/runs/35863331752)
+at commit `132fccc2dadae5514f89a7d1aaae8154208a4d8e` finalized 102 heights in
+34 attempts with the Docker backend and 50 ms delay. Its retained devnet report
+recorded 1,103.819 seconds for the qualification step. Its 34 complete voting
+windows required 510 certified seconds; opening through settlement spanned
+592 certified seconds, including deadline overshoot. The same Ubuntu 24.04 qualification step must finish
+within 551.909 seconds to establish a 2x speedup. Compare the generated report's
+elapsed time, height, faults, replay results, and binary/harness hashes before
+claiming the faster run preserves coverage.
+The original [public baseline report](../docs/mvp/evidence/handoff-baseline-ci.json)
+retains those checks and source identities.
+The baseline GitHub job timestamps separately record 47 seconds for the release
+build barrier, 87 seconds for the native publication/recovery scenario,
+34 seconds for the portable rehearsal, and 17 seconds for image packaging.
+Those steps are outside the 1,103.819-second Docker execution measurement;
+the speedup claim concerns the complete Docker qualification, not compilation.
+CI compares the complete elapsed times after qualification cleanup and fails
+unless the ratio is at least two. Its uploaded report includes that comparison,
+startup and observation time, per-attempt receipt/opening/settlement phases,
+fault recovery, and each independent export and replay. Observation and certified
+voting-window counters overlap the attempt phases; they must not be added to
+those phases as separate elapsed time. Build time remains separate in the
+preceding release compilation step.
 
 ## Authority setup and supervision
 

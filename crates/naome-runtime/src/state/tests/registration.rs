@@ -19,22 +19,60 @@ pub(super) fn registration_runtime() -> (Directory, Directory, StateRuntime) {
     runtime_with_genesis(genesis)
 }
 
-pub(super) fn finalize(runtime: &mut StateRuntime, now: u64, operations: Vec<SignedOperation>) {
+pub(super) fn finalize(
+    runtime: &mut StateRuntime,
+    directory: &Directory,
+    anchors: &Directory,
+    now: u64,
+    operations: Vec<SignedOperation>,
+) {
+    // This fixture drives intake directly, with independently generated sealed
+    // evidence. It must install the matching next-period signer after selection.
+    let old_key = runtime.node.signer_key().unwrap();
+    let owner = runtime
+        .state()
+        .unwrap()
+        .authority()
+        .consensus_unit(old_key.as_bytes())
+        .unwrap()
+        .owner();
+    let index = owner_index(owner);
     let bytes = super::proof_fetch::finality(runtime.history().head().unwrap(), now, operations);
     runtime.node.accept_finality(&bytes).unwrap();
+    let selected = runtime.state().unwrap();
+    if !selected.terminated() {
+        let key = period_key(index, selected.authority().effective_height(), 1);
+        let signer =
+            StateSigner::create_for_selected(&directory.0, &anchors.0, runtime.history(), key, 8)
+                .unwrap();
+        let journal = StateHandoffJournal::create(
+            &directory.0,
+            &anchors.0,
+            selected.genesis().clone(),
+            selected.height() + 1,
+            8,
+        )
+        .unwrap();
+        runtime
+            .node
+            .install_selected_signer(signer, journal)
+            .unwrap();
+    }
     runtime.on_height().unwrap();
 }
 
 pub(super) fn prepare(runtime: &mut StateRuntime, now: u64) -> naome_chain::StateRecord {
+    seed_offers(runtime);
     let state = runtime.state().unwrap();
     let reports: Vec<_> = (0..3)
         .map(|i| {
             SignedTimeReport::sign(
                 state.genesis(),
+                state.authority(),
                 state.head(),
                 state.height() + 1,
                 now,
-                &consensus(i),
+                &period_key(i, state.authority().effective_height(), 1),
             )
             .unwrap()
         })
@@ -76,7 +114,13 @@ async fn registration_is_pending_until_finality_and_ordinary_authority_starts_at
     assert_eq!(runtime.submit_operation(registration.clone()).unwrap(), id);
     assert_eq!(runtime.pending_operations(), 1);
     assert!(runtime.state().unwrap().account_key(author).is_none());
-    finalize(&mut runtime, 101, vec![registration.clone()]);
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        101,
+        vec![registration.clone()],
+    );
     assert_eq!(runtime.pending_operations(), 0);
     assert_eq!(runtime.state().unwrap().next_nonce(author), Some(2));
     assert_eq!(runtime.state().unwrap().balances().account(author), Some(0));
@@ -90,8 +134,8 @@ async fn registration_is_pending_until_finality_and_ordinary_authority_starts_at
     );
     let submission = body.sign(&genesis, 2, &key).unwrap();
     runtime.submit_operation(submission.clone()).unwrap();
-    finalize(&mut runtime, 102, vec![submission]);
-    finalize(&mut runtime, 103, vec![]);
+    finalize(&mut runtime, &_directory, &_anchors, 102, vec![submission]);
+    finalize(&mut runtime, &_directory, &_anchors, 103, vec![]);
     let active = runtime.state().unwrap().active().unwrap();
     let vote = OperationBody::Vote {
         question: active.question,
@@ -110,7 +154,13 @@ async fn registration_is_pending_until_finality_and_ordinary_authority_starts_at
 async fn registrations_cannot_poison_opening_or_active_work_and_survive_unrelated_finality() {
     let (_directory, _anchors, mut runtime) = registration_runtime();
     let genesis = runtime.state().unwrap().genesis().clone();
-    finalize(&mut runtime, 101, vec![operation(&genesis, 1)]);
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        101,
+        vec![operation(&genesis, 1)],
+    );
     let registration = OperationBody::Register
         .sign(&genesis, 1, &account(6))
         .unwrap();
@@ -119,7 +169,13 @@ async fn registrations_cannot_poison_opening_or_active_work_and_survive_unrelate
     assert!(opening.operations().is_empty());
     assert_eq!(runtime.pending_operations(), 1);
     assert!(runtime.operation_rejection(id).is_none());
-    finalize(&mut runtime, 102, opening.operations().to_vec());
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        102,
+        opening.operations().to_vec(),
+    );
     assert_eq!(runtime.pending_operations(), 1);
     let active = runtime.state().unwrap().active().unwrap();
     let vote = OperationBody::Vote {
@@ -133,11 +189,23 @@ async fn registrations_cannot_poison_opening_or_active_work_and_survive_unrelate
     let protected = prepare(&mut runtime, 103);
     assert_eq!(protected.operations(), &[vote]);
     assert!(runtime.operation_rejection(id).is_none());
-    finalize(&mut runtime, 103, protected.operations().to_vec());
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        103,
+        protected.operations().to_vec(),
+    );
     let ordinary = prepare(&mut runtime, 104);
     assert_eq!(ordinary.operations(), &[registration]);
     let prior = runtime.state().unwrap().reserved_records();
-    finalize(&mut runtime, 104, ordinary.operations().to_vec());
+    finalize(
+        &mut runtime,
+        &_directory,
+        &_anchors,
+        104,
+        ordinary.operations().to_vec(),
+    );
     assert_eq!(runtime.state().unwrap().reserved_records(), prior);
     assert!(runtime.state().unwrap().receipt(id).is_some());
 }

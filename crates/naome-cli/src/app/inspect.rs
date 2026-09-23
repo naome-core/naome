@@ -20,7 +20,8 @@ pub fn question(state: &LedgerState, id: OperationId) -> Result<Value> {
             normalization_receipt,
             ..
         }) => {
-            let decoded = NormalizationReceipt::decode(normalization_receipt, state.genesis())?;
+            let decoded =
+                NormalizationReceipt::decode_recorded(normalization_receipt, state.genesis())?;
             value["outcome"] = json!(format!("{outcome:?}").to_uppercase());
             value["completion_ordinal"] = json!(ordinal);
             value["normalization"] = receipt(&decoded);
@@ -29,13 +30,19 @@ pub fn question(state: &LedgerState, id: OperationId) -> Result<Value> {
                 .lookup(*proof)
                 .ok_or("completed root absent")?;
             value["checked_conclusion"] = json!(selected.conclusion().to_source());
-            value["eligibility_claim"]=json!(state.claims().get(&q.question().resolution_id()).map(|c|json!({"author":files::hex(c.author.as_bytes()),"ordinal":c.completion_ordinal,"active_voting_rights":false})));
+            let family = q.question().resolution_id();
+            let active_rights = state.authority().units().iter().any(|unit| {
+                matches!(unit.origin(), naome_ledger::authority::UnitOrigin::Earned { family: selected, .. } if selected == family)
+                    && unit.keys().is_some() && !state.terminated()
+            });
+            value["eligibility_claim"]=json!(state.claims().get(&family).map(|c|json!({"author":files::hex(c.author.as_bytes()),"ordinal":c.completion_ordinal,"consumed":state.consumed_claims().contains(&family),"active_voting_rights":active_rights})));
             value["join_intent"] = json!(state.join_intent(q.question().resolution_id()).map(
                 |entry| {
                     let intent = entry.intent();
                     let receipt = entry.receipt();
                     json!({
-                        "status": "PENDING_NO_AUTHORITY",
+                        "status": if state.consumed_claims().contains(&family) { "CONSUMED" }
+                            else if entry.expires() <= state.time() { "EXPIRED" } else { "QUEUED" },
                         "operation": files::hex(receipt.operation.as_bytes()),
                         "author": files::hex(receipt.author.as_bytes()),
                         "completion_ordinal": intent.completion_ordinal(),
@@ -44,7 +51,10 @@ pub fn question(state: &LedgerState, id: OperationId) -> Result<Value> {
                         "endpoint": intent.endpoint(),
                         "height": receipt.coordinate.height,
                         "operation_index": receipt.coordinate.operation_index,
-                        "active_voting_rights": false,
+                        "active_voting_rights": active_rights,
+                        "expires": entry.expires(),
+                        "first_admission_height": entry.first_receipt().coordinate.height,
+                        "first_admission_operation_index": entry.first_receipt().coordinate.operation_index,
                     })
                 }
             ));

@@ -10,6 +10,8 @@ fn configured(identity: identity::Keypair, peers: Vec<StaticPeer>) -> StateNetwo
     let mut template = StateNetwork::new_state(keys[0].clone(), &genesis).unwrap();
     let mut config = template.state_exchange.take().unwrap();
     config.context = context();
+    config.active_peers = peers.iter().map(StaticPeer::peer_id).collect();
+    config.courier_peers.clear();
     let mut network = StateNetwork::build(identity, peers.clone()).unwrap();
     network.swarm.behaviour_mut().state_exchange =
         Behaviour::new(peers.iter().map(StaticPeer::peer_id), Some(&config));

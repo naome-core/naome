@@ -112,15 +112,14 @@ class Figure(Flowable):
             self.arrow([(CW/2,73),(CW/2,67),((CW-20)/4,67),((CW-20)/4,64)])
             self.arrow([(CW/2,73),(CW/2,67),((3*CW+20)/4,67),((3*CW+20)/4,64)])
         elif k=='membership':
-            self.label(CW/2,102,'Beispiel K = 6: sechs gleich gewichtete aktive Einheiten' if de else 'Example K = 6: six equal active voting units',10.8,True)
-            start=70;gap=7;bw=(CW-start-5*gap)/6
-            for y,values in [(61,[10,13,17,21,24,27]),(5,[13,17,19,21,24,27])]:
+            self.label(CW/2,102,'Vier stabile Sitze; Schlüssel wechseln in jeder Periode' if de else 'Four stable slots; keys rotate every period',10.7,True)
+            start=74;gap=11;bw=(CW-start-3*gap)/4
+            before=['10','13','17','21'];after=['19','13','17','21']
+            for y,values in [(61,before),(5,after)]:
                 self.label(4,y+9,('Vorher' if y==61 else 'Nachher') if de else ('Before' if y==61 else 'After'),10.2,True,True)
                 for i,value in enumerate(values):
-                    self.box(start+i*(bw+gap),y,bw,28,str(value),shade=(y==5 and value==19),size=11)
-            self.label(CW/2,43,'Anspruch 19 tritt bei; die älteste Einheit 10 scheidet aus' if de else 'Claim 19 joins; the oldest unit 10 retires',10.2)
-            x=start+2*(bw+gap)+bw/2
-            self.arrow([(x,40),(x,35)])
+                    self.box(start+i*(bw+gap),y,bw,28,f'<b>S{i+1}</b>  {value}',shade=(y==5 and i==0),size=10.3)
+            self.label(CW/2,43,'Anspruch 19 ersetzt die älteste Einheit 10 in Sitz S1' if de else 'Claim 19 replaces oldest unit 10 in slot S1',10.0)
         elif k=='agenda':
             self.box(0,42,123,39,'<b>Forschungsprofil</b><br/>Eigentümerinteressen' if de else '<b>Research Profile</b><br/>Owner’s interests',size=10)
             self.box((CW-146)/2,42,146,39,'<b>KI-Entscheidung</b><br/>YES / NO' if de else '<b>AI decision</b><br/>YES / NO',size=10)
@@ -129,20 +128,20 @@ class Figure(Flowable):
             self.label(CW/2,19,'Bei Fristende: 67 YES von 100 → genehmigt' if de else 'At the deadline: 67 YES out of 100 → approved',10.5,True)
             self.label(CW/2,3,'T: Eröffnung | volle sieben Tage | D: Abschluss' if de else 'T: opening | full seven days | D: closure',10)
         elif k=='agreement':
-            self.label(CW/2,210,'Versiegelung eines Nachfolgers' if de else 'Sealing a successor',11,True)
+            self.label(CW/2,210,'Datensatz h enthält den exakten Plan für S(h+1)' if de else 'Agreed record h contains the exact plan for S(h+1)',10.8,True)
             self.label(0,166,'Eingehend' if de else 'Incoming',9.8,True,True)
             self.box(76,139,154,51,'<b>Historie prüfen</b><br/>Nachfolger dauerhaft vorbereiten' if de else '<b>Verify history</b><br/>prepare successor durably',size=10.1)
-            self.box(273,139,CW-273,51,'<b>READY signieren</b><br/>ausreichendes eingehendes Gewicht' if de else '<b>Sign READY</b><br/>sufficient incoming weight',size=10.1)
+            self.box(273,139,CW-273,51,'<b>READY 3/4</b><br/>exakter Datensatz und Zustand' if de else '<b>READY 3/4</b><br/>exact record and state',size=10.1)
             self.arrow([(233,164),(270,164)])
             self.label(0,85,'Ausgehend' if de else 'Outgoing',9.8,True,True)
-            self.box(76,57,102,62,'<b>TERMINAL</b><br/>exakte Signaturen speichern' if de else '<b>TERMINAL</b><br/>save exact signatures',size=9.9)
-            self.box(194,57,115,62,'<b>Fähigkeit stilllegen</b><br/>alle Signierwege der Periode' if de else '<b>Retire capability</b><br/>all period-signing paths',size=9.9)
-            self.box(325,57,CW-325,62,'<b>TERMINAL freigeben</b><br/>gespeicherte Signaturen' if de else '<b>Release TERMINAL</b><br/>saved signatures',size=9.9)
+            self.box(76,57,102,62,'<b>TERMINAL</b><br/>Signatur speichern' if de else '<b>TERMINAL</b><br/>save signature',size=9.9)
+            self.box(194,57,115,62,'<b>Fähigkeit stilllegen</b><br/>alte Periode' if de else '<b>Retire capability</b><br/>old period',size=9.9)
+            self.box(325,57,CW-325,62,'<b>TERMINAL 3/4</b><br/>freigeben und versiegeln' if de else '<b>TERMINAL 3/4</b><br/>release and seal',size=9.9)
             self.arrow([(181,88),(191,88)]);self.arrow([(312,88),(322,88)])
             self.arrow([(354,136),(354,128),(127,128),(127,121)])
             self.arrow([(389,54),(389,43)])
-            self.label(CW/2,29,'Mehr als zwei Drittel ausgehendes Gewicht versiegeln den Übergang.' if de else 'More than two thirds of outgoing weight seal the transition.',10.1,True)
-            self.label(CW/2,9,'READY belegt Vorbereitung; fortdauernde Verfügbarkeit bleibt eine Bedingung.' if de else 'READY establishes preparation; continued availability remains a condition.',9.4)
+            self.label(CW/2,29,'Erst der vollständige Siegelbeleg installiert S(h+1).' if de else 'Only complete seal evidence installs S(h+1).',10.1,True)
+            self.label(CW/2,9,'Leere Sitze zählen weiter; externe Schlüsselkopien erfordern Betreiberkontrolle.' if de else 'Vacant slots still count; external key copies require operator control.',9.4)
         elif k=='delivery':
             self.label(CW/2,98,'Lösungsphase nach versiegelter Genehmigung' if de else 'Solution phase after sealed approval',10.7,True)
             gap=12;bw=(CW-4*gap)/5

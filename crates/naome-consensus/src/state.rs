@@ -9,13 +9,19 @@ mod branch;
 mod codec;
 mod evidence;
 mod lock;
+mod seal;
 
-pub use branch::{StateBranch, StateFinality, StateProposal, StateProposalIntent, StateValue};
+pub use branch::{
+    StateAgreement, StateBranch, StateFinality, StateProposal, StateProposalIntent, StateValue,
+};
 pub use evidence::{
     STATE_QUORUM_MAX_BYTES, STATE_VOTE_BYTES, StateQuorum, StateVote, StateVoteSet,
 };
 pub use lock::{
     StateIntent, StateLockEvent, StateLockState, StatePhase, StatePublication, StateVoteIntent,
+};
+pub use seal::{
+    SEAL_SIGNATURE_BYTES, STATE_SEAL_MAX_BYTES, SealContext, SealRole, SealSignature, StateSeal,
 };
 
 use naome_ledger::LedgerError;

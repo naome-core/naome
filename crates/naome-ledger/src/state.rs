@@ -5,6 +5,7 @@ use crate::{
     SolutionRoundId, StateCommitment,
     accounting::{Balances, CitationRecipient, RewardPlan},
     authentication::SignedOperation,
+    authority::{AuthoritySnapshot, HandoffPlan, UnitOrigin},
     capacity::Capacity,
     codec::Writer,
     identity::hash,
@@ -17,7 +18,7 @@ use crate::{
     time::TimeCertificate,
 };
 use naome_proof::ProofId;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 mod encoding;
@@ -121,6 +122,7 @@ struct Attempt {
     deadline: Option<u64>,
     round: Option<SolutionRoundId>,
     votes: BTreeMap<AccountId, bool>,
+    electorate: [AccountId; 4],
     commitments: BTreeMap<AccountId, CommitmentEntry>,
 }
 
@@ -135,6 +137,7 @@ pub struct ActiveAttempt {
     pub deadline: Option<u64>,
     pub solution_round: Option<SolutionRoundId>,
     pub votes: BTreeMap<AccountId, bool>,
+    pub electorate: [AccountId; 4],
     pub commitments: usize,
     pub reveals: usize,
 }
@@ -168,6 +171,8 @@ pub struct EligibilityClaim {
 pub struct JoinIntentEntry {
     intent: JoinIntent,
     receipt: Receipt,
+    first_receipt: Receipt,
+    expires: u64,
     signed_operation: Arc<[u8]>,
 }
 impl JoinIntentEntry {
@@ -176,6 +181,12 @@ impl JoinIntentEntry {
     }
     pub const fn receipt(&self) -> Receipt {
         self.receipt
+    }
+    pub const fn first_receipt(&self) -> Receipt {
+        self.first_receipt
+    }
+    pub const fn expires(&self) -> u64 {
+        self.expires
     }
     /// Exact authenticated bytes committed to state, including possession proofs.
     pub fn signed_operation(&self) -> &[u8] {
@@ -188,6 +199,8 @@ impl JoinIntentEntry {
 #[derive(Clone)]
 pub struct LedgerState {
     genesis: Arc<Genesis>,
+    authority: AuthoritySnapshot,
+    used_period_keys: BTreeSet<[u8; 32]>,
     height: u64,
     head: RecordId,
     time: u64,
@@ -204,6 +217,8 @@ pub struct LedgerState {
     families: BTreeMap<ResolutionId, FamilyResult>,
     claims: BTreeMap<ResolutionId, EligibilityClaim>,
     join_intents: BTreeMap<ResolutionId, JoinIntentEntry>,
+    join_queue: VecDeque<ResolutionId>,
+    consumed_claims: BTreeSet<ResolutionId>,
     capacity: Capacity,
     terminated: bool,
 }
@@ -224,8 +239,17 @@ impl LedgerState {
             .iter()
             .map(|a| (a.id(), *a.key()))
             .collect();
+        let authority =
+            AuthoritySnapshot::from_genesis(&genesis).expect("validated genesis authority");
+        let used_period_keys = genesis
+            .validators()
+            .iter()
+            .flat_map(|v| [v.consensus_key, v.transport_key])
+            .collect();
         Self {
             genesis: Arc::new(genesis),
+            authority,
+            used_period_keys,
             height: 0,
             head,
             time,
@@ -242,12 +266,144 @@ impl LedgerState {
             families: BTreeMap::new(),
             claims: BTreeMap::new(),
             join_intents: BTreeMap::new(),
+            join_queue: VecDeque::new(),
+            consumed_claims: BTreeSet::new(),
             capacity,
             terminated: false,
         }
     }
     pub fn genesis(&self) -> &Genesis {
         &self.genesis
+    }
+    /// Selected four-slot authority for the next record height.
+    pub fn authority(&self) -> &AuthoritySnapshot {
+        &self.authority
+    }
+    pub fn used_period_keys(&self) -> &BTreeSet<[u8; 32]> {
+        &self.used_period_keys
+    }
+    pub fn join_queue(&self) -> &VecDeque<ResolutionId> {
+        &self.join_queue
+    }
+    pub fn consumed_claims(&self) -> &BTreeSet<ResolutionId> {
+        &self.consumed_claims
+    }
+    pub fn prepare_handoff(&self, plan: &HandoffPlan) -> Result<AuthoritySnapshot, LedgerError> {
+        self.prepare_handoff_at(plan, self.time)
+    }
+    /// Derive the incoming snapshot at the exact certified record time. Queue
+    /// expiry can change the oldest eligible claim between parent and child.
+    /// This verifies time evidence but does not execute mathematical content.
+    pub fn prepare_handoff_certified(
+        &self,
+        plan: &HandoffPlan,
+        time: &TimeCertificate,
+    ) -> Result<AuthoritySnapshot, LedgerError> {
+        let certificate = TimeCertificate::decode(
+            &time.encode(),
+            &self.genesis,
+            &self.authority,
+            self.head,
+            self.height.checked_add(1).ok_or(LedgerError::Overflow)?,
+            self.time,
+        )?;
+        self.prepare_handoff_at(plan, certificate.time())
+    }
+    fn prepare_handoff_at(
+        &self,
+        plan: &HandoffPlan,
+        at_time: u64,
+    ) -> Result<AuthoritySnapshot, LedgerError> {
+        let mut forbidden = self.used_period_keys.clone();
+        forbidden.extend(self.accounts.values().copied());
+        let mut offer_forbidden = forbidden.clone();
+        for family in &self.join_queue {
+            if let Some(entry) = self.join_intents.get(family)
+                && entry.expires > at_time
+            {
+                offer_forbidden.insert(*entry.intent.consensus_key());
+                offer_forbidden.insert(*entry.intent.transport_key());
+                if plan
+                    .offers()
+                    .iter()
+                    .any(|offer| offer.keys().endpoint() == entry.intent.endpoint())
+                {
+                    return Err(LedgerError::Invalid("period endpoint reserved by join"));
+                }
+            }
+        }
+        let mut successor = self.authority.successor(
+            self.head,
+            self.commitment(),
+            plan.offers(),
+            |owner| self.account_key(owner).copied(),
+            &offer_forbidden,
+        )?;
+        if let Some(candidate) = plan.candidate() {
+            let first = self
+                .join_queue
+                .iter()
+                .copied()
+                .find(|family| {
+                    self.join_intents
+                        .get(family)
+                        .is_some_and(|entry| entry.expires > at_time)
+                        && !self.consumed_claims.contains(family)
+                        && self.claims.get(family).is_some_and(|claim| {
+                            self.authority
+                                .oldest()
+                                .origin()
+                                .older_than(UnitOrigin::Earned {
+                                    family: *family,
+                                    completion_ordinal: claim.completion_ordinal,
+                                })
+                        })
+                })
+                .ok_or(LedgerError::Invalid("no eligible queued join"))?;
+            if candidate.family() != first {
+                return Err(LedgerError::Invalid("join queue priority"));
+            }
+            let entry = self
+                .join_intents
+                .get(&first)
+                .ok_or(LedgerError::Invalid("join intent missing"))?;
+            let claim = self
+                .claims
+                .get(&first)
+                .ok_or(LedgerError::Invalid("join claim missing"))?;
+            if candidate.intent_receipt() != entry.receipt.operation
+                || candidate.keys().consensus() != entry.intent.consensus_key()
+                || candidate.keys().transport() != entry.intent.transport_key()
+                || candidate.keys().endpoint() != entry.intent.endpoint()
+                || self.authority.owner(claim.author).is_some()
+            {
+                return Err(LedgerError::Invalid("candidate readiness intent or owner"));
+            }
+            let account_key = *self
+                .account_key(claim.author)
+                .ok_or(LedgerError::Invalid("candidate account key"))?;
+            candidate.verify(&self.authority, self.head, self.commitment(), account_key)?;
+            for key in [candidate.keys().consensus(), candidate.keys().transport()] {
+                if forbidden.contains(key)
+                    || plan.offers().iter().any(|offer| {
+                        offer.keys().consensus() == key || offer.keys().transport() == key
+                    })
+                {
+                    return Err(LedgerError::Invalid("candidate period key reuse"));
+                }
+            }
+            successor = successor.install_candidate(
+                self.authority.oldest().id(),
+                first,
+                claim.completion_ordinal,
+                claim.author,
+                candidate.keys().clone(),
+            )?;
+            if successor.active_count() < 3 {
+                return Err(LedgerError::Invalid("incoming authority quorum"));
+            }
+        }
+        Ok(successor)
     }
     pub const fn height(&self) -> u64 {
         self.height
@@ -328,6 +484,15 @@ impl LedgerState {
                 .claims
                 .get(&family)
                 .is_some_and(|claim| claim.author == author && claim.completion_ordinal == ordinal)
+            && !self.consumed_claims.contains(&family)
+            && self
+                .authority
+                .oldest()
+                .origin()
+                .older_than(UnitOrigin::Earned {
+                    family,
+                    completion_ordinal: ordinal,
+                })
             && matches!(
                 self.families.get(&family),
                 Some(FamilyResult::Completed {
@@ -359,6 +524,7 @@ impl LedgerState {
             deadline: a.deadline,
             solution_round: a.round,
             votes: a.votes.clone(),
+            electorate: a.electorate,
             commitments: a.commitments.len(),
             reveals: a
                 .commitments
@@ -394,7 +560,7 @@ impl LedgerState {
     pub fn commitment(&self) -> StateCommitment {
         let mut count = Writer::counting();
         self.write_state(&mut count);
-        let mut digest = Writer::hashing(b"naome:state:state:v4\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:state:v5\0", count.len());
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }
@@ -412,8 +578,9 @@ impl LedgerState {
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
+        plan: HandoffPlan,
     ) -> Result<LedgerExecution, LedgerError> {
-        self.prepare(time, operations)
+        self.prepare(time, operations, plan)
     }
 }
 
@@ -424,6 +591,7 @@ pub struct LedgerExecution {
     next: LedgerState,
     time: TimeCertificate,
     operations: Vec<SignedOperation>,
+    plan: HandoffPlan,
     effects: Vec<u8>,
 }
 impl LedgerExecution {
@@ -435,6 +603,9 @@ impl LedgerExecution {
     }
     pub fn operations(&self) -> &[SignedOperation] {
         &self.operations
+    }
+    pub fn handoff_plan(&self) -> &HandoffPlan {
+        &self.plan
     }
     pub fn effects(&self) -> &[u8] {
         &self.effects

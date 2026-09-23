@@ -45,7 +45,7 @@ fn genesis() -> Genesis {
     .unwrap()
 }
 fn vector(name: &str) -> Vec<u8> {
-    let line = include_str!("../../naome-consensus/src/state/tests/golden-v4.txt")
+    let line = include_str!("../../naome-consensus/src/state/tests/golden-current.txt")
         .lines()
         .find(|line| line.split_whitespace().next() == Some(name))
         .unwrap();

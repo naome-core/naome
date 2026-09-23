@@ -1,2 +1,2 @@
 *.nao text eol=lf
-golden-v*.txt text eol=lf
+golden-*.txt text eol=lf

@@ -22,9 +22,12 @@ PATHS = {
     'history_anchor': 'anchors/history', 'signer': 'data/signer',
     'signer_anchor': 'anchors/signer', 'consensus_key': 'consensus.key',
     'transport_key': 'transport.key', 'account_key': 'account.key',
+    'custody': 'data/custody', 'custody_anchor': 'anchors/custody',
+    'handoff': 'data/handoff', 'handoff_anchor': 'anchors/handoff',
     'agenda_profile': 'agenda-profile.txt', 'control_socket': 'control.sock',
 }
-STORES = ('history', 'history_anchor', 'signer', 'signer_anchor')
+STORES = ('history', 'history_anchor', 'signer', 'signer_anchor',
+          'custody', 'custody_anchor', 'handoff', 'handoff_anchor')
 AGREEMENT = ('genesis', 'profile', 'height', 'head', 'state', 'library_root',
              'accounts', 'reserve_atoms', 'claims', 'paid_completions',
              'consensus_commitment')
@@ -129,8 +132,10 @@ def prepare(args):
     retirement_plan = root / 'retirement-order.json'
     write(retirement_plan, retirement)
     staging = root / 'provisioning'
-    configured = run(native['naome'], 'setup', staging, args.timing, args.records,
-                     44100, retirement_plan, args.limits, plan)
+    setup_args = [staging, args.timing, args.records, 44100, retirement_plan, args.limits, plan]
+    if getattr(args, 'handoff_endpoints', None):
+        setup_args.append(args.handoff_endpoints)
+    configured = run(native['naome'], 'setup', *setup_args)
     profile = run(native['naome'], 'profile-info', staging / 'genesis.bin')
     manifest = {'version': 1, 'genesis': configured['genesis'], 'profile': profile,
                 'genesis_sha256': digest(staging / 'genesis.bin'), 'endpoints': endpoints,
@@ -145,9 +150,9 @@ def prepare(args):
         config = read(config_path)
         mkdir(bundle / 'data')
         mkdir(bundle / 'anchors')
-        for field in ('history', 'signer'):
+        for field in ('history', 'signer', 'custody', 'handoff'):
             move(bundle / field, bundle / PATHS[field])
-        for field in ('history_anchor', 'signer_anchor', 'account_key'):
+        for field in ('history_anchor', 'signer_anchor', 'custody_anchor', 'handoff_anchor', 'account_key'):
             move(Path(config[field]), bundle / PATHS[field])
         create(bundle / 'genesis.bin', (staging / 'genesis.bin').read_bytes())
         config.update(PATHS)
@@ -182,8 +187,8 @@ def check(bundle, native):
     config, manifest = read(bundle / 'node.json'), read(bundle / 'pilot.json')
     require(manifest['version'] == 1 and type(manifest['node_index']) is int
             and 0 <= manifest['node_index'] < 4, 'unsupported pilot bundle')
-    require(config['version'] == 2 and config['simulation'] is False,
-            'pilot requires configuration v2 with simulation disabled')
+    require(config['version'] == 5 and config['simulation'] is False,
+            'pilot requires configuration v5 with simulation disabled')
     require(all(config[k] == v for k, v in PATHS.items()), 'bundle paths were changed')
     for parent in ('data', 'anchors'):
         private(bundle / parent, True)
@@ -191,8 +196,11 @@ def check(bundle, native):
         path = bundle / config[field]
         private(path, True)
         require(any(path.iterdir()), f'initialized {field} is missing; never regenerate it')
-    for name in ('genesis.bin', 'consensus.key', 'transport.key', 'account.key', 'agenda-profile.txt'):
+    for name in ('genesis.bin', 'account.key', 'agenda-profile.txt'):
         private(bundle / name)
+    for name in ('consensus.key', 'transport.key'):
+        if (bundle / name).exists():
+            private(bundle / name)
     require(digest(bundle / 'genesis.bin') == manifest['genesis_sha256'], 'genesis file changed')
     profile = run(native['naome'], 'profile-info', bundle / 'genesis.bin')
     require(profile == manifest['profile'] and profile['genesis'] == manifest['genesis'],
@@ -274,6 +282,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('prepare')
     p.add_argument('--endpoints', type=Path, required=True)
+    p.add_argument('--handoff-endpoints', type=Path)
     p.add_argument('--retirement-order', type=Path, required=True)
     p.add_argument('--directory', type=Path, required=True)
     p.add_argument('--timing', choices=('lab', 'research', 'short-test'), default='lab')

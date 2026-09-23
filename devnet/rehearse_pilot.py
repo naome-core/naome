@@ -18,20 +18,23 @@ def rehearse(args):
     native = pilot.binaries(args.bin_dir)
     root = args.directory.absolute()
     pilot.mkdir(root)
-    sockets = [socket.socket() for _ in range(4)]
+    sockets = [socket.socket() for _ in range(8)]
     try:
         for sock in sockets:
             sock.bind(('127.0.0.1', 0))
-        endpoints = [f'127.0.0.1:{s.getsockname()[1]}' for s in sockets]
+        all_endpoints = [f'127.0.0.1:{s.getsockname()[1]}' for s in sockets]
+        endpoints, handoff_endpoints = all_endpoints[:4], all_endpoints[4:]
     finally:
         for sock in sockets:
             sock.close()
     plan = root / 'endpoints.json'
     pilot.write(plan, endpoints)
+    handoff_plan = root / 'handoff-endpoints.json'
+    pilot.write(handoff_plan, handoff_endpoints)
     retirement_plan = root / 'retirement-order.json'
     pilot.write(retirement_plan, [2, 0, 3, 1])
     prepared = root / 'prepared'
-    pilot.prepare(SimpleNamespace(bin_dir=args.bin_dir, endpoints=plan, retirement_order=retirement_plan, directory=prepared,
+    pilot.prepare(SimpleNamespace(bin_dir=args.bin_dir, endpoints=plan, handoff_endpoints=handoff_plan, retirement_order=retirement_plan, directory=prepared,
                                   timing='short-test', records=128, limits='compact'))
     bundles, children, logs = [], {}, []
     checks = {}

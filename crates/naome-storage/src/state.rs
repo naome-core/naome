@@ -10,12 +10,16 @@
 mod codec;
 #[cfg(test)]
 mod faults;
+mod handoff;
 mod history;
 mod log;
+mod period;
 mod signer;
 #[cfg(test)]
 mod tests;
+pub use handoff::StateHandoffJournal;
 pub use history::{SelectedStateHistory, StateAppendOutcome, StateHistory, StateObserver};
+pub use period::StatePeriodCustody;
 pub use signer::{StatePreparation, StateSigner};
 
 use std::fmt;
@@ -27,6 +31,7 @@ pub enum StateStorageError {
     Io(io::Error),
     Platform(crate::StoragePlatformError),
     Locked,
+    KeyRequired,
     Invalid(&'static str),
     Limit(&'static str),
     Poisoned,
@@ -38,6 +43,7 @@ impl fmt::Display for StateStorageError {
             Self::Io(e) => write!(f, "state storage I/O: {e}"),
             Self::Platform(e) => write!(f, "research durability unavailable: {e}"),
             Self::Locked => f.write_str("state storage already owned"),
+            Self::KeyRequired => f.write_str("active period signer requires its exact secret key"),
             Self::Invalid(e) => write!(f, "invalid state history: {e}"),
             Self::Limit(e) => write!(f, "state storage limit exceeded: {e}"),
             Self::Poisoned => f.write_str("state storage halted after uncertain durability"),

@@ -13,6 +13,18 @@ import uuid
 HERE = Path(__file__).resolve().parent
 BINARIES = ('naome', 'naome-validator', 'naome-verifier')
 
+# Collect finalized status and cgroup memory in one container probe. The local
+# control request is still served by naome itself; this wrapper has no authority.
+STATUS_MEMORY = """import json,pathlib,subprocess,sys
+result=subprocess.run(['/usr/local/bin/naome','status',sys.argv[1]],capture_output=True,text=True,timeout=15)
+if result.returncode: sys.exit(result.returncode)
+status=json.loads(result.stdout)
+if 'error' in status: sys.exit(1)
+memory=pathlib.Path('/sys/fs/cgroup/memory.current')
+if not memory.exists(): memory=pathlib.Path('/sys/fs/cgroup/memory/memory.usage_in_bytes')
+print(json.dumps({'status':status,'memory_bytes':int(memory.read_text())}))
+"""
+
 
 def command(args, timeout=60, tolerate=False):
     result = subprocess.run(list(map(str, args)), capture_output=True, text=True, timeout=timeout)
@@ -53,10 +65,14 @@ class Backend:
             self.ips = [str(subnet[i]) for i in range(10, 14)]
             self.fronts = [f'{ip}:4200' for ip in self.ips]
             self.backs = [f'{ip}:4100' for ip in self.ips]
+            self.handoff_fronts = [f'{ip}:4204' for ip in self.ips]
+            self.handoff_backs = [f'{ip}:4104' for ip in self.ips]
         else:
-            ports = free_ports(8)
+            ports = free_ports(16)
             self.fronts = [f'127.0.0.1:{p}' for p in ports[:4]]
-            self.backs = [f'127.0.0.1:{p}' for p in ports[4:]]
+            self.backs = [f'127.0.0.1:{p}' for p in ports[4:8]]
+            self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[8:12]]
+            self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[12:]]
 
     def node(self, index):
         return self.root / 'run' / f'node-{index}'
@@ -78,6 +94,15 @@ class Backend:
                 return None
             raise RuntimeError('operator command rejected')
         return value
+
+    def status_memory(self, index, tolerate=False):
+        """Probe a Docker node's actual control status and cgroup use together."""
+        result = command(['docker', 'exec', self.containers[index], 'python3', '-c', STATUS_MEMORY,
+                          self.config(index)], timeout=20, tolerate=tolerate)
+        if result.returncode:
+            return None
+        value = json.loads(result.stdout)
+        return value['status'], value['memory_bytes']
 
     def control(self, index, request):
         # Exercise the actual bounded local ingress; the canonical runtime still
@@ -133,7 +158,9 @@ print(exact(n).decode());s.close()
                 'volumes': volumes, 'networks': {'devnet': {'ipv4_address': self.ips[i]}},
                 'command': ['python3', '-B', '/opt/naome/devnet/state_agent.py', '--config', str(self.config(i)),
                             '--validator', '/usr/local/bin/naome-validator', '--front', self.multi(self.fronts[i]),
-                            '--back', self.multi(self.backs[i]), '--delay-ms', str(self.args.delay_ms)],
+                            '--back', self.multi(self.backs[i]),
+                            '--handoff-front', self.multi(self.handoff_fronts[i]),
+                            '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms)],
                 'logging': {'driver': 'json-file', 'options': {'max-size': '8m', 'max-file': '2'}},
             }
         self.compose_file.write_text(json.dumps({'services': services, 'networks': {'devnet': {
@@ -159,7 +186,8 @@ print(exact(n).decode());s.close()
             self.children[i] = subprocess.Popen([sys.executable, '-B', str(HERE / 'state_agent.py'),
                 '--config', str(self.config(i)), '--validator', str(self.args.bin_dir / 'naome-validator'),
                 '--front', self.multi(self.fronts[i]), '--back', self.multi(self.backs[i]),
-                '--delay-ms', str(self.args.delay_ms)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                '--handoff-front', self.multi(self.handoff_fronts[i]),
+                '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 
     def alive(self, i):
         if self.args.backend == 'docker':
@@ -210,7 +238,7 @@ print(exact(n).decode());s.close()
         # the process remains live and can expose its finalized state.
         status = self.cli(i, 'status', self.config(i))
         for peer, validator in enumerate(status['validators']):
-            if validator['endpoint'] != self.fronts[i]:
+            if validator['endpoint'] not in (self.fronts[i], self.handoff_fronts[i]):
                 self.cli(i, 'peer', self.config(i), peer, 'off')
         return 'authenticated_links_disabled'
 
@@ -222,16 +250,17 @@ print(exact(n).decode());s.close()
         else:
             status = self.cli(i, 'status', self.config(i))
             for peer, validator in enumerate(status['validators']):
-                if validator['endpoint'] != self.fronts[i]:
+                if validator['endpoint'] not in (self.fronts[i], self.handoff_fronts[i]):
                     self.cli(i, 'peer', self.config(i), peer, 'on')
 
-    def resources(self, i):
-        rss = None
+    def resources(self, i, memory_bytes=None):
+        rss = memory_bytes
         if self.args.backend == 'docker':
             # cgroup usage includes the delay proxy, wrapper and validator.
-            out = command(['docker', 'exec', self.containers[i], 'python3', '-c',
-                           "from pathlib import Path;p=Path('/sys/fs/cgroup/memory.current');print(p.read_text() if p.exists() else Path('/sys/fs/cgroup/memory/memory.usage_in_bytes').read_text())"]).stdout
-            rss = int(out.strip())
+            if rss is None:
+                out = command(['docker', 'exec', self.containers[i], 'python3', '-c',
+                               "from pathlib import Path;p=Path('/sys/fs/cgroup/memory.current');print(p.read_text() if p.exists() else Path('/sys/fs/cgroup/memory/memory.usage_in_bytes').read_text())"]).stdout
+                rss = int(out.strip())
         else:
             pidfile = self.node(i) / 'runtime-pid.json'
             if pidfile.exists():

@@ -4,9 +4,12 @@ use super::model::{self, Action, Local, Model, Rules, State, proof, proof_round,
 use crate::state::*;
 use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
-use naome_consensus::state::{StateIntent, StateLockState, StateValue};
+use naome_consensus::state::{
+    SealRole, SealSignature, StateAgreement, StateIntent, StateLockState, StateSeal, StateValue,
+};
 use naome_ledger::{
     AccountId,
+    authority::{HandoffPlan, NextPeriodKeys},
     operations::OperationBody,
     profile::{Genesis, Limits, Profile, STATE_CHECKER_PROFILE, TimingKind, ValidatorRegistration},
     question::CompiledQuestion,
@@ -50,6 +53,45 @@ struct Participant {
 }
 fn consensus_key(key: &SigningKey) -> ConsensusKey {
     ConsensusKey::from_bytes(key.verifying_key().to_bytes())
+}
+fn next_key(i: usize) -> SigningKey {
+    SigningKey::from_bytes(&[i as u8 + 151; 32])
+}
+fn next_transport(i: usize) -> SigningKey {
+    SigningKey::from_bytes(&[i as u8 + 211; 32])
+}
+fn plan(branch: &StateBranch) -> HandoffPlan {
+    let state = branch.state();
+    let mut offers: Vec<_> = state
+        .authority()
+        .units()
+        .iter()
+        .map(|unit| {
+            let i = (0..4)
+                .find(|i| {
+                    AccountId::for_key(
+                        SigningKey::from_bytes(&[*i as u8 + 1; 32])
+                            .verifying_key()
+                            .as_bytes(),
+                    ) == unit.owner()
+                })
+                .unwrap();
+            let owner = SigningKey::from_bytes(&[i as u8 + 1; 32]);
+            NextPeriodKeys::sign(
+                state.authority(),
+                state.head(),
+                state.commitment(),
+                unit.id(),
+                &owner,
+                &next_key(i),
+                &next_transport(i),
+                format!("127.0.0.1:{}", 45000 + i),
+            )
+            .unwrap()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    HandoffPlan::new(offers, None).unwrap()
 }
 fn genesis(keys: &[SigningKey; 4]) -> Genesis {
     let limits = Limits {
@@ -117,10 +159,13 @@ fn records(branch: &StateBranch, keys: &[SigningKey; 4]) -> [Vec<u8>; 2] {
     let genesis = state.genesis();
     let time = TimeCertificate::new(
         keys.iter()
-            .take(3)
-            .map(|key| SignedTimeReport::sign(genesis, state.head(), 1, 100, key).unwrap())
+            .map(|key| {
+                SignedTimeReport::sign(genesis, state.authority(), state.head(), 1, 100, key)
+                    .unwrap()
+            })
             .collect(),
         genesis,
+        state.authority(),
         state.head(),
         1,
         100,
@@ -138,7 +183,7 @@ fn records(branch: &StateBranch, keys: &[SigningKey; 4]) -> [Vec<u8>; 2] {
         .sign(genesis, 1, &SigningKey::from_bytes(&[5; 32]))
         .unwrap();
         state
-            .prepare_record(time.clone(), vec![operation])
+            .prepare_record(time.clone(), vec![operation], plan(branch))
             .unwrap()
             .record()
             .encode()
@@ -156,6 +201,35 @@ struct Replay {
     votes: BTreeMap<(u8, u8, u8), StateVote>,
 }
 impl Replay {
+    fn seal(&self, agreement: &StateAgreement) -> StateSeal {
+        let signature = |role: SealRole, key: &SigningKey| {
+            let signer = consensus_key(key);
+            let context = agreement.seal_context();
+            SealSignature::complete(
+                role,
+                context,
+                signer,
+                key.sign(&SealSignature::signing_bytes(role, context, signer))
+                    .to_bytes(),
+                agreement.outgoing(),
+                agreement.incoming(),
+            )
+            .unwrap()
+        };
+        StateSeal::new(
+            (0..3)
+                .map(|i| signature(SealRole::Ready, &next_key(i)))
+                .collect(),
+            self.keys[..3]
+                .iter()
+                .map(|key| signature(SealRole::Terminal, key))
+                .collect(),
+            agreement.seal_context(),
+            agreement.outgoing(),
+            agreement.incoming(),
+        )
+        .unwrap()
+    }
     fn target(&self, value: u8) -> ConsensusVoteTarget {
         match value {
             1 | 2 => {
@@ -175,9 +249,10 @@ impl Replay {
     fn faulty_vote(&self, round: u8, role: u8, value: u8) -> StateVote {
         let key = &self.keys[usize::from(self.model.faulty)];
         let genesis = self.branch.state().genesis();
-        let mut body = b"NSCV1".to_vec();
+        let mut body = b"NSCV5".to_vec();
         body.extend_from_slice(genesis.id().as_bytes());
         body.extend_from_slice(genesis.profile().id().as_bytes());
+        body.extend_from_slice(&self.branch.authority().id());
         body.extend_from_slice(&1u64.to_be_bytes());
         body.extend_from_slice(&u64::from(round).to_be_bytes());
         body.push(role + 1);
@@ -193,13 +268,13 @@ impl Replay {
         }
         body.extend_from_slice(key.verifying_key().as_bytes());
         let mut transcript = if role == 0 {
-            b"naome:state:prevote:v1\0".to_vec()
+            b"naome:state:prevote:v5\0".to_vec()
         } else {
-            b"naome:state:precommit:v1\0".to_vec()
+            b"naome:state:precommit:v5\0".to_vec()
         };
         transcript.extend_from_slice(&body);
         body.extend_from_slice(&key.sign(&transcript).to_bytes());
-        StateVote::decode(&body, genesis).unwrap()
+        StateVote::decode(&body, genesis, self.branch.authority()).unwrap()
     }
     fn quorum(&self, round: u8, role: u8, target: u8) -> StateQuorum {
         assert!(self.model.quorum(self.state, round, role, target));
@@ -214,7 +289,12 @@ impl Replay {
                 }
             })
             .collect();
-        StateQuorum::from_votes(votes, self.branch.state().genesis()).unwrap()
+        StateQuorum::from_votes(
+            votes,
+            self.branch.state().genesis(),
+            self.branch.authority(),
+        )
+        .unwrap()
     }
     fn progress(&self, round: u8, role: u8, minimum: usize) -> Vec<u8> {
         let mut votes = vec![self.faulty_vote(round, role, 3)];
@@ -229,9 +309,13 @@ impl Replay {
         if minimum == 2 {
             votes.truncate(2);
         }
-        StateVoteSet::new(votes, self.branch.state().genesis())
-            .unwrap()
-            .encode()
+        StateVoteSet::new(
+            votes,
+            self.branch.state().genesis(),
+            self.branch.authority(),
+        )
+        .unwrap()
+        .encode()
     }
     fn proposal(&self, round: u8, encoded: u8) -> Vec<u8> {
         assert!(self.model.proposals(self.state, round).contains(&encoded));
@@ -239,11 +323,11 @@ impl Replay {
         let value = self.values[index];
         let mut bytes = if self.model.proposers[usize::from(round)] == self.model.faulty {
             let key = &self.keys[usize::from(self.model.faulty)];
-            let mut transcript = b"naome:state:proposal:v1\0".to_vec();
+            let mut transcript = b"naome:state:proposal:v5\0".to_vec();
             transcript.extend(value.encode());
             transcript.extend_from_slice(&u64::from(round).to_be_bytes());
             transcript.extend_from_slice(key.verifying_key().as_bytes());
-            let mut out = b"NSCP1".to_vec();
+            let mut out = b"NSCP5".to_vec();
             out.extend(value.encode());
             out.extend_from_slice(&u64::from(round).to_be_bytes());
             out.extend_from_slice(key.verifying_key().as_bytes());
@@ -282,7 +366,7 @@ impl Replay {
             StatePhase::Precommit => 2,
         };
         let snapshot = signer.snapshot().unwrap();
-        assert_eq!(&snapshot[..5], b"NSCS1");
+        assert_eq!(&snapshot[..5], b"NSCS5");
         let mut offset = 5 + 32 + 32 + 8 + 8 + 1;
         let mut field = || {
             let present = snapshot[offset];
@@ -468,9 +552,13 @@ impl Replay {
                     .verify_proposal(&self.proposal(round, proposal), MAXIMUM_ROUND)
                     .unwrap();
                 let qc = self.quorum(round, 1, value);
+                let agreement = self
+                    .branch
+                    .verify_agreement(&proposal, &qc, MAXIMUM_ROUND)
+                    .unwrap();
                 let finalized = self
                     .branch
-                    .verify_finality(&proposal, &qc, MAXIMUM_ROUND)
+                    .verify_finality(&proposal, &qc, &self.seal(&agreement), MAXIMUM_ROUND)
                     .unwrap();
                 for participant in participants.iter_mut().flatten() {
                     let node = participant.node.as_mut().unwrap();
@@ -483,7 +571,8 @@ impl Replay {
                         node.state().unwrap().head(),
                         self.values[usize::from(value - 1)].record_id()
                     );
-                    assert_eq!(node.position().unwrap(), Some((2, 0, StatePhase::Proposal)));
+                    assert_eq!(node.position().unwrap(), None);
+                    assert!(node.signer.as_ref().unwrap().stopped().unwrap());
                     observed.push(node.branch().unwrap().commitment());
                 }
             }
@@ -504,7 +593,11 @@ fn explorer_witnesses_match_anchored_canonical_nodes_and_cold_reopen() {
     let mut keys = std::array::from_fn(|i| SigningKey::from_bytes(&[i as u8 + 101; 32]));
     keys.sort_by_key(consensus_key);
     let genesis = genesis(&keys);
-    for (faulty, report) in model::protocol_explorations().iter().enumerate() {
+    let reports: [_; 4] = std::array::from_fn(|faulty| {
+        let (replay, _) = fixture(faulty, &keys, &genesis);
+        model::explore(replay.model)
+    });
+    for (faulty, report) in reports.iter().enumerate() {
         assert!(report.counterexample.is_none());
         for (&label, trace) in &report.witnesses {
             let (mut replay, mut participants) = fixture(faulty, &keys, &genesis);
@@ -548,7 +641,8 @@ fn fixture(
     let branch = StateBranch::from_genesis(LedgerState::new(genesis.clone())).unwrap();
     let records = records(&branch, keys);
     let values = records.each_ref().map(|record| {
-        let mut state = StateLockState::new(&branch, consensus_key(&keys[0])).unwrap();
+        let scheduled = branch.proposer(0, MAXIMUM_ROUND).unwrap().unwrap();
+        let mut state = StateLockState::new(&branch, scheduled).unwrap();
         let StateIntent::Proposal(intent) = state
             .apply(
                 &branch,
@@ -563,11 +657,20 @@ fn fixture(
         };
         intent.value()
     });
-    let model = Model::unit(faulty as u8, Rules::Protocol);
+    let mut model = Model::unit(faulty as u8, Rules::Protocol);
+    model.proposers = std::array::from_fn(|round| {
+        let scheduled = branch
+            .proposer(round as u64, MAXIMUM_ROUND)
+            .unwrap()
+            .unwrap();
+        keys.iter()
+            .position(|key| consensus_key(key) == scheduled)
+            .unwrap() as u8
+    });
     for (round, actor) in model.proposers.iter().enumerate() {
         assert_eq!(
             branch.proposer(round as u64, MAXIMUM_ROUND).unwrap(),
-            consensus_key(&keys[usize::from(*actor)])
+            Some(consensus_key(&keys[usize::from(*actor)]))
         );
     }
     let replay = Replay {
@@ -591,11 +694,17 @@ fn canonical_signed_quorum_subsets_match_four_unit_validator_boundary() {
     let mut checked = 0;
     for faulty in 0..4 {
         let (mut replay, mut participants) = fixture(faulty, &keys, &genesis);
-        if faulty != 0 {
+        let proposer = replay.model.proposers[0] as usize;
+        if faulty != proposer {
             replay.step(
-                participants[0].as_mut().unwrap().node.as_mut().unwrap(),
+                participants[proposer]
+                    .as_mut()
+                    .unwrap()
+                    .node
+                    .as_mut()
+                    .unwrap(),
                 Action::Author {
-                    actor: 0,
+                    actor: proposer as u8,
                     proposal: 1,
                 },
             );
@@ -632,7 +741,7 @@ fn canonical_signed_quorum_subsets_match_four_unit_validator_boundary() {
                     .filter(|(i, _)| mask & (1 << i) != 0)
                     .map(|(_, vote)| vote.clone())
                     .collect();
-                let quorum = StateQuorum::from_votes(selected, &genesis);
+                let quorum = StateQuorum::from_votes(selected, &genesis, replay.branch.authority());
                 assert_eq!(
                     quorum.is_ok(),
                     mask.count_ones() >= 3,
@@ -642,7 +751,8 @@ fn canonical_signed_quorum_subsets_match_four_unit_validator_boundary() {
                     assert_eq!(quorum.target(), replay.target(1));
                     assert_eq!(quorum.role(), Replay::role(role));
                     let encoded = quorum.encode();
-                    let decoded = StateQuorum::decode(&encoded, &genesis).unwrap();
+                    let decoded =
+                        StateQuorum::decode(&encoded, &genesis, replay.branch.authority()).unwrap();
                     assert_eq!(decoded.encode(), encoded);
                 }
                 checked += 1;

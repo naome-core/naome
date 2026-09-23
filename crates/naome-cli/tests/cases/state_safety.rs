@@ -3,16 +3,20 @@ use ed25519_dalek::{Signer, SigningKey};
 use naome_chain::StateRecordExecution;
 use naome_consensus::{
     ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget,
-    state::{StateBranch, StateLockEvent, StatePhase, StatePublication},
+    state::{
+        SealRole, SealSignature, StateAgreement, StateBranch, StateLockEvent, StatePhase,
+        StatePublication, StateSeal,
+    },
 };
 use naome_ledger::{
-    LedgerState,
+    AccountId, LedgerState,
+    authority::{HandoffPlan, NextPeriodKeys},
     operations::OperationBody,
     profile::Genesis,
     question::CompiledQuestion,
     time::{SignedTimeReport, TimeCertificate},
 };
-use naome_storage::state::StateSigner;
+use naome_storage::state::{StatePeriodCustody, StateSigner};
 use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
@@ -27,6 +31,133 @@ fn key(lab: &Lab, relative: &str, role: u8) -> SigningKey {
 fn genesis(lab: &Lab) -> Genesis {
     Genesis::decode(&fs::read(lab.root.join("genesis.bin")).unwrap()).unwrap()
 }
+fn fixture_next_custody(lab: &Lab, state: &LedgerState, index: usize) -> StatePeriodCustody {
+    let owner = key(lab, &format!("accounts/account-{index}.key"), 1);
+    let unit = state
+        .authority()
+        .owner(AccountId::for_key(owner.verifying_key().as_bytes()))
+        .unwrap();
+    let endpoint =
+        if unit.keys().unwrap().endpoint() == format!("127.0.0.1:{}", lab.base + index as u16) {
+            format!("127.0.0.1:{}", lab.base + 4 + index as u16)
+        } else {
+            format!("127.0.0.1:{}", lab.base + index as u16)
+        };
+    StatePeriodCustody::stage_offer(
+        lab.root.join(format!("node-{index}/custody")),
+        lab.root.join(format!("anchor-custody-{index}")),
+        state,
+        unit.id(),
+        &owner,
+        endpoint,
+    )
+    .unwrap()
+}
+fn fixture_period_key(lab: &Lab, state: &LedgerState, index: usize) -> SigningKey {
+    let height = state.authority().effective_height();
+    if height == 1 {
+        key(lab, &format!("node-{index}/consensus.key"), 2)
+    } else {
+        assert_eq!(height, 2, "fixture only constructs one successor period");
+        fixture_next_custody(lab, &LedgerState::new(genesis(lab)), index)
+            .consensus_key()
+            .clone()
+    }
+}
+fn fixture_period_transport_key(lab: &Lab, state: &LedgerState, index: usize) -> SigningKey {
+    if state.authority().effective_height() == 1 {
+        key(lab, &format!("node-{index}/transport.key"), 3)
+    } else {
+        assert_eq!(state.authority().effective_height(), 2);
+        fixture_next_custody(lab, &LedgerState::new(genesis(lab)), index)
+            .transport_key()
+            .clone()
+    }
+}
+fn fixture_public_key(lab: &Lab, state: &LedgerState, index: usize, transport: bool) -> [u8; 32] {
+    let owner = key(lab, &format!("accounts/account-{index}.key"), 1);
+    let keys = state
+        .authority()
+        .owner(AccountId::for_key(owner.verifying_key().as_bytes()))
+        .unwrap()
+        .keys()
+        .unwrap();
+    if transport {
+        *keys.transport()
+    } else {
+        *keys.consensus()
+    }
+}
+fn fixture_plan(lab: &Lab, state: &LedgerState) -> HandoffPlan {
+    let mut offers: Vec<_> = (0..4)
+        .map(|index| {
+            fixture_next_custody(lab, state, index)
+                .offer()
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    HandoffPlan::new(offers, None).unwrap()
+}
+fn fixture_seal(lab: &Lab, branch: &StateBranch, agreement: &StateAgreement) -> StateSeal {
+    let signatures = |role: SealRole, incoming: bool| {
+        let authority = if incoming {
+            agreement.incoming()
+        } else {
+            agreement.outgoing()
+        };
+        authority
+            .units()
+            .iter()
+            .filter_map(|unit| unit.keys().map(|keys| (unit, keys)))
+            .take(3)
+            .map(|(unit, keys)| {
+                let index = (0..4)
+                    .find(|i| {
+                        AccountId::for_key(
+                            key(lab, &format!("accounts/account-{i}.key"), 1)
+                                .verifying_key()
+                                .as_bytes(),
+                        ) == unit.owner()
+                    })
+                    .unwrap();
+                let signer = if incoming {
+                    fixture_next_custody(lab, branch.state(), index)
+                        .consensus_key()
+                        .clone()
+                } else {
+                    fixture_period_key(lab, branch.state(), index)
+                };
+                let consensus = ConsensusKey::from_bytes(*keys.consensus());
+                let signature = signer
+                    .sign(&SealSignature::signing_bytes(
+                        role,
+                        agreement.seal_context(),
+                        consensus,
+                    ))
+                    .to_bytes();
+                SealSignature::complete(
+                    role,
+                    agreement.seal_context(),
+                    consensus,
+                    signature,
+                    agreement.outgoing(),
+                    agreement.incoming(),
+                )
+                .unwrap()
+            })
+            .collect()
+    };
+    StateSeal::new(
+        signatures(SealRole::Ready, true),
+        signatures(SealRole::Terminal, false),
+        agreement.seal_context(),
+        agreement.outgoing(),
+        agreement.incoming(),
+    )
+    .unwrap()
+}
 fn signer(lab: &Lab, node: usize) -> StateSigner {
     let g = genesis(lab);
     let maximum = g.profile().limits().consensus_rounds;
@@ -39,12 +170,11 @@ fn signer(lab: &Lab, node: usize) -> StateSigner {
     )
     .unwrap()
 }
-fn journal(lab: &Lab, node: usize) -> PathBuf {
-    fs::read_dir(lab.root.join(format!("node-{node}/signer")))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "journal"))
-        .unwrap()
+fn journal(lab: &Lab, branch: &StateBranch, node: usize) -> PathBuf {
+    let key = fixture_public_key(lab, branch.state(), node, false);
+    let name: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    lab.root
+        .join(format!("node-{node}/signer/state-signer-{name}.journal"))
 }
 fn kill(lab: &mut Lab, node: usize) {
     let mut child = lab.nodes[node].take().unwrap();
@@ -58,8 +188,12 @@ fn image(lab: &Lab, node: usize) -> BTreeMap<PathBuf, Vec<u8>> {
     for directory in [
         format!("node-{node}/history"),
         format!("node-{node}/signer"),
+        format!("node-{node}/custody"),
+        format!("node-{node}/handoff"),
         format!("anchor-history-{node}"),
         format!("anchor-signer-{node}"),
+        format!("anchor-custody-{node}"),
+        format!("anchor-handoff-{node}"),
     ] {
         for entry in fs::read_dir(lab.root.join(directory)).unwrap() {
             let path = entry.unwrap().path();
@@ -87,15 +221,24 @@ fn make_proposal(
         .map(|i| {
             SignedTimeReport::sign(
                 g,
+                state.authority(),
                 state.head(),
                 height,
                 state.time(),
-                &key(lab, &format!("node-{i}/consensus.key"), 2),
+                &fixture_period_key(lab, state, i),
             )
             .unwrap()
         })
         .collect();
-    let time = TimeCertificate::new(reports, g, state.head(), height, state.time()).unwrap();
+    let time = TimeCertificate::new(
+        reports,
+        g,
+        state.authority(),
+        state.head(),
+        height,
+        state.time(),
+    )
+    .unwrap();
     let question =
         CompiledQuestion::compile(&fs::read_to_string(example(source)).unwrap(), g.profile())
             .unwrap();
@@ -108,14 +251,14 @@ fn make_proposal(
     .sign(g, state.next_nonce(account).unwrap(), &author)
     .unwrap();
     let record = state
-        .prepare_record(time, vec![operation])
+        .prepare_record(time, vec![operation], fixture_plan(lab, state))
         .unwrap()
         .record()
         .encode()
         .unwrap();
-    let proposer = branch.proposer(0, maximum).unwrap();
+    let proposer = branch.proposer(0, maximum).unwrap().unwrap();
     let signing = (0..4)
-        .map(|i| key(lab, &format!("node-{i}/consensus.key"), 2))
+        .map(|i| fixture_period_key(lab, state, i))
         .find(|key| key.verifying_key().as_bytes() == proposer.as_bytes())
         .unwrap();
     let mut kernel = naome_consensus::state::StateLockState::new(branch, proposer).unwrap();
@@ -142,19 +285,20 @@ fn exported(lab: &Lab, node: usize, label: &str) -> PathBuf {
 }
 
 #[test]
-fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_quorum_vote() {
+fn canonical_sigkill_resends_exact_vote_then_resumes_selected_successor_with_fresh_quorum_vote() {
     let _guard = process_guard();
     let mut lab = Lab::new();
+    let proposal = alternate_proposal(&lab);
     lab.start(3);
     lab.wait(3, |_| true);
-    let proposal = alternate_proposal(&lab);
     // The authenticated fixture peer supplies a valid proposal but deliberately
     // withholds the receipt for the actual process's durably completed vote.
-    let observed_vote = capture_vote_without_receipt(&lab, Some(proposal.clone()), 1);
+    let initial = StateBranch::from_genesis(LedgerState::new(genesis(&lab))).unwrap();
+    let observed_vote = capture_vote_without_receipt(&lab, &initial, Some(proposal.clone()), 1);
     kill(&mut lab, 3);
     super::lifecycle::refuse_missing_stores(&lab, 3);
     let before = image(&lab, 3);
-    let journal_path = journal(&lab, 3);
+    let journal_path = journal(&lab, &initial, 3);
     let prefix = fs::read(&journal_path).unwrap();
     let mut recovered = signer(&lab, 3);
     assert_eq!(recovered.phase().unwrap(), StatePhase::Prevote);
@@ -186,57 +330,55 @@ fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_qu
         status["consensus_position"]["phase"] == "Prevote"
     });
     // A receive-only peer observes retransmission without supplying a new proposal.
-    assert_eq!(capture_vote_without_receipt(&lab, None, 1), observed_vote);
+    assert_eq!(
+        capture_vote_without_receipt(&lab, &initial, None, 1),
+        observed_vote
+    );
     kill(&mut lab, 3);
     assert_eq!(signer(&lab, 3).retry_publications().unwrap(), publications);
     assert_eq!(image(&lab, 3), before);
 
-    // Three other independent processes settle while this signer remains offline.
-    for node in 0..3 {
+    // The same proposal carries node 3's offer, anchored before the crash.
+    // Select exactly one sealed successor while node 3 is offline. This is the
+    // last period in which its existing offer can be activated after recovery.
+    let selected = certify(&lab, &initial, &proposal);
+    for node in 0..4 {
+        let g = genesis(&lab);
+        let mut history = naome_storage::state::StateHistory::open(
+            lab.root.join(format!("node-{node}/history")),
+            lab.root.join(format!("anchor-history-{node}")),
+            g.clone(),
+            g.profile().limits().consensus_rounds,
+        )
+        .unwrap();
+        history
+            .append_finality(&selected.encode().unwrap())
+            .unwrap();
+    }
+    for node in [0, 2, 3] {
         lab.start(node);
     }
-    for node in 0..3 {
-        lab.wait(node, |_| true);
-    }
-    lab.submit(0, 4, example("question-a.nao"), "crash-a");
-    let prior = lab.wait(0, |status| {
-        status["height"].as_u64().unwrap() >= 3
-            && status["active"].is_null()
-            && status["queued"] == 0
-    });
-    lab.assert_same(&[0, 1, 2], &prior);
-    let provider = exported(&lab, 0, "provider-prefix");
-    lab.stop(1);
-    lab.start(3);
+    let prior = lab.wait(3, |status| status["height"] == 1);
     lab.assert_same(&[0, 2, 3], &prior);
-    let caught = exported(&lab, 3, "caught-prefix");
-    for height in 1..=prior["height"].as_u64().unwrap() {
-        let name = format!("{height:08}.finality");
-        assert_eq!(
-            fs::read(provider.join(&name)).unwrap(),
-            fs::read(caught.join(name)).unwrap()
-        );
-    }
-    // Only 0, 2 and the recovered signer 3 are online: its vote is necessary.
-    let target = prior["height"].as_u64().unwrap() + 1;
+    assert!(!lab.root.join("node-3/consensus.key").exists());
+    let recovered_key = ConsensusKey::from_bytes(fixture_public_key(
+        &lab,
+        selected.branch().state(),
+        3,
+        false,
+    ));
+    // With node 1 offline, a new record needs node 3's fresh period vote.
     lab.submit(0, 5, example("question-b.nao"), "crash-b");
-    let next = lab.wait(0, |status| {
-        status["height"].as_u64().unwrap() >= target && status["active"]["phase"] == "Voting"
-    });
+    let next = lab.wait(0, |status| status["height"].as_u64().unwrap() >= 2);
     lab.assert_same(&[0, 2, 3], &next);
     let final_archive = exported(&lab, 0, "after-catch-up");
     let g = genesis(&lab);
     let maximum = g.profile().limits().consensus_rounds;
-    let mut branch = StateBranch::from_genesis(LedgerState::new(g)).unwrap();
-    let recovered_key = ConsensusKey::from_bytes(
-        key(&lab, "node-3/consensus.key", 2)
-            .verifying_key()
-            .to_bytes(),
-    );
+    let mut branch = initial;
     for height in 1..=next["height"].as_u64().unwrap() {
         let bytes = fs::read(final_archive.join(format!("{height:08}.finality"))).unwrap();
         let finality = branch.decode_finality(&bytes, maximum).unwrap();
-        if height >= target {
+        if height == 2 {
             assert!(
                 finality
                     .quorum()
@@ -252,10 +394,47 @@ fn canonical_sigkill_resends_exact_vote_then_catches_up_and_supplies_required_qu
         lab.stop(node);
     }
     assert!(fs::read(journal_path).unwrap().starts_with(&prefix));
-    startup_corruption_matrix(&lab, &before);
+    startup_corruption_matrix(&lab, &before, &branch);
     lab.start(3);
     lab.assert_same(&[3], &next);
     lab.stop(3);
+}
+
+#[test]
+fn canonical_vacant_slot_catches_up_without_reviving_retired_signing_key() {
+    let _guard = process_guard();
+    let mut lab = Lab::new();
+    for node in 0..3 {
+        lab.start(node);
+    }
+    for node in 0..3 {
+        lab.wait(node, |_| true);
+    }
+    lab.submit(0, 4, example("question-a.nao"), "vacant-a");
+    let prior = lab.wait(0, |status| {
+        status["height"].as_u64().unwrap() >= 3
+            && status["active"].is_null()
+            && status["queued"] == 0
+    });
+    lab.assert_same(&[0, 1, 2], &prior);
+    let provider = exported(&lab, 0, "vacant-provider");
+    lab.start(3);
+    lab.wait(3, |status| {
+        status["height"].as_u64().unwrap() >= prior["height"].as_u64().unwrap()
+            && status["consensus_position"].is_null()
+    });
+    let caught = exported(&lab, 3, "vacant-caught");
+    for height in 1..=prior["height"].as_u64().unwrap() {
+        let name = format!("{height:08}.finality");
+        assert_eq!(
+            fs::read(provider.join(&name)).unwrap(),
+            fs::read(caught.join(name)).unwrap()
+        );
+    }
+    assert!(!lab.root.join("node-3/consensus.key").exists());
+    for node in 0..4 {
+        lab.stop(node);
+    }
 }
 
 fn restore(snapshot: &BTreeMap<PathBuf, Vec<u8>>) {
@@ -294,7 +473,7 @@ fn refused_start_preserves(lab: &Lab, node: usize) {
         "failed startup repaired authority files"
     );
 }
-fn startup_corruption_matrix(lab: &Lab, old: &BTreeMap<PathBuf, Vec<u8>>) {
+fn startup_corruption_matrix(lab: &Lab, old: &BTreeMap<PathBuf, Vec<u8>>, branch: &StateBranch) {
     let current = image(lab, 3);
     let history = current
         .iter()
@@ -318,7 +497,7 @@ fn startup_corruption_matrix(lab: &Lab, old: &BTreeMap<PathBuf, Vec<u8>>) {
         .unwrap()
         .0
         .clone();
-    let signer_journal = journal(lab, 3);
+    let signer_journal = journal(lab, branch, 3);
     assert_ne!(current[&history], old[&history]);
     assert_ne!(current[&anchor], old[&anchor]);
     for (path, bytes) in [(&history, &old[&history]), (&anchor, &old[&anchor])] {
@@ -365,6 +544,7 @@ fn startup_corruption_matrix(lab: &Lab, old: &BTreeMap<PathBuf, Vec<u8>>) {
 
 fn capture_vote_without_receipt(
     lab: &Lab,
+    branch: &StateBranch,
     proposal: Option<Vec<u8>>,
     expected_height: u64,
 ) -> Vec<u8> {
@@ -373,20 +553,15 @@ fn capture_vote_without_receipt(
         StateResponseBody as Response, state_peer_id,
     };
     let g = genesis(lab);
-    let mut seed = Zeroizing::new(key(lab, "node-0/transport.key", 3).to_bytes());
+    let mut seed = Zeroizing::new(fixture_period_transport_key(lab, branch.state(), 0).to_bytes());
     let identity = Keypair::ed25519_from_bytes(&mut *seed).unwrap();
-    let peer = state_peer_id(
-        key(lab, "node-3/transport.key", 3)
-            .verifying_key()
-            .to_bytes(),
-    )
-    .unwrap();
+    let peer = state_peer_id(fixture_public_key(lab, branch.state(), 3, true)).unwrap();
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            let mut network = StateNetwork::new_state(identity, &g).unwrap();
+            let mut network = StateNetwork::new_for_parent(identity, branch.state()).unwrap();
             network
                 .listen_on(network.state_listen_address().unwrap().clone())
                 .unwrap();
@@ -411,15 +586,20 @@ fn capture_vote_without_receipt(
                         NetworkEvent::InboundState(inbound) => {
                             assert_eq!(inbound.peer_id(), peer);
                             if let Request::Vote(bytes) = inbound.request().body() {
-                                let vote =
-                                    naome_consensus::state::StateVote::decode(bytes, &g).unwrap();
+                                let vote = naome_consensus::state::StateVote::decode(
+                                    bytes,
+                                    &g,
+                                    branch.authority(),
+                                )
+                                .unwrap();
                                 assert_eq!(
                                     vote.signer(),
-                                    ConsensusKey::from_bytes(
-                                        key(lab, "node-3/consensus.key", 2)
-                                            .verifying_key()
-                                            .to_bytes()
-                                    )
+                                    ConsensusKey::from_bytes(fixture_public_key(
+                                        lab,
+                                        branch.state(),
+                                        3,
+                                        false
+                                    ))
                                 );
                                 assert_eq!(vote.height(), expected_height);
                                 assert_eq!(vote.round(), 0);
@@ -486,7 +666,8 @@ fn certify(lab: &Lab, branch: &StateBranch, bytes: &[u8]) -> naome_consensus::st
         };
         votes.push(vote);
     }
-    let prevotes = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
+    let prevotes =
+        StateQuorum::from_votes(votes, branch.state().genesis(), branch.authority()).unwrap();
     let mut votes = Vec::new();
     for (kernel, key) in kernels.iter_mut().zip(&keys) {
         let intent = kernel
@@ -506,8 +687,19 @@ fn certify(lab: &Lab, branch: &StateBranch, bytes: &[u8]) -> naome_consensus::st
         };
         votes.push(vote);
     }
-    let quorum = StateQuorum::from_votes(votes, branch.state().genesis()).unwrap();
-    branch.verify_finality(&proposal, &quorum, maximum).unwrap()
+    let quorum =
+        StateQuorum::from_votes(votes, branch.state().genesis(), branch.authority()).unwrap();
+    let agreement = branch
+        .verify_agreement(&proposal, &quorum, maximum)
+        .unwrap();
+    branch
+        .verify_finality(
+            &proposal,
+            &quorum,
+            &fixture_seal(lab, branch, &agreement),
+            maximum,
+        )
+        .unwrap()
 }
 
 #[test]
@@ -555,11 +747,16 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
     );
     lab.start(3);
     lab.wait(3, |status| status["height"] == 1);
-    let vote = capture_vote_without_receipt(&lab, Some(pending), 2);
-    let journal_path = journal(&lab, 3);
+    let vote = capture_vote_without_receipt(&lab, selected.branch(), Some(pending), 2);
+    let journal_path = journal(&lab, selected.branch(), 3);
     let prefix = fs::read(&journal_path).unwrap();
     let before = image(&lab, 3);
-    deliver_conflict_until_process_stops(&mut lab, conflicting.encode().unwrap(), &vote);
+    deliver_conflict_until_process_stops(
+        &mut lab,
+        selected.branch(),
+        conflicting.encode().unwrap(),
+        &vote,
+    );
     let observer = StateObserver::open(
         lab.root.join("node-3/history"),
         lab.root.join("anchor-history-3"),
@@ -572,15 +769,6 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
         observer.branch().commitment(),
         selected.branch().commitment()
     );
-    let mut stopped = signer(&lab, 3);
-    assert!(stopped.stopped().unwrap());
-    assert!(stopped.retry_publications().is_err());
-    assert!(
-        stopped
-            .apply_and_sign(&StateLockEvent::ProposalTimeout)
-            .is_err()
-    );
-    drop(stopped);
     let after = fs::read(&journal_path).unwrap();
     assert!(after.starts_with(&prefix));
     // Exactly one STOP frame follows the pending publication; no signing PREPARE
@@ -603,23 +791,22 @@ fn canonical_authenticated_historical_conflict_stops_pending_publication_and_per
     assert_eq!(image(&lab, 3), halted);
 }
 
-fn deliver_conflict_until_process_stops(lab: &mut Lab, conflict: Vec<u8>, pending_vote: &[u8]) {
+fn deliver_conflict_until_process_stops(
+    lab: &mut Lab,
+    branch: &StateBranch,
+    conflict: Vec<u8>,
+    pending_vote: &[u8],
+) {
     use naome_network::{
         Keypair, NetworkEvent, PeerSessionEvent, StateNetwork, StateRequestBody as Request,
         StateResponseBody as Response, state_peer_id,
     };
-    let g = genesis(lab);
-    let mut seed = Zeroizing::new(key(lab, "node-0/transport.key", 3).to_bytes());
+    let mut seed = Zeroizing::new(fixture_period_transport_key(lab, branch.state(), 0).to_bytes());
     let identity = Keypair::ed25519_from_bytes(&mut *seed).unwrap();
-    let peer = state_peer_id(
-        key(lab, "node-3/transport.key", 3)
-            .verifying_key()
-            .to_bytes(),
-    )
-    .unwrap();
+    let peer = state_peer_id(fixture_public_key(lab, branch.state(), 3, true)).unwrap();
     let child = lab.nodes[3].as_mut().unwrap();
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-        let mut network=StateNetwork::new_state(identity,&g).unwrap();
+        let mut network=StateNetwork::new_for_parent(identity,branch.state()).unwrap();
         network.listen_on(network.state_listen_address().unwrap().clone()).unwrap();
         tokio::time::timeout(Duration::from_secs(20),async {
             let mut ticket=None;let mut sent=false;

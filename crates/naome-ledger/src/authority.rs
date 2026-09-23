@@ -19,6 +19,8 @@ use std::{
 
 mod offer;
 pub use offer::NextPeriodKeys;
+mod plan;
+pub use plan::{CandidateAdmissionOffer, HANDOFF_PLAN_MAX_BYTES, HandoffPlan};
 
 const MAGIC: &[u8; 5] = b"NSAU5";
 const MAX_BYTES: usize = 5 + 32 + 8 + 1 + 4 * (32 + 32 + 32 + 1 + 32 + 8 + 1 + 32 + 32 + 4 + 128);
@@ -279,6 +281,41 @@ impl AuthoritySnapshot {
     }
     pub fn slot(&self, id: AuthoritySlotId) -> Option<&AuthorityUnit> {
         self.units.iter().find(|unit| unit.slot == id)
+    }
+    pub fn consensus_unit(&self, key: &[u8; 32]) -> Option<&AuthorityUnit> {
+        self.units.iter().find(|unit| {
+            unit.keys
+                .as_ref()
+                .is_some_and(|keys| &keys.consensus == key)
+        })
+    }
+    pub fn owner(&self, account: AccountId) -> Option<&AuthorityUnit> {
+        self.units.iter().find(|unit| unit.owner == account)
+    }
+    pub fn active_count(&self) -> usize {
+        self.units.iter().filter(|unit| unit.keys.is_some()).count()
+    }
+    pub(crate) fn install_candidate(
+        &self,
+        outgoing: AuthorityUnitId,
+        family: ResolutionId,
+        ordinal: u64,
+        owner: AccountId,
+        keys: PeriodKeys,
+    ) -> Result<Self, LedgerError> {
+        let mut units = self.units.to_vec();
+        let old = units
+            .iter_mut()
+            .find(|unit| unit.id == outgoing)
+            .ok_or(LedgerError::Invalid("retiring unit missing"))?;
+        old.id = AuthorityUnitId::for_claim(family);
+        old.origin = UnitOrigin::Earned {
+            family,
+            completion_ordinal: ordinal,
+        };
+        old.owner = owner;
+        old.keys = Some(keys);
+        Self::new(self.genesis, self.effective_height, units)
     }
     /// Derives the next four-slot set. Each absent offer produces a vacant
     /// weighted slot. A future selected-state caller must supply account keys

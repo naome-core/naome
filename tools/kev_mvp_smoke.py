@@ -55,7 +55,7 @@ def free_ports():
         base = 20000 + int.from_bytes(os.urandom(2), 'big') % 40000
         held = []
         try:
-            for index in range(4):
+            for index in range(8):
                 listener = socket.socket()
                 held.append(listener)
                 listener.bind(('127.0.0.1', base + index))
@@ -65,7 +65,7 @@ def free_ports():
         finally:
             for listener in held:
                 listener.close()
-    raise RuntimeError('cannot find four available local TCP ports')
+    raise RuntimeError('cannot find eight available local TCP ports')
 
 
 class Smoke:
@@ -268,7 +268,8 @@ class Smoke:
         self.report['immutable_profile'] = immutable
         node_settings = [json.loads(self.node_config(index).read_text()) for index in range(4)]
         for field in ('history', 'history_anchor', 'signer', 'signer_anchor', 'consensus_key',
-                      'transport_key', 'control_socket'):
+                      'transport_key', 'control_socket', 'custody', 'custody_anchor',
+                      'handoff', 'handoff_anchor'):
             require(len({value[field] for value in node_settings}) == 4, 'nodes share custody path: ' + field)
         self.report['checks']['separate_node_custody'] = True
         for index, text in enumerate(self.profiles):

@@ -2,10 +2,16 @@ use super::*;
 
 impl LedgerState {
     pub(super) fn write_state(&self, w: &mut Writer) {
-        w.u16(3);
+        w.u16(5);
         w.fixed(self.genesis.id().as_bytes());
         w.u64(self.height);
         w.u64(self.time);
+        w.bytes(&self.authority.encode())
+            .expect("bounded authority snapshot");
+        w.u32(self.used_period_keys.len() as u32);
+        for key in &self.used_period_keys {
+            w.fixed(key);
+        }
         w.fixed(&self.library.root());
         w.u32(self.accounts.len() as u32);
         for (account, key) in &self.accounts {
@@ -77,6 +83,9 @@ impl LedgerState {
                 w.u8(0);
             }
             w.u32(active.votes.len() as u32);
+            for owner in &active.electorate {
+                w.fixed(owner.as_bytes());
+            }
             for (author, yes) in &active.votes {
                 w.fixed(author.as_bytes());
                 w.u8(u8::from(*yes));
@@ -137,10 +146,20 @@ impl LedgerState {
         for (family, pending) in &self.join_intents {
             w.fixed(family.as_bytes());
             encode_receipt(w, &pending.receipt);
+            encode_receipt(w, &pending.first_receipt);
+            w.u64(pending.expires);
             // Exact authenticated operation bytes include every candidate field
             // and both key-possession proofs, not merely a mutable lookup hint.
             w.bytes(&pending.signed_operation)
                 .expect("bounded signed join intent");
+        }
+        w.u32(self.join_queue.len() as u32);
+        for family in &self.join_queue {
+            w.fixed(family.as_bytes());
+        }
+        w.u32(self.consumed_claims.len() as u32);
+        for family in &self.consumed_claims {
+            w.fixed(family.as_bytes());
         }
         self.capacity.encode_into(w);
         w.u8(u8::from(self.terminated));

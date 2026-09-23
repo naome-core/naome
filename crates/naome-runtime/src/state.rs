@@ -6,22 +6,30 @@
 
 mod delivery;
 mod input;
+mod lifecycle;
+mod proof_fetch_slot;
 mod schedule;
 #[cfg(test)]
 mod tests;
 
+use ed25519_dalek::SigningKey;
 use naome_consensus::state::StatePhase;
 use naome_ledger::{
-    LedgerError, LedgerState, OperationId, ValidatorId, authentication::SignedOperation,
+    AuthorityUnitId, LedgerError, LedgerState, OperationId, ResolutionId, ValidatorId,
+    authentication::SignedOperation,
+    authority::{CandidateAdmissionOffer, HandoffPlan, NextPeriodKeys},
     time::SignedTimeReport,
 };
-use naome_network::{PeerId, StateNetwork, StateTicket};
+use naome_network::{PeerId, StateNetwork, StateTicket, StateTransportEvent, StateTransportPair};
 use naome_node::state::{StateNode, StateNodeError};
 use naome_protocol::state_exchange::StateRequestBody;
+use naome_storage::state::{StateHandoffJournal, StatePeriodCustody, StateStorageError};
 use naome_storage::state::{StateHistory, StateSigner};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
+    net::SocketAddr,
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -81,7 +89,35 @@ impl From<LedgerError> for StateRuntimeError {
         Self::Rejected(e.to_string())
     }
 }
+impl From<StateStorageError> for StateRuntimeError {
+    fn from(e: StateStorageError) -> Self {
+        Self::Node(StateNodeError::Storage(e))
+    }
+}
 type Result<T> = std::result::Result<T, StateRuntimeError>;
+
+/// Local owner and paths for durable per-parent keys and sealed handoff.
+pub struct StateHandoffSetup {
+    pub owner_key: SigningKey,
+    pub candidate_family: Option<ResolutionId>,
+    /// Fresh non-authority Noise identity for owner-authenticated replay.
+    pub recovery_key: Option<SigningKey>,
+    /// Explicit stable alternate endpoints used when the last selected peer
+    /// identities are stale after a missed period boundary.
+    pub recovery_endpoints: Vec<String>,
+    pub signer_directory: PathBuf,
+    pub signer_anchor_directory: PathBuf,
+    pub custody_directory: PathBuf,
+    pub custody_anchor_directory: PathBuf,
+    pub handoff_directory: PathBuf,
+    pub handoff_anchor_directory: PathBuf,
+    pub primary_endpoint: String,
+    pub handoff_endpoint: String,
+    pub initial_consensus_key_path: PathBuf,
+    pub initial_transport_key_path: PathBuf,
+    pub primary_listen_address: Option<SocketAddr>,
+    pub handoff_listen_address: Option<SocketAddr>,
+}
 
 // Local transport custody is independent of the canonical account registry.
 const MAX_PENDING_OPERATIONS: usize = 16;
@@ -98,9 +134,11 @@ struct Delivery {
     body: StateRequestBody,
     id: [u8; 32],
     height: u64,
+    queued_at: Instant,
 }
 struct ProofFetch {
     peer: PeerId,
+    slot: Option<naome_ledger::AuthoritySlotId>,
     proof: naome_proof::ProofId,
     deadline: Instant,
     ticket: Option<StateTicket>,
@@ -110,11 +148,24 @@ struct Flight {
     delivery: Delivery,
     ticket: StateTicket,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoveryStage {
+    Challenge,
+    Hello,
+    History,
+    PendingAgreement,
+}
+struct RecoveryFlight {
+    peer: PeerId,
+    stage: RecoveryStage,
+    ticket: StateTicket,
+}
 
 pub struct StateRuntime {
     node: StateNode,
-    network: StateNetwork,
+    network: StateTransportPair,
     peers: Vec<PeerId>,
+    handoff_peers: Vec<PeerId>,
     config: StateRuntimeConfig,
     pending: BTreeMap<OperationId, SignedOperation>,
     pending_bytes: usize,
@@ -122,11 +173,26 @@ pub struct StateRuntime {
     rejections: VecDeque<(OperationId, u64, String)>,
     deferred: VecDeque<(OperationId, naome_ledger::AccountId, u64)>,
     time_reports: BTreeMap<ValidatorId, SignedTimeReport>,
+    offers: BTreeMap<AuthorityUnitId, NextPeriodKeys>,
+    candidate_offers: BTreeMap<ResolutionId, CandidateAdmissionOffer>,
+    disabled_slots: BTreeSet<naome_ledger::AuthoritySlotId>,
+    handoff_setup: Option<StateHandoffSetup>,
+    current_custody: Option<StatePeriodCustody>,
+    next_custody: Option<StatePeriodCustody>,
     own_time: Option<Arc<[u8]>>,
     outbox: VecDeque<Delivery>,
     flights: Vec<Flight>,
+    recovery_flights: Vec<RecoveryFlight>,
+    recovery_authenticated: BTreeSet<PeerId>,
+    recovery_clients: BTreeSet<PeerId>,
+    recovery_cursor: usize,
+    last_recovery_probe: Instant,
+    last_selected_at: Instant,
+    offers_ready_at: Option<Instant>,
     proof_fetches: Vec<ProofFetch>,
     sent: BTreeSet<(PeerId, [u8; 32])>,
+    acknowledged: VecDeque<(PeerId, [u8; 32])>,
+    last_rebroadcast: Instant,
     disabled: Vec<PeerId>,
     next_tick: Instant,
     phase_started: Instant,
@@ -137,12 +203,251 @@ pub struct StateRuntime {
     work_ready: bool,
 }
 impl StateRuntime {
-    pub fn new(
+    #[cfg(test)]
+    fn new(
         history: StateHistory,
         signer: Option<StateSigner>,
         network: StateNetwork,
+        peers: Vec<PeerId>,
+        config: StateRuntimeConfig,
+    ) -> Result<Self> {
+        let pair = StateTransportPair::new(network)
+            .map_err(|e| StateRuntimeError::Transport(e.to_string()))?;
+        Self::new_inner(history, signer, pair, peers, config, None, None, None, None)
+    }
+    pub fn new_handoff(
+        history: StateHistory,
+        signer: Option<StateSigner>,
+        mut network: StateTransportPair,
+        peers: Vec<PeerId>,
+        config: StateRuntimeConfig,
+        mut setup: StateHandoffSetup,
+    ) -> Result<Self> {
+        let state = history.head()?.state();
+        let selected_authority = state.authority().id();
+        if network
+            .active()
+            .is_some_and(|active| active.state_authority_id() != Some(selected_authority))
+            || network
+                .recovery()
+                .is_some_and(|recovery| recovery.state_authority_id() != Some(selected_authority))
+        {
+            return Err(StateRuntimeError::Configuration(
+                "transport authority differs from selected history",
+            ));
+        }
+        if setup.recovery_key.is_none() {
+            setup.recovery_key = Some(lifecycle::fresh_recovery_key(state)?);
+        }
+        if state.terminated() {
+            StatePeriodCustody::retire_terminal_selected(
+                &setup.custody_directory,
+                &setup.custody_anchor_directory,
+                &history,
+                &setup.owner_key,
+            )?;
+            let mut seed = zeroize::Zeroizing::new(
+                setup
+                    .recovery_key
+                    .as_ref()
+                    .expect("recovery key set")
+                    .to_bytes(),
+            );
+            let identity = naome_network::Keypair::ed25519_from_bytes(&mut *seed)
+                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            let recovery = StateNetwork::new_recovery_only(identity, state)
+                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            network = StateTransportPair::from_recovery(recovery)
+                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            lifecycle::listen_terminal_recovery(
+                &mut network,
+                &setup.primary_endpoint,
+                setup.primary_listen_address,
+            )?;
+            return Self::new_inner(
+                history,
+                signer,
+                network,
+                Vec::new(),
+                config,
+                None,
+                Some(setup),
+                None,
+                None,
+            );
+        }
+        lifecycle::attach_recovery_network(
+            &mut network,
+            state,
+            setup.recovery_key.as_ref().expect("recovery key set"),
+        )?;
+        let current_custody = if state.height() > 0
+            && signer
+                .as_ref()
+                .is_some_and(|s| !s.stopped().unwrap_or(false))
+        {
+            StatePeriodCustody::open_for_selected(
+                &setup.custody_directory,
+                &setup.custody_anchor_directory,
+                &history,
+                &setup.owner_key,
+            )?
+        } else {
+            None
+        };
+        let local_unit = state.authority().owner(naome_ledger::AccountId::for_key(
+            setup.owner_key.verifying_key().as_bytes(),
+        ));
+        let next_endpoint = local_unit.map(|unit| {
+            if unit
+                .keys()
+                .is_some_and(|keys| keys.endpoint() == setup.primary_endpoint)
+            {
+                setup.handoff_endpoint.clone()
+            } else {
+                setup.primary_endpoint.clone()
+            }
+        });
+        let next_custody = if let Some((unit, endpoint)) = local_unit.zip(next_endpoint) {
+            Some(StatePeriodCustody::stage_offer(
+                &setup.custody_directory,
+                &setup.custody_anchor_directory,
+                state,
+                unit.id(),
+                &setup.owner_key,
+                endpoint,
+            )?)
+        } else if let Some(family) = setup
+            .candidate_family
+            .filter(|family| lifecycle::candidate_still_live(state, *family))
+        {
+            Some(StatePeriodCustody::stage_candidate(
+                &setup.custody_directory,
+                &setup.custody_anchor_directory,
+                state,
+                family,
+                &setup.owner_key,
+            )?)
+        } else {
+            None
+        };
+        let height = state
+            .height()
+            .checked_add(1)
+            .ok_or(StateRuntimeError::Configuration("height overflow"))?;
+        if network.active().is_none()
+            && let Some(candidate) = next_custody
+                .as_ref()
+                .and_then(StatePeriodCustody::candidate_offer)
+        {
+            let custody = next_custody.as_ref().expect("candidate custody exists");
+            let mut seed = zeroize::Zeroizing::new(custody.transport_key().to_bytes());
+            let identity = naome_network::Keypair::ed25519_from_bytes(&mut *seed)
+                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            let active = StateNetwork::new_for_parent(identity, state)
+                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            let bind = if candidate.keys().endpoint() == setup.primary_endpoint {
+                setup.primary_listen_address
+            } else {
+                setup.handoff_listen_address
+            };
+            let listen = match bind {
+                Some(address) => lifecycle::listen_address(address)?,
+                None => active
+                    .state_listen_address()
+                    .ok_or(StateRuntimeError::Configuration(
+                        "candidate endpoint missing",
+                    ))?
+                    .clone(),
+            };
+            network = StateTransportPair::new(active)
+                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            network
+                .active_mut()
+                .expect("candidate lane installed")
+                .listen_on(listen)
+                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            lifecycle::attach_recovery_network(
+                &mut network,
+                state,
+                setup.recovery_key.as_ref().expect("recovery key set"),
+            )?;
+        }
+        let journal = StateHandoffJournal::open_or_create(
+            &setup.handoff_directory,
+            &setup.handoff_anchor_directory,
+            state.genesis().clone(),
+            height,
+            history.maximum_round(),
+            &history,
+        )?;
+        if let Some(staged) = network.staged() {
+            let agreement = journal.agreement().ok_or(StateRuntimeError::Configuration(
+                "staged transport has no selected-parent handoff agreement",
+            ))?;
+            if agreement.proposal().parent_commitment() != &history.head()?.commitment()
+                || agreement.outgoing().id() != selected_authority
+                || staged.state_authority_id() != Some(agreement.incoming().id())
+            {
+                return Err(StateRuntimeError::Configuration(
+                    "staged transport differs from selected handoff agreement",
+                ));
+            }
+        }
+        let peers = if network.active().is_some() && peers.is_empty() {
+            state
+                .authority()
+                .units()
+                .iter()
+                .filter_map(|unit| unit.keys())
+                .map(|keys| {
+                    naome_network::state_peer_id(*keys.transport())
+                        .map_err(|error| StateRuntimeError::Transport(error.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            peers
+        };
+        let mut runtime = Self::new_inner(
+            history,
+            signer,
+            network,
+            peers,
+            config,
+            Some(journal),
+            Some(setup),
+            current_custody,
+            next_custody,
+        )?;
+        if let Some(bytes) = runtime
+            .next_custody
+            .as_ref()
+            .and_then(StatePeriodCustody::offer)
+            .map(|offer| offer.encode())
+        {
+            runtime.accept_offer(&bytes)?;
+        }
+        if let Some(bytes) = runtime
+            .next_custody
+            .as_ref()
+            .and_then(StatePeriodCustody::candidate_offer)
+            .map(|offer| offer.encode())
+        {
+            runtime.accept_candidate_offer(&bytes)?;
+        }
+        Ok(runtime)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        history: StateHistory,
+        signer: Option<StateSigner>,
+        network: StateTransportPair,
         mut peers: Vec<PeerId>,
         config: StateRuntimeConfig,
+        journal: Option<StateHandoffJournal>,
+        handoff_setup: Option<StateHandoffSetup>,
+        current_custody: Option<StatePeriodCustody>,
+        next_custody: Option<StatePeriodCustody>,
     ) -> Result<Self> {
         if config.tick_interval.is_zero()
             || config.proposal_timeout < config.tick_interval
@@ -155,10 +460,16 @@ impl StateRuntime {
         }
         peers.sort();
         peers.dedup();
-        if peers.len() > 3
-            || peers
-                .iter()
-                .any(|p| *p == network.local_peer_id() || !network.is_configured_peer(p))
+        let local = network
+            .active()
+            .or(network.staged())
+            .or(network.recovery())
+            .ok_or(StateRuntimeError::Configuration("no state transport"))?
+            .local_peer_id();
+        if peers.len() > 4
+            || peers.iter().any(|p| {
+                *p == local || (!network.is_configured_peer(p) && network.active().is_some())
+            })
         {
             return Err(StateRuntimeError::Configuration(
                 "peers must be the configured remote research validators",
@@ -178,7 +489,7 @@ impl StateRuntime {
                 "transport context differs from selected history",
             ));
         }
-        let node = StateNode::new(history, signer)?;
+        let node = StateNode::new_with_handoff(history, signer, journal)?;
         let observed_height = node.state()?.height();
         let last_position = node.position()?;
         let now = Instant::now();
@@ -186,6 +497,7 @@ impl StateRuntime {
             node,
             network,
             peers,
+            handoff_peers: Vec::new(),
             config,
             pending: BTreeMap::new(),
             pending_bytes: 0,
@@ -193,11 +505,26 @@ impl StateRuntime {
             rejections: VecDeque::new(),
             deferred: VecDeque::new(),
             time_reports: BTreeMap::new(),
+            offers: BTreeMap::new(),
+            candidate_offers: BTreeMap::new(),
+            disabled_slots: BTreeSet::new(),
+            handoff_setup,
+            current_custody,
+            next_custody,
             own_time: None,
             outbox: VecDeque::new(),
             flights: Vec::new(),
+            recovery_flights: Vec::new(),
+            recovery_authenticated: BTreeSet::new(),
+            recovery_clients: BTreeSet::new(),
+            recovery_cursor: 0,
+            last_recovery_probe: now - Duration::from_secs(10),
+            last_selected_at: now,
+            offers_ready_at: None,
             proof_fetches: Vec::new(),
             sent: BTreeSet::new(),
+            acknowledged: VecDeque::new(),
+            last_rebroadcast: now,
             disabled: Vec::new(),
             next_tick: now,
             phase_started: now,
@@ -218,7 +545,12 @@ impl StateRuntime {
         Ok(self.node.position()?)
     }
     pub fn local_peer_id(&self) -> PeerId {
-        self.network.local_peer_id()
+        self.network
+            .active()
+            .or(self.network.staged())
+            .or(self.network.recovery())
+            .expect("state transport configured")
+            .local_peer_id()
     }
     pub fn pending_operations(&self) -> usize {
         self.pending.len()
@@ -237,6 +569,98 @@ impl StateRuntime {
     }
     pub fn finality_bytes(&mut self, height: u64) -> Result<Vec<u8>> {
         Ok(self.node.finality_bytes(height)?)
+    }
+    pub fn accept_offer(&mut self, bytes: &[u8]) -> Result<()> {
+        let offer = NextPeriodKeys::decode(bytes)?;
+        let state = self.state()?;
+        let unit = state.authority().unit(offer.unit()).ok_or_else(|| {
+            StateRuntimeError::Rejected("period offer unit outside authority".into())
+        })?;
+        let owner_key = state.account_key(unit.owner()).ok_or_else(|| {
+            StateRuntimeError::Rejected("period offer owner missing from registry".into())
+        })?;
+        offer.verify(
+            state.authority(),
+            state.head(),
+            state.commitment(),
+            state
+                .authority()
+                .effective_height()
+                .checked_add(1)
+                .ok_or(StateRuntimeError::Configuration("height overflow"))?,
+            *owner_key,
+        )?;
+        if self
+            .offers
+            .get(&offer.unit())
+            .is_some_and(|old| old != &offer)
+        {
+            return Err(StateRuntimeError::Rejected(
+                "different offer for same unit and parent".into(),
+            ));
+        }
+        if self.offers.len() >= 4 && !self.offers.contains_key(&offer.unit()) {
+            return Err(StateRuntimeError::Rejected("period offer count".into()));
+        }
+        self.offers.insert(offer.unit(), offer);
+        Ok(())
+    }
+    pub fn accept_candidate_offer(&mut self, bytes: &[u8]) -> Result<()> {
+        let offer = CandidateAdmissionOffer::decode(bytes)?;
+        let state = self.state()?;
+        let entry = state.join_intent(offer.family()).ok_or_else(|| {
+            StateRuntimeError::Rejected("candidate has no finalized intent".into())
+        })?;
+        let claim = state.claims().get(&offer.family()).ok_or_else(|| {
+            StateRuntimeError::Rejected("candidate has no finalized claim".into())
+        })?;
+        if offer.intent_receipt() != entry.receipt().operation
+            || offer.keys().consensus() != entry.intent().consensus_key()
+            || offer.keys().transport() != entry.intent().transport_key()
+            || offer.keys().endpoint() != entry.intent().endpoint()
+        {
+            return Err(StateRuntimeError::Rejected(
+                "candidate offer differs from intent".into(),
+            ));
+        }
+        let owner = *state
+            .account_key(claim.author)
+            .ok_or_else(|| StateRuntimeError::Rejected("candidate account missing".into()))?;
+        offer.verify(state.authority(), state.head(), state.commitment(), owner)?;
+        if self
+            .candidate_offers
+            .get(&offer.family())
+            .is_some_and(|old| old != &offer)
+        {
+            return Err(StateRuntimeError::Rejected(
+                "different candidate offer for same parent".into(),
+            ));
+        }
+        if self.candidate_offers.len() >= 32 && !self.candidate_offers.contains_key(&offer.family())
+        {
+            return Err(StateRuntimeError::Rejected("candidate offer count".into()));
+        }
+        self.candidate_offers.insert(offer.family(), offer);
+        Ok(())
+    }
+    fn handoff_plan(
+        &self,
+        time: &naome_ledger::time::TimeCertificate,
+    ) -> Result<Option<HandoffPlan>> {
+        if self.offers.len() < 3 {
+            return Ok(None);
+        }
+        let offers: Vec<_> = self.offers.values().cloned().collect();
+        let state = self.state()?;
+        for family in state.join_queue() {
+            if let Some(candidate) = self.candidate_offers.get(family) {
+                let plan = HandoffPlan::new(offers.clone(), Some(candidate.clone()))?;
+                if state.prepare_handoff_certified(&plan, time).is_ok() {
+                    return Ok(Some(plan));
+                }
+            }
+        }
+        Ok(Some(HandoffPlan::new(offers, None)?))
     }
     /// Validates authenticated queue input, but promises no admission receipt.
     pub fn submit_operation(&mut self, operation: SignedOperation) -> Result<OperationId> {
@@ -274,12 +698,9 @@ impl StateRuntime {
                     "registered account capacity".into(),
                 ));
             }
-            if state.genesis().validators().iter().any(|validator| {
-                &validator.consensus_key == operation.public_key()
-                    || &validator.transport_key == operation.public_key()
-            }) {
+            if state.used_period_keys().contains(operation.public_key()) {
                 return Err(StateRuntimeError::Rejected(
-                    "validator keys cannot register researcher accounts".into(),
+                    "period keys cannot register researcher accounts".into(),
                 ));
             }
         } else if state.account_key(operation.author()) != Some(operation.public_key()) {
@@ -409,19 +830,13 @@ impl StateRuntime {
             }
             OperationBody::Vote {
                 question, attempt, ..
-            } => {
-                state
-                    .genesis()
-                    .validators()
-                    .iter()
-                    .any(|v| v.owner == author)
-                    && active.as_ref().is_some_and(|a| {
-                        a.phase == Phase::Voting
-                            && a.question == *question
-                            && a.number == *attempt
-                            && !a.votes.contains_key(&author)
-                    })
-            }
+            } => active.as_ref().is_some_and(|a| {
+                a.electorate.contains(&author)
+                    && a.phase == Phase::Voting
+                    && a.question == *question
+                    && a.number == *attempt
+                    && !a.votes.contains_key(&author)
+            }),
             OperationBody::Commit { round, .. } => active.as_ref().is_some_and(|a| {
                 a.phase == Phase::Commit
                     && a.solution_round == Some(*round)
@@ -526,6 +941,7 @@ impl StateRuntime {
         }
         self.proof_fetches.push(ProofFetch {
             peer,
+            slot: None,
             proof,
             deadline: Instant::now() + Duration::from_secs(30),
             ticket: None,
@@ -588,13 +1004,83 @@ impl StateRuntime {
         if !self.peers.contains(&peer) {
             return Err(StateRuntimeError::Configuration("unknown simulation peer"));
         }
-        self.network
-            .set_state_peer_enabled(peer, enabled)
-            .map_err(|e| StateRuntimeError::Transport(e.to_string()))?;
+        if let Some(active) = self.network.active_mut() {
+            active
+                .set_state_peer_enabled(peer, enabled)
+                .map_err(|e| StateRuntimeError::Transport(e.to_string()))?;
+        }
         self.disabled.retain(|p| *p != peer);
         if !enabled {
             self.disabled.push(peer);
             self.expire_proof_fetches();
+        }
+        Ok(())
+    }
+    /// Fault-injection control follows stable authority slots when keys rotate.
+    pub fn set_slot_enabled(
+        &mut self,
+        slot: naome_ledger::AuthoritySlotId,
+        enabled: bool,
+    ) -> Result<()> {
+        if !self.config.allow_simulation_controls {
+            return Err(StateRuntimeError::Configuration(
+                "simulation controls are disabled",
+            ));
+        }
+        if self.state()?.authority().slot(slot).is_none() {
+            return Err(StateRuntimeError::Configuration("unknown simulation slot"));
+        }
+        if enabled {
+            self.disabled_slots.remove(&slot);
+        } else {
+            self.disabled_slots.insert(slot);
+        }
+        self.apply_slot_disables()
+    }
+    pub(super) fn apply_slot_disables(&mut self) -> Result<()> {
+        let current = self.state()?.authority().clone();
+        let staged = self
+            .node
+            .handoff_agreement()
+            .map(|agreement| agreement.incoming().clone());
+        let mut disabled = Vec::new();
+        for (snapshot, handoff) in [(Some(current), false), (staged, true)] {
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            for unit in snapshot.units() {
+                let Some(keys) = unit.keys() else {
+                    continue;
+                };
+                let peer = naome_network::state_peer_id(*keys.transport())
+                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+                let blocked = self.disabled_slots.contains(&unit.slot());
+                let network = if handoff {
+                    self.network.staged_mut()
+                } else {
+                    self.network.active_mut()
+                };
+                if let Some(network) = network
+                    && peer != network.local_peer_id()
+                    && network.is_configured_peer(&peer)
+                {
+                    network
+                        .set_state_peer_enabled(peer, !blocked)
+                        .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+                }
+                if blocked {
+                    disabled.push(peer);
+                }
+            }
+        }
+        disabled.sort();
+        disabled.dedup();
+        self.disabled = disabled;
+        self.expire_proof_fetches();
+        if self.all_remote_slots_disabled()? {
+            self.recovery_authenticated.clear();
+            self.recovery_clients.clear();
+            self.recovery_flights.clear();
         }
         Ok(())
     }
@@ -604,7 +1090,12 @@ impl StateRuntime {
         self.drive()?;
         self.flush()?;
         let event = tokio::select! {
-            event=self.network.next_event()=>self.network_event(event)?,
+            event=self.network.next_event()=>match event {
+                Some(StateTransportEvent::Active(event)) => self.network_event(event,naome_network::StateLane::Active)?,
+                Some(StateTransportEvent::Handoff(event)) => self.network_event(event,naome_network::StateLane::Handoff)?,
+                Some(StateTransportEvent::Recovery(event)) => self.network_event(event,naome_network::StateLane::Recovery)?,
+                None => return Err(StateRuntimeError::Configuration("state transports exhausted")),
+            },
             _=tokio::time::sleep_until(self.next_tick)=>{
                 self.next_tick=Instant::now()+self.config.tick_interval;
                 self.tick()?;
@@ -623,6 +1114,10 @@ impl StateRuntime {
     fn drive(&mut self) -> Result<()> {
         let before = self.state()?.height();
         self.node.drive()?;
+        if self.state()?.height() == before {
+            self.advance_handoff()?;
+            self.node.drive()?;
+        }
         if self.state()?.height() != before {
             self.on_height()?;
         }
@@ -631,6 +1126,7 @@ impl StateRuntime {
             if position.map(|p| (p.0, p.1)) != self.last_position.map(|p| (p.0, p.1)) {
                 self.outbox.clear();
                 self.sent.clear();
+                self.acknowledged.clear();
             }
             self.last_position = position;
             self.phase_started = Instant::now();
@@ -639,11 +1135,24 @@ impl StateRuntime {
         Ok(())
     }
     fn on_height(&mut self) -> Result<()> {
+        self.activate_selected_period()?;
+        self.last_selected_at = Instant::now();
+        self.offers_ready_at = None;
+        if self.network.active().is_none() {
+            self.recovery_cursor = 0;
+            self.last_recovery_probe = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now);
+        }
+        self.recovery_flights.clear();
+        self.recovery_authenticated.clear();
+        self.recovery_clients.clear();
         self.time_reports.clear();
         self.own_time = None;
         self.work_ready = false;
         self.outbox.clear();
         self.sent.clear();
+        self.acknowledged.clear();
         let state = self.node.state()?;
         let consumed: Vec<_> = self
             .pending
@@ -673,6 +1182,7 @@ impl StateRuntime {
         self.pending_bytes = self.pending.values().map(|op| op.encode().len()).sum();
         self.last_position = self.node.position()?;
         self.phase_started = Instant::now();
+        self.enqueue_period_offers()?;
         self.enqueue_latest_finality()?;
         Ok(())
     }

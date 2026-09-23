@@ -181,7 +181,53 @@ jobs:
       - name: Package exact Linux binaries
         run: python3 -B devnet/image.py --bin-dir target/release --tag naome-devnet:ci
       - name: Qualify 100 canonical state heights with isolation, delay, and faults
-        run: python3 -B devnet/qualify.py --backend docker --image naome-devnet:ci --bin-dir target/release --directory "$RUNNER_TEMP/naome-devnet" --heights 100 --delay-ms 50 --deadline-seconds 2400
+        run: python3 -B devnet/qualify.py --backend docker --image naome-devnet:ci --bin-dir target/release --directory "$RUNNER_TEMP/naome-devnet" --heights 100 --timing ci-test --delay-ms 50 --deadline-seconds 2400
+      - name: Verify at least twice the baseline qualification speed
+        run: |
+          python3 - "$RUNNER_TEMP/naome-devnet/report.json" <<'PY'
+          import json, pathlib, sys
+          baseline_path = pathlib.Path('docs/mvp/evidence/handoff-baseline-ci.json')
+          current_path = pathlib.Path(sys.argv[1])
+          baseline = json.loads(baseline_path.read_text())
+          current = json.loads(current_path.read_text())
+          required_faults = {
+              'container_network_disconnected', 'partition_healed_on_deadline',
+              'healed_and_caught_up', 'sigkill_restart', 'graceful_restart',
+          }
+          for report in (baseline, current):
+              assert report['outcome'] == 'passed' and report['backend'] == 'docker'
+              assert report['delay_ms_each_direction_per_chunk'] == 50
+              assert len(report['verified']) == 4
+              assert min(v['height'] for v in report['verified']) >= 100
+              assert report['corrupt_export_rejected_without_repair']
+              assert required_faults <= {f['operation'] for f in report['faults']}
+          cut = next(f for f in current['faults'] if f['operation'] == 'container_network_disconnected')
+          assert cut['active_slots_before_cut'] == 4
+          assert all(f['active_signer_before_restart'] for f in current['faults']
+                     if f['operation'] in ('sigkill_restart', 'graceful_restart'))
+          assert current['post_restart_progress']['verified_height'] > current['post_restart_progress']['restart_height']
+          speedup = baseline['elapsed_seconds'] / current['elapsed_seconds']
+          def certified_windows(report):
+              return [a['voting_deadline'] - a['certified_start'] for a in report['attempts']]
+          current['baseline_comparison'] = {
+              'baseline_commit': baseline['source_commit'],
+              'baseline_ci_run': 35863331752,
+              'runner': 'ubuntu-24.04',
+              'baseline_seconds': baseline['elapsed_seconds'],
+              'current_seconds': current['elapsed_seconds'],
+              'speedup': round(speedup, 6),
+              'required_speedup': 2,
+              'passed': speedup >= 2,
+              'includes_authorized_ci_timing_profile_change': True,
+              'baseline_voting_seconds': sorted(set(certified_windows(baseline))),
+              'current_voting_seconds': sorted(set(certified_windows(current))),
+              'baseline_total_voting_seconds': sum(certified_windows(baseline)),
+              'current_total_voting_seconds': sum(certified_windows(current)),
+          }
+          current_path.write_text(json.dumps(current, indent=2) + '\n')
+          print(json.dumps(current['baseline_comparison'], indent=2))
+          assert speedup >= 2, '100-height qualification is less than twice as fast as baseline'
+          PY
       - name: Retain public qualification evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn signed_consensus_protocol_v4_golden_vectors() {
+fn signed_consensus_protocol_current_golden_vectors() {
     use std::fmt::Write;
     let branch = branch();
     let proposal = proposal(
@@ -19,7 +19,7 @@ fn signed_consensus_protocol_v4_golden_vectors() {
         1,
     );
     let qc = quorum(&branch, 0, ConsensusVoteRole::Precommit, target(&proposal));
-    let finality = branch.verify_finality(&proposal, &qc, MAX_ROUND).unwrap();
+    let finality = branch.finalize(&proposal, &qc, MAX_ROUND).unwrap();
     let entries = [
         ("proposal", proposal.encode().unwrap()),
         ("prevote", prevote.encode()),
@@ -40,7 +40,7 @@ fn signed_consensus_protocol_v4_golden_vectors() {
         std::fs::write(path, &output).unwrap();
         return;
     }
-    assert_eq!(output, include_str!("golden-v4.txt"));
+    assert_eq!(output, include_str!("golden-current.txt"));
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn legacy_research_consensus_evidence_is_rejected() {
     );
     let certificate = quorum(&branch, 0, ConsensusVoteRole::Precommit, target(&candidate));
     let current = branch
-        .verify_finality(&candidate, &certificate, MAX_ROUND)
+        .finalize(&candidate, &certificate, MAX_ROUND)
         .unwrap();
     for line in include_str!("legacy-research-v1.txt").lines() {
         let fields: Vec<_> = line.split_whitespace().collect();
@@ -76,12 +76,21 @@ fn legacy_research_consensus_evidence_is_rejected() {
                 assert!(branch.decode_finality(&bytes, MAX_ROUND).is_err());
             }
             "prevote" | "nil-precommit" => {
-                assert!(StateVote::decode(&bytes, branch.state().genesis()).is_err());
+                assert!(
+                    StateVote::decode(&bytes, branch.state().genesis(), branch.authority())
+                        .is_err()
+                );
                 bytes[..5].copy_from_slice(b"NSCV1");
-                assert!(StateVote::decode(&bytes, branch.state().genesis()).is_err());
+                assert!(
+                    StateVote::decode(&bytes, branch.state().genesis(), branch.authority())
+                        .is_err()
+                );
             }
             "precommit-quorum" => {
-                assert!(StateQuorum::decode(&bytes, branch.state().genesis()).is_err())
+                assert!(
+                    StateQuorum::decode(&bytes, branch.state().genesis(), branch.authority())
+                        .is_err()
+                )
             }
             "branch-commitment" => assert_ne!(bytes, current.branch().commitment()),
             name => panic!("unhandled legacy vector {name}"),

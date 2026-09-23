@@ -81,6 +81,11 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
     assert!(compact.required_storage_bytes().unwrap() < standard.required_storage_bytes().unwrap());
     args.truncate(5);
     assert_eq!(parameters(&args).unwrap().0, standard);
+    args[1] = "ci-test".into();
+    let ci = parameters(&args).unwrap().0;
+    assert_eq!(ci.kind(), TimingKind::CiTest);
+    assert_eq!(ci.timing().voting_seconds, 1);
+    assert_ne!(ci.id(), standard.id());
     args.push("unknown".into());
     assert!(parameters(&args).is_err());
 }
@@ -98,12 +103,19 @@ impl Directory {
     }
     fn config(&self) -> NodeConfig {
         NodeConfig {
-            version: 2,
+            version: 5,
+            primary_endpoint: "127.0.0.1:44000".into(),
+            candidate_family: None,
+            recovery_endpoints: vec!["127.0.0.1:44000".into(), "127.0.0.1:44004".into()],
             genesis: self.0.join("genesis.bin"),
             history: self.0.join("history"),
             history_anchor: self.0.join("history-anchor"),
             signer: self.0.join("signer"),
             signer_anchor: self.0.join("signer-anchor"),
+            custody: self.0.join("custody"),
+            custody_anchor: self.0.join("custody-anchor"),
+            handoff: self.0.join("handoff"),
+            handoff_anchor: self.0.join("handoff-anchor"),
             consensus_key: self.0.join("consensus.key"),
             transport_key: self.0.join("transport.key"),
             account_key: self.0.join("account.key"),
@@ -112,6 +124,8 @@ impl Directory {
             maximum_round: 8,
             simulation: true,
             listen_address: None,
+            handoff_endpoint: "127.0.0.1:44004".into(),
+            handoff_listen_address: None,
         }
     }
 }

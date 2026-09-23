@@ -5,7 +5,8 @@
 //! Neither provisional preparation nor decoding grants finality.
 
 use naome_ledger::{
-    LedgerError, LedgerState, authentication::SignedOperation, time::TimeCertificate,
+    LedgerError, LedgerState, authentication::SignedOperation, authority::HandoffPlan,
+    time::TimeCertificate,
 };
 use sha2::{Digest, Sha256};
 mod codec;
@@ -31,6 +32,7 @@ pub trait StateRecordExecution {
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
+        plan: HandoffPlan,
     ) -> Result<StateTransition, LedgerError>;
     fn validate_record(&self, record: &StateRecord) -> Result<StateTransition, LedgerError>;
 }
@@ -39,13 +41,15 @@ impl StateRecordExecution for LedgerState {
         &self,
         time: TimeCertificate,
         operations: Vec<SignedOperation>,
+        plan: HandoffPlan,
     ) -> Result<StateTransition, LedgerError> {
-        let execution = self.execute(time, operations)?;
+        let execution = self.execute(time, operations, plan)?;
         let record = StateRecord::new(
             self,
             execution.state(),
             execution.time_certificate().clone(),
             execution.operations().to_vec(),
+            execution.handoff_plan().clone(),
             execution.effects().to_vec(),
         )?;
         let next = execution.bind_record(record.id());
@@ -62,6 +66,7 @@ impl StateRecordExecution for LedgerState {
         let transition = self.prepare_record(
             record.time_certificate().clone(),
             record.operations().to_vec(),
+            record.handoff_plan().clone(),
         )?;
         if transition.record.encode()? != record.encode()? {
             return Err(LedgerError::Invalid("state record effects or successor"));

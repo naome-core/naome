@@ -217,10 +217,8 @@ async fn execute(args: &[String], review_only: bool) -> Result<()> {
     let key = files::key(Path::new(&args[1]), 1)?;
     let author = AccountId::for_key(key.verifying_key().as_bytes());
     let configured_key = files::key(&config.account_key, 1)?;
-    if configured_key.verifying_key() != key.verifying_key()
-        || !genesis.validators().iter().any(|v| v.owner == author)
-    {
-        return Err("agent review requires this node's registered validator owner".into());
+    if configured_key.verifying_key() != key.verifying_key() {
+        return Err("agent review requires this node's configured owner".into());
     }
     // A retained signed vote is an exact retry and needs no fresh inference.
     let action_path = Path::new(&args[2]);
@@ -242,6 +240,17 @@ async fn execute(args: &[String], review_only: bool) -> Result<()> {
         return Ok(());
     }
     let status = control::call(&config, Request::Status {}).await?;
+    let author_hex = files::hex(author.as_bytes());
+    if !status["active"]["electorate"]
+        .as_array()
+        .is_some_and(|owners| {
+            owners
+                .iter()
+                .any(|owner| owner.as_str() == Some(&author_hex))
+        })
+    {
+        return Err("configured owner is outside this attempt's frozen electorate".into());
+    }
     let question_id = status["active"]["question"]
         .as_str()
         .ok_or("question ID unavailable")?

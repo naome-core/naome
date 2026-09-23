@@ -125,6 +125,160 @@ fn fixture() -> (Genesis, Vec<identity::Keypair>) {
         keys,
     )
 }
+
+fn rotation_fixture() -> (
+    LedgerState,
+    LedgerState,
+    Vec<identity::Keypair>,
+    HandoffPlan,
+    TimeCertificate,
+) {
+    use ed25519_dalek::SigningKey;
+    use naome_ledger::{AccountId, RecordId, authority::NextPeriodKeys, time::SignedTimeReport};
+    let (genesis, _) = fixture();
+    let parent = LedgerState::new(genesis);
+    let time = TimeCertificate::new(
+        (0..3)
+            .map(|index| {
+                SignedTimeReport::sign(
+                    parent.genesis(),
+                    parent.authority(),
+                    parent.head(),
+                    1,
+                    parent.time(),
+                    &SigningKey::from_bytes(&[index + 101; 32]),
+                )
+                .unwrap()
+            })
+            .collect(),
+        parent.genesis(),
+        parent.authority(),
+        parent.head(),
+        1,
+        parent.time(),
+    )
+    .unwrap();
+    let listeners: Vec<_> = (0..4)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let keys: Vec<_> = (0..4)
+        .map(|index| identity::Keypair::ed25519_from_bytes([index + 171; 32]).unwrap())
+        .collect();
+    let mut offers = (0..4)
+        .map(|index| {
+            let owner = SigningKey::from_bytes(&[index + 1; 32]);
+            let unit = parent
+                .authority()
+                .owner(AccountId::for_key(owner.verifying_key().as_bytes()))
+                .unwrap();
+            NextPeriodKeys::sign(
+                parent.authority(),
+                parent.head(),
+                parent.commitment(),
+                unit.id(),
+                &owner,
+                &SigningKey::from_bytes(&[index + 151; 32]),
+                &SigningKey::from_bytes(&[index + 171; 32]),
+                listeners[index as usize].local_addr().unwrap().to_string(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    let plan = HandoffPlan::new(offers, None).unwrap();
+    let selected = parent
+        .execute(time.clone(), Vec::new(), plan.clone())
+        .unwrap()
+        .bind_record(RecordId::from_bytes([31; 32]));
+    drop(listeners);
+    (parent, selected, keys, plan, time)
+}
+
+#[tokio::test]
+async fn staged_promotion_requires_exact_selected_roster_and_keeps_noise_sessions() {
+    use crate::StateTransportPair;
+    let (parent, selected, keys, plan, time) = rotation_fixture();
+    let mut a = StateNetwork::new_staged(keys[0].clone(), &parent, &plan, &time).unwrap();
+    let mut b = StateNetwork::new_staged(keys[1].clone(), &parent, &plan, &time).unwrap();
+    for network in [&mut a, &mut b] {
+        network
+            .listen_on(network.state_listen_address().unwrap().clone())
+            .unwrap();
+    }
+    let (a_id, b_id) = (a.local_peer_id(), b.local_peer_id());
+    let mut connected = (false, false);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !connected.0 || !connected.1 {
+            tokio::select! {
+                event = a.next_event() => if let NetworkEvent::PeerSession(super::super::PeerSessionEvent::Established {peer_id}) = event {
+                    connected.0 |= peer_id == b_id;
+                },
+                event = b.next_event() => if let NetworkEvent::PeerSession(super::super::PeerSessionEvent::Established {peer_id}) = event {
+                    connected.1 |= peer_id == a_id;
+                },
+            }
+        }
+    })
+    .await
+    .expect("staged Noise sessions");
+    let old = StateNetwork::new_for_parent(
+        identity::Keypair::ed25519_from_bytes([201; 32]).unwrap(),
+        &parent,
+    )
+    .unwrap();
+    let mut pair = StateTransportPair::new(old).unwrap();
+    pair.stage(a).unwrap();
+    assert!(!pair.try_promote_selected(&selected));
+    pair.retire_old();
+    assert!(!pair.try_promote_selected(&parent));
+    assert_eq!(
+        pair.staged().unwrap().state_lane(),
+        Some(StateLane::Handoff)
+    );
+    assert!(pair.try_promote_selected(&selected));
+    assert!(pair.staged().is_none());
+    let promoted = pair.active_mut().unwrap();
+    assert_eq!(promoted.state_lane(), Some(StateLane::Active));
+    assert_eq!(
+        promoted.state_authority_id(),
+        Some(selected.authority().id())
+    );
+    assert!(
+        promoted
+            .swarm
+            .behaviour()
+            .sessions
+            .connection_status_at(
+                promoted
+                    .swarm
+                    .behaviour()
+                    .sessions
+                    .peer_index(&b_id)
+                    .unwrap()
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        promoted
+            .state_exchange
+            .as_ref()
+            .unwrap()
+            .recovery_registry
+            .as_ref()
+            .unwrap()
+            .commitment(),
+        selected.commitment()
+    );
+    assert!(!pair.try_promote_selected(&selected));
+    assert!(!b.promote_staged_selected(&parent));
+    b.state_exchange
+        .as_mut()
+        .unwrap()
+        .courier_peers
+        .insert(a_id);
+    assert!(!b.promote_staged_selected(&selected));
+    assert_eq!(b.state_lane(), Some(StateLane::Handoff));
+}
 async fn pair() -> (StateNetwork, StateNetwork) {
     pair_context(false).await
 }
@@ -351,3 +505,451 @@ async fn state_noise_peer_with_wrong_genesis_never_delivers_application_payload(
 mod boundary;
 
 mod lifecycle;
+
+#[tokio::test]
+async fn stale_peer_ids_can_recover_history_only_after_owner_and_fresh_transport_proof() {
+    use ed25519_dalek::SigningKey;
+    use naome_ledger::state::LedgerState;
+    let transport = SigningKey::from_bytes(&[230; 32]);
+    let (genesis, keys) = fixture();
+    let selected = LedgerState::new(genesis);
+    let client_key = identity::Keypair::ed25519_from_bytes(transport.to_bytes()).unwrap();
+    let mut client = StateNetwork::new_recovery_only(client_key, &selected).unwrap();
+    assert!(client.state_listen_address().is_none());
+    let mut server = StateNetwork::new_for_parent(keys[0].clone(), &selected).unwrap();
+    let server_id = server.local_peer_id();
+    server
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let address = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let NetworkEvent::Listening { address } = server.next_event().await {
+                break address;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let port = address
+        .to_string()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    let connection = client.dial_recovery(&format!("127.0.0.1:{port}")).unwrap();
+    let (mut connected_client, mut connected_server) = (false, false);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !connected_client || !connected_server {
+            tokio::select! {
+                event = client.next_event() => if let NetworkEvent::RecoveryConnected { connection_id, peer_id, initiated_by_us } = event {
+                    assert_eq!(connection_id, connection); assert_eq!(peer_id, server_id); assert!(initiated_by_us); connected_client = true;
+                },
+                event = server.next_event() => if let NetworkEvent::RecoveryConnected { peer_id, initiated_by_us, .. } = event {
+                    assert_eq!(peer_id, client.local_peer_id()); assert!(!initiated_by_us); connected_server = true;
+                },
+            }
+        }
+    }).await.unwrap();
+    assert!(matches!(
+        client.request_recovery_state(
+            server_id,
+            StateRequestBody::History {
+                from: 1,
+                max_records: 1
+            }
+        ),
+        Err(StateStartError::Lane)
+    ));
+    assert!(matches!(
+        server.request_recovery_evidence_to_owner(
+            client.local_peer_id(),
+            StateRequestBody::Agreement(vec![1].into()),
+        ),
+        Err(StateStartError::Lane)
+    ));
+
+    let ticket = client
+        .request_recovery_state(server_id, StateRequestBody::RecoveryChallenge)
+        .unwrap();
+    let challenge = tokio::time::timeout(Duration::from_secs(10), async { loop { tokio::select! {
+        event = client.next_event() => if let NetworkEvent::OutboundState(event) = event {
+            let response = ticket.complete(event).unwrap().unwrap();
+            if let StateResponseBody::RecoveryNonce(nonce) = response.response().body() { break *nonce; }
+            panic!("expected recipient challenge");
+        },
+        event = server.next_event() => assert!(!matches!(event, NetworkEvent::InboundState(_))),
+    }}}).await.unwrap();
+    let hello = RecoveryHello::sign(
+        client.state_context().unwrap(),
+        server_id,
+        challenge,
+        &SigningKey::from_bytes(&[1; 32]),
+        &transport,
+    );
+    let mut ticket = Some(
+        client
+            .request_recovery_state(
+                server_id,
+                StateRequestBody::RecoveryHello(hello.encode().to_vec().into()),
+            )
+            .unwrap(),
+    );
+    let (mut accepted, mut authenticated) = (false, false);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !accepted || !authenticated { tokio::select! {
+            event = client.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                assert_eq!(ticket.take().unwrap().complete(event).unwrap().unwrap().response().body(), &StateResponseBody::Accepted);
+                accepted = true;
+            },
+            event = server.next_event() => if let NetworkEvent::RecoveryAuthenticated { peer_id, owner } = event {
+                assert_eq!(peer_id, client.local_peer_id()); assert_eq!(owner, hello.owner()); authenticated = true;
+            },
+        }}
+    }).await.unwrap();
+    // Accepting our hello grants only our outbound recovery requests. It does
+    // not authenticate the remote recipient as an owner on the local node.
+    assert!(client.recovery_grants.is_empty());
+    assert!(client.recovery_remote_grants.contains(&server_id));
+    assert_eq!(
+        server.recovery_grants.get(&client.local_peer_id()),
+        Some(&hello.owner())
+    );
+    assert!(matches!(
+        server.request_recovery_state(
+            client.local_peer_id(),
+            StateRequestBody::Agreement(vec![1].into()),
+        ),
+        Err(StateStartError::Lane)
+    ));
+    assert!(matches!(
+        server.request_recovery_evidence_to_owner(
+            client.local_peer_id(),
+            StateRequestBody::History {
+                from: 1,
+                max_records: 1,
+            },
+        ),
+        Err(StateStartError::Lane)
+    ));
+    assert!(matches!(
+        client.request_recovery_evidence_to_owner(
+            server_id,
+            StateRequestBody::Agreement(vec![1].into()),
+        ),
+        Err(StateStartError::Lane)
+    ));
+    for body in [
+        StateRequestBody::Agreement(vec![1].into()),
+        StateRequestBody::ReadySignature(vec![2].into()),
+        StateRequestBody::TerminalSignature(vec![3].into()),
+        StateRequestBody::Finalized(vec![4].into()),
+    ] {
+        let expected = std::mem::discriminant(&body);
+        let reverse = server
+            .request_recovery_evidence_to_owner(client.local_peer_id(), body)
+            .unwrap();
+        let reverse_result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    event = client.next_event() => if let NetworkEvent::InboundState(inbound) = event {
+                        assert_eq!(inbound.peer_id(), server_id);
+                        assert_eq!(inbound.recovery_owner(), None);
+                        assert_eq!(std::mem::discriminant(inbound.request().body()), expected);
+                        client.respond_state(inbound, StateResponseBody::Accepted).unwrap();
+                    },
+                    event = server.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                        break reverse.complete(event).unwrap().unwrap().response().body().clone();
+                    },
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(reverse_result, StateResponseBody::Accepted);
+    }
+    let first_lease = *server.recovery_leases.get(&client.local_peer_id()).unwrap();
+    let repeated = client
+        .request_recovery_state(server_id, StateRequestBody::RecoveryChallenge)
+        .unwrap();
+    let repeated = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                    break repeated.complete(event).unwrap().unwrap().response().body().clone();
+                },
+                event = server.next_event() => assert!(!matches!(event, NetworkEvent::RecoveryAuthenticated { .. })),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        repeated,
+        StateResponseBody::Rejected(StateRejection::Unauthorized)
+    );
+    let current_lease = server.recovery_leases.get(&client.local_peer_id()).unwrap();
+    assert_eq!(current_lease.idle_deadline, first_lease.idle_deadline);
+    assert_eq!(
+        current_lease.absolute_deadline,
+        first_lease.absolute_deadline
+    );
+    assert!(matches!(
+        client.request_recovery_state(server_id, StateRequestBody::UserAction(vec![1].into())),
+        Err(StateStartError::Lane)
+    ));
+    let idle_before_empty = server
+        .recovery_leases
+        .get(&client.local_peer_id())
+        .unwrap()
+        .idle_deadline;
+    let ticket = client
+        .request_recovery_state(
+            server_id,
+            StateRequestBody::History {
+                from: 1,
+                max_records: 1,
+            },
+        )
+        .unwrap();
+    let mut response = None;
+    tokio::time::timeout(Duration::from_secs(10), async { loop { tokio::select! {
+        event = client.next_event() => if let NetworkEvent::OutboundState(event) = event { response = Some(event); break; },
+        event = server.next_event() => if let NetworkEvent::InboundState(inbound) = event {
+            assert_eq!(inbound.recovery_owner(), Some(hello.owner()));
+            assert_eq!(inbound.peer_id(), client.local_peer_id());
+            server.respond_state(inbound, StateResponseBody::History(vec![])).unwrap();
+        },
+    }}}).await.unwrap();
+    assert!(
+        matches!(ticket.complete(response.unwrap()).unwrap().unwrap().response().body(), StateResponseBody::History(items) if items.is_empty())
+    );
+    // An empty history response does not prolong a recovery connection. The
+    // owner may reconnect later, but it cannot hold both limited slots idle.
+    let client_id = client.local_peer_id();
+    let lease = server.recovery_leases.get_mut(&client_id).unwrap();
+    assert_eq!(lease.idle_deadline, idle_before_empty);
+    lease.idle_deadline = Instant::now() - Duration::from_millis(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let NetworkEvent::RecoveryDisconnected { peer_id } = server.next_event().await {
+                assert_eq!(peer_id, client_id);
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!server.recovery_grants.contains_key(&client_id));
+    assert!(!server.recovery_leases.contains_key(&client_id));
+}
+
+#[tokio::test]
+async fn recovery_only_server_sends_finality_to_authenticated_owner_without_vote_lane() {
+    use ed25519_dalek::SigningKey;
+    use naome_ledger::state::LedgerState;
+
+    let (genesis, _) = fixture();
+    let selected = LedgerState::new(genesis);
+    let client_transport = SigningKey::from_bytes(&[230; 32]);
+    let server_transport = SigningKey::from_bytes(&[231; 32]);
+    let mut client = StateNetwork::new_recovery_only(
+        identity::Keypair::ed25519_from_bytes(client_transport.to_bytes()).unwrap(),
+        &selected,
+    )
+    .unwrap();
+    let mut server = StateNetwork::new_recovery_only(
+        identity::Keypair::ed25519_from_bytes(server_transport.to_bytes()).unwrap(),
+        &selected,
+    )
+    .unwrap();
+    assert!(server.state_listen_address().is_none());
+    let server_id = server.local_peer_id();
+    server
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let address = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let NetworkEvent::Listening { address } = server.next_event().await {
+                break address;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let port = address
+        .to_string()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    client.dial_recovery(&format!("127.0.0.1:{port}")).unwrap();
+    let (mut client_connected, mut server_connected) = (false, false);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !client_connected || !server_connected {
+            tokio::select! {
+                event = client.next_event() => if let NetworkEvent::RecoveryConnected { peer_id, .. } = event {
+                    assert_eq!(peer_id, server_id); client_connected = true;
+                },
+                event = server.next_event() => if let NetworkEvent::RecoveryConnected { peer_id, .. } = event {
+                    assert_eq!(peer_id, client.local_peer_id()); server_connected = true;
+                },
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        server.request_recovery_evidence_to_owner(
+            client.local_peer_id(),
+            StateRequestBody::Finalized(vec![1].into()),
+        ),
+        Err(StateStartError::Lane)
+    ));
+    let challenge = client
+        .request_recovery_state(server_id, StateRequestBody::RecoveryChallenge)
+        .unwrap();
+    let nonce = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                    if let StateResponseBody::RecoveryNonce(nonce) = challenge.complete(event).unwrap().unwrap().response().body() { break *nonce; }
+                    panic!("expected challenge nonce");
+                },
+                event = server.next_event() => assert!(!matches!(event, NetworkEvent::InboundState(_))),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let hello = RecoveryHello::sign(
+        client.state_context().unwrap(),
+        server_id,
+        nonce,
+        &SigningKey::from_bytes(&[1; 32]),
+        &client_transport,
+    );
+    let mut hello_ticket = Some(
+        client
+            .request_recovery_state(
+                server_id,
+                StateRequestBody::RecoveryHello(hello.encode().to_vec().into()),
+            )
+            .unwrap(),
+    );
+    let (mut accepted, mut authenticated) = (false, false);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !accepted || !authenticated {
+            tokio::select! {
+                event = client.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                    assert_eq!(hello_ticket.take().unwrap().complete(event).unwrap().unwrap().response().body(), &StateResponseBody::Accepted);
+                    accepted = true;
+                },
+                event = server.next_event() => if let NetworkEvent::RecoveryAuthenticated { owner, .. } = event {
+                    assert_eq!(owner, hello.owner()); authenticated = true;
+                },
+            }
+        }
+    })
+    .await
+    .unwrap();
+    for denied in [
+        StateRequestBody::Agreement(vec![1].into()),
+        StateRequestBody::Proposal(vec![1].into()),
+        StateRequestBody::Vote(vec![1].into()),
+        StateRequestBody::TimeReport(vec![1].into()),
+        StateRequestBody::UserAction(vec![1].into()),
+    ] {
+        assert!(matches!(
+            server.request_recovery_evidence_to_owner(client.local_peer_id(), denied),
+            Err(StateStartError::Lane)
+        ));
+    }
+    let finality = server
+        .request_recovery_evidence_to_owner(
+            client.local_peer_id(),
+            StateRequestBody::Finalized(vec![2].into()),
+        )
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = client.next_event() => if let NetworkEvent::InboundState(inbound) = event {
+                    assert_eq!(inbound.peer_id(), server_id);
+                    assert_eq!(inbound.recovery_owner(), None);
+                    assert!(matches!(inbound.request().body(), StateRequestBody::Finalized(_)));
+                    client.respond_state(inbound, StateResponseBody::Accepted).unwrap();
+                },
+                event = server.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                    break finality.complete(event).unwrap().unwrap().response().body().clone();
+                },
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(response, StateResponseBody::Accepted);
+}
+
+#[test]
+fn recovery_hello_rejects_replay_wrong_recipient_and_used_key() {
+    use ed25519_dalek::SigningKey;
+    use naome_ledger::state::LedgerState;
+    let (genesis, keys) = fixture();
+    let selected = LedgerState::new(genesis);
+    let context = StateContext::new(
+        *selected.genesis().id().as_bytes(),
+        *selected.genesis().profile().id().as_bytes(),
+    );
+    let owner = SigningKey::from_bytes(&[1; 32]);
+    let fresh = SigningKey::from_bytes(&[230; 32]);
+    let remote = state_peer_id(fresh.verifying_key().to_bytes()).unwrap();
+    let recipient = keys[0].public().to_peer_id();
+    let hello = RecoveryHello::sign(context, recipient, [7; 32], &owner, &fresh);
+    assert_eq!(RecoveryHello::decode(&hello.encode()).unwrap(), hello);
+    assert_eq!(
+        hello.verify(&selected, context, recipient, remote, [7; 32]),
+        Ok(hello.owner())
+    );
+    assert_eq!(
+        hello.verify(&selected, context, recipient, remote, [8; 32]),
+        Err(RecoveryError::Challenge)
+    );
+    assert_eq!(
+        hello.verify(
+            &selected,
+            context,
+            keys[1].public().to_peer_id(),
+            remote,
+            [7; 32]
+        ),
+        Err(RecoveryError::Signature)
+    );
+    assert_eq!(
+        hello.verify(
+            &selected,
+            context,
+            recipient,
+            keys[1].public().to_peer_id(),
+            [7; 32]
+        ),
+        Err(RecoveryError::Identity)
+    );
+    assert!(matches!(
+        StateNetwork::new_recovery_only(keys[0].clone(), &selected),
+        Err(StateNetworkBuildError::Identity)
+    ));
+    let used = SigningKey::from_bytes(&[201; 32]);
+    let old = RecoveryHello::sign(context, recipient, [7; 32], &owner, &used);
+    assert_eq!(
+        old.verify(
+            &selected,
+            context,
+            recipient,
+            keys[0].public().to_peer_id(),
+            [7; 32]
+        ),
+        Err(RecoveryError::Identity)
+    );
+}

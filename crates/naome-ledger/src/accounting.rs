@@ -1,6 +1,9 @@
 //! Exact whole-atom reward plans and atomic balance updates.
 
-use crate::{AccountId, GenesisId, LedgerError, codec::Writer, profile::Genesis};
+use crate::{
+    AccountId, GenesisId, LedgerError, authority::AuthoritySnapshot, codec::Writer,
+    profile::Genesis,
+};
 use naome_proof::ProofId;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,6 +28,7 @@ impl RewardPlan {
     /// Divides the fixed issuance, allocating remainders by raw ProofId order.
     pub fn new(
         genesis: &Genesis,
+        authority: &AuthoritySnapshot,
         author: AccountId,
         mut citations: Vec<CitationRecipient>,
     ) -> Result<Self, LedgerError> {
@@ -53,8 +57,11 @@ impl RewardPlan {
                 rewards.author_with_citations_atoms
             },
         )?;
-        for validator in genesis.validators() {
-            plan.credit(validator.owner, rewards.validator_atoms_each)?;
+        if authority.genesis() != genesis.id() {
+            return Err(LedgerError::Invalid("reward authority genesis"));
+        }
+        for unit in authority.units() {
+            plan.credit(unit.owner(), rewards.validator_atoms_each)?;
         }
         if !citations.is_empty() {
             let count = citations.len() as u128;
