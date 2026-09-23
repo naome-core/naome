@@ -41,6 +41,31 @@ def require(condition, reason):
         raise RuntimeError(reason)
 
 
+def public_wait_status(value):
+    """Keep liveness evidence from public status without keys or endpoints."""
+    active = value.get('active')
+    authority = value.get('authority')
+    return {
+        key: value.get(key) for key in (
+            'status', 'height', 'head', 'state', 'time', 'queued',
+            'pending_operations', 'consensus_position', 'remaining_records',
+            'reserved_records', 'terminated',
+        )
+    } | {
+        'active': None if active is None else {
+            key: active.get(key) for key in ('submission', 'attempt', 'phase', 'deadline')
+        },
+        'authority': None if authority is None else {
+            key: authority.get(key) for key in (
+                'id', 'effective_height', 'active_slots', 'terminated',
+            )
+        },
+        'validator_slots': [{key: unit.get(key) for key in (
+            'index', 'slot', 'unit', 'available',
+        )} for unit in value.get('validators', [])],
+    }
+
+
 class Qualification:
     def __init__(self, args):
         self.args = args
@@ -50,10 +75,13 @@ class Qualification:
         self.started = time.monotonic()
         self.deadline = self.started + args.deadline_seconds
         self.latest, self.resources = {}, {}
+        self.current_attempt = None
         self.isolated = None
         self.report = {'schema_version': 1, 'outcome': 'running', 'backend': args.backend,
             'scope': 'four stable authority slots with sealed key rotation; canonical records, authenticated operations and certified phase transitions; accelerated qualification',
             'requested_minimum_heights': args.heights, 'genesis_run_records': 256, 'timing_profile': args.timing,
+            'voting_observation': {'method': 'per-node finalized status for exact submission',
+                                   'certified_start': 'deadline minus actual genesis profile voting seconds'},
             'delay_ms_each_direction_per_chunk': args.delay_ms,
             'delay_proxy_prefetched_chunks_per_direction': 1,
             'observation_poll_seconds': OBSERVATION_POLL_SECONDS,
@@ -80,6 +108,12 @@ class Qualification:
         retirement = self.root / 'retirement-order.json'
         retirement.write_text(json.dumps([2, 0, 3, 1]))
         command([self.args.bin_dir / 'naome', 'setup', self.root / 'run', self.args.timing, 256, 44100, retirement, 'compact', endpoints, handoff_endpoints])
+        profile = json.loads(command([self.args.bin_dir / 'naome', 'profile-info',
+                                      self.root / 'run/genesis.bin']).stdout)
+        self.voting_seconds = profile['timing']['voting_seconds']
+        require(isinstance(self.voting_seconds, int) and self.voting_seconds > 0,
+                'genesis voting duration unavailable')
+        self.report['profile_info'] = {key: profile[key] for key in ('genesis', 'profile', 'kind', 'timing')}
         anchors = self.root / 'anchors'
         anchors.mkdir(mode=0o700)
         for i in range(4):
@@ -188,16 +222,69 @@ class Qualification:
                                          'height_at_cut': before['height'], 'survivor_heights_before_heal': survivor_heights})
             require(any(height > before['height'] for height in survivor_heights.values()), 'surviving quorum made no progress while isolated')
 
+    def wait_timeout(self, label, indices, observed, retained=None):
+        retained = retained or {}
+        self.report['wait_timeout'] = {
+            'label': label,
+            'required_indices': indices,
+            'missing_indices': [i for i in indices if i not in observed],
+            'missing_voting_indices': [i for i in indices if i not in retained]
+                                      if label == 'full voting window opens' else None,
+            'current_attempt': dict(self.current_attempt) if getattr(self, 'current_attempt', None) else None,
+            'last_observed': {str(i): public_wait_status(value)
+                              for i, value in sorted(observed.items())},
+            'last_known': {str(i): public_wait_status(value)
+                           for i, value in sorted(self.latest.items())},
+            'retained_voting': {str(i): public_wait_status(value)
+                                for i, value in sorted(retained.items())},
+        }
+        attempt = getattr(self, 'current_attempt', None)
+        if label == 'full voting window opens' and attempt and 'operation' in attempt:
+            try:
+                receipt = self.backend.cli(attempt['owner'], 'receipt',
+                                           self.backend.config(attempt['owner']),
+                                           attempt['operation'], tolerate=True, timeout=5)
+                status = receipt.get('status') if isinstance(receipt, dict) else None
+            except Exception:
+                status = None
+            self.report['wait_timeout']['owner_receipt_status'] = status
+        self.save()
+        raise RuntimeError(f'deadline: {label}')
+
     def wait(self, label, indices, predicate, starting=False):
         indices = list(indices)
         until = min(self.deadline, time.monotonic() + self.args.height_timeout)
+        observed = {}
         while time.monotonic() < until:
             self.service_fault()
-            values = self.observe(indices, starting=starting)
-            if len(values) == len(indices) and predicate(values):
-                return values
+            observed = self.observe(indices, starting=starting)
+            if len(observed) == len(indices) and predicate(observed):
+                return observed
             time.sleep(OBSERVATION_POLL_SECONDS)
-        raise RuntimeError(f'deadline: {label}')
+        self.wait_timeout(label, indices, observed)
+
+    def wait_voting_window(self, indices, operation):
+        """Retain each node's real Voting observation across different polls."""
+        indices = list(indices)
+        until = min(self.deadline, time.monotonic() + self.args.height_timeout)
+        observed, retained = {}, {}
+        expected = None
+        while time.monotonic() < until:
+            self.service_fault()
+            observed = self.observe(indices)
+            for index, value in observed.items():
+                active = value['active']
+                if active is None or active['phase'] != 'Voting' or active['submission'] != operation:
+                    continue
+                identity = (active['submission'], active['attempt'], active['deadline'])
+                if expected is None:
+                    expected = identity
+                require(identity == expected, 'certified voting window disagreement')
+                retained.setdefault(index, value)
+            if len(retained) == len(indices):
+                return retained
+            time.sleep(OBSERVATION_POLL_SECONDS)
+        self.wait_timeout('full voting window opens', indices, observed, retained)
 
     def converge(self, indices, height):
         return self.wait('same finalized tip', indices, lambda values: all(v['height'] >= height for v in values.values()) and
@@ -213,8 +300,10 @@ class Qualification:
             phases[name] = round(now - checkpoint, 3)
             checkpoint = now
         owner = number % 2
+        self.current_attempt = {'number': number, 'owner': owner, 'checkpoint': 'before_submission'}
         config, node = self.backend.config(owner), self.backend.node(owner)
         before = self.backend.cli(owner, 'status', config)
+        self.current_attempt['before_height'] = before['height']
         require(before['active'] is None and before['queued'] == 0, 'previous attempt not settled')
         submitted = self.backend.cli(owner, 'submit', config, node / 'account.key', node / 'question.nao',
                                      f'Canonical qualification attempt {number}', node / f'action-{number}.bin')
@@ -230,18 +319,24 @@ class Qualification:
             require('error' not in response, 'active ingress rejected authenticated owner submission')
         record('submit')
         operation = submitted['operation']
+        # Poll immediately after submission: a complete certified Voting
+        # window can open and close while a separate receipt request waits.
+        self.current_attempt.update(operation=operation, checkpoint='await_voting')
+        active = self.wait_voting_window(indices, operation)
+        record('voting_open')
+        self.current_attempt['checkpoint'] = 'await_receipt'
         self.wait('authenticated submission receipt', [owner], lambda _: self.backend.cli(owner, 'receipt', config, operation)['status'] == 'finalized')
         record('receipt')
-        active = self.wait('full voting window opens', indices,
-                           lambda values: all(v['active'] is not None and v['active']['phase'] == 'Voting' for v in values.values()))
-        record('voting_open')
+        self.current_attempt['checkpoint'] = 'await_settlement'
         submission = active[owner]['active']['submission']
         deadline = active[owner]['active']['deadline']
+        certified_start = deadline - self.voting_seconds
         require(all(v['active']['submission'] == submission and v['active']['deadline'] == deadline for v in active.values()), 'active attempt or deadline disagreement')
         finished = self.wait('full-window NotApproved settlement', indices,
             lambda values: all(v['height'] > before['height'] and v['active'] is None and v['queued'] == 0 for v in values.values()))
         record('settlement')
         height = max(v['height'] for v in finished.values())
+        self.current_attempt['checkpoint'] = 'await_convergence'
         finished = self.converge(indices, height)
         record('converge')
         require(all(v['time'] >= deadline for v in finished.values()), 'voting closed before its certified deadline')
@@ -250,11 +345,16 @@ class Qualification:
         require(question['status'] == 'NotApproved', 'unexpected agenda outcome')
         self.report['attempts'].append({'number': number, 'owner': owner, 'operation': operation,
             'submission': submission, 'height': height, 'head': finished[owner]['head'], 'state': finished[owner]['state'],
-            'voting_deadline': deadline, 'certified_start': active[owner]['time'], 'certified_end': finished[owner]['time'],
+            'voting_deadline': deadline, 'certified_start': certified_start, 'certified_end': finished[owner]['time'],
+            'voting_observations': {str(i): {'height': value['height'], 'head': value['head'],
+                                            'state': value['state'], 'time': value['time'],
+                                            'attempt': value['active']['attempt']}
+                                    for i, value in sorted(active.items())},
             'elapsed_seconds': round(time.monotonic() - started, 3), 'phase_seconds': phases,
             'active_slots_at_settlement': {str(i): value['authority']['active_slots'] for i, value in finished.items()}})
         self.save()
         print(json.dumps({'event': 'canonical_devnet_progress', 'attempt': number, 'height': height}), flush=True)
+        self.current_attempt = None
         return height
 
     def restart(self, index, force):
@@ -378,10 +478,10 @@ class Qualification:
         # are attribution counters, not additive portions of elapsed time.
         self.report['timing_seconds']['attempt_phases'] = {
             phase: round(sum(a['phase_seconds'][phase] for a in self.report['attempts']), 3)
-            for phase in ('submit', 'receipt', 'voting_open', 'settlement', 'converge', 'question')}
+            for phase in ('submit', 'voting_open', 'receipt', 'settlement', 'converge', 'question')}
         phases = self.report['timing_seconds']['attempt_phases']
         self.report['timing_seconds']['consensus_and_delivery_before_voting_observed'] = round(
-            phases['receipt'] + phases['voting_open'], 3)
+            phases['voting_open'], 3)
         self.report['timing_seconds']['settlement_including_voting_wait'] = phases['settlement']
         self.report['timing_seconds']['fault_restarts'] = round(sum(
             fault.get('elapsed_seconds', 0) for fault in self.report['faults']), 3)

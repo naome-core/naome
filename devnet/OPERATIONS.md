@@ -102,6 +102,15 @@ cgroup memory; it does not cache progress. Probe failures, oversized responses,
 restarts and cleanup close the owned pipe. Authenticated submissions, exports
 and independent verification continue through the normal executables.
 
+Voting observation starts immediately after authenticated submission. The harness
+retains each participating node's actual finalized Voting state for the exact
+submission and requires the same attempt and certified deadline before accepting
+settlement. The opening time is derived from that deadline and the voting
+duration read from genesis; observed heights and times are retained separately.
+Nodes need not appear in Voting in the same polling pass.
+Every node must still be observed, and timeout reports retain the current attempt
+and bounded public node states for diagnosis.
+
 The timed partition starts only after all four nodes agree on a selected state
 with four available signers. If a rotation temporarily leaves a slot vacant,
 the harness continues genuine workload within the normal height deadline until

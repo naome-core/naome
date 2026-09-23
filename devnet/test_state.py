@@ -104,6 +104,94 @@ class CanonicalQualification(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'exited'):
             q.observe([0], starting=True)
 
+    @staticmethod
+    def voting(height, head, operation='operation', deadline=101):
+        return {**CanonicalQualification.state(height, head), 'time': 100,
+                'active': {'submission': operation, 'attempt': 1,
+                           'phase': 'Voting', 'deadline': deadline}}
+
+    def test_staggered_exact_voting_observations_satisfy_window(self):
+        q = self.qualification()
+        q.deadline = 100
+        q.save = Mock()
+        first = self.voting(4, 'opening', deadline=115)
+        second = self.voting(5, 'later', deadline=115)
+        second['time'] = 101
+        q.observe = Mock(side_effect=[{0: first, 1: {**self.state(), 'active': None}},
+                                      {0: {**self.state(height=5), 'active': None}, 1: second}])
+        with patch('state_qualify.time.monotonic', return_value=0), \
+             patch('state_qualify.time.sleep'):
+            observed = q.wait_voting_window([0, 1], 'operation')
+        self.assertIs(observed[0], first)
+        self.assertIs(observed[1], second)
+        self.assertNotIn('wait_timeout', q.report)
+        q.save.assert_not_called()
+
+    def test_voting_timeout_retains_public_observations_and_receipt_status(self):
+        q = self.qualification()
+        q.deadline = 100
+        q.args.height_timeout = 1
+        q.current_attempt = {'number': 29, 'owner': 1, 'operation': 'operation',
+                             'checkpoint': 'await_voting'}
+        q.save = Mock()
+        first = self.voting(4, 'opening')
+        first['validators'] = [{'index': 0, 'slot': 'slot', 'unit': 'unit',
+                                'available': True, 'consensus_key': 'secret',
+                                'endpoint': '/private/config'}]
+        wrong = self.voting(4, 'opening', operation='other-operation')
+        q.observe = Mock(return_value={0: first, 1: wrong})
+        q.latest = {0: first, 1: wrong}
+        q.backend.cli.return_value = {'status': 'pending', 'reason': '/private/log'}
+        with patch('state_qualify.time.monotonic', side_effect=[0, 0, 2]), \
+             patch('state_qualify.time.sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'deadline: full voting window opens'):
+                q.wait_voting_window([0, 1], 'operation')
+        timeout = q.report['wait_timeout']
+        self.assertEqual(timeout['current_attempt']['number'], 29)
+        self.assertEqual(timeout['required_indices'], [0, 1])
+        self.assertEqual(timeout['missing_indices'], [])
+        self.assertEqual(timeout['missing_voting_indices'], [1])
+        self.assertEqual(timeout['retained_voting']['0']['height'], 4)
+        self.assertEqual(timeout['owner_receipt_status'], 'pending')
+        self.assertEqual(timeout['last_known']['1']['active']['submission'], 'other-operation')
+        self.assertNotIn('secret', json.dumps(timeout))
+        self.assertNotIn('/private/', json.dumps(timeout))
+        q.save.assert_called_once()
+
+    def test_missing_node_times_out_and_conflicting_voting_deadline_fails(self):
+        q = self.qualification()
+        q.deadline = 100
+        q.args.height_timeout = 1
+        q.save = Mock()
+        first = self.voting(4, 'opening')
+        q.observe = Mock(return_value={0: first})
+        q.latest = {0: first}
+        with patch('state_qualify.time.monotonic', side_effect=[0, 0, 2]), \
+             patch('state_qualify.time.sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'deadline: full voting window opens'):
+                q.wait_voting_window([0, 1], 'operation')
+        self.assertEqual(q.report['wait_timeout']['missing_indices'], [1])
+        self.assertEqual(q.report['wait_timeout']['missing_voting_indices'], [1])
+
+        q = self.qualification()
+        q.deadline = 100
+        q.observe = Mock(return_value={0: first, 1: self.voting(4, 'opening', deadline=102)})
+        with patch('state_qualify.time.monotonic', return_value=0):
+            with self.assertRaisesRegex(RuntimeError, 'certified voting window disagreement'):
+                q.wait_voting_window([0, 1], 'operation')
+        self.assertNotIn('wait_timeout', q.report)
+
+    def test_successful_wait_keeps_timeout_report_absent(self):
+        q = self.qualification()
+        q.deadline = 100
+        q.save = Mock()
+        q.observe = Mock(return_value={0: self.state()})
+        with patch('state_qualify.time.monotonic', return_value=0):
+            self.assertEqual(q.wait('ready', [0], lambda values: values[0]['height'] == 3),
+                             {0: self.state()})
+        self.assertNotIn('wait_timeout', q.report)
+        q.save.assert_not_called()
+
     def test_outage_heals_on_deadline_without_new_finality(self):
         q = self.qualification()
         q.isolated = (3, self.state(), 20)

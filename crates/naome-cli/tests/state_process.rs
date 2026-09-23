@@ -279,17 +279,39 @@ impl Lab {
             thread::sleep(Duration::from_millis(40));
         }
     }
-    fn wait_receipt(&self, node: usize, submission: &str, operation: &Value) {
+    fn wait_receipt(
+        &self,
+        node: usize,
+        submission: &str,
+        operation: &Value,
+        kind: &str,
+        label: &str,
+    ) {
         let id = operation["operation"]
             .as_str()
             .expect("signed operation ID");
-        self.wait(node, |_| {
+        self.wait(node, |status| {
             let receipt = command(&["receipt".into(), self.config(node), id.into()]);
             if receipt["status"] == "finalized" {
                 return true;
             }
-            assert_ne!(receipt["status"], "rejected", "operation {id}: {receipt}");
-            self.assert_question_can_progress(node, submission);
+            let context = format!(
+                "{kind} {label} operation {id} on node {node}: receipt={receipt}; height={}; active_submission={}; active_phase={}; active_deadline={}; consensus_position={}",
+                status["height"],
+                status["active"]["submission"],
+                status["active"]["phase"],
+                status["active"]["deadline"],
+                status["consensus_position"],
+            );
+            assert_ne!(receipt["status"], "rejected", "{context}");
+            let output = raw(&["question".into(), self.config(node), submission.into()]);
+            if output.status.success() {
+                let question: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert!(
+                    matches!(question["status"].as_str(), Some("Queued" | "Active")),
+                    "{context}; question {submission}: {question}"
+                );
+            }
             false
         });
     }
@@ -318,7 +340,13 @@ impl Lab {
         // Every intended YES must be finalized, not merely accepted by a
         // transport socket, before the test claims successful approval.
         for (index, vote) in votes {
-            self.wait_receipt(index, submission, &vote);
+            self.wait_receipt(
+                index,
+                submission,
+                &vote,
+                "vote",
+                &format!("{label}-{index}"),
+            );
         }
     }
     fn solve(&self, _node: usize, author: usize, package: &str, label: &str, submission: &str) {
@@ -331,7 +359,7 @@ impl Lab {
             self.file(&format!("{label}.secret")),
             self.file(&format!("{label}.commit")),
         ]);
-        self.wait_receipt(commit_ingress, submission, &commit);
+        self.wait_receipt(commit_ingress, submission, &commit, "commit", label);
         let reveal_ingress = self.wait_active_phase(submission, "Reveal");
         let reveal = command(&[
             "reveal".into(),
@@ -340,7 +368,7 @@ impl Lab {
             self.file(&format!("{label}.secret")),
             self.file(&format!("{label}.reveal")),
         ]);
-        self.wait_receipt(reveal_ingress, submission, &reveal);
+        self.wait_receipt(reveal_ingress, submission, &reveal, "reveal", label);
     }
     fn assert_same(&self, indices: &[usize], expected: &Value) {
         for &index in indices {
@@ -505,9 +533,26 @@ fn four_process_state_recovery_partition_and_independent_replay() {
     // B's Voting window can close while a fourth offer is still pending.
     let before_b = lab.restore_four_keyed_slots("before-b", 3);
     assert_eq!(before_b["paid_completions"], 1);
-    // With four keyed slots established, B can test the provider-offline
-    // fetch and approval path across its full Voting window.
-    let b_ingress = (0..4)
+    // Stop the first provider at the quiet four-slot tip. A following period
+    // can lawfully have only three active slots, so do not make B depend on
+    // preserving the fourth slot through its Voting window.
+    lab.stop(0);
+    for index in 1..4 {
+        let status = lab.wait(index, |status| status["state"] == before_b["state"]);
+        assert_eq!(status["head"], before_b["head"], "node {index} head");
+        assert_eq!(
+            status["authority"], before_b["authority"],
+            "node {index} authority"
+        );
+        assert!(status["active"].is_null(), "node {index} active question");
+        assert_eq!(status["queued"], 0, "node {index} queued questions");
+        assert!(
+            !status["consensus_position"].is_null(),
+            "node {index} has no active position"
+        );
+    }
+    // B exercises proof fetch and approval with the provider offline.
+    let b_ingress = (1..4)
         .find(|&index| {
             lab.status(index)
                 .is_some_and(|status| !status["consensus_position"].is_null())
@@ -515,13 +560,10 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         .unwrap();
     let b = lab.submit(b_ingress, 5, example("question-b.nao"), "b");
     lab.wait(b_ingress, |status| {
-        status["active"]["submission"] == b
-            && status["active"]["phase"] == "Voting"
-            && status["authority"]["active_slots"] == 4
+        status["active"]["submission"] == b && status["active"]["phase"] == "Voting"
     });
     // H is requested from another independently persisted node while the first
     // submission provider is unavailable. All remaining nodes retain quorum.
-    lab.stop(0);
     let helper =
         naome_authoring::compile(&fs::read_to_string(example("helper-h.nao")).unwrap()).unwrap();
     let helper_id = helper

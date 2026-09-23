@@ -65,7 +65,15 @@ the attempt phases and must not be added to them.
 A subsequent [PR CI run](https://github.com/naome-core/naome/actions/runs/35907476236)
 reported two macOS release process-test timeouts on the same implementation
 tree. The passing runs above retain their named-snapshot evidence, but milestone
-acceptance is pending resolution and new exact-source validation. A new real-agent Lab run,
+acceptance is pending resolution and new exact-source validation.
+[Run 35912269549](https://github.com/naome-core/naome/actions/runs/35912269549)
+then exposed a provider-outage test ordering error and a Docker timeout while
+waiting to observe all nodes in Voting. That Docker report completed 87 heights
+and does not qualify the 100-height target or speedup. The fixture now stops the
+provider at the quiet four-slot tip before submitting the dependent question;
+qualification also retains per-node finalized Voting observations and public
+timeout diagnostics. These corrections still require complete validation.
+A new real-agent Lab run,
 physical multi-machine acceptance and the complete seven-day research run remain
 separate and unqualified. Operational handoff requires operator attestation that
 external secret backups and regeneration seeds are destroyed; the implementation
