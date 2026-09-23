@@ -27,7 +27,7 @@ Unless explicitly labelled as implemented MVP behavior, the following sections d
 
 ### 2.1. Participants, records and rights
 
-A <i>question author</i> proposes a task. A <i>solution author</i> authenticates a submitted bundle containing the solution and its helper proofs. A <i>validator</i> checks records and participates in agreement; its <i>owner</i> controls the associated authority. An owner may hold several voting units, whose weights are combined. A local <i>agent</i> assists its owner in reviewing research questions.
+A <i>question author</i> proposes a task. A <i>solution author</i> authenticates a submitted bundle containing the solution and its helper proofs. A <i>validator</i> checks records and participates in agreement; its <i>owner</i> controls the associated authority. Each installed unit has a distinct owner account ID, though one person may control several accounts. A local <i>agent</i> assists its owner in reviewing research questions.
 
 The installed electorate contains <i>K</i> equal voting units. Its owners authorize research and membership handoffs. Section 7 describes the initial allocation and how qualifying authors may request replacement of the oldest unit. Equal units do not by themselves establish dispersed ownership.
 
@@ -179,7 +179,7 @@ An empty reserve does not invalidate control transitions. Operators nevertheless
 
 ### 7.1. Contribution-ordered replacement
 
-The electorate has a fixed number <i>K</i> of equal voting units, each associated with an owner and an original contribution-completion ordinal. Active units add together for record agreement and research votes, subject to each attempt's frozen snapshot. There is no per-person cap or independent-identity assertion; splitting the same contributions among keys preserves combined weight.
+The electorate has a fixed number <i>K</i> of equal voting units, each associated with an owner and an immutable age: a genesis retirement rank for a bootstrap unit or the original contribution-completion ordinal for an earned unit. Active units add together for record agreement and research votes, subject to each attempt's frozen snapshot. Installed units must have distinct owner account IDs. This is not a per-person cap or independent-identity assertion: one person can control several accounts.
 
 The winning author may voluntarily request admission using the completion's nontransferable eligibility claim, independently of payment. The author authenticates the request and binds a validator key. The claim must be unused and strictly newer than the oldest installed unit. Successful installation inserts it at its original ordinal and retires that oldest unit. At most one unit is replaced per transition.
 
@@ -339,7 +339,7 @@ Every record closes all due windows before ordinary operations. The first record
 
 ### C.2. Time certificates
 
-Each record contains one bounded certificate of integer UTC-second reports. Distinct outgoing owners with more than two thirds of installed weight sign reports bound to chain, parent seal, height and the TIME role. Combined owner weight is counted once. Correct owners report their current time only after verifying the parent. Let <i>m</i> be the lower weighted median of the included reports:
+Each record contains one bounded certificate of integer UTC-second reports. Distinct outgoing owner accounts with more than two thirds of installed weight sign reports bound to chain, parent seal, height and the TIME role. Each installed owner account contributes one unit of weight. Correct owners report their current time only after verifying the parent. Let <i>m</i> be the lower weighted median of the included reports:
 
 [EQ] record time = max(parent time, m).
 

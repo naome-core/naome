@@ -29,6 +29,14 @@ identity!(
     "Role-separated address of a fixed validator consensus key."
 );
 identity!(
+    AuthorityUnitId,
+    "Stable identity of one voting unit, independent of its period keys."
+);
+identity!(
+    AuthoritySlotId,
+    "Stable four-slot position inherited across voting-unit replacements."
+);
+identity!(
     ResolutionId,
     "Foundation and canonical core identity, independent of orientation."
 );
@@ -80,5 +88,30 @@ impl ValidatorId {
     /// Derives the validator address; membership is checked separately.
     pub fn for_key(key: &[u8; 32]) -> Self {
         Self(hash(b"naome:state:validator:v1\0", &[key]))
+    }
+}
+
+impl AuthorityUnitId {
+    /// Identifies one bootstrap unit throughout key rotations.
+    pub fn for_bootstrap(validator: ValidatorId) -> Self {
+        Self(hash(
+            b"naome:state:bootstrap-unit:v5\0",
+            &[validator.as_bytes()],
+        ))
+    }
+
+    /// Identifies the unit installed from one paid completion claim.
+    pub fn for_claim(family: ResolutionId) -> Self {
+        Self(hash(b"naome:state:claim-unit:v5\0", &[family.as_bytes()]))
+    }
+}
+
+impl AuthoritySlotId {
+    /// Keeps one genesis slot stable after its original unit is retired.
+    pub fn for_bootstrap(validator: ValidatorId) -> Self {
+        Self(hash(
+            b"naome:state:authority-slot:v5\0",
+            &[validator.as_bytes()],
+        ))
     }
 }
