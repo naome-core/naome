@@ -167,30 +167,6 @@ fn retained(
     Ok(operation)
 }
 
-fn save_report(
-    path: &Path,
-    report: &serde_json::Value,
-    operation: Option<&SignedOperation>,
-) -> Result<()> {
-    if path.try_exists()?
-        && let Some(operation) = operation
-    {
-        let bytes = files::read(path, 16384, true)?;
-        let mut legacy: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if legacy["operation"] == files::hex(operation.id().as_bytes()) {
-            if let Some(object) = legacy.as_object_mut() {
-                object.remove("operation");
-            }
-            if &legacy == report {
-                // A pre-upgrade crash could retain its report and budget.action
-                // before the caller's ACTION_FILE. Preserve that exact evidence.
-                return files::create_or_match(path, &bytes, true);
-            }
-        }
-    }
-    files::create_or_match(path, &serde_json::to_vec_pretty(report)?, true)
-}
-
 pub async fn run(args: &[String]) -> Result<()> {
     execute(args, false).await
 }
@@ -370,7 +346,11 @@ async fn execute(args: &[String], review_only: bool) -> Result<()> {
         files::create(&retained_path, &operation.encode(), true)?;
         operation
     };
-    save_report(Path::new(&args[3]), &report, Some(&operation))?;
+    files::create_or_match(
+        Path::new(&args[3]),
+        &serde_json::to_vec_pretty(&report)?,
+        true,
+    )?;
     files::create_or_match(action_path, &operation.encode(), true)?;
     report["operation"] = json!(files::hex(operation.id().as_bytes()));
     let result = control::call(

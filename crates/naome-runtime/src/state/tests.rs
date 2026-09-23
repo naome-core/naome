@@ -108,6 +108,54 @@ fn seed_offers(runtime: &mut StateRuntime) {
     }
 }
 #[test]
+fn exact_offer_retry_is_idempotent_but_conflicting_valid_offer_keeps_original() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let original = runtime.offers.values().next().unwrap().clone();
+    let unit = original.unit();
+    let state = runtime.state().unwrap();
+    let owner = owner_index(state.authority().unit(unit).unwrap().owner());
+    let parent_head = state.head();
+    let parent_commitment = state.commitment();
+    let authority = state.authority().clone();
+    let conflicting = NextPeriodKeys::sign(
+        &authority,
+        parent_head,
+        parent_commitment,
+        unit,
+        &account(owner),
+        &period_key(owner, 3, 1),
+        &period_key(owner, 3, 2),
+        original.keys().endpoint().to_owned(),
+    )
+    .unwrap();
+    assert_ne!(conflicting, original);
+    conflicting
+        .verify(
+            &authority,
+            parent_head,
+            parent_commitment,
+            authority.effective_height() + 1,
+            account(owner).verifying_key().to_bytes(),
+        )
+        .unwrap();
+
+    let offers = runtime.offers.clone();
+    runtime.accept_offer(&original.encode()).unwrap();
+    assert_eq!(runtime.offers, offers);
+    assert!(matches!(
+        runtime.accept_offer(&conflicting.encode()),
+        Err(StateRuntimeError::Rejected(message))
+            if message == "different offer for same unit and parent"
+    ));
+    assert_eq!(runtime.offers, offers);
+    assert_eq!(runtime.offers.get(&unit), Some(&original));
+    let selected = runtime.state().unwrap();
+    assert_eq!(selected.head(), parent_head);
+    assert_eq!(selected.commitment(), parent_commitment);
+    assert_eq!(selected.authority(), &authority);
+    assert!(runtime.node.handoff_agreement().is_none());
+}
+#[test]
 fn round_zero_waits_boundedly_for_fourth_offer_then_three_can_progress() {
     let (_directory, _anchors, mut runtime) = runtime();
     runtime.config.proposal_timeout = Duration::from_millis(350);
