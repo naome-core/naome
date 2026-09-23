@@ -21,7 +21,7 @@ transport and replay. Research attempts retain their frozen owner electorate.
 Four stable slots retain their quorum weight through unavailability; admission
 consumes the oldest eligible claim only when its successor is sealed.
 
-The 23 September 2026 qualification passed on clean implementation commit
+The initial 23 September 2026 qualification passed on clean implementation commit
 `1554fcac6d39dcbf9eba4c43c4767e078856cf51`. The [local qualification record](evidence/handoff-final-local.json)
 contains the source fingerprint, commands, elapsed times, output hashes,
 architecture review and paper checks. Documentation and evidence added after
@@ -62,8 +62,10 @@ rehearsal and 16 s for image packaging. Those steps are outside the Docker
 qualification measurement. Observation and certified-window counters overlap
 the attempt phases and must not be added to them.
 
-These results accept MVP-36 through MVP-38 and AB-08 through AB-10 under the
-explicit accelerated authority-period qualification. A new real-agent Lab run,
+A subsequent [PR CI run](https://github.com/naome-core/naome/actions/runs/35907476236)
+reported two macOS release process-test timeouts on the same implementation
+tree. The passing runs above retain their named-snapshot evidence, but milestone
+acceptance is pending resolution and new exact-source validation. A new real-agent Lab run,
 physical multi-machine acceptance and the complete seven-day research run remain
 separate and unqualified. Operational handoff requires operator attestation that
 external secret backups and regeneration seeds are destroyed; the implementation

@@ -412,6 +412,246 @@ async fn seal_height_with(
 }
 
 #[tokio::test]
+async fn live_outgoing_quorum_cannot_vote_for_a_roster_with_only_two_live_ready_owners() {
+    let endpoints = free_endpoints();
+    let g = genesis_at(&endpoints);
+    let mut nodes: Vec<_> = (0..4).map(|i| start(i, &g, &endpoints)).collect();
+    let proposer = nodes[0]
+        .runtime
+        .node
+        .branch()
+        .unwrap()
+        .proposer(0, 8)
+        .unwrap()
+        .unwrap();
+    let proposer_index = (0..4)
+        .find(|index| consensus(*index).verifying_key().as_bytes() == proposer.as_bytes())
+        .unwrap() as usize;
+    let non_proposers: Vec<_> = (0..4).filter(|index| *index != proposer_index).collect();
+    let stopped = non_proposers[0];
+    let omitted_live = non_proposers[1];
+    let live: Vec<_> = (0..4).filter(|index| *index != stopped).collect();
+
+    // The stopped owner's previously valid offer remains in the proposer's
+    // current-height cache. The live omitted owner can still sign old-period
+    // votes, so a three-voter QC is possible for a three-offer plan that has
+    // only two live incoming READY signers.
+    let mut offers: Vec<_> = (0..4)
+        .filter(|index| *index != omitted_live)
+        .map(|index| {
+            nodes[index]
+                .runtime
+                .next_custody
+                .as_ref()
+                .unwrap()
+                .offer()
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    let plan = HandoffPlan::new(offers, None).unwrap();
+    let keys: Vec<_> = live.iter().map(|index| consensus(*index as u8)).collect();
+    let agreed = agreement(
+        nodes[proposer_index].runtime.node.branch().unwrap(),
+        plan,
+        &keys,
+        101,
+    );
+    assert_eq!(
+        live.iter()
+            .filter(|index| {
+                let key = nodes[**index]
+                    .runtime
+                    .next_custody
+                    .as_ref()
+                    .unwrap()
+                    .consensus_key()
+                    .verifying_key()
+                    .to_bytes();
+                agreed.incoming().consensus_unit(&key).is_some()
+            })
+            .count(),
+        2
+    );
+
+    // A real runtime ingress must not let the omitted live signer supply the
+    // decisive old-period vote for a successor it cannot prepare or sign.
+    let proposal = agreed.proposal().encode().unwrap();
+    let receiver = &mut nodes[omitted_live].runtime;
+    assert!(
+        receiver
+            .request_body(&StateRequestBody::Proposal(proposal.into()))
+            .is_ok()
+    );
+    receiver.drive().unwrap();
+    assert!(
+        receiver
+            .node
+            .publications()
+            .unwrap()
+            .iter()
+            .any(|publication| {
+                matches!(publication, StatePublication::Proposal(candidate)
+            if candidate.value() == agreed.proposal().value())
+            })
+    );
+    let target = ConsensusVoteTarget::Proposal(agreed.proposal().value().signing_root());
+    let local = ConsensusKey::from_bytes(consensus(omitted_live as u8).verifying_key().to_bytes());
+    assert!(
+        receiver
+            .node
+            .publications()
+            .unwrap()
+            .iter()
+            .all(|publication| {
+                !matches!(publication, StatePublication::Vote(vote)
+            if vote.signer() == local
+                && vote.role() == ConsensusVoteRole::Prevote
+                && vote.target() == target)
+            })
+    );
+}
+
+#[tokio::test]
+async fn three_live_offers_still_allow_their_owners_to_prevote() {
+    let endpoints = free_endpoints();
+    let g = genesis_at(&endpoints);
+    let mut nodes: Vec<_> = (0..4).map(|i| start(i, &g, &endpoints)).collect();
+    let proposer = nodes[0]
+        .runtime
+        .node
+        .branch()
+        .unwrap()
+        .proposer(0, 8)
+        .unwrap()
+        .unwrap();
+    let stopped = (0..4)
+        .find(|index| consensus(*index).verifying_key().as_bytes() != proposer.as_bytes())
+        .unwrap() as usize;
+    let live: Vec<_> = (0..4).filter(|index| *index != stopped).collect();
+    let mut offers: Vec<_> = live
+        .iter()
+        .map(|index| {
+            nodes[*index]
+                .runtime
+                .next_custody
+                .as_ref()
+                .unwrap()
+                .offer()
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    let keys: Vec<_> = live.iter().map(|index| consensus(*index as u8)).collect();
+    let agreed = agreement(
+        nodes[live[0]].runtime.node.branch().unwrap(),
+        HandoffPlan::new(offers, None).unwrap(),
+        &keys,
+        101,
+    );
+    let proposal = agreed.proposal().encode().unwrap();
+    let target = ConsensusVoteTarget::Proposal(agreed.proposal().value().signing_root());
+    for index in live {
+        let runtime = &mut nodes[index].runtime;
+        runtime
+            .request_body(&StateRequestBody::Proposal(proposal.clone().into()))
+            .unwrap();
+        runtime.drive().unwrap();
+        let local = ConsensusKey::from_bytes(consensus(index as u8).verifying_key().to_bytes());
+        assert!(
+            runtime
+                .node
+                .publications()
+                .unwrap()
+                .iter()
+                .any(|publication| {
+                    matches!(publication, StatePublication::Vote(vote)
+                if vote.signer() == local
+                    && vote.role() == ConsensusVoteRole::Prevote
+                    && vote.target() == target)
+                })
+        );
+    }
+}
+
+#[tokio::test]
+async fn candidate_replacement_exempts_only_the_replaced_outgoing_unit() {
+    let endpoints = free_endpoints();
+    let g = genesis_at(&endpoints);
+    let nodes: Vec<_> = (0..4).map(|i| start(i, &g, &endpoints)).collect();
+    let state = nodes[0].runtime.state().unwrap();
+    let oldest = state.authority().oldest().id();
+    let old_index = (0..4)
+        .find(|index| {
+            nodes[*index]
+                .runtime
+                .next_custody
+                .as_ref()
+                .unwrap()
+                .offer()
+                .unwrap()
+                .unit()
+                == oldest
+        })
+        .unwrap();
+    let candidate = CandidateAdmissionOffer::sign(
+        state.authority(),
+        state.head(),
+        state.commitment(),
+        ResolutionId::from_bytes([71; 32]),
+        OperationId::from_bytes([72; 32]),
+        &account(7),
+        &consensus(7),
+        &SigningKey::from_bytes(&[208; 32]),
+        "127.0.0.1:31000".into(),
+    )
+    .unwrap();
+    let mut offers: Vec<_> = (0..4)
+        .filter(|index| *index != old_index)
+        .map(|index| {
+            nodes[index]
+                .runtime
+                .next_custody
+                .as_ref()
+                .unwrap()
+                .offer()
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    let plan = HandoffPlan::new(offers, Some(candidate)).unwrap();
+    let old_offer = nodes[old_index]
+        .runtime
+        .next_custody
+        .as_ref()
+        .unwrap()
+        .offer()
+        .unwrap();
+    assert!(plan_carries_local_ready(
+        &plan,
+        Some(oldest),
+        Some(old_offer),
+        oldest
+    ));
+    let other = nodes[(old_index + 1) % 4]
+        .runtime
+        .next_custody
+        .as_ref()
+        .unwrap()
+        .offer()
+        .unwrap();
+    assert!(!plan_carries_local_ready(
+        &plan,
+        Some(other.unit()),
+        None,
+        oldest
+    ));
+}
+
+#[tokio::test]
 async fn localhost_handoff_rotates_twice_and_retires_old_signing_custody() {
     let endpoints = free_endpoints();
     let g = genesis_at(&endpoints);

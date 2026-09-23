@@ -674,6 +674,13 @@ impl StateNode {
     /// Drain bounded immediately actionable evidence. Finality always precedes
     /// new votes; runtime measures elapsed time separately via `timeout`.
     pub fn drive(&mut self) -> Result<bool> {
+        self.drive_with(|_| true)
+    }
+    /// A local readiness policy may withhold a fresh proposal prevote, but
+    /// verified proposal/QC evidence stays available for conflict detection.
+    /// Passing no proposal through the normal lock transition preserves a
+    /// previously locked vote target.
+    pub fn drive_with(&mut self, locally_ready: impl Fn(&StateProposal) -> bool) -> Result<bool> {
         if self.state()?.terminated() {
             return Ok(false);
         }
@@ -779,9 +786,12 @@ impl StateNode {
                 .cloned()
                 .collect();
             if phase == StatePhase::Proposal && proposals.len() == 1 {
-                self.apply(StateLockEvent::Prevote {
-                    proposal: Some(proposals[0].encode()?),
-                })?;
+                let proposal = if locally_ready(&proposals[0]) {
+                    Some(proposals[0].encode()?)
+                } else {
+                    None
+                };
+                self.apply(StateLockEvent::Prevote { proposal })?;
                 continue;
             }
             if phase == StatePhase::Prevote {

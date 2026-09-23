@@ -110,6 +110,28 @@ impl StateRuntime {
         let Some(plan) = self.handoff_plan(&certificate)? else {
             return Ok(None);
         };
+        let current_unit = self
+            .node
+            .signer_key()
+            .and_then(|key| state.authority().consensus_unit(key.as_bytes()))
+            .map(|unit| unit.id());
+        if self.handoff_setup.is_some() && current_unit.is_none() {
+            return Err(StateRuntimeError::Configuration(
+                "local signer absent from selected authority",
+            ));
+        }
+        if self.handoff_setup.is_some()
+            && !plan_carries_local_ready(
+                &plan,
+                current_unit,
+                self.next_custody
+                    .as_ref()
+                    .and_then(StatePeriodCustody::offer),
+                state.authority().oldest().id(),
+            )
+        {
+            return Ok(None);
+        }
         let mut operations = Vec::new();
         let mut rejected = Vec::new();
         let mut best = state

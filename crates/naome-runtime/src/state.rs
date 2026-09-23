@@ -13,6 +13,7 @@ mod schedule;
 mod tests;
 
 use ed25519_dalek::SigningKey;
+use naome_chain::StateRecord;
 use naome_consensus::state::StatePhase;
 use naome_ledger::{
     AuthorityUnitId, LedgerError, LedgerState, OperationId, ResolutionId, ValidatorId,
@@ -95,6 +96,26 @@ impl From<StateStorageError> for StateRuntimeError {
     }
 }
 type Result<T> = std::result::Result<T, StateRuntimeError>;
+
+/// Local willingness to sign a fresh proposal. An accepted candidate replaces
+/// the oldest unit, so that outgoing owner has no incoming READY obligation.
+/// Every other live owner needs the exact custody offer it can actually open.
+fn plan_carries_local_ready(
+    plan: &HandoffPlan,
+    current_unit: Option<AuthorityUnitId>,
+    local: Option<&NextPeriodKeys>,
+    oldest: AuthorityUnitId,
+) -> bool {
+    if plan.candidate().is_some() && current_unit == Some(oldest) {
+        return true;
+    }
+    match current_unit {
+        None => true,
+        Some(unit) => local.is_some_and(|offer| {
+            offer.unit() == unit && plan.offers().iter().any(|selected| selected == offer)
+        }),
+    }
+}
 
 /// Local owner and paths for durable per-parent keys and sealed handoff.
 pub struct StateHandoffSetup {
@@ -1117,10 +1138,10 @@ impl StateRuntime {
     }
     fn drive(&mut self) -> Result<()> {
         let before = self.state()?.height();
-        self.node.drive()?;
+        self.drive_node_with_local_ready()?;
         if self.state()?.height() == before {
             self.advance_handoff()?;
-            self.node.drive()?;
+            self.drive_node_with_local_ready()?;
         }
         if self.state()?.height() != before {
             self.on_height()?;
@@ -1136,6 +1157,45 @@ impl StateRuntime {
             self.phase_started = Instant::now();
         }
         self.enqueue_publications()?;
+        Ok(())
+    }
+    fn drive_node_with_local_ready(&mut self) -> Result<()> {
+        if self.handoff_setup.is_none() || self.node.position()?.is_none() {
+            self.node.drive()?;
+            return Ok(());
+        }
+        let signer = self
+            .node
+            .signer_key()
+            .ok_or(StateRuntimeError::Configuration(
+                "active local signer missing",
+            ))?;
+        let state = self.state()?;
+        let unit = state
+            .authority()
+            .consensus_unit(signer.as_bytes())
+            .ok_or(StateRuntimeError::Configuration(
+                "local signer absent from selected authority",
+            ))?
+            .id();
+        let oldest = state.authority().oldest().id();
+        let genesis = state.genesis().clone();
+        let local_offer = self
+            .next_custody
+            .as_ref()
+            .and_then(StatePeriodCustody::offer)
+            .cloned();
+        self.node.drive_with(|proposal| {
+            proposal.valid_quorum().is_some()
+                || StateRecord::decode(proposal.record_bytes(), &genesis).is_ok_and(|record| {
+                    plan_carries_local_ready(
+                        record.handoff_plan(),
+                        Some(unit),
+                        local_offer.as_ref(),
+                        oldest,
+                    )
+                })
+        })?;
         Ok(())
     }
     fn on_height(&mut self) -> Result<()> {

@@ -146,6 +146,7 @@ impl Lab {
             .success()
             .then(|| serde_json::from_slice(&output.stdout).unwrap())
     }
+    #[track_caller]
     fn wait(&self, index: usize, predicate: impl Fn(&Value) -> bool) -> Value {
         let start = Instant::now();
         loop {
@@ -154,13 +155,36 @@ impl Lab {
             {
                 return status;
             }
-            assert!(
-                start.elapsed() < Duration::from_secs(90),
-                "node {index} timeout; status={:?}; errors={}",
-                self.status(index),
-                fs::read_to_string(self.root.join(format!("node-{index}.errors")))
-                    .unwrap_or_default()
-            );
+            if start.elapsed() >= Duration::from_secs(90) {
+                let nodes: Vec<_> = (0..self.nodes.len())
+                    .map(|peer| {
+                        let status = self.status(peer);
+                        let errors =
+                            fs::read_to_string(self.root.join(format!("node-{peer}.errors")))
+                                .unwrap_or_default();
+                        let recent_errors: Vec<_> = errors.lines().rev().take(6).collect();
+                        serde_json::json!({
+                            "node": peer,
+                            "running": self.nodes[peer].is_some(),
+                            "height": status.as_ref().map(|s| &s["height"]),
+                            "head": status.as_ref().map(|s| &s["head"]),
+                            "authority": status.as_ref().map(|s| &s["authority"]),
+                            "position": status.as_ref().map(|s| &s["consensus_position"]),
+                            "active": status.as_ref().map(|s| &s["active"]),
+                            "queued": status.as_ref().map(|s| &s["queued"]),
+                            "pending": status.as_ref().map(|s| &s["pending_operations"]),
+                            "paid": status.as_ref().map(|s| &s["paid_completions"]),
+                            "recent_errors": recent_errors,
+                        })
+                    })
+                    .collect();
+                let caller = std::panic::Location::caller();
+                panic!(
+                    "node {index} timeout at {}:{}; public node diagnostics={nodes:?}",
+                    caller.file(),
+                    caller.line()
+                );
+            }
             thread::sleep(Duration::from_millis(40));
         }
     }
@@ -335,6 +359,78 @@ impl Lab {
             }
         }
     }
+    fn restore_four_keyed_slots(&self, phase: &str, first_quantifiers: usize) -> Value {
+        let started = Instant::now();
+        let mut settled = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| child.is_some())
+            .find_map(|(index, _)| self.status(index))
+            .expect("running validator status");
+        for attempt in 0..=3 {
+            if settled["active"].is_null()
+                && settled["queued"] == 0
+                && settled["authority"]["active_slots"] == 4
+            {
+                break;
+            }
+            assert!(
+                attempt < 3,
+                "{phase}: four keyed slots did not return after three periods"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(90),
+                "{phase}: four keyed reentry exceeded 90 seconds"
+            );
+            // Each distinct unpaid question must pass a real vote and handoff.
+            // Vary the statement as well as the file name so a known question
+            // cannot silently skip a period.
+            let mut statement = "forall(x,equal(x,x))".to_owned();
+            for variable in ["a", "b", "c", "d", "e", "f", "g", "h"]
+                .iter()
+                .take(first_quantifiers + attempt)
+            {
+                statement = format!("forall({variable},{statement})");
+            }
+            let label = format!("{phase}-reentry-{attempt}");
+            let source = self.root.join(format!("{label}.nao"));
+            fs::write(
+                &source,
+                format!("foundation = \"naome:zfc\"\nstatement = {statement}\n"),
+            )
+            .unwrap();
+            let ingress = (0..self.nodes.len())
+                .filter(|&index| self.nodes[index].is_some())
+                .find(|&index| {
+                    self.status(index)
+                        .is_some_and(|status| !status["consensus_position"].is_null())
+                })
+                .expect("active ingress for reentry question");
+            let submission = self.submit(ingress, 4, source, &label);
+            settled = self.wait(ingress, |status| {
+                assert!(
+                    started.elapsed() < Duration::from_secs(90),
+                    "{phase}: four keyed reentry exceeded 90 seconds"
+                );
+                if !status["active"].is_null() || status["queued"] != 0 {
+                    return false;
+                }
+                let question = raw(&["question".into(), self.config(ingress), submission.clone()]);
+                question.status.success()
+                    && serde_json::from_slice::<Value>(&question.stdout)
+                        .is_ok_and(|result| result["status"] == "NotApproved")
+            });
+        }
+        assert_eq!(settled["authority"]["active_slots"], 4);
+        self.assert_same(&[0, 1, 2, 3], &settled);
+        for index in 0..4 {
+            self.wait(index, |status| {
+                status["height"] == settled["height"] && !status["consensus_position"].is_null()
+            });
+        }
+        settled
+    }
 }
 impl Drop for Lab {
     fn drop(&mut self) {
@@ -368,11 +464,13 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         "--helper".into(),
         path(example("helper-h.nao")),
     ]);
-    for index in 0..4 {
+    // Leave the fourth owner offline through A's handoff so the later
+    // reentry path has a genuine vacant slot to restore.
+    for index in 0..3 {
         lab.start(index);
     }
     let initial = lab.wait(0, |s| s["height"] == 0);
-    for index in 1..4 {
+    for index in 1..3 {
         lab.wait(index, |s| s["height"] == 0);
     }
     let canonical = (0..4)
@@ -391,14 +489,24 @@ fn four_process_state_recovery_partition_and_independent_replay() {
     lab.approve(&[0, 1, 2], "a", &a);
     lab.solve(0, 4, &a_package, "a", &a);
     let first = lab.wait(0, |s| s["paid_completions"] == 1);
+    assert_eq!(first["authority"]["active_slots"], 3);
+    lab.start(3);
+    lab.wait(3, |s| {
+        s["state"] == first["state"] && s["consensus_position"].is_null()
+    });
     lab.assert_same(&[0, 1, 2, 3], &first);
     assert_eq!(
         command(&["question".into(), lab.config(0), a])["status"],
         "Completed"
     );
 
-    // Opening the dependent question is real work that lets an omitted healthy
-    // owner reoffer its slot before the original provider goes offline.
+    // A's final handoff left the offline owner's slot vacant. Drive a
+    // bounded genuine period before B so that owner can offer a new key:
+    // B's Voting window can close while a fourth offer is still pending.
+    let before_b = lab.restore_four_keyed_slots("before-b", 3);
+    assert_eq!(before_b["paid_completions"], 1);
+    // With four keyed slots established, B can test the provider-offline
+    // fetch and approval path across its full Voting window.
     let b_ingress = (0..4)
         .find(|&index| {
             lab.status(index)
@@ -500,62 +608,7 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         s["height"].as_u64().unwrap() >= post_c["height"].as_u64().unwrap()
             && s["paid_completions"] == 2
     });
-    let reentry_started = Instant::now();
-    let mut settled = lab.status(1).unwrap();
-    for attempt in 0..=3 {
-        if settled["active"].is_null()
-            && settled["queued"] == 0
-            && settled["authority"]["active_slots"] == 4
-        {
-            break;
-        }
-        assert!(
-            attempt < 3,
-            "four keyed slots did not return after three periods"
-        );
-        assert!(
-            reentry_started.elapsed() < Duration::from_secs(90),
-            "four keyed reentry exceeded 90 seconds"
-        );
-        let mut statement = "forall(x,equal(x,x))".to_owned();
-        for variable in ["a", "b", "c", "d", "e"].iter().take(3 + attempt) {
-            statement = format!("forall({variable},{statement})");
-        }
-        let source = lab.root.join(format!("reentry-{attempt}.nao"));
-        fs::write(
-            &source,
-            format!("foundation = \"naome:zfc\"\nstatement = {statement}\n"),
-        )
-        .unwrap();
-        let ingress = (0..4)
-            .find(|&index| {
-                lab.status(index)
-                    .is_some_and(|status| !status["consensus_position"].is_null())
-            })
-            .unwrap();
-        let label = format!("reentry-{attempt}");
-        let submission = lab.submit(ingress, 4, source, &label);
-        settled = lab.wait(ingress, |s| {
-            assert!(
-                reentry_started.elapsed() < Duration::from_secs(90),
-                "four keyed reentry exceeded 90 seconds"
-            );
-            if !s["active"].is_null() || s["queued"] != 0 {
-                return false;
-            }
-            let question = raw(&["question".into(), lab.config(ingress), submission.clone()]);
-            question.status.success()
-                && serde_json::from_slice::<Value>(&question.stdout)
-                    .is_ok_and(|status| status["status"] == "NotApproved")
-        });
-    }
-    assert_eq!(settled["authority"]["active_slots"], 4);
-    lab.assert_same(&[0, 1, 2, 3], &settled);
-    for index in 0..4 {
-        lab.wait(index, |status| {
-            status["height"] == settled["height"] && !status["consensus_position"].is_null()
-        });
-    }
+    let settled = lab.restore_four_keyed_slots("after-b", 6);
     assert_eq!(settled["paid_completions"], 2);
     assert_eq!(settled["claims"].as_array().unwrap().len(), 2);
 

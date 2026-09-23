@@ -243,7 +243,7 @@ impl StateRuntime {
             _ => Err("remote proof response does not match request".into()),
         }
     }
-    fn request_body(&mut self, body: &StateRequestBody) -> Result<StateResponseBody> {
+    pub(super) fn request_body(&mut self, body: &StateRequestBody) -> Result<StateResponseBody> {
         match body {
             StateRequestBody::Handshake => Ok(StateResponseBody::Ready),
             StateRequestBody::TimeReport(bytes) => {

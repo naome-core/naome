@@ -43,6 +43,17 @@ candidate joins. The candidate must match the oldest eligible queued intent's
 owner, keys, endpoint, receipt, and unconsumed claim. The record at `h` is
 agreed under `S_h`; its successor is not selected until sealed.
 
+Before proposing or prevoting a fresh record, a configured live node requires
+its exact locally anchored rotation offer in the plan, unless a valid candidate
+replaces its unit. A proposal carrying a verified earlier prevote quorum follows
+the ordinary lock rules. Otherwise a locally unready proposal takes the normal
+no-proposal transition: a locked signer supports its locked value and an unlocked
+signer votes NIL. The verified proposal remains retained for quorum processing
+and conflict detection. This local policy changes neither record validity nor
+agreement acceptance. It prevents a cached offline offer from displacing a late
+live owner's offer before agreement; it cannot restore a lost incoming quorum
+after the record is agreed.
+
 ## Two quorums and local retirement
 
 A verified agreement yields a seal context that binds genesis, height, record,
