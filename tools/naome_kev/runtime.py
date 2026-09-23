@@ -107,15 +107,43 @@ def _running(root, fingerprint, timeout=1):
     return info
 
 
+def _poll_owned(process):
+    """Reap an exclusively owned child without Popen's interruptible wait lock."""
+    if process.returncode is not None:
+        return process.returncode
+    try:
+        pid, status = os.waitpid(process.pid, os.WNOHANG)
+    except ChildProcessError:
+        # A signal can raise after waitpid reaps the child but before Python
+        # stores its status. Never report an unknown exit as setup success.
+        process.returncode = 125
+    else:
+        if pid == process.pid:
+            process.returncode = os.waitstatus_to_exitcode(status)
+    return process.returncode
+
+
+def _wait_owned(process, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        result = _poll_owned(process)
+        if result is not None:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        time.sleep(min(0.05, remaining))
+
+
 def _terminate_owned(process):
     """Only a Popen session created here, including descendants of its leader."""
-    if process.poll() is None:
+    if _poll_owned(process) is None:
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
         try:
-            process.wait(timeout=2)
+            _wait_owned(process, 2)
         except subprocess.TimeoutExpired:
             pass
     # A leader may exit promptly while its loader/download descendant ignores
@@ -124,7 +152,7 @@ def _terminate_owned(process):
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    process.wait(timeout=2)
+    _wait_owned(process, 2)
 
 
 def _ensure(settings, deadline, progress=None):
@@ -176,7 +204,7 @@ def _ensure(settings, deadline, progress=None):
                 if info and info.get('state') in ('failed', 'stopping'):
                     raise RuntimeFailure('startup_failed', 'KEV startup failed or was cancelled.',
                                          'Inspect the private worker.log; free memory and run start again.')
-                if process is not None and process.poll() is not None:
+                if process is not None and _poll_owned(process) is not None:
                     raise RuntimeFailure('worker_exited', 'The KEV worker exited before becoming ready.',
                                          'Inspect the private worker.log; free memory and run start again.')
                 if progress and time.monotonic() - last_update >= 10:

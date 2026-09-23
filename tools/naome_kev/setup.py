@@ -211,7 +211,7 @@ def source(root):
 
 
 def _run(root, argv, env, code):
-    from .runtime import _terminate_owned
+    from .runtime import _terminate_owned, _wait_owned
     descriptor = os.open(root / 'setup.log', os.O_CREAT | os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'ab') as log:
         metadata = os.fstat(log.fileno())
@@ -224,7 +224,7 @@ def _run(root, argv, env, code):
             process = subprocess.Popen(argv, env=env, stdout=log, stderr=log, start_new_session=True)
             while True:
                 try:
-                    returncode = process.wait(timeout=PROGRESS_SECONDS)
+                    returncode = _wait_owned(process, PROGRESS_SECONDS)
                     break
                 except subprocess.TimeoutExpired:
                     progress('Kev setup is still working (%.0f seconds in this phase). Details: %s' %
