@@ -142,6 +142,20 @@ history requests only after an authenticated peer accepts an exact-parent offer,
 and reuses status probes. Unconfirmed peers and stalled heights retain repair.
 The full CI speed gate remains mandatory.
 
+The [observation and repair measurement](../docs/mvp/evidence/handoff-observation-ci.json)
+on `e4ce11a`, in [CI run 35897139541](https://github.com/naome-core/naome/actions/runs/35897139541),
+passed the same Docker checks in 614.499 seconds (1.796x), still below the required
+speedup. It used the identical Ubuntu 24.04 runner image `20260907.300.1` as the
+baseline. Observation fell to 64.937 seconds; receipt, opening and settlement
+still accounted for 565.664 seconds. The next latency change overlaps at most
+two ordinary consensus messages per configured peer within the existing global
+request and byte caps. Outbound handoff, history, proof and user-action requests
+remain serial per peer. Configured peers allow four combined protocol streams
+for two sends and two receives; recovery retains its two-stream limit. Request
+and response decoding each retain at most two events within the same global
+frame and byte budgets. Observation polls every 0.2 seconds, recorded in the report, to reduce
+delay between confirmed workload stages without shortening certified windows.
+
 ## Authority setup and supervision
 
 Canonical setup creates fresh genesis and refuses existing output, invalid or

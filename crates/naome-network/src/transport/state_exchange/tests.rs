@@ -18,6 +18,38 @@ fn codec() -> StateCodec {
         responses: Arc::new(InboundRetentionBudget::new(2, 4 * MAX)),
     }
 }
+
+#[test]
+fn peer_retention_releases_only_the_dropped_slot() {
+    let peer = identity::Keypair::generate_ed25519().public().to_peer_id();
+    let budget = Arc::new(InboundRetentionBudget::with_peer_limit(3, 0, 2));
+    let mut first = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
+    let mut second = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
+    let mut third = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
+    assert!(first.bind_peer(peer));
+    assert!(second.bind_peer(peer));
+    assert!(!third.bind_peer(peer));
+    drop(first);
+    assert!(third.bind_peer(peer));
+    let mut replacement = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
+    assert!(!replacement.bind_peer(peer));
+    drop(second);
+    assert!(replacement.bind_peer(peer));
+
+    let recovery = Arc::new(InboundRetentionBudget::new(2, 0));
+    let mut one = InboundRetentionBudget::try_acquire(&recovery, 0).unwrap();
+    let mut denied = InboundRetentionBudget::try_acquire(&recovery, 0).unwrap();
+    assert!(one.bind_peer(peer));
+    assert!(!denied.bind_peer(peer));
+
+    let shared = Arc::new(InboundRetentionBudget::with_peer_limit(2, 0, 2));
+    let mut recovery_first = InboundRetentionBudget::try_acquire(&shared, 0).unwrap();
+    let mut recovery_second = InboundRetentionBudget::try_acquire(&shared, 0).unwrap();
+    assert!(recovery_first.bind_peer_exclusive(peer));
+    assert!(!recovery_second.bind_peer_exclusive(peer));
+    drop(recovery_first);
+    assert!(recovery_second.bind_peer_exclusive(peer));
+}
 #[test]
 fn state_codec_rejects_malformed_frames_and_releases_all_custody() {
     let mut codec = codec();

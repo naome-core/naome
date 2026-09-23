@@ -6,10 +6,11 @@ archives. The commands below describe the research workflow within that run.
 
 These commands operate a four-validator canonical state genesis on Unix. The
 current qualification target is four independent local processes with separate
-keys, journals, anchors, and authenticated network connections. The [completed integration lab report](evidence/final-integration-lab.json) records actual
-300/120/120-second windows, a real agent review, and four local processes.
-Accelerated tests and fake-provider adapter tests remain supplementary evidence.
-This qualification does not establish multi-machine operation or public-network
+keys, journals, anchors, and authenticated network connections. Current process
+and Docker checks use explicit accelerated timing profiles. The historical
+[integration lab report](evidence/final-integration-lab.json) records actual
+300/120/120-second windows and a real agent review for its named state-v1 snapshot.
+These checks do not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
@@ -59,10 +60,12 @@ Setup accepts `lab`, `research`, `short-test`, or `ci-test`. `lab` uses 300-seco
 120-second commitment, 120-second reveal, and 1,800-second queue windows.
 `research` uses seven days of voting, one day for commitments, one day for
 reveals, and a 30-day queue lifetime. That long-running profile is a separate
-later qualification; the initial MVP acceptance uses `lab`. `short-test` uses
+later qualification; the original state-v1 acceptance used `lab`. `short-test` uses
 15/8/8/120 seconds; `ci-test` uses 1/8/8/120 seconds. Both must be labeled
-accelerated testing, and neither qualifies the full Lab or research windows.
-Their timing is committed in genesis. `compact` changes
+accelerated testing. Current authority-period process and Docker acceptance use
+these profiles, with separate signed-time tests for every complete Lab and
+research phase boundary. Neither establishes a full real-time Lab or research
+run on the current implementation. Their timing is committed in genesis. `compact` changes
 resource limits before genesis, while preserving the selected timing windows and reward rules:
 
 | Bound | Default, 8,192 records | Compact, 256 records |
@@ -229,11 +232,13 @@ pilot. The candidate's primary endpoint must exactly match its finalized intent.
 
 ```sh
 "$BIN" export "$C0" "$RUN/candidate-history"
+printf '["127.0.0.1:44100","127.0.0.1:44101","127.0.0.1:44102","127.0.0.1:44103","127.0.0.1:44104","127.0.0.1:44105","127.0.0.1:44106","127.0.0.1:44107"]\n' \
+  > "$RUN/recovery-endpoints.json"
 "$BIN" candidate-setup "$RUN/candidate" "$RUN/genesis.bin" \
   "$RUN/candidate-history" "$RUN/accounts/researcher.key" "$FAMILY_ID" \
   "$RUN/candidate-consensus.key" "$RUN/candidate-transport.key" \
   127.0.0.1:45100 127.0.0.1:45104 "$RUN/recovery-endpoints.json"
-"$VALIDATOR" "$RUN/candidate/node.json"
+"$VALIDATOR" start "$RUN/candidate/node.json"
 ```
 
 Provisioning verifies the paid claim, current intent, keys, endpoint and archive.

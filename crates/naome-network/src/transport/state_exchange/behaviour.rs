@@ -23,14 +23,22 @@ pub(in crate::transport) struct Behaviour {
     cursor: usize,
 }
 impl Behaviour {
-    fn configured_inner(config: Option<&StateConfig>) -> Inner {
+    fn configured_inner(config: Option<&StateConfig>, peer_limit: usize) -> Inner {
         let maximum = config.map_or(0, |c| c.maximum);
         let codec = StateCodec {
             context: config.map(|c| c.context),
             maximum,
             global: config.map(|c| Arc::clone(&c.budget)),
-            requests: Arc::new(InboundRetentionBudget::new(2, 4 * maximum)),
-            responses: Arc::new(InboundRetentionBudget::new(2, 4 * maximum)),
+            requests: Arc::new(InboundRetentionBudget::with_peer_limit(
+                2,
+                4 * maximum,
+                peer_limit,
+            )),
+            responses: Arc::new(InboundRetentionBudget::with_peer_limit(
+                2,
+                4 * maximum,
+                peer_limit,
+            )),
         };
         let protocols = config.map(|_| (STATE_PROTOCOL, request_response::ProtocolSupport::Full));
         Inner::with_codec(
@@ -38,7 +46,9 @@ impl Behaviour {
             protocols,
             request_response::Config::default()
                 .with_request_timeout(REQUEST_TIMEOUT)
-                .with_max_concurrent_streams(2),
+                // libp2p counts inbound and outbound workers together. Two
+                // configured requests in each direction need four workers.
+                .with_max_concurrent_streams(2 * peer_limit),
         )
     }
     pub(in crate::transport) fn new(
@@ -47,11 +57,11 @@ impl Behaviour {
     ) -> Self {
         Self {
             peers: peers
-                .map(|peer| (peer, Self::configured_inner(config)))
+                .map(|peer| (peer, Self::configured_inner(config, 2)))
                 .collect(),
             recovery: config
                 .and_then(|c| c.recovery_registry.as_ref())
-                .map(|_| Self::configured_inner(config)),
+                .map(|_| Self::configured_inner(config, 1)),
             cursor: 0,
         }
     }

@@ -17,6 +17,7 @@ from state_backend import Backend, BINARIES, command
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+OBSERVATION_POLL_SECONDS = 0.2
 
 
 def atomic(path, value):
@@ -54,6 +55,7 @@ class Qualification:
             'scope': 'four stable authority slots with sealed key rotation; canonical records, authenticated operations and certified phase transitions; accelerated qualification',
             'requested_minimum_heights': args.heights, 'genesis_run_records': 256, 'timing_profile': args.timing,
             'delay_ms_each_direction_per_chunk': args.delay_ms,
+            'observation_poll_seconds': OBSERVATION_POLL_SECONDS,
             'deadline_seconds': args.deadline_seconds, 'consensus_commands_sent': 0,
             'workload': 'alternating independent owner submissions and full-window NotApproved settlement; proof publication/citation separately qualified by the four-process Rust suite',
             'limits': {'sampled_role_disk_bytes': 512 * 1024 * 1024, 'container_memory_bytes': 512 * 1024 * 1024},
@@ -193,7 +195,7 @@ class Qualification:
             values = self.observe(indices, starting=starting)
             if len(values) == len(indices) and predicate(values):
                 return values
-            time.sleep(.5)
+            time.sleep(OBSERVATION_POLL_SECONDS)
         raise RuntimeError(f'deadline: {label}')
 
     def converge(self, indices, height):

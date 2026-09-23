@@ -3,6 +3,13 @@ use naome_consensus::state::StatePublication;
 use naome_protocol::state_exchange::{StateContext, StateRequest};
 use sha2::{Digest, Sha256};
 
+fn ordinary_parallel_body(body: &StateRequestBody) -> bool {
+    matches!(
+        body,
+        StateRequestBody::Proposal(_) | StateRequestBody::Vote(_) | StateRequestBody::TimeReport(_)
+    )
+}
+
 impl StateRuntime {
     fn send_request(
         &mut self,
@@ -84,7 +91,7 @@ impl StateRuntime {
         {
             // An accepted offer was checked against this exact selected
             // parent by the peer. Its already-durable finality need not
-            // occupy the one outbound flight to that peer again.
+            // occupy the serial proof delivery slot to that peer again.
             return Ok(());
         }
         if matches!(&body, StateRequestBody::UserAction(_)) {
@@ -269,7 +276,7 @@ impl StateRuntime {
             // The durable agreement carries the proposal and its complete
             // outgoing quorum. Peers can verify it directly. Retrying ordinary
             // round traffic now only delays READY and TERMINAL on the same
-            // bounded, single-flight peer connection.
+            // bounded peer connection, where sealing remains serial.
             self.outbox.retain(|delivery| {
                 !matches!(
                     delivery.body,
@@ -425,19 +432,28 @@ impl StateRuntime {
     }
     pub(super) fn flush(&mut self) -> Result<()> {
         self.expire_proof_fetches();
+        let mut deferred_serial = BTreeSet::new();
         for fetch in &mut self.proof_fetches {
             if fetch.outcome.is_none() && fetch.ticket.is_none() {
                 // Transient disconnected/already-pending capacity retries are
                 // bounded by this fetch's fixed overall deadline.
-                if let Some(active) = self.network.active_mut()
-                    && let Ok(ticket) = active.request_state(
+                if let Some(active) = self.network.active_mut() {
+                    match active.request_state(
                         fetch.peer,
                         StateRequestBody::Proof {
                             proof_id: fetch.proof,
                         },
-                    )
-                {
-                    fetch.ticket = Some(ticket);
+                    ) {
+                        Ok(ticket) => fetch.ticket = Some(ticket),
+                        Err(naome_network::StateStartError::Transport(
+                            naome_network::RequestStartError::AlreadyPending(_),
+                        )) => {
+                            // The proof tried first; do not let an ordinary
+                            // second flight leapfrog it during this flush.
+                            deferred_serial.insert(fetch.peer);
+                        }
+                        Err(_) => {}
+                    }
                 }
             }
         }
@@ -474,12 +490,32 @@ impl StateRuntime {
             if delivery.height != self.state()?.height() {
                 continue;
             }
-            if self.disabled.contains(&delivery.peer)
+            let mut same_peer = self
+                .flights
+                .iter()
+                .filter(|flight| flight.delivery.peer == delivery.peer);
+            let first = same_peer.next();
+            let has_second = same_peer.next().is_some();
+            let static_peer = self
+                .network
+                .active()
+                .is_some_and(|network| network.is_configured_peer(&delivery.peer))
                 || self
-                    .flights
-                    .iter()
-                    .any(|f| f.delivery.peer == delivery.peer)
-            {
+                    .network
+                    .staged()
+                    .is_some_and(|network| network.is_configured_peer(&delivery.peer));
+            let ordinary_pair = first
+                .is_some_and(|flight| ordinary_parallel_body(&flight.delivery.body))
+                && !has_second
+                && static_peer
+                && !deferred_serial.contains(&delivery.peer)
+                && ordinary_parallel_body(&delivery.body);
+            if self.disabled.contains(&delivery.peer) || (first.is_some() && !ordinary_pair) {
+                // A serial item encountered earlier in priority order must
+                // not be leapfrogged by a second ordinary request this pass.
+                if first.is_some() && !ordinary_parallel_body(&delivery.body) {
+                    deferred_serial.insert(delivery.peer);
+                }
                 self.outbox.push_back(delivery);
                 continue;
             }

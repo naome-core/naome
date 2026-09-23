@@ -380,6 +380,116 @@ async fn respond(
         },
     }}}).await.unwrap();
 }
+
+#[tokio::test]
+async fn ordinary_deliveries_share_two_slots_without_leapfrogging_a_seal() {
+    let (_directory, _anchors, mut runtime, server, ..) = pair().await;
+    let peer = server.local_peer_id();
+    runtime
+        .enqueue(peer, StateRequestBody::Proposal(vec![1; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        1
+    );
+
+    runtime
+        .enqueue(peer, StateRequestBody::Agreement(vec![2; 80].into()))
+        .unwrap();
+    runtime
+        .enqueue(peer, StateRequestBody::Vote(vec![3; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        1
+    );
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .any(|d| matches!(d.body, StateRequestBody::Agreement(_)))
+    );
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .any(|d| matches!(d.body, StateRequestBody::Vote(_)))
+    );
+
+    // With no serial item ahead, the ordinary vote can take the second slot.
+    runtime
+        .outbox
+        .retain(|d| !matches!(d.body, StateRequestBody::Agreement(_)));
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        2
+    );
+    runtime
+        .enqueue(peer, StateRequestBody::TimeReport(vec![4; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        2
+    );
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .any(|d| matches!(d.body, StateRequestBody::TimeReport(_)))
+    );
+}
+
+#[tokio::test]
+async fn waiting_proof_fetch_keeps_a_second_ordinary_delivery_queued() {
+    let (_directory, _anchors, mut runtime, server, proof, ..) = pair().await;
+    let peer = server.local_peer_id();
+    runtime
+        .enqueue(peer, StateRequestBody::Proposal(vec![1; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    runtime.start_proof_fetch(peer, proof).unwrap();
+    runtime
+        .enqueue(peer, StateRequestBody::Vote(vec![2; 80].into()))
+        .unwrap();
+    runtime.flush().unwrap();
+    assert!(
+        runtime
+            .proof_fetches
+            .iter()
+            .any(|fetch| fetch.peer == peer && fetch.ticket.is_none())
+    );
+    assert_eq!(
+        runtime
+            .flights
+            .iter()
+            .filter(|f| f.delivery.peer == peer)
+            .count(),
+        1
+    );
+    assert!(runtime.outbox.iter().any(|delivery| {
+        delivery.peer == peer && matches!(delivery.body, StateRequestBody::Vote(_))
+    }));
+}
 #[tokio::test]
 async fn actual_noise_proof_fetch_checks_selected_bytes_and_bounds_retention() {
     let (_directory, _anchors, mut runtime, mut server, proof, root, bytes) = pair().await;

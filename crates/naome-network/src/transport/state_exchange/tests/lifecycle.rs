@@ -123,6 +123,213 @@ async fn simultaneous_bidirectional_requests_keep_independent_peer_and_request_c
 }
 
 #[tokio::test]
+async fn two_requests_each_way_complete_while_all_four_streams_are_held() {
+    fn finish_exact(tickets: &mut [Option<StateTicket>; 2], event: StateEvent) {
+        let index = tickets
+            .iter()
+            .position(|ticket| {
+                ticket
+                    .as_ref()
+                    .is_some_and(|ticket| ticket.accepts_event(&event))
+            })
+            .expect("response matches one exact ticket");
+        drop(
+            tickets[index]
+                .take()
+                .unwrap()
+                .complete(event)
+                .unwrap()
+                .unwrap(),
+        );
+    }
+
+    let (mut a, mut b) = pair().await;
+    let mut a_tickets = [
+        Some(
+            a.request_state(
+                b.local_peer_id(),
+                StateRequestBody::Proposal(vec![1; 80].into()),
+            )
+            .unwrap(),
+        ),
+        Some(
+            a.request_state(
+                b.local_peer_id(),
+                StateRequestBody::Vote(vec![2; 80].into()),
+            )
+            .unwrap(),
+        ),
+    ];
+    let mut b_tickets = [
+        Some(
+            b.request_state(
+                a.local_peer_id(),
+                StateRequestBody::Proposal(vec![3; 80].into()),
+            )
+            .unwrap(),
+        ),
+        Some(
+            b.request_state(
+                a.local_peer_id(),
+                StateRequestBody::Vote(vec![4; 80].into()),
+            )
+            .unwrap(),
+        ),
+    ];
+    let mut inbound_a = Vec::new();
+    let mut inbound_b = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while inbound_a.len() < 2 || inbound_b.len() < 2 {
+            tokio::select! {
+                event = a.next_event() => match event {
+                    NetworkEvent::InboundState(inbound) => inbound_a.push(inbound),
+                    NetworkEvent::OutboundState(_) => panic!("A request failed before a response was sent"),
+                    _ => {}
+                },
+                event = b.next_event() => match event {
+                    NetworkEvent::InboundState(inbound) => inbound_b.push(inbound),
+                    NetworkEvent::OutboundState(_) => panic!("B request failed before a response was sent"),
+                    _ => {}
+                },
+            }
+        }
+    }).await.expect("both peers receive two requests before either replies");
+    assert_eq!(a.pending_budget.active.load(Ordering::Relaxed), 2);
+    assert_eq!(b.pending_budget.active.load(Ordering::Relaxed), 2);
+    for inbound in inbound_a {
+        a.respond_state(inbound, StateResponseBody::Accepted)
+            .unwrap();
+    }
+    for inbound in inbound_b {
+        b.respond_state(inbound, StateResponseBody::Accepted)
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while a_tickets.iter().any(Option::is_some) || b_tickets.iter().any(Option::is_some) {
+            tokio::select! {
+                event = a.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                    finish_exact(&mut a_tickets, event);
+                },
+                event = b.next_event() => if let NetworkEvent::OutboundState(event) = event {
+                    finish_exact(&mut b_tickets, event);
+                },
+            }
+        }
+    })
+    .await
+    .expect("all four exact responses complete");
+    assert_eq!(a.pending_budget.active.load(Ordering::Relaxed), 0);
+    assert_eq!(b.pending_budget.active.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn two_ordinary_requests_keep_distinct_tickets_and_retained_peer_slots() {
+    let (mut a, mut b) = pair().await;
+    let peer = b.local_peer_id();
+    let proposal = a
+        .request_state(peer, StateRequestBody::Proposal(vec![7; 80].into()))
+        .unwrap();
+    let vote = a
+        .request_state(peer, StateRequestBody::Vote(vec![8; 80].into()))
+        .unwrap();
+    assert!(matches!(
+        a.request_state(peer, StateRequestBody::TimeReport(vec![9; 80].into())),
+        Err(StateStartError::Transport(
+            RequestStartError::AlreadyPending(_)
+        ))
+    ));
+    let mut inbound_proposal = None;
+    let mut inbound_vote = None;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while inbound_proposal.is_none() || inbound_vote.is_none() {
+            tokio::select! {
+                _ = a.next_event() => {},
+                event = b.next_event() => if let NetworkEvent::InboundState(inbound) = event {
+                    match inbound.request().body() {
+                        StateRequestBody::Proposal(_) => inbound_proposal = Some(inbound),
+                        StateRequestBody::Vote(_) => inbound_vote = Some(inbound),
+                        other => panic!("unexpected request: {other:?}"),
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    b.respond_state(inbound_vote.unwrap(), StateResponseBody::Accepted)
+        .unwrap();
+    let vote_event = tokio::time::timeout(Duration::from_secs(10), async { loop {
+        tokio::select! {
+            event = a.next_event() => if let NetworkEvent::OutboundState(event) = event { break event; },
+            _ = b.next_event() => {},
+        }
+    } }).await.unwrap();
+    assert!(vote.accepts_event(&vote_event));
+    assert!(!proposal.accepts_event(&vote_event));
+    let retained_vote = vote.complete(vote_event).unwrap().unwrap();
+    b.respond_state(inbound_proposal.unwrap(), StateResponseBody::Accepted)
+        .unwrap();
+    let proposal_event = tokio::time::timeout(Duration::from_secs(10), async { loop {
+        tokio::select! {
+            event = a.next_event() => if let NetworkEvent::OutboundState(event) = event { break event; },
+            _ = b.next_event() => {},
+        }
+    } }).await.unwrap();
+    assert!(proposal.accepts_event(&proposal_event));
+    let retained_proposal = proposal.complete(proposal_event).unwrap().unwrap();
+    assert!(matches!(
+        a.request_state(peer, StateRequestBody::TimeReport(vec![9; 80].into())),
+        Err(StateStartError::Transport(
+            RequestStartError::AlreadyPending(_)
+        ))
+    ));
+    drop(retained_vote);
+    let third = a
+        .request_state(peer, StateRequestBody::TimeReport(vec![9; 80].into()))
+        .unwrap();
+    drop(retained_proposal);
+    let third_event = exchange(&mut a, &mut b, StateResponseBody::Accepted).await;
+    drop(third.complete(third_event).unwrap().unwrap());
+    assert_eq!(a.pending_budget.active.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn proof_and_ordinary_requests_remain_exclusive_in_both_orders() {
+    let (mut a, mut b) = pair().await;
+    let peer = b.local_peer_id();
+    let proof = StateRequestBody::Proof {
+        proof_id: naome_proof::ProofId::from_bytes([3; 32]),
+    };
+    let ordinary = StateRequestBody::Proposal(vec![7; 80].into());
+    let proof_ticket = a.request_state(peer, proof.clone()).unwrap();
+    assert!(matches!(
+        a.request_state(peer, ordinary.clone()),
+        Err(StateStartError::Transport(
+            RequestStartError::AlreadyPending(_)
+        ))
+    ));
+    drop(
+        proof_ticket
+            .complete(exchange(&mut a, &mut b, StateResponseBody::Unavailable).await)
+            .unwrap()
+            .unwrap(),
+    );
+    let ordinary_ticket = a.request_state(peer, ordinary).unwrap();
+    assert!(matches!(
+        a.request_state(peer, proof),
+        Err(StateStartError::Transport(
+            RequestStartError::AlreadyPending(_)
+        ))
+    ));
+    drop(
+        ordinary_ticket
+            .complete(exchange(&mut a, &mut b, StateResponseBody::Accepted).await)
+            .unwrap()
+            .unwrap(),
+    );
+}
+
+#[tokio::test]
 async fn foreign_network_ticket_and_duplicate_terminal_cannot_release_live_custody() {
     let (mut a, mut b) = pair().await;
     let peer = b.local_peer_id();

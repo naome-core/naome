@@ -247,8 +247,9 @@ impl StateNetwork {
         &self,
         peer_id: PeerId,
         transport_connected: bool,
+        body: &StateRequestBody,
     ) -> Result<(usize, PendingPermit), RequestStartError> {
-        let peer_index = self.preflight_request(peer_id, transport_connected)?;
+        let peer_index = self.preflight_request(peer_id, transport_connected, body)?;
         PendingBudget::try_acquire(&self.pending_budget)
             .map(|permit| (peer_index, permit))
             .ok_or(RequestStartError::GlobalLimit {
@@ -260,17 +261,25 @@ impl StateNetwork {
         &self,
         peer_id: PeerId,
         transport_connected: bool,
+        body: &StateRequestBody,
     ) -> Result<usize, RequestStartError> {
         let sessions = &self.swarm.behaviour().sessions;
         let Some(peer_index) = sessions.peer_index(&peer_id) else {
             return Err(RequestStartError::UnknownPeer(peer_id));
         };
-        if self
+        let mut same_peer = 0;
+        for pending in self
             .pending
             .values()
-            .any(|pending| pending.peer_index == Some(peer_index))
+            .filter(|pending| pending.peer_index == Some(peer_index))
         {
-            return Err(RequestStartError::AlreadyPending(peer_id));
+            same_peer += 1;
+            if same_peer >= 2
+                || !ordinary_parallel_body(body)
+                || !ordinary_parallel_body(pending.request.body())
+            {
+                return Err(RequestStartError::AlreadyPending(peer_id));
+            }
         }
         let session_connected = sessions
             .connection_status_at(peer_index)
@@ -405,6 +414,13 @@ impl StateNetwork {
             }
         }
     }
+}
+
+fn ordinary_parallel_body(body: &StateRequestBody) -> bool {
+    matches!(
+        body,
+        StateRequestBody::Proposal(_) | StateRequestBody::Vote(_) | StateRequestBody::TimeReport(_)
+    )
 }
 pub(crate) fn yamux_config(max_streams: usize) -> yamux::Config {
     let mut config = yamux::Config::default();

@@ -113,7 +113,7 @@ pub(super) struct WireResponse {
 }
 pub(super) struct PendingState {
     pub(super) peer_index: Option<usize>,
-    request: StateRequest,
+    pub(super) request: StateRequest,
     digest: [u8; 32],
     custody: Arc<Custody>,
     permit: PendingPermit,
@@ -491,7 +491,11 @@ impl StateNetwork {
             ),
             maximum,
             budget: Arc::new(InboundRetentionBudget::new(frames, bytes)),
-            outbound: Arc::new(InboundRetentionBudget::new(super::MAX_PENDING_REQUESTS, 0)),
+            outbound: Arc::new(InboundRetentionBudget::with_peer_limit(
+                super::MAX_PENDING_REQUESTS,
+                0,
+                2,
+            )),
             listen,
             lane,
             selected_authority: authority.id(),
@@ -718,7 +722,7 @@ impl StateNetwork {
                 .blocked_peers()
                 .contains(&peer);
         let (peer_index, permit) = self
-            .acquire_request_permit(peer, connected)
+            .acquire_request_permit(peer, connected, request.body())
             .map_err(StateStartError::Transport)?;
         let mut outbound_slot = InboundRetentionBudget::try_acquire(&config.outbound, 0)
             .ok_or(StateStartError::Capacity)?;
@@ -827,7 +831,7 @@ impl StateNetwork {
             PendingBudget::try_acquire(&self.pending_budget).ok_or(StateStartError::Capacity)?;
         let mut outbound_slot = InboundRetentionBudget::try_acquire(&config.outbound, 0)
             .ok_or(StateStartError::Capacity)?;
-        if !outbound_slot.bind_peer(peer) {
+        if !outbound_slot.bind_peer_exclusive(peer) {
             return Err(StateStartError::Transport(
                 RequestStartError::AlreadyPending(peer),
             ));
