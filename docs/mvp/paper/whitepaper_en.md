@@ -13,7 +13,7 @@ NAOME's research path can span many sealed records. An unapproved or expired att
 
 [FIG:system]
 
-[CAPTION] The research path feeds a reusable library and can create a later join claim. Every record follows agreement and sealing. A nonterminal seal selects the next electorate; only an admitted join changes its owners.
+[CAPTION] Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. A terminal seal ends the bounded run.
 
 A proposal combines a readable purpose with an exact mathematical task. Validator owners judge whether to authorize it; contributors seek a proof of an approved conclusion under the declared Foundation, or formal rulebook. Approval expresses a research preference, while checking establishes derivability. The shared history records both without treating either as evidence for the other.
 
@@ -265,16 +265,17 @@ ordinary voting rights. Old transport identity closes before TERMINAL
 release. A saved signature can be resent after a crash; the old signing
 capability cannot be reconstructed to repair a failed seal.
 
-Deleting a local secret does not retire copied keys, backups or regenerating
-seeds. Effective retirement must cover every signing path; a height label on
-an Ed25519 signature cannot enforce it. Vacant and unavailable slots retain
-their quorum weight. Handoffs need no membership overlap, but still need three
-reachable incoming and three reachable outgoing signers.
+Managed local retirement cannot erase copied keys, external backups or
+regenerating seeds. Operators must attest that every external signing path is
+retired; a height label on an Ed25519 signature cannot enforce it. Vacant and
+unavailable slots retain their quorum weight. Handoffs need no membership
+overlap, but still need three reachable incoming and three reachable outgoing
+signers.
 
 An outgoing unit remains responsible for TERMINAL even if its next slot is
 vacant or replaced. After old-period transport closes, a separately authorized
-recovery channel may relay saved signatures and finality evidence without
-granting an incoming vote or reviving old signing power. Peers verify a
+fresh owner-authenticated recovery channel may relay saved signatures and
+finality evidence without granting an incoming vote or reviving old signing power. Peers verify a
 complete seal against their selected parent before adopting its successor.
 Late recovery also depends on continued access to that sealed history.
 
@@ -321,7 +322,7 @@ At opening, an exact target already answered by an admitted unpaid helper closes
 
 The four-slot handoff profile includes bounded account registration, claim-backed finalized join intent, one contribution-ordered replacement per sealed transition, stable-slot proposer priorities, per-height key rotation and incoming READY plus outgoing TERMINAL quorums. Broader public-network rules remain to be defined for multiple simultaneous research attempts, joint authorship and separate recipients, historical-key security across external backups, sustainable recovery, reserve spending and live amendments. The exposure-service cycle and amendment-cycle duration and boundaries also remain undefined; neither is an agreement round, research attempt, voting window or signing period.
 
-Finite bounds on records, storage and consensus retries do not establish continuous operation. That requires safe storage, synchronization and upgrade rules. Formal proof validity and the membership rule alone do not establish resistance to cheap-proof farming, manufactured citations, agenda censorship, concentrated ownership or historical-key compromise.
+The four-slot profile's genesis bounds records, storage and consensus retries; restart cannot reset those bounds. Such finite bounds do not establish continuous operation, which requires safe storage, synchronization and upgrade rules. Formal proof validity and the membership rule alone do not establish resistance to cheap-proof farming, manufactured citations, agenda censorship, concentrated ownership or historical-key compromise.
 
 ### 9.3. Required operating properties
 
@@ -419,7 +420,7 @@ Outgoing signers and weights are fixed throughout a height. Proposer priorities 
 
 A proposer reuses its retained valid value and round, if any, or proposes a fresh value. An unlocked signer can prevote a valid proposal. A locked signer prevotes the proposed value if it matches the lock, or unlocks for matching verified quorum evidence strictly newer than its lock and below the current round. Otherwise it prevotes its locked value.
 
-A continuing owner with prepared fresh keys declines an unconstrained new proposal that omits its offer; valid candidate replacement is permitted. Existing locks and proposals carrying verified earlier quorums follow the ordinary lock rules. This preserves a late owner's opportunity to prepare the next period, but cannot recover an agreed transition after its incoming quorum is lost.
+Before proposing or prevoting an unconstrained fresh record, a continuing signer requires its exact locally anchored rotation offer in the plan, unless a valid candidate replaces its unit. A proposal carrying a verified earlier prevote quorum follows the ordinary lock rules instead. Without the local offer, an unlocked signer prevotes NIL and a locked signer prevotes its locked value; a verified proposal remains retained for quorum and conflict checks. This protects a late owner's opportunity to prepare the next period, but cannot recover an agreed transition after its incoming quorum is lost.
 
 From prevoting onward, current-round quorum prevotes that match a valid current proposal update the retained value and round. While the signer is prevoting, they also establish its lock and permit precommit. Evidence received after a NIL precommit updates retention but permits no second precommit. Without a proposal, including on proposal timeout, a signer prevotes its locked value or NIL if unlocked. Quorum NIL prevotes or timeout while prevoting cause NIL precommit.
 
@@ -450,14 +451,15 @@ commitments, and both snapshot IDs. Only the complete envelope selects the
 successor and activates ordinary incoming signing.
 
 After a crash, saved signatures can be resent, but an old signing capability
-may not be restored to repair a failed seal. Retirement includes external
-copies, seeds and alternative signing routes; deleting local files or labeling
+may not be restored to repair a failed seal. Local custody retires managed
+keys; external copies, backups, regenerating seeds and alternative signing
+routes require operator attestation. Deleting local files or labeling
 signatures with heights is insufficient. If sufficient reachable weight is
 absent, transition and later progress can halt. Time does not reduce the
 denominator or roll back sealed history.
 
 A vacant or replaced incoming slot does not remove its outgoing owner's
-TERMINAL duty. Authenticated evidence transport may carry that owner's saved
+TERMINAL duty. Fresh owner-authenticated evidence transport may carry that owner's saved
 signature or a complete seal to peers without granting incoming voting
 authority. Recipients verify the selected parent and seal before adopting the
 successor.
