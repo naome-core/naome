@@ -1,4 +1,5 @@
 """Canonical devnet oracles and ownership boundaries."""
+import asyncio
 import json
 import os
 import signal
@@ -8,7 +9,7 @@ import sys
 import threading
 import time
 import socket
-from proxy import Proxy
+from proxy import Proxy, copy
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -416,7 +417,215 @@ class CanonicalQualification(unittest.TestCase):
                 self.assertNotIn('ports', service)
 
 
+class ProxyScheduling(unittest.IsolatedAsyncioTestCase):
+    async def test_each_chunk_waits_from_its_read_and_prefetch_preserves_order(self):
+        class Clock:
+            now = 0.0
+
+            def time(self):
+                return self.now
+
+            async def sleep(self, duration):
+                # Let the next read run before advancing this clock.
+                await asyncio.sleep(0)
+                self.now += duration
+
+        clock = Clock()
+
+        class Reader:
+            chunks = [b"first", b"second", b""]
+            reads = []
+
+            async def read(self, size):
+                self.reads.append((size, clock.time()))
+                return self.chunks.pop(0)
+
+        class Writer:
+            writes = []
+
+            def write(self, data):
+                self.writes.append((data, clock.time()))
+
+            async def drain(self):
+                pass
+
+        reader, writer = Reader(), Writer()
+        await copy(reader, writer, 0.05, clock=clock.time, sleep=clock.sleep)
+        self.assertEqual(writer.writes, [(b"first", 0.05), (b"second", 0.05)])
+        self.assertEqual([size for size, _ in reader.reads], [32_768] * 3)
+        self.assertEqual(reader.reads[1][1], 0.0)
+
+    async def test_early_wakeup_rechecks_deadline(self):
+        now = 0.0
+        waits = []
+
+        async def sleep(duration):
+            nonlocal now
+            waits.append(duration)
+            now += 0.02 if len(waits) == 1 else duration
+
+        class Reader:
+            chunks = [b"a", b""]
+
+            async def read(self, size):
+                return self.chunks.pop(0)
+
+        class Writer:
+            written_at = None
+
+            def write(self, data):
+                self.written_at = now
+
+            async def drain(self):
+                pass
+
+        writer = Writer()
+        await copy(Reader(), writer, 0.05, clock=lambda: now, sleep=sleep)
+        self.assertEqual(len(waits), 2)
+        self.assertGreaterEqual(writer.written_at, 0.05)
+
+    async def test_prefetch_is_one_chunk_and_cancellation_stops_pending_read(self):
+        class Reader:
+            reads = 0
+            cancelled = False
+            pending = asyncio.Event()
+
+            async def read(self, size):
+                self.reads += 1
+                if self.reads == 1:
+                    return b"first"
+                try:
+                    await self.pending.wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                return b"second"
+
+        class Writer:
+            wrote = asyncio.Event()
+            draining = asyncio.Event()
+
+            def write(self, data):
+                self.wrote.set()
+
+            async def drain(self):
+                await self.draining.wait()
+
+        reader, writer = Reader(), Writer()
+        task = asyncio.create_task(copy(reader, writer, 0))
+        await asyncio.wait_for(writer.wrote.wait(), 1)
+        await asyncio.sleep(0)
+        self.assertEqual(reader.reads, 2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        self.assertTrue(reader.cancelled)
+
+    async def test_blocked_drain_allows_only_one_read_ahead(self):
+        class Reader:
+            chunks = [b"one", b"two", b"three", b""]
+            reads = 0
+            second_read = asyncio.Event()
+
+            async def read(self, size):
+                self.reads += 1
+                if self.reads == 2:
+                    self.second_read.set()
+                return self.chunks.pop(0)
+
+        class Writer:
+            chunks = []
+            first_write = asyncio.Event()
+            release_drain = asyncio.Event()
+
+            def write(self, data):
+                self.chunks.append(data)
+                self.first_write.set()
+
+            async def drain(self):
+                if len(self.chunks) == 1:
+                    await self.release_drain.wait()
+
+        reader, writer = Reader(), Writer()
+        task = asyncio.create_task(copy(reader, writer, 0))
+        await asyncio.wait_for(writer.first_write.wait(), 1)
+        await asyncio.wait_for(reader.second_read.wait(), 1)
+        self.assertEqual(reader.reads, 2)
+        self.assertEqual(writer.chunks, [b"one"])
+        writer.release_drain.set()
+        await asyncio.wait_for(task, 1)
+        self.assertEqual(writer.chunks, [b"one", b"two", b"three"])
+
+
 class DelayedTransport(unittest.TestCase):
+    def test_close_cancels_active_delayed_connection(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+        holder.close()
+        accepted = threading.Event()
+        release = threading.Event()
+
+        def hold():
+            with listener.accept()[0]:
+                accepted.set()
+                release.wait(3)
+
+        worker = threading.Thread(target=hold, daemon=True)
+        worker.start()
+        proxy = Proxy(f"/ip4/127.0.0.1/tcp/{port}", f"/ip4/127.0.0.1/tcp/{listener.getsockname()[1]}", 50)
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as connection:
+                self.assertTrue(accepted.wait(3))
+                connection.sendall(b"pending")
+                proxy.close()
+                self.assertFalse(proxy.thread.is_alive())
+        finally:
+            if proxy.thread.is_alive():
+                proxy.close()
+            release.set()
+            listener.close()
+            worker.join(timeout=3)
+
+    def test_real_tcp_waits_at_least_50ms_in_each_direction(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+        holder.close()
+        times = {}
+
+        def echo():
+            with listener.accept()[0] as connection:
+                connection.settimeout(3)
+                self.assertEqual(connection.recv(1), b"x")
+                times["received"] = time.monotonic()
+                times["sent"] = time.monotonic()
+                connection.sendall(b"y")
+
+        worker = threading.Thread(target=echo, daemon=True)
+        worker.start()
+        proxy = Proxy(f"/ip4/127.0.0.1/tcp/{port}", f"/ip4/127.0.0.1/tcp/{listener.getsockname()[1]}", 50)
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as connection:
+                sent = time.monotonic()
+                connection.sendall(b"x")
+                self.assertEqual(connection.recv(1), b"y")
+                received = time.monotonic()
+            worker.join(timeout=3)
+            self.assertFalse(worker.is_alive())
+            self.assertGreaterEqual(times["received"] - sent, 0.05)
+            self.assertGreaterEqual(received - times["sent"], 0.05)
+        finally:
+            proxy.close()
+            listener.close()
+            worker.join(timeout=3)
+
     def test_delayed_proxy_transfers_exact_bytes_and_releases_listener(self):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))

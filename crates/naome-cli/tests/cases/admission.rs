@@ -35,6 +35,43 @@ fn active_ingress(lab: &Lab) -> usize {
     }
 }
 
+fn quiet_handoff_tip(lab: &Lab, submission: &str) -> Vec<Value> {
+    let start = Instant::now();
+    loop {
+        if let Some(statuses) = [0, 1, 3, 4]
+            .iter()
+            .map(|index| lab.status(*index))
+            .collect::<Option<Vec<_>>>()
+        {
+            let claimant = &statuses[3];
+            if claimant["active"].is_null()
+                && claimant["queued"] == 0
+                && statuses.iter().all(|status| {
+                    status["height"] == claimant["height"]
+                        && status["head"] == claimant["head"]
+                        && status["state"] == claimant["state"]
+                        && status["authority"] == claimant["authority"]
+                        && status["active"].is_null()
+                        && status["queued"] == 0
+                })
+            {
+                let question = raw(&["question".into(), lab.config(4), submission.to_owned()]);
+                if question.status.success()
+                    && serde_json::from_slice::<Value>(&question.stdout)
+                        .is_ok_and(|value| value["status"] == "NotApproved")
+                {
+                    return statuses;
+                }
+            }
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(90),
+            "handoff question did not reach a common quiet NotApproved tip"
+        );
+        thread::sleep(Duration::from_millis(40));
+    }
+}
+
 fn archive_has_earned_owner_quorum_vote(
     genesis_path: &str,
     archive_path: &str,
@@ -306,7 +343,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     lab.start(4);
     lab.assert_same(&[4], &settled);
     // A new record gives the prepared candidate a canonical handoff point.
-    lab.submit(
+    let mut handoff_submission = lab.submit(
         active_ingress(&lab),
         5,
         example("question-b.nao"),
@@ -362,40 +399,57 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
             .any(|unit| { unit["owner"] == author && unit["available"] == true })
     );
 
-    // A valid handoff may leave any bootstrap slot vacant. Keep exactly two
-    // currently selected bootstrap signers beside the installed claimant.
-    // Every following 3-of-4 quorum must contain the claimant's signature.
-    let bootstrap = {
-        let start = Instant::now();
-        loop {
-            let height = lab.status(4).unwrap()["height"].as_u64().unwrap();
-            let live: Vec<_> = (0..4)
-                .filter(|index| {
-                    lab.status(*index).is_some_and(|status| {
-                        status["height"]
-                            .as_u64()
-                            .is_some_and(|peer_height| peer_height >= height)
-                            && status["consensus_position"].is_object()
-                    })
-                })
-                .take(2)
-                .collect();
-            if live.len() == 2 {
-                break live;
-            }
-            assert!(
-                start.elapsed() < Duration::from_secs(90),
-                "two selected bootstrap signers did not catch up"
-            );
-            thread::sleep(Duration::from_millis(40));
+    // Settle the question that installed the claimant before isolating peers.
+    // Its automatic voting deadline can otherwise seal a new period while the
+    // test is choosing signers from different heights. A vacant claimant gets
+    // bounded, substantive recovery work with all bootstrap peers still up.
+    let recovery_statements = [
+        "forall(w, forall(z, forall(y, forall(x, equal(x, x)))))",
+        "forall(v, forall(w, forall(z, forall(y, forall(x, equal(x, x))))))",
+        "forall(u, forall(v, forall(w, forall(z, forall(y, forall(x, equal(x, x)))))))",
+    ];
+    let mut recovery_attempt = 0;
+    let (quiet, bootstrap) = loop {
+        let statuses = quiet_handoff_tip(&lab, &handoff_submission);
+        let claimant = &statuses[3];
+        let live: Vec<_> = [0, 1, 3]
+            .into_iter()
+            .zip(statuses[..3].iter())
+            .filter_map(|(index, status)| status["consensus_position"].is_object().then_some(index))
+            .take(2)
+            .collect();
+        if claimant["consensus_position"].is_object()
+            && claimant["validators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|unit| unit["owner"] == author && unit["available"] == true)
+            && live.len() == 2
+        {
+            break (claimant.clone(), live);
         }
+        let statement = recovery_statements
+            .get(recovery_attempt)
+            .expect("claimant did not return after three recovery records");
+        let label = format!("claimant-recovery-{recovery_attempt}");
+        let source = lab.file(&format!("{label}.nao"));
+        fs::write(
+            &source,
+            format!("foundation = \"naome:zfc\"\nstatement = {statement}\n"),
+        )
+        .unwrap();
+        handoff_submission = lab.submit(active_ingress(&lab), 5, PathBuf::from(source), &label);
+        recovery_attempt += 1;
     };
-    assert!(lab.status(4).unwrap()["consensus_position"].is_object());
     let stopped: Vec<_> = (0..4).filter(|index| !bootstrap.contains(index)).collect();
     for index in &stopped {
         lab.stop(*index);
     }
-    let after_stop = lab.status(4).unwrap()["height"].as_u64().unwrap();
+    let cut = lab.status(4).unwrap();
+    assert_eq!(cut["head"], quiet["head"]);
+    assert_eq!(cut["authority"], quiet["authority"]);
+    assert!(cut["consensus_position"].is_object());
+    let after_stop = cut["height"].as_u64().unwrap();
     // Supply substantive work before demanding the next record. An idle
     // proposal intentionally does not consume this finite run merely to
     // rotate period keys.

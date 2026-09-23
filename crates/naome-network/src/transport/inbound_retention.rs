@@ -15,7 +15,12 @@ pub(super) struct InboundRetentionBudget {
 struct InboundRetentionState {
     events: usize,
     bytes: usize,
-    peers: HashMap<PeerId, usize>,
+    peers: HashMap<PeerId, PeerRetention>,
+}
+
+struct PeerRetention {
+    count: usize,
+    exclusive: bool,
 }
 
 impl InboundRetentionBudget {
@@ -59,23 +64,32 @@ pub(super) struct InboundRetentionPermit {
 
 impl InboundRetentionPermit {
     pub(super) fn bind_peer(&mut self, peer_id: PeerId) -> bool {
-        self.bind_peer_with_limit(peer_id, self.budget.max_per_peer)
+        self.bind_peer_with_limit(peer_id, self.budget.max_per_peer, false)
     }
     pub(super) fn bind_peer_exclusive(&mut self, peer_id: PeerId) -> bool {
-        self.bind_peer_with_limit(peer_id, 1)
+        self.bind_peer_with_limit(peer_id, 1, true)
     }
-    fn bind_peer_with_limit(&mut self, peer_id: PeerId, limit: usize) -> bool {
+    fn bind_peer_with_limit(&mut self, peer_id: PeerId, limit: usize, exclusive: bool) -> bool {
         if self.peer_id.is_some() {
             return false;
         }
         let Ok(mut retained) = self.budget.retained.lock() else {
             return false;
         };
-        let active = retained.peers.get(&peer_id).copied().unwrap_or(0);
-        if active >= limit || active >= self.budget.max_per_peer {
+        let current = retained.peers.get(&peer_id);
+        let active = current.map_or(0, |slot| slot.count);
+        if active >= limit
+            || active >= self.budget.max_per_peer
+            || current.is_some_and(|slot| slot.exclusive)
+        {
             return false;
         }
-        retained.peers.insert(peer_id, active + 1);
+        let Some(count) = active.checked_add(1) else {
+            return false;
+        };
+        retained
+            .peers
+            .insert(peer_id, PeerRetention { count, exclusive });
         self.peer_id = Some(peer_id);
         true
     }
@@ -91,12 +105,12 @@ impl Drop for InboundRetentionPermit {
         retained.events = retained.events.saturating_sub(1);
         retained.bytes = retained.bytes.saturating_sub(self.bytes);
         if let Some(peer_id) = self.peer_id {
-            let active = retained
+            let slot = retained
                 .peers
                 .get_mut(&peer_id)
                 .expect("bound peer retains its slot");
-            *active -= 1;
-            if *active == 0 {
+            slot.count -= 1;
+            if slot.count == 0 {
                 retained.peers.remove(&peer_id);
             }
         }

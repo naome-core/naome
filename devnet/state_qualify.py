@@ -55,6 +55,7 @@ class Qualification:
             'scope': 'four stable authority slots with sealed key rotation; canonical records, authenticated operations and certified phase transitions; accelerated qualification',
             'requested_minimum_heights': args.heights, 'genesis_run_records': 256, 'timing_profile': args.timing,
             'delay_ms_each_direction_per_chunk': args.delay_ms,
+            'delay_proxy_prefetched_chunks_per_direction': 1,
             'observation_poll_seconds': OBSERVATION_POLL_SECONDS,
             'deadline_seconds': args.deadline_seconds, 'consensus_commands_sent': 0,
             'workload': 'alternating independent owner submissions and full-window NotApproved settlement; proof publication/citation separately qualified by the four-process Rust suite',

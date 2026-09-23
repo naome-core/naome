@@ -278,12 +278,24 @@ async fn two_ordinary_requests_keep_distinct_tickets_and_retained_peer_slots() {
     assert!(proposal.accepts_event(&proposal_event));
     let retained_proposal = proposal.complete(proposal_event).unwrap().unwrap();
     assert!(matches!(
+        a.request_state(peer, StateRequestBody::Handshake),
+        Err(StateStartError::Transport(
+            RequestStartError::AlreadyPending(_)
+        ))
+    ));
+    assert!(matches!(
         a.request_state(peer, StateRequestBody::TimeReport(vec![9; 80].into())),
         Err(StateStartError::Transport(
             RequestStartError::AlreadyPending(_)
         ))
     ));
     drop(retained_vote);
+    assert!(matches!(
+        a.request_state(peer, StateRequestBody::Handshake),
+        Err(StateStartError::Transport(
+            RequestStartError::AlreadyPending(_)
+        ))
+    ));
     let third = a
         .request_state(peer, StateRequestBody::TimeReport(vec![9; 80].into()))
         .unwrap();

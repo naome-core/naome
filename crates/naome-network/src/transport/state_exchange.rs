@@ -726,7 +726,12 @@ impl StateNetwork {
             .map_err(StateStartError::Transport)?;
         let mut outbound_slot = InboundRetentionBudget::try_acquire(&config.outbound, 0)
             .ok_or(StateStartError::Capacity)?;
-        if !outbound_slot.bind_peer(peer) {
+        let bound = if super::ordinary_parallel_body(request.body()) {
+            outbound_slot.bind_peer(peer)
+        } else {
+            outbound_slot.bind_peer_exclusive(peer)
+        };
+        if !bound {
             return Err(StateStartError::Transport(
                 RequestStartError::AlreadyPending(peer),
             ));

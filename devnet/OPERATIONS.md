@@ -67,6 +67,10 @@ per-role disk use against 512 MiB and records peak process/container memory. Nat
 memory samples are observations; Docker supplies memory enforcement.
 
 A bounded proxy delays each TCP chunk by 50 ms in each direction by default.
+It overlaps one prefetched chunk with the current chunk's wait. Each write is
+gated by its own completed-read timestamp plus the full configured delay, with
+FIFO order and drain backpressure. Application custody is bounded to two 32 KiB
+chunks per direction; the existing connection and transport-buffer bounds remain.
 Genesis binds the initial advertised endpoints; each sealed handoff binds the
 next endpoints and identities. Two delay proxies per operator cover both sides
 of every rotation. Local bind overrides direct those authenticated identities
@@ -155,6 +159,18 @@ for two sends and two receives; recovery retains its two-stream limit. Request
 and response decoding each retain at most two events within the same global
 frame and byte budgets. Observation polls every 0.2 seconds, recorded in the report, to reduce
 delay between confirmed workload stages without shortening certified windows.
+
+The [bounded-concurrency measurement](../docs/mvp/evidence/handoff-concurrency-ci.json)
+on `f18fd2f`, in [CI run 35902219562](https://github.com/naome-core/naome/actions/runs/35902219562),
+completed the Docker correctness checks in 598.632 seconds (1.844x), still below
+the required speedup. Its Ubuntu 24.04 runner image was `20260920.314.1`, while
+the baseline used `20260907.300.1`; the runner class and container CPU/memory
+limits were unchanged. Receipt, opening and settlement totaled 543.334 seconds;
+the overlapping observation counter was 128.411 seconds. The proxy now overlaps
+bounded read ahead while preserving every chunk's full configured latency in
+both directions. Its minimum-delay, FIFO, backpressure, EOF and cancellation
+properties have direct tests. Final acceptance still requires the complete
+Docker fault run and its 2x gate.
 
 ## Authority setup and supervision
 

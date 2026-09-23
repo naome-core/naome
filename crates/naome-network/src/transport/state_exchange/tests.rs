@@ -51,6 +51,32 @@ fn peer_retention_releases_only_the_dropped_slot() {
     assert!(recovery_second.bind_peer_exclusive(peer));
 }
 #[test]
+fn peer_retention_exclusive_and_shared_slots_block_each_other_in_both_orders() {
+    let peer = identity::Keypair::generate_ed25519().public().to_peer_id();
+    let budget = Arc::new(InboundRetentionBudget::with_peer_limit(3, 0, 2));
+    let mut serial = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
+    let mut ordinary = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
+    let mut second = InboundRetentionBudget::try_acquire(&budget, 0).unwrap();
+
+    assert!(serial.bind_peer_exclusive(peer));
+    assert!(!ordinary.bind_peer(peer));
+    assert!(!second.bind_peer_exclusive(peer));
+    drop(serial);
+
+    assert!(ordinary.bind_peer(peer));
+    assert!(!second.bind_peer_exclusive(peer));
+    assert!(
+        InboundRetentionBudget::try_acquire(&budget, 0)
+            .unwrap()
+            .bind_peer(peer)
+    );
+    // That temporary shared permit has gone; the surviving ordinary one still
+    // prevents a serial request from taking the peer.
+    assert!(!second.bind_peer_exclusive(peer));
+    drop(ordinary);
+    assert!(second.bind_peer_exclusive(peer));
+}
+#[test]
 fn state_codec_rejects_malformed_frames_and_releases_all_custody() {
     let mut codec = codec();
     let bytes = StateRequest::new(
@@ -370,6 +396,12 @@ async fn state_real_noise_roundtrip_retained_response_blocks_next_and_resumes() 
     assert_eq!(received.response().body(), &StateResponseBody::Ready);
     assert!(matches!(
         a.request_state(peer, StateRequestBody::Handshake),
+        Err(StateStartError::Transport(
+            RequestStartError::AlreadyPending { .. }
+        ))
+    ));
+    assert!(matches!(
+        a.request_state(peer, StateRequestBody::Proposal(vec![7; 80].into())),
         Err(StateStartError::Transport(
             RequestStartError::AlreadyPending { .. }
         ))

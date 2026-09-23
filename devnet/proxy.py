@@ -11,6 +11,39 @@ def endpoint(address):
     return fields[2], int(fields[4])
 
 
+async def copy(source, target, delay, *, clock=None, sleep=asyncio.sleep):
+    """Forward FIFO chunks once each has spent its own delay in custody.
+
+    Only one 32 KiB read is prefetched while the current chunk waits or drains.
+    Across 16 connections and two directions, these chunk references hold at
+    most 2 MiB. StreamReader and StreamWriter transport buffers are separate.
+    """
+    if clock is None:
+        clock = asyncio.get_running_loop().time
+
+    async def read_next():
+        data = await source.read(32_768)
+        return data, clock()
+
+    pending = asyncio.create_task(read_next())
+    try:
+        while True:
+            data, read_at = await pending
+            if not data:
+                return
+            pending = asyncio.create_task(read_next())
+            due = read_at + delay
+            remaining = due - clock()
+            while remaining > 0:
+                await sleep(remaining)
+                remaining = due - clock()
+            target.write(data)
+            await target.drain()
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 class Proxy:
     def __init__(self, address, listen, delay_ms):
         if not 0 <= delay_ms <= 1000:
@@ -58,17 +91,8 @@ class Proxy:
             peer_reader, peer_writer = await asyncio.wait_for(asyncio.open_connection(*self.back, limit=32_768), timeout=3)
             self.open_writers.add(peer_writer)
 
-            async def copy(source, target):
-                while True:
-                    data = await source.read(32_768)
-                    if not data:
-                        return
-                    if self.delay:
-                        await asyncio.sleep(self.delay)
-                    target.write(data)
-                    await target.drain()
-
-            pumps = [asyncio.create_task(copy(reader, peer_writer)), asyncio.create_task(copy(peer_reader, writer))]
+            pumps = [asyncio.create_task(copy(reader, peer_writer, self.delay)),
+                     asyncio.create_task(copy(peer_reader, writer, self.delay))]
             await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
         except (OSError, asyncio.TimeoutError, ConnectionError):
             pass
