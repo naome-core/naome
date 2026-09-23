@@ -398,24 +398,21 @@
   "whitepaper": {
     "structural_checks": "passed",
     "pages": 20,
-    "source_sha256": "49b7ec70151ebe9e08f2a1f3cea37e04cf95f8e6e956adc9eee5892a67c20749",
-    "pdf_sha256": "31b0a34a843e7f088a932c965736502735d72671bd9702eaabf347aa84c8d358",
+    "source_sha256": "99fd8b52d11087ffa462a15b3bdb75141ca8366eb627a097a05d41e4e5d8744a",
+    "pdf_sha256": "725075186c4e4532a438a37c80f3f26da9ce546059ade2408b43954e3c28cbd8",
     "visual_review": {
       "status": "passed",
-      "method": "The paper revision task inspected the first page and affected pages 10-13 and 18-20 after rendering the final PDF; the milestone task independently inspected the final first-page preview and reran structural checks on the exact published paper commit. Prior rendered-page review covers unchanged pages.",
+      "method": "The paper revision task inspected the final first page and ring, including labels and shared arrow contours, and inspected affected pages 2-4. The milestone task independently inspected the final first page and marked join. Unchanged pages retain their previous rendered-page review.",
       "render_directory": "/private/tmp/naome-paper-review-241",
+      "final_first_page": "chevron-centered-01.png",
       "reviewed_changed_pages": [
         1,
-        10,
-        11,
-        12,
-        13,
-        18,
-        19,
-        20
+        2,
+        3,
+        4
       ]
     },
-    "source_commit": "42ec4c7ae13c1919dbb7a3ff48f2921a456e7d2d"
+    "source_commit": "3eb1100ef66553c9aa5297c2039e78ca42ba0854"
   },
   "limitations": [
     "Operational handoff requires operator attestation that external secret backups and regeneration seeds are destroyed; the implementation retires managed local signing capability.",
@@ -425,7 +422,7 @@
   ],
   "post_qualification_changes": {
     "qualified_software_commit": "66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c",
-    "paper_commit": "42ec4c7ae13c1919dbb7a3ff48f2921a456e7d2d",
+    "paper_commit": "3eb1100ef66553c9aa5297c2039e78ca42ba0854",
     "reviewed_paths": [
       ".github/workflows/ci.yml",
       "devnet/OPERATIONS.md",
@@ -445,7 +442,8 @@
     ],
     "scope": "The qualified consensus implementation, build inputs and devnet fixtures remain unchanged. The listed Kev runtime/setup cleanup and regression changes are qualified separately above. Other listed changes concern the workflow, operating documentation, paper and evidence. The stored implementation fingerprint still identifies the original qualification snapshot. The final PR head requires its own complete CI run without the recurring historical speed assertion.",
     "consensus_and_devnet_fixtures_unchanged": true,
-    "kev_cleanup_commit": "fd742b1b06b0df0b24e251def61032fa45b6f05c"
+    "kev_cleanup_commit": "fd742b1b06b0df0b24e251def61032fa45b6f05c",
+    "latest_software_ci_head": "90a5a0a1ac7b95398a9a4610e144b5bb8d117821"
   },
   "kev_cleanup_followup": {
     "reason": "PR CI run 35919639411 reproduced an interrupt while CPython acquired its subprocess wait lock, which left cleanup unable to reap the owned child. Owned-child waitpid polling removes that dependency without changing consensus, deadlines or process-group cleanup.",
@@ -477,6 +475,96 @@
       "tests_passed": 57,
       "source_unchanged": true
     },
-    "independent_review": "No blocking findings; exclusive child ownership, real exit status, unknown-status failure, cancellation, bounded TERM/KILL and descendant cleanup reviewed."
+    "independent_review": "No blocking findings; exclusive child ownership, real exit status, unknown-status failure, cancellation, bounded TERM/KILL and descendant cleanup reviewed.",
+    "ci": {
+      "url": "https://github.com/naome-core/naome/actions/runs/35921060926",
+      "head": "90a5a0a1ac7b95398a9a4610e144b5bb8d117821",
+      "conclusion": "success",
+      "jobs_passed": 12,
+      "kev_tests_passed": 57,
+      "measurement": {
+        "run_id": 35921060926,
+        "head": "90a5a0a1ac7b95398a9a4610e144b5bb8d117821",
+        "run_status": "completed",
+        "run_outcome": "success",
+        "runner_image_label": "ubuntu-24.04",
+        "runner_image": "20260907.300.1",
+        "devnet_job_id": 107384962181,
+        "devnet_job_outcome": "success",
+        "devnet_step_seconds": {
+          "build": 98,
+          "process": 199,
+          "pilot": 71,
+          "image": 17,
+          "docker": 525
+        },
+        "devnet_step_names": {
+          "build": "Build release test targets and devnet binaries",
+          "process": "Qualify canonical publication, citation, outage, partition, and cold replay",
+          "pilot": "Rehearse portable pilot bundles and independent archive collection",
+          "image": "Package exact Linux binaries",
+          "docker": "Qualify 100 canonical state heights with isolation, delay, and faults"
+        },
+        "source_provenance": {
+          "event": "pull_request",
+          "checkout_commit": "80dbfdb8d12bf2b449a8418e0b6ce739593dae21",
+          "checkout_parents": [
+            "132fccc2dadae5514f89a7d1aaae8154208a4d8e",
+            "90a5a0a1ac7b95398a9a4610e144b5bb8d117821"
+          ],
+          "base_commit": "132fccc2dadae5514f89a7d1aaae8154208a4d8e",
+          "head_commit": "90a5a0a1ac7b95398a9a4610e144b5bb8d117821",
+          "checkout_tree": "28e8de542e4b9a8f75b277bad714b54e05dc3c3d",
+          "head_tree": "28e8de542e4b9a8f75b277bad714b54e05dc3c3d",
+          "checkout_tree_matches_head": true,
+          "docker_report_source_commit": "80dbfdb8d12bf2b449a8418e0b6ce739593dae21",
+          "pilot_report_source_commit": "80dbfdb8d12bf2b449a8418e0b6ce739593dae21",
+          "report_source_worktree_clean": true
+        },
+        "artifacts_sha256": {
+          "docker_report": "c433d9cb9ee0028ff619267cbb1572f8d921c9deb0aa1299cee59bea04ddaf36",
+          "pilot_report": "e95540efc98b51ccf76dd267a44aec34c1ebe02ea017b00508a62c84f1111ed3"
+        },
+        "source": {
+          "run_snapshot": "ci-run.json",
+          "jobs_snapshot": "ci-jobs.json",
+          "runner_log": "devnet-job.log",
+          "checkout_commit_snapshot": "checkout-commit.json",
+          "head_commit_snapshot": "head-commit.json"
+        }
+      },
+      "docker": {
+        "outcome": "passed",
+        "elapsed_seconds": 524.657,
+        "verified_heights": [
+          102,
+          102,
+          102,
+          102
+        ],
+        "independent_replays_agree": true,
+        "delay_ms_each_direction": 50,
+        "corrupt_export_rejected": true,
+        "fault_operations": [
+          "container_network_disconnected",
+          "partition_healed_on_deadline",
+          "healed_and_caught_up",
+          "sigkill_restart",
+          "graceful_restart"
+        ],
+        "post_restart_progress": {
+          "restart_height": 12,
+          "verified_height": 102
+        },
+        "recurring_speed_gate": false
+      },
+      "pilot": {
+        "outcome": "passed",
+        "elapsed_seconds": 71.128,
+        "checks_passed": 9,
+        "cleanup_complete": true
+      },
+      "scope": "This full CI run qualifies the software after the cleanup fix. The later paper and evidence changes require final-head CI before merge."
+    }
   }
 }

@@ -25,7 +25,7 @@ The 23 September 2026 qualification passed on clean implementation commit
 `66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c`. The [local qualification record](evidence/handoff-final-local.json)
 contains the source fingerprint, commands, elapsed times, output hashes,
 architecture review and separately identified paper checks. The recorded paper
-revision is `42ec4c7ae13c1919dbb7a3ff48f2921a456e7d2d`; its hashes and review are
+revision is `3eb1100ef66553c9aa5297c2039e78ca42ba0854`; its hashes and review are
 recorded separately from the qualified software snapshot. The qualified consensus
 implementation and devnet fixtures remain unchanged. A later Kev cleanup fix is
 qualified separately below. The workflow removes the recurring
@@ -63,7 +63,13 @@ process-group termination and reaping. Regressions cover a poisoned wait lock,
 an interrupt after the child was reaped, and a nonzero installation exit. On
 clean commit `fd742b1b06b0df0b24e251def61032fa45b6f05c`, all 57 Kev tests passed under
 Python 3.12.12; source and output hashes are recorded in the local qualification
-record. This follow-up does not change the consensus or devnet qualification.
+record. [CI run 35921060926](https://github.com/naome-core/naome/actions/runs/35921060926)
+then passed all 12 jobs on `90a5a0a`, including all six Rust profiles, 57 Kev tests,
+and the full Docker qualification. Docker reached 102 matching heights in
+524.657 seconds with four agreeing replays and the required faults; its Ubuntu
+runner image matched the baseline. This follow-up does not change the consensus
+or devnet qualification; later paper and evidence changes still require their
+own final-head CI.
 
 | Evidence | Current result |
 |---|---|
