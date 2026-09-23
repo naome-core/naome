@@ -24,10 +24,11 @@ consumes the oldest eligible claim only when its successor is sealed.
 The 23 September 2026 qualification passed on clean implementation commit
 `66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c`. The [local qualification record](evidence/handoff-final-local.json)
 contains the source fingerprint, commands, elapsed times, output hashes,
-architecture review and separately identified paper checks. The final paper
+architecture review and separately identified paper checks. The recorded paper
 revision is `42ec4c7ae13c1919dbb7a3ff48f2921a456e7d2d`; its hashes and review are
-recorded separately from the qualified software snapshot. Later paper, evidence
-and workflow updates preserve the qualified software and fixtures; the workflow removes the recurring
+recorded separately from the qualified software snapshot. The qualified consensus
+implementation and devnet fixtures remain unchanged. A later Kev cleanup fix is
+qualified separately below. The workflow removes the recurring
 historical speed assertion at the user's request. The final PR commit must pass
 CI using the revised workflow and full correctness qualification. The measured comparison
 below remains milestone evidence. The qualification runner checked out
@@ -54,6 +55,15 @@ for the same operation, attempt and deadline. It reads the full voting duration
 from genesis, requires every participating node's observation, and keeps the
 settlement, fault, resource and independent replay checks. Timeout reports retain
 bounded public diagnostics; no failed run is counted as qualification.
+
+The later [PR quality run](https://github.com/naome-core/naome/actions/runs/35919639411)
+exposed an interrupt race in Python's subprocess wait lock during Kev setup
+cleanup. The fix uses bounded polling of exclusively owned children and retains
+process-group termination and reaping. Regressions cover a poisoned wait lock,
+an interrupt after the child was reaped, and a nonzero installation exit. On
+clean commit `fd742b1b06b0df0b24e251def61032fa45b6f05c`, all 57 Kev tests passed under
+Python 3.12.12; source and output hashes are recorded in the local qualification
+record. This follow-up does not change the consensus or devnet qualification.
 
 | Evidence | Current result |
 |---|---|

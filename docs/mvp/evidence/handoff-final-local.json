@@ -438,9 +438,45 @@
       "docs/mvp/paper/whitepaper_en.md",
       "docs/mvp/requirements.md",
       "docs/mvp/verification.md",
-      "docs/mvp/whitepaper-en.pdf"
+      "docs/mvp/whitepaper-en.pdf",
+      "tools/naome_kev/runtime.py",
+      "tools/naome_kev/setup.py",
+      "tools/tests/test_kev_setup.py"
     ],
-    "software_and_test_fixtures_unchanged": true,
-    "scope": "Only the listed workflow, operating documentation, paper and evidence paths changed after software qualification. The stored implementation fingerprint identifies the qualification snapshot and includes its earlier workflow and operating notes. The final PR head requires its own complete CI run with the recurring historical speed assertion removed."
+    "scope": "The qualified consensus implementation, build inputs and devnet fixtures remain unchanged. The listed Kev runtime/setup cleanup and regression changes are qualified separately above. Other listed changes concern the workflow, operating documentation, paper and evidence. The stored implementation fingerprint still identifies the original qualification snapshot. The final PR head requires its own complete CI run without the recurring historical speed assertion.",
+    "consensus_and_devnet_fixtures_unchanged": true,
+    "kev_cleanup_commit": "fd742b1b06b0df0b24e251def61032fa45b6f05c"
+  },
+  "kev_cleanup_followup": {
+    "reason": "PR CI run 35919639411 reproduced an interrupt while CPython acquired its subprocess wait lock, which left cleanup unable to reap the owned child. Owned-child waitpid polling removes that dependency without changing consensus, deadlines or process-group cleanup.",
+    "failing_ci_run": "https://github.com/naome-core/naome/actions/runs/35919639411",
+    "validation": {
+      "source_commit": "fd742b1b06b0df0b24e251def61032fa45b6f05c",
+      "worktree_dirty": false,
+      "command": [
+        "/opt/homebrew/bin/python3.12",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools/tests",
+        "-v"
+      ],
+      "python_version": "Python 3.12.12",
+      "source_sha256": {
+        "tools/naome_kev/runtime.py": "6b3c46d230eff8477705d79dfcc694e43ee902c0950527b5b3f0d6e4eab05969",
+        "tools/naome_kev/setup.py": "d7acce63a5d4fec4c1a350ed0a30093b205827c877ee4b03a346db6a679d750c",
+        "tools/tests/test_kev_setup.py": "a484d9d69d7751f584906035656ab3def81a868bc12a20c7ae38763ff7c6deb0"
+      },
+      "started_at_utc": "2026-09-23T21:12:23Z",
+      "elapsed_seconds": 6.264,
+      "exit_code": 0,
+      "log_name": "naome-kev-fd742b1-tests.log",
+      "log_sha256": "47c75949ba0e46483382962511c0a03e46d06933738b8175a7733fa3a98d6ba7",
+      "tests_passed": 57,
+      "source_unchanged": true
+    },
+    "independent_review": "No blocking findings; exclusive child ownership, real exit status, unknown-status failure, cancellation, bounded TERM/KILL and descendant cleanup reviewed."
   }
 }
