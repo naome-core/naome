@@ -17,6 +17,7 @@ pub use artifacts::*;
 
 pub mod accounting;
 pub mod authentication;
+pub mod authority;
 mod capacity;
 mod codec;
 pub mod identity;

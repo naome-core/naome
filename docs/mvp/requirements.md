@@ -98,6 +98,8 @@ Initial acceptance does not include identity-flooding resistance, validator acti
 - [ ] **MVP-36 – Bounded research self-registration.** A new researcher can create a key, sign `Register` with nonce 1 and zero starting balance, then submit with nonce 2, publish a checked result, and receive its reward. Registration grants no validator authority. Exact retries retain the original receipt; reused validator keys, over-cap registrations, and registrations consuming protected attempt capacity are rejected without changing state. All four validators, a cold restart, and independent replay agree on the account registry. Local v2 checks and v2 platform CI pass; Lab-profile acceptance on the extension remains pending.
 - [ ] **MVP-37 – Claim-backed join intent.** After a paid completion is sealed, its signing author can finalize a current intent bound to that exact family and completion ordinal, fresh candidate consensus and transport keys with separate possession proofs, and a canonical endpoint. The intent and receipt survive replay and restart. A foreign author, absent claim, conflicting same-nonce intent, reused role key, bad proof, wrong genesis, or conflicting nonce changes no state. This preparation grants no validator, time-reporting, transport, proposer, reward-share, or voting authority and does not consume the claim. Full admission and activation require separate policy and handoff work.
 
+The [v5 authority-period data contract](../../specs/authority-periods.md) defines stable slots and signed fresh-key offers for that later handoff. It does not change the live `state-v4` validator set.
+
 <a id="acceptance"></a>
 
 ## 7. Required Acceptance Scenarios for the Proposed Scope
