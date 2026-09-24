@@ -16,22 +16,29 @@ use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
 pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
-/// Research protocol with sealed authority periods and four stable voting slots.
-pub const STATE_PROTOCOL_VERSION: u16 = 5;
+/// Research protocol with sealed authority periods and a bounded growing roster.
+pub const STATE_PROTOCOL_VERSION: u16 = 6;
+pub const MIN_VALIDATORS: usize = 4;
+pub const MAX_VALIDATORS: usize = 256;
+/// Strictly more than two thirds of installed slots, including vacant slots.
+pub const fn validator_quorum(installed: usize) -> usize {
+    (installed * 2) / 3 + 1
+}
 
 /// Reserved space around one maximum user payload for canonical record headers,
-/// four time reports, operation authentication, and finality signatures. The
+/// bounded time reports, operation authentication, and finality signatures. The
 /// integrated codec must fit this allowance; it is not permission to omit bytes
 /// from the complete-record limit.
-pub const DOMAIN_RECORD_OVERHEAD_BYTES: u64 = 4096;
+pub const DOMAIN_RECORD_OVERHEAD_BYTES: u64 = 384 * 1024;
 /// Space outside the complete record for bounded transport envelope metadata.
 /// A frame must fit both the largest record and this envelope allocation.
-pub const TRANSPORT_ENVELOPE_OVERHEAD_BYTES: u64 = 65536;
+pub const TRANSPORT_ENVELOPE_OVERHEAD_BYTES: u64 = 256 * 1024;
 /// Fixed v1 signer checkpoint and unsigned transcript ceilings.
-pub const SIGNER_SNAPSHOT_MAX_BYTES: u64 = 8192;
+pub const SIGNER_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024;
 pub const SIGNER_TRANSCRIPT_MAX_BYTES: u64 = 1024;
-/// Four fixed-width consensus votes, including their authority IDs, plus the count byte.
-pub const STATE_QUORUM_BYTES_BOUND: u64 = 1 + 4 * (5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
+/// Up to 256 fixed-width consensus votes, including authority IDs and the count.
+pub const STATE_QUORUM_BYTES_BOUND: u64 =
+    2 + MAX_VALIDATORS as u64 * (5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
 /// Journal preparation metadata outside one complete research record.
 pub const SIGNER_FRAME_OVERHEAD_BYTES: u64 = 16384;
 /// Covers the genesis-bound signer prefix, initial anchor and their metadata.
@@ -43,10 +50,10 @@ pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
 /// One parent-bound offer journal, optional candidate import, secret files and anchors.
 pub const PERIOD_CUSTODY_BYTES_BOUND: u64 = 8192;
 
-const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF4";
-const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS4";
+const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF6";
+const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS6";
 const MAX_PROFILE_BYTES: usize = 4096;
-const MAX_GENESIS_BYTES: usize = 16384;
+const MAX_GENESIS_BYTES: usize = 128 * 1024;
 
 /// Identifies the timing assumptions under which evidence was obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,8 +111,8 @@ macro_rules! limit_fields {
 limit_fields! {
     active_attempts = 1,
     queued_questions = 32,
-    genesis_accounts = 16,
-    registered_accounts = 256,
+    genesis_accounts = 512,
+    registered_accounts = 1024,
     commitments_per_attempt = 16,
     commitments_per_account = 1,
     question_source_bytes = 16 * 1024,
@@ -136,7 +143,7 @@ limit_fields! {
     dag_steps_per_record = 16 * 2 * (17 + 64) * 4096,
     normalization_steps_per_record = 16 * 17 * 4096,
     // Framing plus bounded transport/signature metadata beyond record content.
-    transport_frame_bytes = 1024 * 1024 + 64 * 1024,
+    transport_frame_bytes = 1024 * 1024 + 256 * 1024,
     transport_buffer_frames = 64,
     // Inclusive largest round index: 64 permits rounds 0 through 64.
     consensus_rounds = 64,
@@ -149,7 +156,7 @@ pub struct Rewards {
     pub author_without_citations_atoms: u128,
     pub author_with_citations_atoms: u128,
     pub citation_pool_atoms: u128,
-    pub validator_atoms_each: u128,
+    pub validator_pool_atoms: u128,
     pub reserve_atoms: u128,
 }
 
@@ -160,7 +167,7 @@ impl Default for Rewards {
             author_without_citations_atoms: 700_000_000,
             author_with_citations_atoms: 600_000_000,
             citation_pool_atoms: 100_000_000,
-            validator_atoms_each: 50_000_000,
+            validator_pool_atoms: 200_000_000,
             reserve_atoms: 100_000_000,
         }
     }
@@ -173,7 +180,7 @@ impl Rewards {
             self.author_without_citations_atoms,
             self.author_with_citations_atoms,
             self.citation_pool_atoms,
-            self.validator_atoms_each,
+            self.validator_pool_atoms,
             self.reserve_atoms,
         ] {
             w.u128(value);
@@ -185,7 +192,7 @@ impl Rewards {
             author_without_citations_atoms: r.u128()?,
             author_with_citations_atoms: r.u128()?,
             citation_pool_atoms: r.u128()?,
-            validator_atoms_each: r.u128()?,
+            validator_pool_atoms: r.u128()?,
             reserve_atoms: r.u128()?,
         })
     }
@@ -262,11 +269,29 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "state-v5-lab",
-            TimingKind::Research => "state-v5-research",
-            TimingKind::ShortTest => "state-v5-short-test",
-            TimingKind::CiTest => "state-v5-ci-test",
+            TimingKind::Lab => "state-v6-lab",
+            TimingKind::Research => "state-v6-research",
+            TimingKind::ShortTest => "state-v6-short-test",
+            TimingKind::CiTest => "state-v6-ci-test",
         }
+    }
+    /// Minimum finite run for an opening electorate, including the terminal
+    /// record. Every owner may vote in a separate record, as may each commit
+    /// and reveal; seven records cover opening, phases and settlement.
+    pub fn minimum_run_records_for(&self, electorate: usize) -> Result<u64, LedgerError> {
+        if !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&electorate) {
+            return Err(LedgerError::Limit("opening electorate"));
+        }
+        let needed = self
+            .limits
+            .commitments_per_attempt
+            .checked_mul(2)
+            .and_then(|records| records.checked_add(electorate as u64 + 7))
+            .ok_or(LedgerError::Overflow)?;
+        needed
+            .max(self.limits.completion_records)
+            .checked_add(self.limits.terminal_records)
+            .ok_or(LedgerError::Overflow)
     }
     fn validate(&self) -> Result<(), LedgerError> {
         self.limits.validate()?;
@@ -449,7 +474,7 @@ impl Profile {
         Ok(result)
     }
     pub fn id(&self) -> ProfileId {
-        ProfileId::from_bytes(hash(b"naome:state:profile:v4\0", &[&self.encode()]))
+        ProfileId::from_bytes(hash(b"naome:state:profile:v6\0", &[&self.encode()]))
     }
 }
 
@@ -560,9 +585,13 @@ impl Genesis {
             .and_then(|x| x.checked_add(self.profile.timing.commitment_seconds))
             .and_then(|x| x.checked_add(self.profile.timing.reveal_seconds))
             .ok_or(LedgerError::Overflow)?;
-        if self.accounts.len() < 4
+        if self.accounts.len() < self.validators.len()
             || self.accounts.len() as u64 > self.profile.limits.genesis_accounts
-            || self.validators.len() != 4
+            || !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&self.validators.len())
+            || self.profile.limits.run_records
+                < self
+                    .profile
+                    .minimum_run_records_for(self.validators.len())?
         {
             return Err(LedgerError::Limit("genesis membership"));
         }
@@ -571,7 +600,7 @@ impl Genesis {
         {
             return Err(LedgerError::Invalid("membership order or duplicate"));
         }
-        if self.retirement_order.len() != 4
+        if self.retirement_order.len() != self.validators.len()
             || self
                 .retirement_order
                 .iter()
@@ -679,18 +708,18 @@ impl Genesis {
         w.u16(self.protocol_version);
         w.u64(self.start_utc);
         w.fixed(&self.run_nonce);
-        w.u8(self.accounts.len() as u8);
+        w.u16(self.accounts.len() as u16);
         for account in &self.accounts {
             w.fixed(&account.key);
         }
-        w.u8(self.validators.len() as u8);
+        w.u16(self.validators.len() as u16);
         for validator in &self.validators {
             w.fixed(validator.owner.as_bytes());
             w.fixed(&validator.consensus_key);
             w.fixed(&validator.transport_key);
             w.string(&validator.endpoint).expect("bounded endpoint");
         }
-        w.u8(self.retirement_order.len() as u8);
+        w.u16(self.retirement_order.len() as u16);
         for id in &self.retirement_order {
             w.fixed(id.as_bytes());
         }
@@ -707,8 +736,8 @@ impl Genesis {
         let protocol_version = r.u16()?;
         let start_utc = r.u64()?;
         let run_nonce = r.fixed()?;
-        let count = r.u8()?;
-        if u64::from(count) > profile.limits.genesis_accounts || count < 4 {
+        let count = r.u16()?;
+        if u64::from(count) > profile.limits.genesis_accounts || count < MIN_VALIDATORS as u16 {
             return Err(LedgerError::Limit("accounts"));
         }
         let mut accounts = Vec::with_capacity(count as usize);
@@ -719,11 +748,11 @@ impl Genesis {
                 key,
             });
         }
-        let count = r.u8()?;
-        if count != 4 {
+        let count = r.u16()?;
+        if !(MIN_VALIDATORS as u16..=MAX_VALIDATORS as u16).contains(&count) {
             return Err(LedgerError::Limit("validators"));
         }
-        let mut validators = Vec::with_capacity(4);
+        let mut validators = Vec::with_capacity(count as usize);
         for _ in 0..count {
             validators.push(ValidatorRegistration {
                 owner: AccountId::from_bytes(r.fixed()?),
@@ -732,11 +761,11 @@ impl Genesis {
                 endpoint: r.string(128)?.to_owned(),
             });
         }
-        let count = r.u8()?;
-        if count != 4 {
+        let count = r.u16()?;
+        if usize::from(count) != validators.len() {
             return Err(LedgerError::Invalid("bootstrap retirement order"));
         }
-        let mut retirement_order = Vec::with_capacity(4);
+        let mut retirement_order = Vec::with_capacity(count as usize);
         for _ in 0..count {
             retirement_order.push(ValidatorId::from_bytes(r.fixed()?));
         }
@@ -757,7 +786,7 @@ impl Genesis {
         Ok(result)
     }
     pub fn id(&self) -> GenesisId {
-        GenesisId::from_bytes(hash(b"naome:state:genesis:v4\0", &[&self.encode()]))
+        GenesisId::from_bytes(hash(b"naome:state:genesis:v6\0", &[&self.encode()]))
     }
 }
 

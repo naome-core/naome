@@ -247,9 +247,9 @@ fn seal(agreement: &StateAgreement) -> StateSeal {
 fn genesis() -> Genesis {
     let limits = Limits {
         run_records: 65,
-        record_bytes: 128 * 1024,
+        record_bytes: 512 * 1024,
         package_bytes: 64 * 1024,
-        transport_frame_bytes: 192 * 1024,
+        transport_frame_bytes: 768 * 1024,
         consensus_rounds: 8,
         ..Limits::default()
     };

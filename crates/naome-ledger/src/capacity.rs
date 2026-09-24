@@ -35,17 +35,19 @@ impl Capacity {
     pub(crate) fn reserved_bytes(&self) -> u64 {
         self.active_bytes
     }
-    pub(crate) fn can_open(&self, profile: &Profile) -> bool {
+    pub(crate) fn can_open(&self, profile: &Profile, electorate: usize) -> bool {
         !self.terminated
             && self.active == 0
-            && self.remaining
-                >= profile.limits().completion_records + profile.limits().terminal_records
+            && profile
+                .minimum_run_records_for(electorate)
+                .is_ok_and(|required| self.remaining >= required)
     }
-    pub(crate) fn open(&mut self, profile: &Profile) -> Result<(), LedgerError> {
-        if !self.can_open(profile) {
+    pub(crate) fn open(&mut self, profile: &Profile, electorate: usize) -> Result<(), LedgerError> {
+        if !self.can_open(profile, electorate) {
             return Err(LedgerError::Invalid("no completion reservation"));
         }
-        self.active = profile.limits().completion_records;
+        self.active =
+            profile.minimum_run_records_for(electorate)? - profile.limits().terminal_records;
         self.active_bytes = self.active * self.record_bytes;
         self.active_record()
     }
@@ -71,8 +73,16 @@ impl Capacity {
         self.active = 0;
         self.active_bytes = 0;
     }
-    pub(crate) fn terminate(&mut self, profile: &Profile) -> Result<(), LedgerError> {
-        if self.terminated || self.active != 0 || self.remaining == 0 || self.can_open(profile) {
+    pub(crate) fn terminate(
+        &mut self,
+        profile: &Profile,
+        electorate: usize,
+    ) -> Result<(), LedgerError> {
+        if self.terminated
+            || self.active != 0
+            || self.remaining == 0
+            || self.can_open(profile, electorate)
+        {
             return Err(LedgerError::Invalid("premature run termination"));
         }
         self.remaining -= 1;
@@ -106,21 +116,21 @@ mod tests {
         )
         .unwrap();
         let mut capacity = Capacity::new(&profile);
-        capacity.open(&profile).unwrap();
+        capacity.open(&profile, 4).unwrap();
         assert_eq!(capacity.remaining(), 64);
         assert_eq!(capacity.reserved(), 63);
         assert!(capacity.ordinary_record().is_err());
-        assert!(capacity.terminate(&profile).is_err());
+        assert!(capacity.terminate(&profile, 4).is_err());
         for _ in 0..63 {
             capacity.active_record().unwrap();
         }
         assert_eq!(capacity.remaining(), 1);
         assert!(capacity.active_record().is_err());
         capacity.release();
-        capacity.terminate(&profile).unwrap();
+        capacity.terminate(&profile, 4).unwrap();
         assert_eq!(capacity.remaining(), 0);
         assert!(capacity.ordinary_record().is_err());
-        assert!(capacity.terminate(&profile).is_err());
+        assert!(capacity.terminate(&profile, 4).is_err());
     }
 
     #[test]
@@ -134,7 +144,7 @@ mod tests {
         )
         .unwrap();
         let mut capacity = Capacity::new(&profile);
-        capacity.open(&profile).unwrap();
+        capacity.open(&profile, 4).unwrap();
         for _ in 0..5 {
             capacity.ordinary_record().unwrap();
         }
@@ -145,7 +155,30 @@ mod tests {
         assert_eq!(capacity.remaining(), 63);
         assert_eq!(capacity.reserved(), 62);
         capacity.release();
-        assert!(!capacity.can_open(&profile));
-        capacity.terminate(&profile).unwrap();
+        assert!(!capacity.can_open(&profile, 4));
+        capacity.terminate(&profile, 4).unwrap();
+    }
+
+    #[test]
+    fn maximum_frozen_electorate_retains_one_record_per_vote_and_terminal_capacity() {
+        let profile = Profile::with_limits(
+            TimingKind::ShortTest,
+            Limits {
+                run_records: 296,
+                ..Limits::default()
+            },
+        )
+        .unwrap();
+        let mut capacity = Capacity::new(&profile);
+        assert!(capacity.can_open(&profile, 256));
+        capacity.open(&profile, 256).unwrap();
+        assert_eq!(capacity.reserved(), 294);
+        for _ in 0..294 {
+            capacity.active_record().unwrap();
+        }
+        assert_eq!(capacity.remaining(), 1);
+        capacity.release();
+        capacity.terminate(&profile, 256).unwrap();
+        assert_eq!(capacity.remaining(), 0);
     }
 }

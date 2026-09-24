@@ -1,7 +1,10 @@
 use super::{Result, files};
 use naome_ledger::{
     AccountId,
-    profile::{Genesis, Limits, Profile, STATE_CHECKER_PROFILE, TimingKind, ValidatorRegistration},
+    profile::{
+        Genesis, Limits, MAX_VALIDATORS, MIN_VALIDATORS, Profile, STATE_CHECKER_PROFILE,
+        STATE_PROTOCOL_VERSION, TimingKind, ValidatorRegistration,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,8 +48,8 @@ pub struct NodeConfig {
 }
 impl NodeConfig {
     pub fn read(path: &Path) -> Result<Self> {
-        let mut config: Self = serde_json::from_slice(&files::read(path, 16384, true)?)?;
-        if config.version != 5 || config.maximum_round == 0 {
+        let mut config: Self = serde_json::from_slice(&files::read(path, 65536, true)?)?;
+        if config.version != STATE_PROTOCOL_VERSION || config.maximum_round == 0 {
             return Err("unsupported node configuration".into());
         }
         // Portable bundles resolve paths beside their configuration, never
@@ -82,10 +85,14 @@ impl NodeConfig {
         Ok(config)
     }
     pub fn genesis(&self) -> Result<Genesis> {
-        Ok(Genesis::decode(&files::read(&self.genesis, 16384, false)?)?)
+        Ok(Genesis::decode(&files::read(
+            &self.genesis,
+            128 * 1024,
+            false,
+        )?)?)
     }
 }
-fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
+fn parameters(args: &[String]) -> Result<(Profile, Vec<String>, Vec<usize>)> {
     if !(args.len() == 5
         || ((6..=8).contains(&args.len()) && matches!(args[5].as_str(), "compact" | "standard")))
     {
@@ -94,18 +101,22 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
         );
     }
     // The plan names generated node indices, not the canonical validator list.
-    // Refuse to create keys or a run directory until all four are specified.
-    let retirement_order: [usize; 4] =
+    // Refuse to create keys or a run directory until all slots are specified.
+    let retirement_order: Vec<usize> =
         serde_json::from_slice(&files::read(Path::new(&args[4]), 4096, false)?)?;
-    if retirement_order.iter().any(|&index| index >= 4)
+    let count = retirement_order.len();
+    if !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&count)
+        || retirement_order.iter().any(|&index| index >= count)
         || retirement_order
             .iter()
             .copied()
             .collect::<std::collections::BTreeSet<_>>()
             .len()
-            != 4
+            != count
     {
-        return Err("retirement order must contain each node index 0, 1, 2, 3 exactly once".into());
+        return Err(
+            "retirement order must contain each node index exactly once (4 to 256 nodes)".into(),
+        );
     }
     let timing = match args[1].as_str() {
         "lab" => TimingKind::Lab,
@@ -119,19 +130,25 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
         ..Limits::default()
     };
     if args.get(5).is_some_and(|mode| mode == "compact") {
-        limits.record_bytes = 128 * 1024;
+        limits.record_bytes = 512 * 1024;
         limits.package_bytes = 64 * 1024;
-        limits.transport_frame_bytes = 192 * 1024;
+        limits.transport_frame_bytes = 768 * 1024;
         limits.consensus_rounds = 8;
     }
     let profile = Profile::with_limits(timing, limits)?;
-    let base: u16 = args[3].parse()?;
-    if !(1024..=65528).contains(&base) {
-        return Err("base port must be 1024 through 65528".into());
+    if profile.limits().run_records < profile.minimum_run_records_for(count)? {
+        return Err("run record limit is too small for the starting validator roster".into());
     }
-    let endpoints: [String; 4] = if args.len() >= 7 {
-        let values: [String; 4] =
-            serde_json::from_slice(&files::read(Path::new(&args[6]), 4096, false)?)?;
+    let base: u16 = args[3].parse()?;
+    if base < 1024 || usize::from(base) + 2 * count > 65536 {
+        return Err("base port leaves too few primary and handoff ports".into());
+    }
+    let endpoints: Vec<String> = if args.len() >= 7 {
+        let values: Vec<String> =
+            serde_json::from_slice(&files::read(Path::new(&args[6]), 65536, false)?)?;
+        if values.len() != count {
+            return Err("endpoint count must match the bootstrap roster".into());
+        }
         let parsed = values
             .iter()
             .map(|value| {
@@ -149,41 +166,47 @@ fn parameters(args: &[String]) -> Result<(Profile, [String; 4], [usize; 4])> {
                 Ok(address)
             })
             .collect::<Result<std::collections::BTreeSet<_>>>()?;
-        if parsed.len() != 4 {
-            return Err("four distinct literal peer endpoints are required".into());
+        if parsed.len() != count {
+            return Err("distinct literal peer endpoints are required".into());
         }
         values
     } else {
-        std::array::from_fn(|index| format!("127.0.0.1:{}", base + index as u16))
+        (0..count)
+            .map(|index| format!("127.0.0.1:{}", usize::from(base) + index))
+            .collect()
     };
     configured_handoff_endpoints(args, &endpoints)?;
     Ok((profile, endpoints, retirement_order))
 }
 
-fn handoff_endpoints(endpoints: &[String; 4]) -> Result<[String; 4]> {
+fn handoff_endpoints(endpoints: &[String]) -> Result<Vec<String>> {
     let mut all: std::collections::BTreeSet<_> = endpoints.iter().cloned().collect();
-    let mut next = std::array::from_fn(|_| String::new());
-    for (index, value) in endpoints.iter().enumerate() {
+    let mut next = Vec::with_capacity(endpoints.len());
+    for value in endpoints {
         let mut address: std::net::SocketAddr = value.parse()?;
         address.set_port(
             address
                 .port()
-                .checked_add(4)
+                .checked_add(endpoints.len() as u16)
                 .ok_or("peer endpoint leaves no handoff port")?,
         );
-        next[index] = address.to_string();
-        if !all.insert(next[index].clone()) {
+        let handoff = address.to_string();
+        if !all.insert(handoff.clone()) {
             return Err("handoff endpoints overlap configured endpoints".into());
         }
+        next.push(handoff);
     }
     Ok(next)
 }
 
-fn configured_handoff_endpoints(args: &[String], primary: &[String; 4]) -> Result<[String; 4]> {
+fn configured_handoff_endpoints(args: &[String], primary: &[String]) -> Result<Vec<String>> {
     let Some(path) = args.get(7) else {
         return handoff_endpoints(primary);
     };
-    let values: [String; 4] = serde_json::from_slice(&files::read(Path::new(path), 4096, false)?)?;
+    let values: Vec<String> = serde_json::from_slice(&files::read(Path::new(path), 65536, false)?)?;
+    if values.len() != primary.len() {
+        return Err("handoff endpoint count must match the bootstrap roster".into());
+    }
     let mut seen: std::collections::BTreeSet<_> = primary.iter().cloned().collect();
     for value in &values {
         let address: std::net::SocketAddr = value.parse()?;
@@ -211,19 +234,19 @@ pub fn run(args: &[String]) -> Result<()> {
     let root = requested.canonicalize()?;
     let required = profile
         .required_storage_bytes()?
-        .checked_mul(4)
+        .checked_mul(endpoints.len() as u64)
         .ok_or("storage estimate overflow")?;
     if files::available(&root)? < required {
-        return Err(format!("four nodes require at least {required} free bytes; use a separate pre-genesis run profile or more storage").into());
+        return Err(format!("{} nodes require at least {required} free bytes; use a separate pre-genesis run profile or more storage", endpoints.len()).into());
     }
     let keys = root.join("accounts");
     files::directory(&keys)?;
-    let accounts = (0..6)
+    let accounts = (0..endpoints.len() + 2)
         .map(|i| files::write_key(&keys.join(format!("account-{i}.key")), 1))
         .collect::<Result<Vec<_>>>()?;
     let mut registrations = Vec::new();
     let mut configs = Vec::new();
-    for (index, account) in accounts.iter().enumerate().take(4) {
+    for (index, account) in accounts.iter().enumerate().take(endpoints.len()) {
         let dir = root.join(format!("node-{index}"));
         files::directory(&dir)?;
         let consensus_key = dir.join("consensus.key");
@@ -239,7 +262,7 @@ pub fn run(args: &[String]) -> Result<()> {
         let agenda_profile = dir.join("agenda-profile.txt");
         files::create(&agenda_profile,b"Prioritize precise, checker-expressible foundational mathematics. Approve small reusable helper results and questions that develop a reusable formal library. Reject unclear or unrelated targets.\n",true)?;
         configs.push(NodeConfig {
-            version: 5,
+            version: STATE_PROTOCOL_VERSION,
             genesis: root.join("genesis.bin"),
             history: dir.join("history"),
             history_anchor: root.join(format!("anchor-history-{index}")),
@@ -269,8 +292,9 @@ pub fn run(args: &[String]) -> Result<()> {
         });
     }
     let retirement_order = retirement_indices
-        .map(|index| registrations[index].id())
-        .to_vec();
+        .iter()
+        .map(|&index| registrations[index].id())
+        .collect();
     let genesis = Genesis::new(
         profile,
         "naome:zfc".into(),
@@ -353,13 +377,13 @@ pub fn run(args: &[String]) -> Result<()> {
 }
 
 pub fn profile_info(path: &Path) -> Result<()> {
-    let genesis = Genesis::decode(&files::read(path, 16384, false)?)?;
+    let genesis = Genesis::decode(&files::read(path, 128 * 1024, false)?)?;
     let profile = genesis.profile();
     let timing = profile.timing();
     let rewards = profile.rewards();
     println!(
         "{}",
-        serde_json::json!({"genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(profile.id().as_bytes()),"retirement_order":genesis.retirement_order().iter().map(|id| files::hex(id.as_bytes())).collect::<Vec<_>>(),"kind":format!("{:?}",profile.kind()),"limits":profile.limits().named_values().collect::<std::collections::BTreeMap<_,_>>(),"timing":{"voting_seconds":timing.voting_seconds,"commitment_seconds":timing.commitment_seconds,"reveal_seconds":timing.reveal_seconds,"queue_seconds":timing.queue_seconds,"clock_error_seconds":timing.clock_error_seconds,"agent_call_seconds":timing.agent_call_seconds},"rewards":{"issuance_atoms":rewards.issuance_atoms.to_string(),"author_without_citations_atoms":rewards.author_without_citations_atoms.to_string(),"author_with_citations_atoms":rewards.author_with_citations_atoms.to_string(),"citation_pool_atoms":rewards.citation_pool_atoms.to_string(),"validator_atoms_each":rewards.validator_atoms_each.to_string(),"reserve_atoms":rewards.reserve_atoms.to_string()},"required_storage_bytes_per_node":profile.required_storage_bytes()?,"canonical_profile":files::hex(&profile.encode())})
+        serde_json::json!({"genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(profile.id().as_bytes()),"retirement_order":genesis.retirement_order().iter().map(|id| files::hex(id.as_bytes())).collect::<Vec<_>>(),"kind":format!("{:?}",profile.kind()),"limits":profile.limits().named_values().collect::<std::collections::BTreeMap<_,_>>(),"timing":{"voting_seconds":timing.voting_seconds,"commitment_seconds":timing.commitment_seconds,"reveal_seconds":timing.reveal_seconds,"queue_seconds":timing.queue_seconds,"clock_error_seconds":timing.clock_error_seconds,"agent_call_seconds":timing.agent_call_seconds},"rewards":{"issuance_atoms":rewards.issuance_atoms.to_string(),"author_without_citations_atoms":rewards.author_without_citations_atoms.to_string(),"author_with_citations_atoms":rewards.author_with_citations_atoms.to_string(),"citation_pool_atoms":rewards.citation_pool_atoms.to_string(),"validator_pool_atoms":rewards.validator_pool_atoms.to_string(),"reserve_atoms":rewards.reserve_atoms.to_string()},"required_storage_bytes_per_node":profile.required_storage_bytes()?,"canonical_profile":files::hex(&profile.encode())})
     );
     Ok(())
 }

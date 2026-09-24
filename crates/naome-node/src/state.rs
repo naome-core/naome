@@ -10,6 +10,7 @@ use naome_consensus::state::{
     StateVoteSet,
 };
 use naome_consensus::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget};
+use naome_ledger::profile::MAX_VALIDATORS;
 use naome_ledger::{LedgerState, time::SignedTimeReport};
 use naome_storage::state::{
     StateAppendOutcome, StateHandoffJournal, StateHistory, StatePeriodCustody, StateSigner,
@@ -20,9 +21,9 @@ use std::{collections::BTreeMap, fmt, path::Path};
 /// Volatile evidence is bounded independently of the complete durable history.
 const RETAINED_ROUNDS: usize = 8;
 const MAX_PROPOSALS: usize = RETAINED_ROUNDS * 2;
-const MAX_VOTES: usize = RETAINED_ROUNDS * 8;
+const MAX_VOTES: usize = RETAINED_ROUNDS * 2 * MAX_VALIDATORS;
 const PROPOSALS_PER_SIGNER: usize = MAX_PROPOSALS / 4;
-const VOTES_PER_SIGNER: usize = MAX_VOTES / 4;
+const VOTES_PER_SIGNER: usize = RETAINED_ROUNDS * 2;
 
 #[derive(Debug)]
 pub enum StateNodeError {
@@ -503,7 +504,7 @@ impl StateNode {
             .into_iter()
             .filter(|v| v.target() == target)
             .collect();
-        if votes.len() < 3 {
+        if votes.len() < self.branch()?.authority().quorum() {
             return Ok(None);
         }
         Ok(Some(StateQuorum::from_votes(
@@ -530,7 +531,9 @@ impl StateNode {
         self.finality_for_staged(&agreement)
     }
     fn finality_for_staged(&self, agreement: &StateAgreement) -> Result<Option<Vec<u8>>> {
-        if self.ready.len() < 3 || self.terminal.len() < 3 {
+        if self.ready.len() < agreement.incoming().quorum()
+            || self.terminal.len() < agreement.outgoing().quorum()
+        {
             return Ok(None);
         }
         let seal = StateSeal::new(
@@ -617,6 +620,10 @@ impl StateNode {
             agreement.outgoing(),
             agreement.incoming(),
         )?;
+        let maximum = match signature.role() {
+            SealRole::Ready => agreement.incoming().units().len(),
+            SealRole::Terminal => agreement.outgoing().units().len(),
+        };
         let target = match signature.role() {
             SealRole::Ready => &mut self.ready,
             SealRole::Terminal => &mut self.terminal,
@@ -629,7 +636,7 @@ impl StateNode {
                 "equivocating seal signature".into(),
             ));
         }
-        if target.len() >= 4 && !target.contains_key(&signature.signer()) {
+        if target.len() >= maximum && !target.contains_key(&signature.signer()) {
             return Err(StateNodeError::Rejected("seal signer limit".into()));
         }
         target.insert(signature.signer(), signature);

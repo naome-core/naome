@@ -97,16 +97,16 @@ impl From<StateStorageError> for StateRuntimeError {
 }
 type Result<T> = std::result::Result<T, StateRuntimeError>;
 
-/// Local willingness to sign a fresh proposal. An accepted candidate replaces
-/// the oldest unit, so that outgoing owner has no incoming READY obligation.
+/// Local willingness to sign a fresh proposal. A candidate retires the oldest
+/// unit only when the roster is full; otherwise every incumbent must rotate.
 /// Every other live owner needs the exact custody offer it can actually open.
 fn plan_carries_local_ready(
     plan: &HandoffPlan,
     current_unit: Option<AuthorityUnitId>,
     local: Option<&NextPeriodKeys>,
-    oldest: AuthorityUnitId,
+    retiring: Option<AuthorityUnitId>,
 ) -> bool {
-    if plan.candidate().is_some() && current_unit == Some(oldest) {
+    if plan.candidate().is_some() && retiring.is_some() && current_unit == retiring {
         return true;
     }
     match current_unit {
@@ -490,7 +490,7 @@ impl StateRuntime {
             .or(network.recovery())
             .ok_or(StateRuntimeError::Configuration("no state transport"))?
             .local_peer_id();
-        if peers.len() > 4
+        if peers.len() > 2 * naome_ledger::profile::MAX_VALIDATORS + 32
             || peers.iter().any(|p| {
                 *p == local || (!network.is_configured_peer(p) && network.active().is_some())
             })
@@ -624,7 +624,9 @@ impl StateRuntime {
                 "different offer for same unit and parent".into(),
             ));
         }
-        if self.offers.len() >= 4 && !self.offers.contains_key(&offer.unit()) {
+        if self.offers.len() >= state.authority().units().len()
+            && !self.offers.contains_key(&offer.unit())
+        {
             return Err(StateRuntimeError::Rejected("period offer count".into()));
         }
         self.offers.insert(offer.unit(), offer);
@@ -672,7 +674,7 @@ impl StateRuntime {
         &self,
         time: &naome_ledger::time::TimeCertificate,
     ) -> Result<Option<HandoffPlan>> {
-        if self.offers.len() < 3 {
+        if self.offers.len() < self.state()?.authority().quorum() {
             return Ok(None);
         }
         let offers: Vec<_> = self.offers.values().cloned().collect();
@@ -1178,7 +1180,8 @@ impl StateRuntime {
                 "local signer absent from selected authority",
             ))?
             .id();
-        let oldest = state.authority().oldest().id();
+        let retiring = (state.authority().units().len() == naome_ledger::profile::MAX_VALIDATORS)
+            .then(|| state.authority().oldest().id());
         let genesis = state.genesis().clone();
         let local_offer = self
             .next_custody
@@ -1192,7 +1195,7 @@ impl StateRuntime {
                         record.handoff_plan(),
                         Some(unit),
                         local_offer.as_ref(),
-                        oldest,
+                        retiring,
                     )
                 })
         })?;

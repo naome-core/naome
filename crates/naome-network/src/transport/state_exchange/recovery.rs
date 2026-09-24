@@ -8,8 +8,8 @@ use crate::PeerId;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use naome_ledger::{AccountId, state::LedgerState};
 
-const OWNER_DOMAIN: &[u8] = b"naome:state:recovery-owner:v5\0";
-const TRANSPORT_DOMAIN: &[u8] = b"naome:state:recovery-transport:v5\0";
+const OWNER_DOMAIN: &[u8] = b"naome:state:recovery-owner:v6\0";
+const TRANSPORT_DOMAIN: &[u8] = b"naome:state:recovery-transport:v6\0";
 pub const RECOVERY_HELLO_BYTES: usize = 32 + 32 + 32 + 64 + 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -15,9 +15,9 @@ use naome_ledger::{
     GenesisId, LedgerState, ProfileId, RecordId, StateCommitment, authority::AuthoritySnapshot,
 };
 
-const VALUE_MAGIC: &[u8; 5] = b"NSCB5";
+const VALUE_MAGIC: &[u8; 5] = b"NSCB6";
 const VALUE_BYTES: usize = 5 + 9 * 32 + 8;
-const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP5";
+const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP6";
 
 /// Evidence-free header binding a complete state record and proposer state.
 /// Neither observing nor decoding this header grants application authority.
@@ -106,7 +106,7 @@ impl StateValue {
     }
     pub fn signing_root(&self) -> ProposalSigningRoot {
         ProposalSigningRoot::from_bytes(digest(
-            b"naome:state:consensus-value:v5\0",
+            b"naome:state:consensus-value:v6\0",
             &[&self.encode()],
         ))
     }
@@ -195,6 +195,22 @@ impl StateBranch {
             .map(|(_, state)| state)
             .map_err(|_| Error::Invalid("proposer successor"))
     }
+    fn successor_proposer(&self, next: &LedgerState) -> Result<FixedProposerState> {
+        let same_slots = self
+            .authority()
+            .units()
+            .iter()
+            .map(|unit| unit.slot())
+            .eq(next.authority().units().iter().map(|unit| unit.slot()));
+        if same_slots {
+            self.next_proposer()
+        } else {
+            // A new installed seat changes the fixed proposer set. Its first
+            // state is derived from the sealed successor roster, while key
+            // rotations and replacements in existing slots retain the cycle.
+            stable_proposer(next.authority())
+        }
+    }
     fn validate_record_bytes(&self, record_bytes: &[u8]) -> Result<(StateValue, LedgerState)> {
         let record = StateRecord::decode(record_bytes, self.state.genesis())?;
         if record.encode()?.as_slice() != record_bytes {
@@ -213,7 +229,7 @@ impl StateBranch {
         {
             return Err(Error::Invalid("state successor state"));
         }
-        let proposer = self.next_proposer()?;
+        let proposer = self.successor_proposer(&next)?;
         let value = StateValue {
             genesis: self.state.genesis().id(),
             profile: self.state.genesis().profile().id(),
@@ -346,10 +362,8 @@ impl StateBranch {
         )?;
         let proposal = self.verify_proposal(&proposal.encode()?, maximum_round)?;
         let (_, state) = self.validate_record_bytes(proposal.record_bytes())?;
-        let child = Self {
-            state,
-            proposer: self.next_proposer()?,
-        };
+        let proposer = self.successor_proposer(&state)?;
+        let child = Self { state, proposer };
         if child.commitment() != proposal.value().next_consensus_commitment() {
             return Err(Error::Invalid("state branch successor"));
         }
@@ -370,7 +384,7 @@ impl StateBranch {
             .limits()
             .transport_frame_bytes as usize;
         let mut r = Reader::new(input, maximum)?;
-        if r.fixed::<5>()? != *b"NSAG5" {
+        if r.fixed::<5>()? != *b"NSAG6" {
             return Err(Error::Invalid("agreement format"));
         }
         let proposal_bytes = r.bytes(maximum)?;
@@ -441,7 +455,7 @@ fn branch_commitment(
     proposer: [u8; 32],
 ) -> [u8; 32] {
     digest(
-        b"naome:state:consensus-state:v5\0",
+        b"naome:state:consensus-state:v6\0",
         &[
             genesis.as_bytes(),
             &height.to_be_bytes(),
@@ -475,7 +489,7 @@ fn validate_valid_quorum(
     Ok(())
 }
 fn proposal_signing_bytes(value: StateValue, round: u64, proposer: ConsensusKey) -> Vec<u8> {
-    let mut bytes = b"naome:state:proposal:v5\0".to_vec();
+    let mut bytes = b"naome:state:proposal:v6\0".to_vec();
     bytes.extend(value.encode());
     bytes.extend_from_slice(&round.to_be_bytes());
     bytes.extend_from_slice(proposer.as_bytes());
@@ -601,7 +615,7 @@ impl StateAgreement {
         &self.quorum
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let mut out = b"NSAG5".to_vec();
+        let mut out = b"NSAG6".to_vec();
         bytes(&mut out, &self.proposal.encode()?)?;
         bytes(&mut out, &self.quorum.encode())?;
         Ok(out)
@@ -704,6 +718,9 @@ fn authenticate_parts(
         return Err(Error::Invalid("state proposal version"));
     }
     let value = StateValue::decode(p.take(VALUE_BYTES)?)?;
+    // The fixed proposer set belongs to the successor. Admission may add a
+    // seat, so it cannot be checked against the outgoing authority here. Full
+    // proposal/record validation checks its exact successor value below.
     if value.genesis != genesis.id()
         || value.profile != genesis.profile().id()
         || value.authority != authority.id()
@@ -711,7 +728,6 @@ fn authenticate_parts(
         || value.height != parent.height().checked_add(1).ok_or(Error::Overflow)?
         || value.parent != parent.head()
         || value.previous != parent.commitment()
-        || value.fixed_set != *stable_proposer(authority)?.fixed_set_id().as_bytes()
     {
         return Err(Error::Invalid("state evidence parent or authority"));
     }

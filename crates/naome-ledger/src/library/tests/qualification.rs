@@ -444,8 +444,8 @@ fn qualification_near_2mib_older_closure_sixteen_authenticated_candidates() {
         TimingKind::ShortTest,
         Limits {
             package_bytes: 64 * 1024,
-            record_bytes: 128 * 1024,
-            transport_frame_bytes: 192 * 1024,
+            record_bytes: 512 * 1024,
+            transport_frame_bytes: 768 * 1024,
             ..Limits::default()
         },
     )

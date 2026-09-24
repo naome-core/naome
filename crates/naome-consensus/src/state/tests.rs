@@ -264,6 +264,114 @@ fn quorum(
     )
     .unwrap()
 }
+
+#[test]
+fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
+    let key = |index: u16, role: u8| {
+        let mut seed = [0; 32];
+        seed[..2].copy_from_slice(&index.to_be_bytes());
+        seed[2] = role;
+        seed[3] = 1;
+        SigningKey::from_bytes(&seed)
+    };
+    let accounts = (0..256)
+        .map(|index| key(index, 1).verifying_key().to_bytes())
+        .collect::<Vec<_>>();
+    let validators = (0..256)
+        .map(|index| ValidatorRegistration {
+            owner: AccountId::for_key(&accounts[index as usize]),
+            consensus_key: key(index, 2).verifying_key().to_bytes(),
+            transport_key: key(index, 3).verifying_key().to_bytes(),
+            endpoint: format!("127.0.0.1:{}", 42000 + index),
+        })
+        .collect::<Vec<_>>();
+    let retirement = validators.iter().map(ValidatorRegistration::id).collect();
+    let genesis = Genesis::new(
+        Profile::short_test(),
+        "naome:zfc".into(),
+        STATE_CHECKER_PROFILE.into(),
+        naome_ledger::profile::STATE_PROTOCOL_VERSION,
+        100,
+        [9; 32],
+        accounts,
+        validators,
+        retirement,
+    )
+    .unwrap();
+    let branch = StateBranch::from_genesis(LedgerState::new(genesis)).unwrap();
+    let body = VoteBody {
+        genesis: branch.state().genesis().id(),
+        profile: branch.state().genesis().profile().id(),
+        authority: branch.authority().id(),
+        height: branch.next_height().unwrap(),
+        round: 0,
+        role: ConsensusVoteRole::Prevote,
+        target: ConsensusVoteTarget::Nil,
+    };
+    let votes = (0..256)
+        .map(|index| {
+            let secret = key(index, 2);
+            let signer = ConsensusKey::from_bytes(secret.verifying_key().to_bytes());
+            StateVote::complete(
+                body,
+                signer,
+                secret.sign(&body.signing_bytes(signer)).to_bytes(),
+                branch.state().genesis(),
+                branch.authority(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let set =
+        StateVoteSet::new(votes.clone(), branch.state().genesis(), branch.authority()).unwrap();
+    assert_eq!(set.encode().len(), STATE_QUORUM_MAX_BYTES);
+    assert_eq!(
+        StateVoteSet::decode(&set.encode(), branch.state().genesis(), branch.authority()).unwrap(),
+        set
+    );
+    assert!(
+        StateQuorum::from_votes(
+            votes[..170].to_vec(),
+            branch.state().genesis(),
+            branch.authority()
+        )
+        .is_err()
+    );
+    assert!(
+        StateQuorum::from_votes(
+            votes[..171].to_vec(),
+            branch.state().genesis(),
+            branch.authority()
+        )
+        .is_ok()
+    );
+    assert!(branch.proposer(0, MAX_ROUND).unwrap().is_some());
+
+    let mut offers = (0..256)
+        .map(|index| {
+            let owner = key(index, 1);
+            let owner_id = AccountId::for_key(owner.verifying_key().as_bytes());
+            NextPeriodKeys::sign(
+                branch.authority(),
+                branch.state().head(),
+                branch.state().commitment(),
+                branch.authority().owner(owner_id).unwrap().id(),
+                &owner,
+                &key(index, 4),
+                &key(index, 5),
+                format!("127.0.0.1:{}", 42000 + index),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    let plan = HandoffPlan::new(offers, None).unwrap();
+    assert_eq!(HandoffPlan::decode(&plan.encode()).unwrap(), plan);
+    let successor = branch.state().prepare_handoff(&plan).unwrap();
+    assert_eq!(successor.units().len(), 256);
+    assert_eq!(successor.active_count(), 256);
+    assert_eq!(successor.quorum(), 171);
+}
 fn target(proposal: &StateProposal) -> ConsensusVoteTarget {
     ConsensusVoteTarget::Proposal(proposal.value().signing_root())
 }
@@ -943,15 +1051,15 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
     let record_length = p.record_bytes().len();
     let first = proposal.len() - record_length;
     proposal[first] ^= 1;
-    let mut bytes = b"NSCF5".to_vec();
+    let mut bytes = b"NSCF6".to_vec();
     super::codec::bytes(&mut bytes, &proposal).unwrap();
-    super::codec::bytes(&mut bytes, &[0]).unwrap();
+    super::codec::bytes(&mut bytes, &[0, 0]).unwrap();
     super::codec::bytes(&mut bytes, &[]).unwrap();
     assert_eq!(
         StateFinality::authenticate(&bytes, branch.state(), MAX_ROUND),
         Err(StateConsensusError::Limit("vote set"))
     );
-    let mut authenticated_bad = b"NSCF5".to_vec();
+    let mut authenticated_bad = b"NSCF6".to_vec();
     super::codec::bytes(&mut authenticated_bad, &proposal).unwrap();
     super::codec::bytes(&mut authenticated_bad, &qc.encode()).unwrap();
     super::codec::bytes(&mut authenticated_bad, &[]).unwrap();

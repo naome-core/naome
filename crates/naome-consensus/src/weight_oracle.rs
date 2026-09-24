@@ -230,8 +230,8 @@ fn independent_weight_and_schedule_boundaries() {
     }
 }
 
-// This tests shared arithmetic, not a weighted canonical validator network.
-// The live trusted profile continues to require exactly four unit weights.
+// This tests shared arithmetic with four weights, not a weighted canonical
+// validator network. Live state snapshots use 4–256 equal-weight units.
 fn compare_arithmetic(profile: Profile) {
     let keys: [ConsensusKey; 4] = std::array::from_fn(|i| ConsensusKey::from_bytes([i as u8; 32]));
     let entries: [ActiveAgreementEntry; 4] = std::array::from_fn(|i| {

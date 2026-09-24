@@ -437,7 +437,7 @@ impl StateRuntime {
             }
         }
 
-        if self.node.ready_signatures().len() >= 3
+        if self.node.ready_signatures().len() >= agreement.incoming().quorum()
             && self.node.position()?.is_some()
             && !self.node.local_terminal_saved()
         {

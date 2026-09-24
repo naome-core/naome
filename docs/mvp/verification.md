@@ -1,6 +1,6 @@
 # Trusted research MVP verification
 
-The current authority-period implementation uses canonical `state-v5` history through
+The current authority-period implementation uses canonical `state-v6` history through
 `naome`, `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
 proof-library component of that complete state. The historical
 [qualification report](evidence/final-integration.json) records source identities,
@@ -9,10 +9,10 @@ below identify executable test sources; a source pointer is not a passing run.
 Every recorded run establishes evidence only for its named snapshot.
 
 The older lab and CI reports below qualify only their named historical snapshots.
-They do not qualify the current authority-period implementation. There is one
-supported prerelease model; fresh genesis and stores are required for it.
+They do not qualify the current v6 implementation. There is one supported
+prerelease model; fresh genesis and stores are required for it.
 
-## Authority-period qualification
+## Historical state-v5 authority-period qualification
 
 The canonical implementation seals every record using outgoing agreement,
 three incoming READY signatures and three outgoing TERMINAL signatures. The

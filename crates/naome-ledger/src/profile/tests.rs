@@ -1,4 +1,5 @@
 use super::*;
+use crate::authority::AuthoritySnapshot;
 use ed25519_dalek::SigningKey;
 
 fn key(seed: u8) -> [u8; 32] {
@@ -45,6 +46,154 @@ fn fixture() -> Genesis {
 }
 
 #[test]
+fn genesis_and_authority_accept_four_through_256_installed_seats() {
+    let signing_key = |index: u16, role: u8| {
+        let mut seed = [0; 32];
+        seed[..2].copy_from_slice(&index.to_be_bytes());
+        seed[2] = role;
+        seed[3] = 1;
+        SigningKey::from_bytes(&seed)
+    };
+    let public_key = |index: u16, role: u8| signing_key(index, role).verifying_key().to_bytes();
+    for (count, quorum) in [(4, 3), (5, 4), (32, 22), (256, 171)] {
+        let accounts = (0..count)
+            .map(|index| public_key(index as u16, 1))
+            .collect::<Vec<_>>();
+        let validators = (0..count)
+            .map(|index| ValidatorRegistration {
+                owner: AccountId::for_key(&accounts[index]),
+                consensus_key: public_key(index as u16, 2),
+                transport_key: public_key(index as u16, 3),
+                endpoint: format!("127.0.0.1:{}", 5000 + index),
+            })
+            .collect::<Vec<_>>();
+        let retirement = validators.iter().map(ValidatorRegistration::id).collect();
+        let g = Genesis::new(
+            Profile::lab(),
+            "naome:zfc".into(),
+            STATE_CHECKER_PROFILE.into(),
+            STATE_PROTOCOL_VERSION,
+            1_800_000_000,
+            [42; 32],
+            accounts,
+            validators,
+            retirement,
+        )
+        .unwrap();
+        assert_eq!(Genesis::decode(&g.encode()).unwrap(), g);
+        if count == 256 {
+            let undersized = Profile::with_limits(
+                TimingKind::ShortTest,
+                Limits {
+                    run_records: 295,
+                    ..Limits::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                Genesis::new(
+                    undersized,
+                    "naome:zfc".into(),
+                    STATE_CHECKER_PROFILE.into(),
+                    STATE_PROTOCOL_VERSION,
+                    1_800_000_000,
+                    [42; 32],
+                    g.accounts().iter().map(|account| account.key).collect(),
+                    g.validators().to_vec(),
+                    g.retirement_order().to_vec(),
+                )
+                .is_err()
+            );
+        }
+        let authority = AuthoritySnapshot::from_genesis(&g).unwrap();
+        assert_eq!(authority.units().len(), count);
+        assert_eq!(authority.quorum(), quorum);
+        assert_eq!(
+            AuthoritySnapshot::decode(&authority.encode()).unwrap(),
+            authority
+        );
+        let parent = crate::RecordId::from_bytes([7; 32]);
+        let reports = (0..quorum)
+            .map(|index| {
+                crate::time::SignedTimeReport::sign(
+                    &g,
+                    &authority,
+                    parent,
+                    1,
+                    g.start_utc(),
+                    &signing_key(index as u16, 2),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            crate::time::TimeCertificate::new(
+                reports[..quorum - 1].to_vec(),
+                &g,
+                &authority,
+                parent,
+                1,
+                g.start_utc(),
+            )
+            .is_err()
+        );
+        let certificate =
+            crate::time::TimeCertificate::new(reports, &g, &authority, parent, 1, g.start_utc())
+                .unwrap();
+        assert_eq!(certificate.reports().len(), quorum);
+        assert_eq!(
+            crate::time::TimeCertificate::decode(
+                &certificate.encode(),
+                &g,
+                &authority,
+                parent,
+                1,
+                g.start_utc(),
+            )
+            .unwrap(),
+            certificate
+        );
+        if count == 4 || count == 256 {
+            let oldest = authority.oldest();
+            let old_slot = oldest.slot();
+            let old_unit = oldest.id();
+            let owner = AccountId::for_key(&public_key(1_000, 1));
+            let successor = authority
+                .install_candidate(
+                    old_unit,
+                    crate::ResolutionId::from_bytes([9; 32]),
+                    1,
+                    owner,
+                    crate::authority::PeriodKeys::new(
+                        public_key(1_000, 2),
+                        public_key(1_000, 3),
+                        "127.0.0.1:61000".into(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(successor.units().len(), count + usize::from(count < 256));
+            assert!(successor.owner(owner).is_some());
+            if count == 4 {
+                assert!(successor.unit(old_unit).is_some());
+                assert!(
+                    successor
+                        .slot(old_slot)
+                        .is_some_and(|unit| unit.id() == old_unit)
+                );
+            } else {
+                assert!(successor.unit(old_unit).is_none());
+                assert!(
+                    successor
+                        .slot(old_slot)
+                        .is_some_and(|unit| unit.owner() == owner)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn profile_presets_and_storage_reservation() {
     let lab = Profile::lab();
     let research = Profile::research();
@@ -55,9 +204,9 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(lab.timing().reveal_seconds, 120);
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
-    assert_eq!(short.name(), "state-v5-short-test");
+    assert_eq!(short.name(), "state-v6-short-test");
     assert_eq!(ci.timing().voting_seconds, 1);
-    assert_eq!(ci.name(), "state-v5-ci-test");
+    assert_eq!(ci.name(), "state-v6-ci-test");
     assert_ne!(lab.id(), research.id());
     assert_ne!(lab.id(), short.id());
     assert_ne!(short.id(), ci.id());
@@ -67,7 +216,7 @@ fn profile_presets_and_storage_reservation() {
     );
     // Full 8192-record run, all 65 consensus rounds per height, complete signer
     // journals, per-height handoff/custody, two archives, reveal staging and 100% margin.
-    assert_eq!(lab.required_storage_bytes().unwrap(), 3_564_533_612_544);
+    assert_eq!(lab.required_storage_bytes().unwrap(), 5_644_006_522_880);
     assert_eq!(lab.maximum_issuance_atoms().unwrap(), 8_192_000_000_000);
     for p in [lab, research, short, ci] {
         assert_eq!(Profile::decode(&p.encode()).unwrap(), p);
@@ -83,7 +232,7 @@ fn rewards_are_exact_and_immutable_on_wire() {
         r.author_without_citations_atoms
     );
     assert_eq!(
-        r.author_without_citations_atoms + 4 * r.validator_atoms_each + r.reserve_atoms,
+        r.author_without_citations_atoms + r.validator_pool_atoms + r.reserve_atoms,
         r.issuance_atoms
     );
     let mut bytes = p.encode();
@@ -146,13 +295,13 @@ fn storage_arithmetic_never_wraps() {
 #[test]
 fn registration_capacity_is_independent_of_genesis_and_reveal_work() {
     let standard = Profile::lab();
-    assert_eq!(standard.limits().genesis_accounts, 16);
-    assert_eq!(standard.limits().registered_accounts, 256);
+    assert_eq!(standard.limits().genesis_accounts, 512);
+    assert_eq!(standard.limits().registered_accounts, 1024);
     assert_eq!(standard.limits().commitments_per_attempt, 16);
     let smaller_registry = Profile::with_limits(
         TimingKind::Lab,
         Limits {
-            registered_accounts: 16,
+            registered_accounts: 512,
             ..Limits::default()
         },
     )
@@ -184,15 +333,15 @@ fn registration_capacity_is_independent_of_genesis_and_reveal_work() {
     );
     for limits in [
         Limits {
-            genesis_accounts: 17,
+            genesis_accounts: 513,
             ..Limits::default()
         },
         Limits {
-            registered_accounts: 257,
+            registered_accounts: 1025,
             ..Limits::default()
         },
         Limits {
-            registered_accounts: 15,
+            registered_accounts: 511,
             ..Limits::default()
         },
         Limits {
@@ -207,7 +356,13 @@ fn registration_capacity_is_independent_of_genesis_and_reveal_work() {
         assert!(Profile::with_limits(TimingKind::Lab, limits).is_err());
     }
     let (_, validators) = inputs();
-    assert!(genesis((1..=17).map(key).collect(), validators).is_err());
+    let mut accounts = (1..=5).map(key).collect::<Vec<_>>();
+    for index in 0..508u16 {
+        let mut seed = [0; 32];
+        seed[..2].copy_from_slice(&(index + 256).to_be_bytes());
+        accounts.push(SigningKey::from_bytes(&seed).verifying_key().to_bytes());
+    }
+    assert!(genesis(accounts, validators).is_err());
 }
 
 #[test]
@@ -225,17 +380,31 @@ fn old_profile_and_genesis_versions_are_not_reinterpreted() {
     assert!(Profile::decode(&old_profile).is_err());
     old_profile[..8].copy_from_slice(b"NAOPROF3");
     assert!(Profile::decode(&old_profile).is_err());
+    for old_magic in [b"NAOPROF4", b"NAOPROF5"] {
+        let mut incompatible = Profile::lab().encode();
+        incompatible[..8].copy_from_slice(old_magic);
+        assert_eq!(
+            Profile::decode(&incompatible),
+            Err(LedgerError::Invalid("profile version"))
+        );
+    }
 
     let genesis = fixture();
     let mut old_genesis = genesis.encode();
-    for old_magic in [b"NAOGENS1", b"NAOGENS2", b"NAOGENS3"] {
+    for old_magic in [
+        b"NAOGENS1",
+        b"NAOGENS2",
+        b"NAOGENS3",
+        b"NAOGENS4",
+        b"NAOGENS5",
+    ] {
         old_genesis[..8].copy_from_slice(old_magic);
         assert_eq!(
             Genesis::decode(&old_genesis),
             Err(LedgerError::Invalid("genesis version"))
         );
     }
-    for protocol_version in [1, 2, 3, 4] {
+    for protocol_version in [1, 2, 3, 4, 5] {
         let mut unsupported = genesis.clone();
         unsupported.protocol_version = protocol_version;
         assert!(Genesis::decode(&unsupported.encode()).is_err());
@@ -454,11 +623,11 @@ fn lab_profile_golden_encoding_and_identity() {
     // Independently written protocol vector: magic, variant, timing, bounds,
     // rewards. Changes require an explicit new encoding/profile decision.
     let values: [u64; 39] = [
-        300, 120, 120, 1800, 2, 60, 1, 32, 16, 256, 16, 1, 16384, 1024, 32, 16, 262144, 65536,
+        300, 120, 120, 1800, 2, 60, 1, 32, 512, 1024, 16, 1, 16384, 1024, 32, 16, 262144, 65536,
         4096, 64, 2097152, 32, 64, 16, 1, 1048576, 8192, 64, 1, 2, 4, 4194304, 2592, 75497472,
-        10616832, 1114112, 1114112, 64, 64,
+        10616832, 1114112, 1310720, 64, 64,
     ];
-    let mut bytes = b"NAOPROF4\0".to_vec();
+    let mut bytes = b"NAOPROF6\0".to_vec();
     for value in values {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -467,7 +636,7 @@ fn lab_profile_golden_encoding_and_identity() {
         700_000_000,
         600_000_000,
         100_000_000,
-        50_000_000,
+        200_000_000,
         100_000_000,
     ] {
         bytes.extend_from_slice(&value.to_be_bytes());
@@ -477,8 +646,8 @@ fn lab_profile_golden_encoding_and_identity() {
     assert_eq!(
         Profile::lab().id().as_bytes(),
         &[
-            128, 220, 27, 191, 218, 52, 143, 50, 21, 144, 26, 11, 114, 185, 13, 149, 11, 180, 179,
-            171, 207, 127, 6, 84, 196, 212, 107, 186, 187, 157, 45, 135
+            57, 145, 65, 102, 224, 142, 55, 136, 11, 205, 47, 101, 51, 206, 114, 171, 116, 58, 17,
+            153, 65, 146, 102, 18, 177, 135, 97, 220, 238, 103, 196, 164
         ]
     );
 }
@@ -520,21 +689,21 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
     let p = Profile::lab();
     assert_eq!(p.limits().consensus_rounds, 64); // Inclusive: 65 rounds.
     assert_eq!(p.signer_height_frames().unwrap(), 456);
-    assert_eq!(p.signer_height_bytes().unwrap(), 208594069);
-    assert_eq!(p.signer_journal_bytes().unwrap(), 1709071679488);
+    assert_eq!(p.signer_height_bytes().unwrap(), 333942111);
+    assert_eq!(p.signer_journal_bytes().unwrap(), 2735922839552);
     let reduced = Profile::with_limits(
         TimingKind::Lab,
         Limits {
             run_records: 256,
-            record_bytes: 128 * 1024,
+            record_bytes: 512 * 1024,
             package_bytes: 64 * 1024,
-            transport_frame_bytes: 192 * 1024,
+            transport_frame_bytes: 768 * 1024,
             consensus_rounds: 8,
             ..Limits::default()
         },
     )
     .unwrap();
-    assert_eq!(reduced.required_storage_bytes().unwrap(), 3_070_260_224);
+    assert_eq!(reduced.required_storage_bytes().unwrap(), 20_295_559_168);
     assert!(reduced.required_storage_bytes().unwrap() < p.required_storage_bytes().unwrap());
     assert!(reduced.signer_journal_bytes().unwrap() > reduced.signer_height_bytes().unwrap() * 256);
     assert_eq!(Profile::decode(&reduced.encode()).unwrap(), reduced);

@@ -634,7 +634,7 @@ async fn candidate_replacement_exempts_only_the_replaced_outgoing_unit() {
         &plan,
         Some(oldest),
         Some(old_offer),
-        oldest
+        Some(oldest)
     ));
     let other = nodes[(old_index + 1) % 4]
         .runtime
@@ -647,7 +647,7 @@ async fn candidate_replacement_exempts_only_the_replaced_outgoing_unit() {
         &plan,
         Some(other.unit()),
         None,
-        oldest
+        Some(oldest)
     ));
 }
 

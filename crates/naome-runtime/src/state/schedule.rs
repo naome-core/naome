@@ -73,25 +73,26 @@ impl StateRuntime {
         Ok(())
     }
     pub(super) fn prepare_record(&mut self) -> Result<Option<Vec<u8>>> {
-        if self.time_reports.len() < 3 || self.node.position()?.is_none() {
+        let quorum = self.state()?.authority().quorum();
+        if self.time_reports.len() < quorum || self.node.position()?.is_none() {
             return Ok(None);
         }
-        if self.offers.len() < 3 {
+        if self.offers.len() < quorum {
             return Ok(None);
         }
         let offers_ready_at = *self.offers_ready_at.get_or_insert_with(Instant::now);
-        // An ordinary round-zero proposer gives a healthy fourth owner time
-        // for a first static Noise reconnect after the third offer and time
-        // report are ready. The short-test round timeout alone is shorter
-        // than the network's initial one-second retry. Three offers still
-        // progress after this fixed bound when a unit is offline or vacant.
-        let fourth_offer_grace = self.config.proposal_timeout.max(Duration::from_secs(2));
-        if self.offers.len() == 3
+        // A round-zero proposer allows remaining owners a static Noise
+        // reconnect after the quorum of offers and time reports is ready.
+        // The short-test timeout is shorter than the initial one-second retry;
+        // a quorum can still progress after this bound if a unit stays absent.
+        let remaining_offer_grace = self.config.proposal_timeout.max(Duration::from_secs(2));
+        if self.offers.len() == quorum
+            && self.state()?.authority().units().len() > quorum
             && self
                 .node
                 .position()?
                 .is_some_and(|(_, round, _)| round == 0)
-            && offers_ready_at.elapsed() < fourth_offer_grace
+            && offers_ready_at.elapsed() < remaining_offer_grace
         {
             return Ok(None);
         }
@@ -127,7 +128,8 @@ impl StateRuntime {
                 self.next_custody
                     .as_ref()
                     .and_then(StatePeriodCustody::offer),
-                state.authority().oldest().id(),
+                (state.authority().units().len() == naome_ledger::profile::MAX_VALIDATORS)
+                    .then(|| state.authority().oldest().id()),
             )
         {
             return Ok(None);

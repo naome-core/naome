@@ -4,12 +4,12 @@ use super::*;
 use crate::OperationId;
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
-const PLAN_MAGIC: &[u8; 5] = b"NSHP5";
-const CANDIDATE_MAGIC: &[u8; 5] = b"NSCA5";
-const OWNER_DOMAIN: &[u8] = b"naome:state:candidate-ready-owner:v5\0";
-const CONSENSUS_DOMAIN: &[u8] = b"naome:state:candidate-ready-consensus:v5\0";
-const TRANSPORT_DOMAIN: &[u8] = b"naome:state:candidate-ready-transport:v5\0";
-pub const HANDOFF_PLAN_MAX_BYTES: usize = 4096;
+const PLAN_MAGIC: &[u8; 5] = b"NSHP6";
+const CANDIDATE_MAGIC: &[u8; 5] = b"NSCA6";
+const OWNER_DOMAIN: &[u8] = b"naome:state:candidate-ready-owner:v6\0";
+const CONSENSUS_DOMAIN: &[u8] = b"naome:state:candidate-ready-consensus:v6\0";
+const TRANSPORT_DOMAIN: &[u8] = b"naome:state:candidate-ready-transport:v6\0";
+pub const HANDOFF_PLAN_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidateAdmissionOffer {
@@ -178,7 +178,7 @@ impl HandoffPlan {
         offers: Vec<NextPeriodKeys>,
         candidate: Option<CandidateAdmissionOffer>,
     ) -> Result<Self, LedgerError> {
-        if !(3..=4).contains(&offers.len())
+        if !(validator_quorum(MIN_VALIDATORS)..=MAX_VALIDATORS).contains(&offers.len())
             || offers
                 .windows(2)
                 .any(|pair| pair[0].unit() >= pair[1].unit())
@@ -200,7 +200,7 @@ impl HandoffPlan {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
         w.fixed(PLAN_MAGIC);
-        w.u8(self.offers.len() as u8);
+        w.u16(self.offers.len() as u16);
         for offer in &self.offers {
             w.bytes(&offer.encode()).expect("bounded period offer");
         }
@@ -218,8 +218,8 @@ impl HandoffPlan {
         if r.fixed::<5>()? != *PLAN_MAGIC {
             return Err(LedgerError::Invalid("handoff plan format"));
         }
-        let count = r.u8()?;
-        if !(3..=4).contains(&count) {
+        let count = r.u16()?;
+        if !(validator_quorum(MIN_VALIDATORS) as u16..=MAX_VALIDATORS as u16).contains(&count) {
             return Err(LedgerError::Invalid("handoff offer count"));
         }
         let mut offers = Vec::with_capacity(count as usize);

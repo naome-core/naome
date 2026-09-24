@@ -1,6 +1,6 @@
 //! Stable voting units and the public keys usable in one signing period.
 //!
-//! A missing key binding leaves the unit's weight in the four-unit denominator.
+//! A missing key binding leaves the unit's weight in the installed denominator.
 //! The account owner can authorize a key for a future seal, never retroactively
 //! for this snapshot. Sealed-history verification grants authority separately.
 
@@ -9,7 +9,7 @@ use crate::{
     StateCommitment, ValidatorId,
     codec::{Reader, Writer},
     identity::hash,
-    profile::Genesis,
+    profile::{Genesis, MAX_VALIDATORS, MIN_VALIDATORS, validator_quorum},
 };
 use ed25519_dalek::VerifyingKey;
 use std::{
@@ -22,8 +22,9 @@ pub use offer::NextPeriodKeys;
 mod plan;
 pub use plan::{CandidateAdmissionOffer, HANDOFF_PLAN_MAX_BYTES, HandoffPlan};
 
-const MAGIC: &[u8; 5] = b"NSAU5";
-const MAX_BYTES: usize = 5 + 32 + 8 + 1 + 4 * (32 + 32 + 32 + 1 + 32 + 8 + 1 + 32 + 32 + 4 + 128);
+const MAGIC: &[u8; 5] = b"NSAU6";
+pub const AUTHORITY_SNAPSHOT_MAX_BYTES: usize =
+    5 + 32 + 8 + 2 + MAX_VALIDATORS * (32 + 32 + 32 + 1 + 32 + 8 + 2 + 1 + 32 + 32 + 4 + 128);
 const ENDPOINT_MAX_BYTES: usize = 128;
 
 /// Original contribution order. Every bootstrap unit precedes every earned one.
@@ -31,7 +32,7 @@ const ENDPOINT_MAX_BYTES: usize = 128;
 pub enum UnitOrigin {
     Bootstrap {
         validator: ValidatorId,
-        retirement_rank: u8,
+        retirement_rank: u16,
     },
     Earned {
         family: ResolutionId,
@@ -187,7 +188,7 @@ impl AuthorityUnit {
             }
             UnitOrigin::Bootstrap {
                 retirement_rank, ..
-            } if retirement_rank >= 4 => {
+            } if usize::from(retirement_rank) >= MAX_VALIDATORS => {
                 return Err(LedgerError::Invalid("bootstrap retirement rank"));
             }
             UnitOrigin::Earned {
@@ -203,12 +204,12 @@ impl AuthorityUnit {
     }
 }
 
-/// Exactly four equal-weight units and their effective period keys.
+/// Between four and 256 equal-weight units and their effective period keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoritySnapshot {
     genesis: GenesisId,
     effective_height: u64,
-    units: [AuthorityUnit; 4],
+    units: Vec<AuthorityUnit>,
 }
 impl AuthoritySnapshot {
     pub fn from_genesis(genesis: &Genesis) -> Result<Self, LedgerError> {
@@ -226,7 +227,7 @@ impl AuthoritySnapshot {
                     validator.owner,
                     UnitOrigin::Bootstrap {
                         validator: validator.id(),
-                        retirement_rank: rank as u8,
+                        retirement_rank: rank as u16,
                     },
                     Some(PeriodKeys::new(
                         validator.consensus_key,
@@ -244,9 +245,9 @@ impl AuthoritySnapshot {
         mut units: Vec<AuthorityUnit>,
     ) -> Result<Self, LedgerError> {
         units.sort_by_key(AuthorityUnit::slot);
-        let units: [AuthorityUnit; 4] = units
-            .try_into()
-            .map_err(|_| LedgerError::Limit("authority unit count"))?;
+        if !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&units.len()) {
+            return Err(LedgerError::Limit("authority unit count"));
+        }
         let result = Self {
             genesis,
             effective_height,
@@ -261,8 +262,11 @@ impl AuthoritySnapshot {
     pub const fn effective_height(&self) -> u64 {
         self.effective_height
     }
-    pub fn units(&self) -> &[AuthorityUnit; 4] {
+    pub fn units(&self) -> &[AuthorityUnit] {
         &self.units
+    }
+    pub fn quorum(&self) -> usize {
+        validator_quorum(self.units.len())
     }
     pub fn oldest(&self) -> &AuthorityUnit {
         self.units
@@ -274,7 +278,7 @@ impl AuthoritySnapshot {
                     oldest
                 }
             })
-            .expect("four units")
+            .expect("validated nonempty authority")
     }
     pub fn unit(&self, id: AuthorityUnitId) -> Option<&AuthorityUnit> {
         self.units.iter().find(|unit| unit.id == id)
@@ -304,20 +308,33 @@ impl AuthoritySnapshot {
         keys: PeriodKeys,
     ) -> Result<Self, LedgerError> {
         let mut units = self.units.to_vec();
-        let old = units
-            .iter_mut()
-            .find(|unit| unit.id == outgoing)
-            .ok_or(LedgerError::Invalid("retiring unit missing"))?;
-        old.id = AuthorityUnitId::for_claim(family);
-        old.origin = UnitOrigin::Earned {
+        if self.oldest().id != outgoing {
+            return Err(LedgerError::Invalid("retiring unit is not oldest"));
+        }
+        let origin = UnitOrigin::Earned {
             family,
             completion_ordinal: ordinal,
         };
-        old.owner = owner;
-        old.keys = Some(keys);
+        if units.len() < MAX_VALIDATORS {
+            units.push(AuthorityUnit::new(
+                AuthoritySlotId::for_claim(family),
+                owner,
+                origin,
+                Some(keys),
+            )?);
+        } else {
+            let old = units
+                .iter_mut()
+                .find(|unit| unit.id == outgoing)
+                .ok_or(LedgerError::Invalid("retiring unit missing"))?;
+            old.id = origin.id();
+            old.origin = origin;
+            old.owner = owner;
+            old.keys = Some(keys);
+        }
         Self::new(self.genesis, self.effective_height, units)
     }
-    /// Derives the next four-slot set. Each absent offer produces a vacant
+    /// Derives the next roster. Each absent offer produces a vacant
     /// weighted slot. A future selected-state caller must supply account keys
     /// and every registered or previously used consensus/transport key.
     pub fn successor(
@@ -328,7 +345,7 @@ impl AuthoritySnapshot {
         account_key: impl Fn(AccountId) -> Option<[u8; 32]>,
         forbidden_keys: &BTreeSet<[u8; 32]>,
     ) -> Result<Self, LedgerError> {
-        if !(3..=4).contains(&offers.len()) {
+        if !(self.quorum()..=self.units.len()).contains(&offers.len()) {
             return Err(LedgerError::Invalid("period offer quorum"));
         }
         let height = self
@@ -372,20 +389,20 @@ impl AuthoritySnapshot {
             let successor = units
                 .iter_mut()
                 .find(|unit| unit.id == current.id)
-                .expect("same four units");
+                .expect("same authority units");
             successor.keys = Some(offer.keys().clone());
         }
         Self::new(self.genesis, height, units)
     }
     pub fn id(&self) -> [u8; 32] {
-        hash(b"naome:state:authority-snapshot:v5\0", &[&self.encode()])
+        hash(b"naome:state:authority-snapshot:v6\0", &[&self.encode()])
     }
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
         w.fixed(MAGIC);
         w.fixed(self.genesis.as_bytes());
         w.u64(self.effective_height);
-        w.u8(4);
+        w.u16(self.units.len() as u16);
         for unit in &self.units {
             w.fixed(unit.slot.as_bytes());
             w.fixed(unit.id.as_bytes());
@@ -397,7 +414,7 @@ impl AuthoritySnapshot {
                 } => {
                     w.u8(1);
                     w.fixed(validator.as_bytes());
-                    w.u8(retirement_rank);
+                    w.u16(retirement_rank);
                 }
                 UnitOrigin::Earned {
                     family,
@@ -421,24 +438,25 @@ impl AuthoritySnapshot {
         w.finish()
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, LedgerError> {
-        let mut r = Reader::new(bytes, MAX_BYTES)?;
+        let mut r = Reader::new(bytes, AUTHORITY_SNAPSHOT_MAX_BYTES)?;
         if r.fixed::<5>()? != *MAGIC {
             return Err(LedgerError::Invalid("authority snapshot version"));
         }
         let genesis = GenesisId::from_bytes(r.fixed()?);
         let effective_height = r.u64()?;
-        if r.u8()? != 4 {
+        let count = usize::from(r.u16()?);
+        if !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&count) {
             return Err(LedgerError::Invalid("authority unit count"));
         }
-        let mut units = Vec::with_capacity(4);
-        for _ in 0..4 {
+        let mut units = Vec::with_capacity(count);
+        for _ in 0..count {
             let slot = AuthoritySlotId::from_bytes(r.fixed()?);
             let id = AuthorityUnitId::from_bytes(r.fixed()?);
             let owner = AccountId::from_bytes(r.fixed()?);
             let origin = match r.u8()? {
                 1 => UnitOrigin::Bootstrap {
                     validator: ValidatorId::from_bytes(r.fixed()?),
-                    retirement_rank: r.u8()?,
+                    retirement_rank: r.u16()?,
                 },
                 2 => UnitOrigin::Earned {
                     family: ResolutionId::from_bytes(r.fixed()?),

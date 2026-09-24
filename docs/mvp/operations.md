@@ -4,8 +4,12 @@ For separate-machine deployment, start with the [pilot runbook](pilot.md).
 It prepares relocatable per-node bundles and collects independently replayed
 archives. The commands below describe the research workflow within that run.
 
-These commands operate a four-validator canonical state genesis on Unix. The
-current qualification target is four independent local processes with separate
+These commands use a four-validator starting genesis on Unix. Fresh v6 genesis
+may install four to 256 validators; the example below starts with four. The
+finite run needs at least `max(64, N + 2K + 7) + 1` records for its opening
+roster of `N` owners and commitment limit `K` (296 at 256 owners with `K=16`).
+Setup also reserves disk space per node before creating the run.
+The local qualification target is four independent processes with separate
 keys, journals, anchors, and authenticated network connections. Current process
 and Docker checks use explicit accelerated timing profiles. The historical
 [integration lab report](evidence/final-integration-lab.json) records actual
@@ -14,7 +18,7 @@ These checks do not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The current canonical protocol is `state-v5` and node configuration version 5.
+The current canonical protocol is `state-v6` and node configuration version 6.
 Use a fresh genesis and run directory. Incompatible earlier development data is
 rejected; this executable provides one current implementation and no migration.
 The current files include `state.journal`, `state-finality.anchor`, per-period
@@ -41,7 +45,8 @@ printf '[2,0,3,1]\n' > /tmp/bootstrap-retirement-order.json
 The JSON order lists generated `node-0` through `node-3` indices, in the
 operator-selected retirement sequence. Setup resolves them to consensus validator
 IDs, commits the four IDs in genesis, and prints them. Review that sequence before
-startup with `profile-info`. It determines which bootstrap slot is replaced first when a claim-backed candidate is sealed into authority.
+startup with `profile-info`. It determines which bootstrap slot is replaced first
+after the roster reaches 256; earned claimants add seats until then.
 An omitted, repeated, or unknown index is rejected before provisioning.
 
 Run this from the repository root. `RUN` must name a new directory; setup never
@@ -70,14 +75,13 @@ resource limits before genesis, while preserving the selected timing windows and
 
 | Bound | Default, 8,192 records | Compact, 256 records |
 |---|---:|---:|
-| Complete record | 1 MiB | 128 KiB |
+| Complete record | 1 MiB | 512 KiB |
 | Original/final package | 256 KiB each | 64 KiB each |
-| Transport frame | 1,088 KiB | 192 KiB |
+| Transport frame | 1,280 KiB | 768 KiB |
 | Maximum consensus round index | 64, allowing 65 rounds | 8, allowing 9 rounds |
-| Conservative storage floor per node | 3,564,533,612,544 bytes | 3,070,260,224 bytes |
+| Conservative storage floor per node | Query `profile-info` for the selected run | Query `profile-info` for the selected run |
 
-The compact example requires 12,281,040,896 free bytes across its four node
-reservations, approximately 11.44 GiB. The calculation includes worst-case
+The storage calculation includes worst-case
 period signing history, handoff and key custody journals, archives, staged reveals, metadata, and a safety margin; it is
 not a measured storage-consumption or throughput claim. Different record counts
 produce a different calculation. Setup prints the actual genesis/profile IDs
@@ -246,12 +250,13 @@ It imports the two private candidate keys into anchored custody, publishes the
 configuration, then removes the source key files. The owner account key remains
 separate. Retrying a completed setup safely finishes interrupted source-file
 cleanup. Keep the candidate process running so it can stage the agreed record
-and issue READY. A three-of-four READY quorum and three-of-four outgoing TERMINAL
-quorum seal the replacement. Only selected sealed history opens ordinary signing.
+and issue READY. An incoming `q(N_in)` READY quorum and an outgoing `q(N_out)`
+TERMINAL quorum seal the addition, or replacement once 256 seats are installed.
+Only selected sealed history opens ordinary signing.
 Use `status` and `question` to inspect the selected slot and `CONSUMED` claim.
 
 Each node needs two distinct reachable literal endpoints. Setup defaults to the
-primary port plus four for handoff; pass both endpoint JSON files after `compact`
+primary port plus the genesis validator count for handoff; pass both endpoint JSON files after `compact`
 for explicit addresses. With proxies or NAT, configure matching `listen_address`
 and `handoff_listen_address`. The two fresh-key transports overlap only during
 handoff; old sessions close before local TERMINAL evidence is released.
@@ -452,7 +457,8 @@ the `node-N` directory number. Match its current owner and endpoint before chang
 a link; the same slot remains selected when its period keys rotate. A 2:2
 partition requires disabling every cross-group link in both groups. Restore those
 same links with `on`. Two validators must never finalize; no command reduces the
-four-slot denominator. Shutdown/restart uses the existing durable state.
+four-slot denominator in this starting-roster example. Shutdown/restart uses
+the existing durable state.
 
 The process test is
 `crates/naome-cli/tests/state_process.rs`. Its accelerated execution,
@@ -530,3 +536,10 @@ and visually inspect every page after changes; structural checks alone do not
 qualify layout. The paper describes both the trusted MVP and the broader public
 proposal; the requirement and verification documents define the operational
 scope and actual evidence.
+
+The separate [variable-roster proposal source](paper/whitepaper_variable_proposal_en.md)
+builds with `python3 docs/mvp/paper/build_whitepaper.py variable-en` and checks
+with `python3 docs/mvp/paper/check_paper.py variable-en`. It writes
+`whitepaper-variable-proposal-en.pdf`. The fresh v6 four-to-256-seat design is
+separate from the four-seat first-print paper. Section 9.2 identifies the
+remaining public-network decisions and evidence limits.

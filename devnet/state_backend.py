@@ -169,6 +169,9 @@ def free_ports(count):
 class Backend:
     def __init__(self, args, root):
         self.args, self.root = args, root
+        self.count = getattr(args, 'validators', 4)
+        if not 4 <= self.count <= 256 or (args.backend == 'docker' and self.count != 4):
+            raise ValueError('process roster must have 4..256 validators; Docker harness has four')
         self.children, self.logs = {}, {}
         self.project = 'naome-state-' + uuid.uuid4().hex[:12]
         self.network = self.project + '-network'
@@ -176,7 +179,7 @@ class Backend:
         self.containers, self.disconnected = {}, set()
         self.probes = {}
         self.image_id = None
-        self.generations = [0] * 4
+        self.generations = [0] * self.count
         if args.backend == 'docker':
             subnet = ipaddress.ip_network(args.subnet)
             if subnet.version != 4 or subnet.prefixlen != 24 or not subnet.is_private:
@@ -187,11 +190,12 @@ class Backend:
             self.handoff_fronts = [f'{ip}:4204' for ip in self.ips]
             self.handoff_backs = [f'{ip}:4104' for ip in self.ips]
         else:
-            ports = free_ports(16)
-            self.fronts = [f'127.0.0.1:{p}' for p in ports[:4]]
-            self.backs = [f'127.0.0.1:{p}' for p in ports[4:8]]
-            self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[8:12]]
-            self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[12:]]
+            count = self.count
+            ports = free_ports(4 * count)
+            self.fronts = [f'127.0.0.1:{p}' for p in ports[:count]]
+            self.backs = [f'127.0.0.1:{p}' for p in ports[count:2 * count]]
+            self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[2 * count:3 * count]]
+            self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[3 * count:]]
 
     def node(self, index):
         return self.root / 'run' / f'node-{index}'

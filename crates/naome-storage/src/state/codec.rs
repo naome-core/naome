@@ -34,6 +34,9 @@ impl<'a> Reader<'a> {
     pub fn u8(&mut self) -> Result<u8, Error> {
         Ok(self.fixed::<1>()?[0])
     }
+    pub fn u16(&mut self) -> Result<u16, Error> {
+        Ok(u16::from_be_bytes(self.fixed()?))
+    }
     pub fn u64(&mut self) -> Result<u64, Error> {
         Ok(u64::from_be_bytes(self.fixed()?))
     }

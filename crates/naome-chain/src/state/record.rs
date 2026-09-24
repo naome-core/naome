@@ -85,14 +85,14 @@ impl StateRecord {
     }
     pub fn id(&self) -> RecordId {
         RecordId::from_bytes(hash(
-            b"naome:state:record:v5\0",
+            b"naome:state:record:v6\0",
             &[&self.encode().expect("private bounded record content")],
         ))
     }
     pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         let mut w = Writer::new();
         w.fixed(MAGIC);
-        w.u16(5);
+        w.u16(6);
         w.fixed(self.genesis.as_bytes());
         w.u64(self.height);
         w.fixed(self.parent.as_bytes());
@@ -112,7 +112,7 @@ impl StateRecord {
     /// The selected parent is still needed to verify time, effects and state.
     pub fn decode(bytes: &[u8], genesis: &Genesis) -> Result<Self, LedgerError> {
         let mut r = Reader::new(bytes, genesis.profile().limits().record_bytes as usize)?;
-        if r.fixed::<4>()? != *MAGIC || r.u16()? != 5 {
+        if r.fixed::<4>()? != *MAGIC || r.u16()? != 6 {
             return Err(LedgerError::Invalid("state record version"));
         }
         let context = GenesisId::from_bytes(r.fixed()?);

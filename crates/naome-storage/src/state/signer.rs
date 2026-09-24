@@ -26,7 +26,7 @@ use super::{
     log::{FileLog, Limits},
 };
 
-const MAGIC: &[u8; 8] = b"NAOSSIG5";
+const MAGIC: &[u8; 8] = b"NAOSSIG6";
 const PREPARE: u8 = 1;
 const COMPLETE: u8 = 2;
 const STOP: u8 = 4;

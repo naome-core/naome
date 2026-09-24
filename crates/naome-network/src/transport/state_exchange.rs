@@ -337,7 +337,7 @@ impl StateNetwork {
             parent.authority(),
             bindings,
             StateLane::Active,
-            36,
+            naome_ledger::profile::MAX_VALIDATORS + 32,
             Some(Arc::new(parent.clone())),
         )
     }
@@ -357,7 +357,7 @@ impl StateNetwork {
             authority,
             bindings,
             StateLane::Active,
-            36,
+            naome_ledger::profile::MAX_VALIDATORS + 32,
             None,
         )
     }
@@ -390,7 +390,7 @@ impl StateNetwork {
             &incoming,
             bindings,
             StateLane::Handoff,
-            5,
+            2 * naome_ledger::profile::MAX_VALIDATORS + 1,
             Some(Arc::new(parent.clone())),
         )
     }

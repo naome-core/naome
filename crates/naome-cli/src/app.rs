@@ -28,7 +28,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
         Some("compile-question") if args.len() == 3 => {
             let genesis = naome_ledger::profile::Genesis::decode(&files::read(
                 std::path::Path::new(&args[1]),
-                16384,
+                128 * 1024,
                 false,
             )?)?;
             let source = String::from_utf8(files::read(

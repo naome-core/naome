@@ -1,17 +1,27 @@
-# Authority periods and sealed handoff (state-v5)
+# Authority periods and sealed handoff (state-v6)
 
 A selected parent at height `h-1` contains the authority snapshot `S_h` for
-record `h`. It has four equal-weight slots. A vacant slot has no signing key but
-still counts in the denominator: agreement, time, READY, and TERMINAL each need
-at least three distinct eligible signatures. The slot identifier survives owner changes;
+record `h`. It has `N` equal-weight installed slots, where `4 <= N <= 256`.
+A vacant slot has no signing key but still counts in the denominator:
+agreement and time need `q(N) = floor(2N/3) + 1` distinct eligible signatures.
+READY uses the incoming roster's `q(N_in)` and TERMINAL uses the outgoing
+roster's `q(N_out)`. The slot identifier survives owner changes;
 its occupant has a unit identity, owner account, origin, and period keys.
 Distinct owners are distinct accounts, not evidence of distinct people.
+An opened research attempt freezes its electorate. If that electorate has `N`
+owners and the profile permits `K` commitments, the active-record reserve is
+`max(64, N + 2K + 7)`: one possible record per vote, one per commitment and
+reveal, and seven opening/phase/settlement records. Genesis must provide that
+reserve plus a terminal record for its starting roster. A grown roster may
+stop new openings when the finite run no longer has that capacity.
 
 The initial units and their retirement order come from genesis. Bootstrap age
 uses that explicit order; an earned unit's age is its original paid-completion
 ordinal. A candidate derives its unit identity from the completed family and
-inherits the oldest unit's slot when installed. At most one earned claimant
-replaces one unit per record. The lowest paid-completion ordinal among eligible finalized intents has priority.
+adds a fresh slot while fewer than 256 are installed. Once the roster is full,
+it replaces the oldest unit in that unit's slot. At most one earned claimant
+is installed per record. The lowest paid-completion ordinal among eligible
+finalized intents has priority.
 An absent candidate offer selects a no-join rotation and leaves the queued
 claim in place, subject to its original expiry. A revised intent keeps its
 original queue position and expiry. An expired, consumed, or stale claim grants
@@ -19,7 +29,7 @@ no admission. An intent alone grants no signing or voting weight.
 
 ## Exact record and successor
 
-Every record carries a bounded `HandoffPlan`: three or four owner-authorized
+Every record carries a bounded `HandoffPlan`: from `q(N_out)` through `N_out` owner-authorized
 `NextPeriodKeys` offers from current units, plus at most one
 `CandidateAdmissionOffer`. Each offer binds genesis, the exact selected parent
 record and state, outgoing snapshot, immediately following effective height,
@@ -37,15 +47,15 @@ remain permanently ineligible for reuse.
 
 The plan is part of the agreed record and its resulting state commitment. It
 is never added after agreement. Deterministic execution derives `S_(h+1)`
-from the exact plan, preserving four stable slots and making a missing rotation
-slot vacant. At least three valid rotation offers are required even if a
+from the exact plan, preserving installed slots and making a missing rotation
+slot vacant. At least `q(N_out)` valid rotation offers are required even if a
 candidate joins. The candidate must match the oldest eligible queued intent's
 owner, keys, endpoint, receipt, and unconsumed claim. The record at `h` is
 agreed under `S_h`; its successor is not selected until sealed.
 
 Before proposing or prevoting a fresh record, a configured live node requires
-its exact locally anchored rotation offer in the plan, unless a valid candidate
-replaces its unit. A proposal carrying a verified earlier prevote quorum follows
+its exact locally anchored rotation offer in the plan, unless the roster is full
+and a valid candidate replaces its unit. A proposal carrying a verified earlier prevote quorum follows
 the ordinary lock rules. Otherwise a locally unready proposal takes the normal
 no-proposal transition: a locked signer supports its locked value and an unlocked
 signer votes NIL. The verified proposal remains retained for quorum processing
@@ -59,10 +69,10 @@ after the record is agreed.
 A verified agreement yields a seal context that binds genesis, height, record,
 previous and next state commitments, and both snapshot IDs. Incoming members
 verify the predecessor history and agreed record, durably stage this exact
-context, then at least three members of `S_(h+1)` sign READY. Outgoing members verify
+context, then at least `q(N_in)` members of `S_(h+1)` sign READY. Outgoing members verify
 READY, durably save exact TERMINAL signatures, stop old consensus and TIME
 signing, retire their locally controlled old period secret capabilities, and
-release the saved bytes. At least three members of `S_h` sign TERMINAL. Only a finality
+release the saved bytes. At least `q(N_out)` members of `S_h` sign TERMINAL. Only a finality
 envelope containing the agreed proposal, precommit quorum, and both seal
 quorums installs the selected successor.
 
@@ -113,7 +123,8 @@ handoff, and explicit recovery endpoints. Source candidate key files are
 removed after durable import. The owner key remains separate. Candidate
 startup has no ordinary signer until a sealed selected period installs it.
 
-The v5 code and local tests implement these checks. A local replay or
-four-process rehearsal does not demonstrate separate-machine operation,
+The v6 code and local tests implement these checks for a fresh genesis; v5
+history is not accepted or upgraded in place. A local replay or process
+rehearsal does not demonstrate separate-machine operation,
 long-running availability, or erasure of external backups. The verification
 record must report test, CI, Docker, and physical-host evidence separately.

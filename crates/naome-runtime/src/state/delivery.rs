@@ -150,7 +150,12 @@ impl StateRuntime {
             };
             return Ok(());
         }
-        if self.outbox.len() + self.flights.len() >= capacity {
+        let delivery_capacity = capacity.max(
+            (self.peers.len() + self.handoff_peers.len())
+                .saturating_mul(8)
+                .saturating_add(64),
+        );
+        if self.outbox.len() + self.flights.len() >= delivery_capacity {
             return Ok(());
         }
         self.outbox.push_back(Delivery {
@@ -182,7 +187,7 @@ impl StateRuntime {
         }
         let id = (delivery.peer, delivery.id);
         if !self.acknowledged.contains(&id) {
-            // Four slots can each use current and prepared identities. This
+            // Each slot can use current and prepared identities. This
             // bounded hash cache owns no message payload or transport permit.
             let maximum = self
                 .state()?
@@ -190,7 +195,7 @@ impl StateRuntime {
                 .profile()
                 .limits()
                 .transport_buffer_frames as usize
-                * 4;
+                * (self.peers.len() + self.handoff_peers.len()).max(4);
             while self.acknowledged.len() >= maximum {
                 self.acknowledged.pop_front();
             }
