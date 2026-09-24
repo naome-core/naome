@@ -12,6 +12,44 @@ The older lab and CI reports below qualify only their named historical snapshots
 They do not qualify the current v6 implementation. There is one supported
 prerelease model; fresh genesis and stores are required for it.
 
+## Local state-v6 variable-roster assessment
+
+Implementation commit `05101336477c7fded3790a578a79476a7434ede5` changes the
+sealed electorate to 4–256 equal-weight units. A paid completion claim can add
+one unit until 256 are installed; later admissions replace the oldest unit.
+The full workspace test-profile and release-profile build barriers and test
+runs each passed 646 tests on pinned Rust 1.97.1, including the five-seat
+admission, reward, archive replay and restart process scenario. A separate
+256-seat vote, time-certificate and full handoff-plan boundary test passed in
+both profiles. Formatting and workspace Clippy with `-D warnings` passed.
+
+The [local comparison](evidence/variable-roster-local.json) uses the same
+two-height, one-question workload in three sequential runs per configuration.
+All nodes ran on one macOS ARM64 host through zero-delay local TCP proxies.
+Times below start after process launch; memory and disk are totals sampled at
+convergence, rather than peaks or reserved capacity.
+
+| Release binary | Installed units | Quorum | First quorum median | All nodes median (range) | Sampled memory median | Disk median |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v5 baseline | 4 | 3 | 3.165 s | 3.409 s (3.165–4.030) | 115.3 MiB | 209.0 KiB |
+| v6 | 4 | 3 | 3.177 s | 3.991 s (3.951–3.996) | 114.7 MiB | 208.9 KiB |
+| v6 | 8 | 6 | 3.254 s | 5.562 s (5.213–6.116) | 239.8 MiB | 676.1 KiB |
+
+The v5 baseline and v6 four-unit medians differ by 0.582 s in this small
+sample. This is not a sustained-throughput estimate. The older
+[12-height baseline](evidence/variable-roster-baseline-4.json) uses a different
+workload and is not used for the timing comparison. A 16-process attempt was
+stopped by setup before genesis: its storage preflight required 84,142,119,552
+free bytes, while the host had 49,971,200,000. The same reservation rule would
+require approximately 1.35 TB for 256 local nodes. No 16–256-process timing
+or physical multi-machine result is available.
+
+The v6 implementation still permits one active research attempt; more voters
+do not make questions run in parallel. This evidence supports a controlled
+4–8-unit testnet, not production use of the 256-unit ceiling. Larger and
+separate-machine rehearsals, sustained workloads and network-fault measurement
+remain necessary before recommending that ceiling for deployment.
+
 ## Historical state-v5 authority-period qualification
 
 The canonical implementation seals every record using outgoing agreement,
