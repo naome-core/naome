@@ -639,7 +639,12 @@
     "required_free_bytes": 84142119552,
     "available_free_bytes_at_diagnostic": 49971200000,
     "processes_started": 0,
-    "estimated_256_node_reservation_bytes_at_same_profile": 1346273912832
+    "minimum_run_records_for_256_bootstrap": 296,
+    "estimated_256_node_reservation_at_minimum_compact_profile": {
+      "basis": "Calculated with 296 run records and the same compact byte and round limits; not measured",
+      "required_free_bytes_per_node": 23444601408,
+      "required_free_bytes_for_256_local_nodes": 6001817960448
+    }
   },
   "limits": [
     "Local processes and zero-delay proxies do not establish multi-machine latency, sustained throughput, or adversarial network behavior.",

@@ -40,9 +40,12 @@ sample. This is not a sustained-throughput estimate. The older
 [12-height baseline](evidence/variable-roster-baseline-4.json) uses a different
 workload and is not used for the timing comparison. A 16-process attempt was
 stopped by setup before genesis: its storage preflight required 84,142,119,552
-free bytes, while the host had 49,971,200,000. The same reservation rule would
-require approximately 1.35 TB for 256 local nodes. No 16–256-process timing
-or physical multi-machine result is available.
+free bytes, while the host had 49,971,200,000. The 65-record profile cannot
+bootstrap 256 units: its minimum run length would be 296 records. With the
+same compact byte and round limits at that length, the calculated floor is
+23,444,601,408 bytes per node, or 6,001,817,960,448 bytes for 256 local
+nodes. These are worst-case reservations, not observed use. No 16–256-process
+timing or physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters
 do not make questions run in parallel. This evidence supports a controlled
