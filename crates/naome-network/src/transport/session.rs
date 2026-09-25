@@ -26,6 +26,7 @@ use super::{
 
 pub(super) struct Behaviour {
     peers: Vec<PeerSession>,
+    static_dialing_enabled: bool,
     recovery_enabled: bool,
     recovery_dials: HashMap<ConnectionId, Multiaddr>,
     recovery_connected: HashMap<PeerId, ConnectionId>,
@@ -70,6 +71,7 @@ impl Behaviour {
         peers.sort_unstable_by_key(|peer| peer.peer_id);
         Self {
             peers,
+            static_dialing_enabled: true,
             recovery_enabled,
             recovery_dials: HashMap::new(),
             recovery_connected: HashMap::new(),
@@ -90,6 +92,11 @@ impl Behaviour {
             .iter()
             .filter(|peer| matches!(peer.link, Link::Connected { .. }))
             .count()
+    }
+
+    pub(super) fn set_static_dialing_enabled(&mut self, enabled: bool) {
+        self.static_dialing_enabled = enabled;
+        self.retry_timer = None;
     }
 
     #[cfg(test)]
@@ -448,7 +455,9 @@ impl NetworkBehaviour for Behaviour {
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
         loop {
             let now = Instant::now();
-            if let Some(peer_id) = self.due_peer(now) {
+            if self.static_dialing_enabled
+                && let Some(peer_id) = self.due_peer(now)
+            {
                 let options = self.start_dial(peer_id);
                 self.retry_timer = None;
                 return Poll::Ready(ToSwarm::Dial { opts: options });
@@ -458,7 +467,11 @@ impl NetworkBehaviour for Behaviour {
                 return Poll::Ready(ToSwarm::GenerateEvent(event));
             }
 
-            let Some(retry_at) = self.earliest_retry() else {
+            let Some(retry_at) = self
+                .static_dialing_enabled
+                .then(|| self.earliest_retry())
+                .flatten()
+            else {
                 self.retry_timer = None;
                 return Poll::Pending;
             };

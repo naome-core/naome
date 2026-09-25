@@ -139,6 +139,9 @@ impl StateTransportPair {
     /// terminal signature can be released. The fresh handoff lane remains.
     pub fn retire_old(&mut self) {
         self.active = None;
+        if let Some(staged) = self.staged.as_mut() {
+            staged.resume_static_dials();
+        }
     }
     /// Reuses the prepared fresh-key sessions after the caller has verified
     /// and durably selected this exact successor. A changed roster or any

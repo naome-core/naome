@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T06:10:10+00:00",
+  "recorded_at_utc": "2026-09-25T07:40:16+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -1312,6 +1312,377 @@
       "failure": "benchmark interrupted",
       "elapsed_seconds": 870.139,
       "report_sha256": "4233141f078affc1b11ab26f581111987ab1f1ee6a4c250243f09488f82946b9"
+    },
+    {
+      "label": "256-exact-head-long-phase-handoff-stall",
+      "note": "Clean-head run was stopped after 3,861.567 seconds at height zero. All 256 respondents had prepared agreement and one observed all 256 precommits, but READY signatures reached only 1..8 and TERMINAL remained zero. Old-lane connected peers fell to 0..32. A direct sample of node 0 earlier showed 32 staged peers, 496 queued READY deliveries and one READY in flight. This is a handoff delivery/concurrency bottleneck, not proof that the host lacks disk or RAM. No Mac sleep was observed during the run.",
+      "process_sample": {
+        "sampled_at_utc": "2026-09-25T06:28:54+00:00",
+        "validator_processes": 256,
+        "sum_cpu_percent": 879.2,
+        "sum_rss_mib": 4010.1,
+        "method": "ps read-only sample; not a peak"
+      },
+      "tcp_sample": {
+        "sampled_at_utc": "2026-09-25T06:46:18+00:00",
+        "established_socket_entries": 21023,
+        "total_tcp_entries": 26119,
+        "method": "netstat read-only sample, includes other host processes; does not prove port exhaustion"
+      },
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "aefe11a80b4ff0858585a37047824bcf0fb6319bb2f563d378af600c845ba26c",
+        "naome-validator": "ba3229d3638897f335cb72878086067cf36d7ffa36ef3cedd58abbe8d854bfc5",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "7a489bd5c8d688a5a73cd7b28169646bf2bcc220",
+      "source_tree_clean": true,
+      "runner_sha256": "3c316528094999df3dcf21158707d17dea4d68d6e49bd8198135210ee050ca9b",
+      "outcome": "failed",
+      "setup_seconds": 45.807,
+      "submission": "8a22dedc849b1a8d1521d6bb44d3813f6e385b2aaaed6f3c4f8e851aa8339833",
+      "latest_progress": {
+        "responded": 256,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 1,
+        "observed_proposal_range": [
+          1,
+          1
+        ],
+        "observed_prevote_range": [
+          218,
+          246
+        ],
+        "observed_precommit_range": [
+          171,
+          256
+        ],
+        "connected_peer_range": [
+          0,
+          32
+        ],
+        "offer_range": [
+          219,
+          256
+        ],
+        "time_report_range": [
+          218,
+          256
+        ],
+        "queued_delivery_range": [
+          1267,
+          4039
+        ],
+        "work_ready_count": 256,
+        "agreement_ready_count": 256,
+        "ready_signature_range": [
+          1,
+          8
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "peak_agreement_ready_count": 256,
+      "peak_observed_precommits": 256,
+      "last_poll_elapsed_seconds": 3703.302,
+      "last_poll_responded": 256,
+      "failure": "benchmark interrupted",
+      "elapsed_seconds": 3861.567,
+      "report_sha256": "7d3491ee9d502157c073c46ee964b9781de19b7bf9308c058e31fe0fd7787a1d"
+    },
+    {
+      "label": "4-deferred-dial-diagnostic",
+      "note": "Two-height live local process diagnostic on the uncommitted deferred-dial change. All validators reached one common head; release binaries were built from the dirty source tree. Not a controlled baseline comparison.",
+      "schema_version": 1,
+      "roster_size": 4,
+      "quorum": 3,
+      "target_height": 2,
+      "run_records": 65,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 0,
+      "poll_interval_seconds": 0.25,
+      "binary_sha256": {
+        "naome": "25aee1a1416d0eafcb3d9565517589dba83a5542965f9977a8d192acf9e35227",
+        "naome-validator": "35df4315aee086bb3b78f0948cca26f26945303dd92f27ea30c120e16805cf11",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "7a489bd5c8d688a5a73cd7b28169646bf2bcc220",
+      "source_tree_clean": false,
+      "runner_sha256": "3c316528094999df3dcf21158707d17dea4d68d6e49bd8198135210ee050ca9b",
+      "outcome": "passed",
+      "setup_seconds": 0.917,
+      "submission": "22b99631ff3eb8c57bb089ef0ddbe618e3e0f6af23015cc12ad7d3cdd8e403c2",
+      "latest_progress": {
+        "responded": 4,
+        "height_range": [
+          2,
+          2
+        ],
+        "pending_operation_range": [
+          0,
+          0
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          0
+        ],
+        "observed_prevote_range": [
+          0,
+          0
+        ],
+        "observed_precommit_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 4,
+        "ready_signature_range": [
+          1,
+          3
+        ],
+        "terminal_signature_range": [
+          0,
+          3
+        ]
+      },
+      "peak_agreement_ready_count": 4,
+      "peak_observed_precommits": 4,
+      "last_poll_elapsed_seconds": 6.13,
+      "last_poll_responded": 4,
+      "finalized_height": 2,
+      "head": "669c3424579e086a49482595422cb98a2959430562a28fcceeb0d951d2b00d8f",
+      "state": "cb36554c066cb455797be7d9195a94e66f83497ea977f28a342a2e631040b213",
+      "first_quorum_seconds": 2.227,
+      "all_nodes_seconds": 6.387,
+      "total_sampled_memory_bytes": null,
+      "total_disk_bytes": 208558,
+      "elapsed_seconds": 7.345,
+      "report_sha256": "6426e65e3363b37fc2a848232f1d1a8d9bfab39732a2b83067e74bd6ec4277da"
+    },
+    {
+      "label": "16-deferred-dial-diagnostic",
+      "note": "Two-height live local process diagnostic on the uncommitted deferred-dial change. All validators reached one common head; release binaries were built from the dirty source tree. Not a controlled baseline comparison.",
+      "schema_version": 1,
+      "roster_size": 16,
+      "quorum": 11,
+      "target_height": 2,
+      "run_records": 65,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 0,
+      "poll_interval_seconds": 1.0,
+      "binary_sha256": {
+        "naome": "25aee1a1416d0eafcb3d9565517589dba83a5542965f9977a8d192acf9e35227",
+        "naome-validator": "35df4315aee086bb3b78f0948cca26f26945303dd92f27ea30c120e16805cf11",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "7a489bd5c8d688a5a73cd7b28169646bf2bcc220",
+      "source_tree_clean": false,
+      "runner_sha256": "3c316528094999df3dcf21158707d17dea4d68d6e49bd8198135210ee050ca9b",
+      "outcome": "passed",
+      "setup_seconds": 2.45,
+      "submission": "ecf5f8377e41cdded72c63f6f697f44f36d5f04d645f35ca7225250b73c45f25",
+      "latest_progress": {
+        "responded": 16,
+        "height_range": [
+          2,
+          2
+        ],
+        "pending_operation_range": [
+          0,
+          0
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          0
+        ],
+        "observed_prevote_range": [
+          0,
+          0
+        ],
+        "observed_precommit_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 16,
+        "ready_signature_range": [
+          11,
+          12
+        ],
+        "terminal_signature_range": [
+          1,
+          11
+        ]
+      },
+      "peak_agreement_ready_count": 16,
+      "peak_observed_precommits": 16,
+      "last_poll_elapsed_seconds": 12.218,
+      "last_poll_responded": 16,
+      "finalized_height": 2,
+      "head": "865634b9c6e2a0fe56e00c797f6b4306d2c0b8e9592b03ee4d3776466381974f",
+      "state": "de6a2d6ee0674f2353867e2a461bbf330cf11cf9e794107c7ebe9cc6aba8cdb1",
+      "first_quorum_seconds": 7.141,
+      "all_nodes_seconds": 13.225,
+      "total_sampled_memory_bytes": null,
+      "total_disk_bytes": 2173478,
+      "elapsed_seconds": 15.892,
+      "report_sha256": "17a3bb78811ec3386b73aad74d8fd3e53624279b0c3f1d655e364c554fcf939c"
+    },
+    {
+      "label": "32-deferred-dial-diagnostic",
+      "note": "Two-height live local process diagnostic on the uncommitted deferred-dial change. All validators reached one common head; release binaries were built from the dirty source tree. Not a controlled baseline comparison.",
+      "schema_version": 1,
+      "roster_size": 32,
+      "quorum": 22,
+      "target_height": 2,
+      "run_records": 72,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 0,
+      "poll_interval_seconds": 2.0,
+      "binary_sha256": {
+        "naome": "25aee1a1416d0eafcb3d9565517589dba83a5542965f9977a8d192acf9e35227",
+        "naome-validator": "35df4315aee086bb3b78f0948cca26f26945303dd92f27ea30c120e16805cf11",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "7a489bd5c8d688a5a73cd7b28169646bf2bcc220",
+      "source_tree_clean": false,
+      "runner_sha256": "3c316528094999df3dcf21158707d17dea4d68d6e49bd8198135210ee050ca9b",
+      "outcome": "passed",
+      "setup_seconds": 5.121,
+      "submission": "286c525d9ebb6fe9611da86fbbaf55339af238b9ff095d1184011b6fd42c907c",
+      "latest_progress": {
+        "responded": 32,
+        "height_range": [
+          2,
+          2
+        ],
+        "pending_operation_range": [
+          0,
+          0
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          0
+        ],
+        "observed_prevote_range": [
+          0,
+          0
+        ],
+        "observed_precommit_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 32,
+        "ready_signature_range": [
+          17,
+          29
+        ],
+        "terminal_signature_range": [
+          2,
+          22
+        ]
+      },
+      "peak_agreement_ready_count": 32,
+      "peak_observed_precommits": 32,
+      "last_poll_elapsed_seconds": 76.163,
+      "last_poll_responded": 32,
+      "finalized_height": 2,
+      "head": "b70e7323bf814490f0b10d5aaff26d83db6cddd2e4140304d0d5b435309b4047",
+      "state": "4aff56e3abbaf68bcdf7dc510cb730f7ec667d8a1e96679090be6a78db6cf4b0",
+      "first_quorum_seconds": 19.607,
+      "all_nodes_seconds": 78.18,
+      "total_sampled_memory_bytes": null,
+      "total_disk_bytes": 8805455,
+      "elapsed_seconds": 83.727,
+      "report_sha256": "d551973508bc5fb15062a1c82210839d66c3260c12df98ddb1abc5c72c366b0e"
     }
   ],
   "host_port_observation": {

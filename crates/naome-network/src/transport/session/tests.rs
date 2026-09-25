@@ -25,6 +25,29 @@ fn owner_behaviour() -> (Behaviour, PeerId) {
 }
 
 #[test]
+fn prepared_listener_can_defer_outbound_static_dials_until_retirement() {
+    let (mut behaviour, peer_id) = owner_behaviour();
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+
+    behaviour.set_static_dialing_enabled(false);
+    assert!(matches!(
+        NetworkBehaviour::poll(&mut behaviour, &mut context),
+        Poll::Pending
+    ));
+    assert!(matches!(
+        behaviour.peer(&peer_id).unwrap().link,
+        Link::Down { .. }
+    ));
+
+    behaviour.set_static_dialing_enabled(true);
+    assert!(matches!(
+        NetworkBehaviour::poll(&mut behaviour, &mut context),
+        Poll::Ready(ToSwarm::Dial { .. })
+    ));
+}
+
+#[test]
 fn dial_ownership_is_antisymmetric() {
     for _ in 0..32 {
         let (lower, higher) = ordered_peer_ids();

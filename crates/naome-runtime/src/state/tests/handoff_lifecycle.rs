@@ -723,11 +723,9 @@ async fn cold_terminal_server_serves_final_record_to_a_late_owner() {
                 .runtime
                 .current_custody
                 .as_ref()
-                .unwrap()
-                .consensus_key()
-                .verifying_key()
-                .as_bytes()
-                != proposer.as_bytes()
+                .is_some_and(|custody| {
+                    custody.consensus_key().verifying_key().as_bytes() != proposer.as_bytes()
+                })
         })
         .unwrap();
     let Running {
@@ -751,38 +749,10 @@ async fn cold_terminal_server_serves_final_record_to_a_late_owner() {
     let late_setup = runtime.handoff_setup.take().unwrap();
     drop(runtime);
 
-    let mut offers: Vec<_> = nodes
-        .iter()
-        .map(|node| {
-            node.runtime
-                .next_custody
-                .as_ref()
-                .unwrap()
-                .offer()
-                .unwrap()
-                .clone()
-        })
-        .collect();
-    offers.sort_by_key(NextPeriodKeys::unit);
-    let plan = HandoffPlan::new(offers, None).unwrap();
-    let keys: Vec<_> = nodes
-        .iter()
-        .map(|node| {
-            node.runtime
-                .current_custody
-                .as_ref()
-                .unwrap()
-                .consensus_key()
-                .clone()
-        })
-        .collect();
-    let agreement = agreement(nodes[0].runtime.node.branch().unwrap(), plan, &keys, 102);
-    assert!(agreement.state().terminated());
-    let bytes = agreement.encode().unwrap();
-    for node in &mut nodes {
-        node.runtime.node.accept_agreement(&bytes).unwrap();
-    }
-    tokio::time::timeout(Duration::from_secs(45), async {
+    // Let the remaining quorum seal the terminal height through its ordinary
+    // consensus path. Injecting a synthetic agreement here races legitimate
+    // votes that an early H1 finisher may already have durably signed for H2.
+    tokio::time::timeout(Duration::from_secs(60), async {
         while nodes
             .iter()
             .any(|node| node.runtime.state().unwrap().height() == 1)

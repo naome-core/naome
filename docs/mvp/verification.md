@@ -100,7 +100,22 @@ after 870 seconds: 34 of 222 responding nodes held a prepared agreement, but
 none had sealed a record. The sampled main thread was mostly waiting for
 network events. The CI test profile now allows a longer phase interval for
 large local rosters, reaching 12 minutes at 256 seats; signed quorum and round
-limits are unchanged. Its 256-process result remains to be measured.
+limits are unchanged. A clean-head 256-process run with that interval reached
+prepared agreement on all responding nodes, but remained at height zero after
+3,862 seconds: READY counts were only 1–8, TERMINAL was absent, and old-lane
+connections had fallen to 0–32 peers. One sampled node had 32 staged peers
+and almost 500 READY deliveries queued. The host did not sleep; sampled memory
+was about 4.0 GiB across the 256 validators. This run does not establish that
+host port exhaustion alone caused the stall.
+
+The staged handoff listener now defers outbound full-mesh dialing until old
+transport retirement. Signed READY can travel over the existing old lane,
+and each signer retries its own durable handoff signature instead of flooding
+every collected signature through every peer. The affected network and runtime
+tests pass. Dirty-tree local process runs reached a common height two with 4,
+16, and 32 validators in 6.387, 13.225, and 78.180 seconds respectively;
+these are diagnostic runs, not a controlled baseline comparison. This change
+still needs a clean-head 256-process measurement.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

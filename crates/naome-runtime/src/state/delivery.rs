@@ -348,12 +348,24 @@ impl StateRuntime {
         Ok(())
     }
     pub(super) fn broadcast_handoff(&mut self, body: StateRequestBody) -> Result<()> {
-        let mut peers = if self.network.active().is_some() {
+        let old_lane = self.network.active().is_some();
+        let prepared_evidence = matches!(
+            &body,
+            StateRequestBody::Agreement(_) | StateRequestBody::ReadySignature(_)
+        );
+        let mut peers = if old_lane {
             self.peers.clone()
         } else {
             Vec::new()
         };
-        peers.extend(self.handoff_peers.iter().copied());
+        peers.extend(self.handoff_peers.iter().copied().filter(|peer| {
+            !old_lane
+                || !prepared_evidence
+                || self
+                    .network
+                    .staged()
+                    .is_some_and(|staged| staged.has_connected_static_session(peer))
+        }));
         peers.extend(self.recovery_authenticated.iter().copied());
         peers.extend(self.recovery_clients.iter().copied());
         peers.sort();
@@ -507,29 +519,16 @@ impl StateRuntime {
                 agreement.encode().map_err(StateNodeError::from)?.into(),
             ))?;
         }
-        // Outgoing signers may lack a prepared successor lane. Until the old
-        // lane retires, relay collected signatures so those signers can still
-        // gather READY and release TERMINAL. After retirement, each signer
-        // retries its own durable bytes on the prepared lane; relaying every
-        // signature from every prepared peer would multiply delivery work by N.
-        if self.network.active().is_some() {
-            for terminal in self.node.terminal_signatures() {
-                self.broadcast_handoff(StateRequestBody::TerminalSignature(
-                    terminal.encode().into(),
-                ))?;
-            }
-            for ready in self.node.ready_signatures() {
-                self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
-            }
-        } else {
-            if let Some(terminal) = self.node.local_terminal_signature().cloned() {
-                self.broadcast_handoff(StateRequestBody::TerminalSignature(
-                    terminal.encode().into(),
-                ))?;
-            }
-            if let Some(ready) = self.node.local_ready_signature().cloned() {
-                self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
-            }
+        // Every signer retries its own durable evidence. Flooding every
+        // collected signature through every peer multiplies delivery work by
+        // the roster size again and can starve READY behind old requests.
+        if let Some(terminal) = self.node.local_terminal_signature().cloned() {
+            self.broadcast_handoff(StateRequestBody::TerminalSignature(
+                terminal.encode().into(),
+            ))?;
+        }
+        if let Some(ready) = self.node.local_ready_signature().cloned() {
+            self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
         }
         if self.network.active().is_some() {
             self.enqueue_latest_finality()?;

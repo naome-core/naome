@@ -167,6 +167,23 @@ impl StateNetwork {
         self.swarm.behaviour().sessions.connected_count()
     }
 
+    /// Keep a prepared handoff listener available while the old full mesh
+    /// carries READY, without opening a second full mesh before retirement.
+    pub fn defer_handoff_dials(&mut self) {
+        debug_assert_eq!(self.state_lane(), Some(StateLane::Handoff));
+        self.swarm
+            .behaviour_mut()
+            .sessions
+            .set_static_dialing_enabled(false);
+    }
+
+    pub(crate) fn resume_static_dials(&mut self) {
+        self.swarm
+            .behaviour_mut()
+            .sessions
+            .set_static_dialing_enabled(true);
+    }
+
     #[cfg(test)]
     fn build(
         identity: Keypair,

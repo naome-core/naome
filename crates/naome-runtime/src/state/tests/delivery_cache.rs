@@ -2,6 +2,33 @@ use super::*;
 use naome_network::{ListenerId, NetworkEvent, PeerSessionEvent, StateLane};
 
 #[tokio::test]
+async fn prepared_evidence_uses_old_peers_until_the_old_lane_retires() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let fresh = loop {
+        let candidate = PeerId::random();
+        if !runtime.peers.contains(&candidate) {
+            break candidate;
+        }
+    };
+    runtime.handoff_peers.push(fresh);
+    let ready = StateRequestBody::ReadySignature(vec![1].into());
+    runtime.broadcast_handoff(ready.clone()).unwrap();
+    assert_eq!(runtime.outbox.len(), runtime.peers.len());
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .all(|item| runtime.peers.contains(&item.peer))
+    );
+
+    runtime.network.retire_old();
+    runtime.outbox.clear();
+    runtime.broadcast_handoff(ready).unwrap();
+    assert_eq!(runtime.outbox.len(), 1);
+    assert_eq!(runtime.outbox[0].peer, fresh);
+}
+
+#[tokio::test]
 async fn broadcast_uses_one_wire_identity_with_peer_scoped_acknowledgements() {
     let (_directory, _anchors, mut runtime) = runtime();
     let body = StateRequestBody::Proposal(vec![7; 80].into());

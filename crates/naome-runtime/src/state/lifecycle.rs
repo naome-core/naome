@@ -562,6 +562,13 @@ impl StateRuntime {
             self.network.retire_old();
             self.flights.clear();
         }
+        if self.network.active().is_some() && self.node.signer_key().is_some() {
+            // READY is signed only after this fresh listener is prepared, but
+            // the old authenticated mesh can carry its signed bytes. Keep the
+            // fresh lane passive until the old identity retires; opening both
+            // complete meshes at once can exhaust local connection capacity.
+            staged.defer_handoff_dials();
+        }
         staged
             .listen_on(listen)
             .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
