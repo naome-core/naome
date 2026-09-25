@@ -73,8 +73,12 @@ nonfatal listener error. A later clean-head run formed all 255 peer links per
 validator and collected all 256 offers and signed time reports, but was stopped
 at 540 seconds with no finalized height: the selected round-zero proposer had
 not received the pending question. The runtime now gives that proposer the
-first bounded action-delivery slot. Focused tests and a four-process run pass;
-the 256-process result for this relay change remains to be measured.
+first bounded action-delivery slot. In the next clean-head run, one proposer
+authored early, but after 926 seconds no record had finalized and
+only 11–23 prevotes were visible per responding node. A short CPU sample found
+repeated hashing of large outgoing requests before send-capacity checks;
+fingerprinting now follows those checks. The new order has not yet passed a
+256-process run.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

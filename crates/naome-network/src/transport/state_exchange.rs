@@ -713,7 +713,6 @@ impl StateNetwork {
                 .ok_or(StateStartError::Capacity)?,
             peer: None,
         });
-        let digest = fingerprint(&request);
         let connected = self.swarm.behaviour().state_exchange.is_connected(&peer)
             && !self
                 .swarm
@@ -736,6 +735,9 @@ impl StateNetwork {
                 RequestStartError::AlreadyPending(peer),
             ));
         }
+        // A busy or disconnected peer can reject the start repeatedly. Hash
+        // large immutable proposals only after the request has a send slot.
+        let digest = fingerprint(&request);
         let id = self.swarm.behaviour_mut().state_exchange.send_request(
             &peer,
             WireRequest {
