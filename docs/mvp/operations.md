@@ -66,7 +66,7 @@ Setup accepts `lab`, `research`, `short-test`, or `ci-test`. `lab` uses 300-seco
 `research` uses seven days of voting, one day for commitments, one day for
 reveals, and a 30-day queue lifetime. That long-running profile is a separate
 later qualification; the original state-v1 acceptance used `lab`. `short-test` uses
-15/8/8/120 seconds; `ci-test` uses 1/8/8/120 seconds. Both must be labeled
+15/45/45/120 seconds; `ci-test` uses 1/8/8/120 seconds. Both must be labeled
 accelerated testing. Current authority-period process and Docker acceptance use
 these profiles, with separate signed-time tests for every complete Lab and
 research phase boundary. Neither establishes a full real-time Lab or research
