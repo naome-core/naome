@@ -492,7 +492,7 @@ impl StateNetwork {
             maximum,
             budget: Arc::new(InboundRetentionBudget::new(frames, bytes)),
             outbound: Arc::new(InboundRetentionBudget::with_peer_limit(
-                super::MAX_PENDING_REQUESTS,
+                super::pending_request_limit(peers.len()),
                 0,
                 2,
             )),

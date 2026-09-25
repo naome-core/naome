@@ -33,8 +33,20 @@ impl StateRuntime {
                 self.own_time = Some(report.encode().into());
                 self.time_reports.insert(report.validator(), report);
             }
-            let record = self.prepare_record()?;
-            let work_ready = record.is_some() || self.node.has_retained_value()?;
+            let retained = self.node.has_retained_value()?;
+            let proposer_needs_record =
+                self.node.is_proposer()? && !self.node.already_authored()?;
+            let potential_work =
+                !self.pending.is_empty() || self.state()?.may_have_automatic_record_work();
+            // An idle member need not replay every offer signature and execute
+            // an empty candidate on every tick. Once readiness was checked,
+            // only the current proposer needs to rebuild a changing record.
+            let record = if potential_work && (proposer_needs_record || !self.work_ready) {
+                self.prepare_record()?
+            } else {
+                None
+            };
+            let work_ready = record.is_some() || retained || (self.work_ready && potential_work);
             if work_ready
                 && !self.work_ready
                 && self
@@ -45,8 +57,8 @@ impl StateRuntime {
                 self.phase_started = Instant::now();
             }
             self.work_ready = work_ready;
-            if self.node.is_proposer()? && !self.node.already_authored()? {
-                if self.node.has_retained_value()? {
+            if proposer_needs_record {
+                if retained {
                     self.node.author(None)?;
                 } else if let Some(record) = record {
                     self.node.author(Some(record))?;

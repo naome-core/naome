@@ -153,12 +153,12 @@ def command(args, timeout=60, tolerate=False):
     return result
 
 
-def free_ports(count):
+def free_ports(count, host='127.0.0.1'):
     sockets = []
     try:
         for _ in range(count):
-            s = socket.socket()
-            s.bind(('127.0.0.1', 0))
+            s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET)
+            s.bind((host, 0))
             sockets.append(s)
         return [s.getsockname()[1] for s in sockets]
     finally:
@@ -170,6 +170,7 @@ class Backend:
     def __init__(self, args, root):
         self.args, self.root = args, root
         self.count = getattr(args, 'validators', 4)
+        self.direct = bool(getattr(args, 'direct', False)) and args.backend == 'process'
         if not 4 <= self.count <= 256 or (args.backend == 'docker' and self.count != 4):
             raise ValueError('process roster must have 4..256 validators; Docker harness has four')
         self.children, self.logs = {}, {}
@@ -191,11 +192,34 @@ class Backend:
             self.handoff_backs = [f'{ip}:4104' for ip in self.ips]
         else:
             count = self.count
-            ports = free_ports(4 * count)
-            self.fronts = [f'127.0.0.1:{p}' for p in ports[:count]]
-            self.backs = [f'127.0.0.1:{p}' for p in ports[count:2 * count]]
-            self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[2 * count:3 * count]]
-            self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[3 * count:]]
+            if self.direct and getattr(args, 'mixed_loopback', False):
+                # A 256-node local full mesh needs 32,640 TCP connections,
+                # exceeding macOS's 16,384-port IPv4 ephemeral range. Split
+                # destinations across the two existing loopback families.
+                v4_count = (count + 1) // 2
+                v6_count = count // 2
+                v4 = iter(free_ports(2 * v4_count))
+                v6 = iter(free_ports(2 * v6_count, '::1'))
+                hosts = ['127.0.0.1' if index % 2 == 0 else '::1'
+                         for index in range(count)]
+                def endpoint(host):
+                    port = next(v4 if host == '127.0.0.1' else v6)
+                    return f'{host}:{port}' if host == '127.0.0.1' else f'[{host}]:{port}'
+                self.fronts = [endpoint(host) for host in hosts]
+                self.backs = self.fronts.copy()
+                self.handoff_fronts = [endpoint(host) for host in hosts]
+                self.handoff_backs = self.handoff_fronts.copy()
+            else:
+                ports = free_ports((2 if self.direct else 4) * count)
+                self.fronts = [f'127.0.0.1:{p}' for p in ports[:count]]
+                if self.direct:
+                    self.backs = self.fronts.copy()
+                    self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[count:]]
+                    self.handoff_backs = self.handoff_fronts.copy()
+                else:
+                    self.backs = [f'127.0.0.1:{p}' for p in ports[count:2 * count]]
+                    self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[2 * count:3 * count]]
+                    self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[3 * count:]]
 
     def node(self, index):
         return self.root / 'run' / f'node-{index}'
@@ -318,11 +342,19 @@ print(exact(n).decode());s.close()
         else:
             log = open(self.node(i) / f'process-{self.generations[i]}.log', 'ab')
             self.logs[i] = log
-            self.children[i] = subprocess.Popen([sys.executable, '-B', str(HERE / 'state_agent.py'),
-                '--config', str(self.config(i)), '--validator', str(self.args.bin_dir / 'naome-validator'),
-                '--front', self.multi(self.fronts[i]), '--back', self.multi(self.backs[i]),
-                '--handoff-front', self.multi(self.handoff_fronts[i]),
-                '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            if self.direct:
+                argv = [str(self.args.bin_dir / 'naome-validator'), 'start', str(self.config(i))]
+            else:
+                argv = [sys.executable, '-B', str(HERE / 'state_agent.py'),
+                    '--config', str(self.config(i)), '--validator', str(self.args.bin_dir / 'naome-validator'),
+                    '--front', self.multi(self.fronts[i]), '--back', self.multi(self.backs[i]),
+                    '--handoff-front', self.multi(self.handoff_fronts[i]),
+                    '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms)]
+            self.children[i] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
+                                                stderr=subprocess.STDOUT, start_new_session=True)
+            if self.direct:
+                (self.node(i) / 'runtime-pid.json').write_text(
+                    json.dumps({'validator': self.children[i].pid}))
 
     def alive(self, i):
         if self.args.backend == 'docker':
@@ -401,9 +433,14 @@ print(exact(n).decode());s.close()
             pidfile = self.node(i) / 'runtime-pid.json'
             if pidfile.exists():
                 pids = json.loads(pidfile.read_text())
-                out = command(['ps', '-o', 'rss=', '-p', ','.join(map(str, pids.values()))], tolerate=True).stdout
-                if out.strip():
-                    rss = sum(int(line) for line in out.split()) * 1024
+                try:
+                    out = command(['ps', '-o', 'rss=', '-p', ','.join(map(str, pids.values()))], tolerate=True).stdout
+                    if out.strip():
+                        rss = sum(int(line) for line in out.split()) * 1024
+                except OSError:
+                    # Restricted local runners may deny process inspection.
+                    # Disk and convergence evidence remain valid without RSS.
+                    pass
         paths = (self.node(i), self.root / 'anchors' / str(i))
         sizes = []
         for root in paths:

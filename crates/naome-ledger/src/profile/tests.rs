@@ -82,6 +82,8 @@ fn genesis_and_authority_accept_four_through_256_installed_seats() {
         .unwrap();
         assert_eq!(Genesis::decode(&g.encode()).unwrap(), g);
         if count == 256 {
+            assert!(g.encode().len() > 32 * 1024);
+            assert!(SIGNER_HEADER_BYTES_BOUND >= g.encode().len() as u64 + 84);
             let undersized = Profile::with_limits(
                 TimingKind::ShortTest,
                 Limits {
@@ -215,8 +217,9 @@ fn profile_presets_and_storage_reservation() {
         8 * 1024 * 1024 * 1024
     );
     // Full 8192-record run, all 65 consensus rounds per height, complete signer
-    // journals, per-height handoff/custody, two archives, reveal staging and 100% margin.
-    assert_eq!(lab.required_storage_bytes().unwrap(), 5_644_006_522_880);
+    // journals, per-height handoff/custody, two archives and a 100% margin.
+    assert_eq!(lab.maximum_run_storage_bytes().unwrap(), 5_645_470_729_216);
+    assert_eq!(lab.operating_storage_floor_bytes().unwrap(), 689_143_672);
     assert_eq!(lab.maximum_issuance_atoms().unwrap(), 8_192_000_000_000);
     for p in [lab, research, short, ci] {
         assert_eq!(Profile::decode(&p.encode()).unwrap(), p);
@@ -289,7 +292,7 @@ fn profile_rejects_noncanonical_limits_variants_and_every_truncation() {
 fn storage_arithmetic_never_wraps() {
     let mut p = Profile::lab();
     p.limits.run_records = u64::MAX;
-    assert_eq!(p.required_storage_bytes(), Err(LedgerError::Overflow));
+    assert_eq!(p.maximum_run_storage_bytes(), Err(LedgerError::Overflow));
 }
 
 #[test]
@@ -308,8 +311,8 @@ fn registration_capacity_is_independent_of_genesis_and_reveal_work() {
     .unwrap();
     assert_ne!(smaller_registry.id(), standard.id());
     assert_eq!(
-        smaller_registry.required_storage_bytes().unwrap(),
-        standard.required_storage_bytes().unwrap()
+        smaller_registry.operating_storage_floor_bytes().unwrap(),
+        standard.operating_storage_floor_bytes().unwrap()
     );
     let fewer_commitments = Profile::with_limits(
         TimingKind::Lab,
@@ -319,12 +322,9 @@ fn registration_capacity_is_independent_of_genesis_and_reveal_work() {
         },
     )
     .unwrap();
-    let staging_per_commitment =
-        2 * (standard.limits().package_bytes + standard.limits().dependency_bytes);
     assert_eq!(
-        standard.required_storage_bytes().unwrap()
-            - fewer_commitments.required_storage_bytes().unwrap(),
-        2 * 8 * staging_per_commitment
+        standard.operating_storage_floor_bytes().unwrap(),
+        fewer_commitments.operating_storage_floor_bytes().unwrap()
     );
     assert_eq!(fewer_commitments.limits().completion_records, 64);
     assert_eq!(
@@ -690,7 +690,7 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
     assert_eq!(p.limits().consensus_rounds, 64); // Inclusive: 65 rounds.
     assert_eq!(p.signer_height_frames().unwrap(), 456);
     assert_eq!(p.signer_height_bytes().unwrap(), 333942111);
-    assert_eq!(p.signer_journal_bytes().unwrap(), 2735922839552);
+    assert_eq!(p.signer_journal_bytes().unwrap(), 2736730243072);
     let reduced = Profile::with_limits(
         TimingKind::Lab,
         Limits {
@@ -703,8 +703,38 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
         },
     )
     .unwrap();
-    assert_eq!(reduced.required_storage_bytes().unwrap(), 20_295_559_168);
-    assert!(reduced.required_storage_bytes().unwrap() < p.required_storage_bytes().unwrap());
+    assert_eq!(reduced.maximum_run_storage_bytes().unwrap(), 20_208_004_096);
+    assert_eq!(reduced.operating_storage_floor_bytes().unwrap(), 78_923_176);
+    assert!(
+        reduced.operating_storage_floor_bytes().unwrap()
+            < p.operating_storage_floor_bytes().unwrap()
+    );
     assert!(reduced.signer_journal_bytes().unwrap() > reduced.signer_height_bytes().unwrap() * 256);
     assert_eq!(Profile::decode(&reduced.encode()).unwrap(), reduced);
+}
+
+#[test]
+fn operating_storage_headroom_does_not_reserve_the_entire_run() {
+    let compact = |run_records| {
+        Profile::with_limits(
+            TimingKind::CiTest,
+            Limits {
+                run_records,
+                record_bytes: 512 * 1024,
+                package_bytes: 64 * 1024,
+                transport_frame_bytes: 768 * 1024,
+                consensus_rounds: 8,
+                ..Limits::default()
+            },
+        )
+        .unwrap()
+    };
+    let short = compact(65);
+    let long = compact(296);
+    assert_eq!(short.operating_storage_floor_bytes().unwrap(), 78_923_176);
+    assert_eq!(
+        short.operating_storage_floor_bytes(),
+        long.operating_storage_floor_bytes()
+    );
+    assert!(long.maximum_run_storage_bytes().unwrap() > short.maximum_run_storage_bytes().unwrap());
 }

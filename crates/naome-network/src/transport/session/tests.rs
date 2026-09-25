@@ -236,6 +236,35 @@ fn inbound_hook_rejects_the_ninth_pre_authentication_attempt() {
 }
 
 #[test]
+fn configured_large_roster_has_a_bounded_startup_burst() {
+    let local = PeerId::random();
+    let peers = (0..96).map(|_| StaticPeer::new(PeerId::random(), address()));
+    let mut behaviour = Behaviour::new(local, peers);
+    let listen = address();
+    let send = address();
+    for index in 0..64 {
+        assert!(
+            NetworkBehaviour::handle_pending_inbound_connection(
+                &mut behaviour,
+                ConnectionId::new_unchecked(index),
+                &listen,
+                &send,
+            )
+            .is_ok()
+        );
+    }
+    assert!(
+        NetworkBehaviour::handle_pending_inbound_connection(
+            &mut behaviour,
+            ConnectionId::new_unchecked(64),
+            &listen,
+            &send,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn a_due_retry_precedes_queued_observability_events() {
     let (mut behaviour, peer_id) = owner_behaviour();
     behaviour

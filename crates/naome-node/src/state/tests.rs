@@ -312,6 +312,8 @@ fn restart_after_terminal_intent_retires_old_signer_before_releasing_seal() {
     assert!(restarted.handoff.as_ref().unwrap().terminal().is_none());
     let terminal = restarted.release_local_terminal().unwrap();
     assert_eq!(terminal.role(), SealRole::Terminal);
+    assert_eq!(restarted.local_terminal_signature(), Some(&terminal));
+    assert!(restarted.local_ready_signature().is_some());
     assert!(
         restarted
             .signer
@@ -320,6 +322,8 @@ fn restart_after_terminal_intent_retires_old_signer_before_releasing_seal() {
             .retry_publications()
             .is_err()
     );
+    restarted.signer = None;
+    assert_eq!(restarted.local_terminal_signature(), Some(&terminal));
 }
 
 #[test]

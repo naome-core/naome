@@ -1,5 +1,41 @@
 use super::*;
-use naome_network::{NetworkEvent, PeerSessionEvent, StateLane};
+use naome_network::{ListenerId, NetworkEvent, PeerSessionEvent, StateLane};
+
+#[tokio::test]
+async fn transient_listener_error_does_not_stop_signing_but_closure_does() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let listener_id = ListenerId::next();
+    assert!(matches!(
+        runtime.network_event(
+            NetworkEvent::ListenerError {
+                listener_id,
+                error: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid input parameter",
+                ),
+            },
+            StateLane::Active,
+        ),
+        Ok(StateRuntimeEvent::Network)
+    ));
+    assert!(
+        runtime
+            .network_event(
+                NetworkEvent::ListenerClosed {
+                    listener_id,
+                    addresses: Vec::new(),
+                    reason: Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid input parameter",
+                    )),
+                },
+                StateLane::Active,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("listener closed")
+    );
+}
 
 #[tokio::test]
 async fn accepted_offer_is_suppressed_until_same_height_peer_reconnects() {

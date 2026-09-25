@@ -23,7 +23,7 @@ use naome_ledger::{
 };
 use naome_network::{PeerId, StateNetwork, StateTicket, StateTransportEvent, StateTransportPair};
 use naome_node::state::{StateNode, StateNodeError};
-use naome_protocol::state_exchange::StateRequestBody;
+use naome_protocol::state_exchange::{StateContext, StateRequestBody};
 use naome_storage::state::{StateHandoffJournal, StatePeriodCustody, StateStorageError};
 use naome_storage::state::{StateHistory, StateSigner};
 use std::{
@@ -150,6 +150,29 @@ pub enum StateRuntimeEvent {
     Finalized { height: u64 },
     Rejected { peer: PeerId, reason: String },
 }
+/// Read-only local progress counters; none grants consensus authority.
+#[derive(Clone, Copy, Debug)]
+pub struct StateRuntimeDiagnostics {
+    pub local_proposer: bool,
+    pub proposal_authored: bool,
+    pub observed_proposals: usize,
+    pub observed_prevotes: usize,
+    pub observed_precommits: usize,
+    pub connected_peers: usize,
+    pub staged_connected_peers: usize,
+    pub offers: usize,
+    pub time_reports: usize,
+    pub queued_deliveries: usize,
+    pub in_flight_deliveries: usize,
+    pub queued_ready: usize,
+    pub queued_terminal: usize,
+    pub in_flight_ready: usize,
+    pub in_flight_terminal: usize,
+    pub work_ready: bool,
+    pub agreement_ready: bool,
+    pub ready_signatures: usize,
+    pub terminal_signatures: usize,
+}
 struct Delivery {
     peer: PeerId,
     body: StateRequestBody,
@@ -185,12 +208,14 @@ struct RecoveryFlight {
 pub struct StateRuntime {
     node: StateNode,
     network: StateTransportPair,
+    context: StateContext,
     peers: Vec<PeerId>,
     handoff_peers: Vec<PeerId>,
     config: StateRuntimeConfig,
     pending: BTreeMap<OperationId, SignedOperation>,
     pending_bytes: usize,
     action_cursor: usize,
+    action_peer_cursor: usize,
     rejections: VecDeque<(OperationId, u64, String)>,
     deferred: VecDeque<(OperationId, naome_ledger::AccountId, u64)>,
     time_reports: BTreeMap<ValidatorId, SignedTimeReport>,
@@ -227,6 +252,58 @@ pub struct StateRuntime {
     work_ready: bool,
 }
 impl StateRuntime {
+    pub fn diagnostics(&self) -> Result<StateRuntimeDiagnostics> {
+        let (observed_proposals, observed_prevotes, observed_precommits) =
+            self.node.observed_consensus_counts()?;
+        Ok(StateRuntimeDiagnostics {
+            local_proposer: self.node.is_proposer()?,
+            proposal_authored: self.node.already_authored()?,
+            observed_proposals,
+            observed_prevotes,
+            observed_precommits,
+            connected_peers: self
+                .network
+                .active()
+                .or_else(|| self.network.staged())
+                .map_or(0, StateNetwork::connected_static_peers),
+            staged_connected_peers: self
+                .network
+                .staged()
+                .map_or(0, StateNetwork::connected_static_peers),
+            offers: self.offers.len(),
+            time_reports: self.time_reports.len(),
+            queued_deliveries: self.outbox.len(),
+            in_flight_deliveries: self.flights.len(),
+            queued_ready: self
+                .outbox
+                .iter()
+                .filter(|delivery| matches!(delivery.body, StateRequestBody::ReadySignature(_)))
+                .count(),
+            queued_terminal: self
+                .outbox
+                .iter()
+                .filter(|delivery| matches!(delivery.body, StateRequestBody::TerminalSignature(_)))
+                .count(),
+            in_flight_ready: self
+                .flights
+                .iter()
+                .filter(|flight| {
+                    matches!(flight.delivery.body, StateRequestBody::ReadySignature(_))
+                })
+                .count(),
+            in_flight_terminal: self
+                .flights
+                .iter()
+                .filter(|flight| {
+                    matches!(flight.delivery.body, StateRequestBody::TerminalSignature(_))
+                })
+                .count(),
+            work_ready: self.work_ready,
+            agreement_ready: self.node.handoff_agreement().is_some(),
+            ready_signatures: self.node.ready_signatures().len(),
+            terminal_signatures: self.node.terminal_signatures().len(),
+        })
+    }
     #[cfg(all(test, unix))]
     fn new(
         history: StateHistory,
@@ -504,10 +581,8 @@ impl StateRuntime {
             .map_err(StateNodeError::from)?
             .state()
             .genesis();
-        let expected = naome_protocol::state_exchange::StateContext::new(
-            *genesis.id().as_bytes(),
-            *genesis.profile().id().as_bytes(),
-        );
+        let expected =
+            StateContext::new(*genesis.id().as_bytes(), *genesis.profile().id().as_bytes());
         if network.state_context() != Some(expected) {
             return Err(StateRuntimeError::Configuration(
                 "transport context differs from selected history",
@@ -520,12 +595,14 @@ impl StateRuntime {
         Ok(Self {
             node,
             network,
+            context: expected,
             peers,
             handoff_peers: Vec::new(),
             config,
             pending: BTreeMap::new(),
             pending_bytes: 0,
             action_cursor: 0,
+            action_peer_cursor: 0,
             rejections: VecDeque::new(),
             deferred: VecDeque::new(),
             time_reports: BTreeMap::new(),
@@ -1151,7 +1228,21 @@ impl StateRuntime {
         let position = self.node.position()?;
         if position != self.last_position {
             if position.map(|p| (p.0, p.1)) != self.last_position.map(|p| (p.0, p.1)) {
-                self.outbox.clear();
+                if self.network.active().is_none() {
+                    // Leaving the outgoing signer after saving TERMINAL changes
+                    // position to None. Keep seal evidence on the prepared lane.
+                    self.outbox.retain(|delivery| {
+                        matches!(
+                            delivery.body,
+                            StateRequestBody::Agreement(_)
+                                | StateRequestBody::ReadySignature(_)
+                                | StateRequestBody::TerminalSignature(_)
+                                | StateRequestBody::Finalized(_)
+                        )
+                    });
+                } else {
+                    self.outbox.clear();
+                }
                 self.sent.clear();
                 self.acknowledged.clear();
             }

@@ -423,9 +423,15 @@ impl StateRuntime {
         let Some(agreement) = self.node.handoff_agreement().cloned() else {
             return Ok(());
         };
-        let parent = self.state()?.clone();
-        let record = StateRecord::decode(agreement.proposal().record_bytes(), parent.genesis())?;
-        self.prepare_handoff_network(&parent, &record, &agreement)?;
+        // The staged transport and its peer set are bound to the durable
+        // agreement. Decoding its complete record on every network event is
+        // unnecessary once that preparation has succeeded.
+        if self.network.staged().is_none() || self.handoff_peers.is_empty() {
+            let parent = self.state()?.clone();
+            let record =
+                StateRecord::decode(agreement.proposal().record_bytes(), parent.genesis())?;
+            self.prepare_handoff_network(&parent, &record, &agreement)?;
+        }
 
         if let Some(custody) = &self.next_custody {
             let local_key = custody.consensus_key().verifying_key().to_bytes();

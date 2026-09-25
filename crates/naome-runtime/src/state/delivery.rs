@@ -1,6 +1,6 @@
 use super::*;
 use naome_consensus::state::StatePublication;
-use naome_protocol::state_exchange::{StateContext, StateRequest};
+use naome_protocol::state_exchange::StateRequest;
 use sha2::{Digest, Sha256};
 
 fn ordinary_parallel_body(body: &StateRequestBody) -> bool {
@@ -11,11 +11,24 @@ fn ordinary_parallel_body(body: &StateRequestBody) -> bool {
 }
 
 impl StateRuntime {
+    fn queued_action_deliveries(&self) -> usize {
+        self.outbox
+            .iter()
+            .filter(|delivery| matches!(&delivery.body, StateRequestBody::UserAction(_)))
+            .count()
+            + self
+                .flights
+                .iter()
+                .filter(|flight| matches!(&flight.delivery.body, StateRequestBody::UserAction(_)))
+                .count()
+    }
+    // The caller retries failed starts. Keep their error typed as a unit so a
+    // busy roster does not format discarded peer IDs on every flush.
     fn send_request(
         &mut self,
         peer: PeerId,
         body: StateRequestBody,
-    ) -> std::result::Result<StateTicket, String> {
+    ) -> std::result::Result<StateTicket, ()> {
         let handoff = matches!(
             &body,
             StateRequestBody::Offer(_)
@@ -44,7 +57,7 @@ impl StateRuntime {
             {
                 return Ok(ticket);
             }
-            return Err("owner-authenticated handoff route unavailable".into());
+            return Err(());
         }
         // A candidate retains its advertised key while moving from the
         // parent courier lane to the prepared lane. Its first agreement must
@@ -55,27 +68,31 @@ impl StateRuntime {
             && let Some(active) = self.network.active_mut()
             && active.is_configured_peer(&peer)
         {
-            return active.request_state(peer, body).map_err(|e| e.to_string());
+            if !active.has_connected_static_session(&peer) {
+                return Err(());
+            }
+            return active.request_state(peer, body).map_err(|_| ());
         }
         if (handoff || self.network.active().is_none())
             && let Some(staged) = self.network.staged_mut()
             && staged.is_configured_peer(&peer)
         {
-            return staged.request_state(peer, body).map_err(|e| e.to_string());
+            if !staged.has_connected_static_session(&peer) {
+                return Err(());
+            }
+            return staged.request_state(peer, body).map_err(|_| ());
         }
         if self.recovery_authenticated.contains(&peer)
             && self.network.active().is_none()
             && let Some(recovery) = self.network.recovery_mut()
         {
-            return recovery
-                .request_recovery_state(peer, body)
-                .map_err(|e| e.to_string());
+            return recovery.request_recovery_state(peer, body).map_err(|_| ());
         }
-        self.network
-            .active_mut()
-            .ok_or_else(|| "active transport retired".to_owned())?
-            .request_state(peer, body)
-            .map_err(|e| e.to_string())
+        let active = self.network.active_mut().ok_or(())?;
+        if !active.has_connected_static_session(&peer) {
+            return Err(());
+        }
+        active.request_state(peer, body).map_err(|_| ())
     }
     pub(super) fn enqueue(&mut self, peer: PeerId, body: StateRequestBody) -> Result<()> {
         if self.disabled.contains(&peer) {
@@ -98,27 +115,12 @@ impl StateRuntime {
             // Candidate couriers have no ordinary relay authority. Keep most
             // of the bounded queue available for consensus and sealing even
             // when all sixteen local action slots are occupied.
-            let queued_actions = self
-                .outbox
-                .iter()
-                .filter(|delivery| matches!(&delivery.body, StateRequestBody::UserAction(_)))
-                .count()
-                + self
-                    .flights
-                    .iter()
-                    .filter(|flight| {
-                        matches!(&flight.delivery.body, StateRequestBody::UserAction(_))
-                    })
-                    .count();
+            let queued_actions = self.queued_action_deliveries();
             if self.node.position()?.is_none() || queued_actions >= (capacity / 4).max(1) {
                 return Ok(());
             }
         }
-        let context = StateContext::new(
-            *state.genesis().id().as_bytes(),
-            *state.genesis().profile().id().as_bytes(),
-        );
-        let request = StateRequest::new(context, body.clone(), maximum)
+        let request = StateRequest::new(self.context, body.clone(), maximum)
             .map_err(|e| StateRuntimeError::Rejected(e.to_string()))?;
         let id: [u8; 32] = Sha256::digest(request.to_wire_bytes()).into();
         if self.sent.contains(&(peer, id))
@@ -233,6 +235,30 @@ impl StateRuntime {
     }
     fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
         if self.network.active().is_none() {
+            return Ok(());
+        }
+        if matches!(&body, StateRequestBody::UserAction(_)) {
+            let count = self.peers.len();
+            if count == 0 {
+                return Ok(());
+            }
+            let limit = (self
+                .state()?
+                .genesis()
+                .profile()
+                .limits()
+                .transport_buffer_frames as usize
+                / 4)
+            .max(1);
+            for _ in 0..count {
+                if self.queued_action_deliveries() >= limit {
+                    break;
+                }
+                let index = self.action_peer_cursor % count;
+                let peer = self.peers[index];
+                self.action_peer_cursor = (index + 1) % count;
+                self.enqueue(peer, body.clone())?;
+            }
             return Ok(());
         }
         for peer in self.peers.clone() {
@@ -373,13 +399,29 @@ impl StateRuntime {
                 agreement.encode().map_err(StateNodeError::from)?.into(),
             ))?;
         }
-        for ready in self.node.ready_signatures() {
-            self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
-        }
-        for terminal in self.node.terminal_signatures() {
-            self.broadcast_handoff(StateRequestBody::TerminalSignature(
-                terminal.encode().into(),
-            ))?;
+        // Outgoing signers may lack a prepared successor lane. Until the old
+        // lane retires, relay collected signatures so those signers can still
+        // gather READY and release TERMINAL. After retirement, each signer
+        // retries its own durable bytes on the prepared lane; relaying every
+        // signature from every prepared peer would multiply delivery work by N.
+        if self.network.active().is_some() {
+            for terminal in self.node.terminal_signatures() {
+                self.broadcast_handoff(StateRequestBody::TerminalSignature(
+                    terminal.encode().into(),
+                ))?;
+            }
+            for ready in self.node.ready_signatures() {
+                self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
+            }
+        } else {
+            if let Some(terminal) = self.node.local_terminal_signature().cloned() {
+                self.broadcast_handoff(StateRequestBody::TerminalSignature(
+                    terminal.encode().into(),
+                ))?;
+            }
+            if let Some(ready) = self.node.local_ready_signature().cloned() {
+                self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
+            }
         }
         if self.network.active().is_some() {
             self.enqueue_latest_finality()?;
@@ -463,28 +505,45 @@ impl StateRuntime {
             }
         }
 
-        // Finish an agreed handoff before recurring repair traffic. Any item
-        // waiting two seconds rejoins the front class, preserving bounded
-        // fairness for actions and catch-up. Stable sorting retains FIFO order
-        // within each class and does not increase per-peer or total capacity.
+        // An authenticated roster can fill the bounded queue with offers and
+        // speculative history before its quorum is ready. Deliver current
+        // agreement, seal and consensus frames first; otherwise large rosters
+        // can exhaust signing rounds while old repair requests occupy every
+        // flight. Aging still moves ordinary work ahead of fresh repair.
+        // Stable sorting preserves FIFO order within each class.
         let now = Instant::now();
         let retired = self.network.active().is_none();
         self.outbox.make_contiguous().sort_by_key(|delivery| {
             if retired && matches!(delivery.body, StateRequestBody::Finalized(_)) {
                 0
-            } else if now.duration_since(delivery.queued_at) >= Duration::from_secs(2)
-                || matches!(
-                    delivery.body,
-                    StateRequestBody::Agreement(_)
-                        | StateRequestBody::ReadySignature(_)
-                        | StateRequestBody::TerminalSignature(_)
-                )
-            {
+            } else if matches!(delivery.body, StateRequestBody::Agreement(_)) {
                 1
-            } else if matches!(delivery.body, StateRequestBody::History { .. }) {
-                3
-            } else {
+            } else if matches!(delivery.body, StateRequestBody::TerminalSignature(_)) {
                 2
+            } else if matches!(
+                delivery.body,
+                StateRequestBody::ReadySignature(_) | StateRequestBody::Finalized(_)
+            ) {
+                3
+            } else if matches!(
+                delivery.body,
+                StateRequestBody::Proposal(_) | StateRequestBody::Vote(_)
+            ) {
+                4
+            } else if matches!(
+                delivery.body,
+                StateRequestBody::UserAction(_)
+                    | StateRequestBody::Offer(_)
+                    | StateRequestBody::CandidateOffer(_)
+                    | StateRequestBody::TimeReport(_)
+            ) {
+                5
+            } else if now.duration_since(delivery.queued_at) >= Duration::from_secs(2) {
+                6
+            } else if matches!(delivery.body, StateRequestBody::History { .. }) {
+                8
+            } else {
+                7
             }
         });
         let attempts = self.outbox.len();

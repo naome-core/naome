@@ -61,13 +61,19 @@ impl Behaviour {
                 }
             })
             .collect::<Vec<_>>();
+        let inbound_burst = (peers.len() as u32).clamp(INBOUND_AUTH_BURST, 64);
+        let inbound_refill = if peers.len() > 64 {
+            Duration::from_millis(250)
+        } else {
+            INBOUND_AUTH_REFILL_INTERVAL
+        };
         peers.sort_unstable_by_key(|peer| peer.peer_id);
         Self {
             peers,
             recovery_enabled,
             recovery_dials: HashMap::new(),
             recovery_connected: HashMap::new(),
-            inbound_budget: TokenBucket::new(INBOUND_AUTH_BURST, INBOUND_AUTH_REFILL_INTERVAL, now),
+            inbound_budget: TokenBucket::new(inbound_burst, inbound_refill, now),
             pending_events: VecDeque::new(),
             retry_timer: None,
         }
@@ -77,6 +83,13 @@ impl Behaviour {
         self.peers
             .get(index)
             .map(|peer| matches!(peer.link, Link::Connected { .. }))
+    }
+
+    pub(super) fn connected_count(&self) -> usize {
+        self.peers
+            .iter()
+            .filter(|peer| matches!(peer.link, Link::Connected { .. }))
+            .count()
     }
 
     #[cfg(test)]
@@ -94,7 +107,11 @@ impl Behaviour {
     }
 
     pub(super) fn peer_index(&self, peer_id: &PeerId) -> Option<usize> {
-        self.peers.iter().position(|peer| peer.peer_id == *peer_id)
+        // Static peers are sorted once during construction. This lookup runs
+        // on every delivery retry in a large roster.
+        self.peers
+            .binary_search_by_key(peer_id, |peer| peer.peer_id)
+            .ok()
     }
     pub(super) fn peer_address(&self, peer_id: &PeerId) -> Option<&Multiaddr> {
         self.peer(peer_id).map(|peer| &peer.address)
@@ -122,11 +139,12 @@ impl Behaviour {
     }
 
     fn peer(&self, peer_id: &PeerId) -> Option<&PeerSession> {
-        self.peers.iter().find(|peer| peer.peer_id == *peer_id)
+        self.peers.get(self.peer_index(peer_id)?)
     }
 
     fn peer_mut(&mut self, peer_id: &PeerId) -> Option<&mut PeerSession> {
-        self.peers.iter_mut().find(|peer| peer.peer_id == *peer_id)
+        let index = self.peer_index(peer_id)?;
+        self.peers.get_mut(index)
     }
 
     fn due_peer(&self, now: Instant) -> Option<PeerId> {

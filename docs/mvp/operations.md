@@ -8,7 +8,7 @@ These commands use a four-validator starting genesis on Unix. Fresh v6 genesis
 may install four to 256 validators; the example below starts with four. The
 finite run needs at least `max(64, N + 2K + 7) + 1` records for its opening
 roster of `N` owners and commitment limit `K` (296 at 256 owners with `K=16`).
-Setup also reserves disk space per node before creating the run.
+Setup checks one-height operating headroom per node before creating the run.
 The local qualification target is four independent processes with separate
 keys, journals, anchors, and authenticated network connections. Current process
 and Docker checks use explicit accelerated timing profiles. The historical
@@ -79,14 +79,19 @@ resource limits before genesis, while preserving the selected timing windows and
 | Original/final package | 256 KiB each | 64 KiB each |
 | Transport frame | 1,280 KiB | 768 KiB |
 | Maximum consensus round index | 64, allowing 65 rounds | 8, allowing 9 rounds |
-| Conservative storage floor per node | Query `profile-info` for the selected run | Query `profile-info` for the selected run |
+| One-height operating floor per node | Query `profile-info` for the selected run | Query `profile-info` for the selected run |
+| Conservative full-run allowance per node | Query `profile-info` for the selected run | Query `profile-info` for the selected run |
 
-The storage calculation includes worst-case
-period signing history, handoff and key custody journals, archives, staged reveals, metadata, and a safety margin; it is
-not a measured storage-consumption or throughput claim. Different record counts
-produce a different calculation. Setup prints the actual genesis/profile IDs
-and required bytes and rejects insufficient space. Nodes also halt visibly if
-free space later falls below their profile floor.
+The setup and startup floor covers one full signing height, handoff and key
+custody journals, two history frames and a 100% metadata margin. It is checked
+again while nodes run. The separately reported full-run allowance assumes
+maximum usage at every height and is not reserved in advance. Reveal bytes are
+inside bounded records, with no second validator-local staging journal. Archive
+export needs separate destination space. Setup prints the actual genesis/profile
+IDs and the aggregate floor for local nodes, rejecting insufficient space.
+Low free space or a durable write fault halts the affected node visibly without
+turning partial bytes into confirmed state. These estimates are not measured
+storage consumption or throughput claims.
 
 Setup creates six account keys, four consensus keys, four separate transport
 keys, public `genesis.bin`, and `node-0` through `node-3` configurations. It also

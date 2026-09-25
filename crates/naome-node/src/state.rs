@@ -210,6 +210,27 @@ impl StateNode {
         }
         Ok(Some((signer.height()?, signer.round()?, signer.phase()?)))
     }
+    /// Counts verified evidence held for the currently signed round.
+    /// These local counters are diagnostic and grant no voting authority.
+    pub fn observed_consensus_counts(&self) -> Result<(usize, usize, usize)> {
+        let Some((_, round, _)) = self.position()? else {
+            return Ok((0, 0, 0));
+        };
+        Ok((
+            self.proposals
+                .values()
+                .filter(|proposal| proposal.round() == round)
+                .count(),
+            self.votes
+                .values()
+                .filter(|vote| vote.round() == round && vote.role() == ConsensusVoteRole::Prevote)
+                .count(),
+            self.votes
+                .values()
+                .filter(|vote| vote.round() == round && vote.role() == ConsensusVoteRole::Precommit)
+                .count(),
+        ))
+    }
     pub fn has_retained_value(&self) -> Result<bool> {
         match &self.signer {
             Some(s) if !s.stopped()? => Ok(s.retained_record()?.is_some()),
@@ -575,6 +596,16 @@ impl StateNode {
             .as_ref()
             .and_then(StateHandoffJournal::terminal)
             .is_some()
+    }
+    /// Locally signed bytes survive retirement and can be retried after a
+    /// cold restart without reopening the retired signing key.
+    pub fn local_ready_signature(&self) -> Option<&SealSignature> {
+        self.handoff.as_ref().and_then(StateHandoffJournal::ready)
+    }
+    pub fn local_terminal_signature(&self) -> Option<&SealSignature> {
+        self.handoff
+            .as_ref()
+            .and_then(StateHandoffJournal::terminal)
     }
     pub fn retire_selected_custody(
         &self,

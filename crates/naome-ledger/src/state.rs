@@ -511,6 +511,18 @@ impl LedgerState {
     pub fn remaining_records(&self) -> u64 {
         self.capacity.remaining()
     }
+    /// Whether an empty operation list can still produce a substantive record.
+    /// The runtime uses this as a cheap scheduling hint; record execution remains
+    /// the authority for every effect and terminal transition.
+    pub fn may_have_automatic_record_work(&self) -> bool {
+        !self.terminated
+            && (self.active.is_some()
+                || !self.queue.is_empty()
+                || !self.join_queue.is_empty()
+                || !self
+                    .capacity
+                    .can_open(self.genesis.profile(), self.authority.units().len()))
+    }
     pub fn reserved_records(&self) -> u64 {
         self.capacity.reserved()
     }

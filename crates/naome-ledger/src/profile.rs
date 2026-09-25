@@ -1,7 +1,7 @@
 //! Immutable, canonical parameters and public genesis for a finite trusted run.
 //!
-//! The storage estimate is a conservative provisioning floor, not a measured
-//! performance claim. A genesis contains public material only; all balances
+//! Storage limits bound a finite run; local free-space headroom protects one
+//! signing height at a time. A genesis contains public material only; all balances
 //! begin at zero in the state machine.
 
 use std::collections::BTreeSet;
@@ -41,8 +41,9 @@ pub const STATE_QUORUM_BYTES_BOUND: u64 =
     2 + MAX_VALIDATORS as u64 * (5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
 /// Journal preparation metadata outside one complete research record.
 pub const SIGNER_FRAME_OVERHEAD_BYTES: u64 = 16384;
-/// Covers the genesis-bound signer prefix, initial anchor and their metadata.
-pub const SIGNER_HEADER_BYTES_BOUND: u64 = 32768;
+/// Covers the largest admitted genesis plus the signer key, selected branch,
+/// round and prefix framing. A 256-seat genesis already exceeds 32 KiB.
+pub const SIGNER_HEADER_BYTES_BOUND: u64 = MAX_GENESIS_BYTES as u64 + 256;
 /// Type, intent sequence, signature and canonical publication digest.
 pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;
 /// Terminal signer stop plus its chained frame header/footer.
@@ -316,7 +317,8 @@ impl Profile {
         {
             return Err(LedgerError::Invalid("inconsistent ledger limits"));
         }
-        self.required_storage_bytes()?;
+        self.maximum_run_storage_bytes()?;
+        self.operating_storage_floor_bytes()?;
         Ok(())
     }
     /// Maximum journal frames per consensus height: one author, prevote,
@@ -381,11 +383,28 @@ impl Profile {
             .and_then(|bytes| bytes.checked_add(8 + 32 + 8 + 8))
             .ok_or(LedgerError::Overflow)
     }
-    /// Full finite archive AND worst-case signer history, staged original/final
-    /// reveals with dependency closures, indexes/evidence, and a 100% margin.
-    /// The default profile deliberately provisions its entire maximum run;
-    /// reduced acceptance profiles must be selected before genesis.
-    pub fn required_storage_bytes(&self) -> Result<u64, LedgerError> {
+    /// Free-space headroom for one complete signing height, handoff and custody,
+    /// two history frames (selected finality and a verified conflict), and a
+    /// 100% filesystem/metadata margin. It is checked before startup and while
+    /// running; each durable store remains separately bounded and fails closed
+    /// on an I/O fault. Research reveal data is carried in bounded records, not
+    /// in a separate validator-local staging journal. Archive export needs its
+    /// own destination capacity and is not required before a node can start.
+    /// This is not a guarantee of free space for the entire finite run.
+    pub fn operating_storage_floor_bytes(&self) -> Result<u64, LedgerError> {
+        let next_height = self
+            .signer_period_bytes()?
+            .checked_add(self.handoff_journal_bytes()?)
+            .and_then(|bytes| bytes.checked_add(PERIOD_CUSTODY_BYTES_BOUND + 4096))
+            .and_then(|bytes| bytes.checked_add(self.limits.transport_frame_bytes.checked_mul(2)?))
+            .ok_or(LedgerError::Overflow)?;
+        next_height.checked_mul(2).ok_or(LedgerError::Overflow)
+    }
+    /// Conservative allowance if every record in the finite run reaches its
+    /// largest allowed signing, handoff and archive usage. No independent
+    /// validator-local reveal staging file exists; reveal bytes already belong
+    /// to bounded records. This is not disk space required before first start.
+    pub fn maximum_run_storage_bytes(&self) -> Result<u64, LedgerError> {
         let l = &self.limits;
         // One extra frame retains a verified conflict after the final run record.
         let archive = l
@@ -393,12 +412,6 @@ impl Profile {
             .checked_add(1)
             .and_then(|n| n.checked_mul(l.transport_frame_bytes))
             .and_then(|v| v.checked_add(SIGNER_HEADER_BYTES_BOUND))
-            .ok_or(LedgerError::Overflow)?;
-        let reveal = l
-            .package_bytes
-            .checked_mul(2)
-            .and_then(|v| v.checked_add(l.dependency_bytes.checked_mul(2)?))
-            .and_then(|v| v.checked_mul(l.commitments_per_attempt))
             .ok_or(LedgerError::Overflow)?;
         // Each height has independent handoff and fresh-key custody. The extra
         // 4 KiB reserves signer/handoff anchor files separately from journal data.
@@ -410,7 +423,6 @@ impl Profile {
         archive
             .checked_mul(2)
             .and_then(|v| v.checked_add(self.signer_journal_bytes().ok()?))
-            .and_then(|v| v.checked_add(reveal))
             .and_then(|v| v.checked_add(handoff))
             .and_then(|v| v.checked_mul(2))
             .ok_or(LedgerError::Overflow)

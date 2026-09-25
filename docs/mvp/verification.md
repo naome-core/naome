@@ -38,18 +38,43 @@ convergence, rather than peaks or reserved capacity.
 The v5 baseline and v6 four-unit medians differ by 0.582 s in this small
 sample. This is not a sustained-throughput estimate. The older
 [12-height baseline](evidence/variable-roster-baseline-4.json) uses a different
-workload and is not used for the timing comparison. A 16-process attempt was
-stopped by setup before genesis: its storage preflight required 84,142,119,552
-free bytes, while the host had 49,971,200,000. The 65-record profile cannot
-bootstrap 256 units: its minimum run length would be 296 records. With the
-same compact byte and round limits at that length, the calculated floor is
-23,444,601,408 bytes per node, or 6,001,817,960,448 bytes for 256 local
-nodes. These are worst-case reservations, not observed use. No 16–256-process
-timing or physical multi-machine result is available.
+workload and is not used for the timing comparison.
+
+The former 16-process setup rejection used a full-run maximum as the startup
+free-space floor and counted reveal staging that has no separate validator
+file. The corrected 256-seat, 296-record compact profile checks 78,923,176
+bytes of next-height headroom per node, or 20,204,333,056 bytes across 256
+local nodes. Setup succeeded on this Mac and occupied about 39 MiB. Its
+separately reported 23,364,931,136-byte per-node full-run allowance assumes
+every bounded height reaches maximum usage; it is not reserved at startup.
+The [scale diagnostics](evidence/variable-roster-scale-local.json) identify
+each release binary and keep failed attempts separate from passing runs.
+
+| Diagnostic v6 direct-process run | Installed units | Quorum | All nodes at common height 2 | Disk at convergence |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 16 | 11 | 21.492 s | 2.45 MiB |
+| 32 | 32 | 22 | 100.210 s | 8.44 MiB |
+| 64, hybrid relay | 64 | 43 | 623.035 s | 40.50 MiB |
+
+These are single runs on changing, uncommitted binaries. The direct-process
+harness differs from the earlier four- and eight-unit proxy comparison, so the
+tables are not a controlled speedup series. The recorded 256-process attempts
+have not finalized a record. Early runs exposed overloaded control and submit
+paths. A cap on connection attempts stalled peer discovery and was removed.
+An IPv4-only mesh then approached this Mac's ephemeral-port limit; mixed IPv4
+and IPv6 loopback allowed nearly all peer links to form. Later runs exposed
+repeated idle candidate preparation and repeated hashing of the full genesis
+on outbound frames. The corresponding scheduling and immutable-context fixes
+passed focused tests and smaller process runs. The cached-context 256 run
+reached at least 237 question holders and 201 validators in round-two
+precommit, but no record finalized before one validator exited with a
+transport error. The runtime now keeps a listener alive after a libp2p
+nonfatal listener error; this repair has not yet passed a new 256-process run.
+No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters
 do not make questions run in parallel. This evidence supports a controlled
-4–8-unit testnet, not production use of the 256-unit ceiling. Larger and
+small-roster testnet, not production use of the 256-unit ceiling. Larger and
 separate-machine rehearsals, sustained workloads and network-fault measurement
 remain necessary before recommending that ceiling for deployment.
 

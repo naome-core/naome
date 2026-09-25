@@ -78,7 +78,10 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
     let (compact, actual, _) = parameters(&args).unwrap();
     assert_eq!(actual, endpoints);
     assert_ne!(compact.id(), standard.id());
-    assert!(compact.required_storage_bytes().unwrap() < standard.required_storage_bytes().unwrap());
+    assert!(
+        compact.operating_storage_floor_bytes().unwrap()
+            < standard.operating_storage_floor_bytes().unwrap()
+    );
     args.truncate(5);
     assert_eq!(parameters(&args).unwrap().0, standard);
     args[1] = "ci-test".into();

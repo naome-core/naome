@@ -40,6 +40,11 @@ pub const MAX_STATIC_PEERS: usize = 8;
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
 /// Maximum pending or caller-retained outbound requests across all application exchanges.
 pub const MAX_PENDING_REQUESTS: usize = 8;
+/// Cap for a large static roster; small networks retain the original budget.
+const MAX_SCALED_PENDING_REQUESTS: usize = 32;
+fn pending_request_limit(peers: usize) -> usize {
+    peers.clamp(MAX_PENDING_REQUESTS, MAX_SCALED_PENDING_REQUESTS)
+}
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -146,6 +151,22 @@ impl StateNetwork {
             .is_some()
     }
 
+    /// A currently authenticated static session is necessary before an
+    /// application request can start. Callers may defer retry work until then.
+    pub fn has_connected_static_session(&self, peer_id: &PeerId) -> bool {
+        let sessions = &self.swarm.behaviour().sessions;
+        sessions
+            .peer_index(peer_id)
+            .and_then(|index| sessions.connection_status_at(index))
+            .unwrap_or(false)
+    }
+
+    /// Number of currently authenticated static transport sessions. This is
+    /// diagnostic only and does not establish voting or signing authority.
+    pub fn connected_static_peers(&self) -> usize {
+        self.swarm.behaviour().sessions.connected_count()
+    }
+
     #[cfg(test)]
     fn build(
         identity: Keypair,
@@ -180,6 +201,8 @@ impl StateNetwork {
             static_peers.push(peer);
         }
 
+        let pending_limit = pending_request_limit(static_peers.len());
+        let listen_backlog = (static_peers.len() as u32).clamp(TCP_LISTEN_BACKLOG, 64);
         let peers_u32 = u32::try_from(maximum_peers).expect("bounded peer limit fits u32");
         let connection_limits = connection_limits::ConnectionLimits::default()
             .with_max_pending_incoming(Some(peers_u32))
@@ -202,7 +225,7 @@ impl StateNetwork {
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
             .with_tcp(
-                tcp::Config::new().listen_backlog(TCP_LISTEN_BACKLOG),
+                tcp::Config::new().listen_backlog(listen_backlog),
                 noise::Config::new,
                 || yamux_config(MAX_YAMUX_STREAMS_PER_CONNECTION),
             )
@@ -230,7 +253,10 @@ impl StateNetwork {
             recovery_rates: HashMap::new(),
             recovery_pending_auth: HashMap::new(),
             recovery_leases: HashMap::new(),
-            pending_budget: Arc::new(PendingBudget::default()),
+            pending_budget: Arc::new(PendingBudget {
+                active: AtomicUsize::new(0),
+                limit: pending_limit,
+            }),
         })
     }
     /// Returns this transport's authenticated peer identity.
@@ -253,7 +279,7 @@ impl StateNetwork {
         PendingBudget::try_acquire(&self.pending_budget)
             .map(|permit| (peer_index, permit))
             .ok_or(RequestStartError::GlobalLimit {
-                maximum: MAX_PENDING_REQUESTS,
+                maximum: self.pending_budget.limit,
             })
     }
 
@@ -468,16 +494,24 @@ pub enum NetworkEvent {
     },
 }
 
-#[derive(Default)]
 struct PendingBudget {
     active: AtomicUsize,
+    limit: usize,
+}
+impl Default for PendingBudget {
+    fn default() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit: MAX_PENDING_REQUESTS,
+        }
+    }
 }
 impl PendingBudget {
     fn try_acquire(budget: &Arc<Self>) -> Option<PendingPermit> {
         budget
             .active
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
-                active.checked_add(1).filter(|n| *n <= MAX_PENDING_REQUESTS)
+                active.checked_add(1).filter(|n| *n <= budget.limit)
             })
             .ok()?;
         Some(PendingPermit {

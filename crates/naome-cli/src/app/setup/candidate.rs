@@ -155,7 +155,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         files::directory(requested)?;
     }
     let root = requested.canonicalize()?;
-    if !resume && files::available(&root)? < genesis.profile().required_storage_bytes()? {
+    if !resume && files::available(&root)? < genesis.profile().operating_storage_floor_bytes()? {
         return Err("candidate observer requires more free storage".into());
     }
     let config = NodeConfig {

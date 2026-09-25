@@ -201,12 +201,14 @@ impl StateRuntime {
                 // `received` releases the transport byte/pending permit here.
                 Ok(StateRuntimeEvent::Network)
             }
-            NetworkEvent::ListenerError { error, .. } => {
-                Err(StateRuntimeError::Transport(error.to_string()))
-            }
+            // libp2p reports this event for a non-fatal accept error; the
+            // listener remains active. A closed listener is reported below.
+            NetworkEvent::ListenerError { .. } => Ok(StateRuntimeEvent::Network),
             NetworkEvent::ListenerClosed {
                 reason: Err(error), ..
-            } => Err(StateRuntimeError::Transport(error.to_string())),
+            } => Err(StateRuntimeError::Transport(format!(
+                "listener closed: {error}"
+            ))),
             _ => Ok(StateRuntimeEvent::Network),
         }
     }

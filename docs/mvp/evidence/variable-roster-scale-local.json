@@ -1,0 +1,769 @@
+{
+  "schema_version": 1,
+  "recorded_at_utc": "2026-09-25T03:37:02.770512+00:00",
+  "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
+  "host": {
+    "logical_cpus": 10,
+    "memory_bytes": 17179869184,
+    "storage_free_during_tests_approx_gib": 44
+  },
+  "toolchain": "Rust 1.97.1 pinned by rust-toolchain.toml; release binaries",
+  "qualifications": "These runs used changing uncommitted source trees; source commit alone does not identify their binaries. Each report records release binary hashes. They are diagnostic, not exact-head or separate-machine acceptance.",
+  "storage_256": {
+    "run_records": 296,
+    "operating_floor_bytes_per_node": 78923176,
+    "aggregate_floor_bytes_for_local_256": 20204333056,
+    "maximum_run_allowance_bytes_per_node": 23364931136,
+    "setup_only_disk_allocated_kib": 40012,
+    "note": "The operating floor is headroom, not reserved bytes. The maximum-run allowance assumes every record uses its bound and is not required before startup."
+  },
+  "process_rss_sample": {
+    "run": "256-live",
+    "sampled_at_utc": "2026-09-25T00:51:07+00:00",
+    "validator_count": 256,
+    "sum_rss_mib": 4494.3,
+    "method": "ps -axo pid,%cpu,rss,comm; one sample, not a peak"
+  },
+  "runs": [
+    {
+      "label": "16-direct-3",
+      "note": "passed two-height direct process run; early diagnostic binary",
+      "roster_size": 16,
+      "quorum": 11,
+      "target_height": 2,
+      "run_records": 65,
+      "backend": "direct local validator processes",
+      "outcome": "passed",
+      "failure": null,
+      "setup_seconds": 2.44,
+      "first_quorum_seconds": 11.014,
+      "all_nodes_seconds": 21.492,
+      "total_disk_bytes_at_convergence": 2570334,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 24.144,
+      "submitted_operation": "aaa0848a6bde90c9c401df09214fecd99edfda4dced038abf2d3c2fcabc24d97",
+      "latest_progress": null,
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": null,
+      "binary_sha256": {
+        "naome": "235a6098d9c9b53581b8eaa2b0d3bb2954915b0db01e899b7a52d983153b77fd",
+        "naome-validator": "7413c340357ea86da68c24fae3cafa4b3357dd70b0f7bdd84ba7c559798884a6",
+        "naome-verifier": "c1d46449b34a2753c1bffe44c13e7bf8eb84c03d4c879f419f94faaa298a619f"
+      },
+      "runner_sha256": "ae8191183b0c6512f5e5fe36ea48eb53046dd4d1d2e45688a22cca455e70e8b1",
+      "report_sha256": "4923d6b499f84dc12ef31ed5b067a3074dc075ecf2ee72e1e7924ec2a48247d7"
+    },
+    {
+      "label": "32-longround",
+      "note": "passed two-height direct process run; longer CI round timing",
+      "roster_size": 32,
+      "quorum": 22,
+      "target_height": 2,
+      "run_records": 72,
+      "backend": "direct local validator processes",
+      "outcome": "passed",
+      "failure": null,
+      "setup_seconds": 4.891,
+      "first_quorum_seconds": 83.553,
+      "all_nodes_seconds": 100.21,
+      "total_disk_bytes_at_convergence": 8852977,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 105.255,
+      "submitted_operation": "35139e08555bb226f5c72ce7f38c2ca910967d48d3e1b5dd25bb27e597c34294",
+      "latest_progress": {
+        "height_range": [
+          2,
+          2
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 32
+      },
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": null,
+      "binary_sha256": {
+        "naome": "47b429f6b7d13372fb0c1ce69591d3c2323568c724a5322a31a92f54b8a139bb",
+        "naome-validator": "634e40f833d5ef1038332c57f45be123890b0cdd536816786699ef6748e062af",
+        "naome-verifier": "a0cf28dee9e6983679688adb05ca58f4577f62fab86143e5c4f4e623aa006d46"
+      },
+      "runner_sha256": "33b7c1be23a23562c1e5e51ab1741c4777f50bb5edf7f4bc1d0f40bdfe9e2c21",
+      "report_sha256": "41188794c1f6080b40202a5cd2fc6bbef4479d22a49b54b4fdd8ba1f63f60b68"
+    },
+    {
+      "label": "64-terminal-long",
+      "note": "passed two-height run with terminal queue fix",
+      "roster_size": 64,
+      "quorum": 43,
+      "target_height": 2,
+      "run_records": 104,
+      "backend": "direct local validator processes",
+      "outcome": "passed",
+      "failure": null,
+      "setup_seconds": 10.186,
+      "first_quorum_seconds": 687.598,
+      "all_nodes_seconds": 687.598,
+      "total_disk_bytes_at_convergence": 42136141,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 698.639,
+      "submitted_operation": "9c31a63d991dc69cd8bd7eb2f2f58e7a10e2c763af3f66caf940a7db3912cea0",
+      "latest_progress": {
+        "height_range": [
+          2,
+          2
+        ],
+        "pending_operation_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 64,
+        "ready_signature_range": [
+          26,
+          48
+        ],
+        "terminal_signature_range": [
+          12,
+          43
+        ]
+      },
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "0540ded5a76a3444549f5e95227d6f1af99d361836cf9dd3e4b4a077f85392fa",
+        "naome-validator": "a34323208d4d2f8b4362bc23dbf5ce653d7725c2420ac5d70f0c396ac3d676e5",
+        "naome-verifier": "7c74977e8450f2d0b3afad2e5c6c12fbbfe3f78d6c11680e50d7454ab9860342"
+      },
+      "runner_sha256": "abd3600a44d7ed2eb347e28f689ed65fbe845a9db963e8ed14153d02470c6ed3",
+      "report_sha256": "3014363327dc76ff6b4bab36509dffb368396dc569686d83e1a62f0c7ffdbfc2"
+    },
+    {
+      "label": "64-own-seal",
+      "note": "passed two-height run with local-signature relay",
+      "roster_size": 64,
+      "quorum": 43,
+      "target_height": 2,
+      "run_records": 104,
+      "backend": "direct local validator processes",
+      "outcome": "passed",
+      "failure": null,
+      "setup_seconds": 10.414,
+      "first_quorum_seconds": 425.18,
+      "all_nodes_seconds": 585.565,
+      "total_disk_bytes_at_convergence": 36308773,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 596.301,
+      "submitted_operation": "dd0e40f7a418336e6c3884c714d9f2c2b0e881c45b3dd17865431956a6906bf2",
+      "latest_progress": {
+        "height_range": [
+          2,
+          2
+        ],
+        "pending_operation_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 64,
+        "ready_signature_range": [
+          26,
+          56
+        ],
+        "terminal_signature_range": [
+          1,
+          43
+        ]
+      },
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "1953322e439f0b02865ed0dab90a549aa354d34a88fd497c3012c43090c0e05a",
+        "naome-validator": "1ef91fd26c991f9471429ed492b74e597735b00a30a3b8690a10bc3fa036b228",
+        "naome-verifier": "7c74977e8450f2d0b3afad2e5c6c12fbbfe3f78d6c11680e50d7454ab9860342"
+      },
+      "runner_sha256": "abd3600a44d7ed2eb347e28f689ed65fbe845a9db963e8ed14153d02470c6ed3",
+      "report_sha256": "80e84389310af522ff0beb3a68bcd6fc2bfd106775484093a5801bd0b6b2e717"
+    },
+    {
+      "label": "64-hybrid",
+      "note": "passed two-height run with outgoing-lane relay safeguard",
+      "roster_size": 64,
+      "quorum": 43,
+      "target_height": 2,
+      "run_records": 104,
+      "backend": "direct local validator processes",
+      "outcome": "passed",
+      "failure": null,
+      "setup_seconds": 10.366,
+      "first_quorum_seconds": 542.826,
+      "all_nodes_seconds": 623.035,
+      "total_disk_bytes_at_convergence": 42469434,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 633.724,
+      "submitted_operation": "c4aaec45baa0840f0b600acaab2aee75efd353786154ee64ca1bd738b1179cb2",
+      "latest_progress": {
+        "height_range": [
+          2,
+          2
+        ],
+        "pending_operation_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 64,
+        "ready_signature_range": [
+          34,
+          46
+        ],
+        "terminal_signature_range": [
+          1,
+          43
+        ]
+      },
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "c6b4d12b41a47a8e0d9206cec5822912c0d5619084536d0aa002f736b6bcff72",
+        "naome-validator": "6335ccc25fdc808a16d0c05bbae4f66424e048e3398de549cd15388fbe546cc0",
+        "naome-verifier": "7c74977e8450f2d0b3afad2e5c6c12fbbfe3f78d6c11680e50d7454ab9860342"
+      },
+      "runner_sha256": "c8da62248af3449713d33befe807fb2897e2ceb7868f5d8d374222cfd1183fe6",
+      "report_sha256": "ac02eecd3aa4ae6820e3da07ea079548b78bfa9310f8f016a465fc8fb1351bb5"
+    },
+    {
+      "label": "256-live",
+      "note": "256 launched, but no question was submitted; control status overloaded",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "outcome": "failed",
+      "failure": "benchmark interrupted",
+      "setup_seconds": 45.432,
+      "first_quorum_seconds": null,
+      "all_nodes_seconds": null,
+      "total_disk_bytes_at_convergence": null,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 447.189,
+      "submitted_operation": null,
+      "latest_progress": null,
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "168c82699c695efca2f3e7319b1dabb1df3055557066ad66fb700bf09af06d02",
+        "naome-validator": "51620d5692b6c5967d8cddb8c7135db2910496551957bdc1e823deb32366f443",
+        "naome-verifier": "7c74977e8450f2d0b3afad2e5c6c12fbbfe3f78d6c11680e50d7454ab9860342"
+      },
+      "runner_sha256": "c8da62248af3449713d33befe807fb2897e2ceb7868f5d8d374222cfd1183fe6",
+      "report_sha256": "d32a79b8a8250ea360489e5ae38f7145f6d130987ef0ad30bc15d9a4de8c9e1f"
+    },
+    {
+      "label": "256-progress",
+      "note": "256 submitted, but no height finalized before diagnostic interruption",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "outcome": "failed",
+      "failure": "benchmark interrupted",
+      "setup_seconds": 44.968,
+      "first_quorum_seconds": null,
+      "all_nodes_seconds": null,
+      "total_disk_bytes_at_convergence": null,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 1085.802,
+      "submitted_operation": "ec942afc38b629c1a1bda670a37c1ba18bd89a6b93f4797bc584433a764dcc37",
+      "latest_progress": {
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "connected_peer_range": [
+          13,
+          192
+        ],
+        "offer_range": [
+          11,
+          180
+        ],
+        "time_report_range": [
+          10,
+          186
+        ],
+        "queued_delivery_range": [
+          607,
+          809
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "b8626712c91117de2bed9fbbb7a6de6e79d5e12dea04d03bdcdbe187d7e6cb40",
+        "naome-validator": "86abad37e41d9efcc36e657e56452b589d3813ae10d3874051fccd1c97910c4f",
+        "naome-verifier": "cc6902d10b36dfe1e35ee516ced645512fbc26c1e546ada2f8d99686a6a25591"
+      },
+      "runner_sha256": "b7eb13443e2d1ba7ea1314e9100055493edb0697d95e9afd4e14a1bdb1d95a38",
+      "report_sha256": "a0e6276b27f5a60144419599359aae0b4118a44121cb7fd8b2428ea3efd6e72e"
+    },
+    {
+      "label": "256-bounded-dials",
+      "note": "256 launched; CLI full-status preflight failed before submission",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "outcome": "failed",
+      "failure": "naome: exit 1",
+      "setup_seconds": 45.809,
+      "first_quorum_seconds": null,
+      "all_nodes_seconds": null,
+      "total_disk_bytes_at_convergence": null,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 126.85,
+      "submitted_operation": null,
+      "latest_progress": null,
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "7cfbb113a31c305f86907e92c8daf589ae6c6016961f85064723c231da39f195",
+        "naome-validator": "c225ffba2f71adda1108323ea4749fce564d24d0e68bda8bdabf4e65baf234b5",
+        "naome-verifier": "6ce8c658f7a8d14b13a4991bbfefd7b18eeeb9c83b32dd74254e0f05806dc04a"
+      },
+      "runner_sha256": "b7eb13443e2d1ba7ea1314e9100055493edb0697d95e9afd4e14a1bdb1d95a38",
+      "report_sha256": "2282f32a3bd4f0c65b8f81cb59d90966d21cef284b584e6ec11f259a4ae4a6f2"
+    },
+    {
+      "label": "256-compact-submit",
+      "note": "Question submitted; the 32-dial cap left several nodes below quorum and the diagnostic was interrupted.",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "outcome": "failed",
+      "failure": "benchmark interrupted",
+      "setup_seconds": 45.524,
+      "first_quorum_seconds": null,
+      "all_nodes_seconds": null,
+      "total_disk_bytes_at_convergence": null,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 896.652,
+      "submitted_operation": "e1e75569936c1a8d9f613b283d7080982129b2e4b8041e67407fb8621851484f",
+      "latest_progress": {
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "connected_peer_range": [
+          57,
+          163
+        ],
+        "offer_range": [
+          73,
+          178
+        ],
+        "time_report_range": [
+          74,
+          173
+        ],
+        "queued_delivery_range": [
+          620,
+          793
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "loopback_address_families": [
+        "127.0.0.1"
+      ],
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "ff4338926c7d9bd86c75f50098fba154bf354d16d37ad19e7ee2f1bd593132b8",
+        "naome-validator": "6717607b201895fb6fec83d036a23466b8e53a0bd8c49e6a4a5b4dccb8472c4f",
+        "naome-verifier": "ae80dcf875084e51168d82a0c57ecae952da75e6aee96d106095b8ca1d41e42d"
+      },
+      "runner_sha256": "b7eb13443e2d1ba7ea1314e9100055493edb0697d95e9afd4e14a1bdb1d95a38",
+      "report_sha256": "ce7064fbac367694289dbc6e59bb9417c1640c82c656dc216e6a98244365c8be"
+    },
+    {
+      "label": "256-uncapped",
+      "note": "IPv4-only mesh approached the observed ephemeral-port range ceiling; interrupted below quorum.",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "outcome": "failed",
+      "failure": "benchmark interrupted",
+      "setup_seconds": 45.076,
+      "first_quorum_seconds": null,
+      "all_nodes_seconds": null,
+      "total_disk_bytes_at_convergence": null,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 821.547,
+      "submitted_operation": "4999ed67614f256ddaf9153d8d022eb51a2eb83709b8b5839c2c9e5a43d66ee7",
+      "latest_progress": {
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "connected_peer_range": [
+          55,
+          175
+        ],
+        "offer_range": [
+          57,
+          179
+        ],
+        "time_report_range": [
+          57,
+          173
+        ],
+        "queued_delivery_range": [
+          629,
+          735
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "loopback_address_families": [
+        "127.0.0.1"
+      ],
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "807e5ca7174328a2fd83938e4adba70d95343b5e80fd1c76a45aeb583db4ab71",
+        "naome-validator": "30334b3b76b8bee0c74f71642912cd1cfe5c6ce60bf81f7890bb83042f51117b",
+        "naome-verifier": "0b42014ce52a41f8619eb0fa77c04d3d873b98ef97a531e34a5d3d4895aa27b3"
+      },
+      "runner_sha256": "b7eb13443e2d1ba7ea1314e9100055493edb0697d95e9afd4e14a1bdb1d95a38",
+      "report_sha256": "c9b0790d8266199b8103428c0bf9733dd601c70e21bdd83690718b00f3b9d88a"
+    },
+    {
+      "label": "256-mixed",
+      "note": "Mixed IPv4/IPv6 mesh formed about 32,110 links, but repeated idle record preparation saturated CPU; interrupted before finality.",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "outcome": "failed",
+      "failure": "benchmark interrupted",
+      "setup_seconds": 45.288,
+      "first_quorum_seconds": null,
+      "all_nodes_seconds": null,
+      "total_disk_bytes_at_convergence": null,
+      "total_sampled_memory_bytes": null,
+      "elapsed_seconds": 654.597,
+      "submitted_operation": "31bd29fb5997a8f48b049df4316551965f2de0105e2014dba81270a769505d7b",
+      "latest_progress": {
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "connected_peer_range": [
+          101,
+          250
+        ],
+        "offer_range": [
+          40,
+          213
+        ],
+        "time_report_range": [
+          1,
+          48
+        ],
+        "queued_delivery_range": [
+          517,
+          742
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "binary_sha256": {
+        "naome": "807e5ca7174328a2fd83938e4adba70d95343b5e80fd1c76a45aeb583db4ab71",
+        "naome-validator": "30334b3b76b8bee0c74f71642912cd1cfe5c6ce60bf81f7890bb83042f51117b",
+        "naome-verifier": "0b42014ce52a41f8619eb0fa77c04d3d873b98ef97a531e34a5d3d4895aa27b3"
+      },
+      "runner_sha256": "b7d1e62f76befd177123d7f2a677b12befaa20ecc6fc0ba12122799c560045de",
+      "report_sha256": "30a21a430ae3ee70e9d0efcae0ce8efc34af3c711c50f35eb9d81cbcf1c34257"
+    },
+    {
+      "label": "256-mixed-idle-gate",
+      "note": "Mixed loopback, repeated idle candidate preparation removed; interrupted at height zero when another per-frame hashing cost was found.",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "4bd7ac1de8d74e57ca26bc0a84617574b91fcf95e6cdc4e7b014cfed3441abd6",
+        "naome-validator": "96837bd59ab38942d379471c9fa512849d04a663abfe3f6870e2442d241f145b",
+        "naome-verifier": "03f7cda9c4dc58d81062cc76fb5863a3bdc1e9b393eec0515af8f59ff027113c"
+      },
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "runner_sha256": "b7d1e62f76befd177123d7f2a677b12befaa20ecc6fc0ba12122799c560045de",
+      "outcome": "failed",
+      "setup_seconds": 45.737,
+      "submission": "929aeca5dc0626e0620bf4302ee23e50463488daf2c36fabc645f0ba2389ce98",
+      "latest_progress": {
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "connected_peer_range": [
+          203,
+          255
+        ],
+        "offer_range": [
+          193,
+          256
+        ],
+        "time_report_range": [
+          180,
+          256
+        ],
+        "queued_delivery_range": [
+          494,
+          713
+        ],
+        "work_ready_count": 13,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "failure": "benchmark interrupted",
+      "elapsed_seconds": 381.173,
+      "report_sha256": "f82aa0271e92cbf5c2bc6742c3b46acd8a79d6bb8abbf6357a8fb207562a7fb4"
+    },
+    {
+      "label": "256-mixed-context-cache",
+      "note": "Cached immutable transport context; progress reached at least 237 question holders and 201 round-two precommit nodes, but no record finalized before node 159 exited with a transport invalid input parameter.",
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "52945861dc78aa02afec0390e3fe91122f5fc515e2138d8e319d4d3de6d1e200",
+        "naome-validator": "b6a6ff4363f5ea1bea579058e5c63f1a50fb7361b7826541c3cefe051850743b",
+        "naome-verifier": "03f7cda9c4dc58d81062cc76fb5863a3bdc1e9b393eec0515af8f59ff027113c"
+      },
+      "source_commit": "80be5abd3d369b138ef962c2f55b34d10c582357",
+      "source_tree_clean": false,
+      "runner_sha256": "b7d1e62f76befd177123d7f2a677b12befaa20ecc6fc0ba12122799c560045de",
+      "outcome": "failed",
+      "setup_seconds": 45.384,
+      "submission": "fe724e94961e74e5cfe31b059ea3bbd78570065d09f88dd8717538a9e7cd1e3d",
+      "latest_progress": {
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "connected_peer_range": [
+          221,
+          255
+        ],
+        "offer_range": [
+          222,
+          256
+        ],
+        "time_report_range": [
+          222,
+          256
+        ],
+        "queued_delivery_range": [
+          486,
+          778
+        ],
+        "work_ready_count": 98,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "failure": "validator exited before the target height",
+      "elapsed_seconds": 2091.046,
+      "observed_exit": {
+        "node": 159,
+        "terminal_log": "naome: state transport: invalid input parameter",
+        "listener_error_or_closure": "not distinguished by this binary"
+      },
+      "host_sample": {
+        "sampled_at_utc": "2026-09-25T03:06:20+00:00",
+        "validator_count": 256,
+        "sum_rss_mib": 5313.1,
+        "cpu_percent_sum": 951.0,
+        "method": "ps -axo pid,%cpu,rss,command; one sample, not a peak"
+      },
+      "report_sha256": "1d739b46074da127a5d76c58901ddf3aec2f101b16bdd6e58ad780926111c2ce"
+    }
+  ],
+  "host_port_observation": {
+    "macos_ipv4_ephemeral_port_range": [
+      49152,
+      65535
+    ],
+    "ports_in_range": 16384,
+    "links_for_complete_256_node_mesh": 32640,
+    "ipv4_only_established_links_approx": 16125,
+    "mixed_ipv4_ipv6_established_links_approx": 32110,
+    "method": "netstat loopback ESTABLISHED socket entries divided by two; snapshots during the named live runs",
+    "interpretation": "The IPv4-only plateau near the local port range is consistent with ephemeral-port exhaustion. Mixed loopback removed that observed link ceiling without changing consensus rules."
+  }
+}
