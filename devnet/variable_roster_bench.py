@@ -105,7 +105,10 @@ def main():
     }
 
     def save():
-        (args.directory / 'report.json').write_text(json.dumps(result, indent=2) + '\n')
+        target = args.directory / 'report.json'
+        temporary = args.directory / 'report.json.tmp'
+        temporary.write_text(json.dumps(result, indent=2) + '\n')
+        temporary.replace(target)
 
     def interrupted(*_):
         raise KeyboardInterrupt('benchmark interrupted')
@@ -212,6 +215,12 @@ def main():
                             result['latest_progress']['terminal_signature_range'] = [
                                 min(item['terminal_signatures'] for item in diagnostics),
                                 max(item['terminal_signatures'] for item in diagnostics)]
+                        result['peak_agreement_ready_count'] = max(
+                            result.get('peak_agreement_ready_count', 0),
+                            result['latest_progress']['agreement_ready_count'])
+                        result['peak_observed_precommits'] = max(
+                            result.get('peak_observed_precommits', 0),
+                            result['latest_progress']['observed_precommit_range'][1])
                     at_target = [status for status in responding
                                  if status['height'] >= args.heights]
                     if first_quorum is None and len(at_target) >= result['quorum']:
@@ -234,6 +243,9 @@ def main():
                             result['total_disk_bytes'] = sum(
                                 value['disk_bytes'] for value in result['resources'].values())
                             break
+                result['last_poll_elapsed_seconds'] = round(time.monotonic() - launched, 3)
+                result['last_poll_responded'] = len(responding)
+                save()
                 time.sleep(poll_interval)
             else:
                 raise RuntimeError('target height did not converge before deadline')

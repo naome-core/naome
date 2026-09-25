@@ -95,7 +95,12 @@ precommits, one short of the 171-signature quorum. A CPU sample then found
 repeated full validation of an already retained proposal, including execution
 of the 256-offer successor plan. A signing node now recognizes exact bytes of
 a proposal it has already verified; changed bytes still take the full
-verification path. This further change has not yet been measured at 256.
+verification path. A clean-head run with this change remained at height zero
+after 870 seconds: 34 of 222 responding nodes held a prepared agreement, but
+none had sealed a record. The sampled main thread was mostly waiting for
+network events. The CI test profile now allows a longer phase interval for
+large local rosters, reaching 12 minutes at 256 seats; signed quorum and round
+limits are unchanged. Its 256-process result remains to be measured.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

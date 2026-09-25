@@ -244,12 +244,16 @@ async fn run_owned(
         // finalized heights per minute with a longer first round.
         let round_timeout = if genesis.profile().kind() == naome_ledger::profile::TimingKind::CiTest
         {
-            // Large rosters need time to deliver a quorum's authenticated
-            // frames over bounded per-node queues. This is a local liveness
-            // timeout; the signed protocol and quorum are unchanged.
-            1200u64
+            // The local CI full mesh needs time for a large quorum's votes
+            // and handoff evidence to traverse bounded peer queues. A
+            // 256-process run reached partial agreement but changed rounds
+            // before the seal spread. Only this local timing profile changes;
+            // signed quorum and round limits remain the same.
+            let ordinary = 1200u64
                 .saturating_add(roster.saturating_sub(16) * 400)
-                .min(60_000)
+                .min(720_000);
+            let large_roster = roster.saturating_sub(64).saturating_mul(3_750);
+            ordinary.max(large_roster).min(720_000)
         } else {
             350
         };

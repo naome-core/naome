@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T05:49:13+00:00",
+  "recorded_at_utc": "2026-09-25T06:10:10+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -1223,6 +1223,95 @@
       "failure": "benchmark interrupted",
       "elapsed_seconds": 1234.369,
       "report_sha256": "8618b15e1e404c2fa7a94d86ea87586bfd9f69d8415eebc82bea6d67b71b5565"
+    },
+    {
+      "label": "256-exact-head-proposal-dedup",
+      "note": "Clean-head diagnostic stopped after 870.139 seconds at height zero. In the final sweep 34 of 222 responding nodes held a prepared agreement, but none sealed a record; other nodes had advanced to round one. The local CI phase timeout remained capped at 60 seconds. A sampled main thread was parked for 1527 of 2315 samples, rather than dominated by repeated proposal verification.",
+      "cpu_profile": {
+        "sampled_at_utc": "2026-09-25T06:01:24+00:00",
+        "process_node": 0,
+        "seconds": 3,
+        "main_thread_samples": 2315,
+        "parked_samples": 1527,
+        "method": "macOS sample; one validator at one moment, not a fleet-wide CPU percentage"
+      },
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "cda77f632216488d12a9813d8526e772f79cc88e2bc7fb3924c91b9b9aef5d33",
+        "naome-validator": "a77c4d5553b7cf81f2354c4742a2e4ec0652503ca1c96c7449c8ee987543f0d6",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "9b95a9c6e586fd4539ad50e331812250718f293d",
+      "source_tree_clean": true,
+      "runner_sha256": "46091ba977bb0fc56f1b59b3eedaaa545ef0b86b1833cd2ec7db755b8aced7ea",
+      "outcome": "failed",
+      "setup_seconds": 45.55,
+      "submission": "cf87c1843e8ba3b9578b6adc61196aec15267e6e954a80110f5d4459c6b0ba89",
+      "latest_progress": {
+        "responded": 222,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 1,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          1
+        ],
+        "observed_prevote_range": [
+          0,
+          239
+        ],
+        "observed_precommit_range": [
+          0,
+          170
+        ],
+        "connected_peer_range": [
+          205,
+          255
+        ],
+        "offer_range": [
+          253,
+          256
+        ],
+        "time_report_range": [
+          253,
+          256
+        ],
+        "queued_delivery_range": [
+          731,
+          1772
+        ],
+        "work_ready_count": 186,
+        "agreement_ready_count": 34,
+        "ready_signature_range": [
+          0,
+          1
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "failure": "benchmark interrupted",
+      "elapsed_seconds": 870.139,
+      "report_sha256": "4233141f078affc1b11ab26f581111987ab1f1ee6a4c250243f09488f82946b9"
     }
   ],
   "host_port_observation": {
