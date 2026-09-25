@@ -130,15 +130,31 @@ so a subsequent run can identify it. The next clean-head run found the cause:
 binding staged listeners. It stopped after 547 seconds, with 128 of 225
 respondents prepared for agreement and READY at 0–31. The staged listener now
 uses a 16-slot TCP backlog while the old mesh remains open, down from 64 at
-large rosters. Its 256-process effect remains unmeasured; the 256-process
+large rosters. A clean-head run of this change still failed after 540 seconds:
+22 validator logs reported the same macOS buffer error while binding staged
+listeners. The last saved poll had 169 of 204 respondents prepared for
+agreement, READY at 0–5 and no TERMINAL signature. No height was sealed.
+
+On the same clean commit, a 128-process run was invalidated by a four-second
+macOS maintenance sleep on battery. All validators then stopped on the
+two-second UTC-drift safety rule; this is not a roster-capacity result. A new
+run with display and system wake assertions reached one common height-two head
+and state on all 128 validators. Its first height-two quorum took 1,934.460
+seconds and all-node convergence took 2,214.905 seconds. Run data occupied
+113,882,534 bytes (about 108.6 MiB); one host sample found the 128 validator
+processes at about 4.7 GiB resident memory and 944% CPU. The handoff's
+fresh-key connections were sparse for late nodes, so this pass does not
+establish practical throughput or reliability at 128. The 256-process
 handoff remains unproven.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters
 do not make questions run in parallel. This evidence supports a controlled
-small-roster testnet, not production use of the 256-unit ceiling. Larger and
-separate-machine rehearsals, sustained workloads and network-fault measurement
-remain necessary before recommending that ceiling for deployment.
+small-roster testnet, not production use of the 128- or 256-unit ceiling. The
+256-node listener failure calls for a transport design that avoids the current
+full-mesh resource demand. Separate-machine rehearsals, sustained workloads
+and network-fault measurement remain necessary before recommending larger
+rosters for deployment.
 
 ## Historical state-v5 authority-period qualification
 

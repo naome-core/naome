@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T08:20:36+00:00",
+  "recorded_at_utc": "2026-09-25T09:19:21+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -1945,6 +1945,917 @@
       "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation ",
       "elapsed_seconds": 546.529,
       "report_sha256": "d3143c1c91c409507d27b47afdd5f24e8ee46b1321bf7989faa975f1fecbcf75"
+    },
+    {
+      "label": "256-exact-head-backlog16-enobufs",
+      "note": "Clean-head 256-process run failed after 540.206 seconds at height zero. Twenty-two validator logs reported macOS No buffer space available (OS error 55) while binding staged listeners despite the 16-slot backlog. Final saved poll had 169 of 204 respondents prepared for agreement, READY 0..5, and no TERMINAL signatures. The release binary hashes match the passing 128-process run, and both used the same listener-port policy. All benchmark validator processes were gone after runner exit.",
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "listener_port_policy": "probed 20000..29999",
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "b9f50b09180bad01740dea5a8a947f6b1890be4414ad2ad4b57e19d83cf34c3a",
+        "naome-validator": "92c8ac469e4b9239c2a3d622cfb6c9c912ac21273bfe61c2c5f61766e53b2302",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "780762bc881e6047c1d7637ca200be83e7b60510",
+      "source_tree_clean": true,
+      "runner_sha256": "982f6c466c73cbf91bbed50e24db917a5fc615c2270b93aa11656673f35c54be",
+      "backend_sha256": "773a62aed08f7bc5de89d2fa017b88551ee6f82bdc7f4d36b474b3f37597bc01",
+      "outcome": "failed",
+      "setup_seconds": 45.144,
+      "submission": "c8907dbb4b94e37ffeaca68e322c25c3f636c2d80c6f130313ab8a8a323b8a23",
+      "latest_progress": {
+        "responded": 204,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          1,
+          1
+        ],
+        "observed_prevote_range": [
+          231,
+          256
+        ],
+        "observed_precommit_range": [
+          150,
+          237
+        ],
+        "connected_peer_range": [
+          130,
+          255
+        ],
+        "offer_range": [
+          254,
+          256
+        ],
+        "time_report_range": [
+          254,
+          256
+        ],
+        "queued_delivery_range": [
+          642,
+          1208
+        ],
+        "work_ready_count": 204,
+        "agreement_ready_count": 169,
+        "ready_signature_range": [
+          0,
+          5
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "peak_agreement_ready_count": 169,
+      "peak_observed_precommits": 237,
+      "last_poll_elapsed_seconds": 421.087,
+      "last_poll_responded": 204,
+      "failure": "validator exited before the target height",
+      "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation ",
+      "elapsed_seconds": 540.206,
+      "report_sha256": "21245fdbd0bfbe8c795ff10dee9eee9e642f786c31346ef666942eb6526704f8"
+    },
+    {
+      "label": "128-exact-head-sleep-interrupted",
+      "note": "Clean-head 128-process run was interrupted after 419.657 seconds by a four-second macOS Maintenance Sleep on battery at 10:38:55 local time, despite idle/system caffeinate assertions. All 128 validators rejected further clock reports because UTC drift exceeded two seconds. Before sleep, READY reached 86 of 86 and TERMINAL had begun. This is an invalidated measurement, not a validator or listener-capacity failure; all children were gone after runner exit.",
+      "schema_version": 1,
+      "roster_size": 128,
+      "quorum": 86,
+      "target_height": 2,
+      "run_records": 168,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "listener_port_policy": "probed 20000..29999",
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "b9f50b09180bad01740dea5a8a947f6b1890be4414ad2ad4b57e19d83cf34c3a",
+        "naome-validator": "92c8ac469e4b9239c2a3d622cfb6c9c912ac21273bfe61c2c5f61766e53b2302",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "780762bc881e6047c1d7637ca200be83e7b60510",
+      "source_tree_clean": true,
+      "runner_sha256": "982f6c466c73cbf91bbed50e24db917a5fc615c2270b93aa11656673f35c54be",
+      "backend_sha256": "773a62aed08f7bc5de89d2fa017b88551ee6f82bdc7f4d36b474b3f37597bc01",
+      "outcome": "failed",
+      "setup_seconds": 20.789,
+      "submission": "55f13638fb63314b44d01ad6e90926c269d7b726cd991d13f5d6ce31d84e6a88",
+      "latest_progress": {
+        "responded": 120,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 1,
+        "observed_proposal_range": [
+          0,
+          1
+        ],
+        "observed_prevote_range": [
+          0,
+          128
+        ],
+        "observed_precommit_range": [
+          0,
+          128
+        ],
+        "connected_peer_range": [
+          1,
+          127
+        ],
+        "offer_range": [
+          128,
+          128
+        ],
+        "time_report_range": [
+          128,
+          128
+        ],
+        "queued_delivery_range": [
+          211,
+          634
+        ],
+        "work_ready_count": 120,
+        "agreement_ready_count": 120,
+        "ready_signature_range": [
+          16,
+          86
+        ],
+        "terminal_signature_range": [
+          0,
+          2
+        ]
+      },
+      "peak_agreement_ready_count": 126,
+      "peak_observed_precommits": 128,
+      "last_poll_elapsed_seconds": 346.975,
+      "last_poll_responded": 120,
+      "failure": "validator exited before the target height",
+      "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation ",
+      "elapsed_seconds": 419.657,
+      "report_sha256": "7773b9a585c0c0849beb7375647a80c43d7fe5429ed7d08e57522c02dff87de3"
+    },
+    {
+      "label": "128-exact-head-awake-height2",
+      "note": "Clean-head 128-process run with display, idle, disk, system and user-activity wake assertions. All 128 validators reached one common height-two head and state; first quorum at 1934.460 seconds and all nodes at 2214.905 seconds. Second-height handoff was slow and staged connectivity sparse for late nodes. The runner could not sample process memory in its sandbox; a separate read-only ps sample at about 09:00 UTC found 128 validators using 4834.8 MiB RSS and 944.2% CPU. All benchmark validator processes were gone after runner exit.",
+      "schema_version": 1,
+      "roster_size": 128,
+      "quorum": 86,
+      "target_height": 2,
+      "run_records": 168,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "listener_port_policy": "probed 20000..29999",
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "b9f50b09180bad01740dea5a8a947f6b1890be4414ad2ad4b57e19d83cf34c3a",
+        "naome-validator": "92c8ac469e4b9239c2a3d622cfb6c9c912ac21273bfe61c2c5f61766e53b2302",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "780762bc881e6047c1d7637ca200be83e7b60510",
+      "source_tree_clean": true,
+      "runner_sha256": "982f6c466c73cbf91bbed50e24db917a5fc615c2270b93aa11656673f35c54be",
+      "backend_sha256": "773a62aed08f7bc5de89d2fa017b88551ee6f82bdc7f4d36b474b3f37597bc01",
+      "outcome": "passed",
+      "setup_seconds": 18.974,
+      "submission": "7297cb2d22c27e0503d8999f72be9bb402e640ddc2001873637be76a37f01ed6",
+      "latest_progress": {
+        "responded": 128,
+        "height_range": [
+          2,
+          2
+        ],
+        "pending_operation_range": [
+          0,
+          0
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          0
+        ],
+        "observed_prevote_range": [
+          0,
+          0
+        ],
+        "observed_precommit_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          0,
+          0
+        ],
+        "offer_range": [
+          0,
+          0
+        ],
+        "time_report_range": [
+          0,
+          0
+        ],
+        "queued_delivery_range": [
+          0,
+          0
+        ],
+        "work_ready_count": 0,
+        "agreement_ready_count": 128,
+        "ready_signature_range": [
+          54,
+          87
+        ],
+        "terminal_signature_range": [
+          12,
+          86
+        ]
+      },
+      "peak_agreement_ready_count": 128,
+      "peak_observed_precommits": 128,
+      "last_poll_elapsed_seconds": 2194.866,
+      "last_poll_responded": 128,
+      "finalized_height": 2,
+      "head": "3d1a028f3c3ce248fccb6f99755ee450299245200753364ccec4803d9b793988",
+      "state": "495f61f3e7116d6b3ba3c6b8fae8a716dd49898f7137be891bdc61162ade7271",
+      "first_quorum_seconds": 1934.46,
+      "all_nodes_seconds": 2214.905,
+      "resources": {
+        "0": {
+          "memory_bytes": null,
+          "disk_bytes": 1018982,
+          "file_count": 19
+        },
+        "1": {
+          "memory_bytes": null,
+          "disk_bytes": 937868,
+          "file_count": 19
+        },
+        "2": {
+          "memory_bytes": null,
+          "disk_bytes": 939298,
+          "file_count": 19
+        },
+        "3": {
+          "memory_bytes": null,
+          "disk_bytes": 939818,
+          "file_count": 19
+        },
+        "4": {
+          "memory_bytes": null,
+          "disk_bytes": 789185,
+          "file_count": 19
+        },
+        "5": {
+          "memory_bytes": null,
+          "disk_bytes": 938085,
+          "file_count": 19
+        },
+        "6": {
+          "memory_bytes": null,
+          "disk_bytes": 939223,
+          "file_count": 19
+        },
+        "7": {
+          "memory_bytes": null,
+          "disk_bytes": 910974,
+          "file_count": 19
+        },
+        "8": {
+          "memory_bytes": null,
+          "disk_bytes": 790855,
+          "file_count": 19
+        },
+        "9": {
+          "memory_bytes": null,
+          "disk_bytes": 939447,
+          "file_count": 19
+        },
+        "10": {
+          "memory_bytes": null,
+          "disk_bytes": 883748,
+          "file_count": 19
+        },
+        "11": {
+          "memory_bytes": null,
+          "disk_bytes": 938195,
+          "file_count": 19
+        },
+        "12": {
+          "memory_bytes": null,
+          "disk_bytes": 912146,
+          "file_count": 19
+        },
+        "13": {
+          "memory_bytes": null,
+          "disk_bytes": 937410,
+          "file_count": 19
+        },
+        "14": {
+          "memory_bytes": null,
+          "disk_bytes": 937621,
+          "file_count": 19
+        },
+        "15": {
+          "memory_bytes": null,
+          "disk_bytes": 911922,
+          "file_count": 19
+        },
+        "16": {
+          "memory_bytes": null,
+          "disk_bytes": 939768,
+          "file_count": 19
+        },
+        "17": {
+          "memory_bytes": null,
+          "disk_bytes": 762377,
+          "file_count": 19
+        },
+        "18": {
+          "memory_bytes": null,
+          "disk_bytes": 763403,
+          "file_count": 19
+        },
+        "19": {
+          "memory_bytes": null,
+          "disk_bytes": 910987,
+          "file_count": 19
+        },
+        "20": {
+          "memory_bytes": null,
+          "disk_bytes": 762214,
+          "file_count": 19
+        },
+        "21": {
+          "memory_bytes": null,
+          "disk_bytes": 763458,
+          "file_count": 19
+        },
+        "22": {
+          "memory_bytes": null,
+          "disk_bytes": 912297,
+          "file_count": 19
+        },
+        "23": {
+          "memory_bytes": null,
+          "disk_bytes": 939729,
+          "file_count": 19
+        },
+        "24": {
+          "memory_bytes": null,
+          "disk_bytes": 762935,
+          "file_count": 19
+        },
+        "25": {
+          "memory_bytes": null,
+          "disk_bytes": 937567,
+          "file_count": 19
+        },
+        "26": {
+          "memory_bytes": null,
+          "disk_bytes": 912656,
+          "file_count": 19
+        },
+        "27": {
+          "memory_bytes": null,
+          "disk_bytes": 937410,
+          "file_count": 19
+        },
+        "28": {
+          "memory_bytes": null,
+          "disk_bytes": 763398,
+          "file_count": 19
+        },
+        "29": {
+          "memory_bytes": null,
+          "disk_bytes": 938345,
+          "file_count": 19
+        },
+        "30": {
+          "memory_bytes": null,
+          "disk_bytes": 937621,
+          "file_count": 19
+        },
+        "31": {
+          "memory_bytes": null,
+          "disk_bytes": 938681,
+          "file_count": 19
+        },
+        "32": {
+          "memory_bytes": null,
+          "disk_bytes": 761567,
+          "file_count": 19
+        },
+        "33": {
+          "memory_bytes": null,
+          "disk_bytes": 937410,
+          "file_count": 19
+        },
+        "34": {
+          "memory_bytes": null,
+          "disk_bytes": 938038,
+          "file_count": 19
+        },
+        "35": {
+          "memory_bytes": null,
+          "disk_bytes": 911935,
+          "file_count": 19
+        },
+        "36": {
+          "memory_bytes": null,
+          "disk_bytes": 765100,
+          "file_count": 19
+        },
+        "37": {
+          "memory_bytes": null,
+          "disk_bytes": 938412,
+          "file_count": 19
+        },
+        "38": {
+          "memory_bytes": null,
+          "disk_bytes": 764750,
+          "file_count": 19
+        },
+        "39": {
+          "memory_bytes": null,
+          "disk_bytes": 787707,
+          "file_count": 19
+        },
+        "40": {
+          "memory_bytes": null,
+          "disk_bytes": 938805,
+          "file_count": 19
+        },
+        "41": {
+          "memory_bytes": null,
+          "disk_bytes": 938669,
+          "file_count": 19
+        },
+        "42": {
+          "memory_bytes": null,
+          "disk_bytes": 762564,
+          "file_count": 19
+        },
+        "43": {
+          "memory_bytes": null,
+          "disk_bytes": 939282,
+          "file_count": 19
+        },
+        "44": {
+          "memory_bytes": null,
+          "disk_bytes": 938092,
+          "file_count": 19
+        },
+        "45": {
+          "memory_bytes": null,
+          "disk_bytes": 941292,
+          "file_count": 19
+        },
+        "46": {
+          "memory_bytes": null,
+          "disk_bytes": 938868,
+          "file_count": 19
+        },
+        "47": {
+          "memory_bytes": null,
+          "disk_bytes": 764157,
+          "file_count": 19
+        },
+        "48": {
+          "memory_bytes": null,
+          "disk_bytes": 939179,
+          "file_count": 19
+        },
+        "49": {
+          "memory_bytes": null,
+          "disk_bytes": 763551,
+          "file_count": 19
+        },
+        "50": {
+          "memory_bytes": null,
+          "disk_bytes": 938982,
+          "file_count": 19
+        },
+        "51": {
+          "memory_bytes": null,
+          "disk_bytes": 886091,
+          "file_count": 19
+        },
+        "52": {
+          "memory_bytes": null,
+          "disk_bytes": 937995,
+          "file_count": 19
+        },
+        "53": {
+          "memory_bytes": null,
+          "disk_bytes": 938427,
+          "file_count": 19
+        },
+        "54": {
+          "memory_bytes": null,
+          "disk_bytes": 911011,
+          "file_count": 19
+        },
+        "55": {
+          "memory_bytes": null,
+          "disk_bytes": 939514,
+          "file_count": 19
+        },
+        "56": {
+          "memory_bytes": null,
+          "disk_bytes": 938038,
+          "file_count": 19
+        },
+        "57": {
+          "memory_bytes": null,
+          "disk_bytes": 787405,
+          "file_count": 19
+        },
+        "58": {
+          "memory_bytes": null,
+          "disk_bytes": 761006,
+          "file_count": 19
+        },
+        "59": {
+          "memory_bytes": null,
+          "disk_bytes": 937784,
+          "file_count": 19
+        },
+        "60": {
+          "memory_bytes": null,
+          "disk_bytes": 762401,
+          "file_count": 19
+        },
+        "61": {
+          "memory_bytes": null,
+          "disk_bytes": 886161,
+          "file_count": 19
+        },
+        "62": {
+          "memory_bytes": null,
+          "disk_bytes": 937434,
+          "file_count": 19
+        },
+        "63": {
+          "memory_bytes": null,
+          "disk_bytes": 941965,
+          "file_count": 19
+        },
+        "64": {
+          "memory_bytes": null,
+          "disk_bytes": 937905,
+          "file_count": 19
+        },
+        "65": {
+          "memory_bytes": null,
+          "disk_bytes": 938158,
+          "file_count": 19
+        },
+        "66": {
+          "memory_bytes": null,
+          "disk_bytes": 937434,
+          "file_count": 19
+        },
+        "67": {
+          "memory_bytes": null,
+          "disk_bytes": 910987,
+          "file_count": 19
+        },
+        "68": {
+          "memory_bytes": null,
+          "disk_bytes": 937995,
+          "file_count": 19
+        },
+        "69": {
+          "memory_bytes": null,
+          "disk_bytes": 912348,
+          "file_count": 19
+        },
+        "70": {
+          "memory_bytes": null,
+          "disk_bytes": 790285,
+          "file_count": 19
+        },
+        "71": {
+          "memory_bytes": null,
+          "disk_bytes": 937724,
+          "file_count": 19
+        },
+        "72": {
+          "memory_bytes": null,
+          "disk_bytes": 840668,
+          "file_count": 19
+        },
+        "73": {
+          "memory_bytes": null,
+          "disk_bytes": 939526,
+          "file_count": 19
+        },
+        "74": {
+          "memory_bytes": null,
+          "disk_bytes": 841906,
+          "file_count": 19
+        },
+        "75": {
+          "memory_bytes": null,
+          "disk_bytes": 887009,
+          "file_count": 19
+        },
+        "76": {
+          "memory_bytes": null,
+          "disk_bytes": 937808,
+          "file_count": 19
+        },
+        "77": {
+          "memory_bytes": null,
+          "disk_bytes": 938388,
+          "file_count": 19
+        },
+        "78": {
+          "memory_bytes": null,
+          "disk_bytes": 937434,
+          "file_count": 19
+        },
+        "79": {
+          "memory_bytes": null,
+          "disk_bytes": 937410,
+          "file_count": 19
+        },
+        "80": {
+          "memory_bytes": null,
+          "disk_bytes": 938705,
+          "file_count": 19
+        },
+        "81": {
+          "memory_bytes": null,
+          "disk_bytes": 788800,
+          "file_count": 19
+        },
+        "82": {
+          "memory_bytes": null,
+          "disk_bytes": 736479,
+          "file_count": 19
+        },
+        "83": {
+          "memory_bytes": null,
+          "disk_bytes": 788800,
+          "file_count": 19
+        },
+        "84": {
+          "memory_bytes": null,
+          "disk_bytes": 937434,
+          "file_count": 19
+        },
+        "85": {
+          "memory_bytes": null,
+          "disk_bytes": 938345,
+          "file_count": 19
+        },
+        "86": {
+          "memory_bytes": null,
+          "disk_bytes": 938491,
+          "file_count": 19
+        },
+        "87": {
+          "memory_bytes": null,
+          "disk_bytes": 938038,
+          "file_count": 19
+        },
+        "88": {
+          "memory_bytes": null,
+          "disk_bytes": 844157,
+          "file_count": 19
+        },
+        "89": {
+          "memory_bytes": null,
+          "disk_bytes": 939853,
+          "file_count": 19
+        },
+        "90": {
+          "memory_bytes": null,
+          "disk_bytes": 938436,
+          "file_count": 19
+        },
+        "91": {
+          "memory_bytes": null,
+          "disk_bytes": 792382,
+          "file_count": 19
+        },
+        "92": {
+          "memory_bytes": null,
+          "disk_bytes": 788824,
+          "file_count": 19
+        },
+        "93": {
+          "memory_bytes": null,
+          "disk_bytes": 886717,
+          "file_count": 19
+        },
+        "94": {
+          "memory_bytes": null,
+          "disk_bytes": 841115,
+          "file_count": 19
+        },
+        "95": {
+          "memory_bytes": null,
+          "disk_bytes": 938280,
+          "file_count": 19
+        },
+        "96": {
+          "memory_bytes": null,
+          "disk_bytes": 939022,
+          "file_count": 19
+        },
+        "97": {
+          "memory_bytes": null,
+          "disk_bytes": 762377,
+          "file_count": 19
+        },
+        "98": {
+          "memory_bytes": null,
+          "disk_bytes": 940314,
+          "file_count": 19
+        },
+        "99": {
+          "memory_bytes": null,
+          "disk_bytes": 938554,
+          "file_count": 19
+        },
+        "100": {
+          "memory_bytes": null,
+          "disk_bytes": 938434,
+          "file_count": 19
+        },
+        "101": {
+          "memory_bytes": null,
+          "disk_bytes": 941158,
+          "file_count": 19
+        },
+        "102": {
+          "memory_bytes": null,
+          "disk_bytes": 938208,
+          "file_count": 19
+        },
+        "103": {
+          "memory_bytes": null,
+          "disk_bytes": 938941,
+          "file_count": 19
+        },
+        "104": {
+          "memory_bytes": null,
+          "disk_bytes": 937447,
+          "file_count": 19
+        },
+        "105": {
+          "memory_bytes": null,
+          "disk_bytes": 792769,
+          "file_count": 19
+        },
+        "106": {
+          "memory_bytes": null,
+          "disk_bytes": 937948,
+          "file_count": 19
+        },
+        "107": {
+          "memory_bytes": null,
+          "disk_bytes": 939305,
+          "file_count": 19
+        },
+        "108": {
+          "memory_bytes": null,
+          "disk_bytes": 991374,
+          "file_count": 19
+        },
+        "109": {
+          "memory_bytes": null,
+          "disk_bytes": 939029,
+          "file_count": 19
+        },
+        "110": {
+          "memory_bytes": null,
+          "disk_bytes": 937447,
+          "file_count": 19
+        },
+        "111": {
+          "memory_bytes": null,
+          "disk_bytes": 762861,
+          "file_count": 19
+        },
+        "112": {
+          "memory_bytes": null,
+          "disk_bytes": 911024,
+          "file_count": 19
+        },
+        "113": {
+          "memory_bytes": null,
+          "disk_bytes": 886174,
+          "file_count": 19
+        },
+        "114": {
+          "memory_bytes": null,
+          "disk_bytes": 938051,
+          "file_count": 19
+        },
+        "115": {
+          "memory_bytes": null,
+          "disk_bytes": 884552,
+          "file_count": 19
+        },
+        "116": {
+          "memory_bytes": null,
+          "disk_bytes": 939953,
+          "file_count": 19
+        },
+        "117": {
+          "memory_bytes": null,
+          "disk_bytes": 939083,
+          "file_count": 19
+        },
+        "118": {
+          "memory_bytes": null,
+          "disk_bytes": 762924,
+          "file_count": 19
+        },
+        "119": {
+          "memory_bytes": null,
+          "disk_bytes": 790002,
+          "file_count": 19
+        },
+        "120": {
+          "memory_bytes": null,
+          "disk_bytes": 762227,
+          "file_count": 19
+        },
+        "121": {
+          "memory_bytes": null,
+          "disk_bytes": 938196,
+          "file_count": 19
+        },
+        "122": {
+          "memory_bytes": null,
+          "disk_bytes": 937447,
+          "file_count": 19
+        },
+        "123": {
+          "memory_bytes": null,
+          "disk_bytes": 885618,
+          "file_count": 19
+        },
+        "124": {
+          "memory_bytes": null,
+          "disk_bytes": 938051,
+          "file_count": 19
+        },
+        "125": {
+          "memory_bytes": null,
+          "disk_bytes": 763676,
+          "file_count": 19
+        },
+        "126": {
+          "memory_bytes": null,
+          "disk_bytes": 885156,
+          "file_count": 19
+        },
+        "127": {
+          "memory_bytes": null,
+          "disk_bytes": 886156,
+          "file_count": 19
+        }
+      },
+      "total_sampled_memory_bytes": null,
+      "total_disk_bytes": 113882534,
+      "elapsed_seconds": 2266.374,
+      "report_sha256": "097d90c86422b78f34eb79a50deb42fc9062987d361e33b8311c047eb3cd06ac"
     }
   ],
   "host_port_observation": {
@@ -1958,5 +2869,12 @@
     "mixed_ipv4_ipv6_established_links_approx": 32110,
     "method": "netstat loopback ESTABLISHED socket entries divided by two; snapshots during the named live runs",
     "interpretation": "The IPv4-only plateau near the local port range is consistent with ephemeral-port exhaustion. Mixed loopback removed that observed link ceiling without changing consensus rules."
+  },
+  "process_rss_sample_128": {
+    "source": "read-only ps -axo sample during the passing 128-process run at about 09:00 UTC",
+    "validator_processes": 128,
+    "total_rss_mib": 4834.8,
+    "total_cpu_percent": 944.2,
+    "sample_kind": "one instantaneous host sample, not a peak or convergence measurement"
   }
 }
