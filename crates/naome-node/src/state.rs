@@ -254,6 +254,17 @@ impl StateNode {
         Ok(s.phase()? == StatePhase::Proposal
             && self.branch()?.proposer(s.round()?, self.maximum_round())? == Some(s.signer()))
     }
+    /// Selected current-round signing key for transport prioritization only.
+    /// The branch remains the sole authority for proposal selection.
+    pub fn current_proposer_key(&self) -> Result<Option<ConsensusKey>> {
+        if self.handoff_agreement().is_some() {
+            return Ok(None);
+        }
+        let Some((_, round, _)) = self.position()? else {
+            return Ok(None);
+        };
+        Ok(self.branch()?.proposer(round, self.maximum_round())?)
+    }
     pub fn already_authored(&self) -> Result<bool> {
         let Some(s) = &self.signer else {
             return Ok(false);

@@ -69,7 +69,12 @@ passed focused tests and smaller process runs. The cached-context 256 run
 reached at least 237 question holders and 201 validators in round-two
 precommit, but no record finalized before one validator exited with a
 transport error. The runtime now keeps a listener alive after a libp2p
-nonfatal listener error; this repair has not yet passed a new 256-process run.
+nonfatal listener error. A later clean-head run formed all 255 peer links per
+validator and collected all 256 offers and signed time reports, but was stopped
+at 540 seconds with no finalized height: the selected round-zero proposer had
+not received the pending question. The runtime now gives that proposer the
+first bounded action-delivery slot. Focused tests and a four-process run pass;
+the 256-process result for this relay change remains to be measured.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

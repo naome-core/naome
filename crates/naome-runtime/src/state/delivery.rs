@@ -233,7 +233,25 @@ impl StateRuntime {
         });
         Ok(())
     }
-    fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
+    pub(super) fn current_proposer_peer(&self) -> Result<Option<PeerId>> {
+        let Some(proposer) = self.node.current_proposer_key()? else {
+            return Ok(None);
+        };
+        let Some(keys) = self
+            .state()?
+            .authority()
+            .units()
+            .iter()
+            .filter_map(|unit| unit.keys())
+            .find(|keys| keys.consensus() == proposer.as_bytes())
+        else {
+            return Ok(None);
+        };
+        let peer = naome_network::state_peer_id(*keys.transport())
+            .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+        Ok(self.peers.contains(&peer).then_some(peer))
+    }
+    pub(super) fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
         if self.network.active().is_none() {
             return Ok(());
         }
@@ -250,6 +268,13 @@ impl StateRuntime {
                 .transport_buffer_frames as usize
                 / 4)
             .max(1);
+            // The selected proposer can make an admitted action useful in this
+            // round. Give it the first bounded delivery slot before rotating
+            // the remaining couriers; this changes only transport order.
+            let proposer = self.current_proposer_peer()?;
+            if let Some(peer) = proposer {
+                self.enqueue(peer, body.clone())?;
+            }
             for _ in 0..count {
                 if self.queued_action_deliveries() >= limit {
                     break;
@@ -257,6 +282,9 @@ impl StateRuntime {
                 let index = self.action_peer_cursor % count;
                 let peer = self.peers[index];
                 self.action_peer_cursor = (index + 1) % count;
+                if Some(peer) == proposer {
+                    continue;
+                }
                 self.enqueue(peer, body.clone())?;
             }
             return Ok(());

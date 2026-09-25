@@ -2,6 +2,28 @@ use super::*;
 use naome_network::{ListenerId, NetworkEvent, PeerSessionEvent, StateLane};
 
 #[tokio::test]
+async fn user_action_reaches_selected_proposer_before_rotating_couriers() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let proposer = runtime.current_proposer_peer().unwrap().unwrap();
+    let proposer_index = runtime
+        .peers
+        .iter()
+        .position(|peer| *peer == proposer)
+        .unwrap();
+    runtime.action_peer_cursor = (proposer_index + 1) % runtime.peers.len();
+
+    runtime
+        .broadcast(StateRequestBody::UserAction(vec![1].into()))
+        .unwrap();
+    let first_action = runtime
+        .outbox
+        .iter()
+        .find(|delivery| matches!(delivery.body, StateRequestBody::UserAction(_)))
+        .unwrap();
+    assert_eq!(first_action.peer, proposer);
+}
+
+#[tokio::test]
 async fn transient_listener_error_does_not_stop_signing_but_closure_does() {
     let (_directory, _anchors, mut runtime) = runtime();
     let listener_id = ListenerId::next();

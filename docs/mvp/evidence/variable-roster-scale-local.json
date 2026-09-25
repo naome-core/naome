@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T03:37:02.770512+00:00",
+  "recorded_at_utc": "2026-09-25T04:08:49.101338+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -8,7 +8,7 @@
     "storage_free_during_tests_approx_gib": 44
   },
   "toolchain": "Rust 1.97.1 pinned by rust-toolchain.toml; release binaries",
-  "qualifications": "These runs used changing uncommitted source trees; source commit alone does not identify their binaries. Each report records release binary hashes. They are diagnostic, not exact-head or separate-machine acceptance.",
+  "qualifications": "Earlier diagnostics used changing uncommitted source trees; the 256-exact-head-proposer-diagnostic run used clean commit 038cdc2. All runs are one-host local diagnostics, not separate-machine acceptance. Every report records release binary hashes.",
   "storage_256": {
     "run_records": 296,
     "operating_floor_bytes_per_node": 78923176,
@@ -752,6 +752,87 @@
         "method": "ps -axo pid,%cpu,rss,command; one sample, not a peak"
       },
       "report_sha256": "1d739b46074da127a5d76c58901ddf3aec2f101b16bdd6e58ad780926111c2ce"
+    },
+    {
+      "label": "256-exact-head-proposer-diagnostic",
+      "note": "Clean-head diagnostic stopped after 540 seconds: all 256 peers, offers, and signed time reports were present, but selected round-zero proposer node 28 had not received the pending question or authored a proposal. No record finalized. This motivated proposer-first action delivery.",
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "f1764eca51544c809555a917fdc3d87e689e04077c1d97336d5031556d318451",
+        "naome-validator": "39b9942ed83e67db43fd8f18d285bf229c119acc701e45eb12279d77c542392a",
+        "naome-verifier": "b34a0f8a3bc4c35d9d3d392851593ba040f3521a1736b51cc29f6836ed88991a"
+      },
+      "source_commit": "038cdc2db9b9100a93cffaa4002d3bc1b1bcbf8d",
+      "source_tree_clean": true,
+      "runner_sha256": "46091ba977bb0fc56f1b59b3eedaaa545ef0b86b1833cd2ec7db755b8aced7ea",
+      "outcome": "failed",
+      "setup_seconds": 45.496,
+      "submission": "b3f4378f7fb3f681ead3876b78a4215dd6a0804033cec40c63525839695518a6",
+      "latest_progress": {
+        "responded": 256,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 1,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          0
+        ],
+        "observed_prevote_range": [
+          72,
+          83
+        ],
+        "observed_precommit_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          255,
+          255
+        ],
+        "offer_range": [
+          256,
+          256
+        ],
+        "time_report_range": [
+          256,
+          256
+        ],
+        "queued_delivery_range": [
+          484,
+          770
+        ],
+        "work_ready_count": 96,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "failure": "benchmark interrupted",
+      "elapsed_seconds": 540.226,
+      "report_sha256": "3bad030425099ed3f3b38543586b9156c20577628e3b25cabde262399f0f147b"
     }
   ],
   "host_port_observation": {
