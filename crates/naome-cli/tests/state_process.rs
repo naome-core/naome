@@ -574,38 +574,40 @@ fn four_process_state_recovery_partition_and_independent_replay() {
         .collect::<String>();
     let remote = canonical[2] as u64;
     // Start the independent proof fetch while the saved ballots enter the
-    // short Voting window; both are required before building the package.
+    // short Voting window. Check and package the fetched proof in that same
+    // worker so the short Commitment window is not spent on preparation.
+    let b_package = lab.file("b.package");
     let h = thread::scope(|scope| {
         let fetch = scope.spawn(|| {
-            command(&[
+            let h = command(&[
                 "fetch-proof-from".into(),
                 lab.config(1),
                 remote.to_string(),
                 helper_id.clone(),
                 lab.file("h.proof"),
-            ])
+            ]);
+            command(&[
+                "check-proof".into(),
+                lab.file("genesis.bin"),
+                lab.file("h.proof"),
+            ]);
+            command(&[
+                "package".into(),
+                lab.file("genesis.bin"),
+                lab.key(5),
+                b_package.clone(),
+                path(example("solution-b-original.nao")),
+                "--reference".into(),
+                lab.file("h.proof"),
+                "--helper".into(),
+                path(example("helper-h-duplicate.nao")),
+            ]);
+            h
         });
         lab.approve(&[1, 2, 3], "b", &b);
         fetch.join().unwrap()
     });
     assert_eq!(h["retrieval"], "authenticated peer-to-peer network");
-    command(&[
-        "check-proof".into(),
-        lab.file("genesis.bin"),
-        lab.file("h.proof"),
-    ]);
-    let b_package = lab.file("b.package");
-    command(&[
-        "package".into(),
-        lab.file("genesis.bin"),
-        lab.key(5),
-        b_package.clone(),
-        path(example("solution-b-original.nao")),
-        "--reference".into(),
-        lab.file("h.proof"),
-        "--helper".into(),
-        path(example("helper-h-duplicate.nao")),
-    ]);
     lab.solve(1, 5, &b_package, "b", &b);
     let second = lab.wait(1, |s| s["paid_completions"] == 2);
     lab.assert_same(&[1, 2, 3], &second);
