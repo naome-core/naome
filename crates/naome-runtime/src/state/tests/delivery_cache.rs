@@ -2,6 +2,31 @@ use super::*;
 use naome_network::{ListenerId, NetworkEvent, PeerSessionEvent, StateLane};
 
 #[tokio::test]
+async fn broadcast_uses_one_wire_identity_with_peer_scoped_acknowledgements() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let body = StateRequestBody::Proposal(vec![7; 80].into());
+    runtime.broadcast(body.clone()).unwrap();
+    assert_eq!(runtime.outbox.len(), runtime.peers.len());
+    let first = runtime.outbox.pop_front().unwrap();
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .all(|delivery| delivery.id == first.id)
+    );
+
+    runtime.remember_acknowledged(&first).unwrap();
+    runtime.broadcast(body).unwrap();
+    assert_eq!(runtime.outbox.len(), runtime.peers.len() - 1);
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .all(|delivery| delivery.peer != first.peer && delivery.id == first.id)
+    );
+}
+
+#[tokio::test]
 async fn user_action_reaches_selected_proposer_before_rotating_couriers() {
     let (_directory, _anchors, mut runtime) = runtime();
     let proposer = runtime.current_proposer_peer().unwrap().unwrap();

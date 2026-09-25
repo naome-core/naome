@@ -77,8 +77,13 @@ first bounded action-delivery slot. In the next clean-head run, one proposer
 authored early, but after 926 seconds no record had finalized and
 only 11–23 prevotes were visible per responding node. A short CPU sample found
 repeated hashing of large outgoing requests before send-capacity checks;
-fingerprinting now follows those checks. The new order has not yet passed a
-256-process run.
+fingerprinting now follows those checks. The next clean-head run reached a
+complete peer mesh but was stopped after 624 seconds at height zero, with at
+most one observed proposal in the final responding range. A second CPU sample
+found that the runtime rehashed the same publication for each peer before
+checking its delivery cache. Broadcast now computes that wire identity once
+and retains the existing peer-specific delivery and acknowledgement bounds;
+its 256-process result remains to be measured.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

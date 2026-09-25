@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T04:26:18.461873+00:00",
+  "recorded_at_utc": "2026-09-25T04:41:12.831271+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -8,7 +8,7 @@
     "storage_free_during_tests_approx_gib": 44
   },
   "toolchain": "Rust 1.97.1 pinned by rust-toolchain.toml; release binaries",
-  "qualifications": "Earlier diagnostics used changing uncommitted source trees. The 256-exact-head-proposer-diagnostic and 256-exact-head-proposer-first runs used clean commits 038cdc2 and 26a6396 respectively. All runs are one-host local diagnostics, not separate-machine acceptance. Every report records release binary hashes.",
+  "qualifications": "Earlier diagnostics used changing uncommitted source trees. The 256-exact-head-proposer-diagnostic, 256-exact-head-proposer-first, and 256-exact-head-postpermit runs used clean commits 038cdc2, 26a6396, and bf89a3c respectively. All runs are one-host local diagnostics, not separate-machine acceptance. Every report records release binary hashes.",
   "storage_256": {
     "run_records": 296,
     "operating_floor_bytes_per_node": 78923176,
@@ -929,6 +929,102 @@
         "method": "macOS sample; call-tree sample count, not CPU time or a fleet-wide percentage"
       },
       "report_sha256": "c258cd3400cd8d088bb95c4a7aa7bc3baee8a30f3446aa4b4192af5eefa15fa0"
+    },
+    {
+      "label": "256-exact-head-postpermit",
+      "note": "Clean-head diagnostic stopped after 624 seconds at height zero. A sampled submitting validator repeatedly hashed a publication separately for each peer before deduplicating the already queued wire identity; only one observed proposal and 41\u201343 prevotes were visible in the final responding range.",
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "603a8ac1e03059de542ca5b4e6e21ed28871de37b36b191e0db40f5bc7a0c5c2",
+        "naome-validator": "6d4d045bd1d75364bb7dcd67c9bfb7123428fff6f854d7bffe6efce10796ab98",
+        "naome-verifier": "b34a0f8a3bc4c35d9d3d392851593ba040f3521a1736b51cc29f6836ed88991a"
+      },
+      "source_commit": "bf89a3c9fff02be56cd8232075618fd724359752",
+      "source_tree_clean": true,
+      "runner_sha256": "46091ba977bb0fc56f1b59b3eedaaa545ef0b86b1833cd2ec7db755b8aced7ea",
+      "outcome": "failed",
+      "setup_seconds": 45.702,
+      "submission": "a1f1bc08f924bef25ff307b5d02cb4bfdd4fca001dcb7474f62a7d1ba83ae4e1",
+      "latest_progress": {
+        "responded": 229,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          1
+        ],
+        "observed_prevote_range": [
+          41,
+          43
+        ],
+        "observed_precommit_range": [
+          0,
+          0
+        ],
+        "connected_peer_range": [
+          254,
+          255
+        ],
+        "offer_range": [
+          255,
+          256
+        ],
+        "time_report_range": [
+          255,
+          256
+        ],
+        "queued_delivery_range": [
+          479,
+          1042
+        ],
+        "work_ready_count": 38,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "failure": "benchmark interrupted",
+      "elapsed_seconds": 623.563,
+      "host_sample": {
+        "sampled_at_utc": "2026-09-25T04:35:19+00:00",
+        "validator_count": 256,
+        "sum_rss_mib": 5452.6,
+        "cpu_percent_sum": 929.4,
+        "method": "ps -axo pid,%cpu,rss,command; one sample, not a peak"
+      },
+      "cpu_profile": {
+        "sampled_at_utc": "2026-09-25T04:37:32+00:00",
+        "process_node": 0,
+        "seconds": 3,
+        "main_thread_samples": 2353,
+        "runtime_enqueue_hash_samples": 909,
+        "method": "macOS sample; call-tree sample count, not CPU time or a fleet-wide percentage"
+      },
+      "report_sha256": "4f94fc978d4231165a95a5f0d48709718cc562927880b42ec90c6644c4c71fdf"
     }
   ],
   "host_port_observation": {

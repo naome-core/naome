@@ -22,6 +22,17 @@ impl StateRuntime {
                 .filter(|flight| matches!(&flight.delivery.body, StateRequestBody::UserAction(_)))
                 .count()
     }
+    fn request_id(&self, body: &StateRequestBody) -> Result<[u8; 32]> {
+        let maximum = self
+            .state()?
+            .genesis()
+            .profile()
+            .limits()
+            .transport_frame_bytes as usize;
+        let request = StateRequest::new(self.context, body.clone(), maximum)
+            .map_err(|error| StateRuntimeError::Rejected(error.to_string()))?;
+        Ok(Sha256::digest(request.to_wire_bytes()).into())
+    }
     // The caller retries failed starts. Keep their error typed as a unit so a
     // busy roster does not format discarded peer IDs on every flush.
     fn send_request(
@@ -95,11 +106,18 @@ impl StateRuntime {
         active.request_state(peer, body).map_err(|_| ())
     }
     pub(super) fn enqueue(&mut self, peer: PeerId, body: StateRequestBody) -> Result<()> {
+        self.enqueue_with_id(peer, body, None)
+    }
+    fn enqueue_with_id(
+        &mut self,
+        peer: PeerId,
+        body: StateRequestBody,
+        prepared_id: Option<[u8; 32]>,
+    ) -> Result<()> {
         if self.disabled.contains(&peer) {
             return Ok(());
         }
         let state = self.state()?;
-        let maximum = state.genesis().profile().limits().transport_frame_bytes as usize;
         let capacity = state.genesis().profile().limits().transport_buffer_frames as usize;
         let height = state.height();
         if matches!(&body, StateRequestBody::Finalized(_))
@@ -120,9 +138,10 @@ impl StateRuntime {
                 return Ok(());
             }
         }
-        let request = StateRequest::new(self.context, body.clone(), maximum)
-            .map_err(|e| StateRuntimeError::Rejected(e.to_string()))?;
-        let id: [u8; 32] = Sha256::digest(request.to_wire_bytes()).into();
+        let id = match prepared_id {
+            Some(id) => id,
+            None => self.request_id(&body)?,
+        };
         if self.sent.contains(&(peer, id))
             || self.acknowledged.contains(&(peer, id))
             || self.outbox.iter().any(|d| d.peer == peer && d.id == id)
@@ -252,14 +271,11 @@ impl StateRuntime {
         Ok(self.peers.contains(&peer).then_some(peer))
     }
     pub(super) fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
-        if self.network.active().is_none() {
+        if self.network.active().is_none() || self.peers.is_empty() {
             return Ok(());
         }
         if matches!(&body, StateRequestBody::UserAction(_)) {
             let count = self.peers.len();
-            if count == 0 {
-                return Ok(());
-            }
             let limit = (self
                 .state()?
                 .genesis()
@@ -272,8 +288,9 @@ impl StateRuntime {
             // round. Give it the first bounded delivery slot before rotating
             // the remaining couriers; this changes only transport order.
             let proposer = self.current_proposer_peer()?;
+            let id = self.request_id(&body)?;
             if let Some(peer) = proposer {
-                self.enqueue(peer, body.clone())?;
+                self.enqueue_with_id(peer, body.clone(), Some(id))?;
             }
             for _ in 0..count {
                 if self.queued_action_deliveries() >= limit {
@@ -285,12 +302,15 @@ impl StateRuntime {
                 if Some(peer) == proposer {
                     continue;
                 }
-                self.enqueue(peer, body.clone())?;
+                self.enqueue_with_id(peer, body.clone(), Some(id))?;
             }
             return Ok(());
         }
+        // A wire request has one identity across all recipients. The peer is
+        // kept separately in each bounded delivery and acknowledgement key.
+        let id = self.request_id(&body)?;
         for peer in self.peers.clone() {
-            self.enqueue(peer, body.clone())?;
+            self.enqueue_with_id(peer, body.clone(), Some(id))?;
         }
         Ok(())
     }
@@ -305,6 +325,7 @@ impl StateRuntime {
         peers.extend(self.recovery_clients.iter().copied());
         peers.sort();
         peers.dedup();
+        let mut id = None;
         for peer in peers {
             if self
                 .network
@@ -321,7 +342,15 @@ impl StateRuntime {
             {
                 continue;
             }
-            self.enqueue(peer, body.clone())?;
+            let prepared_id = match id {
+                Some(id) => id,
+                None => {
+                    let prepared_id = self.request_id(&body)?;
+                    id = Some(prepared_id);
+                    prepared_id
+                }
+            };
+            self.enqueue_with_id(peer, body.clone(), Some(prepared_id))?;
         }
         Ok(())
     }
