@@ -83,7 +83,13 @@ most one observed proposal in the final responding range. A second CPU sample
 found that the runtime rehashed the same publication for each peer before
 checking its delivery cache. Broadcast now computes that wire identity once
 and retains the existing peer-specific delivery and acknowledgement bounds;
-its 256-process result remains to be measured.
+a clean-head run of this change remained at height zero after 2,062 seconds.
+One sampled validator reached 217 prevotes and 162 precommits in round zero,
+then advanced to round one without a seal. A second CPU profile found that
+network-driven retries still rehashed retained publications and scanned the
+delivery queue separately for each peer. The runtime now caches the exact wire
+identity of each retained publication and builds one peer lookup per broadcast.
+The 256-process result of this further optimization remains to be measured.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

@@ -14,7 +14,7 @@ mod tests;
 
 use ed25519_dalek::SigningKey;
 use naome_chain::StateRecord;
-use naome_consensus::state::StatePhase;
+use naome_consensus::state::{StatePhase, StatePublication};
 use naome_ledger::{
     AuthorityUnitId, LedgerError, LedgerState, OperationId, ResolutionId, ValidatorId,
     authentication::SignedOperation,
@@ -226,6 +226,9 @@ pub struct StateRuntime {
     current_custody: Option<StatePeriodCustody>,
     next_custody: Option<StatePeriodCustody>,
     own_time: Option<Arc<[u8]>>,
+    // At most the signer's current proposal and two recent votes. Retain
+    // their exact wire identities across network-driven retry passes.
+    publication_cache: Vec<(StatePublication, StateRequestBody, [u8; 32])>,
     outbox: VecDeque<Delivery>,
     flights: Vec<Flight>,
     recovery_flights: Vec<RecoveryFlight>,
@@ -613,6 +616,7 @@ impl StateRuntime {
             current_custody,
             next_custody,
             own_time: None,
+            publication_cache: Vec::new(),
             outbox: VecDeque::new(),
             flights: Vec::new(),
             recovery_flights: Vec::new(),

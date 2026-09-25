@@ -274,6 +274,13 @@ impl StateRuntime {
         if self.network.active().is_none() || self.peers.is_empty() {
             return Ok(());
         }
+        let id = self.request_id(&body)?;
+        self.broadcast_with_id(body, id)
+    }
+    fn broadcast_with_id(&mut self, body: StateRequestBody, id: [u8; 32]) -> Result<()> {
+        if self.network.active().is_none() || self.peers.is_empty() {
+            return Ok(());
+        }
         if matches!(&body, StateRequestBody::UserAction(_)) {
             let count = self.peers.len();
             let limit = (self
@@ -288,7 +295,6 @@ impl StateRuntime {
             // round. Give it the first bounded delivery slot before rotating
             // the remaining couriers; this changes only transport order.
             let proposer = self.current_proposer_peer()?;
-            let id = self.request_id(&body)?;
             if let Some(peer) = proposer {
                 self.enqueue_with_id(peer, body.clone(), Some(id))?;
             }
@@ -308,9 +314,36 @@ impl StateRuntime {
         }
         // A wire request has one identity across all recipients. The peer is
         // kept separately in each bounded delivery and acknowledgement key.
-        let id = self.request_id(&body)?;
+        // Gather peers already holding this exact request once. Repeated
+        // publication retries must not scan the whole outbox for every peer.
+        let already_scheduled: BTreeSet<_> = self
+            .outbox
+            .iter()
+            .filter(|delivery| delivery.id == id)
+            .map(|delivery| delivery.peer)
+            .chain(
+                self.flights
+                    .iter()
+                    .filter(|flight| flight.delivery.id == id)
+                    .map(|flight| flight.delivery.peer),
+            )
+            .chain(
+                self.sent
+                    .iter()
+                    .filter(|(_, sent_id)| *sent_id == id)
+                    .map(|(peer, _)| *peer),
+            )
+            .chain(
+                self.acknowledged
+                    .iter()
+                    .filter(|(_, accepted_id)| *accepted_id == id)
+                    .map(|(peer, _)| *peer),
+            )
+            .collect();
         for peer in self.peers.clone() {
-            self.enqueue_with_id(peer, body.clone(), Some(id))?;
+            if !already_scheduled.contains(&peer) {
+                self.enqueue_with_id(peer, body.clone(), Some(id))?;
+            }
         }
         Ok(())
     }
@@ -375,15 +408,33 @@ impl StateRuntime {
             });
             return Ok(());
         }
-        for publication in self.node.publications()? {
-            let body = match publication {
-                StatePublication::Proposal(p) => {
-                    StateRequestBody::Proposal(p.encode().map_err(StateNodeError::from)?.into())
-                }
-                StatePublication::Vote(v) => StateRequestBody::Vote(v.encode().into()),
-            };
-            self.broadcast(body)?;
+        if self.network.active().is_none() || self.peers.is_empty() {
+            self.publication_cache.clear();
+            return Ok(());
         }
+        let mut next_cache = Vec::new();
+        for publication in self.node.publications()? {
+            let (body, id) = match self
+                .publication_cache
+                .iter()
+                .find(|(cached, _, _)| cached == &publication)
+            {
+                Some((_, body, id)) => (body.clone(), *id),
+                None => {
+                    let body = match &publication {
+                        StatePublication::Proposal(p) => StateRequestBody::Proposal(
+                            p.encode().map_err(StateNodeError::from)?.into(),
+                        ),
+                        StatePublication::Vote(v) => StateRequestBody::Vote(v.encode().into()),
+                    };
+                    let id = self.request_id(&body)?;
+                    (body, id)
+                }
+            };
+            self.broadcast_with_id(body.clone(), id)?;
+            next_cache.push((publication, body, id));
+        }
+        self.publication_cache = next_cache;
         Ok(())
     }
     pub(super) fn enqueue_latest_finality(&mut self) -> Result<()> {
