@@ -23,6 +23,21 @@ admission, reward, archive replay and restart process scenario. A separate
 256-seat vote, time-certificate and full handoff-plan boundary test passed in
 both profiles. Formatting and workspace Clippy with `-D warnings` passed.
 
+Final source validation at `9cbcc425ec428a578cabb934c833057c4845f7cd`
+used pinned Rust 1.97.1 and `CARGO_INCREMENTAL=0`. Complete workspace,
+all-target, all-feature, locked build barriers and test runs passed in both
+`test` and `release`: 655 tests across 26 binaries in each profile, with zero
+failures. With cached dependencies, the test-profile build barrier took 0.15
+seconds and execution 884.29 seconds; the release barrier took 31.63 seconds
+and execution 913.16 seconds.
+Workspace Clippy with `-D warnings` and `cargo fmt --all --check` passed. The
+variable-roster proposal PDF passed its structural check at 20 pages, and a
+rendered-page review found no visible clipping or diagram overlap. The
+accelerated `short-test` process fixture now has 45-second commitment and
+reveal windows to tolerate full-suite scheduling; production and `ci-test`
+timings are unchanged. Its deterministic chain and consensus vectors were
+regenerated and passed replay tests in both complete profile runs.
+
 The [local comparison](evidence/variable-roster-local.json) uses the same
 two-height, one-question workload in three sequential runs per configuration.
 All nodes ran on one macOS ARM64 host through zero-delay local TCP proxies.
