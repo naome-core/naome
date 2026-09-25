@@ -115,7 +115,13 @@ every collected signature through every peer. The affected network and runtime
 tests pass. Dirty-tree local process runs reached a common height two with 4,
 16, and 32 validators in 6.387, 13.225, and 78.180 seconds respectively;
 these are diagnostic runs, not a controlled baseline comparison. This change
-still needs a clean-head 256-process measurement.
+reached 69 prepared agreements in a clean-head 256-process run, but eight
+validators exited while binding their staged handoff listeners. The process
+harness had chosen those ports from the OS ephemeral range before thousands of
+outbound old-lane sockets opened. A port collision is plausible, though the
+transport error gave no OS cause. The direct-process harness now probes
+listener ports below this host's ephemeral range; the corrected 256-process
+handoff remains to be measured.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

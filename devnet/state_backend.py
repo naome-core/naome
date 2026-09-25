@@ -166,6 +166,39 @@ def free_ports(count, host='127.0.0.1'):
             s.close()
 
 
+def non_ephemeral_ports(count, host='127.0.0.1'):
+    """Probe direct-node listener ports below common TCP ephemeral ranges.
+
+    The prepared handoff listeners bind only after the old mesh has started.
+    An OS-assigned ephemeral listener port can be taken by an outbound old-lane
+    connection during that interval. Hold every candidate socket until the
+    complete set is selected, then release them for the validator processes.
+    """
+    first, span = 20000, 10000
+    if not 0 < count <= span:
+        raise ValueError('invalid non-ephemeral listener count')
+    sockets = []
+    ports = []
+    offset = int.from_bytes(os.urandom(4), 'big') % span
+    try:
+        for attempt in range(span):
+            port = first + (offset + attempt) % span
+            s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET)
+            try:
+                s.bind((host, port))
+            except OSError:
+                s.close()
+                continue
+            sockets.append(s)
+            ports.append(port)
+            if len(ports) == count:
+                return ports
+        raise RuntimeError('insufficient non-ephemeral listener ports')
+    finally:
+        for s in sockets:
+            s.close()
+
+
 class Backend:
     def __init__(self, args, root):
         self.args, self.root = args, root
@@ -198,8 +231,8 @@ class Backend:
                 # destinations across the two existing loopback families.
                 v4_count = (count + 1) // 2
                 v6_count = count // 2
-                v4 = iter(free_ports(2 * v4_count))
-                v6 = iter(free_ports(2 * v6_count, '::1'))
+                v4 = iter(non_ephemeral_ports(2 * v4_count))
+                v6 = iter(non_ephemeral_ports(2 * v6_count, '::1'))
                 hosts = ['127.0.0.1' if index % 2 == 0 else '::1'
                          for index in range(count)]
                 def endpoint(host):
@@ -210,7 +243,8 @@ class Backend:
                 self.handoff_fronts = [endpoint(host) for host in hosts]
                 self.handoff_backs = self.handoff_fronts.copy()
             else:
-                ports = free_ports((2 if self.direct else 4) * count)
+                ports = (non_ephemeral_ports(2 * count) if self.direct
+                         else free_ports(4 * count))
                 self.fronts = [f'127.0.0.1:{p}' for p in ports[:count]]
                 if self.direct:
                     self.backs = self.fronts.copy()

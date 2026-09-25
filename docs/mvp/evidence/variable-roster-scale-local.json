@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T07:40:16+00:00",
+  "recorded_at_utc": "2026-09-25T07:53:29+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -8,7 +8,7 @@
     "storage_free_during_tests_approx_gib": 44
   },
   "toolchain": "Rust 1.97.1 pinned by rust-toolchain.toml; release binaries",
-  "qualifications": "Earlier diagnostics used changing uncommitted source trees. The 256-exact-head-proposer-diagnostic, 256-exact-head-proposer-first, and 256-exact-head-postpermit runs used clean commits 038cdc2, 26a6396, and bf89a3c respectively. All runs are one-host local diagnostics, not separate-machine acceptance. Every report records release binary hashes.",
+  "qualifications": "Some diagnostic runs used changing uncommitted source trees. The per-run source_tree_clean flag and source commit distinguish exact-head runs. Every report records release binary hashes. All runs are one-host local diagnostics, not separate-machine acceptance.",
   "storage_256": {
     "run_records": 296,
     "operating_floor_bytes_per_node": 78923176,
@@ -1683,6 +1683,92 @@
       "total_disk_bytes": 8805455,
       "elapsed_seconds": 83.727,
       "report_sha256": "d551973508bc5fb15062a1c82210839d66c3260c12df98ddb1abc5c72c366b0e"
+    },
+    {
+      "label": "256-exact-head-deferred-mesh-bind-failure",
+      "note": "Clean-head deferred-dial run exited after 515.257 seconds at height zero because eight validators logged \"cannot listen for state peers\" while preparing their fresh handoff listener. Before exit, the final complete poll found 69 of 246 respondents prepared for agreement and old-lane connected peers 236..255. The harness had allocated listener ports using OS ephemeral binds and released them before the old mesh opened thousands of outbound sockets. A collision is plausible but the transport error did not include an OS cause; this run does not measure READY convergence after deferral.",
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "25aee1a1416d0eafcb3d9565517589dba83a5542965f9977a8d192acf9e35227",
+        "naome-validator": "35df4315aee086bb3b78f0948cca26f26945303dd92f27ea30c120e16805cf11",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "9de34b56d4230c77049c415845705f5f7e29b111",
+      "source_tree_clean": true,
+      "runner_sha256": "3c316528094999df3dcf21158707d17dea4d68d6e49bd8198135210ee050ca9b",
+      "outcome": "failed",
+      "setup_seconds": 45.842,
+      "submission": "4a40ac6ad1c11cf38bd32fd9bc12e355c5bde85674e8b8196c40417153a2bfe6",
+      "latest_progress": {
+        "responded": 246,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 1,
+        "observed_proposal_range": [
+          1,
+          1
+        ],
+        "observed_prevote_range": [
+          226,
+          256
+        ],
+        "observed_precommit_range": [
+          21,
+          206
+        ],
+        "connected_peer_range": [
+          236,
+          255
+        ],
+        "offer_range": [
+          254,
+          256
+        ],
+        "time_report_range": [
+          253,
+          256
+        ],
+        "queued_delivery_range": [
+          714,
+          1241
+        ],
+        "work_ready_count": 246,
+        "agreement_ready_count": 69,
+        "ready_signature_range": [
+          0,
+          4
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "peak_agreement_ready_count": 69,
+      "peak_observed_precommits": 206,
+      "last_poll_elapsed_seconds": 387.821,
+      "last_poll_responded": 246,
+      "failure": "validator exited before the target height",
+      "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted",
+      "elapsed_seconds": 515.257,
+      "report_sha256": "19b6c327a1eb27efc6bb5410c047e3fed3731fc448ff8375382c8ed639e05a7c"
     }
   ],
   "host_port_observation": {

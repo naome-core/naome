@@ -94,6 +94,7 @@ def main():
                     'local processes with zero-delay TCP proxies'),
         'loopback_address_families': (['127.0.0.1', '::1'] if args.mixed_loopback else
                                       ['127.0.0.1']),
+        'listener_port_policy': ('probed 20000..29999' if args.direct else 'OS assigned'),
         'settle_seconds': args.settle_seconds,
         'poll_interval_seconds': status_poll_interval(args.validators),
         'binary_sha256': {name: hashlib.sha256((args.bin_dir / name).read_bytes()).hexdigest()
@@ -101,6 +102,7 @@ def main():
         'source_commit': command(['git', '-C', binary_repo, 'rev-parse', 'HEAD']).stdout.strip(),
         'source_tree_clean': not command(['git', '-C', binary_repo, 'status', '--porcelain']).stdout.strip(),
         'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'backend_sha256': hashlib.sha256((Path(__file__).parent / 'state_backend.py').read_bytes()).hexdigest(),
         'outcome': 'running',
     }
 
