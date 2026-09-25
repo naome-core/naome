@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T07:53:29+00:00",
+  "recorded_at_utc": "2026-09-25T08:06:05+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -1769,6 +1769,94 @@
       "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted",
       "elapsed_seconds": 515.257,
       "report_sha256": "19b6c327a1eb27efc6bb5410c047e3fed3731fc448ff8375382c8ed639e05a7c"
+    },
+    {
+      "label": "256-exact-head-fixed-ports-listener-failure",
+      "note": "Clean-head run with 512 unique listener address/port pairs in 20000..29999 exited after 494.533 seconds at height zero. Many validators logged \"cannot listen for state peers\" while staging fresh listeners. The libp2p TransportError Display implementation suppressed the underlying I/O cause, so this result disproves the assumption that avoiding this host's ephemeral range alone resolves listener failure, but it does not identify the OS error. The last complete poll saw 57 prepared agreements among 254 respondents and 223..255 old peer links.",
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "listener_port_policy": "probed 20000..29999",
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "25aee1a1416d0eafcb3d9565517589dba83a5542965f9977a8d192acf9e35227",
+        "naome-validator": "35df4315aee086bb3b78f0948cca26f26945303dd92f27ea30c120e16805cf11",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "3a29f990580b0b1a7b11e13569ebb8c3444195b2",
+      "source_tree_clean": true,
+      "runner_sha256": "982f6c466c73cbf91bbed50e24db917a5fc615c2270b93aa11656673f35c54be",
+      "backend_sha256": "773a62aed08f7bc5de89d2fa017b88551ee6f82bdc7f4d36b474b3f37597bc01",
+      "outcome": "failed",
+      "setup_seconds": 45.98,
+      "submission": "980d5b367ba638d18c2b1d79d83d61e334e852741e17cc342cc51898fcf5a974",
+      "latest_progress": {
+        "responded": 254,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 1,
+        "observed_proposal_range": [
+          1,
+          1
+        ],
+        "observed_prevote_range": [
+          213,
+          255
+        ],
+        "observed_precommit_range": [
+          49,
+          196
+        ],
+        "connected_peer_range": [
+          223,
+          255
+        ],
+        "offer_range": [
+          235,
+          256
+        ],
+        "time_report_range": [
+          235,
+          256
+        ],
+        "queued_delivery_range": [
+          670,
+          1267
+        ],
+        "work_ready_count": 254,
+        "agreement_ready_count": 57,
+        "ready_signature_range": [
+          0,
+          1
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "peak_agreement_ready_count": 57,
+      "peak_observed_precommits": 196,
+      "last_poll_elapsed_seconds": 371.628,
+      "last_poll_responded": 254,
+      "failure": "validator exited before the target height",
+      "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation ",
+      "elapsed_seconds": 494.533,
+      "report_sha256": "97c3e3086c0d0d71966f6941665ebff85d5d55333a333679a7ff1c4a107ceb84"
     }
   ],
   "host_port_observation": {

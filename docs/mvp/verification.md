@@ -120,8 +120,12 @@ validators exited while binding their staged handoff listeners. The process
 harness had chosen those ports from the OS ephemeral range before thousands of
 outbound old-lane sockets opened. A port collision is plausible, though the
 transport error gave no OS cause. The direct-process harness now probes
-listener ports below this host's ephemeral range; the corrected 256-process
-handoff remains to be measured.
+listener ports below this host's ephemeral range. A clean-head run with 512
+unique listener addresses in that range still lost validators during staged
+listener binding after 495 seconds. Thus port allocation alone did not resolve
+the failure. The pinned libp2p version prints an empty message for an
+underlying transport I/O error; the listener error now preserves that cause
+so a subsequent run can identify it. The 256-process handoff remains unproven.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

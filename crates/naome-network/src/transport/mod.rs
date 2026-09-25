@@ -593,7 +593,12 @@ pub struct ListenError(libp2p::TransportError<std::io::Error>);
 
 impl fmt::Display for ListenError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "cannot listen for state peers: {}", self.0)
+        match &self.0 {
+            libp2p::TransportError::Other(error) => {
+                write!(formatter, "cannot listen for state peers: {error}")
+            }
+            unsupported => write!(formatter, "cannot listen for state peers: {unsupported}"),
+        }
     }
 }
 
