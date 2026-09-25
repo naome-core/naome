@@ -189,13 +189,14 @@ impl StateNetwork {
         identity: Keypair,
         peers: impl IntoIterator<Item = StaticPeer>,
     ) -> Result<Self, BuildError> {
-        Self::build_with_limit(identity, peers, MAX_STATIC_PEERS, false)
+        Self::build_with_limit(identity, peers, MAX_STATIC_PEERS, false, false)
     }
     fn build_with_limit(
         identity: Keypair,
         peers: impl IntoIterator<Item = StaticPeer>,
         maximum_peers: usize,
         recovery_enabled: bool,
+        prepared_listener: bool,
     ) -> Result<Self, BuildError> {
         let local_peer_id = identity.public().to_peer_id();
         let mut static_peers = Vec::with_capacity(maximum_peers);
@@ -219,7 +220,14 @@ impl StateNetwork {
         }
 
         let pending_limit = pending_request_limit(static_peers.len());
-        let listen_backlog = (static_peers.len() as u32).clamp(TCP_LISTEN_BACKLOG, 64);
+        // The prepared listener is bound while the old full mesh still owns
+        // its sockets. Reserve only the base backlog until retirement; the
+        // fresh static peers retry connection establishment after retirement.
+        let listen_backlog = if prepared_listener {
+            TCP_LISTEN_BACKLOG
+        } else {
+            (static_peers.len() as u32).clamp(TCP_LISTEN_BACKLOG, 64)
+        };
         let peers_u32 = u32::try_from(maximum_peers).expect("bounded peer limit fits u32");
         let connection_limits = connection_limits::ConnectionLimits::default()
             .with_max_pending_incoming(Some(peers_u32))

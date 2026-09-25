@@ -125,7 +125,13 @@ unique listener addresses in that range still lost validators during staged
 listener binding after 495 seconds. Thus port allocation alone did not resolve
 the failure. The pinned libp2p version prints an empty message for an
 underlying transport I/O error; the listener error now preserves that cause
-so a subsequent run can identify it. The 256-process handoff remains unproven.
+so a subsequent run can identify it. The next clean-head run found the cause:
+42 validators logged macOS `No buffer space available` (OS error 55) while
+binding staged listeners. It stopped after 547 seconds, with 128 of 225
+respondents prepared for agreement and READY at 0–31. The staged listener now
+uses a 16-slot TCP backlog while the old mesh remains open, down from 64 at
+large rosters. Its 256-process effect remains unmeasured; the 256-process
+handoff remains unproven.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

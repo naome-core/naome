@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T08:06:05+00:00",
+  "recorded_at_utc": "2026-09-25T08:20:36+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -1857,6 +1857,94 @@
       "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation ",
       "elapsed_seconds": 494.533,
       "report_sha256": "97c3e3086c0d0d71966f6941665ebff85d5d55333a333679a7ff1c4a107ceb84"
+    },
+    {
+      "label": "256-exact-head-listener-enobufs",
+      "note": "Clean-head run stopped after 546.529 seconds at height zero when 42 validator logs reported staged-listener failure: No buffer space available (macOS os error 55). Final complete poll had 128 of 225 respondents prepared for agreement and READY range 0..31; old-lane connected range was 232..255. Distinct handoff listener ports were probed in 20000..29999, so this is a host network buffer/resource failure rather than an observed port collision. Cumulative netstat -m after cleanup reported denied network-memory requests, not attributable solely to this run.",
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "listener_port_policy": "probed 20000..29999",
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "d33160a9216700e1e13f21cd71364c98f32389cdab80a230b83044cc464220a0",
+        "naome-validator": "9b8749626ae65260baed56ec052caa7e8d4aee5bc2cd1b6a44b2d4efe5e8a852",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "6ed69ac2c84acd1e73389925e1574d753aa72d1d",
+      "source_tree_clean": true,
+      "runner_sha256": "982f6c466c73cbf91bbed50e24db917a5fc615c2270b93aa11656673f35c54be",
+      "backend_sha256": "773a62aed08f7bc5de89d2fa017b88551ee6f82bdc7f4d36b474b3f37597bc01",
+      "outcome": "failed",
+      "setup_seconds": 45.772,
+      "submission": "dfd4d88d99f95aaad4d6e04e5b268f35bc3c8d47eed5085cd91c42d5bd11f2db",
+      "latest_progress": {
+        "responded": 225,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 1,
+        "observed_proposal_range": [
+          1,
+          1
+        ],
+        "observed_prevote_range": [
+          190,
+          251
+        ],
+        "observed_precommit_range": [
+          116,
+          229
+        ],
+        "connected_peer_range": [
+          232,
+          255
+        ],
+        "offer_range": [
+          227,
+          256
+        ],
+        "time_report_range": [
+          227,
+          256
+        ],
+        "queued_delivery_range": [
+          698,
+          1321
+        ],
+        "work_ready_count": 225,
+        "agreement_ready_count": 128,
+        "ready_signature_range": [
+          0,
+          31
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "peak_agreement_ready_count": 128,
+      "peak_observed_precommits": 229,
+      "last_poll_elapsed_seconds": 430.815,
+      "last_poll_responded": 225,
+      "failure": "validator exited before the target height",
+      "cleanup_failure": "[Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation not permitted; [Errno 1] Operation ",
+      "elapsed_seconds": 546.529,
+      "report_sha256": "d3143c1c91c409507d27b47afdd5f24e8ee46b1321bf7989faa975f1fecbcf75"
     }
   ],
   "host_port_observation": {

@@ -508,6 +508,7 @@ impl StateNetwork {
             peers.clone(),
             maximum_peers + usize::from(config.recovery_registry.is_some()) * 2,
             config.recovery_registry.is_some(),
+            lane == StateLane::Handoff,
         )
         .map_err(StateNetworkBuildError::Transport)?;
         network.swarm.behaviour_mut().state_exchange =
