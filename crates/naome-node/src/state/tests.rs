@@ -271,6 +271,37 @@ fn relay(nodes: &mut [StateNode], only_role: Option<ConsensusVoteRole>) {
 }
 
 #[test]
+fn exact_proposal_retry_is_idempotent_but_changed_bytes_are_verified() {
+    let g = genesis();
+    let mut nodes: Vec<_> = (0..4).map(|i| node(i, &g)).collect();
+    let proposer = nodes
+        .iter()
+        .position(|(_, _, node)| node.is_proposer().unwrap())
+        .unwrap();
+    let bytes = record(nodes[proposer].2.state().unwrap());
+    nodes[proposer].2.author(Some(bytes)).unwrap();
+    let encoded = nodes[proposer]
+        .2
+        .publications()
+        .unwrap()
+        .into_iter()
+        .find_map(|publication| match publication {
+            StatePublication::Proposal(proposal) => Some(proposal.encode().unwrap()),
+            _ => None,
+        })
+        .unwrap();
+    let receiver = (proposer + 1) % nodes.len();
+    nodes[receiver].2.accept_proposal(&encoded).unwrap();
+    nodes[receiver].2.accept_proposal(&encoded).unwrap();
+    assert_eq!(nodes[receiver].2.proposals.len(), 1);
+
+    let mut changed = encoded;
+    *changed.last_mut().unwrap() ^= 1;
+    assert!(nodes[receiver].2.accept_proposal(&changed).is_err());
+    assert_eq!(nodes[receiver].2.proposals.len(), 1);
+}
+
+#[test]
 fn restart_after_terminal_intent_retires_old_signer_before_releasing_seal() {
     let g = genesis();
     let all: Vec<_> = (0..4).map(|i| node(i, &g)).collect();

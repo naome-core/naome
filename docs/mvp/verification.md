@@ -89,7 +89,13 @@ then advanced to round one without a seal. A second CPU profile found that
 network-driven retries still rehashed retained publications and scanned the
 delivery queue separately for each peer. The runtime now caches the exact wire
 identity of each retained publication and builds one peer lookup per broadcast.
-The 256-process result of this further optimization remains to be measured.
+A clean-head 256-process run of that change remained at height zero after 1,234
+seconds. All 256 nodes responded in its final sweep, which saw at most 170
+precommits, one short of the 171-signature quorum. A CPU sample then found
+repeated full validation of an already retained proposal, including execution
+of the 256-offer successor plan. A signing node now recognizes exact bytes of
+a proposal it has already verified; changed bytes still take the full
+verification path. This further change has not yet been measured at 256.
 No physical multi-machine result is available.
 
 The v6 implementation still permits one active research attempt; more voters

@@ -327,9 +327,21 @@ impl StateNode {
             .collect())
     }
     pub fn accept_proposal(&mut self, bytes: &[u8]) -> Result<()> {
-        let p = self
-            .branch()?
-            .verify_proposal(bytes, self.maximum_round())?;
+        let branch = self.branch()?;
+        // A signer may receive the same accepted proposal from many peers.
+        // Its retained, verified bytes are enough to recognize that exact
+        // retry without re-executing the record and all successor offers.
+        // Changed bytes still take the full verification path below.
+        if self.position()?.is_some()
+            && self.proposals.values().any(|proposal| {
+                proposal
+                    .encode()
+                    .is_ok_and(|accepted| accepted.as_slice() == bytes)
+            })
+        {
+            return Ok(());
+        }
+        let p = branch.verify_proposal(bytes, self.maximum_round())?;
         self.retain(StatePublication::Proposal(p))
     }
     pub fn accept_vote(&mut self, bytes: &[u8]) -> Result<()> {

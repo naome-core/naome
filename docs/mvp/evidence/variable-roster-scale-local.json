@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at_utc": "2026-09-25T05:23:25+00:00",
+  "recorded_at_utc": "2026-09-25T05:49:13+00:00",
   "scope": "local direct-process diagnostic scaling on one macOS ARM64 host; one question and two target records, no network delay injected",
   "host": {
     "logical_cpus": 10,
@@ -1126,6 +1126,103 @@
       "failure": "benchmark interrupted",
       "elapsed_seconds": 2061.529,
       "report_sha256": "064b3b94a09b96ad029f0a2f3575d54f35afab71182a83f6895960b9be59cdba"
+    },
+    {
+      "label": "256-exact-head-publication-cache",
+      "note": "Clean-head diagnostic stopped after 1234.369 seconds at height zero. A sampled node reached 203 round-zero prevotes and 132 precommits; the final responding range included 170 precommits but no seal. A three-second CPU sample showed repeated full proposal validation, including execution of the 256-offer successor plan.",
+      "host_sample": {
+        "sampled_at_utc": "2026-09-25T05:33:13+00:00",
+        "validator_count": 256,
+        "sum_rss_mib": 8857.4,
+        "cpu_percent_sum": 937.6,
+        "method": "ps -axo pid,%cpu,rss,command; one sample, not a peak"
+      },
+      "cpu_profile": {
+        "sampled_at_utc": "2026-09-25T05:34:13+00:00",
+        "process_node": 0,
+        "seconds": 3,
+        "main_thread_samples": 2363,
+        "accept_proposal_verification_samples": 772,
+        "handoff_preparation_samples": 704,
+        "method": "macOS sample; call-tree path sample counts, not CPU time or fleet-wide percentages"
+      },
+      "schema_version": 1,
+      "roster_size": 256,
+      "quorum": 171,
+      "target_height": 2,
+      "run_records": 296,
+      "backend": "direct local validator processes",
+      "loopback_address_families": [
+        "127.0.0.1",
+        "::1"
+      ],
+      "settle_seconds": 30,
+      "poll_interval_seconds": 20.0,
+      "binary_sha256": {
+        "naome": "f25c84f1de933a7b946c863f9abd285cc8eed4145cd01f976a3d772bcbe2b87e",
+        "naome-validator": "3a62fd78a93e9acda8da69ee737a156edf02f44e3dddf16c73c7d1be5e83137c",
+        "naome-verifier": "2d629febc203eba7f974ee92f05ff5e3d08121ed30ab7f28afe77d082117ca18"
+      },
+      "source_commit": "210e92365332ac32f79f68c0096825fdf6d36e4c",
+      "source_tree_clean": true,
+      "runner_sha256": "46091ba977bb0fc56f1b59b3eedaaa545ef0b86b1833cd2ec7db755b8aced7ea",
+      "outcome": "failed",
+      "setup_seconds": 45.217,
+      "submission": "620813ad2fe9d84173a5a835a0e7ee3a8daafee2c75e4c4964835d319db04229",
+      "latest_progress": {
+        "responded": 256,
+        "height_range": [
+          0,
+          0
+        ],
+        "pending_operation_range": [
+          0,
+          1
+        ],
+        "local_proposer_count": 0,
+        "proposal_authored_count": 0,
+        "observed_proposal_range": [
+          0,
+          1
+        ],
+        "observed_prevote_range": [
+          0,
+          249
+        ],
+        "observed_precommit_range": [
+          0,
+          170
+        ],
+        "connected_peer_range": [
+          236,
+          255
+        ],
+        "offer_range": [
+          245,
+          256
+        ],
+        "time_report_range": [
+          244,
+          256
+        ],
+        "queued_delivery_range": [
+          749,
+          1320
+        ],
+        "work_ready_count": 60,
+        "agreement_ready_count": 0,
+        "ready_signature_range": [
+          0,
+          0
+        ],
+        "terminal_signature_range": [
+          0,
+          0
+        ]
+      },
+      "failure": "benchmark interrupted",
+      "elapsed_seconds": 1234.369,
+      "report_sha256": "8618b15e1e404c2fa7a94d86ea87586bfd9f69d8415eebc82bea6d67b71b5565"
     }
   ],
   "host_port_observation": {
