@@ -138,7 +138,9 @@ def main():
     parser.add_argument('--settle-seconds', type=int, default=0,
                         help='wait after all validators start before submitting work')
     parser.add_argument('--direct', action='store_true',
-                        help='start native validators without zero-delay proxy wrappers')
+                        help='start native validators without TCP proxies')
+    parser.add_argument('--delay-ms', type=int, default=0,
+                        help='one-way TCP proxy delay per forwarded chunk')
     parser.add_argument('--mixed-loopback', action='store_true',
                         help='split direct local TCP listeners across IPv4 and IPv6 loopback')
     parser.add_argument('--profile', action='store_true',
@@ -147,15 +149,17 @@ def main():
     minimum_records = max(64, args.validators + 2 * 16 + 7) + 1
     if (not 4 <= args.validators <= 256 or not 1 <= args.heights <= 16
             or not minimum_records <= args.run_records <= 8192
-            or not 0 <= args.settle_seconds <= 120):
+            or not 0 <= args.settle_seconds <= 120
+            or not 0 <= args.delay_ms <= 1000):
         parser.error(f'benchmark supports 4..256 processes, 1..16 heights, and '
                      f'{minimum_records}..8192 records for this roster')
     if args.mixed_loopback and not args.direct:
         parser.error('--mixed-loopback requires --direct')
+    if args.direct and args.delay_ms:
+        parser.error('--delay-ms requires TCP proxies, without --direct')
     args.directory = args.directory.resolve()
     args.bin_dir = args.bin_dir.resolve(strict=True)
     args.backend = 'process'
-    args.delay_ms = 0
     args.directory.mkdir(parents=True, exist_ok=False, mode=0o700)
     os.umask(0o077)
     backend = Backend(args, args.directory)
@@ -171,7 +175,8 @@ def main():
         'host_logical_cpus': os.cpu_count(),
         'host_platform': platform.platform(),
         'backend': ('direct local validator processes' if args.direct else
-                    'local processes with zero-delay TCP proxies'),
+                    'local processes with TCP proxies'),
+        'one_way_proxy_delay_millis': args.delay_ms,
         'loopback_address_families': (['127.0.0.1', '::1'] if args.mixed_loopback else
                                       ['127.0.0.1']),
         'listener_port_policy': ('probed 20000..29999' if args.direct else 'OS assigned'),
@@ -239,13 +244,11 @@ def main():
                     config = backend.config(0)
                     if args.profile:
                         initial = list(executor.map(
-                            lambda index: direct_status(backend.config(index)) if args.direct else
-                            backend.cli(index, 'status', backend.config(index),
-                                        tolerate=True, timeout=8), range(args.validators)))
+                            lambda index: direct_status(backend.config(index)),
+                            range(args.validators)))
                         first_status = initial[0] if all(initial) else None
                     else:
-                        first_status = (direct_status(config) if args.direct else
-                                        backend.cli(0, 'status', config, tolerate=True, timeout=8))
+                        first_status = direct_status(config)
                     if first_status is not None:
                         if args.profile:
                             baseline = [profile_values(status)[:2] for status in initial]
@@ -260,15 +263,9 @@ def main():
                     else:
                         time.sleep(poll_interval)
                         continue
-                if args.direct:
-                    statuses = list(executor.map(
-                        lambda index: direct_status(backend.config(index)),
-                        range(args.validators)))
-                else:
-                    statuses = list(executor.map(
-                        lambda index: backend.cli(index, 'status', backend.config(index),
-                                                  tolerate=True, timeout=8),
-                        range(args.validators)))
+                statuses = list(executor.map(
+                    lambda index: direct_status(backend.config(index)),
+                    range(args.validators)))
                 responding = [status for status in statuses if status is not None]
                 if args.profile:
                     update_profile(result['profile'], statuses, baseline,
