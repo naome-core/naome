@@ -606,6 +606,10 @@ impl StateNode {
     pub fn ready_signatures(&self) -> Vec<SealSignature> {
         self.ready.values().cloned().collect()
     }
+    /// Read-only counts for live diagnostics without copying quorum signatures.
+    pub fn handoff_signature_counts(&self) -> (usize, usize) {
+        (self.ready.len(), self.terminal.len())
+    }
     pub fn terminal_signatures(&self) -> Vec<SealSignature> {
         self.terminal.values().cloned().collect()
     }
@@ -742,6 +746,15 @@ impl StateNode {
     /// Passing no proposal through the normal lock transition preserves a
     /// previously locked vote target.
     pub fn drive_with(&mut self, locally_ready: impl Fn(&StateProposal) -> bool) -> Result<bool> {
+        self.drive_with_observer(locally_ready, |_| {})
+    }
+    /// Report each live position change, including phases crossed in one drive pass.
+    /// The caller owns the clock; these observations never enter signed state or replay.
+    pub fn drive_with_observer(
+        &mut self,
+        locally_ready: impl Fn(&StateProposal) -> bool,
+        mut observe: impl FnMut(Option<(u64, u64, StatePhase)>),
+    ) -> Result<bool> {
         if self.state()?.terminated() {
             return Ok(false);
         }
@@ -828,6 +841,7 @@ impl StateNode {
             }
             if let Some(votes) = higher {
                 self.apply(StateLockEvent::HigherRound { votes })?;
+                observe(self.position()?);
                 continue;
             }
             if let Some(qc) = self.quorum(
@@ -838,6 +852,7 @@ impl StateNode {
                 self.apply(StateLockEvent::NilPrecommit {
                     quorum: qc.encode(),
                 })?;
+                observe(self.position()?);
                 continue;
             }
             let proposals: Vec<_> = self
@@ -853,6 +868,7 @@ impl StateNode {
                     None
                 };
                 self.apply(StateLockEvent::Prevote { proposal })?;
+                observe(self.position()?);
                 continue;
             }
             if phase == StatePhase::Prevote {
@@ -877,6 +893,7 @@ impl StateNode {
                         proposal,
                         quorum: qc.encode(),
                     })?;
+                    observe(self.position()?);
                     continue;
                 }
             }

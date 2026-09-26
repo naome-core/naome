@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import shutil
 import signal
@@ -51,6 +52,69 @@ def status_poll_interval(validators):
     return min(20.0, validators / 4)
 
 
+TRAFFIC_FIELDS = ('request_starts', 'request_start_bytes', 'requests_received',
+                  'request_bytes_received', 'response_starts', 'response_start_bytes',
+                  'responses_received', 'response_bytes_received')
+
+
+def profile_values(status):
+    cpu = status.get('process_cpu')
+    traffic = status.get('state_exchange_traffic')
+    events = status.get('timing_events')
+    if (not isinstance(cpu, dict) or not isinstance(traffic, dict)
+            or not isinstance(events, list)
+            or not all(isinstance(cpu.get(key), int)
+                       for key in ('user_millis', 'system_millis'))
+            or not all(isinstance(traffic.get(key), int) for key in TRAFFIC_FIELDS)):
+        raise RuntimeError('validator lacks complete timing, CPU, or traffic diagnostics')
+    return cpu, traffic, events
+
+
+def update_profile(profile, statuses, baseline, elapsed):
+    queue_total = 0
+    flight_total = 0
+    cpu_total = 0
+    for index, status in enumerate(statuses):
+        if status is None:
+            continue
+        cpu, traffic, events = profile_values(status)
+        first_cpu, first_traffic = baseline[index]
+        cpu_delta = {key: cpu[key] - first_cpu[key]
+                     for key in ('user_millis', 'system_millis')}
+        traffic_delta = {key: traffic[key] - first_traffic[key] for key in TRAFFIC_FIELDS}
+        if any(value < 0 for value in (*cpu_delta.values(), *traffic_delta.values())):
+            raise RuntimeError('validator process or diagnostic counters restarted')
+        diagnostics = status['transport_diagnostics']
+        node = profile['nodes'].setdefault(str(index), {
+            'peak_queued_deliveries': 0, 'peak_in_flight_deliveries': 0})
+        queue = diagnostics['queued_deliveries']
+        flight = diagnostics['in_flight_deliveries']
+        node['peak_queued_deliveries'] = max(node['peak_queued_deliveries'], queue)
+        node['peak_in_flight_deliveries'] = max(node['peak_in_flight_deliveries'], flight)
+        node['cpu_millis_since_submission'] = cpu_delta
+        node['traffic_since_submission'] = traffic_delta
+        node['timing_events'] = events
+        node['timing_events_dropped'] = status.get('timing_events_dropped', 0)
+        node['last_height'] = status['height']
+        node['last_position'] = status.get('consensus_position')
+        node['last_queued_deliveries'] = queue
+        node['last_in_flight_deliveries'] = flight
+        queue_total += queue
+        flight_total += flight
+        cpu_total += sum(cpu_delta.values())
+    profile['peak_total_queued_deliveries'] = max(
+        profile.get('peak_total_queued_deliveries', 0), queue_total)
+    profile['peak_total_in_flight_deliveries'] = max(
+        profile.get('peak_total_in_flight_deliveries', 0), flight_total)
+    profile['samples'].append({
+        'elapsed_seconds': round(elapsed, 3),
+        'responded': sum(status is not None for status in statuses),
+        'total_queued_deliveries': queue_total,
+        'total_in_flight_deliveries': flight_total,
+        'total_cpu_millis_since_submission': cpu_total,
+    })
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--directory', type=Path, required=True)
@@ -65,6 +129,8 @@ def main():
                         help='start native validators without zero-delay proxy wrappers')
     parser.add_argument('--mixed-loopback', action='store_true',
                         help='split direct local TCP listeners across IPv4 and IPv6 loopback')
+    parser.add_argument('--profile', action='store_true',
+                        help='record per-validator timing, CPU, envelope traffic, and queues')
     args = parser.parse_args()
     minimum_records = max(64, args.validators + 2 * 16 + 7) + 1
     if (not 4 <= args.validators <= 256 or not 1 <= args.heights <= 16
@@ -85,11 +151,13 @@ def main():
     binary_repo = args.bin_dir.parent.parent
     start = time.monotonic()
     result = {
-        'schema_version': 1,
+        'schema_version': 2 if args.profile else 1,
         'roster_size': args.validators,
         'quorum': args.validators * 2 // 3 + 1,
         'target_height': args.heights,
         'run_records': args.run_records,
+        'host_logical_cpus': os.cpu_count(),
+        'host_platform': platform.platform(),
         'backend': ('direct local validator processes' if args.direct else
                     'local processes with zero-delay TCP proxies'),
         'loopback_address_families': (['127.0.0.1', '::1'] if args.mixed_loopback else
@@ -105,6 +173,11 @@ def main():
         'backend_sha256': hashlib.sha256((Path(__file__).parent / 'state_backend.py').read_bytes()).hexdigest(),
         'outcome': 'running',
     }
+    if args.profile:
+        result['profile'] = {'nodes': {}, 'samples': [],
+                             'traffic_unit': 'canonical state-exchange envelope bytes',
+                             'traffic_limits': 'excludes Noise, TCP, libp2p framing and retransmits',
+                             'cpu_unit': 'getrusage RUSAGE_SELF user/system milliseconds'}
 
     def save():
         target = args.directory / 'report.json'
@@ -145,20 +218,32 @@ def main():
         poll_interval = status_poll_interval(args.validators)
         first_quorum = None
         submitted = False
+        baseline = None
         with ThreadPoolExecutor(max_workers=min(args.validators, 32)) as executor:
             while time.monotonic() < deadline:
                 if any(not backend.alive(index) for index in range(args.validators)):
                     raise RuntimeError('validator exited before the target height')
                 if not submitted:
                     config = backend.config(0)
-                    first_status = (direct_status(config) if args.direct else
-                                    backend.cli(0, 'status', config, tolerate=True, timeout=8))
+                    if args.profile:
+                        initial = list(executor.map(
+                            lambda index: direct_status(backend.config(index)) if args.direct else
+                            backend.cli(index, 'status', backend.config(index),
+                                        tolerate=True, timeout=8), range(args.validators)))
+                        first_status = initial[0] if all(initial) else None
+                    else:
+                        first_status = (direct_status(config) if args.direct else
+                                        backend.cli(0, 'status', config, tolerate=True, timeout=8))
                     if first_status is not None:
+                        if args.profile:
+                            baseline = [profile_values(status)[:2] for status in initial]
+                            result['profile']['baseline_responded'] = len(initial)
                         account_key = json.loads(config.read_text())['account_key']
                         submission = backend.cli(0, 'submit', config, account_key, question,
                                                  'Variable roster benchmark',
                                                  args.directory / 'submission.bin')
                         result['submission'] = submission['operation']
+                        result['submission_elapsed_seconds'] = round(time.monotonic() - launched, 3)
                         submitted = True
                     else:
                         time.sleep(poll_interval)
@@ -173,6 +258,9 @@ def main():
                                                   tolerate=True, timeout=8),
                         range(args.validators)))
                 responding = [status for status in statuses if status is not None]
+                if args.profile:
+                    update_profile(result['profile'], statuses, baseline,
+                                   time.monotonic() - launched)
                 if responding:
                     diagnostics = [status.get('transport_diagnostics') for status in responding]
                     if all(isinstance(item, dict) for item in diagnostics):

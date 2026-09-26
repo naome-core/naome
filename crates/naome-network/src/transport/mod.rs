@@ -128,6 +128,7 @@ struct Behaviour {
 /// Authenticated canonical state transport over the immutable genesis peers.
 pub struct StateNetwork {
     swarm: Swarm<Behaviour>,
+    traffic: StateTraffic,
     // Each peer behaviour has its own request counter; the peer is part of the key.
     pending: HashMap<(PeerId, request_response::OutboundRequestId), state_exchange::PendingState>,
     pending_budget: Arc<PendingBudget>,
@@ -141,7 +142,36 @@ pub struct StateNetwork {
     recovery_leases: HashMap<PeerId, RecoveryLease>,
 }
 
+/// Local counts of canonical state-exchange envelopes. These exclude Noise,
+/// TCP, retransmission, and other libp2p framing bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateTraffic {
+    pub request_starts: u64,
+    pub request_start_bytes: u64,
+    pub requests_received: u64,
+    pub request_bytes_received: u64,
+    pub response_starts: u64,
+    pub response_start_bytes: u64,
+    pub responses_received: u64,
+    pub response_bytes_received: u64,
+}
+impl std::ops::AddAssign for StateTraffic {
+    fn add_assign(&mut self, other: Self) {
+        self.request_starts += other.request_starts;
+        self.request_start_bytes += other.request_start_bytes;
+        self.requests_received += other.requests_received;
+        self.request_bytes_received += other.request_bytes_received;
+        self.response_starts += other.response_starts;
+        self.response_start_bytes += other.response_start_bytes;
+        self.responses_received += other.responses_received;
+        self.response_bytes_received += other.response_bytes_received;
+    }
+}
+
 impl StateNetwork {
+    pub fn traffic(&self) -> StateTraffic {
+        self.traffic
+    }
     /// Reports static transport configuration, not connectivity or consensus trust.
     pub fn is_configured_peer(&self, peer_id: &PeerId) -> bool {
         self.swarm
@@ -269,6 +299,7 @@ impl StateNetwork {
 
         Ok(Self {
             swarm,
+            traffic: StateTraffic::default(),
             pending: HashMap::new(),
             state_exchange: None,
             recovery_dials: std::collections::HashSet::new(),

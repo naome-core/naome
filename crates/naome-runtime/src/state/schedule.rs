@@ -57,6 +57,9 @@ impl StateRuntime {
                 self.phase_started = Instant::now();
             }
             self.work_ready = work_ready;
+            if work_ready {
+                self.timing_marker(self.state()?.height().saturating_add(1), "work_ready");
+            }
             if proposer_needs_record {
                 if retained {
                     self.node.author(None)?;
@@ -76,6 +79,7 @@ impl StateRuntime {
                     && self.phase_started.elapsed() >= duration
                 {
                     let _ = self.node.timeout()?;
+                    self.timing_position(self.node.position()?, Instant::now());
                     self.drive()?;
                 }
             }

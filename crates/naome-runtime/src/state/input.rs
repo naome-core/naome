@@ -284,6 +284,7 @@ impl StateRuntime {
                     self.phase_started = Instant::now();
                 }
                 self.work_ready = true;
+                self.timing_marker(self.state()?.height().saturating_add(1), "work_ready");
                 Ok(StateResponseBody::Accepted)
             }
             StateRequestBody::Vote(bytes) => {
@@ -390,8 +391,11 @@ impl StateRuntime {
     }
     pub(super) fn receive_finality(&mut self, bytes: &[u8]) -> Result<StateAppendOutcome> {
         let before = self.state()?.height();
+        self.timing_handoff()?;
         let result = self.node.accept_finality(bytes)?;
         if self.state()?.height() != before {
+            self.timing_marker(self.state()?.height(), "finalized");
+            self.timing_position(self.node.position()?, Instant::now());
             self.on_height()?;
         }
         Ok(result)

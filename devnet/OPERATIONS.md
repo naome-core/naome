@@ -56,6 +56,30 @@ image's three runtime binary hashes. A source image can also be built with
 `docker build -f devnet/Dockerfile -t naome-devnet:local .`; cross-host Docker
 Desktop operation is not established by the Linux CI result.
 
+## Variable-roster profiling
+
+Build the operator, validator, and verifier in one release profile, then use a
+new output directory for each measured roster:
+
+```sh
+cargo build --profile release -p naome-cli -p naome-validator -p naome-verifier --all-features --locked
+python3 -B devnet/variable_roster_bench.py --directory /tmp/naome-roster-32 --bin-dir target/release --validators 32 --heights 2 --run-records 72 --deadline-seconds 600 --direct --profile
+python3 -B devnet/variable_roster_forecast.py /tmp/naome-roster-32/report.json
+```
+
+`--profile` waits for every validator to answer before submitting the question.
+The report retains per-validator cumulative CPU time since submission, canonical
+state-exchange request/response counts and bytes, timing events, and sampled
+delivery-queue peaks. Timing events use each process's monotonic clock; compare
+durations within a validator, not absolute timestamps across validators. CPU
+time includes all threads in that validator process. Envelope bytes exclude
+Noise, TCP, libp2p framing, and retransmissions. Queue peaks come from status
+polls and can miss shorter spikes.
+
+The forecast script prints assumed network-only propagation and envelope
+serialization components. It does not infer total wall time on 32 machines
+from one shared-host run.
+
 ## Isolation, faults, and evidence
 
 Each Docker container receives only its own node directory, a separate anchor

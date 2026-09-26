@@ -358,6 +358,10 @@ fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
                 "observed_proposals": diagnostics.observed_proposals,
                 "observed_prevotes": diagnostics.observed_prevotes,
                 "observed_precommits": diagnostics.observed_precommits,
+                "timing_events": timing_events(runtime),
+                "timing_events_dropped": runtime.timing_events_dropped(),
+                "state_exchange_traffic": state_exchange_traffic(runtime),
+                "process_cpu": process_cpu(),
                 "transport_diagnostics": {"connected_peers": diagnostics.connected_peers,"staged_connected_peers":diagnostics.staged_connected_peers,"offers":diagnostics.offers,"time_reports":diagnostics.time_reports,"queued_deliveries":diagnostics.queued_deliveries,"in_flight_deliveries":diagnostics.in_flight_deliveries,"queued_ready":diagnostics.queued_ready,"queued_terminal":diagnostics.queued_terminal,"in_flight_ready":diagnostics.in_flight_ready,"in_flight_terminal":diagnostics.in_flight_terminal,"work_ready":diagnostics.work_ready,"agreement_ready":diagnostics.agreement_ready,"ready_signatures":diagnostics.ready_signatures,"terminal_signatures":diagnostics.terminal_signatures}
             })
         }
@@ -371,6 +375,10 @@ fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
             value["observed_proposals"] = json!(diagnostic.observed_proposals);
             value["observed_prevotes"] = json!(diagnostic.observed_prevotes);
             value["observed_precommits"] = json!(diagnostic.observed_precommits);
+            value["timing_events"] = timing_events(runtime);
+            value["timing_events_dropped"] = json!(runtime.timing_events_dropped());
+            value["state_exchange_traffic"] = state_exchange_traffic(runtime);
+            value["process_cpu"] = process_cpu();
             value["transport_diagnostics"] = json!({"connected_peers": diagnostic.connected_peers,"staged_connected_peers":diagnostic.staged_connected_peers,"offers":diagnostic.offers,"time_reports":diagnostic.time_reports,"queued_deliveries":diagnostic.queued_deliveries,"in_flight_deliveries":diagnostic.in_flight_deliveries,"queued_ready":diagnostic.queued_ready,"queued_terminal":diagnostic.queued_terminal,"in_flight_ready":diagnostic.in_flight_ready,"in_flight_terminal":diagnostic.in_flight_terminal,"work_ready":diagnostic.work_ready,"agreement_ready":diagnostic.agreement_ready,"ready_signatures":diagnostic.ready_signatures,"terminal_signatures":diagnostic.terminal_signatures});
             value
         }
@@ -464,6 +472,43 @@ fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
             runtime.set_slot_enabled(slot, enabled)?;
             json!({"status":"simulation_link_updated","validator":validator,"enabled":enabled})
         }
+    })
+}
+fn timing_events(runtime: &StateRuntime) -> Value {
+    json!(
+        runtime
+            .timing_events()
+            .map(|event| json!({
+                "elapsed_millis": event.elapsed_millis,
+                "height": event.height,
+                "round": event.round,
+                "stage": event.stage,
+            }))
+            .collect::<Vec<_>>()
+    )
+}
+fn state_exchange_traffic(runtime: &StateRuntime) -> Value {
+    let traffic = runtime.traffic();
+    json!({
+        "request_starts": traffic.request_starts,
+        "request_start_bytes": traffic.request_start_bytes,
+        "requests_received": traffic.requests_received,
+        "request_bytes_received": traffic.request_bytes_received,
+        "response_starts": traffic.response_starts,
+        "response_start_bytes": traffic.response_start_bytes,
+        "responses_received": traffic.responses_received,
+        "response_bytes_received": traffic.response_bytes_received,
+    })
+}
+fn process_cpu() -> Value {
+    // This is cumulative CPU used by every thread in this validator process.
+    use nix::sys::time::TimeValLike;
+    let Ok(usage) = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF) else {
+        return Value::Null;
+    };
+    json!({
+        "user_millis": usage.user_time().num_milliseconds(),
+        "system_millis": usage.system_time().num_milliseconds(),
     })
 }
 pub fn decode_bytes(text: &str, maximum: usize) -> Result<Vec<u8>> {

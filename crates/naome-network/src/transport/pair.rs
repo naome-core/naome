@@ -1,7 +1,7 @@
 //! Two independently authenticated periods during a sealed authority handoff.
 
 use super::state_exchange::{StateContext, StateLane};
-use super::{NetworkEvent, StateNetwork};
+use super::{NetworkEvent, StateNetwork, StateTraffic};
 use crate::PeerId;
 use naome_ledger::LedgerState;
 
@@ -19,6 +19,7 @@ pub struct StateTransportPair {
     active: Option<StateNetwork>,
     staged: Option<StateNetwork>,
     recovery: Option<StateNetwork>,
+    retired_traffic: StateTraffic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +45,7 @@ impl StateTransportPair {
             active: Some(active),
             staged: None,
             recovery: None,
+            retired_traffic: StateTraffic::default(),
         })
     }
     /// Restores only the fresh handoff identity after old-period retirement.
@@ -55,6 +57,7 @@ impl StateTransportPair {
             active: None,
             staged: Some(staged),
             recovery: None,
+            retired_traffic: StateTraffic::default(),
         })
     }
     pub fn from_recovery(recovery: StateNetwork) -> Result<Self, StateTransportPairError> {
@@ -65,7 +68,18 @@ impl StateTransportPair {
             active: None,
             staged: None,
             recovery: Some(recovery),
+            retired_traffic: StateTraffic::default(),
         })
+    }
+    pub fn traffic(&self) -> StateTraffic {
+        let mut total = self.retired_traffic;
+        for network in [&self.active, &self.staged, &self.recovery]
+            .into_iter()
+            .flatten()
+        {
+            total += network.traffic();
+        }
+        total
     }
     pub fn active(&self) -> Option<&StateNetwork> {
         self.active.as_ref()
@@ -138,7 +152,9 @@ impl StateTransportPair {
     /// Drops the old-period Noise identity and every connection before a saved
     /// terminal signature can be released. The fresh handoff lane remains.
     pub fn retire_old(&mut self) {
-        self.active = None;
+        if let Some(old) = self.active.take() {
+            self.retired_traffic += old.traffic();
+        }
         if let Some(staged) = self.staged.as_mut() {
             staged.resume_static_dials();
         }
@@ -160,7 +176,9 @@ impl StateTransportPair {
         self.active = self.staged.take();
         // The separately authenticated recovery lane was built against the
         // parent. Recreate it against the newly selected state if needed.
-        self.recovery = None;
+        if let Some(old) = self.recovery.take() {
+            self.retired_traffic += old.traffic();
+        }
         true
     }
     /// Installs a new selected transport after the caller verifies sealed
@@ -178,9 +196,16 @@ impl StateTransportPair {
         {
             return Err(StateTransportPairError::Context);
         }
-        self.staged = None;
-        self.recovery = None;
-        self.active = Some(active);
+        for old in [
+            self.staged.take(),
+            self.recovery.take(),
+            self.active.replace(active),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.retired_traffic += old.traffic();
+        }
         Ok(())
     }
     pub async fn next_event(&mut self) -> Option<StateTransportEvent> {

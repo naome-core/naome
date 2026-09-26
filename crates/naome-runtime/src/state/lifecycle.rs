@@ -666,8 +666,10 @@ impl StateRuntime {
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
             let recovery = StateNetwork::new_recovery_only(identity, &selected)
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
-            self.network = StateTransportPair::from_recovery(recovery)
-                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            self.replace_network(
+                StateTransportPair::from_recovery(recovery)
+                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+            );
             listen_terminal_recovery(&mut self.network, &primary_endpoint, primary_bind)?;
             self.peers.clear();
             self.handoff_peers.clear();
@@ -740,8 +742,10 @@ impl StateRuntime {
                         .clone(),
                 };
                 // A different selected roster needs fresh static sessions.
-                self.network = StateTransportPair::new(active)
-                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+                self.replace_network(
+                    StateTransportPair::new(active)
+                        .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+                );
                 self.network
                     .active_mut()
                     .expect("selected network installed")
@@ -783,8 +787,10 @@ impl StateRuntime {
                     ))?
                     .clone(),
             };
-            self.network = StateTransportPair::new(active)
-                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            self.replace_network(
+                StateTransportPair::new(active)
+                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+            );
             self.network
                 .active_mut()
                 .expect("candidate network installed")
@@ -797,8 +803,10 @@ impl StateRuntime {
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
             let recovery = StateNetwork::new_recovery_only(identity, &selected)
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
-            self.network = StateTransportPair::from_recovery(recovery)
-                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            self.replace_network(
+                StateTransportPair::from_recovery(recovery)
+                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+            );
         }
         attach_recovery_network(&mut self.network, &selected, &recovery_key)?;
         self.apply_slot_disables()?;

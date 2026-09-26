@@ -415,6 +415,15 @@ async fn state_real_noise_roundtrip_retained_response_blocks_next_and_resumes() 
         ticket.complete(event).unwrap().unwrap().response().body(),
         &StateResponseBody::Accepted
     );
+    let sent = a.traffic();
+    let received = b.traffic();
+    assert_eq!(sent.request_starts, 2);
+    assert_eq!(sent.request_start_bytes, 2 * 72 + 65536);
+    assert_eq!(received.requests_received, 2);
+    assert_eq!(received.request_bytes_received, sent.request_start_bytes);
+    assert_eq!(received.response_starts, 2);
+    assert_eq!(sent.responses_received, 2);
+    assert_eq!(sent.response_bytes_received, received.response_start_bytes);
     assert!(
         a.set_state_peer_enabled(
             identity::Keypair::generate_ed25519().public().to_peer_id(),
