@@ -1,0 +1,4105 @@
+{
+  "schema_version": 2,
+  "roster_size": 32,
+  "quorum": 22,
+  "target_height": 2,
+  "run_records": 72,
+  "host_logical_cpus": 10,
+  "host_platform": "macOS-27.0-arm64-arm-64bit",
+  "backend": "direct local validator processes",
+  "loopback_address_families": [
+    "127.0.0.1"
+  ],
+  "listener_port_policy": "probed 20000..29999",
+  "settle_seconds": 0,
+  "poll_interval_seconds": 2.0,
+  "binary_sha256": {
+    "naome": "fba945c77ac3fb88b9997ff4f4f32b01c1c9c3a45dc33a22bf7a7db1c91738b0",
+    "naome-validator": "a40dcb8bd9632bff3dfb40a60d16c57ec564354484b1f70e77e367abe65285f7",
+    "naome-verifier": "b3d1fb150e24b8c4dd4fd10feeacc0f8048de9e65ce75bed339d96c8f1a77440"
+  },
+  "source_commit": "6c1c9f3fc25e01d41f66283e2062c0a81510c3d3",
+  "source_tree_clean": true,
+  "runner_sha256": "ace11e5c2c8437c5694986e6352dd4408f361f1b7e6e8092e79390aa6fab4c46",
+  "backend_sha256": "773a62aed08f7bc5de89d2fa017b88551ee6f82bdc7f4d36b474b3f37597bc01",
+  "outcome": "passed",
+  "profile": {
+    "nodes": {
+      "0": {
+        "peak_queued_deliveries": 121,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3661,
+          "system_millis": 136
+        },
+        "traffic_since_submission": {
+          "request_starts": 688,
+          "request_start_bytes": 6327839,
+          "requests_received": 679,
+          "request_bytes_received": 5948888,
+          "response_starts": 677,
+          "response_start_bytes": 419570,
+          "responses_received": 635,
+          "response_bytes_received": 105760
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2334,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3142,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3515,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3939,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7208,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10164,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10982,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11262,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11752,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12188,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12561,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 16031,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17711,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17860,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "1": {
+        "peak_queued_deliveries": 120,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3603,
+          "system_millis": 130
+        },
+        "traffic_since_submission": {
+          "request_starts": 679,
+          "request_start_bytes": 6075059,
+          "requests_received": 642,
+          "request_bytes_received": 5971511,
+          "response_starts": 641,
+          "response_start_bytes": 101078,
+          "responses_received": 612,
+          "response_bytes_received": 182720
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2588,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3085,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3492,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4028,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7268,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10241,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 11090,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11325,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11778,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12349,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12743,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15364,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17855,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17978,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "2": {
+        "peak_queued_deliveries": 138,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 4837,
+          "system_millis": 148
+        },
+        "traffic_since_submission": {
+          "request_starts": 675,
+          "request_start_bytes": 6005122,
+          "requests_received": 650,
+          "request_bytes_received": 5718575,
+          "response_starts": 650,
+          "response_start_bytes": 107415,
+          "responses_received": 591,
+          "response_bytes_received": 96461
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2586,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3047,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3448,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3968,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7098,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9687,
+            "height": 1,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 9768,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10443,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11631,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 12166,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12671,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 13058,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15346,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 29183,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "3": {
+        "peak_queued_deliveries": 108,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3657,
+          "system_millis": 121
+        },
+        "traffic_since_submission": {
+          "request_starts": 596,
+          "request_start_bytes": 6011022,
+          "requests_received": 550,
+          "request_bytes_received": 6045534,
+          "response_starts": 549,
+          "response_start_bytes": 57111,
+          "responses_received": 531,
+          "response_bytes_received": 55251
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2592,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3289,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3742,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4521,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7249,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10201,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 11083,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11370,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11761,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12343,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12849,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15340,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17827,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17954,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "4": {
+        "peak_queued_deliveries": 95,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3035,
+          "system_millis": 109
+        },
+        "traffic_since_submission": {
+          "request_starts": 465,
+          "request_start_bytes": 4668696,
+          "requests_received": 468,
+          "request_bytes_received": 4458009,
+          "response_starts": 467,
+          "response_start_bytes": 48581,
+          "responses_received": 418,
+          "response_bytes_received": 118688
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2589,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3269,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3802,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4478,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7323,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10218,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 11098,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11343,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11767,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12414,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 13099,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15289,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 28464,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "5": {
+        "peak_queued_deliveries": 121,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3601,
+          "system_millis": 128
+        },
+        "traffic_since_submission": {
+          "request_starts": 714,
+          "request_start_bytes": 6138546,
+          "requests_received": 682,
+          "request_bytes_received": 5950602,
+          "response_starts": 680,
+          "response_start_bytes": 150184,
+          "responses_received": 651,
+          "response_bytes_received": 186778
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2336,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3076,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3427,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3924,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7168,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9901,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10875,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11143,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11780,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12300,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12712,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15321,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17790,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17911,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "6": {
+        "peak_queued_deliveries": 114,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3564,
+          "system_millis": 125
+        },
+        "traffic_since_submission": {
+          "request_starts": 621,
+          "request_start_bytes": 6171420,
+          "requests_received": 613,
+          "request_bytes_received": 5988054,
+          "response_starts": 611,
+          "response_start_bytes": 103276,
+          "responses_received": 558,
+          "response_bytes_received": 97751
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2611,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3107,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3787,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4493,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7475,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9910,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10851,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11120,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11779,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12300,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12797,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15275,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17722,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17840,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "7": {
+        "peak_queued_deliveries": 97,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3098,
+          "system_millis": 111
+        },
+        "traffic_since_submission": {
+          "request_starts": 534,
+          "request_start_bytes": 4560420,
+          "requests_received": 519,
+          "request_bytes_received": 4620218,
+          "response_starts": 518,
+          "response_start_bytes": 53895,
+          "responses_received": 499,
+          "response_bytes_received": 86928
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2591,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3021,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3490,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4004,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7261,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10296,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 11079,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11301,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11735,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12287,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12762,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15009,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 30724,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "8": {
+        "peak_queued_deliveries": 109,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3653,
+          "system_millis": 128
+        },
+        "traffic_since_submission": {
+          "request_starts": 713,
+          "request_start_bytes": 6074485,
+          "requests_received": 654,
+          "request_bytes_received": 6004629,
+          "response_starts": 653,
+          "response_start_bytes": 67995,
+          "responses_received": 664,
+          "response_bytes_received": 69110
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2597,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3026,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3644,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4125,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7115,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10012,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10949,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11215,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11638,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12264,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12500,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15187,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17844,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17935,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "9": {
+        "peak_queued_deliveries": 147,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3684,
+          "system_millis": 126
+        },
+        "traffic_since_submission": {
+          "request_starts": 692,
+          "request_start_bytes": 6360150,
+          "requests_received": 656,
+          "request_bytes_received": 6274768,
+          "response_starts": 653,
+          "response_start_bytes": 68064,
+          "responses_received": 618,
+          "response_bytes_received": 64319
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2558,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3040,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3433,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4060,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7165,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10134,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10974,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11213,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11662,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12209,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12673,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 16533,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 18159,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 18203,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "10": {
+        "peak_queued_deliveries": 116,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3593,
+          "system_millis": 130
+        },
+        "traffic_since_submission": {
+          "request_starts": 651,
+          "request_start_bytes": 5961901,
+          "requests_received": 623,
+          "request_bytes_received": 5995468,
+          "response_starts": 622,
+          "response_start_bytes": 64739,
+          "responses_received": 580,
+          "response_bytes_received": 60364
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2335,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2990,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3453,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3885,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7230,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10123,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10987,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11213,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11698,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12268,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12707,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15188,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17543,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17610,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "11": {
+        "peak_queued_deliveries": 164,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3852,
+          "system_millis": 141
+        },
+        "traffic_since_submission": {
+          "request_starts": 809,
+          "request_start_bytes": 6679431,
+          "requests_received": 741,
+          "request_bytes_received": 6160834,
+          "response_starts": 740,
+          "response_start_bytes": 116784,
+          "responses_received": 734,
+          "response_bytes_received": 111456
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2329,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3069,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3481,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3908,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6942,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9797,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10531,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11051,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11176,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12183,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12540,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 16671,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 28387,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "12": {
+        "peak_queued_deliveries": 109,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3636,
+          "system_millis": 134
+        },
+        "traffic_since_submission": {
+          "request_starts": 721,
+          "request_start_bytes": 6036407,
+          "requests_received": 670,
+          "request_bytes_received": 5934451,
+          "response_starts": 668,
+          "response_start_bytes": 69535,
+          "responses_received": 669,
+          "response_bytes_received": 69637
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2328,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2943,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3339,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3855,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7136,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10183,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 11016,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11271,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11703,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12278,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12633,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15250,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17577,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17677,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "13": {
+        "peak_queued_deliveries": 122,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3629,
+          "system_millis": 129
+        },
+        "traffic_since_submission": {
+          "request_starts": 720,
+          "request_start_bytes": 6110168,
+          "requests_received": 641,
+          "request_bytes_received": 5909626,
+          "response_starts": 639,
+          "response_start_bytes": 106188,
+          "responses_received": 660,
+          "response_bytes_received": 68674
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2560,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3023,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3607,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3871,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7322,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9820,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10763,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11031,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11606,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12177,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12432,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15211,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17659,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17775,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "14": {
+        "peak_queued_deliveries": 112,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3524,
+          "system_millis": 127
+        },
+        "traffic_since_submission": {
+          "request_starts": 807,
+          "request_start_bytes": 6912931,
+          "requests_received": 721,
+          "request_bytes_received": 5772520,
+          "response_starts": 721,
+          "response_start_bytes": 154441,
+          "responses_received": 718,
+          "response_bytes_received": 74801
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2330,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2842,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3466,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3843,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6705,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9497,
+            "height": 1,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 9565,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 9632,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11170,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11598,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12192,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12545,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15252,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17575,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17672,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "15": {
+        "peak_queued_deliveries": 114,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3594,
+          "system_millis": 128
+        },
+        "traffic_since_submission": {
+          "request_starts": 681,
+          "request_start_bytes": 6147540,
+          "requests_received": 635,
+          "request_bytes_received": 5959835,
+          "response_starts": 633,
+          "response_start_bytes": 65870,
+          "responses_received": 597,
+          "response_bytes_received": 62166
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2534,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2944,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3391,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3943,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7253,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10055,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10850,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11112,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11637,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12215,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 13037,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15198,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17587,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17712,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "16": {
+        "peak_queued_deliveries": 97,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3664,
+          "system_millis": 130
+        },
+        "traffic_since_submission": {
+          "request_starts": 814,
+          "request_start_bytes": 6129514,
+          "requests_received": 781,
+          "request_bytes_received": 6796194,
+          "response_starts": 781,
+          "response_start_bytes": 81323,
+          "responses_received": 768,
+          "response_bytes_received": 80051
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2330,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2858,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3306,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3900,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6709,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9557,
+            "height": 1,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 9640,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10247,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11037,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11679,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12118,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12471,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 14741,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17368,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17485,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "17": {
+        "peak_queued_deliveries": 115,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3567,
+          "system_millis": 130
+        },
+        "traffic_since_submission": {
+          "request_starts": 663,
+          "request_start_bytes": 6033483,
+          "requests_received": 625,
+          "request_bytes_received": 5977554,
+          "response_starts": 623,
+          "response_start_bytes": 64823,
+          "responses_received": 598,
+          "response_bytes_received": 62213
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2329,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2950,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3413,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3847,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7062,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10039,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10914,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11162,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11563,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12155,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12593,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15169,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17560,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17697,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "18": {
+        "peak_queued_deliveries": 167,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 2212,
+          "system_millis": 93
+        },
+        "traffic_since_submission": {
+          "request_starts": 281,
+          "request_start_bytes": 1824226,
+          "requests_received": 332,
+          "request_bytes_received": 1797190,
+          "response_starts": 332,
+          "response_start_bytes": 34837,
+          "responses_received": 250,
+          "response_bytes_received": 100810
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2337,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3123,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3622,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4294,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 16166,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 16301,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 16358,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 83451,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "19": {
+        "peak_queued_deliveries": 105,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3661,
+          "system_millis": 134
+        },
+        "traffic_since_submission": {
+          "request_starts": 713,
+          "request_start_bytes": 6050682,
+          "requests_received": 691,
+          "request_bytes_received": 6067842,
+          "response_starts": 690,
+          "response_start_bytes": 111507,
+          "responses_received": 668,
+          "response_bytes_received": 69537
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2466,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2882,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3322,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3902,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7010,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9696,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10618,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11124,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11515,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12083,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12344,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15180,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17739,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17838,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "20": {
+        "peak_queued_deliveries": 154,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 2965,
+          "system_millis": 99
+        },
+        "traffic_since_submission": {
+          "request_starts": 410,
+          "request_start_bytes": 3859752,
+          "requests_received": 377,
+          "request_bytes_received": 3643909,
+          "response_starts": 376,
+          "response_start_bytes": 79422,
+          "responses_received": 367,
+          "response_bytes_received": 73110
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2448,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2785,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3569,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4414,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 10725,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 11010,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11533,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11816,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12901,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15070,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 30186,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "21": {
+        "peak_queued_deliveries": 111,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3589,
+          "system_millis": 125
+        },
+        "traffic_since_submission": {
+          "request_starts": 608,
+          "request_start_bytes": 5940853,
+          "requests_received": 590,
+          "request_bytes_received": 5912994,
+          "response_starts": 589,
+          "response_start_bytes": 61312,
+          "responses_received": 588,
+          "response_bytes_received": 61216
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2469,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3029,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3576,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4351,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7226,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10047,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10913,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11154,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11559,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12168,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12527,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15172,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17649,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17754,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "22": {
+        "peak_queued_deliveries": 158,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 2324,
+          "system_millis": 90
+        },
+        "traffic_since_submission": {
+          "request_starts": 416,
+          "request_start_bytes": 3664952,
+          "requests_received": 374,
+          "request_bytes_received": 3596536,
+          "response_starts": 373,
+          "response_start_bytes": 38828,
+          "responses_received": 377,
+          "response_bytes_received": 74144
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2447,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2783,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3536,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4343,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 11045,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 12007,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 12016,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 12217,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12872,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15150,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 29390,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "23": {
+        "peak_queued_deliveries": 155,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3505,
+          "system_millis": 134
+        },
+        "traffic_since_submission": {
+          "request_starts": 789,
+          "request_start_bytes": 6059829,
+          "requests_received": 740,
+          "request_bytes_received": 5899075,
+          "response_starts": 739,
+          "response_start_bytes": 116624,
+          "responses_received": 733,
+          "response_bytes_received": 76344
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2330,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2407,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3240,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3718,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6249,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9667,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10551,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11093,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11529,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12061,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12386,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15144,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17652,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17770,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "24": {
+        "peak_queued_deliveries": 97,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3824,
+          "system_millis": 116
+        },
+        "traffic_since_submission": {
+          "request_starts": 576,
+          "request_start_bytes": 4538214,
+          "requests_received": 555,
+          "request_bytes_received": 4562091,
+          "response_starts": 555,
+          "response_start_bytes": 57785,
+          "responses_received": 540,
+          "response_bytes_received": 91173
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2333,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2891,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3295,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3831,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6815,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9474,
+            "height": 1,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 9674,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10586,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11527,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11851,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12346,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12821,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 14942,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 27676,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "25": {
+        "peak_queued_deliveries": 167,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 2332,
+          "system_millis": 96
+        },
+        "traffic_since_submission": {
+          "request_starts": 302,
+          "request_start_bytes": 1768697,
+          "requests_received": 326,
+          "request_bytes_received": 1791548,
+          "response_starts": 326,
+          "response_start_bytes": 34203,
+          "responses_received": 272,
+          "response_bytes_received": 103108
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2331,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3059,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3518,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4316,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 16076,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 16214,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 16272,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 83392,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "26": {
+        "peak_queued_deliveries": 114,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3609,
+          "system_millis": 128
+        },
+        "traffic_since_submission": {
+          "request_starts": 679,
+          "request_start_bytes": 6214610,
+          "requests_received": 666,
+          "request_bytes_received": 5891846,
+          "response_starts": 665,
+          "response_start_bytes": 108935,
+          "responses_received": 621,
+          "response_bytes_received": 64658
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2336,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2987,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3518,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4228,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 8716,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9717,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10600,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11051,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11551,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12134,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12512,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15064,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17622,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17751,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "27": {
+        "peak_queued_deliveries": 97,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3498,
+          "system_millis": 121
+        },
+        "traffic_since_submission": {
+          "request_starts": 658,
+          "request_start_bytes": 5957295,
+          "requests_received": 602,
+          "request_bytes_received": 6498541,
+          "response_starts": 601,
+          "response_start_bytes": 62538,
+          "responses_received": 605,
+          "response_bytes_received": 62986
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2383,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 3050,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3580,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 4197,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7118,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9760,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10743,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11031,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11453,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 11984,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12244,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 14838,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17259,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17417,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "28": {
+        "peak_queued_deliveries": 106,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3638,
+          "system_millis": 122
+        },
+        "traffic_since_submission": {
+          "request_starts": 707,
+          "request_start_bytes": 6062865,
+          "requests_received": 595,
+          "request_bytes_received": 6124042,
+          "response_starts": 594,
+          "response_start_bytes": 61793,
+          "responses_received": 631,
+          "response_bytes_received": 65656
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2381,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2834,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3448,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3816,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6982,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10046,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10843,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11103,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11536,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12228,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12896,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15030,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17525,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17653,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "29": {
+        "peak_queued_deliveries": 112,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3573,
+          "system_millis": 132
+        },
+        "traffic_since_submission": {
+          "request_starts": 731,
+          "request_start_bytes": 6011804,
+          "requests_received": 664,
+          "request_bytes_received": 5927976,
+          "response_starts": 661,
+          "response_start_bytes": 68809,
+          "responses_received": 674,
+          "response_bytes_received": 70156
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2329,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2815,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3192,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3742,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 7008,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9949,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10799,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11050,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11466,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12075,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12600,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15069,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17516,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17608,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "30": {
+        "peak_queued_deliveries": 138,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 4907,
+          "system_millis": 141
+        },
+        "traffic_since_submission": {
+          "request_starts": 739,
+          "request_start_bytes": 6075266,
+          "requests_received": 676,
+          "request_bytes_received": 5880589,
+          "response_starts": 676,
+          "response_start_bytes": 70438,
+          "responses_received": 651,
+          "response_bytes_received": 142436
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2330,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2768,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3222,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3761,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6730,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 9355,
+            "height": 1,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 9515,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10111,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11091,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11470,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12797,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12957,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 14904,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 28950,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      },
+      "31": {
+        "peak_queued_deliveries": 111,
+        "peak_in_flight_deliveries": 31,
+        "cpu_millis_since_submission": {
+          "user_millis": 3702,
+          "system_millis": 125
+        },
+        "traffic_since_submission": {
+          "request_starts": 665,
+          "request_start_bytes": 5993173,
+          "requests_received": 607,
+          "request_bytes_received": 5991879,
+          "response_starts": 605,
+          "response_start_bytes": 62964,
+          "responses_received": 607,
+          "response_bytes_received": 63182
+        },
+        "timing_events": [
+          {
+            "elapsed_millis": 0,
+            "height": 1,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 2333,
+            "height": 1,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 2875,
+            "height": 1,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 3245,
+            "height": 1,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 3738,
+            "height": 1,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 6991,
+            "height": 1,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 10004,
+            "height": 1,
+            "round": null,
+            "stage": "finalized"
+          },
+          {
+            "elapsed_millis": 10852,
+            "height": 2,
+            "round": 0,
+            "stage": "proposal"
+          },
+          {
+            "elapsed_millis": 11129,
+            "height": 2,
+            "round": null,
+            "stage": "work_ready"
+          },
+          {
+            "elapsed_millis": 11527,
+            "height": 2,
+            "round": 0,
+            "stage": "prevote"
+          },
+          {
+            "elapsed_millis": 12090,
+            "height": 2,
+            "round": 0,
+            "stage": "precommit"
+          },
+          {
+            "elapsed_millis": 12491,
+            "height": 2,
+            "round": null,
+            "stage": "agreement"
+          },
+          {
+            "elapsed_millis": 15082,
+            "height": 2,
+            "round": null,
+            "stage": "ready_quorum"
+          },
+          {
+            "elapsed_millis": 17884,
+            "height": 2,
+            "round": null,
+            "stage": "terminal_quorum"
+          },
+          {
+            "elapsed_millis": 17929,
+            "height": 2,
+            "round": null,
+            "stage": "finalized"
+          }
+        ],
+        "timing_events_dropped": 0,
+        "last_height": 2,
+        "last_position": null,
+        "last_queued_deliveries": 0,
+        "last_in_flight_deliveries": 0
+      }
+    },
+    "samples": [
+      {
+        "elapsed_seconds": 2.062,
+        "responded": 32,
+        "total_queued_deliveries": 0,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 54
+      },
+      {
+        "elapsed_seconds": 4.524,
+        "responded": 32,
+        "total_queued_deliveries": 2701,
+        "total_in_flight_deliveries": 992,
+        "total_cpu_millis_since_submission": 5064
+      },
+      {
+        "elapsed_seconds": 7.57,
+        "responded": 32,
+        "total_queued_deliveries": 2552,
+        "total_in_flight_deliveries": 758,
+        "total_cpu_millis_since_submission": 32543
+      },
+      {
+        "elapsed_seconds": 10.902,
+        "responded": 32,
+        "total_queued_deliveries": 3271,
+        "total_in_flight_deliveries": 760,
+        "total_cpu_millis_since_submission": 58329
+      },
+      {
+        "elapsed_seconds": 14.063,
+        "responded": 32,
+        "total_queued_deliveries": 2869,
+        "total_in_flight_deliveries": 875,
+        "total_cpu_millis_since_submission": 72880
+      },
+      {
+        "elapsed_seconds": 16.591,
+        "responded": 32,
+        "total_queued_deliveries": 2980,
+        "total_in_flight_deliveries": 451,
+        "total_cpu_millis_since_submission": 96684
+      },
+      {
+        "elapsed_seconds": 18.608,
+        "responded": 32,
+        "total_queued_deliveries": 636,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 111954
+      },
+      {
+        "elapsed_seconds": 20.644,
+        "responded": 32,
+        "total_queued_deliveries": 641,
+        "total_in_flight_deliveries": 2,
+        "total_cpu_millis_since_submission": 112423
+      },
+      {
+        "elapsed_seconds": 22.663,
+        "responded": 32,
+        "total_queued_deliveries": 636,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 112796
+      },
+      {
+        "elapsed_seconds": 24.684,
+        "responded": 32,
+        "total_queued_deliveries": 636,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 113226
+      },
+      {
+        "elapsed_seconds": 26.703,
+        "responded": 32,
+        "total_queued_deliveries": 636,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 113549
+      },
+      {
+        "elapsed_seconds": 28.726,
+        "responded": 32,
+        "total_queued_deliveries": 516,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 113882
+      },
+      {
+        "elapsed_seconds": 30.747,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114218
+      },
+      {
+        "elapsed_seconds": 32.769,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114377
+      },
+      {
+        "elapsed_seconds": 34.789,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114470
+      },
+      {
+        "elapsed_seconds": 36.811,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114562
+      },
+      {
+        "elapsed_seconds": 38.833,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114660
+      },
+      {
+        "elapsed_seconds": 40.855,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114752
+      },
+      {
+        "elapsed_seconds": 42.877,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114862
+      },
+      {
+        "elapsed_seconds": 44.897,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 114945
+      },
+      {
+        "elapsed_seconds": 46.918,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115049
+      },
+      {
+        "elapsed_seconds": 48.94,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115182
+      },
+      {
+        "elapsed_seconds": 50.961,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115268
+      },
+      {
+        "elapsed_seconds": 52.982,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115392
+      },
+      {
+        "elapsed_seconds": 54.999,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115467
+      },
+      {
+        "elapsed_seconds": 57.01,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115536
+      },
+      {
+        "elapsed_seconds": 59.025,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115617
+      },
+      {
+        "elapsed_seconds": 61.046,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115704
+      },
+      {
+        "elapsed_seconds": 63.067,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115786
+      },
+      {
+        "elapsed_seconds": 65.084,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115847
+      },
+      {
+        "elapsed_seconds": 67.101,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 115916
+      },
+      {
+        "elapsed_seconds": 69.121,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 116010
+      },
+      {
+        "elapsed_seconds": 71.144,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 1,
+        "total_cpu_millis_since_submission": 116090
+      },
+      {
+        "elapsed_seconds": 73.166,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 116177
+      },
+      {
+        "elapsed_seconds": 75.188,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 116263
+      },
+      {
+        "elapsed_seconds": 77.21,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 116338
+      },
+      {
+        "elapsed_seconds": 79.234,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 116432
+      },
+      {
+        "elapsed_seconds": 81.257,
+        "responded": 32,
+        "total_queued_deliveries": 240,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 116578
+      },
+      {
+        "elapsed_seconds": 83.397,
+        "responded": 32,
+        "total_queued_deliveries": 0,
+        "total_in_flight_deliveries": 0,
+        "total_cpu_millis_since_submission": 116758
+      }
+    ],
+    "traffic_unit": "canonical state-exchange envelope bytes",
+    "traffic_limits": "excludes Noise, TCP, libp2p framing and retransmits",
+    "cpu_unit": "getrusage RUSAGE_SELF user/system milliseconds",
+    "baseline_responded": 32,
+    "peak_total_queued_deliveries": 3271,
+    "peak_total_in_flight_deliveries": 992
+  },
+  "setup_seconds": 4.933,
+  "submission": "333ce4daa07c27bbdeb7f1558a133cc854484c657e4cf66fc902c824f1567d2b",
+  "submission_elapsed_seconds": 2.054,
+  "latest_progress": {
+    "responded": 32,
+    "height_range": [
+      2,
+      2
+    ],
+    "pending_operation_range": [
+      0,
+      0
+    ],
+    "local_proposer_count": 0,
+    "proposal_authored_count": 0,
+    "observed_proposal_range": [
+      0,
+      0
+    ],
+    "observed_prevote_range": [
+      0,
+      0
+    ],
+    "observed_precommit_range": [
+      0,
+      0
+    ],
+    "connected_peer_range": [
+      0,
+      0
+    ],
+    "offer_range": [
+      0,
+      0
+    ],
+    "time_report_range": [
+      0,
+      0
+    ],
+    "queued_delivery_range": [
+      0,
+      0
+    ],
+    "work_ready_count": 0,
+    "agreement_ready_count": 32,
+    "ready_signature_range": [
+      2,
+      25
+    ],
+    "terminal_signature_range": [
+      1,
+      22
+    ]
+  },
+  "peak_agreement_ready_count": 32,
+  "peak_observed_precommits": 32,
+  "last_poll_elapsed_seconds": 81.258,
+  "last_poll_responded": 32,
+  "finalized_height": 2,
+  "head": "42a15f38f94d4e641c980e93cea33d5ed8352607200257e185620174b3cbe57a",
+  "state": "caa7d36eb6f343656373fd478343cfa1b0a1f596196766942bd5400079684497",
+  "first_quorum_seconds": 18.609,
+  "all_nodes_seconds": 83.398,
+  "resources": {
+    "0": {
+      "memory_bytes": null,
+      "disk_bytes": 257797,
+      "file_count": 19
+    },
+    "1": {
+      "memory_bytes": null,
+      "disk_bytes": 257163,
+      "file_count": 19
+    },
+    "2": {
+      "memory_bytes": null,
+      "disk_bytes": 258282,
+      "file_count": 19
+    },
+    "3": {
+      "memory_bytes": null,
+      "disk_bytes": 257464,
+      "file_count": 19
+    },
+    "4": {
+      "memory_bytes": null,
+      "disk_bytes": 241870,
+      "file_count": 19
+    },
+    "5": {
+      "memory_bytes": null,
+      "disk_bytes": 257510,
+      "file_count": 19
+    },
+    "6": {
+      "memory_bytes": null,
+      "disk_bytes": 257465,
+      "file_count": 19
+    },
+    "7": {
+      "memory_bytes": null,
+      "disk_bytes": 241871,
+      "file_count": 19
+    },
+    "8": {
+      "memory_bytes": null,
+      "disk_bytes": 257464,
+      "file_count": 19
+    },
+    "9": {
+      "memory_bytes": null,
+      "disk_bytes": 257464,
+      "file_count": 19
+    },
+    "10": {
+      "memory_bytes": null,
+      "disk_bytes": 257478,
+      "file_count": 19
+    },
+    "11": {
+      "memory_bytes": null,
+      "disk_bytes": 274551,
+      "file_count": 19
+    },
+    "12": {
+      "memory_bytes": null,
+      "disk_bytes": 257477,
+      "file_count": 19
+    },
+    "13": {
+      "memory_bytes": null,
+      "disk_bytes": 257478,
+      "file_count": 19
+    },
+    "14": {
+      "memory_bytes": null,
+      "disk_bytes": 258493,
+      "file_count": 19
+    },
+    "15": {
+      "memory_bytes": null,
+      "disk_bytes": 258082,
+      "file_count": 19
+    },
+    "16": {
+      "memory_bytes": null,
+      "disk_bytes": 258582,
+      "file_count": 19
+    },
+    "17": {
+      "memory_bytes": null,
+      "disk_bytes": 257478,
+      "file_count": 19
+    },
+    "18": {
+      "memory_bytes": null,
+      "disk_bytes": 199115,
+      "file_count": 19
+    },
+    "19": {
+      "memory_bytes": null,
+      "disk_bytes": 257795,
+      "file_count": 19
+    },
+    "20": {
+      "memory_bytes": null,
+      "disk_bytes": 207132,
+      "file_count": 19
+    },
+    "21": {
+      "memory_bytes": null,
+      "disk_bytes": 257810,
+      "file_count": 19
+    },
+    "22": {
+      "memory_bytes": null,
+      "disk_bytes": 206528,
+      "file_count": 19
+    },
+    "23": {
+      "memory_bytes": null,
+      "disk_bytes": 279060,
+      "file_count": 19
+    },
+    "24": {
+      "memory_bytes": null,
+      "disk_bytes": 242201,
+      "file_count": 19
+    },
+    "25": {
+      "memory_bytes": null,
+      "disk_bytes": 199115,
+      "file_count": 19
+    },
+    "26": {
+      "memory_bytes": null,
+      "disk_bytes": 257810,
+      "file_count": 19
+    },
+    "27": {
+      "memory_bytes": null,
+      "disk_bytes": 257779,
+      "file_count": 19
+    },
+    "28": {
+      "memory_bytes": null,
+      "disk_bytes": 257492,
+      "file_count": 19
+    },
+    "29": {
+      "memory_bytes": null,
+      "disk_bytes": 257780,
+      "file_count": 19
+    },
+    "30": {
+      "memory_bytes": null,
+      "disk_bytes": 258556,
+      "file_count": 19
+    },
+    "31": {
+      "memory_bytes": null,
+      "disk_bytes": 257477,
+      "file_count": 19
+    }
+  },
+  "total_sampled_memory_bytes": null,
+  "total_disk_bytes": 8019619,
+  "elapsed_seconds": 88.749
+}

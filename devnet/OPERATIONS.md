@@ -78,7 +78,9 @@ polls and can miss shorter spikes.
 
 The forecast script prints assumed network-only propagation and envelope
 serialization components. It does not infer total wall time on 32 machines
-from one shared-host run.
+from one shared-host run. Its default 12–24 serial one-way waves for two
+heights are a sensitivity assumption, not an observed message path. The two
+components can overlap and should not be added to the local completion time.
 
 ## Isolation, faults, and evidence
 

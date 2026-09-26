@@ -9,6 +9,7 @@ behavior have not been measured here.
 
 import argparse
 import json
+import math
 from pathlib import Path
 import statistics
 
@@ -25,7 +26,7 @@ def spread(values):
         return None
     return {'count': len(ordered), 'min': round(ordered[0], 3),
             'median': round(statistics.median(ordered), 3),
-            'p90': round(ordered[(9 * len(ordered) - 1) // 10], 3),
+            'p90': round(ordered[math.ceil(0.9 * len(ordered)) - 1], 3),
             'max': round(ordered[-1], 3)}
 
 
@@ -120,7 +121,7 @@ def summarize(report):
 
 def scenarios(summary, heights, rtt_values, link_mbps):
     # Six transition classes are visible per height after work becomes ready.
-    # An extra wave per class represents quorum and response/fanout uncertainty.
+    # One or two one-way waves per class are explicit sensitivity assumptions.
     # Neither count is an observed critical-path hop count.
     maximum_egress = summary['validator_canonical_egress_bytes']['max']
     return [
@@ -148,8 +149,10 @@ def main():
     summary['network_only_scenarios'] = scenarios(
         summary, report['target_height'], args.rtt_ms, args.link_mbps)
     summary['scenario_scope'] = (
-        'Assumed propagation plus canonical-envelope egress serialization only; '
-        'no 32-machine total wall-time prediction or real network measurement.')
+        'Independent propagation and canonical-envelope egress serialization '
+        'sensitivity budgets; they can overlap and must not be added to the '
+        'local wall time. No 32-machine total wall-time prediction or real '
+        'network measurement.')
     print(json.dumps(summary, indent=2))
 
 

@@ -163,6 +163,67 @@ establish practical throughput or reliability at 128. The 256-process
 handoff remains unproven.
 No physical multi-machine result is available.
 
+### Repeated 32-validator resource profile
+
+Two direct-process runs on 26 September 2026 used clean commit
+`6c1c9f3fc25e01d41f66283e2062c0a81510c3d3`, release binaries built with
+pinned Rust 1.97.1, 32 validators, quorum 22, one submitted question and two
+finalized heights. Each run started in a fresh directory on the same macOS host
+with ten logical CPUs, local IPv4 TCP, no inserted delay, and the `ci-test`
+timing profile. The full [run A](evidence/variable-roster-profile-32-a.json) and
+[run B](evidence/variable-roster-profile-32-b.json) reports retain binary and
+runner hashes, the common finalized head and state for each run, per-validator
+events and counters, and sampled queue history. Both passed with all 32 nodes
+at a common height-two head and state. Times below start after all processes
+were launched; submission followed about two seconds later.
+
+| Measure | Run A | Run B |
+| --- | ---: | ---: |
+| First height-two quorum | 20.983 s | 18.609 s |
+| All 32 at common height two | 83.607 s | 83.398 s |
+| Tail after first quorum | 62.624 s | 64.789 s |
+| Validator CPU time since submission, median | 3.971 s | 3.731 s |
+| Canonical state-exchange egress per validator, median | 7.310 MB | 6.119 MB |
+| Canonical state-exchange ingress per validator, median | 7.040 MB | 6.020 MB |
+| Started requests per validator, median | 790 | 679 |
+| Sampled queued deliveries per validator, median peak | 158 | 114 |
+| Sampled total queued deliveries, highest | 4,749 | 3,271 |
+
+At height two, median agreement-to-finalization time per validator was 6.087
+seconds in A and 5.321 seconds in B. Two validators in each run took roughly
+60–68 seconds after agreement and accounted for most of the all-node tail.
+Several late validators have no recorded local TERMINAL quorum; finalization
+can also arrive through catch-up. The data establish a recurring long tail,
+but do not isolate its cause. The queue peaks use a nominal two-second poll
+interval and may miss shorter spikes. CPU time covers all threads in one
+validator process, measured from just before submission, not host-wide CPU
+demand.
+Canonical message bytes exclude Noise, libp2p and TCP framing, retransmission,
+and connection setup. Process memory was not captured in these runs. Neither a
+real network nor one machine per validator was measured.
+
+The [scenario calculator](../../devnet/variable_roster_forecast.py) holds
+round-trip time and link rate constant. Its 12–24 serial one-way message waves
+over two heights are **assumptions**, not a measured critical path. At 50 ms
+RTT they yield 0.3–0.6 seconds of propagation; at 100 ms, 0.6–1.2 seconds.
+Serializing the largest observed canonical egress volume from one validator
+would take 0.565–0.652 seconds at an assumed 100 Mbit/s, or 0.057–0.065 seconds
+at 1 Gbit/s. These are separate sensitivity budgets that can overlap, not
+terms to add to the local 83-second result. The measured runs cannot yet
+support a total-runtime estimate or a production capacity claim for 32
+separate machines. A delayed-network run with the same workload and a
+separate-machine validation would be needed to calibrate that estimate.
+
+The pinned-toolchain focused runtime/node build barrier, workspace Clippy,
+format check, and Python syntax check passed for the instrumented source.
+The `cold_terminal_server_serves_final_record_to_a_late_owner` runtime test
+also hit its 60-second timeout on this branch. The identical isolated test
+timed out on unmodified parent commit `5edf02425f2740f19c6a12be7d6a51f94722184b`
+under the same local conditions, so this observation does not establish a
+regression from profiling. The instrumented commit does not have a passing
+complete-workspace two-profile run; the earlier complete-workspace results
+above apply only to their named commits.
+
 The v6 implementation still permits one active research attempt; more voters
 do not make questions run in parallel. This evidence supports a controlled
 small-roster testnet, not production use of the 128- or 256-unit ceiling. The
