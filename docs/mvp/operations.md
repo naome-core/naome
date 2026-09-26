@@ -8,7 +8,7 @@ These commands operate a four-validator canonical state genesis on Unix. The
 current qualification target is four independent local processes with separate
 keys, journals, anchors, and authenticated network connections. Current process
 and Docker checks use explicit accelerated timing profiles. The historical
-[integration lab report](evidence/final-integration-lab.json) records actual
+[integration lab summary](verification.md#historical-state-v1-qualification) records actual
 300/120/120-second windows and a real agent review for its named state-v1 snapshot.
 These checks do not establish multi-machine operation or public-network
 security. Track acceptance separately
@@ -513,7 +513,7 @@ the progress log wholesale. The report records
 local four-process evidence; it does not establish operation on two physical
 machines or completion of the seven-day research profile.
 
-The [recorded lab run](evidence/final-integration-lab.json) completed successfully.
+The [historical lab run](verification.md#historical-state-v1-qualification) completed successfully.
 Each new run supplies acceptance evidence only after it finishes successfully.
 The [verification map](verification.md) separates component tests, process tests,
 lab evidence, and repository/CI gates. A successful lab run does not replace the
