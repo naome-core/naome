@@ -65,9 +65,15 @@ new output directory for each measured roster:
 cargo build --profile release -p naome-cli -p naome-validator -p naome-verifier --all-features --locked
 python3 -B devnet/variable_roster_bench.py --directory /tmp/naome-roster-32 --bin-dir target/release --validators 32 --heights 2 --run-records 72 --deadline-seconds 600 --direct --profile
 python3 -B devnet/variable_roster_forecast.py /tmp/naome-roster-32/report.json
+python3 -B devnet/variable_roster_bench.py --directory /tmp/naome-roster-32-delay --bin-dir target/release --validators 32 --heights 2 --run-records 72 --deadline-seconds 600 --delay-ms 25 --profile
 ```
 
 `--profile` waits for every validator to answer before submitting the question.
+The last command uses TCP proxies with 25 ms delay in each direction, roughly
+50 ms round-trip delay per forwarded chunk. Use a fresh directory for every
+run; a nonzero `--delay-ms` requires proxy mode (omit `--direct`). Proxy delay
+does not simulate link bandwidth, loss, separate-machine CPU or sustained
+traffic.
 The report retains per-validator cumulative CPU time since submission, canonical
 state-exchange request/response counts and bytes, timing events, and sampled
 delivery-queue peaks. Timing events use each process's monotonic clock; compare

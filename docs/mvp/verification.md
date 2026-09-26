@@ -38,7 +38,7 @@ reveal windows to tolerate full-suite scheduling; production and `ci-test`
 timings are unchanged. Its deterministic chain and consensus vectors were
 regenerated and passed replay tests in both complete profile runs.
 
-The [local comparison](evidence/variable-roster-local.json) uses the same
+The local comparison uses the same
 two-height, one-question workload in three sequential runs per configuration.
 All nodes ran on one macOS ARM64 host through zero-delay local TCP proxies.
 Times below start after process launch; memory and disk are totals sampled at
@@ -52,7 +52,7 @@ convergence, rather than peaks or reserved capacity.
 
 The v5 baseline and v6 four-unit medians differ by 0.582 s in this small
 sample. This is not a sustained-throughput estimate. The older
-[12-height baseline](evidence/variable-roster-baseline-4.json) uses a different
+12-height baseline uses a different
 workload and is not used for the timing comparison.
 
 The former 16-process setup rejection used a full-run maximum as the startup
@@ -62,7 +62,7 @@ bytes of next-height headroom per node, or 20,204,333,056 bytes across 256
 local nodes. Setup succeeded on this Mac and occupied about 39 MiB. Its
 separately reported 23,364,931,136-byte per-node full-run allowance assumes
 every bounded height reaches maximum usage; it is not reserved at startup.
-The [scale diagnostics](evidence/variable-roster-scale-local.json) identify
+The local scale diagnostics identify
 each release binary and keep failed attempts separate from passing runs.
 
 | Diagnostic v6 direct-process run | Installed units | Quorum | All nodes at common height 2 | Disk at convergence |
@@ -170,8 +170,7 @@ Two direct-process runs on 26 September 2026 used clean commit
 pinned Rust 1.97.1, 32 validators, quorum 22, one submitted question and two
 finalized heights. Each run started in a fresh directory on the same macOS host
 with ten logical CPUs, local IPv4 TCP, no inserted delay, and the `ci-test`
-timing profile. The full [run A](evidence/variable-roster-profile-32-a.json) and
-[run B](evidence/variable-roster-profile-32-b.json) reports retain binary and
+timing profile. The local raw reports for runs A and B retain binary and
 runner hashes, the common finalized head and state for each run, per-validator
 events and counters, and sampled queue history. Both passed with all 32 nodes
 at a common height-two head and state. Times below start after all processes
@@ -211,8 +210,8 @@ would take 0.565–0.652 seconds at an assumed 100 Mbit/s, or 0.057–0.065 seco
 at 1 Gbit/s. These are separate sensitivity budgets that can overlap, not
 terms to add to the local 83-second result. The measured runs cannot yet
 support a total-runtime estimate or a production capacity claim for 32
-separate machines. A delayed-network run with the same workload and a
-separate-machine validation would be needed to calibrate that estimate.
+separate machines. The delayed-proxy runs below add a local sensitivity check;
+a separate-machine validation is still needed to calibrate that estimate.
 
 The pinned-toolchain focused runtime/node build barrier, workspace Clippy,
 format check, and Python syntax check passed for the instrumented source.
@@ -222,7 +221,9 @@ timed out on unmodified parent commit `5edf02425f2740f19c6a12be7d6a51f94722184b`
 under the same local conditions, so this observation does not establish a
 regression from profiling. The instrumented commit does not have a passing
 complete-workspace two-profile run; the earlier complete-workspace results
-above apply only to their named commits.
+above apply only to their named commits. The test passed in 39.90 seconds on
+the later optimized branch, though its earlier timeout remains a reliability
+caveat.
 
 The v6 implementation still permits one active research attempt; more voters
 do not make questions run in parallel. This evidence supports a controlled
@@ -231,6 +232,93 @@ small-roster testnet, not production use of the 128- or 256-unit ceiling. The
 full-mesh resource demand. Separate-machine rehearsals, sustained workloads
 and network-fault measurement remain necessary before recommending larger
 rosters for deployment.
+
+### 32-validator handoff recovery and delayed-proxy follow-up
+
+The per-validator timeline on clean commit `7595a796` confirmed a long
+post-quorum tail: the baseline run reached its first height-two quorum in
+30.933 seconds, but all 32 validators needed 83.542 seconds. Several late
+nodes had at most three old-peer links,
+no staged peers and too few READY signatures. Their recovery sweep tried the
+selected keyed endpoints before stable fallback addresses. A selected listener
+can close after handoff while its peer remains reachable through the stable
+recovery address. With only two probes per interval, putting every selected
+endpoint first could delay useful history requests for much of a full sweep.
+
+Commit `063b8f40` interleaves selected and stable recovery addresses, without
+changing authority, voting, the recovery request format or the transport's
+two-connection limit. Three fresh direct-process runs with the same workload,
+profile and measurement runner all passed with 32 validators at one common
+height-two head and state within each run (runs A, B and C).
+
+| Direct-process measure | Baseline | Optimized A | Optimized B | Optimized C |
+| --- | ---: | ---: | ---: | ---: |
+| First height-two quorum | 30.933 s | 25.083 s | 34.625 s | 23.431 s |
+| All 32 at common height two | 83.542 s | 27.103 s | 36.653 s | 29.505 s |
+| Tail after first quorum | 52.609 s | 2.020 s | 2.028 s | 6.074 s |
+
+The later proxy harness used the same optimized Rust binary in every run.
+It raises the proxy connection cap to 64 for this roster and exposes a
+configurable one-way delay per forwarded TCP chunk. Two runs at each setting
+passed with all 32 validators at one common height-two head and state within
+each run. Local raw reports, kept outside Git, retain the code, runner and
+binary hashes, timing events, traffic counters and sampled queue history.
+
+| One-way proxy delay | Runs | First height-two quorum | All 32 at common height two | Tail after first quorum |
+| --- | --- | ---: | ---: | ---: |
+| 0 ms | A / B | 28.169 / 21.626 s | 34.215 / 29.692 s | 6.046 / 8.066 s |
+| 25 ms | A / B | 25.323 / 29.341 s | 27.344 / 31.365 s | 2.021 / 2.024 s |
+| 50 ms | A / B | 32.883 / 32.799 s | 36.919 / 36.852 s | 4.036 / 4.053 s |
+
+Raw reports remain on the measurement host at
+`/private/tmp/naome-profile-32-<run>-20260926/report.json`, outside Git.
+The run names and SHA-256 values are:
+
+| Run | SHA-256 |
+| --- | --- |
+| `timeline-baseline` | `a86411e07df448e8dd3ae8324617b89b8acd3dca8d7b56a16d1bbbf0b40b8f59` |
+| `interleave-a` | `9b1af3a60fc391d0c3b13962985e79ed526e42c07b8cd47368261c0ac660e073` |
+| `interleave-b` | `22f22cbab7e9f07a324a00df74c42f4fa154dd42ebb40d36e4446c4ae8e59d62` |
+| `interleave-c` | `ecd810d6ff14d3d4c3f0f9889964ef27d5dbd1bb5cb933b7794230f15c0c95ad` |
+| `proxy0-cap64` | `d8b3ae13f4eaa9d471d0938042eb4c2112e124709e83cc8c52b01377d27b43af` |
+| `proxy0-cap64-b` | `de0088af8d9cc536e930ce0041bbb5d640629c638af455b7f6e2bcea23a63c74` |
+| `proxy25-a` | `5888ce1d51c59b1b6eef4080412a291ee2b07fd41883b76537d42e4bdce6aae9` |
+| `proxy25-b` | `2a2b29ed9afdd694580365c7c12c65fddea1882e914628e90a92b4e985899173` |
+| `proxy50-a` | `fc9fd721882f4c9727322edd7c7dfb44566b7b0212d7e24099e3b8032d91f1a1` |
+| `proxy50-b` | `6e5d3e354fc0c00f3f2516afcbd56d93be2ae81cf148c9a5df5f13f27b2433f5` |
+
+Five earlier v6 reports cited by the comparisons above are also retained
+outside Git at `/private/tmp/naome-branch-evidence-20260926/<filename>` on
+the measurement host:
+
+| Filename | SHA-256 |
+| --- | --- |
+| `variable-roster-baseline-4.json` | `3ccfdb93b75adb7b5dd066d226a218e2e0f4413b65d0128b990467e13697b6da` |
+| `variable-roster-local.json` | `a51ba0877e9c777565bc18c997e5cb3b35a7c3faf649255fb83b581455e85b6d` |
+| `variable-roster-profile-32-a.json` | `41208c56cf46c1f4649170965453371e60e64698987238e16ccef55252141f5f` |
+| `variable-roster-profile-32-b.json` | `7909dd6f16b17a2703ab1840166d9e380b3b3de653752bb7a96f50e91794aac6` |
+| `variable-roster-scale-local.json` | `478db1b9c672452c575dd35116d1f5750d84677b487d75f130b6c50bbb63b7ad` |
+
+These temporary local paths are not a durable published artifact.
+
+The 25 and 50 ms one-way delays approximate 50 and 100 ms round trips for
+forwarded chunks. All processes and proxies still ran on one ten-logical-CPU
+Mac with loopback TCP and a system wake assertion. The proxy does not model
+separate-machine CPU, link bandwidth, packet loss, geographic routing or
+sustained load. Two runs per delay do not isolate a precise latency cost from
+host scheduling variability.
+The data support a controlled 32-validator testnet rehearsal: all ten new
+baseline, optimized and proxy runs converged, and every optimized run finished
+within 37 seconds. They do not qualify 32 separate machines or production
+deployment. Physical multi-host, loss and sustained-load runs remain open.
+
+With pinned Rust 1.97.1 on macOS ARM64, complete-workspace `test` and
+`release` build barriers and test executions passed on the optimized runtime
+code: 26 targets and 656 passing tests in each profile. A test-only module was
+then moved to the end of its file to satisfy Clippy. On that final source,
+workspace Clippy with `-D warnings`, formatting, and the focused recovery
+probe test in both profiles passed. Python syntax checks passed. This branch
+has not run the Linux or Windows CI matrix or a physical multi-host pilot.
 
 ## Historical state-v5 authority-period qualification
 

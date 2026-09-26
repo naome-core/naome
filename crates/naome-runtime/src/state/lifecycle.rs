@@ -935,6 +935,27 @@ fn handoff_peer_ids(
     Ok(peers)
 }
 
+pub(super) fn listen_address(address: SocketAddr) -> Result<naome_network::Multiaddr> {
+    let family = if address.is_ipv4() { "ip4" } else { "ip6" };
+    format!("/{family}/{}/tcp/{}", address.ip(), address.port())
+        .parse()
+        .map_err(|_| StateRuntimeError::Configuration("invalid handoff bind address"))
+}
+
+fn retire_file(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(StateRuntimeError::Transport(error.to_string())),
+    }
+    let directory = path
+        .parent()
+        .ok_or(StateRuntimeError::Configuration("key directory missing"))?;
+    std::fs::File::open(directory)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| StateRuntimeError::Transport(error.to_string()))
+}
+
 #[cfg(test)]
 mod recovery_probe_tests {
     use super::recovery_probe_order;
@@ -956,25 +977,4 @@ mod recovery_probe_tests {
             ["key-a", "stable-a", "key-b", "stable-b"]
         );
     }
-}
-
-pub(super) fn listen_address(address: SocketAddr) -> Result<naome_network::Multiaddr> {
-    let family = if address.is_ipv4() { "ip4" } else { "ip6" };
-    format!("/{family}/{}/tcp/{}", address.ip(), address.port())
-        .parse()
-        .map_err(|_| StateRuntimeError::Configuration("invalid handoff bind address"))
-}
-
-fn retire_file(path: &std::path::Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(StateRuntimeError::Transport(error.to_string())),
-    }
-    let directory = path
-        .parent()
-        .ok_or(StateRuntimeError::Configuration("key directory missing"))?;
-    std::fs::File::open(directory)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|error| StateRuntimeError::Transport(error.to_string()))
 }
