@@ -163,8 +163,9 @@ comparison, finishing the same Ubuntu 24.04 qualification within 551.909 seconds
 establishes a 2x speedup. Compare the generated report's
 elapsed time, height, faults, replay results, and binary/harness hashes before
 claiming the faster run preserves coverage.
-The original [public baseline report](../docs/mvp/evidence/handoff-baseline-ci.json)
-retains those checks and source identities.
+The historical baseline recorded those checks and source identities; the
+[measurement summary](../docs/mvp/verification.md#authority-period-qualification)
+remains in the repository.
 The baseline GitHub job timestamps separately record 47 seconds for the release
 build barrier, 87 seconds for the native publication/recovery scenario,
 34 seconds for the portable rehearsal, and 17 seconds for image packaging.
@@ -180,7 +181,7 @@ voting-window counters overlap the attempt phases; they must not be added to
 those phases as separate elapsed time. Build time remains separate in the
 preceding release compilation step.
 
-The first sealed-handoff [measurement](../docs/mvp/evidence/handoff-initial-ci.json)
+The first sealed-handoff measurement
 on `40546f7`, in [CI run 35893100165](https://github.com/naome-core/naome/actions/runs/35893100165),
 passed all 102-height Docker correctness checks in 661.884 seconds (1.668x).
 It was below the 2x milestone target. Receipt, voting-open and settlement phases
@@ -189,7 +190,7 @@ The following optimization removes redundant same-parent finality and healthy
 history requests only after an authenticated peer accepts an exact-parent offer,
 and reuses status probes. Unconfirmed peers and stalled heights retain repair.
 
-The [observation and repair measurement](../docs/mvp/evidence/handoff-observation-ci.json)
+The observation and repair measurement
 on `e4ce11a`, in [CI run 35897139541](https://github.com/naome-core/naome/actions/runs/35897139541),
 passed the same Docker checks in 614.499 seconds (1.796x), still below the milestone
 target. It used the identical Ubuntu 24.04 runner image `20260907.300.1` as the
@@ -203,7 +204,7 @@ and response decoding each retain at most two events within the same global
 frame and byte budgets. Observation polls every 0.2 seconds, recorded in the report, to reduce
 delay between confirmed workload stages without shortening certified windows.
 
-The [bounded-concurrency measurement](../docs/mvp/evidence/handoff-concurrency-ci.json)
+The bounded-concurrency measurement
 on `f18fd2f`, in [CI run 35902219562](https://github.com/naome-core/naome/actions/runs/35902219562),
 completed the Docker correctness checks in 598.632 seconds (1.844x), still below
 the milestone target. Its Ubuntu 24.04 runner image was `20260920.314.1`, while

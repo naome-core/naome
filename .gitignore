@@ -11,3 +11,6 @@ __pycache__/
 
 # Managed local model runtime, downloaded weights, and private configuration
 .local/
+
+# Raw MVP evidence reports stay local or in CI artifacts.
+docs/mvp/evidence/*.json

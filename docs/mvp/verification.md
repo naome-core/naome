@@ -2,9 +2,11 @@
 
 The current authority-period implementation uses canonical `state-v6` history through
 `naome`, `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
-proof-library component of that complete state. The historical
-[qualification report](evidence/final-integration.json) records source identities,
-commands, output hashes, the real-agent lab, and CI for `state-v1`. The mappings
+proof-library component of that complete state. The historical `state-v1`
+qualification recorded source identities, commands, output hashes, the real-agent
+lab, and CI. Raw evidence JSON is no longer versioned in the current tree;
+the measured results and source/CI references remain below. Keep new raw
+reports outside Git, such as in local storage or CI artifacts. The mappings
 below identify executable test sources; a source pointer is not a passing run.
 Every recorded run establishes evidence only for its named snapshot.
 
@@ -330,11 +332,11 @@ Four stable slots retain their quorum weight through unavailability; admission
 consumes the oldest eligible claim only when its successor is sealed.
 
 The 23 September 2026 qualification passed on clean implementation commit
-`66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c`. The [local qualification record](evidence/handoff-final-local.json)
-contains the source fingerprint, commands, elapsed times, output hashes,
+`66b84bcfb3d3c6ecbcb82a3d54666dd487e0871c`. The local qualification record
+captured the source fingerprint, commands, elapsed times, output hashes,
 architecture review and separately identified paper checks. The recorded paper
-revision is `3eb1100ef66553c9aa5297c2039e78ca42ba0854`; its hashes and review are
-recorded separately from the qualified software snapshot. The qualified consensus
+revision is `3eb1100ef66553c9aa5297c2039e78ca42ba0854`; its hashes and review
+were recorded separately from the qualified software snapshot. The qualified consensus
 implementation and devnet fixtures remain unchanged. A later Kev cleanup fix is
 qualified separately below. The workflow removes the recurring
 historical speed assertion at the user's request. The final PR commit must pass
@@ -387,14 +389,14 @@ own final-head CI.
 | Platform CI | [Run 35915474813](https://github.com/naome-core/naome/actions/runs/35915474813) passed both profiles on Linux x86_64, macOS ARM64 and Windows x86_64, plus quality, devnet and all aggregate gates. |
 | Earned installation | The process scenario registers a new account, verifies its paid proof and claim, installs its prepared candidate, requires its signature in a later ordinary quorum with only two bootstrap signers online, verifies the future service payment, cold-restarts peers and independently replays four distinct stores. |
 | Vacant-slot recovery | The four-process scenario starts with one owner offline, completes a genuine three-slot handoff, catches the owner up with a vacant slot, and requires a real reentry period before testing provider-offline proof retrieval and three approvals. |
-| Delayed native network | [Four-process report](evidence/handoff-final-native.json): 15 matching heights in 105.431 s with 50 ms delay in each direction, timed isolation with surviving-quorum progress, catch-up, SIGKILL, graceful restart, four replays and corrupt-export rejection. |
-| Portable bundles | [CI rehearsal](evidence/handoff-final-pilot.json): relocated private bundles, real proof/helper settlement with one node offline, catch-up, cold reopen and four agreeing archive replays; all nine checks passed. |
+| Delayed native network | Four-process run: 15 matching heights in 105.431 s with 50 ms delay in each direction, timed isolation with surviving-quorum progress, catch-up, SIGKILL, graceful restart, four replays and corrupt-export rejection. |
+| Portable bundles | CI rehearsal: relocated private bundles, real proof/helper settlement with one node offline, catch-up, cold reopen and four agreeing archive replays; all nine checks passed. |
 | Independent review | Selected authority, seal binding, signer custody, recovery, transport retention and priority, obsolete paths, operating commands, process evidence and the local readiness policy were reviewed. Substantive findings were fixed and no blocking findings remained. |
-| Whitepaper | The updated source, diagrams and generated 20-page English PDF passed structural checks and rendered-page inspection. Hashes are retained in the qualification record. |
+| Whitepaper | The updated source, diagrams and generated 20-page English PDF passed structural checks and rendered-page inspection. Hashes were captured in the historical qualification record. |
 
-The [final Docker report](evidence/handoff-final-ci.json) reached 102 matching
+The final Docker run reached 102 matching
 canonical heights in 34 attempts in **508.743 seconds**, compared with
-**1103.819 seconds** in the [baseline](evidence/handoff-baseline-ci.json):
+**1103.819 seconds** in the baseline:
 **2.170 times faster**. Both runs used the GitHub-hosted Ubuntu 24.04
 x86_64 runner class and the same container CPU/memory limits. The baseline image
 was `20260907.300.1`; the current image was `20260920.314.1`.
@@ -487,12 +489,12 @@ Physical multi-machine acceptance remains separate.
 | Evidence | Source and result |
 |---|---|
 | Implementation | `0bae7b0e61c576f9fc1edf2f465da90602a9645e`, the source qualified by the successful CI run below. |
-| Complete local workspace | Rust 1.97.1 with `CARGO_INCREMENTAL=0`; separate build barriers and complete all-target/all-feature/locked executions; 533 tests passed in each of the test and release profiles. Commands and output hashes are in the qualification report. |
+| Complete local workspace | Rust 1.97.1 with `CARGO_INCREMENTAL=0`; separate build barriers and complete all-target/all-feature/locked executions; 533 tests passed in each of the test and release profiles. Commands and output hashes were captured in the historical qualification record. |
 | Quality | Formatting, Clippy with warnings denied, documentation with warnings denied, and the workspace doctest command passed. The final crates define zero doctests. |
 | Platform CI | [Run 35465126870](https://github.com/naome-core/naome/actions/runs/35465126870) on `0bae7b0`: all six Linux x86_64, macOS ARM64, and Windows x86_64 test/release jobs, quality, devnet, and aggregate gates passed. |
-| CI devnet | [Public Docker report](evidence/final-integration-ci-devnet.json): all four validators independently replayed 102 matching complete records on the same clean `0bae7b0` source, with 50 ms traffic delay, isolation/healing, SIGKILL, graceful restart, and corrupt-export rejection. This is accelerated control-record qualification, not 102 proof publications. |
-| Real lab | [Public lab report](evidence/final-integration-lab.json): passed in 1,665.669 seconds with real 300/120/120-second windows, actual bounded agenda review, reversed reveals, missing earlier reveal, helper retrieval while its original provider was offline, citation payment, no retrospective payment, 2:2 partition/healing, four-node cold restart, and independent replay. |
-| Lab provenance | The lab ran clean source `7e43f2bc3c5e967b2a2f3aad54496c61eb064be2`. The later code change only gates two Unix test helpers. Rebuilt main executable hashes match the lab; the qualification report retains the source-manifest and binary hashes. |
+| CI devnet | Docker run: all four validators independently replayed 102 matching complete records on the same clean `0bae7b0` source, with 50 ms traffic delay, isolation/healing, SIGKILL, graceful restart, and corrupt-export rejection. This is accelerated control-record qualification, not 102 proof publications. |
+| Real lab | Local lab run: passed in 1,665.669 seconds with real 300/120/120-second windows, actual bounded agenda review, reversed reveals, missing earlier reveal, helper retrieval while its original provider was offline, citation payment, no retrospective payment, 2:2 partition/healing, four-node cold restart, and independent replay. |
+| Lab provenance | The lab ran clean source `7e43f2bc3c5e967b2a2f3aad54496c61eb064be2`. The later code change only gates two Unix test helpers. Rebuilt main executable hashes match the lab; source-manifest and binary hashes were captured in the historical qualification record. |
 | Independent review | Read-only architecture and source/log/binary/evidence review was clear for that integration. It did not perform an independent Cargo run. |
 
 The lab produced exactly three paid completions and three passive claims, with
@@ -510,8 +512,8 @@ fixture profile and actual agent decision and reason.
 
 ## Pilot preparation
 
-The next pilot's [local preparation evidence](evidence/pilot-local.json), dated
-20 September 2026, records an exact file manifest for the changes after
+The next pilot's local preparation run, dated
+20 September 2026, recorded an exact file manifest for the changes after
 `6cdab88`. Both complete Rust profiles passed 535 tests with separate build
 barriers; formatting, Clippy, rustdoc and the doctest command passed. All 18
 devnet/Python tests passed. A release-binary rehearsal moved four private bundles,
