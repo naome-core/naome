@@ -383,7 +383,8 @@ print(exact(n).decode());s.close()
                     '--config', str(self.config(i)), '--validator', str(self.args.bin_dir / 'naome-validator'),
                     '--front', self.multi(self.fronts[i]), '--back', self.multi(self.backs[i]),
                     '--handoff-front', self.multi(self.handoff_fronts[i]),
-                    '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms)]
+                    '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms),
+                    '--max-connections', str(max(16, 2 * self.count))]
             self.children[i] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
                                                 stderr=subprocess.STDOUT, start_new_session=True)
             if self.direct:

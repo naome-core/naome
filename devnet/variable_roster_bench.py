@@ -177,6 +177,7 @@ def main():
         'backend': ('direct local validator processes' if args.direct else
                     'local processes with TCP proxies'),
         'one_way_proxy_delay_millis': args.delay_ms,
+        'proxy_connection_limit': None if args.direct else max(16, 2 * args.validators),
         'loopback_address_families': (['127.0.0.1', '::1'] if args.mixed_loopback else
                                       ['127.0.0.1']),
         'listener_port_policy': ('probed 20000..29999' if args.direct else 'OS assigned'),

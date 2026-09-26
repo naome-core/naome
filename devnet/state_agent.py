@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--handoff-front', required=True)
     parser.add_argument('--handoff-back', required=True)
     parser.add_argument('--delay-ms', type=int, required=True)
+    parser.add_argument('--max-connections', type=int, default=16)
     args = parser.parse_args()
     proxies = []
     child = None
@@ -28,8 +29,9 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        proxies.append(Proxy(args.front, args.back, args.delay_ms))
-        proxies.append(Proxy(args.handoff_front, args.handoff_back, args.delay_ms))
+        proxies.append(Proxy(args.front, args.back, args.delay_ms, args.max_connections))
+        proxies.append(Proxy(args.handoff_front, args.handoff_back, args.delay_ms,
+                             args.max_connections))
         child = subprocess.Popen([args.validator, 'start', str(args.config)], stdin=subprocess.DEVNULL)
         (args.config.parent / 'runtime-pid.json').write_text(json.dumps({'wrapper': os.getpid(), 'validator': child.pid}))
         return child.wait()
