@@ -74,6 +74,7 @@ def update_profile(profile, statuses, baseline, elapsed):
     queue_total = 0
     flight_total = 0
     cpu_total = 0
+    node_samples = {}
     for index, status in enumerate(statuses):
         if status is None:
             continue
@@ -99,6 +100,16 @@ def update_profile(profile, statuses, baseline, elapsed):
         node['last_position'] = status.get('consensus_position')
         node['last_queued_deliveries'] = queue
         node['last_in_flight_deliveries'] = flight
+        node_samples[str(index)] = {
+            'height': status['height'],
+            'agreement_ready': diagnostics['agreement_ready'],
+            'connected_peers': diagnostics['connected_peers'],
+            'staged_connected_peers': diagnostics['staged_connected_peers'],
+            'ready_signatures': diagnostics['ready_signatures'],
+            'terminal_signatures': diagnostics['terminal_signatures'],
+            'queued_deliveries': queue,
+            'in_flight_deliveries': flight,
+        }
         queue_total += queue
         flight_total += flight
         cpu_total += sum(cpu_delta.values())
@@ -112,6 +123,7 @@ def update_profile(profile, statuses, baseline, elapsed):
         'total_queued_deliveries': queue_total,
         'total_in_flight_deliveries': flight_total,
         'total_cpu_millis_since_submission': cpu_total,
+        'nodes': node_samples,
     })
 
 
