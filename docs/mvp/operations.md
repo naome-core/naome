@@ -3,6 +3,9 @@
 For separate-machine deployment, start with the [pilot runbook](pilot.md).
 It prepares relocatable per-node bundles and collects independently replayed
 archives. The commands below describe the research workflow within that run.
+For a restartable operator process over an explicit sequence of supplied
+questions, proofs, and owner vote policies, see the
+[operator supervisor](operator-supervisor.md).
 
 These commands use a four-validator starting genesis on Unix. Fresh v6 genesis
 may install four to 32 validators; the example below starts with four. The
