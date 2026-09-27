@@ -37,6 +37,23 @@ The current ceiling keeps the successfully repeated local roster size while
 physical multi-host, slow-node, network-fault and sustained-load qualification
 remain open.
 
+On clean capped-source commit `56c71774ad56f1af06ebac71ae61503217b5a3bf`,
+a fresh 32-process direct run reached one common height-two head and state
+across all validators in 21.500 seconds. Its quorum was 22. The local raw
+report, kept outside Git at
+`/private/tmp/naome-cap32-pr-smoke-20260927/report.json`, has SHA-256
+`8a1bd5d397d120b7fca27d0231e1648718d335f325b1dd8326cc38330d399ade`.
+The run used one macOS host, loopback TCP, accelerated `ci-test` timing and a
+two-second status poll; it did not independently replay exported archives.
+
+For that capped source, pinned Rust 1.97.1 completed the full-workspace
+all-target, all-feature, locked build barriers in both `test` and `release`.
+The ledger, consensus and CLI library suites passed 232 tests per profile,
+and the focused stable-recovery test passed in both profiles. Workspace Clippy
+with denied warnings, formatting, 36 devnet Python tests and both 20-page
+PDF structural checks passed. Complete-workspace test execution and the
+Linux, macOS and Windows CI matrix remain to be checked on the PR head.
+
 ## Earlier state-v6 variable-roster assessment
 
 Earlier implementation commit `05101336477c7fded3790a578a79476a7434ede5` extended the
