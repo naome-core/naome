@@ -399,6 +399,41 @@ fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
                 json!({"status":"transported","operation":files::hex(id.as_bytes())})
             }
         }
+        Request::AuthorContext { account } => {
+            let account = naome_ledger::AccountId::from_bytes(files::unhex(&account)?);
+            let state = runtime.state()?;
+            let active = state.active().map(|attempt| {
+                json!({
+                    "question":files::hex(attempt.question.as_bytes()),
+                    "attempt":attempt.number,
+                    "phase":format!("{:?}",attempt.phase),
+                    "round":attempt.solution_round.map(|round|files::hex(round.as_bytes())),
+                    "deadline":attempt.deadline,
+                })
+            });
+            let claims = state.claims().values().filter(|claim|claim.author==account)
+                .map(|claim|json!({"family":files::hex(claim.family.as_bytes()),"author":files::hex(account.as_bytes()),"ordinal":claim.completion_ordinal}))
+                .collect::<Vec<_>>();
+            json!({"status":"finalized","genesis":files::hex(state.genesis().id().as_bytes()),
+                "height":state.height(),"head":files::hex(state.head().as_bytes()),
+                "state":files::hex(state.commitment().as_bytes()),"next_nonce":state.next_nonce(account),
+                "registration_available":state.registration_available(),"active":active,"claims":claims})
+        }
+        Request::ActionStatus { id } => {
+            let id = OperationId::from_bytes(files::unhex(&id)?);
+            if let Some(receipt) = runtime.state()?.receipt(id) {
+                json!({"status":"finalized","height":receipt.coordinate.height,
+                    "operation_index":receipt.coordinate.operation_index,"nonce":receipt.nonce})
+            } else if let Some(reason) = runtime.operation_rejection(id) {
+                json!({"status":"rejected","reason":reason})
+            } else if runtime.operation_deferred(id) {
+                json!({"status":"deferred","reason":"local queue yielded; retry the exact saved action"})
+            } else if runtime.operation_pending(id) {
+                json!({"status":"pending"})
+            } else {
+                json!({"status":"unknown"})
+            }
+        }
         Request::Receipt { id } => match runtime
             .state()?
             .receipt(OperationId::from_bytes(files::unhex(&id)?))

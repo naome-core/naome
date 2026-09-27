@@ -118,12 +118,14 @@ consensus and transport files have been durably removed and must not be restored
 Use `naome status`, `shutdown`, `profile`, `submit`, `vote`, `agent-vote`,
 `package`, `commit`, `reveal`, `receipt` and library commands from the
 [operating guide](operations.md). Substitute each host's local bundle path and
-local `account.key` for validator-owner actions. Authors use their separately
-held account key and connect to their local node control socket; there is no
-remote public submission API. For the first pilot, let an author operate from a
-validator host under the trusted operator account, or securely transfer a saved
-signed action and use `send`. The author must retain commitment secrets locally
-until reveal; never transfer account keys to all operators for convenience.
+local `account.key` for validator-owner actions. Authors retain their separately
+held account key and may use the loopback participant gateway through a
+restricted authenticated tunnel as described in the [operating guide](operations.md#participant-action-gateway).
+The gateway has no signing key, and its TCP port is never exposed directly to
+the network. The author must retain commitment secrets locally until reveal;
+never transfer account keys to all operators for convenience. The gateway has
+been exercised with separate processes on one host; a real second-machine
+participant flow is still unverified.
 
 For the transfer path, the author prepares the action using a trusted local node
 view and their own account key. The CLI saves the exact signed bytes at the
@@ -144,10 +146,10 @@ finalized submission; follow the [operating guide](operations.md) for exact-byte
 resubmission or a new signed action when appropriate. Save the receipt with
 the operation ID and compare it against a second trusted node or independently
 replayed archive. Keep signed actions, commitment secrets, and raw receipts in
-private storage. There is currently no public remote submission API. A public
-ingress would need explicit decisions on caller authorization, per-caller and
-global rate limits, custody and storage of signed actions, and who may retry or
-return receipts; this pilot does not choose those rules.
+private storage. The keyless gateway offers a loopback alternative to this
+file-transfer procedure. Its caller and author limits, public query policy,
+and node-owned pending custody are specified in the operating guide. Neither
+path has been qualified with a second physical machine.
 
 ## Record separate network and live-state gates
 

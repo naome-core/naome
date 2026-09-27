@@ -807,6 +807,14 @@ impl StateRuntime {
     pub fn pending_operations(&self) -> usize {
         self.pending.len()
     }
+    /// Locally anchored intake, which has not acquired a finalized receipt.
+    pub fn operation_pending(&self, id: OperationId) -> bool {
+        self.pending.contains_key(&id)
+            || matches!(
+                self.pending_store.as_ref().and_then(|s| s.status(id)),
+                Some(PendingActionStatus::Pending)
+            )
+    }
     /// A bounded local preview diagnostic, never a finalized rejection receipt.
     pub fn operation_rejection(&self, id: OperationId) -> Option<&str> {
         if let Some(PendingActionStatus::Rejected(reason)) =

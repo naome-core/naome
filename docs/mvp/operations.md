@@ -176,6 +176,77 @@ pending journal is separate from canonical selected history and has a 512 MiB
 file limit.
 Identical saved actions can be resent with `send`.
 
+## Participant action gateway
+
+Run the keyless gateway as a separate process after its validator starts. It
+accepts only an explicit loopback IP and port, uses the existing same-user Unix
+control socket, and opens only public genesis bytes. It holds no account,
+consensus, or transport key and keeps no action database. The node's anchored
+pending journal remains the only durable intake store; its 16-action queue,
+profile byte limit, and 512 MiB journal cap still apply.
+
+```sh
+"$BIN" gateway serve "$RUN/genesis.bin" "$RUN/node-0/control.sock" 127.0.0.1:45800
+```
+
+For an author on another machine, expose this loopback port only through an
+operator-approved authenticated encrypted tunnel with port forwarding and no
+shell or validator-file access for the author. The gateway protocol itself is
+plain length-framed TCP, without TLS; both server and client reject non-loopback
+addresses. It must not be exposed through an unprotected proxy. This same-user
+control-socket setup
+does not provide operating-system isolation between the gateway process and
+validator-owned files; the gateway code never reads those files, but a stronger
+service-account boundary needs a separate deployment design.
+
+On the participant machine, with the forwarded endpoint at `127.0.0.1:45800`:
+
+```sh
+"$BIN" gateway genesis 127.0.0.1:45800 participant-genesis.bin
+"$BIN" profile-info participant-genesis.bin
+"$BIN" account create author.key
+"$BIN" gateway context 127.0.0.1:45800 ACCOUNT_ID
+"$BIN" remote-register 127.0.0.1:45800 participant-genesis.bin author.key register.action
+"$BIN" gateway receipt 127.0.0.1:45800 OPERATION_ID
+"$BIN" remote-submit 127.0.0.1:45800 participant-genesis.bin author.key question.nao "Purpose" submit.action
+"$BIN" gateway receipt 127.0.0.1:45800 OPERATION_ID
+"$BIN" remote-send 127.0.0.1:45800 participant-genesis.bin submit.action
+```
+
+Compare the genesis ID from `profile-info` with the operator's authenticated,
+out-of-band genesis ID before signing. `remote-vote`, `remote-commit`,
+`remote-reveal`, and `remote-join-intent` use the same `ADDRESS GENESIS` prefix
+as their local counterparts, with the same remaining arguments. Author keys,
+commitment secrets, and exact signed action files stay on the participant's
+machine. A new account must wait for its registration receipt before submitting
+with nonce 2. Keep an action file for an exact-byte retry; `remote-send` and
+`gateway submit` never sign a replacement.
+
+The context response exposes only public genesis bytes, finalized height,
+head/state commitment, the requested account's next nonce and claims, current
+active phase, and registration availability. It is a snapshot: the phase or
+nonce can change before a signed action reaches a validator. Anyone allowed to
+connect can query context or an operation ID; submission requires a valid
+genesis-bound author signature, followed by the validator's normal eligibility
+checks. There is no gateway allowlist or participant identity service. The
+gateway permits at most 16 concurrent connections, a 2 MiB action frame, 64
+requests per source IP, 16 signed submissions per author, and 512 total
+requests per 60-second window. It keeps at most 256 caller and 256 author
+counters and drops idle incomplete frames after five seconds. Authors sharing
+one tunnel share its source-IP budget. Limits are an overload boundary for the
+trusted group, not public-network denial-of-service protection.
+
+An accepted submit returns `transported`; the exact bytes have reached the
+node's durable pending-action path, without a finalized admission promise.
+`gateway receipt` reports `pending` while that node retains the action,
+`finalized` only from sealed history, `deferred` or `rejected` for local
+nonfinal outcomes, and `unknown` when this node has neither custody nor a
+finalized receipt. A lost acknowledgement calls for a receipt query and an
+exact-byte retry. Check a finalized receipt against another validator or an
+independently replayed archive. A gateway restart resets its rate counters and
+can lose an in-flight acknowledgement; validator pending custody and finalized
+receipts survive their own recovery rules.
+
 ```sh
 "$BIN" receipt "$C0" "$OPERATION_ID"
 "$BIN" send "$C0" "$RUN/saved-action.bin"
