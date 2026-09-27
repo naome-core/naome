@@ -253,7 +253,10 @@ class Figure(Flowable):
             self.label(xx+bw/2,108,'H ersetzt; B nicht mehr benötigt' if de else 'H replaced; B no longer needed',9.5)
             self.label(xx+bw/2,87,'H und B werden nicht aufgenommen' if de else 'H and B are not newly admitted',9.3)
             self.arrow([(bw+3,228),(bw+gap-3,228)])
-            self.label(CW/2,38,'C: gleiche kanonische Aussage, gleiche Foundation und Annahmen' if de else 'C: same canonical conclusion, same Foundation and assumptions',10)
+            reuse_condition = ('C: same canonical conclusion and fixed Foundation'
+                               if self.variant == 'variable' else
+                               'C: same canonical conclusion, same Foundation and assumptions')
+            self.label(CW/2,38,'C: gleiche kanonische Aussage, gleiche Foundation und Annahmen' if de else reuse_condition,10)
             self.label(CW/2,21,'C ist zitierberechtigt; A erst bei späterer berechtigter Verwendung' if de else 'C is citation-eligible; A only through later eligible use',10,True)
             self.label(CW/2,4,'Pfeile im Graphen bedeuten: verwendet. Zitate aus entfernten Zweigen entfallen.' if de else 'Graph arrows mean uses. Citations from removed branches no longer count.',9.5)
         elif k=='citation':
@@ -340,7 +343,7 @@ def build(lang,variant='base'):
         if block=='<!-- APPENDICES -->':story.append(Spacer(1,12));continue
         if block=='[IDENTITIES]':story.append(KeepTogether([identity_table(lang,sty)]));continue
         if block.startswith('[FIG:'):
-            figure=Figure(block[5:-1],lang,'variable' if lang=='en' else variant)
+            figure=Figure(block[5:-1],lang,variant)
             assert blocks[i].startswith('[CAPTION] '),(lang,block,'missing caption')
             figure_count+=1
             prefix='Abbildung' if lang=='de' else 'Figure'
