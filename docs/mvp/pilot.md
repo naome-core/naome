@@ -103,6 +103,12 @@ profile, path length and disk capacity. Native startup then checks registered ke
 roles, anchored replay and exclusive signing custody. Neither command initializes
 missing authority. Simulation controls are disabled. No service is installed and
 no automatic restart policy is added; keep the foreground process supervised.
+Save each host's `check` JSON and foreground validator log in private operator
+storage. Record the exact binary hashes reported by `check`; a matching hash
+does not by itself prove how the binary was built. Confirm the operator can
+authenticate to each target before transferring its bundle, and log the
+authenticated destination, physical host, bundle index, and one-copy custody
+handoff. A TCP connection or host label does not establish this gate.
 For an explicit proxy/NAT arrangement, `listen_address` and
 `handoff_listen_address` may name local bind addresses; both configured advertised
 endpoints must still reach them. This pilot keeps both endpoints fixed for the
@@ -118,6 +124,74 @@ remote public submission API. For the first pilot, let an author operate from a
 validator host under the trusted operator account, or securely transfer a saved
 signed action and use `send`. The author must retain commitment secrets locally
 until reveal; never transfer account keys to all operators for convenience.
+
+For the transfer path, the author prepares the action using a trusted local node
+view and their own account key. The CLI saves the exact signed bytes at the
+chosen `ACTION` path even when transport is only pending. The author records
+the printed operation ID and SHA-256 of `ACTION`, transfers that file privately
+to one trusted operator, and retains the original. The operator compares its
+SHA-256 with the author's value, then runs these commands on the validator host:
+
+```sh
+naome send /private/node-0/node.json /private/inbox/action.bin
+naome receipt /private/node-0/node.json OPERATION_ID
+```
+
+`send` uses that host's local Unix socket; it does not accept a private key.
+The operator returns the transport result and later the `finalized` receipt to
+the author. A `transported`, `pending`, `deferred` or `rejected` result is not a
+finalized submission; follow the [operating guide](operations.md) for exact-byte
+resubmission or a new signed action when appropriate. Save the receipt with
+the operation ID and compare it against a second trusted node or independently
+replayed archive. Keep signed actions, commitment secrets, and raw receipts in
+private storage. There is currently no public remote submission API. A public
+ingress would need explicit decisions on caller authorization, per-caller and
+global rate limits, custody and storage of signed actions, and who may retry or
+return receipts; this pilot does not choose those rules.
+
+## Record separate network and live-state gates
+
+After all four validators start, run the TCP probe from each assigned node host.
+It attempts connections to the other three configured primary endpoints and
+writes a private report even when some connections fail. Run it again after
+the sealed handoff with `--channel handoff`; the handoff endpoints are not
+necessarily listening before rotation.
+
+```sh
+python3 -B devnet/pilot_observe.py --bin-dir target/release probe \
+  --bundle /private/node-0 --host-label host-a \
+  --report /private/evidence/probe-0.json
+```
+
+Collect one report per node and compare all twelve directed connections:
+
+```sh
+python3 -B devnet/pilot_observe.py --bin-dir target/release compare-probes \
+  --report /private/evidence/tcp-summary.json \
+  /private/evidence/probe-0.json /private/evidence/probe-1.json \
+  /private/evidence/probe-2.json /private/evidence/probe-3.json
+```
+
+This is TCP reachability evidence only. Record authenticated remote login and
+actual validator placement separately. On each host, save a live observation
+at the same quiet tip, adding operation IDs whose finalized receipts matter:
+
+```sh
+python3 -B devnet/pilot_observe.py --bin-dir target/release observe \
+  --bundle /private/node-0 --host-label host-a --stage settled \
+  --operation OPERATION_ID --report /private/evidence/settled-0.json
+python3 -B devnet/pilot_observe.py --bin-dir target/release compare \
+  --report /private/evidence/settled-summary.json \
+  /private/evidence/settled-0.json /private/evidence/settled-1.json \
+  /private/evidence/settled-2.json /private/evidence/settled-3.json
+```
+
+Use a fresh report path for each stage. Repeat after stopping one validator,
+after it catches up with its original stores and anchors, and after cold
+restart. The comparison requires all four finalized statuses and requested
+receipts to agree; it does not make host labels trustworthy. Keep the operator
+timeline, process exit/start records, and fault-control logs beside these
+reports. Independent archive replay is the later `snapshot`/`collect` gate.
 
 ## Acceptance on real machines
 
@@ -158,7 +232,9 @@ using actual wall-clock LAB windows:
    old consensus or transport key cannot exercise new-period authority.
 
 The milestone passes only with scenario evidence and at least two actual
-machines, preferably four. Archive equality alone proves neither independent
+machines, preferably four. A 32-validator capacity or performance claim
+requires its own 32-host run; this four-host pilot cannot establish it. Archive
+equality alone proves neither independent
 placement nor agent use, fault execution, clock behavior, or research usefulness.
 Use meaningful participant-authored tasks after reproducing the checked fixtures.
 Finite record and consensus-round budgets still apply. A budget halt, unavailable

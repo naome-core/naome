@@ -12,6 +12,7 @@ import time
 from types import SimpleNamespace
 
 import pilot
+import pilot_observe
 
 
 def rehearse(args):
@@ -84,13 +85,22 @@ def rehearse(args):
         for index in range(4):
             wait(index, lambda s: s['height'] == 0)
         checks['relocated_bundles_with_separate_keys'] = True
+        probes = []
+        for index in range(4):
+            report = root / f'probe-{index}.json'
+            result = pilot_observe.probe(SimpleNamespace(bin_dir=args.bin_dir, bundle=bundles[index],
+                host_label='local-rehearsal', timeout=3, channel='primary', report=report))
+            pilot.require(result['all_connected'], 'local rehearsal TCP probe failed')
+            probes.append(report)
+        pilot_observe.compare_probes(SimpleNamespace(probes=probes, report=root / 'tcp-agreement.json'))
+        checks['directed_tcp_probes_one_host_only'] = True
         denied = subprocess.run([str(native['naome']), 'peer', str(bundles[0] / 'node.json'), '0', 'off'], capture_output=True, timeout=15)
         pilot.require(denied.returncode != 0 and b'simulation controls are disabled' in denied.stderr,
                       'pilot did not explicitly reject simulation controls')
         checks['simulation_controls_disabled'] = True
         stop(3)
         author = prepared / 'authors/account-4.key'
-        cli(0, 'submit', author, fixtures / 'question-a.nao', 'Pilot: reusable reflexivity', root / 'submit.bin')
+        submission = cli(0, 'submit', author, fixtures / 'question-a.nao', 'Pilot: reusable reflexivity', root / 'submit.bin')
         for index in range(3):
             wait(index, lambda s: (s.get('active') or {}).get('phase') == 'Voting')
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -115,6 +125,16 @@ def rehearse(args):
         for index in range(4):
             wait(index, lambda s: s['state'] == settled['state'])
         checks['all_nodes_cold_reopened_same_state'] = True
+        observations = []
+        for index in range(4):
+            report = root / f'observation-{index}.json'
+            pilot_observe.observe(SimpleNamespace(bin_dir=args.bin_dir, bundle=bundles[index],
+                host_label='local-rehearsal', stage='after-cold-restart',
+                operation=[submission['operation']], report=report))
+            observations.append(report)
+        pilot_observe.compare(SimpleNamespace(observations=observations,
+            report=root / 'live-agreement.json'))
+        checks['live_status_and_finalized_receipt_agree'] = True
         snapshots = []
         for index in range(4):
             output = root / f'snapshot-{index}'
@@ -157,6 +177,7 @@ def rehearse(args):
                   'multi_machine': False, 'real_agent': False, 'lab_or_research_windows': False,
                   'checks': checks, 'height': settled['height'], 'paid_completions': settled['paid_completions'],
                   'source': pilot.source(), 'binary_sha256': {n: pilot.digest(p) for n, p in native.items()},
+                  'observer_sha256': pilot.digest(pilot_observe.__file__),
                   'elapsed_seconds': round(time.monotonic() - started, 3)}
     finally:
         for child in children.values():
