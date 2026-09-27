@@ -23,41 +23,6 @@ pub fn research_policy() -> Value {
     })
 }
 
-#[cfg(test)]
-mod policy_tests {
-    use super::research_policy;
-    use naome_ledger::{profile::Profile, question::CompiledQuestion};
-
-    #[test]
-    fn policy_preview_matches_question_admission() {
-        let policy = research_policy();
-        let prefix = "foundation = \"naome:zfc\" statement = forall(x,equal(x,x))";
-        assert!(CompiledQuestion::compile(prefix, &Profile::lab()).is_ok());
-        assert!(
-            CompiledQuestion::compile(&format!("{prefix} success = \"resolve\""), &Profile::lab())
-                .is_ok()
-        );
-        for field in [
-            "assumptions = []",
-            "references = []",
-            "allow_substitution = false",
-        ] {
-            assert!(
-                CompiledQuestion::compile(&format!("{prefix} {field}"), &Profile::lab()).is_err()
-            );
-        }
-        assert_eq!(policy["question_source"]["assumptions"], "unsupported");
-        assert_eq!(
-            policy["question_source"]["library_references"],
-            "unsupported in question source"
-        );
-        assert_eq!(
-            policy["solution_admission"]["resource_bounds"],
-            "immutable genesis profile limits; no per-question override"
-        );
-    }
-}
-
 pub fn receipt(value: &NormalizationReceipt) -> Value {
     json!({"round":files::hex(value.round.as_bytes()),"winning_commit":{"operation":files::hex(value.winning_commit.operation.as_bytes()),"height":value.winning_commit.coordinate.height,"operation_index":value.winning_commit.coordinate.operation_index},"commitment":files::hex(value.commitment.as_bytes()),"original_hash":files::hex(value.original_hash.as_bytes()),"parent_state":files::hex(value.parent.as_bytes()),"profile":files::hex(value.profile.as_bytes()),"normalized_root":files::hex(value.root.as_bytes()),"author":files::hex(value.author.as_bytes()),"substitutions":value.substitutions.iter().map(|(old,new)|json!({"original":files::hex(old.as_bytes()),"replacement":files::hex(new.as_bytes())})).collect::<Vec<_>>(),"new_proofs":value.new_proofs.iter().map(|(proof,author)|json!({"proof":files::hex(proof.as_bytes()),"recipient":files::hex(author.as_bytes())})).collect::<Vec<_>>(),"citation_payments":value.rewards.citations().iter().map(|(proof,recipient,atoms)|json!({"proof":files::hex(proof.as_bytes()),"recipient":files::hex(recipient.as_bytes()),"atoms":atoms.to_string()})).collect::<Vec<_>>(),"credits":value.rewards.credits().iter().map(|(account,atoms)|json!({"account":files::hex(account.as_bytes()),"atoms":atoms.to_string()})).collect::<Vec<_>>(),"reserve_atoms":value.rewards.reserve().to_string()})
 }
@@ -122,4 +87,39 @@ pub fn question(state: &LedgerState, id: OperationId) -> Result<Value> {
 
 pub fn compiled_question(question: &naome_ledger::question::CompiledQuestion) -> Value {
     json!({"verification":"well-formed formal obligation; mathematical truth not established","profile":files::hex(question.profile_id().as_bytes()),"family":files::hex(question.resolution_id().as_bytes()),"source":question.source(),"R":question.positive_target().to_source(),"not_R":question.negative_target().to_source(),"submitted_negation_parity":question.negation_parity()})
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::research_policy;
+    use naome_ledger::{profile::Profile, question::CompiledQuestion};
+
+    #[test]
+    fn policy_preview_matches_question_admission() {
+        let policy = research_policy();
+        let prefix = "foundation = \"naome:zfc\" statement = forall(x,equal(x,x))";
+        assert!(CompiledQuestion::compile(prefix, &Profile::lab()).is_ok());
+        assert!(
+            CompiledQuestion::compile(&format!("{prefix} success = \"resolve\""), &Profile::lab())
+                .is_ok()
+        );
+        for field in [
+            "assumptions = []",
+            "references = []",
+            "allow_substitution = false",
+        ] {
+            assert!(
+                CompiledQuestion::compile(&format!("{prefix} {field}"), &Profile::lab()).is_err()
+            );
+        }
+        assert_eq!(policy["question_source"]["assumptions"], "unsupported");
+        assert_eq!(
+            policy["question_source"]["library_references"],
+            "unsupported in question source"
+        );
+        assert_eq!(
+            policy["solution_admission"]["resource_bounds"],
+            "immutable genesis profile limits; no per-question override"
+        );
+    }
 }
