@@ -343,11 +343,14 @@ impl Lab {
         });
     }
     fn approve(&self, owners: &[usize], label: &str, submission: &str) {
+        // All owners can sign against the same finalized Voting view. Waiting
+        // for that view once avoids four competing status/question pollers in
+        // the short voting window after an authority handoff.
+        let ingress = self.wait_active_phase(submission, "Voting");
         let votes = thread::scope(|scope| {
             let mut handles = Vec::new();
             for &index in owners {
                 handles.push(scope.spawn(move || {
-                    let ingress = self.wait_active_phase(submission, "Voting");
                     let args = [
                         "vote".into(),
                         self.config(ingress),

@@ -13,7 +13,7 @@ publisher or alternate history authority is involved.
 The default workload finalizes at least 100 complete state records. Two distinct
 registered owners alternate authenticated question submissions. Each attempt must
 open its full voting window and close as `NotApproved` only after the certified
-deadline. The default `short-test` profile has a 15-second voting window;
+deadline. The default `short-test` profile has a 45-second voting window;
 `--timing ci-test` explicitly selects a 1-second window for the Docker CI run.
 The qualifier sends no consensus commands. This is
 accelerated state/transport qualification. Proof publication, helper retrieval,

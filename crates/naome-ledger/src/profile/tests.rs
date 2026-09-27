@@ -213,6 +213,7 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
     assert_eq!(short.name(), "state-v6-short-test");
+    assert_eq!(short.timing().voting_seconds, 45);
     assert_eq!(ci.timing().voting_seconds, 1);
     assert_eq!(ci.name(), "state-v6-ci-test");
     assert_ne!(lab.id(), research.id());

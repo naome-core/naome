@@ -234,7 +234,7 @@ impl Profile {
             TimingKind::Research => (604800, 86400, 86400, 2592000),
             // Leave room for independent CLI commands and durable quorum
             // delivery under concurrent CI compilation and process scheduling.
-            TimingKind::ShortTest => (15, 45, 45, 120),
+            TimingKind::ShortTest => (45, 45, 45, 120),
             // This qualification submits no approval ballots. Keep a complete
             // nonzero certified window while minimizing its CI-only floor.
             TimingKind::CiTest => (1, 8, 8, 120),
