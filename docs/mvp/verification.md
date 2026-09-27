@@ -729,3 +729,28 @@ throughput or multi-machine performance.
 Reports identify the exact source snapshot that was measured. Earlier successful
 runs do not qualify later code changes. Local checks, CI, lab execution, and
 multi-machine qualification remain separate evidence.
+
+## Operator supervisor local process evidence (2026-09-27)
+
+The bounded operator scenario in `devnet/research_supervisor_scenario.py` passed
+on one macOS ARM64 host with four separate validator processes, a compact
+128-record run, and the explicitly accelerated `short-test` timing profile.
+Operators supplied both questions, both checked proof sources, helper sources,
+and four owner YES policies. The supervisor settled A as PROVED and B as REFUTED,
+reused H with a positive citation payment, recovered an exact saved B submission
+after an operator-process interruption, and stopped after the two-item plan.
+Four independent node exports replayed to the same height 22 and state
+`40ae7a6df6b1ef20063851ab43286639a037acb307dc2e00b149fdfa71fc5bf9`;
+paid completions were 2. Elapsed scenario time was 228.883 seconds.
+
+The run started from prototype tree `ffa7c86a9a407830e0053d5d69b2e9527a093136` with
+uncommitted supervisor/scenario files; their SHA-256 values at run start were
+`f74d968adac8fe77f1f4492c492710504c11f94086b67677ccfb87e4d48d61cf`
+and `8246bb7b4229800d1cfd4f389d1b60b98fa885be6e172ad88942eb785fbd3e4d`,
+respectively. The pinned Rust 1.97.1 build and all-target focused no-run barrier
+passed. Pinned CLI library tests passed (43), as did validator interface (1)
+and verifier canonical (4) tests; `cargo fmt --all -- --check` and Python
+syntax checks passed. This evidence is a one-host process run with manual owner
+policies, not real-agent, real-time Lab/research, or physical multi-machine
+qualification. Required multi-platform, two-profile CI is assessed separately
+on the PR.
