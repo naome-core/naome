@@ -221,6 +221,7 @@ async fn run_owned(
         return Err("insufficient free storage for this immutable profile".into());
     }
     let mut runtime_config = StateRuntimeConfig {
+        pending_store: Some((config.history.clone(), config.history_anchor.clone())),
         allow_simulation_controls: config.simulation,
         ..StateRuntimeConfig::default()
     };

@@ -26,7 +26,10 @@ use naome_network::{
 };
 use naome_node::state::{StateNode, StateNodeError};
 use naome_protocol::state_exchange::{StateContext, StateRequestBody};
-use naome_storage::state::{StateHandoffJournal, StatePeriodCustody, StateStorageError};
+use naome_storage::state::{
+    PendingActionStatus, StateHandoffJournal, StatePendingActions, StatePeriodCustody,
+    StateStorageError,
+};
 use naome_storage::state::{StateHistory, StateSigner};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -40,6 +43,8 @@ use tokio::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct StateRuntimeConfig {
+    /// Separate local delivery custody. Test-only runtimes may omit it.
+    pub pending_store: Option<(PathBuf, PathBuf)>,
     pub tick_interval: Duration,
     /// Round-zero delay; later rounds double it up to a sixteen-fold cap.
     pub proposal_timeout: Duration,
@@ -54,6 +59,7 @@ pub struct StateRuntimeConfig {
 impl Default for StateRuntimeConfig {
     fn default() -> Self {
         Self {
+            pending_store: None,
             tick_interval: Duration::from_millis(500),
             proposal_timeout: Duration::from_secs(4),
             prevote_timeout: Duration::from_secs(4),
@@ -224,6 +230,7 @@ pub struct StateRuntime {
     handoff_peers: Vec<PeerId>,
     config: StateRuntimeConfig,
     pending: BTreeMap<OperationId, SignedOperation>,
+    pending_store: Option<StatePendingActions>,
     pending_bytes: usize,
     action_cursor: usize,
     action_peer_cursor: usize,
@@ -683,7 +690,7 @@ impl StateRuntime {
         let observed_height = node.state()?.height();
         let last_position = node.position()?;
         let now = Instant::now();
-        Ok(Self {
+        let mut runtime = Self {
             node,
             network,
             retired_traffic: StateTraffic::default(),
@@ -692,6 +699,7 @@ impl StateRuntime {
             handoff_peers: Vec::new(),
             config,
             pending: BTreeMap::new(),
+            pending_store: None,
             pending_bytes: 0,
             action_cursor: 0,
             action_peer_cursor: 0,
@@ -745,7 +753,39 @@ impl StateRuntime {
             last_clock: None,
             observed_height,
             work_ready: false,
-        })
+        };
+        if let Some((directory, anchors)) = runtime.config.pending_store.clone() {
+            let mut store = StatePendingActions::open(
+                &directory,
+                &anchors,
+                runtime.state()?.genesis().clone(),
+            )?;
+            store.forget_finalized(runtime.node.state()?);
+            let saved: Vec<_> = store.pending().cloned().collect();
+            runtime.pending_store = Some(store);
+            for action in saved {
+                let id = action.id();
+                if runtime.state()?.receipt(id).is_some() {
+                    continue;
+                }
+                let body = naome_ledger::operations::OperationBody::decode(
+                    action.payload(),
+                    runtime.state()?.genesis(),
+                )?;
+                if !Self::has_current_nonce(runtime.state()?, &action)
+                    || runtime
+                        .validate_queue_phase(&body, action.author())
+                        .is_err()
+                {
+                    runtime.pending_store.as_mut().expect("opened store").reject(
+                        id, "saved action no longer matches selected state; resend only after checking the finalized nonce and phase")?;
+                    continue;
+                }
+                runtime.pending_bytes += action.encode().len();
+                runtime.pending.insert(id, action);
+            }
+        }
+        Ok(runtime)
     }
     pub fn state(&self) -> Result<&LedgerState> {
         Ok(self.node.state()?)
@@ -769,6 +809,11 @@ impl StateRuntime {
     }
     /// A bounded local preview diagnostic, never a finalized rejection receipt.
     pub fn operation_rejection(&self, id: OperationId) -> Option<&str> {
+        if let Some(PendingActionStatus::Rejected(reason)) =
+            self.pending_store.as_ref().and_then(|s| s.status(id))
+        {
+            return Some(reason);
+        }
         self.rejections
             .iter()
             .rev()
@@ -777,6 +822,12 @@ impl StateRuntime {
     }
     /// Local custody yielded to active work; the exact signed bytes may retry.
     pub fn operation_deferred(&self, id: OperationId) -> bool {
+        if matches!(
+            self.pending_store.as_ref().and_then(|s| s.status(id)),
+            Some(PendingActionStatus::Deferred(_))
+        ) {
+            return true;
+        }
         self.deferred.iter().any(|entry| entry.0 == id)
     }
     pub fn finality_bytes(&mut self, height: u64) -> Result<Vec<u8>> {
@@ -937,7 +988,20 @@ impl StateRuntime {
                 | naome_ledger::operations::OperationBody::Commit { .. }
                 | naome_ledger::operations::OperationBody::Reveal { .. }
         );
-        self.reserve_pending_slot(&operation, active, bytes, maximum_bytes)?;
+        let evicted = self.reserve_pending_slot(&operation, active, bytes, maximum_bytes)?;
+        if let Some(store) = &mut self.pending_store {
+            store.accept(&operation, &evicted)?;
+        }
+        for id in evicted {
+            let displaced = &self.pending[&id];
+            let diagnostic = (id, displaced.author(), displaced.nonce());
+            self.remove_pending(id);
+            self.deferred.retain(|entry| entry.0 != id);
+            if self.deferred.len() == MAX_PENDING_OPERATIONS {
+                self.deferred.pop_front();
+            }
+            self.deferred.push_back(diagnostic);
+        }
         self.pending_bytes += bytes;
         self.rejections.retain(|entry| entry.0 != id);
         self.deferred.retain(|entry| entry.0 != id);
@@ -950,7 +1014,7 @@ impl StateRuntime {
         active: bool,
         bytes: usize,
         maximum_bytes: usize,
-    ) -> Result<()> {
+    ) -> Result<Vec<OperationId>> {
         use naome_ledger::operations::OperationBody;
         let genesis = self.state()?.genesis();
         let ordinary = |op: &SignedOperation| {
@@ -1003,18 +1067,7 @@ impl StateRuntime {
                 "pending operation capacity".into(),
             ));
         }
-        // Commit evictions only after proving the new bounded queue fits.
-        for id in evicted {
-            let displaced = &self.pending[&id];
-            let diagnostic = (id, displaced.author(), displaced.nonce());
-            self.remove_pending(id);
-            self.deferred.retain(|entry| entry.0 != id);
-            if self.deferred.len() == MAX_PENDING_OPERATIONS {
-                self.deferred.pop_front();
-            }
-            self.deferred.push_back(diagnostic);
-        }
-        Ok(())
+        Ok(evicted)
     }
     fn validate_queue_phase(
         &self,
@@ -1099,6 +1152,15 @@ impl StateRuntime {
                 ))
     }
     fn reject_preview(&mut self, id: OperationId, reason: String) -> Result<()> {
+        if matches!(
+            self.pending_store.as_ref().and_then(|s| s.status(id)),
+            Some(PendingActionStatus::Pending | PendingActionStatus::Deferred(_))
+        ) {
+            self.pending_store
+                .as_mut()
+                .expect("checked store")
+                .reject(id, &reason)?;
+        }
         self.remove_pending(id);
         self.deferred.retain(|entry| entry.0 != id);
         self.rejections.retain(|entry| entry.0 != id);
@@ -1444,6 +1506,9 @@ impl StateRuntime {
         self.acknowledged.clear();
         self.confirmed_parent.clear();
         let state = self.node.state()?;
+        if let Some(store) = &mut self.pending_store {
+            store.forget_finalized_pending(state);
+        }
         let consumed: Vec<_> = self
             .pending
             .iter()

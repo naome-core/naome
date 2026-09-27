@@ -152,6 +152,10 @@ limit_fields! {
     consensus_rounds = 64,
 }
 
+/// Maximum separate validator-local signed-action delivery journal.
+/// It carries no selected state or signing authority.
+pub const PENDING_ACTION_JOURNAL_BYTES: u64 = 512 * 1024 * 1024;
+
 /// Exact integer issuance; distributions never depend on certificate signers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rewards {
@@ -389,8 +393,9 @@ impl Profile {
     /// two history frames (selected finality and a verified conflict), and a
     /// 100% filesystem/metadata margin. It is checked before startup and while
     /// running; each durable store remains separately bounded and fails closed
-    /// on an I/O fault. Research reveal data is carried in bounded records, not
-    /// in a separate validator-local staging journal. Archive export needs its
+    /// on an I/O fault. The next local signed-action intake has separate
+    /// headroom. Research reveal data is carried in bounded records, not
+    /// in a separate validator-local reveal staging journal. Archive export needs its
     /// own destination capacity and is not required before a node can start.
     /// This is not a guarantee of free space for the entire finite run.
     pub fn operating_storage_floor_bytes(&self) -> Result<u64, LedgerError> {
@@ -399,13 +404,15 @@ impl Profile {
             .checked_add(self.handoff_journal_bytes()?)
             .and_then(|bytes| bytes.checked_add(PERIOD_CUSTODY_BYTES_BOUND + 4096))
             .and_then(|bytes| bytes.checked_add(self.limits.transport_frame_bytes.checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(self.limits.record_bytes.checked_mul(2)?))
             .ok_or(LedgerError::Overflow)?;
         next_height.checked_mul(2).ok_or(LedgerError::Overflow)
     }
     /// Conservative allowance if every record in the finite run reaches its
     /// largest allowed signing, handoff and archive usage. No independent
     /// validator-local reveal staging file exists; reveal bytes already belong
-    /// to bounded records. This is not disk space required before first start.
+    /// to bounded records. The separate pending-action journal is included at
+    /// its fixed file limit. This is not disk space required before first start.
     pub fn maximum_run_storage_bytes(&self) -> Result<u64, LedgerError> {
         let l = &self.limits;
         // One extra frame retains a verified conflict after the final run record.
@@ -426,6 +433,7 @@ impl Profile {
             .checked_mul(2)
             .and_then(|v| v.checked_add(self.signer_journal_bytes().ok()?))
             .and_then(|v| v.checked_add(handoff))
+            .and_then(|v| v.checked_add(PENDING_ACTION_JOURNAL_BYTES))
             .and_then(|v| v.checked_mul(2))
             .ok_or(LedgerError::Overflow)
     }

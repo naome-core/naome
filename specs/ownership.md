@@ -90,6 +90,11 @@ Foundation encodings are independent of this state-format family.
 | State hash and signature domains | Profile, genesis, authority, application state, record and consensus use v6 domains; unchanged action, original and commitment identities bind the new genesis |
 
 Storage uses `state.journal`, `state.lock`, `state-finality.anchor`,
+and the separate `state-pending.journal` / `state-pending.anchor` pair for exact
+signed action delivery custody. Pending action entries and local rejection or
+defer outcomes confer no selected-state authority; only sealed history supplies
+finalized receipts. A missing pending journal on restart halts startup.
+Storage also uses
 `state-signer-KEY.*`, plus exact-height handoff and period custody journals.
 Node configuration version 6 records independent primary/handoff endpoints,
 recovery endpoints and an optional candidate family. Relative configuration
