@@ -204,10 +204,13 @@ fn signed_action_survives_intake_crash_and_lost_ack_retry() {
     let bytes = action.encode();
     let mut lost_ack = stream(&lab);
     lost_ack.write_all(&frame(serde_json::json!({"command":"submit","bytes":bytes.iter().map(|b|format!("{b:02x}")).collect::<String>()}).to_string().as_bytes())).unwrap();
-    drop(lost_ack);
+    // Keep the socket open until the node reports intake. Then discard the
+    // reply unread, so this is a lost acknowledgement after durable acceptance
+    // rather than a race with request delivery.
     lab.wait(0, |status| {
         status["pending_operations"] == 1 && status["height"] == 0
     });
+    drop(lost_ack);
     assert_eq!(
         command(&["receipt".into(), lab.config(0), id.clone()])["status"],
         "not_finalized"
