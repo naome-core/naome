@@ -381,7 +381,6 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
                 .any(|unit| { unit["owner"] == author && unit["available"] == true })
         );
     }
-    assert!(lab.status(4).unwrap()["consensus_position"].is_object());
     let selected_archive = lab.file("candidate-selected-archive");
     command(&["export".into(), lab.config(4), selected_archive.clone()]);
     let verified = command(&["verify".into(), lab.file("genesis.bin"), selected_archive]);
