@@ -558,6 +558,39 @@ fn four_process_state_recovery_partition_and_independent_replay() {
                 .is_some_and(|status| !status["consensus_position"].is_null())
         })
         .unwrap();
+    // Seal the first period with the provider offline before opening B's
+    // short voting window. The remaining three signers must agree on that
+    // handoff, then B can test approval and proof fetch on a ready period.
+    let offline_question = lab.file("before-b-offline.nao");
+    fs::write(
+        &offline_question,
+        "foundation = \"naome:zfc\"\nstatement = forall(x, implies(equal(x, x), equal(x, x)))\n",
+    )
+    .unwrap();
+    let offline = lab.submit(
+        b_ingress,
+        5,
+        PathBuf::from(offline_question),
+        "before-b-offline",
+    );
+    let ready = lab.wait(b_ingress, |status| {
+        if status["height"].as_u64() <= before_b["height"].as_u64()
+            || !status["active"].is_null()
+            || status["queued"] != 0
+        {
+            return false;
+        }
+        let question = raw(&["question".into(), lab.config(b_ingress), offline.clone()]);
+        question.status.success()
+            && serde_json::from_slice::<Value>(&question.stdout)
+                .is_ok_and(|result| result["status"] == "NotApproved")
+    });
+    lab.assert_same(&[1, 2, 3], &ready);
+    for index in 1..4 {
+        lab.wait(index, |status| {
+            status["height"] == ready["height"] && status["consensus_position"].is_object()
+        });
+    }
     let b = lab.submit(b_ingress, 5, example("question-b.nao"), "b");
     lab.wait(b_ingress, |status| {
         status["active"]["submission"] == b && status["active"]["phase"] == "Voting"
