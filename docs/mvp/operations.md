@@ -155,11 +155,22 @@ Status reports finalized height, head/state/library commitments, certified time,
 active phase and deadline, account balances/nonces, claims, and remaining/reserved
 record capacity. `registered_accounts`, `remaining_account_slots`, and
 `registration_available` describe the canonical registry and current ordinary
-capacity. Pending operations are local intake, not finality. A submission
+capacity. Pending operations are local intake, not finality. Before a node
+acknowledges intake, it anchors the exact signed action in its separate local
+pending journal. Restart with the same history and pending journal replays
+eligible actions for delivery. Missing or corrupt pending journal or anchor
+halts startup; restore a consistent backup or start a fresh run. A submission
 response of `transported` does not promise eventual admission. Query its operation
 ID using `receipt`; responses distinguish `finalized`, `not_finalized`,
 `deferred`, and `rejected` with a reason. `deferred` means the bounded local queue
 yielded to an active vote, commitment, or reveal; resubmit the saved action.
+The node retains that defer result across restart. A later selected nonce or
+phase change can make a pending action ineligible, in which case the node records
+a durable local rejection. `rejected` describes local eligibility, not a
+finalized ledger receipt. Queue or journal capacity failure rejects new intake
+before acknowledgement and retains previously accepted actions. The bounded
+pending journal is separate from canonical selected history and has a 512 MiB
+file limit.
 Identical saved actions can be resent with `send`.
 
 ```sh

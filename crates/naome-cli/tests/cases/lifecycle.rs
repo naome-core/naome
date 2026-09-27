@@ -1,8 +1,13 @@
 use super::*;
+use ed25519_dalek::SigningKey;
+use naome_ledger::{operations::OperationBody, profile::Genesis, question::CompiledQuestion};
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
-    os::{fd::OwnedFd, unix::net::UnixStream},
+    os::{
+        fd::OwnedFd,
+        unix::{fs::PermissionsExt, net::UnixStream},
+    },
     process::{ExitStatus, Stdio},
 };
 
@@ -165,6 +170,90 @@ fn response(stream: &mut UnixStream) -> Value {
     let mut bytes = vec![0; length];
     stream.read_exact(&mut bytes).unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn signed_action_survives_intake_crash_and_lost_ack_retry() {
+    let _guard = process_guard();
+    let mut lab = Lab::new();
+    lab.start(0);
+    lab.wait(0, |_| true);
+    let genesis = Genesis::decode(&fs::read(lab.root.join("genesis.bin")).unwrap()).unwrap();
+    let key_file = fs::read(lab.key(4)).unwrap();
+    assert_eq!(&key_file[..9], b"NSKEY001\x01");
+    let key = SigningKey::from_bytes(key_file[9..].try_into().unwrap());
+    let action = OperationBody::Submit {
+        purpose: "Research target crash-intake".into(),
+        question: CompiledQuestion::compile(
+            &fs::read_to_string(example("question-a.nao")).unwrap(),
+            genesis.profile(),
+        )
+        .unwrap(),
+    }
+    .sign(&genesis, 1, &key)
+    .unwrap();
+    let id = action
+        .id()
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let saved = lab.file("crash-intake.submit");
+    fs::write(&saved, action.encode()).unwrap();
+    fs::set_permissions(&saved, fs::Permissions::from_mode(0o600)).unwrap();
+    let bytes = action.encode();
+    let mut lost_ack = stream(&lab);
+    lost_ack.write_all(&frame(serde_json::json!({"command":"submit","bytes":bytes.iter().map(|b|format!("{b:02x}")).collect::<String>()}).to_string().as_bytes())).unwrap();
+    drop(lost_ack);
+    lab.wait(0, |status| {
+        status["pending_operations"] == 1 && status["height"] == 0
+    });
+    assert_eq!(
+        command(&["receipt".into(), lab.config(0), id.clone()])["status"],
+        "not_finalized"
+    );
+    let mut child = lab.nodes[0].take().unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    let anchor = lab.root.join("anchor-history-0/state-pending.anchor");
+    let held = anchor.with_extension("held");
+    fs::rename(&anchor, &held).unwrap();
+    refused(&lab, 0);
+    fs::rename(held, anchor).unwrap();
+
+    lab.start(0);
+    lab.wait(0, |status| {
+        status["pending_operations"] == 1 && status["height"] == 0
+    });
+    // A reply was never read for the original submission. The saved exact
+    // bytes still retry after restart without taking a second queue slot.
+    let retried = command(&[
+        "send".into(),
+        lab.config(0),
+        lab.file("crash-intake.submit"),
+    ]);
+    assert_eq!(retried["operation"], id);
+    assert_eq!(lab.status(0).unwrap()["pending_operations"], 1);
+
+    for node in 1..4 {
+        lab.start(node);
+    }
+    lab.wait(0, |_| {
+        command(&["receipt".into(), lab.config(0), id.clone()])["status"] == "finalized"
+    });
+    let finalized = command(&["receipt".into(), lab.config(0), id.clone()]);
+    assert_eq!(finalized["nonce"], 1);
+    let duplicate = command(&[
+        "send".into(),
+        lab.config(0),
+        lab.file("crash-intake.submit"),
+    ]);
+    assert_eq!(duplicate["result"]["status"], "finalized");
+    assert_eq!(duplicate["result"]["height"], finalized["height"]);
+    for node in 0..4 {
+        lab.stop(node);
+    }
 }
 
 #[test]

@@ -331,6 +331,11 @@ pub fn run(args: &[String]) -> Result<()> {
             genesis.clone(),
             maximum_round,
         )?;
+        drop(naome_storage::state::StatePendingActions::create(
+            &config.history,
+            &config.history_anchor,
+            genesis.clone(),
+        )?);
         let signer = naome_storage::state::StateSigner::create(
             &config.signer,
             &config.signer_anchor,

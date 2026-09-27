@@ -176,6 +176,89 @@ fn genesis() -> Genesis {
     )
     .unwrap()
 }
+
+#[test]
+fn pending_action_journal_reopens_exact_bytes_and_durable_outcomes() {
+    let directory = Directory::new();
+    let anchors = Directory::new();
+    let genesis = genesis();
+    let vote = |yes| {
+        OperationBody::Vote {
+            question: naome_ledger::QuestionId::from_bytes([8; 32]),
+            attempt: 1,
+            yes,
+        }
+        .sign(&genesis, 1, &account(0))
+        .unwrap()
+    };
+    let first = vote(true);
+    let conflicting = vote(false);
+    let mut store = StatePendingActions::create(&directory.0, &anchors.0, genesis.clone()).unwrap();
+    store.accept(&first, &[]).unwrap();
+    assert!(store.accept(&conflicting, &[]).is_err());
+    assert_eq!(
+        store.pending().cloned().collect::<Vec<_>>(),
+        vec![first.clone()]
+    );
+    drop(store);
+    let mut store = StatePendingActions::open(&directory.0, &anchors.0, genesis.clone()).unwrap();
+    assert_eq!(
+        store.pending().cloned().collect::<Vec<_>>(),
+        vec![first.clone()]
+    );
+    store.accept(&conflicting, &[first.id()]).unwrap();
+    assert!(matches!(
+        store.status(first.id()),
+        Some(PendingActionStatus::Deferred(_))
+    ));
+    store.reject(first.id(), "nonce consumed").unwrap();
+    store.reject(conflicting.id(), "phase closed").unwrap();
+    drop(store);
+    let mut store = StatePendingActions::open(&directory.0, &anchors.0, genesis).unwrap();
+    assert_eq!(
+        store.status(conflicting.id()),
+        Some(&PendingActionStatus::Rejected("phase closed".into()))
+    );
+    assert_eq!(
+        store.status(first.id()),
+        Some(&PendingActionStatus::Rejected("nonce consumed".into()))
+    );
+    assert!(store.pending().next().is_none());
+    store.accept(&first, &[]).unwrap();
+    assert_eq!(store.pending().next(), Some(&first));
+}
+
+#[cfg(unix)]
+#[test]
+fn pending_action_capacity_refuses_new_intake_without_losing_accepted_bytes() {
+    let directory = Directory::new();
+    let anchors = Directory::new();
+    let genesis = genesis();
+    let first = OperationBody::Vote {
+        question: naome_ledger::QuestionId::from_bytes([8; 32]),
+        attempt: 1,
+        yes: true,
+    }
+    .sign(&genesis, 1, &account(0))
+    .unwrap();
+    let second = OperationBody::Vote {
+        question: naome_ledger::QuestionId::from_bytes([8; 32]),
+        attempt: 1,
+        yes: true,
+    }
+    .sign(&genesis, 1, &account(1))
+    .unwrap();
+    let mut store = StatePendingActions::create(&directory.0, &anchors.0, genesis.clone()).unwrap();
+    store.accept(&first, &[]).unwrap();
+    store.exhaust_capacity_for_test();
+    assert!(matches!(
+        store.accept(&second, &[]),
+        Err(StateStorageError::Limit("pending action journal capacity"))
+    ));
+    drop(store);
+    let store = StatePendingActions::open(&directory.0, &anchors.0, genesis).unwrap();
+    assert_eq!(store.pending().cloned().collect::<Vec<_>>(), vec![first]);
+}
 fn time(state: &LedgerState, now: u64) -> TimeCertificate {
     TimeCertificate::new(
         (0..4)

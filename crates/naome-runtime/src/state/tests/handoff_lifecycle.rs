@@ -180,6 +180,7 @@ fn start(index: u8, g: &Genesis, endpoints: &[String]) -> Running {
         StateTransportPair::new(active).unwrap(),
         peers,
         StateRuntimeConfig {
+            pending_store: None,
             tick_interval: Duration::from_millis(50),
             proposal_timeout: Duration::from_secs(2),
             prevote_timeout: Duration::from_secs(2),

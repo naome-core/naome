@@ -13,12 +13,14 @@ mod faults;
 mod handoff;
 mod history;
 mod log;
+mod pending_actions;
 mod period;
 mod signer;
 #[cfg(test)]
 mod tests;
 pub use handoff::StateHandoffJournal;
 pub use history::{SelectedStateHistory, StateAppendOutcome, StateHistory, StateObserver};
+pub use pending_actions::{PendingActionStatus, StatePendingActions};
 pub use period::StatePeriodCustody;
 pub use signer::{StatePreparation, StateSigner};
 
