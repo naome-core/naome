@@ -46,7 +46,7 @@ fn fixture() -> Genesis {
 }
 
 #[test]
-fn genesis_and_authority_accept_four_through_256_installed_seats() {
+fn genesis_and_authority_accept_four_through_32_installed_seats() {
     let signing_key = |index: u16, role: u8| {
         let mut seed = [0; 32];
         seed[..2].copy_from_slice(&index.to_be_bytes());
@@ -55,7 +55,7 @@ fn genesis_and_authority_accept_four_through_256_installed_seats() {
         SigningKey::from_bytes(&seed)
     };
     let public_key = |index: u16, role: u8| signing_key(index, role).verifying_key().to_bytes();
-    for (count, quorum) in [(4, 3), (5, 4), (32, 22), (256, 171)] {
+    for (count, quorum) in [(4, 3), (5, 4), (31, 21), (32, 22), (33, 0)] {
         let accounts = (0..count)
             .map(|index| public_key(index as u16, 1))
             .collect::<Vec<_>>();
@@ -68,7 +68,7 @@ fn genesis_and_authority_accept_four_through_256_installed_seats() {
             })
             .collect::<Vec<_>>();
         let retirement = validators.iter().map(ValidatorRegistration::id).collect();
-        let g = Genesis::new(
+        let genesis = Genesis::new(
             Profile::lab(),
             "naome:zfc".into(),
             STATE_CHECKER_PROFILE.into(),
@@ -78,16 +78,19 @@ fn genesis_and_authority_accept_four_through_256_installed_seats() {
             accounts,
             validators,
             retirement,
-        )
-        .unwrap();
+        );
+        if count == MAX_VALIDATORS + 1 {
+            assert!(genesis.is_err());
+            continue;
+        }
+        let g = genesis.unwrap();
         assert_eq!(Genesis::decode(&g.encode()).unwrap(), g);
-        if count == 256 {
-            assert!(g.encode().len() > 32 * 1024);
+        if count == MAX_VALIDATORS {
             assert!(SIGNER_HEADER_BYTES_BOUND >= g.encode().len() as u64 + 84);
             let undersized = Profile::with_limits(
                 TimingKind::ShortTest,
                 Limits {
-                    run_records: 295,
+                    run_records: 71,
                     ..Limits::default()
                 },
             )
@@ -155,7 +158,7 @@ fn genesis_and_authority_accept_four_through_256_installed_seats() {
             .unwrap(),
             certificate
         );
-        if count == 4 || count == 256 {
+        if count == 4 || count == MAX_VALIDATORS {
             let oldest = authority.oldest();
             let old_slot = oldest.slot();
             let old_unit = oldest.id();
@@ -174,7 +177,10 @@ fn genesis_and_authority_accept_four_through_256_installed_seats() {
                     .unwrap(),
                 )
                 .unwrap();
-            assert_eq!(successor.units().len(), count + usize::from(count < 256));
+            assert_eq!(
+                successor.units().len(),
+                count + usize::from(count < MAX_VALIDATORS)
+            );
             assert!(successor.owner(owner).is_some());
             if count == 4 {
                 assert!(successor.unit(old_unit).is_some());
@@ -218,8 +224,8 @@ fn profile_presets_and_storage_reservation() {
     );
     // Full 8192-record run, all 65 consensus rounds per height, complete signer
     // journals, per-height handoff/custody, two archives and a 100% margin.
-    assert_eq!(lab.maximum_run_storage_bytes().unwrap(), 5_645_470_729_216);
-    assert_eq!(lab.operating_storage_floor_bytes().unwrap(), 689_143_672);
+    assert_eq!(lab.maximum_run_storage_bytes().unwrap(), 5_527_626_515_456);
+    assert_eq!(lab.operating_storage_floor_bytes().unwrap(), 674_758_392);
     assert_eq!(lab.maximum_issuance_atoms().unwrap(), 8_192_000_000_000);
     for p in [lab, research, short, ci] {
         assert_eq!(Profile::decode(&p.encode()).unwrap(), p);
@@ -689,8 +695,8 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
     let p = Profile::lab();
     assert_eq!(p.limits().consensus_rounds, 64); // Inclusive: 65 rounds.
     assert_eq!(p.signer_height_frames().unwrap(), 456);
-    assert_eq!(p.signer_height_bytes().unwrap(), 333942111);
-    assert_eq!(p.signer_journal_bytes().unwrap(), 2736730243072);
+    assert_eq!(p.signer_height_bytes().unwrap(), 326_749_471);
+    assert_eq!(p.signer_journal_bytes().unwrap(), 2_677_808_136_192);
     let reduced = Profile::with_limits(
         TimingKind::Lab,
         Limits {
@@ -703,8 +709,8 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
         },
     )
     .unwrap();
-    assert_eq!(reduced.maximum_run_storage_bytes().unwrap(), 20_208_004_096);
-    assert_eq!(reduced.operating_storage_floor_bytes().unwrap(), 78_923_176);
+    assert_eq!(reduced.maximum_run_storage_bytes().unwrap(), 19_698_101_248);
+    assert_eq!(reduced.operating_storage_floor_bytes().unwrap(), 76_931_368);
     assert!(
         reduced.operating_storage_floor_bytes().unwrap()
             < p.operating_storage_floor_bytes().unwrap()
@@ -731,7 +737,7 @@ fn operating_storage_headroom_does_not_reserve_the_entire_run() {
     };
     let short = compact(65);
     let long = compact(296);
-    assert_eq!(short.operating_storage_floor_bytes().unwrap(), 78_923_176);
+    assert_eq!(short.operating_storage_floor_bytes().unwrap(), 76_931_368);
     assert_eq!(
         short.operating_storage_floor_bytes(),
         long.operating_storage_floor_bytes()

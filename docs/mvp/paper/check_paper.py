@@ -18,6 +18,7 @@ assert re.findall(r'^## Appendix ([A-E])\.', raw, re.M) == list('ABCDE')
 figures = ['system', 'graph', 'agenda', 'delivery', 'helpers', 'payments', 'citation', 'membership', 'agreement', 'reuse']
 assert re.findall(r'^\[FIG:([^\]]+)\]', raw, re.M) == figures
 assert raw.index('[FIG:system]') < raw.index('## 2.')
+assert '4 ≤ N ≤ 32' in raw and '256' not in raw
 assert all(term not in raw for term in ('Implementation status', 'state-v5 pilot'))
 assert ('Variable-roster proposal v0.2' if variant else 'Draft v0.1') in raw
 assert '24 September 2026' in raw
@@ -30,7 +31,7 @@ with pdfplumber.open(pdf) as document:
     for term in ('Purpose and scope', 'Bounded profile and open rules', 'KNOWN_UNPAID', 'Test-NAO', 'READY', 'TERMINAL',
                  'ProofId', 'QuestionId', 'ResolutionId', 'source', 'seven-day'):
         assert term in text, term
-    for term in (('Variable-roster proposal v0.2', '256', 'READY', 'TERMINAL') if variant else ('Draft v0.1',)):
+    for term in (('Variable-roster proposal v0.2', '32-unit ceiling', 'READY', 'TERMINAL') if variant else ('Draft v0.1',)):
         assert term in text, term
     assert 'Implementation status' not in text
     for n, page in enumerate(document.pages, 1):

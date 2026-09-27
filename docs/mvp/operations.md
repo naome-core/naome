@@ -5,9 +5,9 @@ It prepares relocatable per-node bundles and collects independently replayed
 archives. The commands below describe the research workflow within that run.
 
 These commands use a four-validator starting genesis on Unix. Fresh v6 genesis
-may install four to 256 validators; the example below starts with four. The
+may install four to 32 validators; the example below starts with four. The
 finite run needs at least `max(64, N + 2K + 7) + 1` records for its opening
-roster of `N` owners and commitment limit `K` (296 at 256 owners with `K=16`).
+roster of `N` owners and commitment limit `K` (72 at 32 owners with `K=16`).
 Setup checks one-height operating headroom per node before creating the run.
 The local qualification target is four independent processes with separate
 keys, journals, anchors, and authenticated network connections. Current process
@@ -46,7 +46,7 @@ The JSON order lists generated `node-0` through `node-3` indices, in the
 operator-selected retirement sequence. Setup resolves them to consensus validator
 IDs, commits the four IDs in genesis, and prints them. Review that sequence before
 startup with `profile-info`. It determines which bootstrap slot is replaced first
-after the roster reaches 256; earned claimants add seats until then.
+after the roster reaches 32; earned claimants add seats until then.
 An omitted, repeated, or unknown index is rejected before provisioning.
 
 Run this from the repository root. `RUN` must name a new directory; setup never
@@ -256,7 +256,7 @@ configuration, then removes the source key files. The owner account key remains
 separate. Retrying a completed setup safely finishes interrupted source-file
 cleanup. Keep the candidate process running so it can stage the agreed record
 and issue READY. An incoming `q(N_in)` READY quorum and an outgoing `q(N_out)`
-TERMINAL quorum seal the addition, or replacement once 256 seats are installed.
+TERMINAL quorum seal the addition, or replacement once 32 seats are installed.
 Only selected sealed history opens ordinary signing.
 Use `status` and `question` to inspect the selected slot and `CONSUMED` claim.
 
@@ -545,6 +545,6 @@ scope and actual evidence.
 The separate [variable-roster proposal source](paper/whitepaper_variable_proposal_en.md)
 builds with `python3 docs/mvp/paper/build_whitepaper.py variable-en` and checks
 with `python3 docs/mvp/paper/check_paper.py variable-en`. It writes
-`whitepaper-variable-proposal-en.pdf`. The fresh v6 four-to-256-seat design is
+`whitepaper-variable-proposal-en.pdf`. The fresh v6 four-to-32-seat design is
 separate from the four-seat first-print paper. Section 9.2 identifies the
 remaining public-network decisions and evidence limits.

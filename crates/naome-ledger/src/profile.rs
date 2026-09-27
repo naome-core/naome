@@ -19,7 +19,7 @@ pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
 /// Research protocol with sealed authority periods and a bounded growing roster.
 pub const STATE_PROTOCOL_VERSION: u16 = 6;
 pub const MIN_VALIDATORS: usize = 4;
-pub const MAX_VALIDATORS: usize = 256;
+pub const MAX_VALIDATORS: usize = 32;
 /// Strictly more than two thirds of installed slots, including vacant slots.
 pub const fn validator_quorum(installed: usize) -> usize {
     (installed * 2) / 3 + 1
@@ -36,13 +36,15 @@ pub const TRANSPORT_ENVELOPE_OVERHEAD_BYTES: u64 = 256 * 1024;
 /// Fixed v1 signer checkpoint and unsigned transcript ceilings.
 pub const SIGNER_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024;
 pub const SIGNER_TRANSCRIPT_MAX_BYTES: u64 = 1024;
-/// Up to 256 fixed-width consensus votes, including authority IDs and the count.
+/// Up to the installed-roster ceiling of fixed-width consensus votes,
+/// including authority IDs and the count.
 pub const STATE_QUORUM_BYTES_BOUND: u64 =
     2 + MAX_VALIDATORS as u64 * (5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
 /// Journal preparation metadata outside one complete research record.
 pub const SIGNER_FRAME_OVERHEAD_BYTES: u64 = 16384;
 /// Covers the largest admitted genesis plus the signer key, selected branch,
-/// round and prefix framing. A 256-seat genesis already exceeds 32 KiB.
+/// round and prefix framing. The genesis bound also covers account keys and
+/// canonical endpoints, independently of the installed-roster ceiling.
 pub const SIGNER_HEADER_BYTES_BOUND: u64 = MAX_GENESIS_BYTES as u64 + 256;
 /// Type, intent sequence, signature and canonical publication digest.
 pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;

@@ -71,7 +71,7 @@ authority only through finalized registration.
 The `state-v6` roster run requires a fresh genesis with protocol version 6.
 The profile and genesis framing use `NAOPROF6` and `NAOGENS6`; their
 versioned contents and IDs reject the previous state run. Genesis commits an
-exact permutation of its four to 256 bootstrap validator IDs as their retirement
+exact permutation of its four to 32 bootstrap validator IDs as their retirement
 order. No order is inferred from sorted keys. Mathematical proof and
 Foundation encodings are independent of this state-format family.
 

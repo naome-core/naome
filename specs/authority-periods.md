@@ -1,7 +1,7 @@
 # Authority periods and sealed handoff (state-v6)
 
 A selected parent at height `h-1` contains the authority snapshot `S_h` for
-record `h`. It has `N` equal-weight installed slots, where `4 <= N <= 256`.
+record `h`. It has `N` equal-weight installed slots, where `4 <= N <= 32`.
 A vacant slot has no signing key but still counts in the denominator:
 agreement and time need `q(N) = floor(2N/3) + 1` distinct eligible signatures.
 READY uses the incoming roster's `q(N_in)` and TERMINAL uses the outgoing
@@ -18,7 +18,7 @@ stop new openings when the finite run no longer has that capacity.
 The initial units and their retirement order come from genesis. Bootstrap age
 uses that explicit order; an earned unit's age is its original paid-completion
 ordinal. A candidate derives its unit identity from the completed family and
-adds a fresh slot while fewer than 256 are installed. Once the roster is full,
+adds a fresh slot while fewer than 32 are installed. Once the roster is full,
 it replaces the oldest unit in that unit's slot. At most one earned claimant
 is installed per record. The lowest paid-completion ordinal among eligible
 finalized intents has priority.

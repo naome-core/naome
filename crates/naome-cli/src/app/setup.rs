@@ -115,7 +115,7 @@ fn parameters(args: &[String]) -> Result<(Profile, Vec<String>, Vec<usize>)> {
             != count
     {
         return Err(
-            "retirement order must contain each node index exactly once (4 to 256 nodes)".into(),
+            "retirement order must contain each node index exactly once (4 to 32 nodes)".into(),
         );
     }
     let timing = match args[1].as_str() {

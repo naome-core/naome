@@ -166,7 +166,7 @@ def free_ports(count, host='127.0.0.1'):
             s.close()
 
 
-def non_ephemeral_ports(count, host='127.0.0.1'):
+def non_ephemeral_ports(count):
     """Probe direct-node listener ports below common TCP ephemeral ranges.
 
     The prepared handoff listeners bind only after the old mesh has started.
@@ -183,9 +183,9 @@ def non_ephemeral_ports(count, host='127.0.0.1'):
     try:
         for attempt in range(span):
             port = first + (offset + attempt) % span
-            s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET)
+            s = socket.socket(socket.AF_INET)
             try:
-                s.bind((host, port))
+                s.bind(('127.0.0.1', port))
             except OSError:
                 s.close()
                 continue
@@ -204,8 +204,8 @@ class Backend:
         self.args, self.root = args, root
         self.count = getattr(args, 'validators', 4)
         self.direct = bool(getattr(args, 'direct', False)) and args.backend == 'process'
-        if not 4 <= self.count <= 256 or (args.backend == 'docker' and self.count != 4):
-            raise ValueError('process roster must have 4..256 validators; Docker harness has four')
+        if not 4 <= self.count <= 32 or (args.backend == 'docker' and self.count != 4):
+            raise ValueError('process roster must have 4..32 validators; Docker harness has four')
         self.children, self.logs = {}, {}
         self.project = 'naome-state-' + uuid.uuid4().hex[:12]
         self.network = self.project + '-network'
@@ -225,35 +225,17 @@ class Backend:
             self.handoff_backs = [f'{ip}:4104' for ip in self.ips]
         else:
             count = self.count
-            if self.direct and getattr(args, 'mixed_loopback', False):
-                # A 256-node local full mesh needs 32,640 TCP connections,
-                # exceeding macOS's 16,384-port IPv4 ephemeral range. Split
-                # destinations across the two existing loopback families.
-                v4_count = (count + 1) // 2
-                v6_count = count // 2
-                v4 = iter(non_ephemeral_ports(2 * v4_count))
-                v6 = iter(non_ephemeral_ports(2 * v6_count, '::1'))
-                hosts = ['127.0.0.1' if index % 2 == 0 else '::1'
-                         for index in range(count)]
-                def endpoint(host):
-                    port = next(v4 if host == '127.0.0.1' else v6)
-                    return f'{host}:{port}' if host == '127.0.0.1' else f'[{host}]:{port}'
-                self.fronts = [endpoint(host) for host in hosts]
+            ports = (non_ephemeral_ports(2 * count) if self.direct
+                     else free_ports(4 * count))
+            self.fronts = [f'127.0.0.1:{p}' for p in ports[:count]]
+            if self.direct:
                 self.backs = self.fronts.copy()
-                self.handoff_fronts = [endpoint(host) for host in hosts]
+                self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[count:]]
                 self.handoff_backs = self.handoff_fronts.copy()
             else:
-                ports = (non_ephemeral_ports(2 * count) if self.direct
-                         else free_ports(4 * count))
-                self.fronts = [f'127.0.0.1:{p}' for p in ports[:count]]
-                if self.direct:
-                    self.backs = self.fronts.copy()
-                    self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[count:]]
-                    self.handoff_backs = self.handoff_fronts.copy()
-                else:
-                    self.backs = [f'127.0.0.1:{p}' for p in ports[count:2 * count]]
-                    self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[2 * count:3 * count]]
-                    self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[3 * count:]]
+                self.backs = [f'127.0.0.1:{p}' for p in ports[count:2 * count]]
+                self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[2 * count:3 * count]]
+                self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[3 * count:]]
 
     def node(self, index):
         return self.root / 'run' / f'node-{index}'

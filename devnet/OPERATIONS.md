@@ -82,6 +82,10 @@ time includes all threads in that validator process. Envelope bytes exclude
 Noise, TCP, libp2p framing, and retransmissions. Queue peaks come from status
 polls and can miss shorter spikes.
 
+The current v6 harness accepts four through 32 validators. This is a controlled
+local testnet ceiling; the larger historical runs in the verification record do
+not qualify a separate-machine deployment at that size.
+
 The forecast script prints assumed network-only propagation and envelope
 serialization components. It does not infer total wall time on 32 machines
 from one shared-host run. Its default 12–24 serial one-way waves for two

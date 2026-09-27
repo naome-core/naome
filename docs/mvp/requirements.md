@@ -1,7 +1,7 @@
 # NAOME trusted MVP: requirements, rules, and acceptance
 
 This document records the four-seat trusted MVP baseline and its historical
-`state-v5` acceptance contract. The fresh `state-v6` four-to-256-seat extension
+`state-v5` acceptance contract. The fresh `state-v6` four-to-32-seat extension
 is specified in [authority periods](../../specs/authority-periods.md) and the
 [new proposal](whitepaper-variable-proposal-en.pdf); its evidence is tracked
 separately in [verification](verification.md). The trusted MVP baseline adopts

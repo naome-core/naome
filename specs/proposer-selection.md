@@ -1,7 +1,7 @@
 # Stable-slot proposer selection
 
 `naome-consensus::proposer_selection` owns deterministic fixed-set arithmetic.
-The canonical `StateBranch` feeds it four to 256 installed slot identifiers with
+The canonical `StateBranch` feeds it four to 32 installed slot identifiers with
 weight one each. A slot retains its arithmetic identity when its owner and
 period keys change. The selected parent snapshot resolves a selected slot to
 its current consensus key; a vacant slot returns no proposer for that round.
@@ -26,7 +26,7 @@ Entries are sorted by their raw 32 bytes in ascending order. Duplicate keys,
 zero-weight entries, and a total weight above `u128::MAX` are rejected. Input
 order has no semantic effect. The reference arithmetic can represent an empty
 set but cannot select a proposer from it. The canonical branch always supplies
-four to 256 stable slot IDs through the same 32-byte arithmetic key type; these bytes
+four to 32 stable slot IDs through the same 32-byte arithmetic key type; these bytes
 are not the rotating consensus public keys.
 
 The trailing-NUL identity domain is:

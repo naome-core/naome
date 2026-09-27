@@ -204,7 +204,7 @@ impl AuthorityUnit {
     }
 }
 
-/// Between four and 256 equal-weight units and their effective period keys.
+/// Between four and 32 equal-weight units and their effective period keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoritySnapshot {
     genesis: GenesisId,

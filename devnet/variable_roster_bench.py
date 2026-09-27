@@ -141,20 +141,16 @@ def main():
                         help='start native validators without TCP proxies')
     parser.add_argument('--delay-ms', type=int, default=0,
                         help='one-way TCP proxy delay per forwarded chunk')
-    parser.add_argument('--mixed-loopback', action='store_true',
-                        help='split direct local TCP listeners across IPv4 and IPv6 loopback')
     parser.add_argument('--profile', action='store_true',
                         help='record per-validator timing, CPU, envelope traffic, and queues')
     args = parser.parse_args()
     minimum_records = max(64, args.validators + 2 * 16 + 7) + 1
-    if (not 4 <= args.validators <= 256 or not 1 <= args.heights <= 16
+    if (not 4 <= args.validators <= 32 or not 1 <= args.heights <= 16
             or not minimum_records <= args.run_records <= 8192
             or not 0 <= args.settle_seconds <= 120
             or not 0 <= args.delay_ms <= 1000):
-        parser.error(f'benchmark supports 4..256 processes, 1..16 heights, and '
+        parser.error(f'benchmark supports 4..32 processes, 1..16 heights, and '
                      f'{minimum_records}..8192 records for this roster')
-    if args.mixed_loopback and not args.direct:
-        parser.error('--mixed-loopback requires --direct')
     if args.direct and args.delay_ms:
         parser.error('--delay-ms requires TCP proxies, without --direct')
     args.directory = args.directory.resolve()
@@ -178,8 +174,7 @@ def main():
                     'local processes with TCP proxies'),
         'one_way_proxy_delay_millis': args.delay_ms,
         'proxy_connection_limit': None if args.direct else max(16, 2 * args.validators),
-        'loopback_address_families': (['127.0.0.1', '::1'] if args.mixed_loopback else
-                                      ['127.0.0.1']),
+        'loopback_address_families': ['127.0.0.1'],
         'listener_port_policy': ('probed 20000..29999' if args.direct else 'OS assigned'),
         'settle_seconds': args.settle_seconds,
         'poll_interval_seconds': status_poll_interval(args.validators),

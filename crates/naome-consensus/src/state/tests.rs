@@ -266,7 +266,7 @@ fn quorum(
 }
 
 #[test]
-fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
+fn maximum_roster_votes_use_the_32_member_wire_bound_and_22_member_quorum() {
     let key = |index: u16, role: u8| {
         let mut seed = [0; 32];
         seed[..2].copy_from_slice(&index.to_be_bytes());
@@ -274,10 +274,10 @@ fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
         seed[3] = 1;
         SigningKey::from_bytes(&seed)
     };
-    let accounts = (0..256)
+    let accounts = (0..32)
         .map(|index| key(index, 1).verifying_key().to_bytes())
         .collect::<Vec<_>>();
-    let validators = (0..256)
+    let validators = (0..32)
         .map(|index| ValidatorRegistration {
             owner: AccountId::for_key(&accounts[index as usize]),
             consensus_key: key(index, 2).verifying_key().to_bytes(),
@@ -308,7 +308,7 @@ fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
         role: ConsensusVoteRole::Prevote,
         target: ConsensusVoteTarget::Nil,
     };
-    let votes = (0..256)
+    let votes = (0..32)
         .map(|index| {
             let secret = key(index, 2);
             let signer = ConsensusKey::from_bytes(secret.verifying_key().to_bytes());
@@ -331,7 +331,7 @@ fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
     );
     assert!(
         StateQuorum::from_votes(
-            votes[..170].to_vec(),
+            votes[..21].to_vec(),
             branch.state().genesis(),
             branch.authority()
         )
@@ -339,7 +339,7 @@ fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
     );
     assert!(
         StateQuorum::from_votes(
-            votes[..171].to_vec(),
+            votes[..22].to_vec(),
             branch.state().genesis(),
             branch.authority()
         )
@@ -347,7 +347,7 @@ fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
     );
     assert!(branch.proposer(0, MAX_ROUND).unwrap().is_some());
 
-    let mut offers = (0..256)
+    let mut offers = (0..32)
         .map(|index| {
             let owner = key(index, 1);
             let owner_id = AccountId::for_key(owner.verifying_key().as_bytes());
@@ -368,9 +368,9 @@ fn maximum_roster_votes_use_the_256_member_wire_bound_and_171_member_quorum() {
     let plan = HandoffPlan::new(offers, None).unwrap();
     assert_eq!(HandoffPlan::decode(&plan.encode()).unwrap(), plan);
     let successor = branch.state().prepare_handoff(&plan).unwrap();
-    assert_eq!(successor.units().len(), 256);
-    assert_eq!(successor.active_count(), 256);
-    assert_eq!(successor.quorum(), 171);
+    assert_eq!(successor.units().len(), 32);
+    assert_eq!(successor.active_count(), 32);
+    assert_eq!(successor.quorum(), 22);
 }
 fn target(proposal: &StateProposal) -> ConsensusVoteTarget {
     ConsensusVoteTarget::Proposal(proposal.value().signing_root())

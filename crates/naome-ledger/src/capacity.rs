@@ -164,21 +164,21 @@ mod tests {
         let profile = Profile::with_limits(
             TimingKind::ShortTest,
             Limits {
-                run_records: 296,
+                run_records: 72,
                 ..Limits::default()
             },
         )
         .unwrap();
         let mut capacity = Capacity::new(&profile);
-        assert!(capacity.can_open(&profile, 256));
-        capacity.open(&profile, 256).unwrap();
-        assert_eq!(capacity.reserved(), 294);
-        for _ in 0..294 {
+        assert!(capacity.can_open(&profile, 32));
+        capacity.open(&profile, 32).unwrap();
+        assert_eq!(capacity.reserved(), 70);
+        for _ in 0..70 {
             capacity.active_record().unwrap();
         }
         assert_eq!(capacity.remaining(), 1);
         capacity.release();
-        capacity.terminate(&profile, 256).unwrap();
+        capacity.terminate(&profile, 32).unwrap();
         assert_eq!(capacity.remaining(), 0);
     }
 }

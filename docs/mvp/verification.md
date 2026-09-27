@@ -14,11 +14,36 @@ The older lab and CI reports below qualify only their named historical snapshots
 They do not qualify the current v6 implementation. There is one supported
 prerelease model; fresh genesis and stores are required for it.
 
-## Local state-v6 variable-roster assessment
+## Current state-v6 roster decision
 
-Implementation commit `05101336477c7fded3790a578a79476a7434ede5` changes the
+The current v6 protocol installs four bootstrap validators and permits earned
+admission through 32 installed slots. At 32, a valid new claimant replaces the
+oldest installed unit. The installed-slot quorum is 22 at the ceiling. Genesis,
+snapshot, handoff, vote, time and seal decoding enforce the same 32-slot bound.
+This is a controlled testnet limit, not a production sizing result.
+
+The optimized 32-process direct runs below converged at one common height-two
+head and state in 27.103–36.653 seconds; the paired local proxy runs with
+50 ms one-way delay converged in 36.852 and 36.919 seconds. Two clean
+64-process direct runs on the later source commit
+`9c8584992a954b2b698fccc2335ca5ec5b4954d6` also converged, but needed
+156.068 and 179.642 seconds for all nodes. Their local raw report SHA-256
+values are `40b19c2d2044826380c55e1b6003cfa050a57c2d946360a3bb15f37bcd8f9c71`
+and `50fbc67b1c7d46e793faafac08f6aae93c6c41f0412ec81ec6a322e3a3ad8f27`.
+The different source snapshots and polling intervals limit a direct timing
+comparison. Earlier 256-process attempts did not finalize. All of these runs
+shared one macOS host, so they do not establish behavior on separate machines.
+The current ceiling keeps the successfully repeated local roster size while
+physical multi-host, slow-node, network-fault and sustained-load qualification
+remain open.
+
+## Earlier state-v6 variable-roster assessment
+
+Earlier implementation commit `05101336477c7fded3790a578a79476a7434ede5` extended the
 sealed electorate to 4–256 equal-weight units. A paid completion claim can add
 one unit until 256 are installed; later admissions replace the oldest unit.
+Those historical experiments and tests below describe their named commits,
+before the current 32-slot limit.
 The full workspace test-profile and release-profile build barriers and test
 runs each passed 646 tests on pinned Rust 1.97.1, including the five-seat
 admission, reward, archive replay and restart process scenario. A separate
@@ -229,7 +254,8 @@ caveat.
 
 The v6 implementation still permits one active research attempt; more voters
 do not make questions run in parallel. This evidence supports a controlled
-small-roster testnet, not production use of the 128- or 256-unit ceiling. The
+small-roster testnet, not production use of the current 32-unit ceiling or the
+larger historical experimental rosters. The
 256-node listener failure calls for a transport design that avoids the current
 full-mesh resource demand. Separate-machine rehearsals, sustained workloads
 and network-fault measurement remain necessary before recommending larger

@@ -94,25 +94,25 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
 }
 
 #[test]
-fn undersized_256_seat_run_is_rejected_before_creating_keys() {
+fn undersized_32_seat_run_is_rejected_before_creating_keys() {
     let dir = Directory::new();
     let order = dir.0.join("retirement.json");
     fs::write(
         &order,
-        serde_json::to_vec(&(0..256).collect::<Vec<_>>()).unwrap(),
+        serde_json::to_vec(&(0..32).collect::<Vec<_>>()).unwrap(),
     )
     .unwrap();
     let requested = dir.0.join("rejected-run");
     let mut args = vec![
         requested.to_string_lossy().into_owned(),
         "ci-test".into(),
-        "295".into(),
+        "71".into(),
         "44100".into(),
         order.to_string_lossy().into_owned(),
     ];
     assert!(run(&args).is_err());
     assert!(!requested.exists());
-    args[2] = "296".into();
+    args[2] = "72".into();
     assert!(parameters(&args).is_ok());
 }
 
