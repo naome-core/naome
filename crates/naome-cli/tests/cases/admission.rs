@@ -459,24 +459,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
         "foundation = \"naome:zfc\"\nstatement = forall(z, forall(y, forall(x, equal(x, x))))\n",
     )
     .unwrap();
-    let submission = lab.submit(
-        active_ingress(&lab),
-        4,
-        PathBuf::from(question),
-        "successor-service",
-    );
-    let successor = lab.wait(4, |status| {
-        status["height"]
-            .as_u64()
-            .is_some_and(|height| height > after_stop)
-            && status["validators"].as_array().is_some_and(|units| {
-                units
-                    .iter()
-                    .any(|unit| unit["owner"] == author && unit["available"] == true)
-            })
-    });
-    assert!(successor["consensus_position"].is_object());
-
+    // Prepare the checked proof before opening the short voting window.
     // The next completion pays the earned owner from the outgoing service
     // snapshot. Its author is a different account, making the service share
     // separately measurable.
@@ -494,11 +477,29 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
         package.clone(),
         solution,
     ]);
+    let submission = lab.submit(
+        active_ingress(&lab),
+        4,
+        PathBuf::from(question),
+        "successor-service",
+    );
     lab.approve(
         &[bootstrap[0], bootstrap[1], bootstrap[2], 6],
         "successor-service",
         &submission,
     );
+    let successor = lab.wait(4, |status| {
+        status["height"]
+            .as_u64()
+            .is_some_and(|height| height > after_stop)
+            && status["validators"].as_array().is_some_and(|units| {
+                units
+                    .iter()
+                    .any(|unit| unit["owner"] == author && unit["available"] == true)
+            })
+    });
+    assert!(successor["consensus_position"].is_object());
+
     lab.solve(
         active_ingress(&lab),
         4,
