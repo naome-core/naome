@@ -104,7 +104,7 @@ pub(crate) fn message(stream: Stream, value: &str, budget: Duration) -> Result<(
 }
 
 /// Complete checked status reports are bounded separately from diagnostic
-/// events: at most 8192 passive claims, 256 accounts, four endpoint strings and
+/// events: at most 8192 passive claims, 1024 accounts, 256 endpoint strings and
 /// one active attempt fit within the same 3 MiB bound as local control replies.
 pub(crate) fn report(value: &str) -> Result<()> {
     let output = Output::start(Stream::Out)?;

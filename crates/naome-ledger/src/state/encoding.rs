@@ -2,7 +2,7 @@ use super::*;
 
 impl LedgerState {
     pub(super) fn write_state(&self, w: &mut Writer) {
-        w.u16(5);
+        w.u16(6);
         w.fixed(self.genesis.id().as_bytes());
         w.u64(self.height);
         w.u64(self.time);
@@ -83,6 +83,7 @@ impl LedgerState {
                 w.u8(0);
             }
             w.u32(active.votes.len() as u32);
+            w.u16(active.electorate.len() as u16);
             for owner in &active.electorate {
                 w.fixed(owner.as_bytes());
             }

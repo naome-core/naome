@@ -33,8 +33,20 @@ impl StateRuntime {
                 self.own_time = Some(report.encode().into());
                 self.time_reports.insert(report.validator(), report);
             }
-            let record = self.prepare_record()?;
-            let work_ready = record.is_some() || self.node.has_retained_value()?;
+            let retained = self.node.has_retained_value()?;
+            let proposer_needs_record =
+                self.node.is_proposer()? && !self.node.already_authored()?;
+            let potential_work =
+                !self.pending.is_empty() || self.state()?.may_have_automatic_record_work();
+            // An idle member need not replay every offer signature and execute
+            // an empty candidate on every tick. Once readiness was checked,
+            // only the current proposer needs to rebuild a changing record.
+            let record = if potential_work && (proposer_needs_record || !self.work_ready) {
+                self.prepare_record()?
+            } else {
+                None
+            };
+            let work_ready = record.is_some() || retained || (self.work_ready && potential_work);
             if work_ready
                 && !self.work_ready
                 && self
@@ -45,8 +57,11 @@ impl StateRuntime {
                 self.phase_started = Instant::now();
             }
             self.work_ready = work_ready;
-            if self.node.is_proposer()? && !self.node.already_authored()? {
-                if self.node.has_retained_value()? {
+            if work_ready {
+                self.timing_marker(self.state()?.height().saturating_add(1), "work_ready");
+            }
+            if proposer_needs_record {
+                if retained {
                     self.node.author(None)?;
                 } else if let Some(record) = record {
                     self.node.author(Some(record))?;
@@ -64,6 +79,7 @@ impl StateRuntime {
                     && self.phase_started.elapsed() >= duration
                 {
                     let _ = self.node.timeout()?;
+                    self.timing_position(self.node.position()?, Instant::now());
                     self.drive()?;
                 }
             }
@@ -73,25 +89,26 @@ impl StateRuntime {
         Ok(())
     }
     pub(super) fn prepare_record(&mut self) -> Result<Option<Vec<u8>>> {
-        if self.time_reports.len() < 3 || self.node.position()?.is_none() {
+        let quorum = self.state()?.authority().quorum();
+        if self.time_reports.len() < quorum || self.node.position()?.is_none() {
             return Ok(None);
         }
-        if self.offers.len() < 3 {
+        if self.offers.len() < quorum {
             return Ok(None);
         }
         let offers_ready_at = *self.offers_ready_at.get_or_insert_with(Instant::now);
-        // An ordinary round-zero proposer gives a healthy fourth owner time
-        // for a first static Noise reconnect after the third offer and time
-        // report are ready. The short-test round timeout alone is shorter
-        // than the network's initial one-second retry. Three offers still
-        // progress after this fixed bound when a unit is offline or vacant.
-        let fourth_offer_grace = self.config.proposal_timeout.max(Duration::from_secs(2));
-        if self.offers.len() == 3
+        // A round-zero proposer allows remaining owners a static Noise
+        // reconnect after the quorum of offers and time reports is ready.
+        // The short-test timeout is shorter than the initial one-second retry;
+        // a quorum can still progress after this bound if a unit stays absent.
+        let remaining_offer_grace = self.config.proposal_timeout.max(Duration::from_secs(2));
+        if self.offers.len() == quorum
+            && self.state()?.authority().units().len() > quorum
             && self
                 .node
                 .position()?
                 .is_some_and(|(_, round, _)| round == 0)
-            && offers_ready_at.elapsed() < fourth_offer_grace
+            && offers_ready_at.elapsed() < remaining_offer_grace
         {
             return Ok(None);
         }
@@ -127,7 +144,8 @@ impl StateRuntime {
                 self.next_custody
                     .as_ref()
                     .and_then(StatePeriodCustody::offer),
-                state.authority().oldest().id(),
+                (state.authority().units().len() == naome_ledger::profile::MAX_VALIDATORS)
+                    .then(|| state.authority().oldest().id()),
             )
         {
             return Ok(None);

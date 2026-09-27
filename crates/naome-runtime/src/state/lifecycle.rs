@@ -163,31 +163,24 @@ impl StateRuntime {
         let Some(setup) = &self.handoff_setup else {
             return Ok(());
         };
-        // Try the currently selected keyed listeners before stable fallback
-        // addresses. The older endpoint of a rotating slot may be closed.
-        let mut endpoints: Vec<_> = self
+        // Alternate selected keyed listeners with stable recovery addresses.
+        // After a sealed handoff the selected key's listener may already be
+        // closed, while a peer that selected the next height serves history
+        // from its stable recovery address. Probing all selected listeners
+        // first can postpone that reachable peer for a whole roster sweep.
+        let selected: Vec<_> = self
             .state()?
             .authority()
             .units()
             .iter()
             .filter_map(|unit| unit.keys().map(|keys| keys.endpoint().to_owned()))
             .collect();
-        endpoints.retain(|endpoint| {
-            endpoint != &setup.primary_endpoint && endpoint != &setup.handoff_endpoint
-        });
-        endpoints.sort();
-        endpoints.dedup();
-        let mut fallback = setup.recovery_endpoints.clone();
-        fallback.retain(|endpoint| {
-            endpoint != &setup.primary_endpoint && endpoint != &setup.handoff_endpoint
-        });
-        fallback.sort();
-        fallback.dedup();
-        for endpoint in fallback {
-            if !endpoints.contains(&endpoint) {
-                endpoints.push(endpoint);
-            }
-        }
+        let endpoints = recovery_probe_order(
+            selected,
+            setup.recovery_endpoints.clone(),
+            &setup.primary_endpoint,
+            &setup.handoff_endpoint,
+        );
         if endpoints.is_empty() {
             return Ok(());
         }
@@ -423,9 +416,15 @@ impl StateRuntime {
         let Some(agreement) = self.node.handoff_agreement().cloned() else {
             return Ok(());
         };
-        let parent = self.state()?.clone();
-        let record = StateRecord::decode(agreement.proposal().record_bytes(), parent.genesis())?;
-        self.prepare_handoff_network(&parent, &record, &agreement)?;
+        // The staged transport and its peer set are bound to the durable
+        // agreement. Decoding its complete record on every network event is
+        // unnecessary once that preparation has succeeded.
+        if self.network.staged().is_none() || self.handoff_peers.is_empty() {
+            let parent = self.state()?.clone();
+            let record =
+                StateRecord::decode(agreement.proposal().record_bytes(), parent.genesis())?;
+            self.prepare_handoff_network(&parent, &record, &agreement)?;
+        }
 
         if let Some(custody) = &self.next_custody {
             let local_key = custody.consensus_key().verifying_key().to_bytes();
@@ -437,7 +436,7 @@ impl StateRuntime {
             }
         }
 
-        if self.node.ready_signatures().len() >= 3
+        if self.node.ready_signatures().len() >= agreement.incoming().quorum()
             && self.node.position()?.is_some()
             && !self.node.local_terminal_saved()
         {
@@ -556,6 +555,13 @@ impl StateRuntime {
             self.network.retire_old();
             self.flights.clear();
         }
+        if self.network.active().is_some() && self.node.signer_key().is_some() {
+            // READY is signed only after this fresh listener is prepared, but
+            // the old authenticated mesh can carry its signed bytes. Keep the
+            // fresh lane passive until the old identity retires; opening both
+            // complete meshes at once can exhaust local connection capacity.
+            staged.defer_handoff_dials();
+        }
         staged
             .listen_on(listen)
             .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
@@ -653,8 +659,10 @@ impl StateRuntime {
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
             let recovery = StateNetwork::new_recovery_only(identity, &selected)
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
-            self.network = StateTransportPair::from_recovery(recovery)
-                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            self.replace_network(
+                StateTransportPair::from_recovery(recovery)
+                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+            );
             listen_terminal_recovery(&mut self.network, &primary_endpoint, primary_bind)?;
             self.peers.clear();
             self.handoff_peers.clear();
@@ -727,8 +735,10 @@ impl StateRuntime {
                         .clone(),
                 };
                 // A different selected roster needs fresh static sessions.
-                self.network = StateTransportPair::new(active)
-                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+                self.replace_network(
+                    StateTransportPair::new(active)
+                        .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+                );
                 self.network
                     .active_mut()
                     .expect("selected network installed")
@@ -770,8 +780,10 @@ impl StateRuntime {
                     ))?
                     .clone(),
             };
-            self.network = StateTransportPair::new(active)
-                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            self.replace_network(
+                StateTransportPair::new(active)
+                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+            );
             self.network
                 .active_mut()
                 .expect("candidate network installed")
@@ -784,8 +796,10 @@ impl StateRuntime {
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
             let recovery = StateNetwork::new_recovery_only(identity, &selected)
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
-            self.network = StateTransportPair::from_recovery(recovery)
-                .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+            self.replace_network(
+                StateTransportPair::from_recovery(recovery)
+                    .map_err(|error| StateRuntimeError::Transport(error.to_string()))?,
+            );
         }
         attach_recovery_network(&mut self.network, &selected, &recovery_key)?;
         self.apply_slot_disables()?;
@@ -872,6 +886,31 @@ impl StateRuntime {
     }
 }
 
+fn recovery_probe_order(
+    mut selected: Vec<String>,
+    mut fallback: Vec<String>,
+    primary: &str,
+    handoff: &str,
+) -> Vec<String> {
+    selected.retain(|endpoint| endpoint != primary && endpoint != handoff);
+    selected.sort();
+    selected.dedup();
+    fallback.retain(|endpoint| endpoint != primary && endpoint != handoff);
+    fallback.sort();
+    fallback.dedup();
+    fallback.retain(|endpoint| selected.binary_search(endpoint).is_err());
+    let mut ordered = Vec::with_capacity(selected.len() + fallback.len());
+    for index in 0..selected.len().max(fallback.len()) {
+        if let Some(endpoint) = selected.get(index) {
+            ordered.push(endpoint.clone());
+        }
+        if let Some(endpoint) = fallback.get(index) {
+            ordered.push(endpoint.clone());
+        }
+    }
+    ordered
+}
+
 fn handoff_peer_ids(
     agreement: &naome_consensus::state::StateAgreement,
     record: &StateRecord,
@@ -915,4 +954,27 @@ fn retire_file(path: &std::path::Path) -> Result<()> {
     std::fs::File::open(directory)
         .and_then(|dir| dir.sync_all())
         .map_err(|error| StateRuntimeError::Transport(error.to_string()))
+}
+
+#[cfg(test)]
+mod recovery_probe_tests {
+    use super::recovery_probe_order;
+
+    #[test]
+    fn stable_recovery_addresses_are_tried_during_the_first_sweep() {
+        assert_eq!(
+            recovery_probe_order(
+                vec!["key-b".into(), "key-a".into(), "key-b".into()],
+                vec![
+                    "key-b".into(),
+                    "stable-b".into(),
+                    "stable-a".into(),
+                    "self".into()
+                ],
+                "self",
+                "self-handoff",
+            ),
+            ["key-a", "stable-a", "key-b", "stable-b"]
+        );
+    }
 }

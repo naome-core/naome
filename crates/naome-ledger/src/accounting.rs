@@ -60,8 +60,11 @@ impl RewardPlan {
         if authority.genesis() != genesis.id() {
             return Err(LedgerError::Invalid("reward authority genesis"));
         }
-        for unit in authority.units() {
-            plan.credit(unit.owner(), rewards.validator_atoms_each)?;
+        let count = authority.units().len() as u128;
+        let each = rewards.validator_pool_atoms / count;
+        let remainder = rewards.validator_pool_atoms % count;
+        for (index, unit) in authority.units().iter().enumerate() {
+            plan.credit(unit.owner(), each + u128::from((index as u128) < remainder))?;
         }
         if !citations.is_empty() {
             let count = citations.len() as u128;

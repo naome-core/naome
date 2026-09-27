@@ -153,14 +153,47 @@ def command(args, timeout=60, tolerate=False):
     return result
 
 
-def free_ports(count):
+def free_ports(count, host='127.0.0.1'):
     sockets = []
     try:
         for _ in range(count):
-            s = socket.socket()
-            s.bind(('127.0.0.1', 0))
+            s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET)
+            s.bind((host, 0))
             sockets.append(s)
         return [s.getsockname()[1] for s in sockets]
+    finally:
+        for s in sockets:
+            s.close()
+
+
+def non_ephemeral_ports(count):
+    """Probe direct-node listener ports below common TCP ephemeral ranges.
+
+    The prepared handoff listeners bind only after the old mesh has started.
+    An OS-assigned ephemeral listener port can be taken by an outbound old-lane
+    connection during that interval. Hold every candidate socket until the
+    complete set is selected, then release them for the validator processes.
+    """
+    first, span = 20000, 10000
+    if not 0 < count <= span:
+        raise ValueError('invalid non-ephemeral listener count')
+    sockets = []
+    ports = []
+    offset = int.from_bytes(os.urandom(4), 'big') % span
+    try:
+        for attempt in range(span):
+            port = first + (offset + attempt) % span
+            s = socket.socket(socket.AF_INET)
+            try:
+                s.bind(('127.0.0.1', port))
+            except OSError:
+                s.close()
+                continue
+            sockets.append(s)
+            ports.append(port)
+            if len(ports) == count:
+                return ports
+        raise RuntimeError('insufficient non-ephemeral listener ports')
     finally:
         for s in sockets:
             s.close()
@@ -169,6 +202,10 @@ def free_ports(count):
 class Backend:
     def __init__(self, args, root):
         self.args, self.root = args, root
+        self.count = getattr(args, 'validators', 4)
+        self.direct = bool(getattr(args, 'direct', False)) and args.backend == 'process'
+        if not 4 <= self.count <= 32 or (args.backend == 'docker' and self.count != 4):
+            raise ValueError('process roster must have 4..32 validators; Docker harness has four')
         self.children, self.logs = {}, {}
         self.project = 'naome-state-' + uuid.uuid4().hex[:12]
         self.network = self.project + '-network'
@@ -176,7 +213,7 @@ class Backend:
         self.containers, self.disconnected = {}, set()
         self.probes = {}
         self.image_id = None
-        self.generations = [0] * 4
+        self.generations = [0] * self.count
         if args.backend == 'docker':
             subnet = ipaddress.ip_network(args.subnet)
             if subnet.version != 4 or subnet.prefixlen != 24 or not subnet.is_private:
@@ -187,11 +224,18 @@ class Backend:
             self.handoff_fronts = [f'{ip}:4204' for ip in self.ips]
             self.handoff_backs = [f'{ip}:4104' for ip in self.ips]
         else:
-            ports = free_ports(16)
-            self.fronts = [f'127.0.0.1:{p}' for p in ports[:4]]
-            self.backs = [f'127.0.0.1:{p}' for p in ports[4:8]]
-            self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[8:12]]
-            self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[12:]]
+            count = self.count
+            ports = (non_ephemeral_ports(2 * count) if self.direct
+                     else free_ports(4 * count))
+            self.fronts = [f'127.0.0.1:{p}' for p in ports[:count]]
+            if self.direct:
+                self.backs = self.fronts.copy()
+                self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[count:]]
+                self.handoff_backs = self.handoff_fronts.copy()
+            else:
+                self.backs = [f'127.0.0.1:{p}' for p in ports[count:2 * count]]
+                self.handoff_fronts = [f'127.0.0.1:{p}' for p in ports[2 * count:3 * count]]
+                self.handoff_backs = [f'127.0.0.1:{p}' for p in ports[3 * count:]]
 
     def node(self, index):
         return self.root / 'run' / f'node-{index}'
@@ -314,11 +358,20 @@ print(exact(n).decode());s.close()
         else:
             log = open(self.node(i) / f'process-{self.generations[i]}.log', 'ab')
             self.logs[i] = log
-            self.children[i] = subprocess.Popen([sys.executable, '-B', str(HERE / 'state_agent.py'),
-                '--config', str(self.config(i)), '--validator', str(self.args.bin_dir / 'naome-validator'),
-                '--front', self.multi(self.fronts[i]), '--back', self.multi(self.backs[i]),
-                '--handoff-front', self.multi(self.handoff_fronts[i]),
-                '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            if self.direct:
+                argv = [str(self.args.bin_dir / 'naome-validator'), 'start', str(self.config(i))]
+            else:
+                argv = [sys.executable, '-B', str(HERE / 'state_agent.py'),
+                    '--config', str(self.config(i)), '--validator', str(self.args.bin_dir / 'naome-validator'),
+                    '--front', self.multi(self.fronts[i]), '--back', self.multi(self.backs[i]),
+                    '--handoff-front', self.multi(self.handoff_fronts[i]),
+                    '--handoff-back', self.multi(self.handoff_backs[i]), '--delay-ms', str(self.args.delay_ms),
+                    '--max-connections', str(max(16, 2 * self.count))]
+            self.children[i] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
+                                                stderr=subprocess.STDOUT, start_new_session=True)
+            if self.direct:
+                (self.node(i) / 'runtime-pid.json').write_text(
+                    json.dumps({'validator': self.children[i].pid}))
 
     def alive(self, i):
         if self.args.backend == 'docker':
@@ -397,9 +450,14 @@ print(exact(n).decode());s.close()
             pidfile = self.node(i) / 'runtime-pid.json'
             if pidfile.exists():
                 pids = json.loads(pidfile.read_text())
-                out = command(['ps', '-o', 'rss=', '-p', ','.join(map(str, pids.values()))], tolerate=True).stdout
-                if out.strip():
-                    rss = sum(int(line) for line in out.split()) * 1024
+                try:
+                    out = command(['ps', '-o', 'rss=', '-p', ','.join(map(str, pids.values()))], tolerate=True).stdout
+                    if out.strip():
+                        rss = sum(int(line) for line in out.split()) * 1024
+                except OSError:
+                    # Restricted local runners may deny process inspection.
+                    # Disk and convergence evidence remain valid without RSS.
+                    pass
         paths = (self.node(i), self.root / 'anchors' / str(i))
         sizes = []
         for root in paths:

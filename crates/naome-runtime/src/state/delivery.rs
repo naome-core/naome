@@ -1,6 +1,6 @@
 use super::*;
 use naome_consensus::state::StatePublication;
-use naome_protocol::state_exchange::{StateContext, StateRequest};
+use naome_protocol::state_exchange::StateRequest;
 use sha2::{Digest, Sha256};
 
 fn ordinary_parallel_body(body: &StateRequestBody) -> bool {
@@ -11,11 +11,35 @@ fn ordinary_parallel_body(body: &StateRequestBody) -> bool {
 }
 
 impl StateRuntime {
+    fn queued_action_deliveries(&self) -> usize {
+        self.outbox
+            .iter()
+            .filter(|delivery| matches!(&delivery.body, StateRequestBody::UserAction(_)))
+            .count()
+            + self
+                .flights
+                .iter()
+                .filter(|flight| matches!(&flight.delivery.body, StateRequestBody::UserAction(_)))
+                .count()
+    }
+    fn request_id(&self, body: &StateRequestBody) -> Result<[u8; 32]> {
+        let maximum = self
+            .state()?
+            .genesis()
+            .profile()
+            .limits()
+            .transport_frame_bytes as usize;
+        let request = StateRequest::new(self.context, body.clone(), maximum)
+            .map_err(|error| StateRuntimeError::Rejected(error.to_string()))?;
+        Ok(Sha256::digest(request.to_wire_bytes()).into())
+    }
+    // The caller retries failed starts. Keep their error typed as a unit so a
+    // busy roster does not format discarded peer IDs on every flush.
     fn send_request(
         &mut self,
         peer: PeerId,
         body: StateRequestBody,
-    ) -> std::result::Result<StateTicket, String> {
+    ) -> std::result::Result<StateTicket, ()> {
         let handoff = matches!(
             &body,
             StateRequestBody::Offer(_)
@@ -44,7 +68,7 @@ impl StateRuntime {
             {
                 return Ok(ticket);
             }
-            return Err("owner-authenticated handoff route unavailable".into());
+            return Err(());
         }
         // A candidate retains its advertised key while moving from the
         // parent courier lane to the prepared lane. Its first agreement must
@@ -55,34 +79,45 @@ impl StateRuntime {
             && let Some(active) = self.network.active_mut()
             && active.is_configured_peer(&peer)
         {
-            return active.request_state(peer, body).map_err(|e| e.to_string());
+            if !active.has_connected_static_session(&peer) {
+                return Err(());
+            }
+            return active.request_state(peer, body).map_err(|_| ());
         }
         if (handoff || self.network.active().is_none())
             && let Some(staged) = self.network.staged_mut()
             && staged.is_configured_peer(&peer)
         {
-            return staged.request_state(peer, body).map_err(|e| e.to_string());
+            if !staged.has_connected_static_session(&peer) {
+                return Err(());
+            }
+            return staged.request_state(peer, body).map_err(|_| ());
         }
         if self.recovery_authenticated.contains(&peer)
             && self.network.active().is_none()
             && let Some(recovery) = self.network.recovery_mut()
         {
-            return recovery
-                .request_recovery_state(peer, body)
-                .map_err(|e| e.to_string());
+            return recovery.request_recovery_state(peer, body).map_err(|_| ());
         }
-        self.network
-            .active_mut()
-            .ok_or_else(|| "active transport retired".to_owned())?
-            .request_state(peer, body)
-            .map_err(|e| e.to_string())
+        let active = self.network.active_mut().ok_or(())?;
+        if !active.has_connected_static_session(&peer) {
+            return Err(());
+        }
+        active.request_state(peer, body).map_err(|_| ())
     }
     pub(super) fn enqueue(&mut self, peer: PeerId, body: StateRequestBody) -> Result<()> {
+        self.enqueue_with_id(peer, body, None)
+    }
+    fn enqueue_with_id(
+        &mut self,
+        peer: PeerId,
+        body: StateRequestBody,
+        prepared_id: Option<[u8; 32]>,
+    ) -> Result<()> {
         if self.disabled.contains(&peer) {
             return Ok(());
         }
         let state = self.state()?;
-        let maximum = state.genesis().profile().limits().transport_frame_bytes as usize;
         let capacity = state.genesis().profile().limits().transport_buffer_frames as usize;
         let height = state.height();
         if matches!(&body, StateRequestBody::Finalized(_))
@@ -98,29 +133,15 @@ impl StateRuntime {
             // Candidate couriers have no ordinary relay authority. Keep most
             // of the bounded queue available for consensus and sealing even
             // when all sixteen local action slots are occupied.
-            let queued_actions = self
-                .outbox
-                .iter()
-                .filter(|delivery| matches!(&delivery.body, StateRequestBody::UserAction(_)))
-                .count()
-                + self
-                    .flights
-                    .iter()
-                    .filter(|flight| {
-                        matches!(&flight.delivery.body, StateRequestBody::UserAction(_))
-                    })
-                    .count();
+            let queued_actions = self.queued_action_deliveries();
             if self.node.position()?.is_none() || queued_actions >= (capacity / 4).max(1) {
                 return Ok(());
             }
         }
-        let context = StateContext::new(
-            *state.genesis().id().as_bytes(),
-            *state.genesis().profile().id().as_bytes(),
-        );
-        let request = StateRequest::new(context, body.clone(), maximum)
-            .map_err(|e| StateRuntimeError::Rejected(e.to_string()))?;
-        let id: [u8; 32] = Sha256::digest(request.to_wire_bytes()).into();
+        let id = match prepared_id {
+            Some(id) => id,
+            None => self.request_id(&body)?,
+        };
         if self.sent.contains(&(peer, id))
             || self.acknowledged.contains(&(peer, id))
             || self.outbox.iter().any(|d| d.peer == peer && d.id == id)
@@ -150,7 +171,12 @@ impl StateRuntime {
             };
             return Ok(());
         }
-        if self.outbox.len() + self.flights.len() >= capacity {
+        let delivery_capacity = capacity.max(
+            (self.peers.len() + self.handoff_peers.len())
+                .saturating_mul(8)
+                .saturating_add(64),
+        );
+        if self.outbox.len() + self.flights.len() >= delivery_capacity {
             return Ok(());
         }
         self.outbox.push_back(Delivery {
@@ -182,7 +208,7 @@ impl StateRuntime {
         }
         let id = (delivery.peer, delivery.id);
         if !self.acknowledged.contains(&id) {
-            // Four slots can each use current and prepared identities. This
+            // Each slot can use current and prepared identities. This
             // bounded hash cache owns no message payload or transport permit.
             let maximum = self
                 .state()?
@@ -190,7 +216,7 @@ impl StateRuntime {
                 .profile()
                 .limits()
                 .transport_buffer_frames as usize
-                * 4;
+                * (self.peers.len() + self.handoff_peers.len()).max(4);
             while self.acknowledged.len() >= maximum {
                 self.acknowledged.pop_front();
             }
@@ -226,26 +252,125 @@ impl StateRuntime {
         });
         Ok(())
     }
-    fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
-        if self.network.active().is_none() {
+    pub(super) fn current_proposer_peer(&self) -> Result<Option<PeerId>> {
+        let Some(proposer) = self.node.current_proposer_key()? else {
+            return Ok(None);
+        };
+        let Some(keys) = self
+            .state()?
+            .authority()
+            .units()
+            .iter()
+            .filter_map(|unit| unit.keys())
+            .find(|keys| keys.consensus() == proposer.as_bytes())
+        else {
+            return Ok(None);
+        };
+        let peer = naome_network::state_peer_id(*keys.transport())
+            .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;
+        Ok(self.peers.contains(&peer).then_some(peer))
+    }
+    pub(super) fn broadcast(&mut self, body: StateRequestBody) -> Result<()> {
+        if self.network.active().is_none() || self.peers.is_empty() {
             return Ok(());
         }
+        let id = self.request_id(&body)?;
+        self.broadcast_with_id(body, id)
+    }
+    fn broadcast_with_id(&mut self, body: StateRequestBody, id: [u8; 32]) -> Result<()> {
+        if self.network.active().is_none() || self.peers.is_empty() {
+            return Ok(());
+        }
+        if matches!(&body, StateRequestBody::UserAction(_)) {
+            let count = self.peers.len();
+            let limit = (self
+                .state()?
+                .genesis()
+                .profile()
+                .limits()
+                .transport_buffer_frames as usize
+                / 4)
+            .max(1);
+            // The selected proposer can make an admitted action useful in this
+            // round. Give it the first bounded delivery slot before rotating
+            // the remaining couriers; this changes only transport order.
+            let proposer = self.current_proposer_peer()?;
+            if let Some(peer) = proposer {
+                self.enqueue_with_id(peer, body.clone(), Some(id))?;
+            }
+            for _ in 0..count {
+                if self.queued_action_deliveries() >= limit {
+                    break;
+                }
+                let index = self.action_peer_cursor % count;
+                let peer = self.peers[index];
+                self.action_peer_cursor = (index + 1) % count;
+                if Some(peer) == proposer {
+                    continue;
+                }
+                self.enqueue_with_id(peer, body.clone(), Some(id))?;
+            }
+            return Ok(());
+        }
+        // A wire request has one identity across all recipients. The peer is
+        // kept separately in each bounded delivery and acknowledgement key.
+        // Gather peers already holding this exact request once. Repeated
+        // publication retries must not scan the whole outbox for every peer.
+        let already_scheduled: BTreeSet<_> = self
+            .outbox
+            .iter()
+            .filter(|delivery| delivery.id == id)
+            .map(|delivery| delivery.peer)
+            .chain(
+                self.flights
+                    .iter()
+                    .filter(|flight| flight.delivery.id == id)
+                    .map(|flight| flight.delivery.peer),
+            )
+            .chain(
+                self.sent
+                    .iter()
+                    .filter(|(_, sent_id)| *sent_id == id)
+                    .map(|(peer, _)| *peer),
+            )
+            .chain(
+                self.acknowledged
+                    .iter()
+                    .filter(|(_, accepted_id)| *accepted_id == id)
+                    .map(|(peer, _)| *peer),
+            )
+            .collect();
         for peer in self.peers.clone() {
-            self.enqueue(peer, body.clone())?;
+            if !already_scheduled.contains(&peer) {
+                self.enqueue_with_id(peer, body.clone(), Some(id))?;
+            }
         }
         Ok(())
     }
     pub(super) fn broadcast_handoff(&mut self, body: StateRequestBody) -> Result<()> {
-        let mut peers = if self.network.active().is_some() {
+        let old_lane = self.network.active().is_some();
+        let prepared_evidence = matches!(
+            &body,
+            StateRequestBody::Agreement(_) | StateRequestBody::ReadySignature(_)
+        );
+        let mut peers = if old_lane {
             self.peers.clone()
         } else {
             Vec::new()
         };
-        peers.extend(self.handoff_peers.iter().copied());
+        peers.extend(self.handoff_peers.iter().copied().filter(|peer| {
+            !old_lane
+                || !prepared_evidence
+                || self
+                    .network
+                    .staged()
+                    .is_some_and(|staged| staged.has_connected_static_session(peer))
+        }));
         peers.extend(self.recovery_authenticated.iter().copied());
         peers.extend(self.recovery_clients.iter().copied());
         peers.sort();
         peers.dedup();
+        let mut id = None;
         for peer in peers {
             if self
                 .network
@@ -262,7 +387,15 @@ impl StateRuntime {
             {
                 continue;
             }
-            self.enqueue(peer, body.clone())?;
+            let prepared_id = match id {
+                Some(id) => id,
+                None => {
+                    let prepared_id = self.request_id(&body)?;
+                    id = Some(prepared_id);
+                    prepared_id
+                }
+            };
+            self.enqueue_with_id(peer, body.clone(), Some(prepared_id))?;
         }
         Ok(())
     }
@@ -287,15 +420,33 @@ impl StateRuntime {
             });
             return Ok(());
         }
-        for publication in self.node.publications()? {
-            let body = match publication {
-                StatePublication::Proposal(p) => {
-                    StateRequestBody::Proposal(p.encode().map_err(StateNodeError::from)?.into())
-                }
-                StatePublication::Vote(v) => StateRequestBody::Vote(v.encode().into()),
-            };
-            self.broadcast(body)?;
+        if self.network.active().is_none() || self.peers.is_empty() {
+            self.publication_cache.clear();
+            return Ok(());
         }
+        let mut next_cache = Vec::new();
+        for publication in self.node.publications()? {
+            let (body, id) = match self
+                .publication_cache
+                .iter()
+                .find(|(cached, _, _)| cached == &publication)
+            {
+                Some((_, body, id)) => (body.clone(), *id),
+                None => {
+                    let body = match &publication {
+                        StatePublication::Proposal(p) => StateRequestBody::Proposal(
+                            p.encode().map_err(StateNodeError::from)?.into(),
+                        ),
+                        StatePublication::Vote(v) => StateRequestBody::Vote(v.encode().into()),
+                    };
+                    let id = self.request_id(&body)?;
+                    (body, id)
+                }
+            };
+            self.broadcast_with_id(body.clone(), id)?;
+            next_cache.push((publication, body, id));
+        }
+        self.publication_cache = next_cache;
         Ok(())
     }
     pub(super) fn enqueue_latest_finality(&mut self) -> Result<()> {
@@ -368,13 +519,16 @@ impl StateRuntime {
                 agreement.encode().map_err(StateNodeError::from)?.into(),
             ))?;
         }
-        for ready in self.node.ready_signatures() {
-            self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
-        }
-        for terminal in self.node.terminal_signatures() {
+        // Every signer retries its own durable evidence. Flooding every
+        // collected signature through every peer multiplies delivery work by
+        // the roster size again and can starve READY behind old requests.
+        if let Some(terminal) = self.node.local_terminal_signature().cloned() {
             self.broadcast_handoff(StateRequestBody::TerminalSignature(
                 terminal.encode().into(),
             ))?;
+        }
+        if let Some(ready) = self.node.local_ready_signature().cloned() {
+            self.broadcast_handoff(StateRequestBody::ReadySignature(ready.encode().into()))?;
         }
         if self.network.active().is_some() {
             self.enqueue_latest_finality()?;
@@ -458,28 +612,45 @@ impl StateRuntime {
             }
         }
 
-        // Finish an agreed handoff before recurring repair traffic. Any item
-        // waiting two seconds rejoins the front class, preserving bounded
-        // fairness for actions and catch-up. Stable sorting retains FIFO order
-        // within each class and does not increase per-peer or total capacity.
+        // An authenticated roster can fill the bounded queue with offers and
+        // speculative history before its quorum is ready. Deliver current
+        // agreement, seal and consensus frames first; otherwise large rosters
+        // can exhaust signing rounds while old repair requests occupy every
+        // flight. Aging still moves ordinary work ahead of fresh repair.
+        // Stable sorting preserves FIFO order within each class.
         let now = Instant::now();
         let retired = self.network.active().is_none();
         self.outbox.make_contiguous().sort_by_key(|delivery| {
             if retired && matches!(delivery.body, StateRequestBody::Finalized(_)) {
                 0
-            } else if now.duration_since(delivery.queued_at) >= Duration::from_secs(2)
-                || matches!(
-                    delivery.body,
-                    StateRequestBody::Agreement(_)
-                        | StateRequestBody::ReadySignature(_)
-                        | StateRequestBody::TerminalSignature(_)
-                )
-            {
+            } else if matches!(delivery.body, StateRequestBody::Agreement(_)) {
                 1
-            } else if matches!(delivery.body, StateRequestBody::History { .. }) {
-                3
-            } else {
+            } else if matches!(delivery.body, StateRequestBody::TerminalSignature(_)) {
                 2
+            } else if matches!(
+                delivery.body,
+                StateRequestBody::ReadySignature(_) | StateRequestBody::Finalized(_)
+            ) {
+                3
+            } else if matches!(
+                delivery.body,
+                StateRequestBody::Proposal(_) | StateRequestBody::Vote(_)
+            ) {
+                4
+            } else if matches!(
+                delivery.body,
+                StateRequestBody::UserAction(_)
+                    | StateRequestBody::Offer(_)
+                    | StateRequestBody::CandidateOffer(_)
+                    | StateRequestBody::TimeReport(_)
+            ) {
+                5
+            } else if now.duration_since(delivery.queued_at) >= Duration::from_secs(2) {
+                6
+            } else if matches!(delivery.body, StateRequestBody::History { .. }) {
+                8
+            } else {
+                7
             }
         });
         let attempts = self.outbox.len();

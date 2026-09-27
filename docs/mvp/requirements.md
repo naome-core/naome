@@ -1,10 +1,15 @@
 # NAOME trusted MVP: requirements, rules, and acceptance
 
-The trusted MVP baseline adopts rules R1–R11 and their parameters. Acceptance
+This document records the four-seat trusted MVP baseline and its historical
+`state-v5` acceptance contract. The fresh `state-v6` four-to-32-seat extension
+is specified in [authority periods](../../specs/authority-periods.md) and the
+[new proposal](whitepaper-variable-proposal-en.pdf); its evidence is tracked
+separately in [verification](verification.md). The trusted MVP baseline adopts
+rules R1–R11 and their parameters. Acceptance
 uses four independent local validator processes with separate keys and durable
 stores, including simulated partitions and failures. A real two-machine run
 remains later qualification. The accompanying [English whitepaper](whitepaper-en.pdf),
-revised 23 September 2026, distinguishes the implemented trusted MVP from the
+Draft v0.1 dated 24 September 2026, distinguishes the implemented trusted MVP from the
 broader public-network proposal. The [pilot runbook](pilot.md) defines the next
 separate-machine qualification and its evidence requirements.
 
@@ -13,8 +18,8 @@ separate-machine qualification and its evidence requirements.
 This is the implementation and acceptance contract: 38 requirements, ten
 acceptance scenarios, five implementation stages, and rules R1–R11. The first
 35 requirements and seven scenarios were accepted for the historical `state-v1`
-trusted, bounded local simulation. The current `state-v5` authority-period model
-replaces the earlier prerelease models and requires its own acceptance.
+trusted, bounded local simulation. The later `state-v5` authority-period model
+replaced the earlier prerelease models and has separately recorded acceptance.
 [Verification evidence](verification.md) separates component
 checks, storage faults, process and lab execution, and cross-platform CI, with
 the source snapshot for each result.
@@ -147,7 +152,7 @@ The following rules make the preceding requirements concrete for the proposed MV
 
 ### R1. A separate, immutable test configuration
 
-The current protocol is `state-v5`, with one supported prerelease implementation and data model. Incompatible earlier development genesis and state formats are rejected; fresh development genesis and fixtures replace them. Four stable slots retain an equal denominator of four. Both consensus and research approval require three votes, including when a slot is unavailable.
+The four-seat baseline uses `state-v5`. Its genesis and state formats are incompatible with earlier development runs. Four stable slots retain an equal denominator of four. Both consensus and research approval require three votes, including when a slot is unavailable. The fresh `state-v6` extension changes the roster, quorum, reward split and active-record reservation as specified in the linked authority-period and proposal documents; it does not reinterpret this baseline's history.
 
 Genesis fixes the Foundation, checker, bootstrap owners and period keys, explicit bootstrap retirement order, initial research accounts, endpoints, timing, limits and reward rules. A finalized record contains a parent-bound handoff plan and commits its successor authority. Three outgoing consensus votes agree that record; three incoming READY signatures and three outgoing TERMINAL signatures seal it before selected history or ordinary incoming signing advances. The oldest eligible queued claimant replaces at most one oldest unit. If that claimant has no exact-parent offer, the same owners rotate keys and preserve its queue position and expiry. Missing incumbent offers leave vacant slots. Proposer arithmetic uses stable slot identifiers across rotations.
 
@@ -325,7 +330,7 @@ Even with only one of these domain actions per record, 43 slots suffice for open
 
 If less than the opening reserve is available in an inactive parent state, the next record must perform final run termination. After due queue expiries, the remaining queued questions are closed with `CAPACITY_END`; this record contains no new user actions. The terminal slot separately reserved from genesis must never be used for ordinary work or an attempt. The terminal state rejects further submissions and records and remains readable. An active attempt, however, retains its completion slots until a valid result or final unresolved expiry, including after a temporary loss of quorum. Reaching the capacity limit therefore does not terminate an already protected active attempt.
 
-For later qualification, data storage, final wire overheads, active buffers, and test machines must be compatible. Before starting, required storage is calculated conservatively from the profile and archive limit; declining free space causes a visible local operating fault rather than loss of confirmed data. It does not change a record's deterministic validity. Whether a record consumes reserved capacity follows solely from its valid domain operations and mandatory transitions together with the canonical remaining budget, not from a claim by the proposer. Archive frames alone are bounded by 8,192 × 1 MiB, totaling 8 GiB; indexes, signing journals, protocol evidence, and a safety margin are additional. This is a finite MVP run, not an indefinitely running production network. The run limit must not cut off an already protected settlement.
+For later qualification, data storage, final wire overheads, active buffers, and test machines must be compatible. Setup and startup check free-space headroom for one complete next signing height, handoff, custody, two history frames, and a 100% margin; they do not require unused space for every possible future height. The full finite-run storage allowance remains a separately reported upper estimate. Free space is checked during operation; a durable I/O fault stops the affected writer, preserving its anchored recovery boundary. Neither local free space nor its estimate changes a record's deterministic validity. Whether a record consumes reserved capacity follows solely from its valid domain operations and mandatory transitions together with the canonical remaining budget, not from a claim by the proposer. Archive frames alone are bounded by 8,192 × 1 MiB, totaling 8 GiB; indexes, signing journals and protocol evidence are additional. Archive export needs its own destination capacity. This is a finite MVP run, not an indefinitely running production network. The run limit must not cut off an already protected settlement.
 
 The original state-v1 acceptance used the Lab profile; its shorter voting window was an explicit deviation from the whitepaper's seven-day window. Current authority-period process and Docker acceptance use explicit accelerated profiles committed in genesis. Separate signed-time tests replay all timing profiles at their exact voting, commitment and reveal boundaries. An accelerated run and these boundary tests do not establish a complete real-time Lab or seven-day research run on the current implementation; those remain separate qualifications.
 
@@ -343,7 +348,7 @@ The separation of a deterministic state machine from consensus and the prohibiti
 
 Historical acceptance of the trusted, bounded local `state-v1` MVP applies only
 to its recorded source snapshot. Later prerelease slices have separately recorded
-evidence. The current `state-v5` milestone requires its own complete workspace,
+evidence. The `state-v5` milestone has its own workspace,
 process, custody, replay and platform CI qualification, documented in the
 [verification record](verification.md). The user-authorized four-process local
 simulation is the network acceptance target; a real multi-machine run and the

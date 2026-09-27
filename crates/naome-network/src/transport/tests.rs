@@ -4,6 +4,14 @@ use libp2p::{
     swarm::{ConnectionId, NetworkBehaviour, ToSwarm},
 };
 use std::task::{Context, Poll, Waker};
+
+#[test]
+fn listen_error_reports_the_underlying_io_failure() {
+    let cause = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+    let expected = cause.to_string();
+    let error = ListenError(libp2p::TransportError::Other(cause));
+    assert!(error.to_string().contains(&expected));
+}
 pub(crate) fn address(port: u16) -> super::Multiaddr {
     format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()
 }

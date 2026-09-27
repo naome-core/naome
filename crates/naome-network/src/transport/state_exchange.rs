@@ -337,7 +337,7 @@ impl StateNetwork {
             parent.authority(),
             bindings,
             StateLane::Active,
-            36,
+            naome_ledger::profile::MAX_VALIDATORS + 32,
             Some(Arc::new(parent.clone())),
         )
     }
@@ -357,7 +357,7 @@ impl StateNetwork {
             authority,
             bindings,
             StateLane::Active,
-            36,
+            naome_ledger::profile::MAX_VALIDATORS + 32,
             None,
         )
     }
@@ -390,7 +390,7 @@ impl StateNetwork {
             &incoming,
             bindings,
             StateLane::Handoff,
-            5,
+            2 * naome_ledger::profile::MAX_VALIDATORS + 1,
             Some(Arc::new(parent.clone())),
         )
     }
@@ -492,7 +492,7 @@ impl StateNetwork {
             maximum,
             budget: Arc::new(InboundRetentionBudget::new(frames, bytes)),
             outbound: Arc::new(InboundRetentionBudget::with_peer_limit(
-                super::MAX_PENDING_REQUESTS,
+                super::pending_request_limit(peers.len()),
                 0,
                 2,
             )),
@@ -508,6 +508,7 @@ impl StateNetwork {
             peers.clone(),
             maximum_peers + usize::from(config.recovery_registry.is_some()) * 2,
             config.recovery_registry.is_some(),
+            lane == StateLane::Handoff,
         )
         .map_err(StateNetworkBuildError::Transport)?;
         network.swarm.behaviour_mut().state_exchange =
@@ -713,7 +714,6 @@ impl StateNetwork {
                 .ok_or(StateStartError::Capacity)?,
             peer: None,
         });
-        let digest = fingerprint(&request);
         let connected = self.swarm.behaviour().state_exchange.is_connected(&peer)
             && !self
                 .swarm
@@ -736,6 +736,9 @@ impl StateNetwork {
                 RequestStartError::AlreadyPending(peer),
             ));
         }
+        // A busy or disconnected peer can reject the start repeatedly. Hash
+        // large immutable proposals only after the request has a send slot.
+        let digest = fingerprint(&request);
         let id = self.swarm.behaviour_mut().state_exchange.send_request(
             &peer,
             WireRequest {
@@ -743,6 +746,8 @@ impl StateNetwork {
                 custody: Arc::clone(&custody),
             },
         );
+        self.traffic.request_starts += 1;
+        self.traffic.request_start_bytes += request.wire_len() as u64;
         let ticket = StateTicket {
             id,
             peer,
@@ -849,6 +854,8 @@ impl StateNetwork {
                 custody: Arc::clone(&custody),
             },
         );
+        self.traffic.request_starts += 1;
+        self.traffic.request_start_bytes += request.wire_len() as u64;
         let ticket = StateTicket {
             id,
             peer,
@@ -895,6 +902,7 @@ impl StateNetwork {
             config.maximum,
         )
         .map_err(StateRespondError::Wire)?;
+        let response_bytes = response.wire_len() as u64;
         if !response.matches_request(inbound.request()) {
             return Err(StateRespondError::Wire(StateWireError::ResponseKind));
         }
@@ -915,6 +923,8 @@ impl StateNetwork {
                 },
             )
             .map_err(|_| StateRespondError::ChannelClosed)?;
+        self.traffic.response_starts += 1;
+        self.traffic.response_start_bytes += response_bytes;
         if recovery_owner.is_some()
             && useful
             && let Some(lease) = self.recovery_leases.get_mut(&peer)
@@ -941,6 +951,8 @@ impl StateNetwork {
                     {
                         return None;
                     }
+                    self.traffic.requests_received += 1;
+                    self.traffic.request_bytes_received += request.request.wire_len() as u64;
                     let inbound = InboundState {
                         peer,
                         recovery_owner: None,
@@ -962,7 +974,11 @@ impl StateNetwork {
                 request_response::Message::Response {
                     request_id,
                     response,
-                } => self.finish_state(request_id, peer, Ok(response)),
+                } => {
+                    self.traffic.responses_received += 1;
+                    self.traffic.response_bytes_received += response.response.wire_len() as u64;
+                    self.finish_state(request_id, peer, Ok(response))
+                }
             },
             request_response::Event::OutboundFailure {
                 peer,

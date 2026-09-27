@@ -68,30 +68,30 @@ authority only through finalized registration.
 
 ## Canonical state formats
 
-The `state-v5` handoff run requires a fresh genesis with protocol version 5.
-The profile and genesis framing retain `NAOPROF4` and `NAOGENS4`; their
+The `state-v6` roster run requires a fresh genesis with protocol version 6.
+The profile and genesis framing use `NAOPROF6` and `NAOGENS6`; their
 versioned contents and IDs reject the previous state run. Genesis commits an
-exact permutation of the four bootstrap validator IDs as their retirement
+exact permutation of its four to 32 bootstrap validator IDs as their retirement
 order. No order is inferred from sorted keys. Mathematical proof and
 Foundation encodings are independent of this state-format family.
 
 | Surface | Encoding and owner |
 | --- | --- |
-| Profile and genesis | `NAOPROF4`, `NAOGENS4`, protocol version 5; ledger profile |
-| Authority snapshot and handoff plan | `NSAU5`, `NSHP5`; owner/period offers and candidate readiness `NSCA5`; ledger authority |
-| Complete application record | `NSRC` plus version 5, including certified time and handoff plan; `naome-chain::StateRecord` |
-| Signed actions, originals, certified time reports | `NSUA`/`NSOR` version 4 and `NSTM` version 1, bound to v5 genesis and selected authority where required; ledger authentication/operations/time |
-| Consensus value, proposal, vote, agreement and sealed finality | `NSCB5`, `NSCP5`, `NSCV5`, `NSAG5`; consensus; `NSCF5` outer proposal/QC/seal envelope in chain |
-| Seal signature, seal, lock events and checked snapshots | `NSSG5`, `NSSL5`, `NSCE5`, `NSCS5`; consensus |
-| History, period signer, handoff, period offer and candidate import journals | `NAOSHIS1` with v5 genesis context, `NAOSSIG5`, `NAOSHOF5`, `NAOSOFJ5`, `NAOCAND5`; storage; external anchor `NAOSANC1` |
-| Authenticated exchange | `/naome/state-v5`, envelope version 3; network/protocol |
+| Profile and genesis | `NAOPROF6`, `NAOGENS6`, protocol version 6; ledger profile |
+| Authority snapshot and handoff plan | `NSAU6`, `NSHP6`; owner/period offers `NSKO6` and candidate readiness `NSCA6`; ledger authority |
+| Complete application record | `NSRC` plus version 6, including certified time and handoff plan; `naome-chain::StateRecord` |
+| Signed actions, originals, certified time reports | `NSUA`/`NSOR` version 4 and `NSTM` version 1, bound to v6 genesis and selected authority where required; ledger authentication/operations/time |
+| Consensus value, proposal, vote, agreement and sealed finality | `NSCB6`, `NSCP6`, `NSCV6`, `NSAG6`; consensus; `NSCF6` outer proposal/QC/seal envelope in chain |
+| Seal signature, seal, lock events and checked snapshots | `NSSG6`, `NSSL6`, `NSCE6`, `NSCS6`; consensus |
+| History, period signer, handoff, period offer and candidate import journals | `NAOSHIS1` with v6 genesis context, `NAOSSIG6`, `NAOSHOF6`, `NAOSOFJ6`, `NAOCAND6`; storage; external anchor `NAOSANC1` |
+| Authenticated exchange | `/naome/state-v6`, envelope version 3; network/protocol |
 | Private key and durable commitment bundle | `NSKEY001`, `NSSEC001`; CLI |
 | Normalization receipt | Version 2 includes the exact outgoing service authority used for reward recomputation; ledger receipt; archive inspection reads it only after full selected-history replay |
-| State hash and signature domains | Authority, application state, record and consensus use v5 domains; unchanged profile, genesis, action, original and commitment identities retain v4 domains and bind the new genesis |
+| State hash and signature domains | Profile, genesis, authority, application state, record and consensus use v6 domains; unchanged action, original and commitment identities bind the new genesis |
 
 Storage uses `state.journal`, `state.lock`, `state-finality.anchor`,
 `state-signer-KEY.*`, plus exact-height handoff and period custody journals.
-Node configuration version 5 records independent primary/handoff endpoints,
+Node configuration version 6 records independent primary/handoff endpoints,
 recovery endpoints and an optional candidate family. Relative configuration
 paths resolve beside the configuration file; absolute paths retain their
 meaning. A candidate's owner key is separate from its imported consensus and

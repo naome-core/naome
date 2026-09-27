@@ -1,6 +1,6 @@
 # Trusted research MVP verification
 
-The current authority-period implementation uses canonical `state-v5` history through
+The current authority-period implementation uses canonical `state-v6` history through
 `naome`, `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
 proof-library component of that complete state. The historical `state-v1`
 qualification recorded source identities, commands, output hashes, the real-agent
@@ -11,10 +11,361 @@ below identify executable test sources; a source pointer is not a passing run.
 Every recorded run establishes evidence only for its named snapshot.
 
 The older lab and CI reports below qualify only their named historical snapshots.
-They do not qualify the current authority-period implementation. There is one
-supported prerelease model; fresh genesis and stores are required for it.
+They do not qualify the current v6 implementation. There is one supported
+prerelease model; fresh genesis and stores are required for it.
 
-## Authority-period qualification
+## Current state-v6 roster decision
+
+The current v6 protocol installs four bootstrap validators and permits earned
+admission through 32 installed slots. At 32, a valid new claimant replaces the
+oldest installed unit. The installed-slot quorum is 22 at the ceiling. Genesis,
+snapshot, handoff, vote, time and seal decoding enforce the same 32-slot bound.
+This is a controlled testnet limit, not a production sizing result.
+
+The optimized 32-process direct runs below converged at one common height-two
+head and state in 27.103–36.653 seconds; the paired local proxy runs with
+50 ms one-way delay converged in 36.852 and 36.919 seconds. Two clean
+64-process direct runs on the later source commit
+`9c8584992a954b2b698fccc2335ca5ec5b4954d6` also converged, but needed
+156.068 and 179.642 seconds for all nodes. Their local raw report SHA-256
+values are `40b19c2d2044826380c55e1b6003cfa050a57c2d946360a3bb15f37bcd8f9c71`
+and `50fbc67b1c7d46e793faafac08f6aae93c6c41f0412ec81ec6a322e3a3ad8f27`.
+The different source snapshots and polling intervals limit a direct timing
+comparison. Earlier 256-process attempts did not finalize. All of these runs
+shared one macOS host, so they do not establish behavior on separate machines.
+The current ceiling keeps the successfully repeated local roster size while
+physical multi-host, slow-node, network-fault and sustained-load qualification
+remain open.
+
+On clean capped-source commit `56c71774ad56f1af06ebac71ae61503217b5a3bf`,
+a fresh 32-process direct run reached one common height-two head and state
+across all validators in 21.500 seconds. Its quorum was 22. The local raw
+report, kept outside Git at
+`/private/tmp/naome-cap32-pr-smoke-20260927/report.json`, has SHA-256
+`8a1bd5d397d120b7fca27d0231e1648718d335f325b1dd8326cc38330d399ade`.
+The run used one macOS host, loopback TCP, accelerated `ci-test` timing and a
+two-second status poll; it did not independently replay exported archives.
+
+For that capped source, pinned Rust 1.97.1 completed the full-workspace
+all-target, all-feature, locked build barriers in both `test` and `release`.
+The ledger, consensus and CLI library suites passed 232 tests per profile,
+and the focused stable-recovery test passed in both profiles. Workspace Clippy
+with denied warnings, formatting, 36 devnet Python tests and both 20-page
+PDF structural checks passed. Complete-workspace test execution and the
+Linux, macOS and Windows CI matrix remain to be checked on the PR head.
+
+## Earlier state-v6 variable-roster assessment
+
+Earlier implementation commit `05101336477c7fded3790a578a79476a7434ede5` extended the
+sealed electorate to 4–256 equal-weight units. A paid completion claim can add
+one unit until 256 are installed; later admissions replace the oldest unit.
+Those historical experiments and tests below describe their named commits,
+before the current 32-slot limit.
+The full workspace test-profile and release-profile build barriers and test
+runs each passed 646 tests on pinned Rust 1.97.1, including the five-seat
+admission, reward, archive replay and restart process scenario. A separate
+256-seat vote, time-certificate and full handoff-plan boundary test passed in
+both profiles. Formatting and workspace Clippy with `-D warnings` passed.
+
+Final source validation at `9cbcc425ec428a578cabb934c833057c4845f7cd`
+used pinned Rust 1.97.1 and `CARGO_INCREMENTAL=0`. Complete workspace,
+all-target, all-feature, locked build barriers and test runs passed in both
+`test` and `release`: 655 tests across 26 binaries in each profile, with zero
+failures. With cached dependencies, the test-profile build barrier took 0.15
+seconds and execution 884.29 seconds; the release barrier took 31.63 seconds
+and execution 913.16 seconds.
+Workspace Clippy with `-D warnings` and `cargo fmt --all --check` passed. The
+variable-roster proposal PDF passed its structural check at 20 pages, and a
+rendered-page review found no visible clipping or diagram overlap. The
+accelerated `short-test` process fixture now has 45-second commitment and
+reveal windows to tolerate full-suite scheduling; production and `ci-test`
+timings are unchanged. Its deterministic chain and consensus vectors were
+regenerated and passed replay tests in both complete profile runs.
+
+The local comparison uses the same
+two-height, one-question workload in three sequential runs per configuration.
+All nodes ran on one macOS ARM64 host through zero-delay local TCP proxies.
+Times below start after process launch; memory and disk are totals sampled at
+convergence, rather than peaks or reserved capacity.
+
+| Release binary | Installed units | Quorum | First quorum median | All nodes median (range) | Sampled memory median | Disk median |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v5 baseline | 4 | 3 | 3.165 s | 3.409 s (3.165–4.030) | 115.3 MiB | 209.0 KiB |
+| v6 | 4 | 3 | 3.177 s | 3.991 s (3.951–3.996) | 114.7 MiB | 208.9 KiB |
+| v6 | 8 | 6 | 3.254 s | 5.562 s (5.213–6.116) | 239.8 MiB | 676.1 KiB |
+
+The v5 baseline and v6 four-unit medians differ by 0.582 s in this small
+sample. This is not a sustained-throughput estimate. The older
+12-height baseline uses a different
+workload and is not used for the timing comparison.
+
+The former 16-process setup rejection used a full-run maximum as the startup
+free-space floor and counted reveal staging that has no separate validator
+file. The corrected 256-seat, 296-record compact profile checks 78,923,176
+bytes of next-height headroom per node, or 20,204,333,056 bytes across 256
+local nodes. Setup succeeded on this Mac and occupied about 39 MiB. Its
+separately reported 23,364,931,136-byte per-node full-run allowance assumes
+every bounded height reaches maximum usage; it is not reserved at startup.
+The local scale diagnostics identify
+each release binary and keep failed attempts separate from passing runs.
+
+| Diagnostic v6 direct-process run | Installed units | Quorum | All nodes at common height 2 | Disk at convergence |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 16 | 11 | 21.492 s | 2.45 MiB |
+| 32 | 32 | 22 | 100.210 s | 8.44 MiB |
+| 64, hybrid relay | 64 | 43 | 623.035 s | 40.50 MiB |
+
+These are single runs on changing, uncommitted binaries. The direct-process
+harness differs from the earlier four- and eight-unit proxy comparison, so the
+tables are not a controlled speedup series. The recorded 256-process attempts
+have not finalized a record. Early runs exposed overloaded control and submit
+paths. A cap on connection attempts stalled peer discovery and was removed.
+An IPv4-only mesh then approached this Mac's ephemeral-port limit; mixed IPv4
+and IPv6 loopback allowed nearly all peer links to form. Later runs exposed
+repeated idle candidate preparation and repeated hashing of the full genesis
+on outbound frames. The corresponding scheduling and immutable-context fixes
+passed focused tests and smaller process runs. The cached-context 256 run
+reached at least 237 question holders and 201 validators in round-two
+precommit, but no record finalized before one validator exited with a
+transport error. The runtime now keeps a listener alive after a libp2p
+nonfatal listener error. A later clean-head run formed all 255 peer links per
+validator and collected all 256 offers and signed time reports, but was stopped
+at 540 seconds with no finalized height: the selected round-zero proposer had
+not received the pending question. The runtime now gives that proposer the
+first bounded action-delivery slot. In the next clean-head run, one proposer
+authored early, but after 926 seconds no record had finalized and
+only 11–23 prevotes were visible per responding node. A short CPU sample found
+repeated hashing of large outgoing requests before send-capacity checks;
+fingerprinting now follows those checks. The next clean-head run reached a
+complete peer mesh but was stopped after 624 seconds at height zero, with at
+most one observed proposal in the final responding range. A second CPU sample
+found that the runtime rehashed the same publication for each peer before
+checking its delivery cache. Broadcast now computes that wire identity once
+and retains the existing peer-specific delivery and acknowledgement bounds;
+a clean-head run of this change remained at height zero after 2,062 seconds.
+One sampled validator reached 217 prevotes and 162 precommits in round zero,
+then advanced to round one without a seal. A second CPU profile found that
+network-driven retries still rehashed retained publications and scanned the
+delivery queue separately for each peer. The runtime now caches the exact wire
+identity of each retained publication and builds one peer lookup per broadcast.
+A clean-head 256-process run of that change remained at height zero after 1,234
+seconds. All 256 nodes responded in its final sweep, which saw at most 170
+precommits, one short of the 171-signature quorum. A CPU sample then found
+repeated full validation of an already retained proposal, including execution
+of the 256-offer successor plan. A signing node now recognizes exact bytes of
+a proposal it has already verified; changed bytes still take the full
+verification path. A clean-head run with this change remained at height zero
+after 870 seconds: 34 of 222 responding nodes held a prepared agreement, but
+none had sealed a record. The sampled main thread was mostly waiting for
+network events. The CI test profile now allows a longer phase interval for
+large local rosters, reaching 12 minutes at 256 seats; signed quorum and round
+limits are unchanged. A clean-head 256-process run with that interval reached
+prepared agreement on all responding nodes, but remained at height zero after
+3,862 seconds: READY counts were only 1–8, TERMINAL was absent, and old-lane
+connections had fallen to 0–32 peers. One sampled node had 32 staged peers
+and almost 500 READY deliveries queued. The host did not sleep; sampled memory
+was about 4.0 GiB across the 256 validators. This run does not establish that
+host port exhaustion alone caused the stall.
+
+The staged handoff listener now defers outbound full-mesh dialing until old
+transport retirement. Signed READY can travel over the existing old lane,
+and each signer retries its own durable handoff signature instead of flooding
+every collected signature through every peer. The affected network and runtime
+tests pass. Dirty-tree local process runs reached a common height two with 4,
+16, and 32 validators in 6.387, 13.225, and 78.180 seconds respectively;
+these are diagnostic runs, not a controlled baseline comparison. This change
+reached 69 prepared agreements in a clean-head 256-process run, but eight
+validators exited while binding their staged handoff listeners. The process
+harness had chosen those ports from the OS ephemeral range before thousands of
+outbound old-lane sockets opened. A port collision is plausible, though the
+transport error gave no OS cause. The direct-process harness now probes
+listener ports below this host's ephemeral range. A clean-head run with 512
+unique listener addresses in that range still lost validators during staged
+listener binding after 495 seconds. Thus port allocation alone did not resolve
+the failure. The pinned libp2p version prints an empty message for an
+underlying transport I/O error; the listener error now preserves that cause
+so a subsequent run can identify it. The next clean-head run found the cause:
+42 validators logged macOS `No buffer space available` (OS error 55) while
+binding staged listeners. It stopped after 547 seconds, with 128 of 225
+respondents prepared for agreement and READY at 0–31. The staged listener now
+uses a 16-slot TCP backlog while the old mesh remains open, down from 64 at
+large rosters. A clean-head run of this change still failed after 540 seconds:
+22 validator logs reported the same macOS buffer error while binding staged
+listeners. The last saved poll had 169 of 204 respondents prepared for
+agreement, READY at 0–5 and no TERMINAL signature. No height was sealed.
+
+On the same clean commit, a 128-process run was invalidated by a four-second
+macOS maintenance sleep on battery. All validators then stopped on the
+two-second UTC-drift safety rule; this is not a roster-capacity result. A new
+run with display and system wake assertions reached one common height-two head
+and state on all 128 validators. Its first height-two quorum took 1,934.460
+seconds and all-node convergence took 2,214.905 seconds. Run data occupied
+113,882,534 bytes (about 108.6 MiB); one host sample found the 128 validator
+processes at about 4.7 GiB resident memory and 944% CPU. The handoff's
+fresh-key connections were sparse for late nodes, so this pass does not
+establish practical throughput or reliability at 128. The 256-process
+handoff remains unproven.
+No physical multi-machine result is available.
+
+### Repeated 32-validator resource profile
+
+Two direct-process runs on 26 September 2026 used clean commit
+`6c1c9f3fc25e01d41f66283e2062c0a81510c3d3`, release binaries built with
+pinned Rust 1.97.1, 32 validators, quorum 22, one submitted question and two
+finalized heights. Each run started in a fresh directory on the same macOS host
+with ten logical CPUs, local IPv4 TCP, no inserted delay, and the `ci-test`
+timing profile. The local raw reports for runs A and B retain binary and
+runner hashes, the common finalized head and state for each run, per-validator
+events and counters, and sampled queue history. Both passed with all 32 nodes
+at a common height-two head and state. Times below start after all processes
+were launched; submission followed about two seconds later.
+
+| Measure | Run A | Run B |
+| --- | ---: | ---: |
+| First height-two quorum | 20.983 s | 18.609 s |
+| All 32 at common height two | 83.607 s | 83.398 s |
+| Tail after first quorum | 62.624 s | 64.789 s |
+| Validator CPU time since submission, median | 3.971 s | 3.731 s |
+| Canonical state-exchange egress per validator, median | 7.310 MB | 6.119 MB |
+| Canonical state-exchange ingress per validator, median | 7.040 MB | 6.020 MB |
+| Started requests per validator, median | 790 | 679 |
+| Sampled queued deliveries per validator, median peak | 158 | 114 |
+| Sampled total queued deliveries, highest | 4,749 | 3,271 |
+
+At height two, median agreement-to-finalization time per validator was 6.087
+seconds in A and 5.321 seconds in B. Two validators in each run took roughly
+60–68 seconds after agreement and accounted for most of the all-node tail.
+Several late validators have no recorded local TERMINAL quorum; finalization
+can also arrive through catch-up. The data establish a recurring long tail,
+but do not isolate its cause. The queue peaks use a nominal two-second poll
+interval and may miss shorter spikes. CPU time covers all threads in one
+validator process, measured from just before submission, not host-wide CPU
+demand.
+Canonical message bytes exclude Noise, libp2p and TCP framing, retransmission,
+and connection setup. Process memory was not captured in these runs. Neither a
+real network nor one machine per validator was measured.
+
+The [scenario calculator](../../devnet/variable_roster_forecast.py) holds
+round-trip time and link rate constant. Its 12–24 serial one-way message waves
+over two heights are **assumptions**, not a measured critical path. At 50 ms
+RTT they yield 0.3–0.6 seconds of propagation; at 100 ms, 0.6–1.2 seconds.
+Serializing the largest observed canonical egress volume from one validator
+would take 0.565–0.652 seconds at an assumed 100 Mbit/s, or 0.057–0.065 seconds
+at 1 Gbit/s. These are separate sensitivity budgets that can overlap, not
+terms to add to the local 83-second result. The measured runs cannot yet
+support a total-runtime estimate or a production capacity claim for 32
+separate machines. The delayed-proxy runs below add a local sensitivity check;
+a separate-machine validation is still needed to calibrate that estimate.
+
+The pinned-toolchain focused runtime/node build barrier, workspace Clippy,
+format check, and Python syntax check passed for the instrumented source.
+The `cold_terminal_server_serves_final_record_to_a_late_owner` runtime test
+also hit its 60-second timeout on this branch. The identical isolated test
+timed out on unmodified parent commit `5edf02425f2740f19c6a12be7d6a51f94722184b`
+under the same local conditions, so this observation does not establish a
+regression from profiling. The instrumented commit does not have a passing
+complete-workspace two-profile run; the earlier complete-workspace results
+above apply only to their named commits. The test passed in 39.90 seconds on
+the later optimized branch, though its earlier timeout remains a reliability
+caveat.
+
+The v6 implementation still permits one active research attempt; more voters
+do not make questions run in parallel. This evidence supports a controlled
+small-roster testnet, not production use of the current 32-unit ceiling or the
+larger historical experimental rosters. The
+256-node listener failure calls for a transport design that avoids the current
+full-mesh resource demand. Separate-machine rehearsals, sustained workloads
+and network-fault measurement remain necessary before recommending larger
+rosters for deployment.
+
+### 32-validator handoff recovery and delayed-proxy follow-up
+
+The per-validator timeline on clean commit `7595a796` confirmed a long
+post-quorum tail: the baseline run reached its first height-two quorum in
+30.933 seconds, but all 32 validators needed 83.542 seconds. Several late
+nodes had at most three old-peer links,
+no staged peers and too few READY signatures. Their recovery sweep tried the
+selected keyed endpoints before stable fallback addresses. A selected listener
+can close after handoff while its peer remains reachable through the stable
+recovery address. With only two probes per interval, putting every selected
+endpoint first could delay useful history requests for much of a full sweep.
+
+Commit `063b8f40` interleaves selected and stable recovery addresses, without
+changing authority, voting, the recovery request format or the transport's
+two-connection limit. Three fresh direct-process runs with the same workload,
+profile and measurement runner all passed with 32 validators at one common
+height-two head and state within each run (runs A, B and C).
+
+| Direct-process measure | Baseline | Optimized A | Optimized B | Optimized C |
+| --- | ---: | ---: | ---: | ---: |
+| First height-two quorum | 30.933 s | 25.083 s | 34.625 s | 23.431 s |
+| All 32 at common height two | 83.542 s | 27.103 s | 36.653 s | 29.505 s |
+| Tail after first quorum | 52.609 s | 2.020 s | 2.028 s | 6.074 s |
+
+The later proxy harness used the same optimized Rust binary in every run.
+It raises the proxy connection cap to 64 for this roster and exposes a
+configurable one-way delay per forwarded TCP chunk. Two runs at each setting
+passed with all 32 validators at one common height-two head and state within
+each run. Local raw reports, kept outside Git, retain the code, runner and
+binary hashes, timing events, traffic counters and sampled queue history.
+
+| One-way proxy delay | Runs | First height-two quorum | All 32 at common height two | Tail after first quorum |
+| --- | --- | ---: | ---: | ---: |
+| 0 ms | A / B | 28.169 / 21.626 s | 34.215 / 29.692 s | 6.046 / 8.066 s |
+| 25 ms | A / B | 25.323 / 29.341 s | 27.344 / 31.365 s | 2.021 / 2.024 s |
+| 50 ms | A / B | 32.883 / 32.799 s | 36.919 / 36.852 s | 4.036 / 4.053 s |
+
+Raw reports remain on the measurement host at
+`/private/tmp/naome-profile-32-<run>-20260926/report.json`, outside Git.
+The run names and SHA-256 values are:
+
+| Run | SHA-256 |
+| --- | --- |
+| `timeline-baseline` | `a86411e07df448e8dd3ae8324617b89b8acd3dca8d7b56a16d1bbbf0b40b8f59` |
+| `interleave-a` | `9b1af3a60fc391d0c3b13962985e79ed526e42c07b8cd47368261c0ac660e073` |
+| `interleave-b` | `22f22cbab7e9f07a324a00df74c42f4fa154dd42ebb40d36e4446c4ae8e59d62` |
+| `interleave-c` | `ecd810d6ff14d3d4c3f0f9889964ef27d5dbd1bb5cb933b7794230f15c0c95ad` |
+| `proxy0-cap64` | `d8b3ae13f4eaa9d471d0938042eb4c2112e124709e83cc8c52b01377d27b43af` |
+| `proxy0-cap64-b` | `de0088af8d9cc536e930ce0041bbb5d640629c638af455b7f6e2bcea23a63c74` |
+| `proxy25-a` | `5888ce1d51c59b1b6eef4080412a291ee2b07fd41883b76537d42e4bdce6aae9` |
+| `proxy25-b` | `2a2b29ed9afdd694580365c7c12c65fddea1882e914628e90a92b4e985899173` |
+| `proxy50-a` | `fc9fd721882f4c9727322edd7c7dfb44566b7b0212d7e24099e3b8032d91f1a1` |
+| `proxy50-b` | `6e5d3e354fc0c00f3f2516afcbd56d93be2ae81cf148c9a5df5f13f27b2433f5` |
+
+Five earlier v6 reports cited by the comparisons above are also retained
+outside Git at `/private/tmp/naome-branch-evidence-20260926/<filename>` on
+the measurement host:
+
+| Filename | SHA-256 |
+| --- | --- |
+| `variable-roster-baseline-4.json` | `3ccfdb93b75adb7b5dd066d226a218e2e0f4413b65d0128b990467e13697b6da` |
+| `variable-roster-local.json` | `a51ba0877e9c777565bc18c997e5cb3b35a7c3faf649255fb83b581455e85b6d` |
+| `variable-roster-profile-32-a.json` | `41208c56cf46c1f4649170965453371e60e64698987238e16ccef55252141f5f` |
+| `variable-roster-profile-32-b.json` | `7909dd6f16b17a2703ab1840166d9e380b3b3de653752bb7a96f50e91794aac6` |
+| `variable-roster-scale-local.json` | `478db1b9c672452c575dd35116d1f5750d84677b487d75f130b6c50bbb63b7ad` |
+
+These temporary local paths are not a durable published artifact.
+
+The 25 and 50 ms one-way delays approximate 50 and 100 ms round trips for
+forwarded chunks. All processes and proxies still ran on one ten-logical-CPU
+Mac with loopback TCP and a system wake assertion. The proxy does not model
+separate-machine CPU, link bandwidth, packet loss, geographic routing or
+sustained load. Two runs per delay do not isolate a precise latency cost from
+host scheduling variability.
+The data support a controlled 32-validator testnet rehearsal: all ten new
+baseline, optimized and proxy runs converged, and every optimized run finished
+within 37 seconds. They do not qualify 32 separate machines or production
+deployment. Physical multi-host, loss and sustained-load runs remain open.
+
+With pinned Rust 1.97.1 on macOS ARM64, complete-workspace `test` and
+`release` build barriers and test executions passed on the optimized runtime
+code: 26 targets and 656 passing tests in each profile. A test-only module was
+then moved to the end of its file to satisfy Clippy. On that final source,
+workspace Clippy with `-D warnings`, formatting, and the focused recovery
+probe test in both profiles passed. Python syntax checks passed. This branch
+has not run the Linux or Windows CI matrix or a physical multi-host pilot.
+
+## Historical state-v5 authority-period qualification
 
 The canonical implementation seals every record using outgoing agreement,
 three incoming READY signatures and three outgoing TERMINAL signatures. The

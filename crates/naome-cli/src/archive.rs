@@ -34,7 +34,7 @@ pub(crate) fn replay(
     root: &Path,
     inspected: Option<&str>,
 ) -> Result<ReplayedArchive> {
-    let genesis = Genesis::decode(&read(genesis_path, 16384)?)?;
+    let genesis = Genesis::decode(&read(genesis_path, 128 * 1024)?)?;
 
     let manifest: Manifest = serde_json::from_slice(&read(&root.join("manifest.json"), 16384)?)?;
     if manifest.version != 1

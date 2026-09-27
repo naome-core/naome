@@ -25,6 +25,29 @@ fn owner_behaviour() -> (Behaviour, PeerId) {
 }
 
 #[test]
+fn prepared_listener_can_defer_outbound_static_dials_until_retirement() {
+    let (mut behaviour, peer_id) = owner_behaviour();
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+
+    behaviour.set_static_dialing_enabled(false);
+    assert!(matches!(
+        NetworkBehaviour::poll(&mut behaviour, &mut context),
+        Poll::Pending
+    ));
+    assert!(matches!(
+        behaviour.peer(&peer_id).unwrap().link,
+        Link::Down { .. }
+    ));
+
+    behaviour.set_static_dialing_enabled(true);
+    assert!(matches!(
+        NetworkBehaviour::poll(&mut behaviour, &mut context),
+        Poll::Ready(ToSwarm::Dial { .. })
+    ));
+}
+
+#[test]
 fn dial_ownership_is_antisymmetric() {
     for _ in 0..32 {
         let (lower, higher) = ordered_peer_ids();
@@ -228,6 +251,35 @@ fn inbound_hook_rejects_the_ninth_pre_authentication_attempt() {
         NetworkBehaviour::handle_pending_inbound_connection(
             &mut behaviour,
             ConnectionId::new_unchecked(INBOUND_AUTH_BURST as usize),
+            &listen,
+            &send,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn configured_large_roster_has_a_bounded_startup_burst() {
+    let local = PeerId::random();
+    let peers = (0..96).map(|_| StaticPeer::new(PeerId::random(), address()));
+    let mut behaviour = Behaviour::new(local, peers);
+    let listen = address();
+    let send = address();
+    for index in 0..64 {
+        assert!(
+            NetworkBehaviour::handle_pending_inbound_connection(
+                &mut behaviour,
+                ConnectionId::new_unchecked(index),
+                &listen,
+                &send,
+            )
+            .is_ok()
+        );
+    }
+    assert!(
+        NetworkBehaviour::handle_pending_inbound_connection(
+            &mut behaviour,
+            ConnectionId::new_unchecked(64),
             &listen,
             &send,
         )

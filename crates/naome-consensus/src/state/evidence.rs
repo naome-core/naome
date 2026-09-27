@@ -1,13 +1,16 @@
 use super::{Result, StateConsensusError as Error, codec::Reader};
 use crate::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget, ProposalSigningRoot};
 use ed25519_dalek::{Signature, VerifyingKey};
-use naome_ledger::{GenesisId, ProfileId, authority::AuthoritySnapshot, profile::Genesis};
+use naome_ledger::{
+    GenesisId, ProfileId,
+    authority::AuthoritySnapshot,
+    profile::{Genesis, MAX_VALIDATORS},
+};
 
-const MAGIC: &[u8; 5] = b"NSCV5";
+const MAGIC: &[u8; 5] = b"NSCV6";
 /// Fixed width of one versioned state vote, including key and signature.
 pub const STATE_VOTE_BYTES: usize = 5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64;
-/// A state quorum carries at most four complete signed votes.
-pub const STATE_QUORUM_MAX_BYTES: usize = 1 + 4 * STATE_VOTE_BYTES;
+pub const STATE_QUORUM_MAX_BYTES: usize = 2 + MAX_VALIDATORS * STATE_VOTE_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct VoteBody {
@@ -45,8 +48,8 @@ impl VoteBody {
     }
     pub(super) fn signing_bytes(self, signer: ConsensusKey) -> Vec<u8> {
         let domain: &[u8] = match self.role {
-            ConsensusVoteRole::Prevote => b"naome:state:prevote:v5\0",
-            ConsensusVoteRole::Precommit => b"naome:state:precommit:v5\0",
+            ConsensusVoteRole::Prevote => b"naome:state:prevote:v6\0",
+            ConsensusVoteRole::Precommit => b"naome:state:precommit:v6\0",
         };
         let mut bytes = domain.to_vec();
         bytes.extend(self.encode());
@@ -199,7 +202,7 @@ impl StateVoteSet {
         genesis: &Genesis,
         authority: &AuthoritySnapshot,
     ) -> Result<Self> {
-        if votes.is_empty() || votes.len() > 4 {
+        if votes.is_empty() || votes.len() > authority.units().len() {
             return Err(Error::Limit("vote set"));
         }
         votes.sort_by_key(StateVote::signer);
@@ -227,8 +230,8 @@ impl StateVoteSet {
     }
     pub fn decode(bytes: &[u8], genesis: &Genesis, authority: &AuthoritySnapshot) -> Result<Self> {
         let mut reader = Reader::new(bytes, STATE_QUORUM_MAX_BYTES)?;
-        let count = reader.u8()?;
-        if !(1..=4).contains(&count) {
+        let count = reader.u16()?;
+        if count == 0 || usize::from(count) > authority.units().len() {
             return Err(Error::Limit("vote set"));
         }
         let mut votes = Vec::with_capacity(count as usize);
@@ -246,7 +249,7 @@ impl StateVoteSet {
         Self::new(votes, genesis, authority)
     }
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = vec![self.votes.len() as u8];
+        let mut bytes = (self.votes.len() as u16).to_be_bytes().to_vec();
         for vote in &self.votes {
             bytes.extend(vote.encode());
         }
@@ -270,11 +273,11 @@ impl StateVoteSet {
         authority: &AuthoritySnapshot,
     ) -> Result<bool> {
         self.check_genesis(genesis, authority)?;
-        Ok(self.votes.len() >= 3)
+        Ok(self.votes.len() >= authority.quorum())
     }
     pub fn has_one_third(&self, genesis: &Genesis, authority: &AuthoritySnapshot) -> Result<bool> {
         self.check_genesis(genesis, authority)?;
-        Ok(self.votes.len() >= 2)
+        Ok(self.votes.len() > authority.units().len() / 3)
     }
     pub(super) fn check_genesis(
         &self,

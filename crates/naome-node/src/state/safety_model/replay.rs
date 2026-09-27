@@ -97,9 +97,9 @@ fn genesis(keys: &[SigningKey; 4]) -> Genesis {
     let limits = Limits {
         consensus_rounds: MAXIMUM_ROUND,
         run_records: 65,
-        record_bytes: 128 * 1024,
+        record_bytes: 512 * 1024,
         package_bytes: 64 * 1024,
-        transport_frame_bytes: 192 * 1024,
+        transport_frame_bytes: 768 * 1024,
         ..Limits::default()
     };
     let accounts: Vec<_> = (0..6)
@@ -249,7 +249,7 @@ impl Replay {
     fn faulty_vote(&self, round: u8, role: u8, value: u8) -> StateVote {
         let key = &self.keys[usize::from(self.model.faulty)];
         let genesis = self.branch.state().genesis();
-        let mut body = b"NSCV5".to_vec();
+        let mut body = b"NSCV6".to_vec();
         body.extend_from_slice(genesis.id().as_bytes());
         body.extend_from_slice(genesis.profile().id().as_bytes());
         body.extend_from_slice(&self.branch.authority().id());
@@ -268,9 +268,9 @@ impl Replay {
         }
         body.extend_from_slice(key.verifying_key().as_bytes());
         let mut transcript = if role == 0 {
-            b"naome:state:prevote:v5\0".to_vec()
+            b"naome:state:prevote:v6\0".to_vec()
         } else {
-            b"naome:state:precommit:v5\0".to_vec()
+            b"naome:state:precommit:v6\0".to_vec()
         };
         transcript.extend_from_slice(&body);
         body.extend_from_slice(&key.sign(&transcript).to_bytes());
@@ -323,11 +323,11 @@ impl Replay {
         let value = self.values[index];
         let mut bytes = if self.model.proposers[usize::from(round)] == self.model.faulty {
             let key = &self.keys[usize::from(self.model.faulty)];
-            let mut transcript = b"naome:state:proposal:v5\0".to_vec();
+            let mut transcript = b"naome:state:proposal:v6\0".to_vec();
             transcript.extend(value.encode());
             transcript.extend_from_slice(&u64::from(round).to_be_bytes());
             transcript.extend_from_slice(key.verifying_key().as_bytes());
-            let mut out = b"NSCP5".to_vec();
+            let mut out = b"NSCP6".to_vec();
             out.extend(value.encode());
             out.extend_from_slice(&u64::from(round).to_be_bytes());
             out.extend_from_slice(key.verifying_key().as_bytes());
@@ -366,7 +366,7 @@ impl Replay {
             StatePhase::Precommit => 2,
         };
         let snapshot = signer.snapshot().unwrap();
-        assert_eq!(&snapshot[..5], b"NSCS5");
+        assert_eq!(&snapshot[..5], b"NSCS6");
         let mut offset = 5 + 32 + 32 + 8 + 8 + 1;
         let mut field = || {
             let present = snapshot[offset];

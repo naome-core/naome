@@ -1,13 +1,13 @@
 # Stable-slot proposer selection
 
 `naome-consensus::proposer_selection` owns deterministic fixed-set arithmetic.
-The canonical `StateBranch` feeds it four immutable slot identifiers with
+The canonical `StateBranch` feeds it four to 32 installed slot identifiers with
 weight one each. A slot retains its arithmetic identity when its owner and
 period keys change. The selected parent snapshot resolves a selected slot to
 its current consensus key; a vacant slot returns no proposer for that round.
-Its turn is still consumed, and the four-slot quorum denominator is unchanged.
+Its turn is still consumed, and the installed-slot quorum denominator is unchanged.
 The general arithmetic accepts larger weighted sets for reference tests; the
-state-v5 authority transition remains four equal slots. [Authority periods](authority-periods.md)
+state-v6 authority transition uses equal-weight slots. [Authority periods](authority-periods.md)
 defines installation and [component ownership](ownership.md) maps its layers.
 
 The hash domains below retain their literal `v0` spelling. They remain part of
@@ -26,7 +26,7 @@ Entries are sorted by their raw 32 bytes in ascending order. Duplicate keys,
 zero-weight entries, and a total weight above `u128::MAX` are rejected. Input
 order has no semantic effect. The reference arithmetic can represent an empty
 set but cannot select a proposer from it. The canonical branch always supplies
-four stable slot IDs through the same 32-byte arithmetic key type; these bytes
+four to 32 stable slot IDs through the same 32-byte arithmetic key type; these bytes
 are not the rotating consensus public keys.
 
 The trailing-NUL identity domain is:
@@ -156,7 +156,7 @@ That first step has two roles:
 
 - it selects the proposer for `(h, 0)`; and
 - its post-state is the sole base carried to height `h + 1` after a verified
-  child transition.
+  child transition when that child has the same installed slot set.
 
 Later rounds apply one additional proposer step at a time to a height-local
 copy. They do not change `B_h_plus_1`:
@@ -170,6 +170,12 @@ Therefore a value verified at round zero or any later sequential round carries
 the same next-height proposer base. The round and signature set do not change
 the next-height base or the evidence-free state value.
 
+If a sealed child adds an installed slot, its proposer base is initialized from
+the successor's sorted slot set with zero priorities. The child value commits
+to this new fixed set and base. Key rotation and a replacement that retains
+the old slot ID continue the existing priority cycle. The outgoing roster
+still signs and seals the child using its own scheduled proposer and quorum.
+
 Height one derives only from the virtual-genesis branch. Every later branch
 uses exactly `verified_height + 1`; height overflow fails rather than wraps.
 `StateBranch::proposer(round, maximum_round)` rejects a round above the bound
@@ -178,7 +184,7 @@ before deriving its proposer from that branch's base.
 ## Canonical branch integration
 
 `StateBranch::from_genesis` accepts only the height-zero `LedgerState` and
-constructs zero priorities from its four stable slots. A later branch arises
+constructs zero priorities from its installed stable slots. A later branch arises
 only from verified agreement, READY and TERMINAL seals for a complete record
 against the exact selected parent. `StateValue` binds genesis, profile,
 outgoing authority ID, height, parent and child record identities, previous and
@@ -187,13 +193,14 @@ identity. The scheduled slot is derived from the branch and round, then
 resolved under the selected parent snapshot. Callers cannot substitute a
 priority vector or a current key for a vacant slot.
 
-Agreement authenticates the scheduled proposal and a non-nil three-of-four
+Agreement authenticates the scheduled proposal and a non-nil `q(N_out)`
 precommit quorum before full mathematical/state replay. It yields a provisional
 `StateAgreement`, not a selectable successor. The exact agreed record and
-successor snapshot need at least three incoming READY and three outgoing TERMINAL
+successor snapshot need at least `q(N_in)` incoming READY and `q(N_out)` outgoing TERMINAL
 signatures before `StateFinality` permits durable selection. The successor
-carries the once-advanced height base, including when agreement arrived in a
-later round. Key rotation does not reset those priorities. Storage owns
+carries the once-advanced height base for an unchanged slot set, including
+when agreement arrived in a later round. Adding a slot initializes a new base;
+key rotation and same-slot replacement do not. Storage owns
 durable selection and conflict halt; proposer arithmetic alone supplies no
 signing, selection, persistence, or network authority.
 

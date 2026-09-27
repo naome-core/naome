@@ -22,7 +22,7 @@ use super::{
     signer::StateSigner,
 };
 
-const MAGIC: &[u8; 8] = b"NAOSHOF5";
+const MAGIC: &[u8; 8] = b"NAOSHOF6";
 const STAGE: u8 = 1;
 const READY_INTENT: u8 = 2;
 const READY_DONE: u8 = 3;
@@ -128,8 +128,10 @@ impl Replay {
                 {
                     return Err(Error::Invalid("TERMINAL signer outside outgoing authority"));
                 }
-                let count = r.u8()? as usize;
-                if !(3..=4).contains(&count) {
+                let count = r.u16()? as usize;
+                if !(agreement.incoming().quorum()..=agreement.incoming().units().len())
+                    .contains(&count)
+                {
                     return Err(Error::Invalid("READY quorum count"));
                 }
                 let mut quorum = Vec::with_capacity(count);
@@ -397,7 +399,7 @@ impl StateHandoffJournal {
             None => {
                 let mut body = vec![TERMINAL_INTENT];
                 body.extend_from_slice(signer.as_bytes());
-                body.push(ready.len() as u8);
+                body.extend_from_slice(&(ready.len() as u16).to_be_bytes());
                 for signature in ready {
                     body.extend(signature.encode());
                 }

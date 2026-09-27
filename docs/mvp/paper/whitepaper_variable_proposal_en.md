@@ -1,9 +1,9 @@
 # NAOME
 # A Public Network for Formal Research
 
-[META] Whitepaper · Draft v0.1 · 24 September 2026 · Project design and bounded prototype
+[META] Whitepaper · Variable-roster proposal v0.2 · 24 September 2026 · Fresh v6 genesis
 
-[ABSTRACT] NAOME proposes a public network for selecting mathematical research questions, checking formal answers and preserving reusable results. Validator owners decide which questions receive resources; contributors submit proofs or refutations under a declared rulebook. A valid first completion publishes the result and its used helpers, records a bounded reward and gives the solution author an optional route to validator membership. Agreement records these decisions in a shared history without treating a vote as mathematical evidence. A bounded fresh-genesis prototype supports four to 32 equal validator units, one active research attempt and test accounting. Public-network operation requires further rules, independent infrastructure and qualification.
+[ABSTRACT] NAOME proposes a public network for selecting mathematical research questions, checking formal answers and preserving reusable results. Validator owners authorize research; contributors submit certificates under a declared rulebook. A first valid completion publishes the result and its used helpers, records a bounded reward and gives the solution author an eligibility claim. This fresh-v6 prototype allows four to 32 installed, equal-weight consensus units. An earned claim adds one unit until the ceiling, then replaces the oldest unit. The bounded research path still processes one active attempt at a time. Public-network operation depends on authority distribution, availability, resources and signing capabilities.
 
 ## 1. Purpose and scope
 
@@ -13,15 +13,13 @@ NAOME coordinates three decisions in shared mathematical research: which questio
 
 [CAPTION] Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. A terminal seal ends the bounded run.
 
-This paper describes the intended public-network protocol and identifies the bounded implementation where its rules differ. The 32-unit ceiling is a prototype/testnet limit, not physical 32-host qualification. The research profile's seven-day live run, physical multi-machine acceptance and public-network operation remain separate qualifications.
-
 NAOME's research path can span many sealed records. An unapproved or expired attempt produces no paid result. A solution author's join request is optional and grants no voting weight until a separate handoff is sealed.
 
 A proposal combines a readable purpose with an exact mathematical task. Validator owners judge whether to authorize it; contributors seek a proof of an approved conclusion under the declared Foundation, or formal rulebook. Approval expresses a research preference, while checking establishes derivability. The shared history records both without treating either as evidence for the other.
 
 A paid completion credits the bounded profile's Test-NAO accounts and creates a nontransferable eligibility claim for its authenticated solution author. This claim provides a possible route to validation; holdings confer no voting weight.
 
-The fresh v6 profile uses a sealed four-to-32-unit electorate and does not upgrade an existing v5 chain in place. Material public-network rules still requiring definition are collected in Section 9.2. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
+This discussion copy describes the proposed fresh v6 profile with a four-to-32-unit sealed electorate. The ceiling is a prototype/testnet limit, not physical 32-host qualification. It makes no in-place upgrade claim for an existing v5 chain. Material rules still requiring definition are collected in Section 9.2. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
 
 ## 2. Network model and research lifecycle
 

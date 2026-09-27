@@ -14,16 +14,18 @@ mod tests;
 
 use ed25519_dalek::SigningKey;
 use naome_chain::StateRecord;
-use naome_consensus::state::StatePhase;
+use naome_consensus::state::{StatePhase, StatePublication};
 use naome_ledger::{
     AuthorityUnitId, LedgerError, LedgerState, OperationId, ResolutionId, ValidatorId,
     authentication::SignedOperation,
     authority::{CandidateAdmissionOffer, HandoffPlan, NextPeriodKeys},
     time::SignedTimeReport,
 };
-use naome_network::{PeerId, StateNetwork, StateTicket, StateTransportEvent, StateTransportPair};
+use naome_network::{
+    PeerId, StateNetwork, StateTicket, StateTraffic, StateTransportEvent, StateTransportPair,
+};
 use naome_node::state::{StateNode, StateNodeError};
-use naome_protocol::state_exchange::StateRequestBody;
+use naome_protocol::state_exchange::{StateContext, StateRequestBody};
 use naome_storage::state::{StateHandoffJournal, StatePeriodCustody, StateStorageError};
 use naome_storage::state::{StateHistory, StateSigner};
 use std::{
@@ -97,16 +99,16 @@ impl From<StateStorageError> for StateRuntimeError {
 }
 type Result<T> = std::result::Result<T, StateRuntimeError>;
 
-/// Local willingness to sign a fresh proposal. An accepted candidate replaces
-/// the oldest unit, so that outgoing owner has no incoming READY obligation.
+/// Local willingness to sign a fresh proposal. A candidate retires the oldest
+/// unit only when the roster is full; otherwise every incumbent must rotate.
 /// Every other live owner needs the exact custody offer it can actually open.
 fn plan_carries_local_ready(
     plan: &HandoffPlan,
     current_unit: Option<AuthorityUnitId>,
     local: Option<&NextPeriodKeys>,
-    oldest: AuthorityUnitId,
+    retiring: Option<AuthorityUnitId>,
 ) -> bool {
-    if plan.candidate().is_some() && current_unit == Some(oldest) {
+    if plan.candidate().is_some() && retiring.is_some() && current_unit == retiring {
         return true;
     }
     match current_unit {
@@ -150,6 +152,37 @@ pub enum StateRuntimeEvent {
     Finalized { height: u64 },
     Rejected { peer: PeerId, reason: String },
 }
+/// Read-only local progress counters; none grants consensus authority.
+#[derive(Clone, Copy, Debug)]
+pub struct StateRuntimeDiagnostics {
+    pub local_proposer: bool,
+    pub proposal_authored: bool,
+    pub observed_proposals: usize,
+    pub observed_prevotes: usize,
+    pub observed_precommits: usize,
+    pub connected_peers: usize,
+    pub staged_connected_peers: usize,
+    pub offers: usize,
+    pub time_reports: usize,
+    pub queued_deliveries: usize,
+    pub in_flight_deliveries: usize,
+    pub queued_ready: usize,
+    pub queued_terminal: usize,
+    pub in_flight_ready: usize,
+    pub in_flight_terminal: usize,
+    pub work_ready: bool,
+    pub agreement_ready: bool,
+    pub ready_signatures: usize,
+    pub terminal_signatures: usize,
+}
+/// Volatile local timing evidence; it is never persisted or used for authority.
+#[derive(Clone, Copy, Debug)]
+pub struct StateTimingEvent {
+    pub elapsed_millis: u64,
+    pub height: u64,
+    pub round: Option<u64>,
+    pub stage: &'static str,
+}
 struct Delivery {
     peer: PeerId,
     body: StateRequestBody,
@@ -185,12 +218,15 @@ struct RecoveryFlight {
 pub struct StateRuntime {
     node: StateNode,
     network: StateTransportPair,
+    retired_traffic: StateTraffic,
+    context: StateContext,
     peers: Vec<PeerId>,
     handoff_peers: Vec<PeerId>,
     config: StateRuntimeConfig,
     pending: BTreeMap<OperationId, SignedOperation>,
     pending_bytes: usize,
     action_cursor: usize,
+    action_peer_cursor: usize,
     rejections: VecDeque<(OperationId, u64, String)>,
     deferred: VecDeque<(OperationId, naome_ledger::AccountId, u64)>,
     time_reports: BTreeMap<ValidatorId, SignedTimeReport>,
@@ -201,6 +237,9 @@ pub struct StateRuntime {
     current_custody: Option<StatePeriodCustody>,
     next_custody: Option<StatePeriodCustody>,
     own_time: Option<Arc<[u8]>>,
+    // At most the signer's current proposal and two recent votes. Retain
+    // their exact wire identities across network-driven retry passes.
+    publication_cache: Vec<(StatePublication, StateRequestBody, [u8; 32])>,
     outbox: VecDeque<Delivery>,
     flights: Vec<Flight>,
     recovery_flights: Vec<RecoveryFlight>,
@@ -221,12 +260,141 @@ pub struct StateRuntime {
     next_tick: Instant,
     phase_started: Instant,
     last_position: Option<(u64, u64, StatePhase)>,
+    timing_started: Instant,
+    timing_position: Option<(u64, u64, StatePhase)>,
+    timing_events: VecDeque<StateTimingEvent>,
+    timing_events_dropped: u64,
     last_utc: Option<u64>,
     last_clock: Option<(std::time::SystemTime, Instant)>,
     observed_height: u64,
     work_ready: bool,
 }
 impl StateRuntime {
+    pub fn diagnostics(&self) -> Result<StateRuntimeDiagnostics> {
+        let (observed_proposals, observed_prevotes, observed_precommits) =
+            self.node.observed_consensus_counts()?;
+        let (ready_signatures, terminal_signatures) = self.node.handoff_signature_counts();
+        Ok(StateRuntimeDiagnostics {
+            local_proposer: self.node.is_proposer()?,
+            proposal_authored: self.node.already_authored()?,
+            observed_proposals,
+            observed_prevotes,
+            observed_precommits,
+            connected_peers: self
+                .network
+                .active()
+                .or_else(|| self.network.staged())
+                .map_or(0, StateNetwork::connected_static_peers),
+            staged_connected_peers: self
+                .network
+                .staged()
+                .map_or(0, StateNetwork::connected_static_peers),
+            offers: self.offers.len(),
+            time_reports: self.time_reports.len(),
+            queued_deliveries: self.outbox.len(),
+            in_flight_deliveries: self.flights.len(),
+            queued_ready: self
+                .outbox
+                .iter()
+                .filter(|delivery| matches!(delivery.body, StateRequestBody::ReadySignature(_)))
+                .count(),
+            queued_terminal: self
+                .outbox
+                .iter()
+                .filter(|delivery| matches!(delivery.body, StateRequestBody::TerminalSignature(_)))
+                .count(),
+            in_flight_ready: self
+                .flights
+                .iter()
+                .filter(|flight| {
+                    matches!(flight.delivery.body, StateRequestBody::ReadySignature(_))
+                })
+                .count(),
+            in_flight_terminal: self
+                .flights
+                .iter()
+                .filter(|flight| {
+                    matches!(flight.delivery.body, StateRequestBody::TerminalSignature(_))
+                })
+                .count(),
+            work_ready: self.work_ready,
+            agreement_ready: self.node.handoff_agreement().is_some(),
+            ready_signatures,
+            terminal_signatures,
+        })
+    }
+    pub fn timing_events(&self) -> impl Iterator<Item = &StateTimingEvent> {
+        self.timing_events.iter()
+    }
+    pub fn traffic(&self) -> StateTraffic {
+        let mut total = self.retired_traffic;
+        total += self.network.traffic();
+        total
+    }
+    fn replace_network(&mut self, next: StateTransportPair) {
+        self.retired_traffic += self.network.traffic();
+        self.network = next;
+    }
+    pub fn timing_events_dropped(&self) -> u64 {
+        self.timing_events_dropped
+    }
+    fn timing_event(&mut self, height: u64, round: Option<u64>, stage: &'static str, now: Instant) {
+        if self.timing_events.len() == 64 {
+            self.timing_events.pop_front();
+            self.timing_events_dropped += 1;
+        }
+        self.timing_events.push_back(StateTimingEvent {
+            elapsed_millis: u64::try_from(now.duration_since(self.timing_started).as_millis())
+                .unwrap_or(u64::MAX),
+            height,
+            round,
+            stage,
+        });
+    }
+    fn timing_marker(&mut self, height: u64, stage: &'static str) {
+        if !self
+            .timing_events
+            .iter()
+            .any(|event| event.height == height && event.stage == stage)
+        {
+            self.timing_event(height, None, stage, Instant::now());
+        }
+    }
+    fn timing_position(&mut self, position: Option<(u64, u64, StatePhase)>, now: Instant) {
+        if self.timing_position == position {
+            return;
+        }
+        if let Some((height, round, phase)) = position {
+            self.timing_event(
+                height,
+                Some(round),
+                match phase {
+                    StatePhase::Proposal => "proposal",
+                    StatePhase::Prevote => "prevote",
+                    StatePhase::Precommit => "precommit",
+                },
+                now,
+            );
+        }
+        self.timing_position = position;
+    }
+    fn timing_handoff(&mut self) -> Result<()> {
+        let Some(agreement) = self.node.handoff_agreement() else {
+            return Ok(());
+        };
+        let height = agreement.seal_context().height();
+        let (ready_count, terminal_count) = self.node.handoff_signature_counts();
+        let ready_quorum = ready_count >= agreement.incoming().quorum();
+        let terminal_quorum = terminal_count >= agreement.outgoing().quorum();
+        self.timing_marker(height, "agreement");
+        if ready_quorum {
+            self.timing_marker(height, "ready_quorum");
+        }
+        if terminal_quorum {
+            self.timing_marker(height, "terminal_quorum");
+        }
+        Ok(())
+    }
     #[cfg(all(test, unix))]
     fn new(
         history: StateHistory,
@@ -490,7 +658,7 @@ impl StateRuntime {
             .or(network.recovery())
             .ok_or(StateRuntimeError::Configuration("no state transport"))?
             .local_peer_id();
-        if peers.len() > 4
+        if peers.len() > 2 * naome_ledger::profile::MAX_VALIDATORS + 32
             || peers.iter().any(|p| {
                 *p == local || (!network.is_configured_peer(p) && network.active().is_some())
             })
@@ -504,10 +672,8 @@ impl StateRuntime {
             .map_err(StateNodeError::from)?
             .state()
             .genesis();
-        let expected = naome_protocol::state_exchange::StateContext::new(
-            *genesis.id().as_bytes(),
-            *genesis.profile().id().as_bytes(),
-        );
+        let expected =
+            StateContext::new(*genesis.id().as_bytes(), *genesis.profile().id().as_bytes());
         if network.state_context() != Some(expected) {
             return Err(StateRuntimeError::Configuration(
                 "transport context differs from selected history",
@@ -520,12 +686,15 @@ impl StateRuntime {
         Ok(Self {
             node,
             network,
+            retired_traffic: StateTraffic::default(),
+            context: expected,
             peers,
             handoff_peers: Vec::new(),
             config,
             pending: BTreeMap::new(),
             pending_bytes: 0,
             action_cursor: 0,
+            action_peer_cursor: 0,
             rejections: VecDeque::new(),
             deferred: VecDeque::new(),
             time_reports: BTreeMap::new(),
@@ -536,6 +705,7 @@ impl StateRuntime {
             current_custody,
             next_custody,
             own_time: None,
+            publication_cache: Vec::new(),
             outbox: VecDeque::new(),
             flights: Vec::new(),
             recovery_flights: Vec::new(),
@@ -554,6 +724,23 @@ impl StateRuntime {
             next_tick: now,
             phase_started: now,
             last_position,
+            timing_started: now,
+            timing_position: last_position,
+            timing_events: last_position
+                .map(|(height, round, phase)| {
+                    VecDeque::from([StateTimingEvent {
+                        elapsed_millis: 0,
+                        height,
+                        round: Some(round),
+                        stage: match phase {
+                            StatePhase::Proposal => "proposal",
+                            StatePhase::Prevote => "prevote",
+                            StatePhase::Precommit => "precommit",
+                        },
+                    }])
+                })
+                .unwrap_or_default(),
+            timing_events_dropped: 0,
             last_utc: None,
             last_clock: None,
             observed_height,
@@ -624,7 +811,9 @@ impl StateRuntime {
                 "different offer for same unit and parent".into(),
             ));
         }
-        if self.offers.len() >= 4 && !self.offers.contains_key(&offer.unit()) {
+        if self.offers.len() >= state.authority().units().len()
+            && !self.offers.contains_key(&offer.unit())
+        {
             return Err(StateRuntimeError::Rejected("period offer count".into()));
         }
         self.offers.insert(offer.unit(), offer);
@@ -672,7 +861,7 @@ impl StateRuntime {
         &self,
         time: &naome_ledger::time::TimeCertificate,
     ) -> Result<Option<HandoffPlan>> {
-        if self.offers.len() < 3 {
+        if self.offers.len() < self.state()?.authority().quorum() {
             return Ok(None);
         }
         let offers: Vec<_> = self.offers.values().cloned().collect();
@@ -1138,18 +1327,38 @@ impl StateRuntime {
     }
     fn drive(&mut self) -> Result<()> {
         let before = self.state()?.height();
+        self.timing_handoff()?;
         self.drive_node_with_local_ready()?;
+        self.timing_handoff()?;
         if self.state()?.height() == before {
             self.advance_handoff()?;
             self.drive_node_with_local_ready()?;
         }
+        self.timing_handoff()?;
         if self.state()?.height() != before {
+            self.timing_marker(self.state()?.height(), "finalized");
+            self.timing_position(self.node.position()?, Instant::now());
             self.on_height()?;
         }
         let position = self.node.position()?;
+        self.timing_position(position, Instant::now());
         if position != self.last_position {
             if position.map(|p| (p.0, p.1)) != self.last_position.map(|p| (p.0, p.1)) {
-                self.outbox.clear();
+                if self.network.active().is_none() {
+                    // Leaving the outgoing signer after saving TERMINAL changes
+                    // position to None. Keep seal evidence on the prepared lane.
+                    self.outbox.retain(|delivery| {
+                        matches!(
+                            delivery.body,
+                            StateRequestBody::Agreement(_)
+                                | StateRequestBody::ReadySignature(_)
+                                | StateRequestBody::TerminalSignature(_)
+                                | StateRequestBody::Finalized(_)
+                        )
+                    });
+                } else {
+                    self.outbox.clear();
+                }
                 self.sent.clear();
                 self.acknowledged.clear();
             }
@@ -1160,8 +1369,17 @@ impl StateRuntime {
         Ok(())
     }
     fn drive_node_with_local_ready(&mut self) -> Result<()> {
+        let mut changes = Vec::new();
         if self.handoff_setup.is_none() || self.node.position()?.is_none() {
-            self.node.drive()?;
+            self.node.drive_with_observer(
+                |_| true,
+                |position| {
+                    changes.push((position, Instant::now()));
+                },
+            )?;
+            for (position, at) in changes {
+                self.timing_position(position, at);
+            }
             return Ok(());
         }
         let signer = self
@@ -1178,24 +1396,31 @@ impl StateRuntime {
                 "local signer absent from selected authority",
             ))?
             .id();
-        let oldest = state.authority().oldest().id();
+        let retiring = (state.authority().units().len() == naome_ledger::profile::MAX_VALIDATORS)
+            .then(|| state.authority().oldest().id());
         let genesis = state.genesis().clone();
         let local_offer = self
             .next_custody
             .as_ref()
             .and_then(StatePeriodCustody::offer)
             .cloned();
-        self.node.drive_with(|proposal| {
-            proposal.valid_quorum().is_some()
-                || StateRecord::decode(proposal.record_bytes(), &genesis).is_ok_and(|record| {
-                    plan_carries_local_ready(
-                        record.handoff_plan(),
-                        Some(unit),
-                        local_offer.as_ref(),
-                        oldest,
-                    )
-                })
-        })?;
+        self.node.drive_with_observer(
+            |proposal| {
+                proposal.valid_quorum().is_some()
+                    || StateRecord::decode(proposal.record_bytes(), &genesis).is_ok_and(|record| {
+                        plan_carries_local_ready(
+                            record.handoff_plan(),
+                            Some(unit),
+                            local_offer.as_ref(),
+                            retiring,
+                        )
+                    })
+            },
+            |position| changes.push((position, Instant::now())),
+        )?;
+        for (position, at) in changes {
+            self.timing_position(position, at);
+        }
         Ok(())
     }
     fn on_height(&mut self) -> Result<()> {

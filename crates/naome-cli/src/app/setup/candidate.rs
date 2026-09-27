@@ -72,9 +72,11 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         return Err("candidate primary and handoff endpoints must differ".into());
     }
     let recovery_endpoints: Vec<String> =
-        serde_json::from_slice(&files::read(Path::new(&args[9]), 4096, false)?)?;
-    if recovery_endpoints.is_empty() || recovery_endpoints.len() > 10 {
-        return Err("one through ten recovery endpoints required".into());
+        serde_json::from_slice(&files::read(Path::new(&args[9]), 65536, false)?)?;
+    if recovery_endpoints.is_empty()
+        || recovery_endpoints.len() > 2 * naome_ledger::profile::MAX_VALIDATORS
+    {
+        return Err("one through 512 recovery endpoints required".into());
     }
     let mut recovery_seen = std::collections::BTreeSet::new();
     for value in &recovery_endpoints {
@@ -153,11 +155,11 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         files::directory(requested)?;
     }
     let root = requested.canonicalize()?;
-    if !resume && files::available(&root)? < genesis.profile().required_storage_bytes()? {
+    if !resume && files::available(&root)? < genesis.profile().operating_storage_floor_bytes()? {
         return Err("candidate observer requires more free storage".into());
     }
     let config = NodeConfig {
-        version: 5,
+        version: naome_ledger::profile::STATE_PROTOCOL_VERSION,
         genesis: root.join("genesis.bin"),
         history: root.join("history"),
         history_anchor: root.join("anchor-history"),

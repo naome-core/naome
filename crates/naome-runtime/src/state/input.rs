@@ -201,12 +201,14 @@ impl StateRuntime {
                 // `received` releases the transport byte/pending permit here.
                 Ok(StateRuntimeEvent::Network)
             }
-            NetworkEvent::ListenerError { error, .. } => {
-                Err(StateRuntimeError::Transport(error.to_string()))
-            }
+            // libp2p reports this event for a non-fatal accept error; the
+            // listener remains active. A closed listener is reported below.
+            NetworkEvent::ListenerError { .. } => Ok(StateRuntimeEvent::Network),
             NetworkEvent::ListenerClosed {
                 reason: Err(error), ..
-            } => Err(StateRuntimeError::Transport(error.to_string())),
+            } => Err(StateRuntimeError::Transport(format!(
+                "listener closed: {error}"
+            ))),
             _ => Ok(StateRuntimeEvent::Network),
         }
     }
@@ -282,6 +284,7 @@ impl StateRuntime {
                     self.phase_started = Instant::now();
                 }
                 self.work_ready = true;
+                self.timing_marker(self.state()?.height().saturating_add(1), "work_ready");
                 Ok(StateResponseBody::Accepted)
             }
             StateRequestBody::Vote(bytes) => {
@@ -388,8 +391,11 @@ impl StateRuntime {
     }
     pub(super) fn receive_finality(&mut self, bytes: &[u8]) -> Result<StateAppendOutcome> {
         let before = self.state()?.height();
+        self.timing_handoff()?;
         let result = self.node.accept_finality(bytes)?;
         if self.state()?.height() != before {
+            self.timing_marker(self.state()?.height(), "finalized");
+            self.timing_position(self.node.position()?, Instant::now());
             self.on_height()?;
         }
         Ok(result)

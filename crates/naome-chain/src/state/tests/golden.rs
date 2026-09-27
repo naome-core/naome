@@ -189,8 +189,7 @@ fn legacy_research_authority_is_not_reinterpreted_as_state_history() {
     report[..4].copy_from_slice(b"NSTM");
     assert!(
         SignedTimeReport::decode(&report)
-            .unwrap()
-            .verify(state.genesis(), state.authority(), state.head(), 1)
+            .and_then(|report| report.verify(state.genesis(), state.authority(), state.head(), 1))
             .is_err()
     );
     assert!(SignedOriginal::decode(&legacy_vector("signed-original"), state.genesis()).is_err());

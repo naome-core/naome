@@ -1,7 +1,9 @@
 use super::codec::{Reader, Writer};
 use naome_ledger::LedgerError;
+use naome_ledger::profile::MAX_VALIDATORS;
 
-const MAGIC: &[u8; 5] = b"NSCF5";
+const MAGIC: &[u8; 5] = b"NSCF6";
+const MAX_SEAL_BYTES: usize = 5 + 4 + 2 * MAX_VALIDATORS * (5 + 32 * 6 + 8 + 1 + 32 + 64);
 
 /// Canonical wire record binding a complete state proposal to finality evidence.
 ///
@@ -28,7 +30,7 @@ impl<'a> FinalizedStateRecord<'a> {
         }
         let proposal = reader.bytes(maximum_bytes)?;
         let quorum = reader.bytes(maximum_quorum_bytes)?;
-        let seal = reader.bytes(4096)?;
+        let seal = reader.bytes(MAX_SEAL_BYTES)?;
         reader.finish()?;
         Ok(Self {
             proposal,

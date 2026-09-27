@@ -1760,7 +1760,7 @@ fn historical_replay_requires_complete_authenticated_finality_first() {
     // A complete outer envelope containing only an unsigned proposal header
     // used to pass claimed_height and trigger historical mathematical replay.
     let header_length = 5 + value_bytes;
-    let mut unsigned = b"NSCF5".to_vec();
+    let mut unsigned = b"NSCF6".to_vec();
     unsigned.extend_from_slice(&(header_length as u32).to_be_bytes());
     unsigned.extend_from_slice(&valid[9..9 + header_length]);
     unsigned.extend_from_slice(&0u32.to_be_bytes());

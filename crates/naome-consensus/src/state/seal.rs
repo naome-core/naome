@@ -4,11 +4,13 @@
 use super::{Result, StateConsensusError as Error, codec::Reader};
 use crate::ConsensusKey;
 use ed25519_dalek::{Signature, VerifyingKey};
-use naome_ledger::{GenesisId, RecordId, StateCommitment, authority::AuthoritySnapshot};
+use naome_ledger::{
+    GenesisId, RecordId, StateCommitment, authority::AuthoritySnapshot, profile::MAX_VALIDATORS,
+};
 
 const CONTEXT_BYTES: usize = 32 * 6 + 8;
 pub const SEAL_SIGNATURE_BYTES: usize = 5 + CONTEXT_BYTES + 1 + 32 + 64;
-pub const STATE_SEAL_MAX_BYTES: usize = 5 + 2 + 8 * SEAL_SIGNATURE_BYTES;
+pub const STATE_SEAL_MAX_BYTES: usize = 5 + 4 + 2 * MAX_VALIDATORS * SEAL_SIGNATURE_BYTES;
 
 /// Exact agreed record and both authority snapshots. Quorum subsets and the
 /// agreement round do not change this context or the finalized record identity.
@@ -110,8 +112,8 @@ pub struct SealSignature {
 impl SealSignature {
     pub fn signing_bytes(role: SealRole, context: SealContext, signer: ConsensusKey) -> Vec<u8> {
         let mut bytes = match role {
-            SealRole::Ready => b"naome:state:ready:v5\0".to_vec(),
-            SealRole::Terminal => b"naome:state:terminal:v5\0".to_vec(),
+            SealRole::Ready => b"naome:state:ready:v6\0".to_vec(),
+            SealRole::Terminal => b"naome:state:terminal:v6\0".to_vec(),
         };
         bytes.extend(context.encode());
         bytes.push(role.tag());
@@ -182,7 +184,7 @@ impl SealSignature {
             .map_err(|_| Error::Invalid("seal signature"))
     }
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = b"NSSG5".to_vec();
+        let mut bytes = b"NSSG6".to_vec();
         bytes.extend(self.context.encode());
         bytes.push(self.role.tag());
         bytes.extend_from_slice(self.signer.as_bytes());
@@ -192,7 +194,7 @@ impl SealSignature {
     /// Bounded structural decoding, with no authority inferred from wire fields.
     pub fn decode(input: &[u8]) -> Result<Self> {
         let mut r = Reader::new(input, SEAL_SIGNATURE_BYTES)?;
-        if r.fixed::<5>()? != *b"NSSG5" {
+        if r.fixed::<5>()? != *b"NSSG6" {
             return Err(Error::Invalid("seal signature format"));
         }
         let context = SealContext::read(&mut r)?;
@@ -212,7 +214,7 @@ impl SealSignature {
     }
 }
 
-/// Both three-of-four quorums for one agreed transition. Missing slots always
+/// Both roster quorums for one agreed transition. Missing slots always
 /// remain in the denominator; evidence never reduces the installed electorate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateSeal {
@@ -263,9 +265,9 @@ impl StateSeal {
         &self.terminal
     }
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = b"NSSL5".to_vec();
+        let mut bytes = b"NSSL6".to_vec();
         for set in [&self.ready, &self.terminal] {
-            bytes.push(set.len() as u8);
+            bytes.extend_from_slice(&(set.len() as u16).to_be_bytes());
             for signature in set {
                 bytes.extend(signature.encode());
             }
@@ -274,12 +276,12 @@ impl StateSeal {
     }
     pub fn decode(input: &[u8]) -> Result<Self> {
         let mut r = Reader::new(input, STATE_SEAL_MAX_BYTES)?;
-        if r.fixed::<5>()? != *b"NSSL5" {
+        if r.fixed::<5>()? != *b"NSSL6" {
             return Err(Error::Invalid("seal format"));
         }
         let mut read = || -> Result<Vec<SealSignature>> {
-            let count = r.u8()?;
-            if !(3..=4).contains(&count) {
+            let count = r.u16()?;
+            if !(3..=MAX_VALIDATORS as u16).contains(&count) {
                 return Err(Error::Invalid("seal quorum count"));
             }
             let mut signatures = Vec::with_capacity(count as usize);
@@ -304,7 +306,11 @@ fn verify_set(
     outgoing: &AuthoritySnapshot,
     incoming: &AuthoritySnapshot,
 ) -> Result<()> {
-    if !(3..=4).contains(&signatures.len())
+    let authority = match role {
+        SealRole::Ready => incoming,
+        SealRole::Terminal => outgoing,
+    };
+    if !(authority.quorum()..=authority.units().len()).contains(&signatures.len())
         || signatures.windows(2).any(|p| p[0].signer >= p[1].signer)
     {
         return Err(Error::Invalid("seal quorum"));

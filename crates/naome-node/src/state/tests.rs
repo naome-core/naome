@@ -96,9 +96,9 @@ fn genesis() -> Genesis {
 fn genesis_with_rounds(rounds: u64) -> Genesis {
     let limits = Limits {
         run_records: 65,
-        record_bytes: 128 * 1024,
+        record_bytes: 512 * 1024,
         package_bytes: 64 * 1024,
-        transport_frame_bytes: 192 * 1024,
+        transport_frame_bytes: 768 * 1024,
         consensus_rounds: rounds,
         ..Limits::default()
     };
@@ -271,6 +271,37 @@ fn relay(nodes: &mut [StateNode], only_role: Option<ConsensusVoteRole>) {
 }
 
 #[test]
+fn exact_proposal_retry_is_idempotent_but_changed_bytes_are_verified() {
+    let g = genesis();
+    let mut nodes: Vec<_> = (0..4).map(|i| node(i, &g)).collect();
+    let proposer = nodes
+        .iter()
+        .position(|(_, _, node)| node.is_proposer().unwrap())
+        .unwrap();
+    let bytes = record(nodes[proposer].2.state().unwrap());
+    nodes[proposer].2.author(Some(bytes)).unwrap();
+    let encoded = nodes[proposer]
+        .2
+        .publications()
+        .unwrap()
+        .into_iter()
+        .find_map(|publication| match publication {
+            StatePublication::Proposal(proposal) => Some(proposal.encode().unwrap()),
+            _ => None,
+        })
+        .unwrap();
+    let receiver = (proposer + 1) % nodes.len();
+    nodes[receiver].2.accept_proposal(&encoded).unwrap();
+    nodes[receiver].2.accept_proposal(&encoded).unwrap();
+    assert_eq!(nodes[receiver].2.proposals.len(), 1);
+
+    let mut changed = encoded;
+    *changed.last_mut().unwrap() ^= 1;
+    assert!(nodes[receiver].2.accept_proposal(&changed).is_err());
+    assert_eq!(nodes[receiver].2.proposals.len(), 1);
+}
+
+#[test]
 fn restart_after_terminal_intent_retires_old_signer_before_releasing_seal() {
     let g = genesis();
     let all: Vec<_> = (0..4).map(|i| node(i, &g)).collect();
@@ -312,6 +343,8 @@ fn restart_after_terminal_intent_retires_old_signer_before_releasing_seal() {
     assert!(restarted.handoff.as_ref().unwrap().terminal().is_none());
     let terminal = restarted.release_local_terminal().unwrap();
     assert_eq!(terminal.role(), SealRole::Terminal);
+    assert_eq!(restarted.local_terminal_signature(), Some(&terminal));
+    assert!(restarted.local_ready_signature().is_some());
     assert!(
         restarted
             .signer
@@ -320,6 +353,8 @@ fn restart_after_terminal_intent_retires_old_signer_before_releasing_seal() {
             .retry_publications()
             .is_err()
     );
+    restarted.signer = None;
+    assert_eq!(restarted.local_terminal_signature(), Some(&terminal));
 }
 
 #[test]
@@ -833,9 +868,9 @@ fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers(
             encoded[round_offset + 8] = role_;
             let signature_offset = encoded.len() - 64;
             let mut transcript = if role_ == 1 {
-                b"naome:state:prevote:v5\0".to_vec()
+                b"naome:state:prevote:v6\0".to_vec()
             } else {
-                b"naome:state:precommit:v5\0".to_vec()
+                b"naome:state:precommit:v6\0".to_vec()
             };
             transcript.extend_from_slice(&encoded[..signature_offset]);
             encoded[signature_offset..].copy_from_slice(&key(faulty).sign(&transcript).to_bytes());
@@ -849,7 +884,7 @@ fn one_faulty_future_vote_and_proposal_flood_cannot_starve_three_honest_signers(
             let offset = 5 + naome_consensus::state::StateValue::BYTE_LENGTH;
             encoded[offset..offset + 8].copy_from_slice(&round.to_be_bytes());
             encoded[offset + 8..offset + 40].copy_from_slice(faulty_key.as_bytes());
-            let mut transcript = b"naome:state:proposal:v5\0".to_vec();
+            let mut transcript = b"naome:state:proposal:v6\0".to_vec();
             transcript.extend_from_slice(&encoded[5..offset + 40]);
             encoded[offset + 40..offset + 104]
                 .copy_from_slice(&key(faulty).sign(&transcript).to_bytes());

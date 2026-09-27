@@ -30,11 +30,79 @@ impl Drop for SocketGuard {
     }
 }
 
+// A connected peer can generate many rejected requests during a handoff. Keep
+// a bounded diagnostic sample without letting that traffic exhaust the output
+// queue and shut down an otherwise healthy signer.
+struct RejectionDiagnostics {
+    window: Instant,
+    detailed: u8,
+    suppressed: u64,
+}
+impl RejectionDiagnostics {
+    fn new() -> Self {
+        Self {
+            window: Instant::now(),
+            detailed: 0,
+            suppressed: 0,
+        }
+    }
+    fn flush_if_due(&mut self, errors: &crate::output::Output) -> Result<()> {
+        if self.window.elapsed() >= Duration::from_secs(1) {
+            if self.suppressed != 0 {
+                errors.line(
+                    &json!({"event":"peer_input_rejections_suppressed","count":self.suppressed})
+                        .to_string(),
+                )?;
+            }
+            self.window = Instant::now();
+            self.detailed = 0;
+            self.suppressed = 0;
+        }
+        Ok(())
+    }
+    fn record(
+        &mut self,
+        errors: &crate::output::Output,
+        peer: impl ToString,
+        reason: String,
+    ) -> Result<()> {
+        self.flush_if_due(errors)?;
+        if self.detailed < 4 {
+            errors.line(
+                &json!({"event":"peer_input_rejected","peer":peer.to_string(),"reason":reason})
+                    .to_string(),
+            )?;
+            self.detailed += 1;
+        } else {
+            self.suppressed = self.suppressed.saturating_add(1);
+        }
+        Ok(())
+    }
+}
+
 async fn serve(listener: UnixListener, sender: mpsc::Sender<Message>) -> Result<()> {
     let permits = Arc::new(Semaphore::new(16));
     loop {
-        let (mut stream, _) = listener.accept().await?;
-        if stream.peer_cred()?.uid() != rustix::process::geteuid().as_raw() {
+        let (mut stream, _) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        // A client can close while its credentials are being read. Reject
+        // that socket without taking down the owning validator.
+        let Ok(credentials) = stream.peer_cred() else {
+            continue;
+        };
+        if credentials.uid() != rustix::process::geteuid().as_raw() {
             continue;
         }
         let Ok(permit) = permits.clone().try_acquire_owned() else {
@@ -48,6 +116,14 @@ async fn serve(listener: UnixListener, sender: mpsc::Sender<Message>) -> Result<
             let response = match result {
                 Ok(Ok(bytes)) => match serde_json::from_slice::<Request>(&bytes) {
                     Ok(request) => {
+                        let processing_timeout = if matches!(
+                            &request,
+                            Request::Submit { .. } | Request::Progress { .. }
+                        ) {
+                            Duration::from_secs(30)
+                        } else {
+                            Duration::from_secs(5)
+                        };
                         let (tx, rx) = oneshot::channel();
                         if sender
                             .try_send(Message {
@@ -58,7 +134,7 @@ async fn serve(listener: UnixListener, sender: mpsc::Sender<Message>) -> Result<
                         {
                             json!({"error":"control queue busy"})
                         } else {
-                            match tokio::time::timeout(Duration::from_secs(5), rx).await {
+                            match tokio::time::timeout(processing_timeout, rx).await {
                                 Ok(Ok(value)) => value,
                                 _ => {
                                     json!({"error":"control processing unavailable; check receipt before resending"})
@@ -141,7 +217,7 @@ async fn run_owned(
     {
         return Err("control socket path is occupied by an unexpected file".into());
     }
-    if files::available(&config.history)? < genesis.profile().required_storage_bytes()? {
+    if files::available(&config.history)? < genesis.profile().operating_storage_floor_bytes()? {
         return Err("insufficient free storage for this immutable profile".into());
     }
     let mut runtime_config = StateRuntimeConfig {
@@ -152,13 +228,32 @@ async fn run_owned(
         genesis.profile().kind(),
         naome_ledger::profile::TimingKind::ShortTest | naome_ledger::profile::TimingKind::CiTest
     ) {
-        runtime_config.tick_interval = Duration::from_millis(50);
+        let roster = genesis.validators().len() as u64;
+        // Rebuilding a record candidate and retry fanout on every 50 ms tick
+        // is costly across a large local full-mesh roster. Network arrivals
+        // still drive the runtime immediately between these periodic ticks.
+        runtime_config.tick_interval = Duration::from_millis(
+            if genesis.profile().kind() == naome_ledger::profile::TimingKind::CiTest {
+                (roster * 8).clamp(50, 1_000)
+            } else {
+                50
+            },
+        );
         // With 50 ms of delay on each TCP chunk, the 350 ms short-test round
         // often times out before authenticated votes arrive. CI gets more
         // finalized heights per minute with a longer first round.
         let round_timeout = if genesis.profile().kind() == naome_ledger::profile::TimingKind::CiTest
         {
-            1200
+            // The local CI full mesh needs time for a large quorum's votes
+            // and handoff evidence to traverse bounded peer queues. A
+            // 256-process run reached partial agreement but changed rounds
+            // before the seal spread. Only this local timing profile changes;
+            // signed quorum and round limits remain the same.
+            let ordinary = 1200u64
+                .saturating_add(roster.saturating_sub(16) * 400)
+                .min(720_000);
+            let large_roster = roster.saturating_sub(64).saturating_mul(3_750);
+            ordinary.max(large_roster).min(720_000)
         } else {
             350
         };
@@ -190,16 +285,22 @@ async fn run_owned(
             self.0.abort();
         }
     }
-    let server = Server(tokio::spawn(serve(listener, sender)));
+    let mut server = Server(tokio::spawn(serve(listener, sender)));
     output.line(&json!({"event":"started","peer":runtime.local_peer_id().to_string(),"height":runtime.state()?.height(),"genesis":files::hex(genesis.id().as_bytes())}).to_string())?;
     let mut space_checked = Instant::now();
+    let mut rejected = RejectionDiagnostics::new();
     let outcome = loop {
         tokio::select! {
+            result=&mut server.0=>break match result {
+                Ok(Ok(()))=>Err("control listener stopped".into()),
+                Ok(Err(error))=>Err(error),
+                Err(error)=>Err(error.into()),
+            },
             ()=output.failed()=>break Err("stdout writer failed".into()),
             ()=errors.failed()=>break Err("stderr writer failed".into()),
             result=runtime.step()=>match result {
                 Ok(StateRuntimeEvent::Finalized{height})=>output.line(&json!({"event":"finalized","height":height,"state":files::hex(runtime.state()?.commitment().as_bytes())}).to_string())?,
-                Ok(StateRuntimeEvent::Rejected{peer,reason})=>errors.line(&json!({"event":"peer_input_rejected","peer":peer.to_string(),"reason":reason}).to_string())?,
+                Ok(StateRuntimeEvent::Rejected{peer,reason})=>rejected.record(errors,peer,reason)?,
                 Ok(_)=>{},Err(error)=>break Err(error.into()),
             },
             message=receiver.recv()=>{
@@ -212,8 +313,11 @@ async fn run_owned(
             result=tokio::signal::ctrl_c()=>{result?;break Ok(());}
             _=terminate.recv()=>break Ok(()),
         }
+        rejected.flush_if_due(errors)?;
         if space_checked.elapsed() >= Duration::from_secs(10) {
-            if files::available(&config.history)? < genesis.profile().required_storage_bytes()? {
+            if files::available(&config.history)?
+                < genesis.profile().operating_storage_floor_bytes()?
+            {
                 break Err("free storage fell below the profile floor; durable state retained, node halted".into());
             }
             space_checked = Instant::now();
@@ -224,10 +328,58 @@ async fn run_owned(
 }
 fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
     Ok(match request {
+        Request::Progress { account } => {
+            let state = runtime.state()?;
+            let height = state.height();
+            let head = files::hex(state.head().as_bytes());
+            let commitment = files::hex(state.commitment().as_bytes());
+            let genesis = files::hex(state.genesis().id().as_bytes());
+            let next_nonce = if let Some(account) = account {
+                let id = naome_ledger::AccountId::from_bytes(files::unhex(&account)?);
+                Some(
+                    state
+                        .next_nonce(id)
+                        .ok_or("registered account nonce unavailable")?,
+                )
+            } else {
+                None
+            };
+            let diagnostics = runtime.diagnostics()?;
+            json!({
+                "genesis": genesis,
+                "height": height,
+                "head": head,
+                "state": commitment,
+                "next_nonce": next_nonce,
+                "pending_operations": runtime.pending_operations(),
+                "consensus_position": runtime.position()?.map(|(height,round,phase)|json!({"height":height,"round":round,"phase":format!("{phase:?}")})),
+                "local_proposer": diagnostics.local_proposer,
+                "proposal_authored": diagnostics.proposal_authored,
+                "observed_proposals": diagnostics.observed_proposals,
+                "observed_prevotes": diagnostics.observed_prevotes,
+                "observed_precommits": diagnostics.observed_precommits,
+                "timing_events": timing_events(runtime),
+                "timing_events_dropped": runtime.timing_events_dropped(),
+                "state_exchange_traffic": state_exchange_traffic(runtime),
+                "process_cpu": process_cpu(),
+                "transport_diagnostics": {"connected_peers": diagnostics.connected_peers,"staged_connected_peers":diagnostics.staged_connected_peers,"offers":diagnostics.offers,"time_reports":diagnostics.time_reports,"queued_deliveries":diagnostics.queued_deliveries,"in_flight_deliveries":diagnostics.in_flight_deliveries,"queued_ready":diagnostics.queued_ready,"queued_terminal":diagnostics.queued_terminal,"in_flight_ready":diagnostics.in_flight_ready,"in_flight_terminal":diagnostics.in_flight_terminal,"work_ready":diagnostics.work_ready,"agreement_ready":diagnostics.agreement_ready,"ready_signatures":diagnostics.ready_signatures,"terminal_signatures":diagnostics.terminal_signatures}
+            })
+        }
         Request::Status {} => {
             let mut value = control::status(runtime.state()?);
+            let diagnostic = runtime.diagnostics()?;
             value["pending_operations"] = json!(runtime.pending_operations());
             value["consensus_position"]=json!(runtime.position()?.map(|(height,round,phase)|json!({"height":height,"round":round,"phase":format!("{phase:?}")})));
+            value["local_proposer"] = json!(diagnostic.local_proposer);
+            value["proposal_authored"] = json!(diagnostic.proposal_authored);
+            value["observed_proposals"] = json!(diagnostic.observed_proposals);
+            value["observed_prevotes"] = json!(diagnostic.observed_prevotes);
+            value["observed_precommits"] = json!(diagnostic.observed_precommits);
+            value["timing_events"] = timing_events(runtime);
+            value["timing_events_dropped"] = json!(runtime.timing_events_dropped());
+            value["state_exchange_traffic"] = state_exchange_traffic(runtime);
+            value["process_cpu"] = process_cpu();
+            value["transport_diagnostics"] = json!({"connected_peers": diagnostic.connected_peers,"staged_connected_peers":diagnostic.staged_connected_peers,"offers":diagnostic.offers,"time_reports":diagnostic.time_reports,"queued_deliveries":diagnostic.queued_deliveries,"in_flight_deliveries":diagnostic.in_flight_deliveries,"queued_ready":diagnostic.queued_ready,"queued_terminal":diagnostic.queued_terminal,"in_flight_ready":diagnostic.in_flight_ready,"in_flight_terminal":diagnostic.in_flight_terminal,"work_ready":diagnostic.work_ready,"agreement_ready":diagnostic.agreement_ready,"ready_signatures":diagnostic.ready_signatures,"terminal_signatures":diagnostic.terminal_signatures});
             value
         }
         Request::Shutdown {} => json!({"status":"stopping"}),
@@ -320,6 +472,43 @@ fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
             runtime.set_slot_enabled(slot, enabled)?;
             json!({"status":"simulation_link_updated","validator":validator,"enabled":enabled})
         }
+    })
+}
+fn timing_events(runtime: &StateRuntime) -> Value {
+    json!(
+        runtime
+            .timing_events()
+            .map(|event| json!({
+                "elapsed_millis": event.elapsed_millis,
+                "height": event.height,
+                "round": event.round,
+                "stage": event.stage,
+            }))
+            .collect::<Vec<_>>()
+    )
+}
+fn state_exchange_traffic(runtime: &StateRuntime) -> Value {
+    let traffic = runtime.traffic();
+    json!({
+        "request_starts": traffic.request_starts,
+        "request_start_bytes": traffic.request_start_bytes,
+        "requests_received": traffic.requests_received,
+        "request_bytes_received": traffic.request_bytes_received,
+        "response_starts": traffic.response_starts,
+        "response_start_bytes": traffic.response_start_bytes,
+        "responses_received": traffic.responses_received,
+        "response_bytes_received": traffic.response_bytes_received,
+    })
+}
+fn process_cpu() -> Value {
+    // This is cumulative CPU used by every thread in this validator process.
+    use nix::sys::time::TimeValLike;
+    let Ok(usage) = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF) else {
+        return Value::Null;
+    };
+    json!({
+        "user_millis": usage.user_time().num_milliseconds(),
+        "system_millis": usage.system_time().num_milliseconds(),
     })
 }
 pub fn decode_bytes(text: &str, maximum: usize) -> Result<Vec<u8>> {

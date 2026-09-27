@@ -10,6 +10,7 @@ use naome_consensus::state::{
     StateVoteSet,
 };
 use naome_consensus::{ConsensusKey, ConsensusVoteRole, ConsensusVoteTarget};
+use naome_ledger::profile::MAX_VALIDATORS;
 use naome_ledger::{LedgerState, time::SignedTimeReport};
 use naome_storage::state::{
     StateAppendOutcome, StateHandoffJournal, StateHistory, StatePeriodCustody, StateSigner,
@@ -20,9 +21,9 @@ use std::{collections::BTreeMap, fmt, path::Path};
 /// Volatile evidence is bounded independently of the complete durable history.
 const RETAINED_ROUNDS: usize = 8;
 const MAX_PROPOSALS: usize = RETAINED_ROUNDS * 2;
-const MAX_VOTES: usize = RETAINED_ROUNDS * 8;
+const MAX_VOTES: usize = RETAINED_ROUNDS * 2 * MAX_VALIDATORS;
 const PROPOSALS_PER_SIGNER: usize = MAX_PROPOSALS / 4;
-const VOTES_PER_SIGNER: usize = MAX_VOTES / 4;
+const VOTES_PER_SIGNER: usize = RETAINED_ROUNDS * 2;
 
 #[derive(Debug)]
 pub enum StateNodeError {
@@ -209,6 +210,27 @@ impl StateNode {
         }
         Ok(Some((signer.height()?, signer.round()?, signer.phase()?)))
     }
+    /// Counts verified evidence held for the currently signed round.
+    /// These local counters are diagnostic and grant no voting authority.
+    pub fn observed_consensus_counts(&self) -> Result<(usize, usize, usize)> {
+        let Some((_, round, _)) = self.position()? else {
+            return Ok((0, 0, 0));
+        };
+        Ok((
+            self.proposals
+                .values()
+                .filter(|proposal| proposal.round() == round)
+                .count(),
+            self.votes
+                .values()
+                .filter(|vote| vote.round() == round && vote.role() == ConsensusVoteRole::Prevote)
+                .count(),
+            self.votes
+                .values()
+                .filter(|vote| vote.round() == round && vote.role() == ConsensusVoteRole::Precommit)
+                .count(),
+        ))
+    }
     pub fn has_retained_value(&self) -> Result<bool> {
         match &self.signer {
             Some(s) if !s.stopped()? => Ok(s.retained_record()?.is_some()),
@@ -231,6 +253,17 @@ impl StateNode {
         }
         Ok(s.phase()? == StatePhase::Proposal
             && self.branch()?.proposer(s.round()?, self.maximum_round())? == Some(s.signer()))
+    }
+    /// Selected current-round signing key for transport prioritization only.
+    /// The branch remains the sole authority for proposal selection.
+    pub fn current_proposer_key(&self) -> Result<Option<ConsensusKey>> {
+        if self.handoff_agreement().is_some() {
+            return Ok(None);
+        }
+        let Some((_, round, _)) = self.position()? else {
+            return Ok(None);
+        };
+        Ok(self.branch()?.proposer(round, self.maximum_round())?)
     }
     pub fn already_authored(&self) -> Result<bool> {
         let Some(s) = &self.signer else {
@@ -294,9 +327,21 @@ impl StateNode {
             .collect())
     }
     pub fn accept_proposal(&mut self, bytes: &[u8]) -> Result<()> {
-        let p = self
-            .branch()?
-            .verify_proposal(bytes, self.maximum_round())?;
+        let branch = self.branch()?;
+        // A signer may receive the same accepted proposal from many peers.
+        // Its retained, verified bytes are enough to recognize that exact
+        // retry without re-executing the record and all successor offers.
+        // Changed bytes still take the full verification path below.
+        if self.position()?.is_some()
+            && self.proposals.values().any(|proposal| {
+                proposal
+                    .encode()
+                    .is_ok_and(|accepted| accepted.as_slice() == bytes)
+            })
+        {
+            return Ok(());
+        }
+        let p = branch.verify_proposal(bytes, self.maximum_round())?;
         self.retain(StatePublication::Proposal(p))
     }
     pub fn accept_vote(&mut self, bytes: &[u8]) -> Result<()> {
@@ -503,7 +548,7 @@ impl StateNode {
             .into_iter()
             .filter(|v| v.target() == target)
             .collect();
-        if votes.len() < 3 {
+        if votes.len() < self.branch()?.authority().quorum() {
             return Ok(None);
         }
         Ok(Some(StateQuorum::from_votes(
@@ -530,7 +575,9 @@ impl StateNode {
         self.finality_for_staged(&agreement)
     }
     fn finality_for_staged(&self, agreement: &StateAgreement) -> Result<Option<Vec<u8>>> {
-        if self.ready.len() < 3 || self.terminal.len() < 3 {
+        if self.ready.len() < agreement.incoming().quorum()
+            || self.terminal.len() < agreement.outgoing().quorum()
+        {
             return Ok(None);
         }
         let seal = StateSeal::new(
@@ -559,6 +606,10 @@ impl StateNode {
     pub fn ready_signatures(&self) -> Vec<SealSignature> {
         self.ready.values().cloned().collect()
     }
+    /// Read-only counts for live diagnostics without copying quorum signatures.
+    pub fn handoff_signature_counts(&self) -> (usize, usize) {
+        (self.ready.len(), self.terminal.len())
+    }
     pub fn terminal_signatures(&self) -> Vec<SealSignature> {
         self.terminal.values().cloned().collect()
     }
@@ -572,6 +623,16 @@ impl StateNode {
             .as_ref()
             .and_then(StateHandoffJournal::terminal)
             .is_some()
+    }
+    /// Locally signed bytes survive retirement and can be retried after a
+    /// cold restart without reopening the retired signing key.
+    pub fn local_ready_signature(&self) -> Option<&SealSignature> {
+        self.handoff.as_ref().and_then(StateHandoffJournal::ready)
+    }
+    pub fn local_terminal_signature(&self) -> Option<&SealSignature> {
+        self.handoff
+            .as_ref()
+            .and_then(StateHandoffJournal::terminal)
     }
     pub fn retire_selected_custody(
         &self,
@@ -617,6 +678,10 @@ impl StateNode {
             agreement.outgoing(),
             agreement.incoming(),
         )?;
+        let maximum = match signature.role() {
+            SealRole::Ready => agreement.incoming().units().len(),
+            SealRole::Terminal => agreement.outgoing().units().len(),
+        };
         let target = match signature.role() {
             SealRole::Ready => &mut self.ready,
             SealRole::Terminal => &mut self.terminal,
@@ -629,7 +694,7 @@ impl StateNode {
                 "equivocating seal signature".into(),
             ));
         }
-        if target.len() >= 4 && !target.contains_key(&signature.signer()) {
+        if target.len() >= maximum && !target.contains_key(&signature.signer()) {
             return Err(StateNodeError::Rejected("seal signer limit".into()));
         }
         target.insert(signature.signer(), signature);
@@ -681,6 +746,15 @@ impl StateNode {
     /// Passing no proposal through the normal lock transition preserves a
     /// previously locked vote target.
     pub fn drive_with(&mut self, locally_ready: impl Fn(&StateProposal) -> bool) -> Result<bool> {
+        self.drive_with_observer(locally_ready, |_| {})
+    }
+    /// Report each live position change, including phases crossed in one drive pass.
+    /// The caller owns the clock; these observations never enter signed state or replay.
+    pub fn drive_with_observer(
+        &mut self,
+        locally_ready: impl Fn(&StateProposal) -> bool,
+        mut observe: impl FnMut(Option<(u64, u64, StatePhase)>),
+    ) -> Result<bool> {
         if self.state()?.terminated() {
             return Ok(false);
         }
@@ -767,6 +841,7 @@ impl StateNode {
             }
             if let Some(votes) = higher {
                 self.apply(StateLockEvent::HigherRound { votes })?;
+                observe(self.position()?);
                 continue;
             }
             if let Some(qc) = self.quorum(
@@ -777,6 +852,7 @@ impl StateNode {
                 self.apply(StateLockEvent::NilPrecommit {
                     quorum: qc.encode(),
                 })?;
+                observe(self.position()?);
                 continue;
             }
             let proposals: Vec<_> = self
@@ -792,6 +868,7 @@ impl StateNode {
                     None
                 };
                 self.apply(StateLockEvent::Prevote { proposal })?;
+                observe(self.position()?);
                 continue;
             }
             if phase == StatePhase::Prevote {
@@ -816,6 +893,7 @@ impl StateNode {
                         proposal,
                         quorum: qc.encode(),
                     })?;
+                    observe(self.position()?);
                     continue;
                 }
             }

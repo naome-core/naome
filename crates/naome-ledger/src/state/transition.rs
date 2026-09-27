@@ -31,7 +31,10 @@ impl LedgerState {
             height,
             self.time,
         )?;
-        let terminal_due = self.active.is_none() && !self.capacity.can_open(self.genesis.profile());
+        let terminal_due = self.active.is_none()
+            && !self
+                .capacity
+                .can_open(self.genesis.profile(), self.authority.units().len());
         if terminal_due && plan.candidate().is_some() {
             return Err(LedgerError::Invalid("terminal record cannot install join"));
         }
@@ -73,7 +76,8 @@ impl LedgerState {
                 next.set_question_status(id, QuestionStatus::CapacityEnd)?;
                 effect(&mut effects, 13, |w| w.fixed(id.as_bytes()));
             }
-            next.capacity.terminate(self.genesis.profile())?;
+            next.capacity
+                .terminate(self.genesis.profile(), self.authority.units().len())?;
             next.terminated = true;
             effect(&mut effects, 12, |_| {});
         } else {
@@ -104,7 +108,8 @@ impl LedgerState {
                 ));
             }
             if opened {
-                next.capacity.open(self.genesis.profile())?;
+                next.capacity
+                    .open(self.genesis.profile(), self.authority.units().len())?;
             } else if active_progress {
                 next.capacity.active_record()?;
             } else {
@@ -272,7 +277,7 @@ impl LedgerState {
                 deadline: Some(deadline),
                 round: None,
                 votes: BTreeMap::new(),
-                electorate: std::array::from_fn(|i| electorate.units()[i].owner()),
+                electorate: electorate.units().iter().map(|unit| unit.owner()).collect(),
                 commitments: BTreeMap::new(),
             });
             effect(effects, 3, |w| {
@@ -305,7 +310,9 @@ impl LedgerState {
                         .deadline
                         .ok_or(LedgerError::Invalid("voting deadline"))? =>
             {
-                if attempt.votes.values().filter(|&&yes| yes).count() >= 3 {
+                if attempt.votes.values().filter(|&&yes| yes).count()
+                    >= crate::profile::validator_quorum(attempt.electorate.len())
+                {
                     attempt.phase = Phase::ApprovedWait;
                     attempt.deadline = None;
                     effect(effects, 4, |w| w.fixed(attempt.question_id.as_bytes()));

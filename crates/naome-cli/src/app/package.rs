@@ -10,7 +10,7 @@ pub fn run(args: &[String]) -> Result<()> {
     if args.len() < 4 || !(args.len() - 4).is_multiple_of(2) {
         return Err("usage: package GENESIS ACCOUNT_KEY OUTPUT ROOT_SOURCE [--reference PROOF_FILE | --helper SOURCE_FILE]...".into());
     }
-    let genesis = Genesis::decode(&files::read(Path::new(&args[0]), 16384, false)?)?;
+    let genesis = Genesis::decode(&files::read(Path::new(&args[0]), 128 * 1024, false)?)?;
     let key = files::key(Path::new(&args[1]), 1)?;
     let author = AccountId::for_key(key.verifying_key().as_bytes());
     let mut context = ArtifactState::new();
@@ -76,7 +76,7 @@ pub fn check(args: &[String]) -> Result<()> {
     if args.len() < 2 {
         return Err("usage: check-proof GENESIS ROOT_PROOF [DEPENDENCY_PROOF...]".into());
     }
-    let genesis = Genesis::decode(&files::read(Path::new(&args[0]), 16384, false)?)?;
+    let genesis = Genesis::decode(&files::read(Path::new(&args[0]), 128 * 1024, false)?)?;
     let limits = genesis.profile().limits();
     if args.len() - 2 > limits.dependency_proofs as usize {
         return Err("dependency proof limit".into());

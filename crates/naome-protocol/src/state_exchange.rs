@@ -6,7 +6,7 @@
 use naome_proof::ProofId;
 use std::{error::Error, fmt, sync::Arc};
 
-pub const STATE_MAX_FRAME_BYTES: usize = 1024 * 1024 + 64 * 1024;
+pub const STATE_MAX_FRAME_BYTES: usize = 1024 * 1024 + 256 * 1024;
 pub const STATE_FRAME_HEADER_BYTES: usize = 72;
 pub const STATE_MAX_HISTORY_RECORDS: usize = 16;
 pub const STATE_MAX_CONTROL_BYTES: usize = 4096;

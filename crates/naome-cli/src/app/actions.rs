@@ -251,11 +251,27 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
         return save_send(&config, &args[5], &bundle.commit).await;
     }
-    let status = control::call(&config, Request::Status {}).await?;
+    let status = if command == "submit" {
+        control::call(
+            &config,
+            Request::Progress {
+                account: Some(files::hex(author.as_bytes())),
+            },
+        )
+        .await?
+    } else {
+        control::call(&config, Request::Status {}).await?
+    };
     if status["genesis"] != files::hex(genesis.id().as_bytes()) {
         return Err("node and local genesis disagree".into());
     }
-    let next = nonce(&status, author)?;
+    let next = if command == "submit" {
+        status["next_nonce"]
+            .as_u64()
+            .ok_or("registered account nonce unavailable")?
+    } else {
+        nonce(&status, author)?
+    };
     let (body, output) = match command {
         "submit" => {
             let source = String::from_utf8(files::read(

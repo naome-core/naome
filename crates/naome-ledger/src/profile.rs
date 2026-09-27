@@ -1,7 +1,7 @@
 //! Immutable, canonical parameters and public genesis for a finite trusted run.
 //!
-//! The storage estimate is a conservative provisioning floor, not a measured
-//! performance claim. A genesis contains public material only; all balances
+//! Storage limits bound a finite run; local free-space headroom protects one
+//! signing height at a time. A genesis contains public material only; all balances
 //! begin at zero in the state machine.
 
 use std::collections::BTreeSet;
@@ -16,26 +16,36 @@ use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
 pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
-/// Research protocol with sealed authority periods and four stable voting slots.
-pub const STATE_PROTOCOL_VERSION: u16 = 5;
+/// Research protocol with sealed authority periods and a bounded growing roster.
+pub const STATE_PROTOCOL_VERSION: u16 = 6;
+pub const MIN_VALIDATORS: usize = 4;
+pub const MAX_VALIDATORS: usize = 32;
+/// Strictly more than two thirds of installed slots, including vacant slots.
+pub const fn validator_quorum(installed: usize) -> usize {
+    (installed * 2) / 3 + 1
+}
 
 /// Reserved space around one maximum user payload for canonical record headers,
-/// four time reports, operation authentication, and finality signatures. The
+/// bounded time reports, operation authentication, and finality signatures. The
 /// integrated codec must fit this allowance; it is not permission to omit bytes
 /// from the complete-record limit.
-pub const DOMAIN_RECORD_OVERHEAD_BYTES: u64 = 4096;
+pub const DOMAIN_RECORD_OVERHEAD_BYTES: u64 = 384 * 1024;
 /// Space outside the complete record for bounded transport envelope metadata.
 /// A frame must fit both the largest record and this envelope allocation.
-pub const TRANSPORT_ENVELOPE_OVERHEAD_BYTES: u64 = 65536;
+pub const TRANSPORT_ENVELOPE_OVERHEAD_BYTES: u64 = 256 * 1024;
 /// Fixed v1 signer checkpoint and unsigned transcript ceilings.
-pub const SIGNER_SNAPSHOT_MAX_BYTES: u64 = 8192;
+pub const SIGNER_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024;
 pub const SIGNER_TRANSCRIPT_MAX_BYTES: u64 = 1024;
-/// Four fixed-width consensus votes, including their authority IDs, plus the count byte.
-pub const STATE_QUORUM_BYTES_BOUND: u64 = 1 + 4 * (5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
+/// Up to the installed-roster ceiling of fixed-width consensus votes,
+/// including authority IDs and the count.
+pub const STATE_QUORUM_BYTES_BOUND: u64 =
+    2 + MAX_VALIDATORS as u64 * (5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64);
 /// Journal preparation metadata outside one complete research record.
 pub const SIGNER_FRAME_OVERHEAD_BYTES: u64 = 16384;
-/// Covers the genesis-bound signer prefix, initial anchor and their metadata.
-pub const SIGNER_HEADER_BYTES_BOUND: u64 = 32768;
+/// Covers the largest admitted genesis plus the signer key, selected branch,
+/// round and prefix framing. The genesis bound also covers account keys and
+/// canonical endpoints, independently of the installed-roster ceiling.
+pub const SIGNER_HEADER_BYTES_BOUND: u64 = MAX_GENESIS_BYTES as u64 + 256;
 /// Type, intent sequence, signature and canonical publication digest.
 pub const SIGNER_COMPLETION_BYTES: u64 = 1 + 8 + 64 + 32;
 /// Terminal signer stop plus its chained frame header/footer.
@@ -43,10 +53,10 @@ pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
 /// One parent-bound offer journal, optional candidate import, secret files and anchors.
 pub const PERIOD_CUSTODY_BYTES_BOUND: u64 = 8192;
 
-const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF4";
-const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS4";
+const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF6";
+const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS6";
 const MAX_PROFILE_BYTES: usize = 4096;
-const MAX_GENESIS_BYTES: usize = 16384;
+const MAX_GENESIS_BYTES: usize = 128 * 1024;
 
 /// Identifies the timing assumptions under which evidence was obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,8 +114,8 @@ macro_rules! limit_fields {
 limit_fields! {
     active_attempts = 1,
     queued_questions = 32,
-    genesis_accounts = 16,
-    registered_accounts = 256,
+    genesis_accounts = 512,
+    registered_accounts = 1024,
     commitments_per_attempt = 16,
     commitments_per_account = 1,
     question_source_bytes = 16 * 1024,
@@ -136,7 +146,7 @@ limit_fields! {
     dag_steps_per_record = 16 * 2 * (17 + 64) * 4096,
     normalization_steps_per_record = 16 * 17 * 4096,
     // Framing plus bounded transport/signature metadata beyond record content.
-    transport_frame_bytes = 1024 * 1024 + 64 * 1024,
+    transport_frame_bytes = 1024 * 1024 + 256 * 1024,
     transport_buffer_frames = 64,
     // Inclusive largest round index: 64 permits rounds 0 through 64.
     consensus_rounds = 64,
@@ -149,7 +159,7 @@ pub struct Rewards {
     pub author_without_citations_atoms: u128,
     pub author_with_citations_atoms: u128,
     pub citation_pool_atoms: u128,
-    pub validator_atoms_each: u128,
+    pub validator_pool_atoms: u128,
     pub reserve_atoms: u128,
 }
 
@@ -160,7 +170,7 @@ impl Default for Rewards {
             author_without_citations_atoms: 700_000_000,
             author_with_citations_atoms: 600_000_000,
             citation_pool_atoms: 100_000_000,
-            validator_atoms_each: 50_000_000,
+            validator_pool_atoms: 200_000_000,
             reserve_atoms: 100_000_000,
         }
     }
@@ -173,7 +183,7 @@ impl Rewards {
             self.author_without_citations_atoms,
             self.author_with_citations_atoms,
             self.citation_pool_atoms,
-            self.validator_atoms_each,
+            self.validator_pool_atoms,
             self.reserve_atoms,
         ] {
             w.u128(value);
@@ -185,7 +195,7 @@ impl Rewards {
             author_without_citations_atoms: r.u128()?,
             author_with_citations_atoms: r.u128()?,
             citation_pool_atoms: r.u128()?,
-            validator_atoms_each: r.u128()?,
+            validator_pool_atoms: r.u128()?,
             reserve_atoms: r.u128()?,
         })
     }
@@ -220,7 +230,7 @@ impl Profile {
             TimingKind::Research => (604800, 86400, 86400, 2592000),
             // Leave room for independent CLI commands and durable quorum
             // delivery under concurrent CI compilation and process scheduling.
-            TimingKind::ShortTest => (15, 8, 8, 120),
+            TimingKind::ShortTest => (15, 45, 45, 120),
             // This qualification submits no approval ballots. Keep a complete
             // nonzero certified window while minimizing its CI-only floor.
             TimingKind::CiTest => (1, 8, 8, 120),
@@ -262,11 +272,29 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "state-v5-lab",
-            TimingKind::Research => "state-v5-research",
-            TimingKind::ShortTest => "state-v5-short-test",
-            TimingKind::CiTest => "state-v5-ci-test",
+            TimingKind::Lab => "state-v6-lab",
+            TimingKind::Research => "state-v6-research",
+            TimingKind::ShortTest => "state-v6-short-test",
+            TimingKind::CiTest => "state-v6-ci-test",
         }
+    }
+    /// Minimum finite run for an opening electorate, including the terminal
+    /// record. Every owner may vote in a separate record, as may each commit
+    /// and reveal; seven records cover opening, phases and settlement.
+    pub fn minimum_run_records_for(&self, electorate: usize) -> Result<u64, LedgerError> {
+        if !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&electorate) {
+            return Err(LedgerError::Limit("opening electorate"));
+        }
+        let needed = self
+            .limits
+            .commitments_per_attempt
+            .checked_mul(2)
+            .and_then(|records| records.checked_add(electorate as u64 + 7))
+            .ok_or(LedgerError::Overflow)?;
+        needed
+            .max(self.limits.completion_records)
+            .checked_add(self.limits.terminal_records)
+            .ok_or(LedgerError::Overflow)
     }
     fn validate(&self) -> Result<(), LedgerError> {
         self.limits.validate()?;
@@ -291,7 +319,8 @@ impl Profile {
         {
             return Err(LedgerError::Invalid("inconsistent ledger limits"));
         }
-        self.required_storage_bytes()?;
+        self.maximum_run_storage_bytes()?;
+        self.operating_storage_floor_bytes()?;
         Ok(())
     }
     /// Maximum journal frames per consensus height: one author, prevote,
@@ -356,11 +385,28 @@ impl Profile {
             .and_then(|bytes| bytes.checked_add(8 + 32 + 8 + 8))
             .ok_or(LedgerError::Overflow)
     }
-    /// Full finite archive AND worst-case signer history, staged original/final
-    /// reveals with dependency closures, indexes/evidence, and a 100% margin.
-    /// The default profile deliberately provisions its entire maximum run;
-    /// reduced acceptance profiles must be selected before genesis.
-    pub fn required_storage_bytes(&self) -> Result<u64, LedgerError> {
+    /// Free-space headroom for one complete signing height, handoff and custody,
+    /// two history frames (selected finality and a verified conflict), and a
+    /// 100% filesystem/metadata margin. It is checked before startup and while
+    /// running; each durable store remains separately bounded and fails closed
+    /// on an I/O fault. Research reveal data is carried in bounded records, not
+    /// in a separate validator-local staging journal. Archive export needs its
+    /// own destination capacity and is not required before a node can start.
+    /// This is not a guarantee of free space for the entire finite run.
+    pub fn operating_storage_floor_bytes(&self) -> Result<u64, LedgerError> {
+        let next_height = self
+            .signer_period_bytes()?
+            .checked_add(self.handoff_journal_bytes()?)
+            .and_then(|bytes| bytes.checked_add(PERIOD_CUSTODY_BYTES_BOUND + 4096))
+            .and_then(|bytes| bytes.checked_add(self.limits.transport_frame_bytes.checked_mul(2)?))
+            .ok_or(LedgerError::Overflow)?;
+        next_height.checked_mul(2).ok_or(LedgerError::Overflow)
+    }
+    /// Conservative allowance if every record in the finite run reaches its
+    /// largest allowed signing, handoff and archive usage. No independent
+    /// validator-local reveal staging file exists; reveal bytes already belong
+    /// to bounded records. This is not disk space required before first start.
+    pub fn maximum_run_storage_bytes(&self) -> Result<u64, LedgerError> {
         let l = &self.limits;
         // One extra frame retains a verified conflict after the final run record.
         let archive = l
@@ -368,12 +414,6 @@ impl Profile {
             .checked_add(1)
             .and_then(|n| n.checked_mul(l.transport_frame_bytes))
             .and_then(|v| v.checked_add(SIGNER_HEADER_BYTES_BOUND))
-            .ok_or(LedgerError::Overflow)?;
-        let reveal = l
-            .package_bytes
-            .checked_mul(2)
-            .and_then(|v| v.checked_add(l.dependency_bytes.checked_mul(2)?))
-            .and_then(|v| v.checked_mul(l.commitments_per_attempt))
             .ok_or(LedgerError::Overflow)?;
         // Each height has independent handoff and fresh-key custody. The extra
         // 4 KiB reserves signer/handoff anchor files separately from journal data.
@@ -385,7 +425,6 @@ impl Profile {
         archive
             .checked_mul(2)
             .and_then(|v| v.checked_add(self.signer_journal_bytes().ok()?))
-            .and_then(|v| v.checked_add(reveal))
             .and_then(|v| v.checked_add(handoff))
             .and_then(|v| v.checked_mul(2))
             .ok_or(LedgerError::Overflow)
@@ -449,7 +488,7 @@ impl Profile {
         Ok(result)
     }
     pub fn id(&self) -> ProfileId {
-        ProfileId::from_bytes(hash(b"naome:state:profile:v4\0", &[&self.encode()]))
+        ProfileId::from_bytes(hash(b"naome:state:profile:v6\0", &[&self.encode()]))
     }
 }
 
@@ -560,9 +599,13 @@ impl Genesis {
             .and_then(|x| x.checked_add(self.profile.timing.commitment_seconds))
             .and_then(|x| x.checked_add(self.profile.timing.reveal_seconds))
             .ok_or(LedgerError::Overflow)?;
-        if self.accounts.len() < 4
+        if self.accounts.len() < self.validators.len()
             || self.accounts.len() as u64 > self.profile.limits.genesis_accounts
-            || self.validators.len() != 4
+            || !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&self.validators.len())
+            || self.profile.limits.run_records
+                < self
+                    .profile
+                    .minimum_run_records_for(self.validators.len())?
         {
             return Err(LedgerError::Limit("genesis membership"));
         }
@@ -571,7 +614,7 @@ impl Genesis {
         {
             return Err(LedgerError::Invalid("membership order or duplicate"));
         }
-        if self.retirement_order.len() != 4
+        if self.retirement_order.len() != self.validators.len()
             || self
                 .retirement_order
                 .iter()
@@ -679,18 +722,18 @@ impl Genesis {
         w.u16(self.protocol_version);
         w.u64(self.start_utc);
         w.fixed(&self.run_nonce);
-        w.u8(self.accounts.len() as u8);
+        w.u16(self.accounts.len() as u16);
         for account in &self.accounts {
             w.fixed(&account.key);
         }
-        w.u8(self.validators.len() as u8);
+        w.u16(self.validators.len() as u16);
         for validator in &self.validators {
             w.fixed(validator.owner.as_bytes());
             w.fixed(&validator.consensus_key);
             w.fixed(&validator.transport_key);
             w.string(&validator.endpoint).expect("bounded endpoint");
         }
-        w.u8(self.retirement_order.len() as u8);
+        w.u16(self.retirement_order.len() as u16);
         for id in &self.retirement_order {
             w.fixed(id.as_bytes());
         }
@@ -707,8 +750,8 @@ impl Genesis {
         let protocol_version = r.u16()?;
         let start_utc = r.u64()?;
         let run_nonce = r.fixed()?;
-        let count = r.u8()?;
-        if u64::from(count) > profile.limits.genesis_accounts || count < 4 {
+        let count = r.u16()?;
+        if u64::from(count) > profile.limits.genesis_accounts || count < MIN_VALIDATORS as u16 {
             return Err(LedgerError::Limit("accounts"));
         }
         let mut accounts = Vec::with_capacity(count as usize);
@@ -719,11 +762,11 @@ impl Genesis {
                 key,
             });
         }
-        let count = r.u8()?;
-        if count != 4 {
+        let count = r.u16()?;
+        if !(MIN_VALIDATORS as u16..=MAX_VALIDATORS as u16).contains(&count) {
             return Err(LedgerError::Limit("validators"));
         }
-        let mut validators = Vec::with_capacity(4);
+        let mut validators = Vec::with_capacity(count as usize);
         for _ in 0..count {
             validators.push(ValidatorRegistration {
                 owner: AccountId::from_bytes(r.fixed()?),
@@ -732,11 +775,11 @@ impl Genesis {
                 endpoint: r.string(128)?.to_owned(),
             });
         }
-        let count = r.u8()?;
-        if count != 4 {
+        let count = r.u16()?;
+        if usize::from(count) != validators.len() {
             return Err(LedgerError::Invalid("bootstrap retirement order"));
         }
-        let mut retirement_order = Vec::with_capacity(4);
+        let mut retirement_order = Vec::with_capacity(count as usize);
         for _ in 0..count {
             retirement_order.push(ValidatorId::from_bytes(r.fixed()?));
         }
@@ -757,7 +800,7 @@ impl Genesis {
         Ok(result)
     }
     pub fn id(&self) -> GenesisId {
-        GenesisId::from_bytes(hash(b"naome:state:genesis:v4\0", &[&self.encode()]))
+        GenesisId::from_bytes(hash(b"naome:state:genesis:v6\0", &[&self.encode()]))
     }
 }
 

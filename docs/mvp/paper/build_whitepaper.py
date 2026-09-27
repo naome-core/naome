@@ -26,7 +26,7 @@ def rich(s):
     return s.replace('∀','<font name="NMath">∀</font>').replace('⅔','2/3')
 
 def styles(lang):
-    body=ParagraphStyle('body',fontName='NSerif',fontSize=11,leading=14.8,alignment=TA_LEFT,spaceAfter=6.5,textColor=INK,allowWidows=0,allowOrphans=0)
+    body=ParagraphStyle('body',fontName='NSerif',fontSize=11,leading=14.8,alignment=TA_LEFT,spaceAfter=6.0,textColor=INK,allowWidows=0,allowOrphans=0)
     return {
       'body':body,
       'heading':ParagraphStyle('heading',parent=body,fontName='NSerifBold',fontSize=14,leading=17.5,spaceBefore=17,spaceAfter=9,keepWithNext=True),
@@ -41,9 +41,9 @@ def styles(lang):
     }
 
 class Figure(Flowable):
-    def __init__(self,kind,lang):
-        super().__init__();self.kind=kind;self.lang=lang;self.width=CW
-        self.height={'system':320,'question':152,'graph':157,'membership':116,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
+    def __init__(self,kind,lang,variant='base'):
+        super().__init__();self.kind=kind;self.lang=lang;self.variant=variant;self.width=CW
+        self.height={'system':320,'question':152,'graph':191,'membership':116,'groups':135,'agenda':91,'agreement':224,'delivery':113,'payments':230,'citation':252,'helpers':262,'reuse':292,'security':101,'journey':86}[kind]
         self.spaceBefore=3;self.spaceAfter=7
     def label(self,x,y,t,size=10.5,bold=False,left=False,color=INK):
         self.canv.setFont('NMath' if '∀' in t else ('NSerifBold' if bold else 'NSerif'),size);self.canv.setFillColor(color)
@@ -158,43 +158,55 @@ class Figure(Flowable):
             self.label(CW/2,0,'Geprüft: ∀x. x = x; keine zusätzliche Annahme' if de else 'Checked: ∀x. x = x; no additional assumption',10)
         elif k=='graph':
             gap=20;bw=(CW-2*gap)/3
-            self.box(0,102,bw,47,'<b>Formale Frage</b><br/>genehmigte Ziele R, ¬R' if de else '<b>Formal question</b><br/>approved targets R, ¬R',size=10)
-            self.box(bw+gap,102,bw,47,'<b>Geprüftes Zertifikat</b><br/>belegt genau ein Ziel' if de else '<b>Checked certificate</b><br/>establishes one target',size=10)
-            self.box(2*(bw+gap),102,bw,47,'<b>Tatsächliches Ergebnis</b><br/>bewiesene Schlussformel' if de else '<b>Actual result</b><br/>the proved conclusion',size=10)
-            self.arrow([(bw+2,125),(bw+gap-2,125)])
-            self.arrow([(2*bw+gap+2,125),(2*(bw+gap)-2,125)])
-            self.label(CW/2,79,'Erfolgreiche Auswahl und Abrechnung erforderlich' if de else 'Successful selection and settlement required',10.3,True)
+            self.box(0,139,bw,47,'<b>Formale Frage</b><br/>genehmigte Ziele R, ¬R' if de else '<b>Formal question</b><br/>approved targets R, ¬R',size=10)
+            self.box(bw+gap,139,bw,47,'<b>Geprüftes Zertifikat</b><br/>belegt genau ein Ziel' if de else '<b>Checked certificate</b><br/>establishes one target',size=10)
+            self.box(2*(bw+gap),139,bw,47,'<b>Tatsächliches Ergebnis</b><br/>bewiesene Schlussformel' if de else '<b>Actual result</b><br/>the proved conclusion',size=10)
+            self.arrow([(bw+2,162),(bw+gap-2,162)])
+            self.arrow([(2*bw+gap+2,162),(2*(bw+gap)-2,162)])
+            self.label(CW/2,108,'Erfolgreiche Auswahl und Abrechnung erforderlich' if de else 'Successful selection and settlement required',10.3,True)
             self.box(0,14,(CW-20)/2,48,'<b>Bibliothek</b><br/>speichert den tatsächlich geführten Beweis' if de else '<b>Library</b><br/>records the proof actually established',size=10.1)
             self.box((CW+20)/2,14,(CW-20)/2,48,'<b>ResolutionId</b><br/>markiert die Fragenfamilie als abgeschlossen' if de else '<b>ResolutionId</b><br/>marks the question family completed',size=10.1)
-            self.arrow([(CW/2,99),(CW/2,91)])
-            self.arrow([(CW/2,73),(CW/2,67),((CW-20)/4,67),((CW-20)/4,64)])
-            self.arrow([(CW/2,73),(CW/2,67),((3*CW+20)/4,67),((3*CW+20)/4,64)])
+            self.arrow([(CW/2,136),(CW/2,122)])
+            left=(CW-20)/4;right=(3*CW+20)/4
+            c.setStrokeColor(INK);c.setLineWidth(.7)
+            c.line(CW/2,100,CW/2,92)
+            c.line(left,92,right,92)
+            self.arrow([(left,92),(left,69)])
+            self.arrow([(right,92),(right,69)])
         elif k=='membership':
-            self.label(CW/2,102,'Vier stabile Sitze; Schlüssel wechseln in jeder Periode' if de else 'Four stable slots; keys rotate every period',10.7,True)
-            start=74;gap=11;bw=(CW-start-3*gap)/4
-            before=['10','13','17','21'];after=['19','13','17','21']
-            for y,values in [(61,before),(5,after)]:
-                self.label(4,y+9,('Vorher' if y==61 else 'Nachher') if de else ('Before' if y==61 else 'After'),10.2,True,True)
-                for i,value in enumerate(values):
-                    self.box(start+i*(bw+gap),y,bw,28,f'<b>S{i+1}</b>  {value}',shade=(y==5 and i==0),size=10.3)
-            self.label(CW/2,43,'Anspruch 19 ersetzt die älteste Einheit 10 in Sitz S1' if de else 'Claim 19 replaces oldest unit 10 in slot S1',10.0)
+            if self.variant=='variable':
+                self.label(CW/2,102,'A sealed claim grows the installed roster',10.7,True)
+                self.box(0,48,174,44,'<b>Before</b><br/>4 units; quorum 3',size=10.1)
+                self.box(CW-174,48,174,44,'<b>After</b><br/>5 units; quorum 4',True,size=10.1)
+                self.arrow([(179,69),(CW-179,69)])
+                self.label(CW/2,27,'One earned claim adds one stable slot while N < 32.',10)
+                self.label(CW/2,7,'At 32, the next claim replaces the oldest installed unit.',9.7)
+            else:
+                self.label(CW/2,102,'Vier stabile Sitze; Schlüssel wechseln in jeder Periode' if de else 'Four stable slots; keys rotate every period',10.7,True)
+                start=74;gap=11;bw=(CW-start-3*gap)/4
+                before=['10','13','17','21'];after=['19','13','17','21']
+                for y,values in [(61,before),(5,after)]:
+                    self.label(4,y+9,('Vorher' if y==61 else 'Nachher') if de else ('Before' if y==61 else 'After'),10.2,True,True)
+                    for i,value in enumerate(values):
+                        self.box(start+i*(bw+gap),y,bw,28,f'<b>S{i+1}</b>  {value}',shade=(y==5 and i==0),size=10.3)
+                self.label(CW/2,43,'Anspruch 19 ersetzt die älteste Einheit 10 in Sitz S1' if de else 'Claim 19 replaces oldest unit 10 in slot S1',10.0)
         elif k=='agenda':
             self.box(0,42,123,39,'<b>Forschungsprofil</b><br/>Eigentümerinteressen' if de else '<b>Research Profile</b><br/>Owner’s interests',size=10)
-            self.box((CW-146)/2,42,146,39,'<b>KI-Entscheidung</b><br/>YES / NO' if de else '<b>AI decision</b><br/>YES / NO',size=10)
-            self.box(CW-123,42,123,39,'<b>Signierte Stimme</b><br/>exakte Frage' if de else '<b>Signed ballot</b><br/>exact question',True,size=10)
+            self.box((CW-146)/2,42,146,39,'<b>KI-Entscheidung</b><br/>YES / NO' if de else '<b>AI assessment</b><br/>YES / NO / REVIEW',size=10)
+            self.box(CW-123,42,123,39,'<b>Signierte Stimme</b><br/>exakte Frage' if de else '<b>Owner ballot</b><br/>signed for question',True,size=10)
             self.arrow([(126,61),((CW-146)/2-3,61)]);self.arrow([((CW+146)/2+3,61),(CW-126,61)])
-            self.label(CW/2,19,'Bei Fristende: 67 YES von 100 → genehmigt' if de else 'At the deadline: 67 YES out of 100 → approved',10.5,True)
+            self.label(CW/2,19,('At the deadline: quorum YES in the opening roster' if self.variant=='variable' else 'Bei Fristende: 67 YES von 100 → genehmigt' if de else 'At the deadline: 67 YES out of 100 → approved'),10.5,True)
             self.label(CW/2,3,'T: Eröffnung | volle sieben Tage | D: Abschluss' if de else 'T: opening | full seven days | D: closure',10)
         elif k=='agreement':
             self.label(CW/2,210,'Datensatz h enthält den exakten Plan für S(h+1)' if de else 'Agreed record h contains the exact plan for S(h+1)',10.8,True)
             self.label(0,166,'Eingehend' if de else 'Incoming',9.8,True,True)
             self.box(76,139,154,51,'<b>Historie prüfen</b><br/>Nachfolger dauerhaft vorbereiten' if de else '<b>Verify history</b><br/>prepare successor durably',size=10.1)
-            self.box(273,139,CW-273,51,'<b>READY 3/4</b><br/>exakter Datensatz und Zustand' if de else '<b>READY 3/4</b><br/>exact record and state',size=10.1)
+            self.box(273,139,CW-273,51,('<b>READY q(N<sub>in</sub>)</b><br/>exact record and state' if self.variant=='variable' else '<b>READY 3/4</b><br/>exakter Datensatz und Zustand' if de else '<b>READY 3/4</b><br/>exact record and state'),size=10.1)
             self.arrow([(233,164),(270,164)])
             self.label(0,85,'Ausgehend' if de else 'Outgoing',9.8,True,True)
             self.box(76,57,102,62,'<b>TERMINAL</b><br/>Signatur speichern' if de else '<b>TERMINAL</b><br/>save signature',size=9.9)
             self.box(194,57,115,62,'<b>Fähigkeit stilllegen</b><br/>alte Periode' if de else '<b>Retire capability</b><br/>old period',size=9.9)
-            self.box(325,57,CW-325,62,'<b>TERMINAL 3/4</b><br/>freigeben und versiegeln' if de else '<b>TERMINAL 3/4</b><br/>release and seal',size=9.9)
+            self.box(325,57,CW-325,62,('<b>TERMINAL q(N<sub>out</sub>)</b><br/>release and seal' if self.variant=='variable' else '<b>TERMINAL 3/4</b><br/>freigeben und versiegeln' if de else '<b>TERMINAL 3/4</b><br/>release and seal'),size=9.9)
             self.arrow([(181,88),(191,88)]);self.arrow([(312,88),(322,88)])
             self.arrow([(354,136),(354,128),(127,128),(127,121)])
             self.arrow([(389,54),(389,43)])
@@ -268,12 +280,12 @@ class Figure(Flowable):
             self.label(CW/2,18,'Pfeile bedeuten: verwendet. Zwei Pfade zu C ergeben einen Pool-Eintrag.' if de else 'Arrows mean uses. Two paths to C produce one pool entry.',9.8)
             self.label(CW/2,2,'Auch D kann für die Gültigkeitsprüfung weiterhin benötigt werden.' if de else 'D may still be required for validity checking.',10)
         elif k=='payments':
-            self.label(CW/2,213,'Ein Forschungsabschluss gibt insgesamt 1 NAO aus' if de else 'One research completion issues 1 NAO in total',11,True)
-            self.box(0,151,258,49,'<b>0,70 NAO: gemeinsames Forschungsbudget</b><br/>Lösung: 0,70 − P | Zitierpool: P' if de else '<b>0.70 NAO: combined research budget</b><br/>Solution: 0.70 − P | Citation pool: P',True,size=10.3)
-            self.box(269,151,94,49,'<b>0,20 NAO</b><br/>Validatorbetrieb' if de else '<b>0.20 NAO</b><br/>Validator service',size=9.7)
-            self.box(374,151,CW-374,49,'<b>0,10 NAO</b><br/>Reserve' if de else '<b>0.10 NAO</b><br/>Reserve',size=10)
+            self.label(CW/2,213,'Ein Forschungsabschluss gibt insgesamt 1 NAO aus' if de else 'One completion credits 1 Test-NAO in total',11,True)
+            self.box(0,151,258,49,'<b>0,70 NAO: gemeinsames Forschungsbudget</b><br/>Lösung: 0,70 − P | Zitierpool: P' if de else '<b>0.70: combined research budget</b><br/>Author: 0.70 − P | Citation pool: P',True,size=10.3)
+            self.box(269,151,94,49,'<b>0,20 NAO</b><br/>Validatorbetrieb' if de else '<b>0.20</b><br/>Validator service',size=9.7)
+            self.box(374,151,CW-374,49,'<b>0,10 NAO</b><br/>Reserve' if de else '<b>0.10</b><br/>Reserve',size=10)
             self.label(0,130,'DATENSATZ n' if de else 'RECORD n',9.5,True,True)
-            self.box(72,78,170,47,'<b>Empfänger zu F</b><br/>erhält 0,70 NAO minus P' if de else '<b>Recipient for F</b><br/>receives 0.70 NAO minus P',size=10.1)
+            self.box(72,78,170,47,'<b>Empfänger zu F</b><br/>erhält 0,70 NAO minus P' if de else '<b>Author of F</b><br/>receives 0.70 minus P',size=10.1)
             self.box(260,78,CW-260,47,'<b>Empfänger von C</b><br/>Anteil gemäß Pool-Richtlinie' if de else '<b>Beneficiary of C</b><br/>share under the pool policy',size=10.1)
             self.label(CW/2,62,'Neuer Hilfsbeweis A: keine Zahlung aus Datensatz n' if de else 'New helper A: no payment from record n',10.2,True)
             self.label(0,39,'SPÄTER' if de else 'LATER',9.5,True,True)
@@ -319,15 +331,16 @@ def identity_table(lang,sty):
     table.spaceBefore=4;table.spaceAfter=12
     return table
 
-def build(lang):
-    sty=styles(lang);raw=(ROOT/f'whitepaper_{lang}.md').read_text()
+def build(lang,variant='base'):
+    source=ROOT/(f'whitepaper_variable_proposal_{lang}.md' if variant=='variable' else f'whitepaper_{lang}.md')
+    sty=styles(lang);raw=source.read_text()
     blocks=re.split(r'\n\s*\n',raw.strip());story=[];title_count=0;figure_count=0;i=0
     while i<len(blocks):
         block=blocks[i];i+=1
         if block=='<!-- APPENDICES -->':story.append(Spacer(1,12));continue
         if block=='[IDENTITIES]':story.append(KeepTogether([identity_table(lang,sty)]));continue
         if block.startswith('[FIG:'):
-            figure=Figure(block[5:-1],lang)
+            figure=Figure(block[5:-1],lang,'variable' if lang=='en' else variant)
             assert blocks[i].startswith('[CAPTION] '),(lang,block,'missing caption')
             figure_count+=1
             prefix='Abbildung' if lang=='de' else 'Figure'
@@ -359,11 +372,13 @@ def build(lang):
         if style=='equation' and story and isinstance(story[-1],Paragraph) and story[-1].style.name=='body':
             lead=story.pop();story.append(KeepTogether([lead,p]))
         else:story.append(p)
-    pdf=OUT/f'whitepaper-{lang}.pdf'
-    doc=PaperDoc(str(pdf),pagesize=A4,leftMargin=M,rightMargin=M,topMargin=58,bottomMargin=53,title='NAOME: A Public Network for Formal Research' if lang=='en' else 'NAOME: Ein öffentliches Netzwerk für formale Forschung',author='NAOME',subject='A public network for formal research: questions, proof publication, incentives, participation and shared history',pageCompression=1)
+    pdf=OUT/(f'whitepaper-variable-proposal-{lang}.pdf' if variant=='variable' else f'whitepaper-{lang}.pdf')
+    title='NAOME: A Public Network for Formal Research' if lang=='en' else 'NAOME: Ein öffentliches Netzwerk für formale Forschung'
+    if variant=='variable':title+=' (4-to-32-validator proposal)'
+    doc=PaperDoc(str(pdf),pagesize=A4,leftMargin=M,rightMargin=M,topMargin=58,bottomMargin=53,title=title,author='NAOME',subject='A public network for formal research: questions, proof publication, incentives, participation and shared history',pageCompression=1)
     doc.paper_lang=lang;doc.headings=[];doc.build(story,onFirstPage=footer,onLaterPages=footer)
-    report={'language':lang,'pages':len(PdfReader(pdf).pages),'headings':doc.headings,'bytes':pdf.stat().st_size,'source_sha256':hashlib.sha256((ROOT/f'whitepaper_{lang}.md').read_bytes()).hexdigest(),'sha256':hashlib.sha256(pdf.read_bytes()).hexdigest()}
+    report={'language':lang,'variant':variant,'pages':len(PdfReader(pdf).pages),'headings':doc.headings,'bytes':pdf.stat().st_size,'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'sha256':hashlib.sha256(pdf.read_bytes()).hexdigest()}
     print(json.dumps(report,indent=2));return report
 if __name__=='__main__':
     import sys
-    reports=[build(l) for l in (sys.argv[1:] or ['en'])]
+    reports=[build('en','variable') if arg=='variable-en' else build(arg) for arg in (sys.argv[1:] or ['en'])]

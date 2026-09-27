@@ -38,12 +38,11 @@ fn active_ingress(lab: &Lab) -> usize {
 fn quiet_handoff_tip(lab: &Lab, submission: &str) -> Vec<Value> {
     let start = Instant::now();
     loop {
-        if let Some(statuses) = [0, 1, 3, 4]
-            .iter()
-            .map(|index| lab.status(*index))
+        if let Some(statuses) = (0..5)
+            .map(|index| lab.status(index))
             .collect::<Option<Vec<_>>>()
         {
-            let claimant = &statuses[3];
+            let claimant = &statuses[4];
             if claimant["active"].is_null()
                 && claimant["queued"] == 0
                 && statuses.iter().all(|status| {
@@ -139,7 +138,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     }
     let initial = lab.wait(0, |s| s["height"] == 0);
     assert_eq!(initial["registered_accounts"], 6);
-    assert_eq!(initial["remaining_account_slots"], 250);
+    assert_eq!(initial["remaining_account_slots"], 1018);
     assert_eq!(initial["registration_available"], true);
     assert!(
         !raw(&[
@@ -170,7 +169,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
         .unwrap();
     assert_eq!(registered["balance_atoms"], "0");
     assert_eq!(registered["next_nonce"], 2);
-    assert_eq!(joined["remaining_account_slots"], 249);
+    assert_eq!(joined["remaining_account_slots"], 1017);
     assert_eq!(
         stable_validator_slots(&joined),
         stable_validator_slots(&initial)
@@ -358,7 +357,8 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
             .as_array()
             .is_some_and(|claims| claims.iter().any(|claim| claim == &family))
     });
-    assert!(selected["authority"]["active_slots"].as_u64().unwrap() >= 3);
+    assert_eq!(stable_validator_slots(&selected).len(), 5);
+    assert!(selected["authority"]["active_slots"].as_u64().unwrap() >= 4);
     assert_eq!(selected["join_queue"], serde_json::json!([]));
     // Other peers can seal the next period while this status is being read.
     // Require the same installed unit and consumed claim at or beyond the
@@ -411,12 +411,12 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     let mut recovery_attempt = 0;
     let (quiet, bootstrap) = loop {
         let statuses = quiet_handoff_tip(&lab, &handoff_submission);
-        let claimant = &statuses[3];
-        let live: Vec<_> = [0, 1, 3]
+        let claimant = &statuses[4];
+        let live: Vec<_> = [0, 1, 2, 3]
             .into_iter()
-            .zip(statuses[..3].iter())
+            .zip(statuses[..4].iter())
             .filter_map(|(index, status)| status["consensus_position"].is_object().then_some(index))
-            .take(2)
+            .take(3)
             .collect();
         if claimant["consensus_position"].is_object()
             && claimant["validators"]
@@ -424,7 +424,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
                 .unwrap()
                 .iter()
                 .any(|unit| unit["owner"] == author && unit["available"] == true)
-            && live.len() == 2
+            && live.len() == 3
         {
             break (claimant.clone(), live);
         }
@@ -495,7 +495,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
         solution,
     ]);
     lab.approve(
-        &[bootstrap[0], bootstrap[1], 6],
+        &[bootstrap[0], bootstrap[1], bootstrap[2], 6],
         "successor-service",
         &submission,
     );
@@ -521,7 +521,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     };
     assert_eq!(
         balance(&paid),
-        balance(&selected) + genesis.profile().rewards().validator_atoms_each
+        balance(&selected) + genesis.profile().rewards().validator_pool_atoms / 5
     );
     let successor_archive = lab.file("successor-archive");
     command(&["export".into(), lab.config(4), successor_archive.clone()]);
@@ -580,7 +580,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     assert!(!std::path::Path::new(&consensus_key).exists());
     assert!(!std::path::Path::new(&transport_key).exists());
 
-    // The earned-installation result must independently replay from four
+    // The earned-installation result must independently replay from five
     // distinct restarted stores, including the claimant. Wait for their
     // existing research work to settle so each export names the same tip.
     let common = {
@@ -608,7 +608,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
             }
             assert!(
                 start.elapsed() < Duration::from_secs(90),
-                "earned claimant and three peers did not reach one quiet tip"
+                "earned claimant and four peers did not reach one quiet tip"
             );
             thread::sleep(Duration::from_millis(40));
         }

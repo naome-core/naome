@@ -17,8 +17,8 @@ pub use transport::{
     INBOUND_AUTH_REFILL_INTERVAL, ListenError, MAX_CONNECTIONS_PER_PEER, MAX_PENDING_REQUESTS,
     MAX_STATIC_PEERS, MAX_YAMUX_STREAMS_PER_CONNECTION, NetworkEvent, PeerSessionEvent,
     RECOVERY_AUTH_TIMEOUT, REQUEST_TIMEOUT, RequestStartError, STABLE_SESSION_DURATION,
-    StateNetwork, StateTransportEvent, StateTransportPair, StateTransportPairError, StaticPeer,
-    TCP_LISTEN_BACKLOG,
+    StateNetwork, StateTraffic, StateTransportEvent, StateTransportPair, StateTransportPairError,
+    StaticPeer, TCP_LISTEN_BACKLOG,
 };
 
 pub use transport::state_exchange::{

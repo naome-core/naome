@@ -122,7 +122,7 @@ struct Attempt {
     deadline: Option<u64>,
     round: Option<SolutionRoundId>,
     votes: BTreeMap<AccountId, bool>,
-    electorate: [AccountId; 4],
+    electorate: Vec<AccountId>,
     commitments: BTreeMap<AccountId, CommitmentEntry>,
 }
 
@@ -137,7 +137,7 @@ pub struct ActiveAttempt {
     pub deadline: Option<u64>,
     pub solution_round: Option<SolutionRoundId>,
     pub votes: BTreeMap<AccountId, bool>,
-    pub electorate: [AccountId; 4],
+    pub electorate: Vec<AccountId>,
     pub commitments: usize,
     pub reveals: usize,
 }
@@ -275,7 +275,7 @@ impl LedgerState {
     pub fn genesis(&self) -> &Genesis {
         &self.genesis
     }
-    /// Selected four-slot authority for the next record height.
+    /// Selected authority roster for the next record height.
     pub fn authority(&self) -> &AuthoritySnapshot {
         &self.authority
     }
@@ -399,7 +399,7 @@ impl LedgerState {
                 claim.author,
                 candidate.keys().clone(),
             )?;
-            if successor.active_count() < 3 {
+            if successor.active_count() < successor.quorum() {
                 return Err(LedgerError::Invalid("incoming authority quorum"));
             }
         }
@@ -437,7 +437,10 @@ impl LedgerState {
         !self.terminated
             && (self.accounts.len() as u64) < self.genesis.profile().limits().registered_accounts
             && self.capacity.remaining() > self.capacity.reserved() + 1
-            && (self.active.is_some() || self.capacity.can_open(self.genesis.profile()))
+            && (self.active.is_some()
+                || self
+                    .capacity
+                    .can_open(self.genesis.profile(), self.authority.units().len()))
     }
     pub fn receipt(&self, id: OperationId) -> Option<&Receipt> {
         self.receipts.get(&id)
@@ -479,7 +482,10 @@ impl LedgerState {
     ) -> bool {
         !self.terminated
             && self.capacity.remaining() > self.capacity.reserved() + 1
-            && (self.active.is_some() || self.capacity.can_open(self.genesis.profile()))
+            && (self.active.is_some()
+                || self
+                    .capacity
+                    .can_open(self.genesis.profile(), self.authority.units().len()))
             && self
                 .claims
                 .get(&family)
@@ -505,6 +511,18 @@ impl LedgerState {
     pub fn remaining_records(&self) -> u64 {
         self.capacity.remaining()
     }
+    /// Whether an empty operation list can still produce a substantive record.
+    /// The runtime uses this as a cheap scheduling hint; record execution remains
+    /// the authority for every effect and terminal transition.
+    pub fn may_have_automatic_record_work(&self) -> bool {
+        !self.terminated
+            && (self.active.is_some()
+                || !self.queue.is_empty()
+                || !self.join_queue.is_empty()
+                || !self
+                    .capacity
+                    .can_open(self.genesis.profile(), self.authority.units().len()))
+    }
     pub fn reserved_records(&self) -> u64 {
         self.capacity.reserved()
     }
@@ -524,7 +542,7 @@ impl LedgerState {
             deadline: a.deadline,
             solution_round: a.round,
             votes: a.votes.clone(),
-            electorate: a.electorate,
+            electorate: a.electorate.clone(),
             commitments: a.commitments.len(),
             reveals: a
                 .commitments
@@ -560,7 +578,7 @@ impl LedgerState {
     pub fn commitment(&self) -> StateCommitment {
         let mut count = Writer::counting();
         self.write_state(&mut count);
-        let mut digest = Writer::hashing(b"naome:state:state:v5\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:state:v6\0", count.len());
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }

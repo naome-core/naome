@@ -21,11 +21,11 @@ use super::{
     log::{FileLog, Limits},
 };
 
-const MAGIC: &[u8; 8] = b"NAOSKEY5";
-const JOURNAL_MAGIC: &[u8; 8] = b"NAOSOFJ5";
+const MAGIC: &[u8; 8] = b"NAOSKEY6";
+const JOURNAL_MAGIC: &[u8; 8] = b"NAOSOFJ6";
 const OFFER: u8 = 1;
 const SIGNER_READY: u8 = 2;
-const CANDIDATE_MAGIC: &[u8; 8] = b"NAOCAND5";
+const CANDIDATE_MAGIC: &[u8; 8] = b"NAOCAND6";
 const KEY_FILE_MAX: u64 = 2048;
 const OFFER_BYTES_MAX: usize = 1024;
 type CustodyFiles = (Vec<u8>, Limits, String, String, String, String);

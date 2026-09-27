@@ -4,8 +4,12 @@ For separate-machine deployment, start with the [pilot runbook](pilot.md).
 It prepares relocatable per-node bundles and collects independently replayed
 archives. The commands below describe the research workflow within that run.
 
-These commands operate a four-validator canonical state genesis on Unix. The
-current qualification target is four independent local processes with separate
+These commands use a four-validator starting genesis on Unix. Fresh v6 genesis
+may install four to 32 validators; the example below starts with four. The
+finite run needs at least `max(64, N + 2K + 7) + 1` records for its opening
+roster of `N` owners and commitment limit `K` (72 at 32 owners with `K=16`).
+Setup checks one-height operating headroom per node before creating the run.
+The local qualification target is four independent processes with separate
 keys, journals, anchors, and authenticated network connections. Current process
 and Docker checks use explicit accelerated timing profiles. The historical
 [integration lab summary](verification.md#historical-state-v1-qualification) records actual
@@ -14,7 +18,7 @@ These checks do not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The current canonical protocol is `state-v5` and node configuration version 5.
+The current canonical protocol is `state-v6` and node configuration version 6.
 Use a fresh genesis and run directory. Incompatible earlier development data is
 rejected; this executable provides one current implementation and no migration.
 The current files include `state.journal`, `state-finality.anchor`, per-period
@@ -41,7 +45,8 @@ printf '[2,0,3,1]\n' > /tmp/bootstrap-retirement-order.json
 The JSON order lists generated `node-0` through `node-3` indices, in the
 operator-selected retirement sequence. Setup resolves them to consensus validator
 IDs, commits the four IDs in genesis, and prints them. Review that sequence before
-startup with `profile-info`. It determines which bootstrap slot is replaced first when a claim-backed candidate is sealed into authority.
+startup with `profile-info`. It determines which bootstrap slot is replaced first
+after the roster reaches 32; earned claimants add seats until then.
 An omitted, repeated, or unknown index is rejected before provisioning.
 
 Run this from the repository root. `RUN` must name a new directory; setup never
@@ -61,7 +66,7 @@ Setup accepts `lab`, `research`, `short-test`, or `ci-test`. `lab` uses 300-seco
 `research` uses seven days of voting, one day for commitments, one day for
 reveals, and a 30-day queue lifetime. That long-running profile is a separate
 later qualification; the original state-v1 acceptance used `lab`. `short-test` uses
-15/8/8/120 seconds; `ci-test` uses 1/8/8/120 seconds. Both must be labeled
+15/45/45/120 seconds; `ci-test` uses 1/8/8/120 seconds. Both must be labeled
 accelerated testing. Current authority-period process and Docker acceptance use
 these profiles, with separate signed-time tests for every complete Lab and
 research phase boundary. Neither establishes a full real-time Lab or research
@@ -70,19 +75,23 @@ resource limits before genesis, while preserving the selected timing windows and
 
 | Bound | Default, 8,192 records | Compact, 256 records |
 |---|---:|---:|
-| Complete record | 1 MiB | 128 KiB |
+| Complete record | 1 MiB | 512 KiB |
 | Original/final package | 256 KiB each | 64 KiB each |
-| Transport frame | 1,088 KiB | 192 KiB |
+| Transport frame | 1,280 KiB | 768 KiB |
 | Maximum consensus round index | 64, allowing 65 rounds | 8, allowing 9 rounds |
-| Conservative storage floor per node | 3,564,533,612,544 bytes | 3,070,260,224 bytes |
+| One-height operating floor per node | Query `profile-info` for the selected run | Query `profile-info` for the selected run |
+| Conservative full-run allowance per node | Query `profile-info` for the selected run | Query `profile-info` for the selected run |
 
-The compact example requires 12,281,040,896 free bytes across its four node
-reservations, approximately 11.44 GiB. The calculation includes worst-case
-period signing history, handoff and key custody journals, archives, staged reveals, metadata, and a safety margin; it is
-not a measured storage-consumption or throughput claim. Different record counts
-produce a different calculation. Setup prints the actual genesis/profile IDs
-and required bytes and rejects insufficient space. Nodes also halt visibly if
-free space later falls below their profile floor.
+The setup and startup floor covers one full signing height, handoff and key
+custody journals, two history frames and a 100% metadata margin. It is checked
+again while nodes run. The separately reported full-run allowance assumes
+maximum usage at every height and is not reserved in advance. Reveal bytes are
+inside bounded records, with no second validator-local staging journal. Archive
+export needs separate destination space. Setup prints the actual genesis/profile
+IDs and the aggregate floor for local nodes, rejecting insufficient space.
+Low free space or a durable write fault halts the affected node visibly without
+turning partial bytes into confirmed state. These estimates are not measured
+storage consumption or throughput claims.
 
 Setup creates six account keys, four consensus keys, four separate transport
 keys, public `genesis.bin`, and `node-0` through `node-3` configurations. It also
@@ -246,12 +255,13 @@ It imports the two private candidate keys into anchored custody, publishes the
 configuration, then removes the source key files. The owner account key remains
 separate. Retrying a completed setup safely finishes interrupted source-file
 cleanup. Keep the candidate process running so it can stage the agreed record
-and issue READY. A three-of-four READY quorum and three-of-four outgoing TERMINAL
-quorum seal the replacement. Only selected sealed history opens ordinary signing.
+and issue READY. An incoming `q(N_in)` READY quorum and an outgoing `q(N_out)`
+TERMINAL quorum seal the addition, or replacement once 32 seats are installed.
+Only selected sealed history opens ordinary signing.
 Use `status` and `question` to inspect the selected slot and `CONSUMED` claim.
 
 Each node needs two distinct reachable literal endpoints. Setup defaults to the
-primary port plus four for handoff; pass both endpoint JSON files after `compact`
+primary port plus the genesis validator count for handoff; pass both endpoint JSON files after `compact`
 for explicit addresses. With proxies or NAT, configure matching `listen_address`
 and `handoff_listen_address`. The two fresh-key transports overlap only during
 handoff; old sessions close before local TERMINAL evidence is released.
@@ -452,7 +462,8 @@ the `node-N` directory number. Match its current owner and endpoint before chang
 a link; the same slot remains selected when its period keys rotate. A 2:2
 partition requires disabling every cross-group link in both groups. Restore those
 same links with `on`. Two validators must never finalize; no command reduces the
-four-slot denominator. Shutdown/restart uses the existing durable state.
+four-slot denominator in this starting-roster example. Shutdown/restart uses
+the existing durable state.
 
 The process test is
 `crates/naome-cli/tests/state_process.rs`. Its accelerated execution,
@@ -530,3 +541,10 @@ and visually inspect every page after changes; structural checks alone do not
 qualify layout. The paper describes both the trusted MVP and the broader public
 proposal; the requirement and verification documents define the operational
 scope and actual evidence.
+
+The separate [variable-roster proposal source](paper/whitepaper_variable_proposal_en.md)
+builds with `python3 docs/mvp/paper/build_whitepaper.py variable-en` and checks
+with `python3 docs/mvp/paper/check_paper.py variable-en`. It writes
+`whitepaper-variable-proposal-en.pdf`. The fresh v6 four-to-32-seat design is
+separate from the four-seat first-print paper. Section 9.2 identifies the
+remaining public-network decisions and evidence limits.

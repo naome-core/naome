@@ -4,17 +4,16 @@ use crate::{
     GenesisId, LedgerError, RecordId, ValidatorId,
     authority::AuthoritySnapshot,
     codec::{Reader, Writer},
-    profile::Genesis,
+    profile::{Genesis, MAX_VALIDATORS, MIN_VALIDATORS, validator_quorum},
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 const MAGIC: &[u8; 4] = b"NSTM";
-const VERSION: u16 = 1;
-const DOMAIN: &[u8] = b"naome:state:time:v1\0";
+const VERSION: u16 = 6;
+const DOMAIN: &[u8] = b"naome:state:time:v6\0";
 /// Exact encoded width of one signed report.
 pub const TIME_REPORT_BYTES: usize = 4 + 2 + 32 + 32 + 8 + 32 + 8 + 64;
-/// A fixed four-validator time certificate never exceeds this byte count.
-pub const TIME_CERTIFICATE_MAX_BYTES: usize = 1 + 4 * TIME_REPORT_BYTES;
+pub const TIME_CERTIFICATE_MAX_BYTES: usize = 2 + MAX_VALIDATORS * TIME_REPORT_BYTES;
 
 /// One validator's signed report for an exact parent and height.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,7 +163,7 @@ pub struct TimeCertificate {
 mod tests;
 
 impl TimeCertificate {
-    /// Verifies three or four distinct reports, then sorts their wire order.
+    /// Verifies a quorum of distinct reports, then sorts their wire order.
     pub fn new(
         mut reports: Vec<SignedTimeReport>,
         genesis: &Genesis,
@@ -173,7 +172,7 @@ impl TimeCertificate {
         height: u64,
         parent_time: u64,
     ) -> Result<Self, LedgerError> {
-        if !(3..=4).contains(&reports.len()) {
+        if !(authority.quorum()..=authority.units().len()).contains(&reports.len()) {
             return Err(LedgerError::Invalid("time quorum"));
         }
         reports.sort_by_key(SignedTimeReport::validator);
@@ -202,7 +201,7 @@ impl TimeCertificate {
     /// Encodes all chosen reports. No computed time is trusted on the wire.
     pub fn encode(&self) -> Vec<u8> {
         let mut writer = Writer::new();
-        writer.u8(self.reports.len() as u8);
+        writer.u16(self.reports.len() as u16);
         for report in &self.reports {
             writer.fixed(&report.encode());
         }
@@ -218,8 +217,8 @@ impl TimeCertificate {
         parent_time: u64,
     ) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, TIME_CERTIFICATE_MAX_BYTES)?;
-        let count = reader.u8()?;
-        if !(3..=4).contains(&count) {
+        let count = reader.u16()?;
+        if !(authority.quorum() as u16..=authority.units().len() as u16).contains(&count) {
             return Err(LedgerError::Invalid("time quorum"));
         }
         let mut reports = Vec::with_capacity(count as usize);
@@ -239,8 +238,8 @@ impl TimeCertificate {
     /// Bounded syntax only. The ledger must reverify against a selected snapshot.
     pub fn decode_structure(bytes: &[u8]) -> Result<Self, LedgerError> {
         let mut reader = Reader::new(bytes, TIME_CERTIFICATE_MAX_BYTES)?;
-        let count = reader.u8()?;
-        if !(3..=4).contains(&count) {
+        let count = reader.u16()?;
+        if !(validator_quorum(MIN_VALIDATORS) as u16..=MAX_VALIDATORS as u16).contains(&count) {
             return Err(LedgerError::Invalid("time quorum"));
         }
         let mut reports = Vec::with_capacity(count as usize);

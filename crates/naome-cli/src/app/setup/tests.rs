@@ -78,7 +78,10 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
     let (compact, actual, _) = parameters(&args).unwrap();
     assert_eq!(actual, endpoints);
     assert_ne!(compact.id(), standard.id());
-    assert!(compact.required_storage_bytes().unwrap() < standard.required_storage_bytes().unwrap());
+    assert!(
+        compact.operating_storage_floor_bytes().unwrap()
+            < standard.operating_storage_floor_bytes().unwrap()
+    );
     args.truncate(5);
     assert_eq!(parameters(&args).unwrap().0, standard);
     args[1] = "ci-test".into();
@@ -88,6 +91,29 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
     assert_ne!(ci.id(), standard.id());
     args.push("unknown".into());
     assert!(parameters(&args).is_err());
+}
+
+#[test]
+fn undersized_32_seat_run_is_rejected_before_creating_keys() {
+    let dir = Directory::new();
+    let order = dir.0.join("retirement.json");
+    fs::write(
+        &order,
+        serde_json::to_vec(&(0..32).collect::<Vec<_>>()).unwrap(),
+    )
+    .unwrap();
+    let requested = dir.0.join("rejected-run");
+    let mut args = vec![
+        requested.to_string_lossy().into_owned(),
+        "ci-test".into(),
+        "71".into(),
+        "44100".into(),
+        order.to_string_lossy().into_owned(),
+    ];
+    assert!(run(&args).is_err());
+    assert!(!requested.exists());
+    args[2] = "72".into();
+    assert!(parameters(&args).is_ok());
 }
 
 struct Directory(PathBuf);
@@ -103,7 +129,7 @@ impl Directory {
     }
     fn config(&self) -> NodeConfig {
         NodeConfig {
-            version: 5,
+            version: 6,
             primary_endpoint: "127.0.0.1:44000".into(),
             candidate_family: None,
             recovery_endpoints: vec!["127.0.0.1:44000".into(), "127.0.0.1:44004".into()],
@@ -148,9 +174,9 @@ async fn changing_local_agenda_profile_cannot_change_genesis_or_reinitialize_his
         TimingKind::Lab,
         Limits {
             run_records: 256,
-            record_bytes: 128 * 1024,
+            record_bytes: 512 * 1024,
             package_bytes: 64 * 1024,
-            transport_frame_bytes: 192 * 1024,
+            transport_frame_bytes: 768 * 1024,
             consensus_rounds: 8,
             ..Limits::default()
         },
@@ -284,7 +310,7 @@ fn explicit_peer_endpoints_are_genesis_bound_and_invalid_plans_create_no_state()
     let args = vec![
         output.to_str().unwrap().into(),
         "short-test".into(),
-        "160".into(),
+        "65".into(),
         "44100".into(),
         order.to_str().unwrap().into(),
         "compact".into(),

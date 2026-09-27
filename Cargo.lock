@@ -1790,6 +1790,7 @@ dependencies = [
  "naome-proof",
  "naome-runtime",
  "naome-storage",
+ "nix",
  "rustix 1.1.4",
  "serde",
  "serde_json",

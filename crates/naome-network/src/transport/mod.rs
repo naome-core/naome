@@ -40,6 +40,11 @@ pub const MAX_STATIC_PEERS: usize = 8;
 pub const MAX_CONNECTIONS_PER_PEER: u32 = 1;
 /// Maximum pending or caller-retained outbound requests across all application exchanges.
 pub const MAX_PENDING_REQUESTS: usize = 8;
+/// Cap for a large static roster; small networks retain the original budget.
+const MAX_SCALED_PENDING_REQUESTS: usize = 32;
+fn pending_request_limit(peers: usize) -> usize {
+    peers.clamp(MAX_PENDING_REQUESTS, MAX_SCALED_PENDING_REQUESTS)
+}
 /// Maximum total Yamux substreams on one connection.
 pub const MAX_YAMUX_STREAMS_PER_CONNECTION: usize = 8;
 /// Configured TCP listen backlog.
@@ -123,6 +128,7 @@ struct Behaviour {
 /// Authenticated canonical state transport over the immutable genesis peers.
 pub struct StateNetwork {
     swarm: Swarm<Behaviour>,
+    traffic: StateTraffic,
     // Each peer behaviour has its own request counter; the peer is part of the key.
     pending: HashMap<(PeerId, request_response::OutboundRequestId), state_exchange::PendingState>,
     pending_budget: Arc<PendingBudget>,
@@ -136,7 +142,36 @@ pub struct StateNetwork {
     recovery_leases: HashMap<PeerId, RecoveryLease>,
 }
 
+/// Local counts of canonical state-exchange envelopes. These exclude Noise,
+/// TCP, retransmission, and other libp2p framing bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateTraffic {
+    pub request_starts: u64,
+    pub request_start_bytes: u64,
+    pub requests_received: u64,
+    pub request_bytes_received: u64,
+    pub response_starts: u64,
+    pub response_start_bytes: u64,
+    pub responses_received: u64,
+    pub response_bytes_received: u64,
+}
+impl std::ops::AddAssign for StateTraffic {
+    fn add_assign(&mut self, other: Self) {
+        self.request_starts += other.request_starts;
+        self.request_start_bytes += other.request_start_bytes;
+        self.requests_received += other.requests_received;
+        self.request_bytes_received += other.request_bytes_received;
+        self.response_starts += other.response_starts;
+        self.response_start_bytes += other.response_start_bytes;
+        self.responses_received += other.responses_received;
+        self.response_bytes_received += other.response_bytes_received;
+    }
+}
+
 impl StateNetwork {
+    pub fn traffic(&self) -> StateTraffic {
+        self.traffic
+    }
     /// Reports static transport configuration, not connectivity or consensus trust.
     pub fn is_configured_peer(&self, peer_id: &PeerId) -> bool {
         self.swarm
@@ -146,18 +181,52 @@ impl StateNetwork {
             .is_some()
     }
 
+    /// A currently authenticated static session is necessary before an
+    /// application request can start. Callers may defer retry work until then.
+    pub fn has_connected_static_session(&self, peer_id: &PeerId) -> bool {
+        let sessions = &self.swarm.behaviour().sessions;
+        sessions
+            .peer_index(peer_id)
+            .and_then(|index| sessions.connection_status_at(index))
+            .unwrap_or(false)
+    }
+
+    /// Number of currently authenticated static transport sessions. This is
+    /// diagnostic only and does not establish voting or signing authority.
+    pub fn connected_static_peers(&self) -> usize {
+        self.swarm.behaviour().sessions.connected_count()
+    }
+
+    /// Keep a prepared handoff listener available while the old full mesh
+    /// carries READY, without opening a second full mesh before retirement.
+    pub fn defer_handoff_dials(&mut self) {
+        debug_assert_eq!(self.state_lane(), Some(StateLane::Handoff));
+        self.swarm
+            .behaviour_mut()
+            .sessions
+            .set_static_dialing_enabled(false);
+    }
+
+    pub(crate) fn resume_static_dials(&mut self) {
+        self.swarm
+            .behaviour_mut()
+            .sessions
+            .set_static_dialing_enabled(true);
+    }
+
     #[cfg(test)]
     fn build(
         identity: Keypair,
         peers: impl IntoIterator<Item = StaticPeer>,
     ) -> Result<Self, BuildError> {
-        Self::build_with_limit(identity, peers, MAX_STATIC_PEERS, false)
+        Self::build_with_limit(identity, peers, MAX_STATIC_PEERS, false, false)
     }
     fn build_with_limit(
         identity: Keypair,
         peers: impl IntoIterator<Item = StaticPeer>,
         maximum_peers: usize,
         recovery_enabled: bool,
+        prepared_listener: bool,
     ) -> Result<Self, BuildError> {
         let local_peer_id = identity.public().to_peer_id();
         let mut static_peers = Vec::with_capacity(maximum_peers);
@@ -180,6 +249,15 @@ impl StateNetwork {
             static_peers.push(peer);
         }
 
+        let pending_limit = pending_request_limit(static_peers.len());
+        // The prepared listener is bound while the old full mesh still owns
+        // its sockets. Reserve only the base backlog until retirement; the
+        // fresh static peers retry connection establishment after retirement.
+        let listen_backlog = if prepared_listener {
+            TCP_LISTEN_BACKLOG
+        } else {
+            (static_peers.len() as u32).clamp(TCP_LISTEN_BACKLOG, 64)
+        };
         let peers_u32 = u32::try_from(maximum_peers).expect("bounded peer limit fits u32");
         let connection_limits = connection_limits::ConnectionLimits::default()
             .with_max_pending_incoming(Some(peers_u32))
@@ -202,7 +280,7 @@ impl StateNetwork {
         let swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
             .with_tcp(
-                tcp::Config::new().listen_backlog(TCP_LISTEN_BACKLOG),
+                tcp::Config::new().listen_backlog(listen_backlog),
                 noise::Config::new,
                 || yamux_config(MAX_YAMUX_STREAMS_PER_CONNECTION),
             )
@@ -221,6 +299,7 @@ impl StateNetwork {
 
         Ok(Self {
             swarm,
+            traffic: StateTraffic::default(),
             pending: HashMap::new(),
             state_exchange: None,
             recovery_dials: std::collections::HashSet::new(),
@@ -230,7 +309,10 @@ impl StateNetwork {
             recovery_rates: HashMap::new(),
             recovery_pending_auth: HashMap::new(),
             recovery_leases: HashMap::new(),
-            pending_budget: Arc::new(PendingBudget::default()),
+            pending_budget: Arc::new(PendingBudget {
+                active: AtomicUsize::new(0),
+                limit: pending_limit,
+            }),
         })
     }
     /// Returns this transport's authenticated peer identity.
@@ -253,7 +335,7 @@ impl StateNetwork {
         PendingBudget::try_acquire(&self.pending_budget)
             .map(|permit| (peer_index, permit))
             .ok_or(RequestStartError::GlobalLimit {
-                maximum: MAX_PENDING_REQUESTS,
+                maximum: self.pending_budget.limit,
             })
     }
 
@@ -468,16 +550,24 @@ pub enum NetworkEvent {
     },
 }
 
-#[derive(Default)]
 struct PendingBudget {
     active: AtomicUsize,
+    limit: usize,
+}
+impl Default for PendingBudget {
+    fn default() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit: MAX_PENDING_REQUESTS,
+        }
+    }
 }
 impl PendingBudget {
     fn try_acquire(budget: &Arc<Self>) -> Option<PendingPermit> {
         budget
             .active
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
-                active.checked_add(1).filter(|n| *n <= MAX_PENDING_REQUESTS)
+                active.checked_add(1).filter(|n| *n <= budget.limit)
             })
             .ok()?;
         Some(PendingPermit {
@@ -542,7 +632,12 @@ pub struct ListenError(libp2p::TransportError<std::io::Error>);
 
 impl fmt::Display for ListenError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "cannot listen for state peers: {}", self.0)
+        match &self.0 {
+            libp2p::TransportError::Other(error) => {
+                write!(formatter, "cannot listen for state peers: {error}")
+            }
+            unsupported => write!(formatter, "cannot listen for state peers: {unsupported}"),
+        }
     }
 }
 

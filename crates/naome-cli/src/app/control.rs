@@ -12,6 +12,7 @@ pub const MAXIMUM: usize = 3 * 1024 * 1024;
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Status {},
+    Progress { account: Option<String> },
     Shutdown {},
     Submit { bytes: String },
     Receipt { id: String },
@@ -40,7 +41,12 @@ pub async fn write(stream: &mut UnixStream, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 pub async fn call(config: &NodeConfig, request: Request) -> Result<Value> {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let timeout = if matches!(&request, Request::Submit { .. } | Request::Progress { .. }) {
+        Duration::from_secs(35)
+    } else {
+        Duration::from_secs(10)
+    };
+    tokio::time::timeout(timeout, async {
         let mut stream = UnixStream::connect(&config.control_socket).await?;
         if stream.peer_cred()?.uid() != rustix::process::geteuid().as_raw() {
             return Err("control server belongs to another user".into());

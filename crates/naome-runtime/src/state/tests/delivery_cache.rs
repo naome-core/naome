@@ -1,5 +1,115 @@
 use super::*;
-use naome_network::{NetworkEvent, PeerSessionEvent, StateLane};
+use naome_network::{ListenerId, NetworkEvent, PeerSessionEvent, StateLane};
+
+#[tokio::test]
+async fn prepared_evidence_uses_old_peers_until_the_old_lane_retires() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let fresh = loop {
+        let candidate = PeerId::random();
+        if !runtime.peers.contains(&candidate) {
+            break candidate;
+        }
+    };
+    runtime.handoff_peers.push(fresh);
+    let ready = StateRequestBody::ReadySignature(vec![1].into());
+    runtime.broadcast_handoff(ready.clone()).unwrap();
+    assert_eq!(runtime.outbox.len(), runtime.peers.len());
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .all(|item| runtime.peers.contains(&item.peer))
+    );
+
+    runtime.network.retire_old();
+    runtime.outbox.clear();
+    runtime.broadcast_handoff(ready).unwrap();
+    assert_eq!(runtime.outbox.len(), 1);
+    assert_eq!(runtime.outbox[0].peer, fresh);
+}
+
+#[tokio::test]
+async fn broadcast_uses_one_wire_identity_with_peer_scoped_acknowledgements() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let body = StateRequestBody::Proposal(vec![7; 80].into());
+    runtime.broadcast(body.clone()).unwrap();
+    assert_eq!(runtime.outbox.len(), runtime.peers.len());
+    let first = runtime.outbox.pop_front().unwrap();
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .all(|delivery| delivery.id == first.id)
+    );
+
+    runtime.remember_acknowledged(&first).unwrap();
+    runtime.broadcast(body).unwrap();
+    assert_eq!(runtime.outbox.len(), runtime.peers.len() - 1);
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .all(|delivery| delivery.peer != first.peer && delivery.id == first.id)
+    );
+}
+
+#[tokio::test]
+async fn user_action_reaches_selected_proposer_before_rotating_couriers() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let proposer = runtime.current_proposer_peer().unwrap().unwrap();
+    let proposer_index = runtime
+        .peers
+        .iter()
+        .position(|peer| *peer == proposer)
+        .unwrap();
+    runtime.action_peer_cursor = (proposer_index + 1) % runtime.peers.len();
+
+    runtime
+        .broadcast(StateRequestBody::UserAction(vec![1].into()))
+        .unwrap();
+    let first_action = runtime
+        .outbox
+        .iter()
+        .find(|delivery| matches!(delivery.body, StateRequestBody::UserAction(_)))
+        .unwrap();
+    assert_eq!(first_action.peer, proposer);
+}
+
+#[tokio::test]
+async fn transient_listener_error_does_not_stop_signing_but_closure_does() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    let listener_id = ListenerId::next();
+    assert!(matches!(
+        runtime.network_event(
+            NetworkEvent::ListenerError {
+                listener_id,
+                error: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid input parameter",
+                ),
+            },
+            StateLane::Active,
+        ),
+        Ok(StateRuntimeEvent::Network)
+    ));
+    assert!(
+        runtime
+            .network_event(
+                NetworkEvent::ListenerClosed {
+                    listener_id,
+                    addresses: Vec::new(),
+                    reason: Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid input parameter",
+                    )),
+                },
+                StateLane::Active,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("listener closed")
+    );
+}
 
 #[tokio::test]
 async fn accepted_offer_is_suppressed_until_same_height_peer_reconnects() {

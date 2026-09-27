@@ -8,7 +8,7 @@ use crate::{
 use ed25519_dalek::SigningKey;
 
 fn time_for(state: &LedgerState) -> TimeCertificate {
-    let reports = (0..3)
+    let reports = (0..state.authority().quorum() as u8)
         .map(|index| {
             SignedTimeReport::sign(
                 state.genesis(),
@@ -414,7 +414,7 @@ fn another_pending_intent_reserves_its_keys_and_endpoint() {
 }
 
 #[test]
-fn selected_claim_handoff_replaces_oldest_slot_and_retires_old_keys() {
+fn selected_claim_handoff_adds_a_slot_and_rotates_old_keys() {
     let (state, family, author) = state_with_claim();
     let candidate_consensus = candidate(71);
     let candidate_transport = candidate(72);
@@ -462,14 +462,13 @@ fn selected_claim_handoff_replaces_oldest_slot_and_retires_old_keys() {
         .unwrap()
         .bind_record(RecordId::from_bytes([100; 32]));
     assert_eq!(next.authority().effective_height(), 3);
+    assert_eq!(next.authority().units().len(), 5);
     assert_eq!(
         next.authority().slot(outgoing.slot()).unwrap().owner(),
-        author
+        outgoing.owner()
     );
-    assert!(
-        matches!(next.authority().slot(outgoing.slot()).unwrap().origin(),
-        UnitOrigin::Earned { family: installed, completion_ordinal: 1 } if installed == family)
-    );
+    assert!(matches!(next.authority().owner(author).unwrap().origin(),
+        UnitOrigin::Earned { family: installed, completion_ordinal: 1 } if installed == family));
     assert!(next.authority().consensus_unit(&old_consensus).is_none());
     assert!(next.consumed_claims().contains(&family));
     assert!(next.join_queue().is_empty());
@@ -746,9 +745,10 @@ fn attempt_opening_at_handoff_freezes_outgoing_owners_for_later_ballots() {
     let active = selected.active().unwrap();
     assert_eq!(active.phase, Phase::Voting);
     assert_eq!(active.electorate.as_slice(), outgoing.as_slice());
-    assert!(selected.authority().owner(retired).is_none());
+    assert!(selected.authority().owner(retired).is_some());
+    assert_eq!(selected.authority().units().len(), 5);
     let time = TimeCertificate::new(
-        [0, 1, 3]
+        [0, 1, 2, 3]
             .into_iter()
             .map(|i| {
                 SignedTimeReport::sign(

@@ -6,7 +6,7 @@ use crate::{
     AccountId, CommitmentId, GenesisId, LedgerError, OperationId, PackageHash, ProfileId,
     SolutionRoundId, StateCommitment,
     accounting::{CitationRecipient, RewardPlan},
-    authority::AuthoritySnapshot,
+    authority::{AUTHORITY_SNAPSHOT_MAX_BYTES, AuthoritySnapshot},
     codec::{Reader, Writer},
     library::{AdmissionCoordinate, ProofPackage},
     profile::Genesis,
@@ -62,7 +62,7 @@ impl NormalizationReceipt {
         if genesis_id != genesis.id() {
             return Err(LedgerError::Invalid("normalization receipt genesis"));
         }
-        let authority = AuthoritySnapshot::decode(r.bytes(2048)?)?;
+        let authority = AuthoritySnapshot::decode(r.bytes(AUTHORITY_SNAPSHOT_MAX_BYTES)?)?;
         if authority.genesis() != genesis.id() {
             return Err(LedgerError::Invalid("normalization service genesis"));
         }

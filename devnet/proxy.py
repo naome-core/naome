@@ -16,7 +16,8 @@ async def copy(source, target, delay, *, clock=None, sleep=asyncio.sleep):
 
     Only one 32 KiB read is prefetched while the current chunk waits or drains.
     Across 16 connections and two directions, these chunk references hold at
-    most 2 MiB. StreamReader and StreamWriter transport buffers are separate.
+    most 2 MiB. Larger roster runs raise the explicit connection bound.
+    StreamReader and StreamWriter transport buffers are separate.
     """
     if clock is None:
         clock = asyncio.get_running_loop().time
@@ -45,12 +46,15 @@ async def copy(source, target, delay, *, clock=None, sleep=asyncio.sleep):
 
 
 class Proxy:
-    def __init__(self, address, listen, delay_ms):
+    def __init__(self, address, listen, delay_ms, max_connections=16):
         if not 0 <= delay_ms <= 1000:
             raise ValueError("delay must be 0..1000 milliseconds")
+        if not 1 <= max_connections <= 512:
+            raise ValueError("connection bound must be 1..512")
         self.front = endpoint(address)
         self.back = endpoint(listen)
         self.delay = delay_ms / 1000
+        self.max_connections = max_connections
         self.loop = asyncio.new_event_loop()
         self.tasks = set()
         self.open_writers = set()
@@ -62,7 +66,9 @@ class Proxy:
     def run(self):
         asyncio.set_event_loop(self.loop)
         try:
-            server = self.loop.run_until_complete(asyncio.start_server(self.accept, *self.front, limit=32_768, backlog=16))
+            server = self.loop.run_until_complete(asyncio.start_server(
+                self.accept, *self.front, limit=32_768,
+                backlog=max(16, self.max_connections)))
             self.started.set_result(True)
             self.loop.run_forever()
             server.close()
@@ -79,7 +85,7 @@ class Proxy:
             self.loop.close()
 
     async def accept(self, reader, writer):
-        if len(self.tasks) >= 16:
+        if len(self.tasks) >= self.max_connections:
             writer.close()
             return
         task = asyncio.current_task()

@@ -67,7 +67,7 @@ impl Fixture {
         )
         .unwrap();
         let config = NodeConfig {
-            version: 5,
+            version: 6,
             primary_endpoint: "127.0.0.1:44000".into(),
             candidate_family: None,
             recovery_endpoints: vec!["127.0.0.1:44000".into(), "127.0.0.1:44004".into()],
