@@ -253,6 +253,7 @@ impl Lab {
     fn wait_active_phase(&self, submission: &str, phase: &str) -> usize {
         let start = Instant::now();
         loop {
+            let mut question_ingress = None;
             for index in 0..self.nodes.len() {
                 if self.nodes[index].is_none() {
                     continue;
@@ -260,6 +261,7 @@ impl Lab {
                 let Some(status) = self.status(index) else {
                     continue;
                 };
+                question_ingress.get_or_insert(index);
                 // A research owner may remain in the frozen vote electorate
                 // while its validator is vacant after a 3-of-4 handoff.
                 if status["consensus_position"].is_null() {
@@ -270,13 +272,38 @@ impl Lab {
                 {
                     return index;
                 }
+            }
+            // One question lookup is enough to detect a terminal state. Polling
+            // every process with a fresh CLI command every 40 ms competes with
+            // the four validator processes during timed phase transitions.
+            if let Some(index) = question_ingress {
                 self.assert_question_can_progress(index, submission);
             }
-            assert!(
-                start.elapsed() < Duration::from_secs(90),
-                "no active validator reached {phase} for question {submission}"
-            );
-            thread::sleep(Duration::from_millis(40));
+            if start.elapsed() >= Duration::from_secs(180) {
+                let nodes: Vec<_> = (0..self.nodes.len())
+                    .map(|index| {
+                        let status = self.status(index);
+                        let errors =
+                            fs::read_to_string(self.root.join(format!("node-{index}.errors")))
+                                .unwrap_or_default();
+                        serde_json::json!({
+                            "node": index,
+                            "running": self.nodes[index].is_some(),
+                            "height": status.as_ref().map(|s| &s["height"]),
+                            "head": status.as_ref().map(|s| &s["head"]),
+                            "authority": status.as_ref().map(|s| &s["authority"]),
+                            "position": status.as_ref().map(|s| &s["consensus_position"]),
+                            "active": status.as_ref().map(|s| &s["active"]),
+                            "transport": status.as_ref().map(|s| &s["transport_diagnostics"]),
+                            "recent_errors": errors.lines().rev().take(6).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                panic!(
+                    "no active validator reached {phase} for question {submission}; node diagnostics={nodes:?}"
+                );
+            }
+            thread::sleep(Duration::from_millis(250));
         }
     }
     fn wait_receipt(
