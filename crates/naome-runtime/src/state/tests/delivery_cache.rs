@@ -29,6 +29,40 @@ async fn prepared_evidence_uses_old_peers_until_the_old_lane_retires() {
 }
 
 #[tokio::test]
+async fn first_candidate_agreement_uses_its_parent_courier_without_a_prepared_session() {
+    let (_directory, _anchors, mut runtime) = runtime();
+    // Model a configured parent courier that is selected into the handoff
+    // but is not an outgoing validator in the normal broadcast list.
+    let candidate = runtime.peers.pop().unwrap();
+    assert!(
+        runtime
+            .network
+            .active()
+            .unwrap()
+            .is_configured_peer(&candidate)
+    );
+    runtime.handoff_peers.push(candidate);
+    let unconfigured = PeerId::random();
+    runtime.handoff_peers.push(unconfigured);
+
+    runtime
+        .broadcast_handoff(StateRequestBody::Agreement(vec![1].into()))
+        .unwrap();
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .any(|delivery| delivery.peer == candidate)
+    );
+    assert!(
+        runtime
+            .outbox
+            .iter()
+            .all(|delivery| delivery.peer != unconfigured)
+    );
+}
+
+#[tokio::test]
 async fn broadcast_uses_one_wire_identity_with_peer_scoped_acknowledgements() {
     let (_directory, _anchors, mut runtime) = runtime();
     let body = StateRequestBody::Proposal(vec![7; 80].into());
