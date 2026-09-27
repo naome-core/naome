@@ -13,7 +13,7 @@ NAOME coordinates three decisions in shared mathematical research: which questio
 
 [CAPTION] Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. A terminal seal ends the bounded run.
 
-This paper describes the intended public-network protocol and identifies the bounded implementation where its rules differ. The 32-unit ceiling is a prototype/testnet limit, not physical 32-host qualification. The research profile's seven-day live run, physical multi-machine acceptance and public-network operation remain separate qualifications.
+This design draft discusses a public-network protocol and a bounded prototype. The companion variable-roster discussion copy gives the exact fresh-v6 question syntax, fixed proof-admission rules and immutable profile limits. Question-specific policies and definition publication discussed as broader design possibilities here are not active v6 inputs. The 32-unit ceiling is a prototype/testnet limit, not physical 32-host qualification. The research profile's seven-day live run, physical multi-machine acceptance and public-network operation remain separate qualifications.
 
 NAOME's research path can span many sealed records. An unapproved or expired attempt produces no paid result. A solution author's join request is optional and grants no voting weight until a separate handoff is sealed.
 
@@ -51,7 +51,7 @@ For example, three of four owners may approve a question, after which a contribu
 
 ### 3.1. The mathematical obligation
 
-A question's <i>.nao</i> source declares a Foundation, a closed statement <i>Q</i>, permitted library dependencies, a bounded policy for new helpers and replacement by older proofs, resource bounds and <i>success = "resolve"</i>. A closed statement has no free variables. Its formal obligation must compile before voting begins; a solution need not accompany the proposal. The readable purpose must match the formal statement. Compilation checks syntax and bounds, not the fidelity or scientific value of the translation.
+A v6 question's <i>.nao</i> source contains <i>foundation = "naome:zfc"</i> and one closed <i>statement = Q</i>, with optional <i>success = "resolve"</i>. A closed statement has no free variables. The source cannot set assumptions, definitions, reference permissions, substitution rules or resource bounds; those would require broader public-network rules. Its formal obligation must compile before voting begins; a solution need not accompany the proposal. Owners judge whether the readable purpose matches the formal statement. Compilation checks syntax and profile bounds, not the fidelity or scientific value of the translation.
 
 The Foundation <i>naome:zfc</i> consists of classical first-order logic with equality over sets, ZFC axioms, and the Separation and Replacement schemas. A certificate supplies axiom or schema instances, inference steps and checked references. Verification establishes derivability under this rulebook. The interpretation of that result relies on sound checking and a consistent Foundation. Unapproved assumptions are forbidden.
 
@@ -75,9 +75,9 @@ After refutation, the rejected claim is not entered as a theorem. If certificate
 
 A bundle contains a root certificate for the approved question and helper certificates for their own closed statements. Surviving helpers become reusable proof blocks when the group settles; internal inference steps are not separate publications. Appendix B specifies publication and attribution.
 
-Definitions introduce notation. Relations abbreviate primitive graphs; a function with one or more inputs requires a selected proof that its expanded graph gives exactly one output for every input. Definitions expand before checking and introduce no new axioms. Recursion, zero-input relations or functions, and standalone constants are excluded.
+The authoring compiler can check conservative definitions offline. Relations abbreviate primitive graphs; a function with one or more inputs requires a selected proof that its expanded graph gives exactly one output for every input. The v6 ledger does not publish definitions or admit their references in questions or settlement certificates; a broader network needs a definition-publication rule. Recursion, zero-input relations or functions, and standalone constants are excluded from the offline authoring form.
 
-Helpers may be developed after approval within the frozen dependency context and used by later certificates in the normalized group. This checking order does not make them older proofs for payment. Appendix A distinguishes statements, derivations, certificates and typed artifacts; Appendix B gives the admission rules.
+Helpers developed after approval may be used by later certificates in the normalized group without becoming older proofs for payment. Appendices A and B define their identities, admission and attribution.
 
 ## 4. Research authorization and submission
 
@@ -105,7 +105,9 @@ A sealed opening freezes the proposal and electorate for the seven-day vote. Let
 
 [EQ] D = T + 604,800 seconds; approval requires 3Y &gt; 2W.
 
-With five opening units, four YES approve; with 32, 22 YES approve. The result authorizes research resources and says nothing about the statement's truth. Current process qualification uses accelerated windows and separate signed-time boundary tests, not a complete seven-day live run. Appendix C.1 gives ballot admission, deadline and closure rules; C.2 defines certified time.
+With five opening units, four YES approve; with 32, 22 YES approve. The result authorizes research resources and says nothing about the statement's truth.
+
+Current process qualification uses accelerated windows and separate signed-time boundary tests, not a complete seven-day live run. Appendix C.1 gives ballot admission, deadline and closure rules; C.2 defines certified time.
 
 The frozen snapshot preserves a stable electorate even if membership changes during review. Former owners can therefore influence attempts opened during their membership, using research authority protected through closure. A halt can consume part of the voting interval, as discussed in Section 8.3.
 
@@ -123,7 +125,7 @@ An unresolved solution phase expires without recording a refutation, issuing mon
 
 ## 5. Proof acceptance and publication
 
-Acceptance connects an authenticated submission to a reusable public result. Both the original bundle and its final form must validate. Under the question's frozen policy, normalization may replace duplicate helpers with admissible older proofs and remove material no longer used by the root. Appendix B specifies the exact matching, pruning, authorization and validation rules.
+Acceptance connects an authenticated submission to a reusable public result. Both the original bundle and its final form must validate. The fixed v6 rule replaces exact duplicate helpers with admissible older proofs and removes material no longer used by the root; a question cannot change that rule. Appendix B specifies the exact matching, pruning, authorization and validation rules.
 
 [FIG:helpers]
 
@@ -141,7 +143,7 @@ Other valid bounded-profile records may carry research and control operations wi
 
 Each paid research completion credits exactly one Test-NAO in the bounded profile, equally for proof and refutation: 0.20 funds validator service, 0.10 enters the reserve, and 0.70 funds the solution author and a citation pool of <i>P</i>. The author receives 0.70 minus <i>P</i>. Each completion has one pool within this budget; helper admission adds no issuance. These accounting units have no established market value.
 
-Section 9.2 gives the bounded profile's citation terms and identifies remaining allocation choices. The applicable terms must be fixed before the affected question is approved.
+Section 9.2 gives the immutable bounded profile's citation terms and identifies open allocation choices for a broader network. The prototype's terms apply to every question opened under that profile.
 
 [FIG:payments]
 
@@ -322,7 +324,7 @@ Inlining or citing a derivation preserves its DerivationId. Typed ArtifactIds us
 
 Changed derivations and certificates receive recomputed identities; existing referenced proofs retain theirs. Appendix B.3 binds these changes to the authenticated original. The artifact set uses a Merkle-Patricia root for presence and absence witnesses under an adopted trusted root.
 
-Versioned identities preserve exact sealed references; historical migration follows Section 9.4. Permitted definitions expand within the approved resource bounds.
+Versioned identities preserve exact sealed references; historical migration follows Section 9.4. Offline definition authoring is separate from the proof-only selected library and cannot change a prototype question's targets or limits.
 
 ## Appendix B. Proof admission and reuse
 
@@ -332,11 +334,11 @@ A commitment binds the solution author, payment recipient, chain, research attem
 
 The original authenticated submission must satisfy its original well-formedness rules: its graph must be acyclic, helpers canonically ordered before their uses, every certificate and dependency valid, and its root a proof of an approved target. Lookup may precede costly checking, but substitution and pruning cannot repair an invalid original submission.
 
-The approved context fixes targets, Foundation, assumptions, permitted reference and substitution rules, definitions and total resource limits. It authorizes bounded helpers whose certificates may be developed later. Replacement must already be authorized by the question's frozen policy and satisfy its assumption, reference and resource bounds; older approved questions are not silently broadened. Helpers cannot change the target or add axioms.
+The approved v6 question fixes its targets and is bound to the immutable genesis profile, checker and selected library root at opening. The profile supplies the same proof-reference, exact duplicate-helper substitution and resource-limit rules for every question. It permits bounded helper certificates developed after approval, but no question-specific assumptions, definitions, reference permissions or limits. A broader network with selectable question policies would need explicit authorization and compatibility rules. Helpers cannot change the target or add axioms.
 
 ### B.2. Exact replacement and pruning
 
-Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the same Foundation and assumption context. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. Where the frozen policy permits, replace the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 gives the bounded profile's deterministic selector and single-author restriction.
+Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the fixed Foundation. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. The fixed v6 rule replaces the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 gives the bounded profile's deterministic selector and single-author restriction.
 
 After replacement, recursively remove every helper, dependency and citation no longer reachable from the root through actual proof uses. Recompute the surviving graph, canonical order and affected identities before checking it.
 
@@ -348,7 +350,7 @@ After replacement, recursively remove every helper, dependency and citation no l
 
 The normalized graph must be acyclic, with each surviving helper ordered before its uses and reachable from the root through checked dependencies. Validate the root, every surviving helper and all actual final dependencies, including replaced references and their validity evidence. All required bytes must be available. Both this validation and B.1 are required within the capacity reserved under E.1; any failure prevents publication and settlement of the whole group.
 
-A deterministic <i>normalization receipt</i> binds the original commitment receipt and submission hash, selected sealed parent, frozen policy version, helper-to-existing-proof replacement map, final normalized bundle and recomputed identities. It also embeds the outgoing service-authority snapshot used to calculate service rewards. This permits historical inspection after later key and membership changes; the embedded snapshot is a claim until full history replay proves that it matches the selected parent. The receipt records an authorized derivation from the authenticated original while leaving its commitment, signed bytes and signatures intact. An original signature does not authorize the rewritten bytes. Validators reproduce the transformation and check both forms. Joint authorization needs the further rules identified in Section 9.2.
+A deterministic <i>normalization receipt</i> binds the original commitment receipt and submission hash, selected sealed parent, immutable profile identity, helper-to-existing-proof replacement map, final normalized bundle and recomputed identities. It also embeds the outgoing service-authority snapshot used to calculate service rewards. This permits historical inspection after later key and membership changes; the embedded snapshot is a claim until full history replay proves that it matches the selected parent. The receipt records the deterministic transformation from the authenticated original while leaving its commitment, signed bytes and signatures intact. An original signature does not authorize the rewritten bytes. Validators reproduce the transformation and check both forms. Joint authorization needs the further rules identified in Section 9.2.
 
 If the proposed settlement parent changes, recompute and revalidate lookup, normalization, receipt, identities, citation eligibility and bounds against that parent. Timely valid disclosures remain eligible for later settlement subject to these checks; replacements, identities, beneficiaries and resource use may change.
 

@@ -6,13 +6,16 @@ The user grants standing authorization for pull requests created by Codex in
 `naome-core/naome` to:
 
 - mark a finalized draft ready for review; and
-- enable squash auto-merge while required CI is pending.
+- enable squash auto-merge once the gate below passes, whether required CI is
+  pending or successful.
 
 Codex does not need another per-PR confirmation for those two operations when
-all conditions below are satisfied. This authorization applies only within an
-active user-requested task that explicitly includes completing that PR. A
-request only to implement, open, or publish a PR does not authorize marking it
-ready or arming auto-merge. The standing authorization does not allow an
+all conditions below are satisfied. This is the default completion path for
+every PR Codex creates during an active user-requested task, including requests
+to implement, open, or publish a PR. Unless the user explicitly asks to keep
+the PR as a draft, requests review before merge, or rules out merging, Codex
+should mark the finalized draft ready and arm squash auto-merge as soon as the
+gate below passes. The standing authorization does not allow an
 unbounded PR loop, a new product scope, direct merging, admin or ruleset bypass,
 force-pushes, changing repository protections, or marking ready, arming
 auto-merge, or merging any PR Codex did not create.

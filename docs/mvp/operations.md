@@ -552,19 +552,19 @@ complete pinned test/release workspace checks or required platform CI.
 
 ## Rebuild the research paper
 
-The [paper source](paper/whitepaper_en.md) and its preserved vector diagrams are
+The [design draft source](paper/whitepaper_en.md) and its vector diagrams are
 versioned with the implementation. On macOS, with ReportLab, pypdf and pdfplumber
 available, run `python3 docs/mvp/paper/build_whitepaper.py en` and
 `python3 docs/mvp/paper/check_paper.py`. The builder uses the system Times New
 Roman, Arial Unicode and Andale Mono fonts and writes `whitepaper-en.pdf`. Render
 and visually inspect every page after changes; structural checks alone do not
-qualify layout. The paper describes both the trusted MVP and the broader public
-proposal; the requirement and verification documents define the operational
-scope and actual evidence.
+qualify layout. The draft discusses broader public-network policy options;
+the requirement and verification documents define implemented scope and actual
+evidence.
 
 The separate [variable-roster proposal source](paper/whitepaper_variable_proposal_en.md)
 builds with `python3 docs/mvp/paper/build_whitepaper.py variable-en` and checks
 with `python3 docs/mvp/paper/check_paper.py variable-en`. It writes
-`whitepaper-variable-proposal-en.pdf`. The fresh v6 four-to-32-seat design is
-separate from the four-seat first-print paper. Section 9.2 identifies the
-remaining public-network decisions and evidence limits.
+`whitepaper-variable-proposal-en.pdf`. This discussion copy gives the fresh v6
+four-to-32-seat profile's fixed question syntax and proof-admission rules.
+Section 9.2 identifies remaining public-network decisions and evidence limits.

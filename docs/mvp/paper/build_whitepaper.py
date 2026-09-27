@@ -174,39 +174,29 @@ class Figure(Flowable):
             self.arrow([(left,92),(left,69)])
             self.arrow([(right,92),(right,69)])
         elif k=='membership':
-            if self.variant=='variable':
-                self.label(CW/2,102,'A sealed claim grows the installed roster',10.7,True)
-                self.box(0,48,174,44,'<b>Before</b><br/>4 units; quorum 3',size=10.1)
-                self.box(CW-174,48,174,44,'<b>After</b><br/>5 units; quorum 4',True,size=10.1)
-                self.arrow([(179,69),(CW-179,69)])
-                self.label(CW/2,27,'One earned claim adds one stable slot while N < 32.',10)
-                self.label(CW/2,7,'At 32, the next claim replaces the oldest installed unit.',9.7)
-            else:
-                self.label(CW/2,102,'Vier stabile Sitze; Schlüssel wechseln in jeder Periode' if de else 'Four stable slots; keys rotate every period',10.7,True)
-                start=74;gap=11;bw=(CW-start-3*gap)/4
-                before=['10','13','17','21'];after=['19','13','17','21']
-                for y,values in [(61,before),(5,after)]:
-                    self.label(4,y+9,('Vorher' if y==61 else 'Nachher') if de else ('Before' if y==61 else 'After'),10.2,True,True)
-                    for i,value in enumerate(values):
-                        self.box(start+i*(bw+gap),y,bw,28,f'<b>S{i+1}</b>  {value}',shade=(y==5 and i==0),size=10.3)
-                self.label(CW/2,43,'Anspruch 19 ersetzt die älteste Einheit 10 in Sitz S1' if de else 'Claim 19 replaces oldest unit 10 in slot S1',10.0)
+            self.label(CW/2,102,'Versiegelter Anspruch erweitert die Gruppe' if de else 'A sealed claim grows the installed roster',10.7,True)
+            self.box(0,48,174,44,'<b>Vorher</b><br/>4 Einheiten; Quorum 3' if de else '<b>Before</b><br/>4 units; quorum 3',size=10.1)
+            self.box(CW-174,48,174,44,'<b>Nachher</b><br/>5 Einheiten; Quorum 4' if de else '<b>After</b><br/>5 units; quorum 4',True,size=10.1)
+            self.arrow([(179,69),(CW-179,69)])
+            self.label(CW/2,27,'Ein Anspruch fügt bei N < 32 einen stabilen Sitz hinzu.' if de else 'One earned claim adds one stable slot while N < 32.',10)
+            self.label(CW/2,7,'Bei 32 ersetzt er die älteste Einheit.' if de else 'At 32, the next claim replaces the oldest installed unit.',9.7)
         elif k=='agenda':
             self.box(0,42,123,39,'<b>Forschungsprofil</b><br/>Eigentümerinteressen' if de else '<b>Research Profile</b><br/>Owner’s interests',size=10)
             self.box((CW-146)/2,42,146,39,'<b>KI-Entscheidung</b><br/>YES / NO' if de else '<b>AI assessment</b><br/>YES / NO / REVIEW',size=10)
             self.box(CW-123,42,123,39,'<b>Signierte Stimme</b><br/>exakte Frage' if de else '<b>Owner ballot</b><br/>signed for question',True,size=10)
             self.arrow([(126,61),((CW-146)/2-3,61)]);self.arrow([((CW+146)/2+3,61),(CW-126,61)])
-            self.label(CW/2,19,('At the deadline: quorum YES in the opening roster' if self.variant=='variable' else 'Bei Fristende: 67 YES von 100 → genehmigt' if de else 'At the deadline: 67 YES out of 100 → approved'),10.5,True)
+            self.label(CW/2,19,('Bei Fristende: 3 YES von 4 → genehmigt' if de else 'At the deadline: 3 YES out of 4 → approved') if self.variant=='base' else 'At the deadline: quorum YES in the opening roster',10.5,True)
             self.label(CW/2,3,'T: Eröffnung | volle sieben Tage | D: Abschluss' if de else 'T: opening | full seven days | D: closure',10)
         elif k=='agreement':
             self.label(CW/2,210,'Datensatz h enthält den exakten Plan für S(h+1)' if de else 'Agreed record h contains the exact plan for S(h+1)',10.8,True)
             self.label(0,166,'Eingehend' if de else 'Incoming',9.8,True,True)
             self.box(76,139,154,51,'<b>Historie prüfen</b><br/>Nachfolger dauerhaft vorbereiten' if de else '<b>Verify history</b><br/>prepare successor durably',size=10.1)
-            self.box(273,139,CW-273,51,('<b>READY q(N<sub>in</sub>)</b><br/>exact record and state' if self.variant=='variable' else '<b>READY 3/4</b><br/>exakter Datensatz und Zustand' if de else '<b>READY 3/4</b><br/>exact record and state'),size=10.1)
+            self.box(273,139,CW-273,51,'<b>READY q(N<sub>in</sub>)</b><br/>exakter Datensatz und Zustand' if de else '<b>READY q(N<sub>in</sub>)</b><br/>exact record and state',size=10.1)
             self.arrow([(233,164),(270,164)])
             self.label(0,85,'Ausgehend' if de else 'Outgoing',9.8,True,True)
             self.box(76,57,102,62,'<b>TERMINAL</b><br/>Signatur speichern' if de else '<b>TERMINAL</b><br/>save signature',size=9.9)
             self.box(194,57,115,62,'<b>Fähigkeit stilllegen</b><br/>alte Periode' if de else '<b>Retire capability</b><br/>old period',size=9.9)
-            self.box(325,57,CW-325,62,('<b>TERMINAL q(N<sub>out</sub>)</b><br/>release and seal' if self.variant=='variable' else '<b>TERMINAL 3/4</b><br/>freigeben und versiegeln' if de else '<b>TERMINAL 3/4</b><br/>release and seal'),size=9.9)
+            self.box(325,57,CW-325,62,'<b>TERMINAL q(N<sub>out</sub>)</b><br/>freigeben und versiegeln' if de else '<b>TERMINAL q(N<sub>out</sub>)</b><br/>release and seal',size=9.9)
             self.arrow([(181,88),(191,88)]);self.arrow([(312,88),(322,88)])
             self.arrow([(354,136),(354,128),(127,128),(127,121)])
             self.arrow([(389,54),(389,43)])

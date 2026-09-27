@@ -3,14 +3,15 @@
 This document records the four-seat trusted MVP baseline and its historical
 `state-v5` acceptance contract. The fresh `state-v6` four-to-32-seat extension
 is specified in [authority periods](../../specs/authority-periods.md) and the
-[new proposal](whitepaper-variable-proposal-en.pdf); its evidence is tracked
+[v6 discussion copy](whitepaper-variable-proposal-en.pdf); its evidence is tracked
 separately in [verification](verification.md). The trusted MVP baseline adopts
 rules R1–R11 and their parameters. Acceptance
 uses four independent local validator processes with separate keys and durable
 stores, including simulated partitions and failures. A real two-machine run
-remains later qualification. The accompanying [English whitepaper](whitepaper-en.pdf),
-Draft v0.1 dated 24 September 2026, distinguishes the implemented trusted MVP from the
-broader public-network proposal. The [pilot runbook](pilot.md) defines the next
+remains later qualification. The [English design draft](whitepaper-en.pdf)
+also discusses broader public-network rules. Its question-selected policy and
+definition-publication options are outside the implemented v6 profile; the v6
+discussion copy gives the fixed prototype rules. The [pilot runbook](pilot.md) defines the next
 separate-machine qualification and its evidence requirements.
 
 **Goal:** Four stable validator slots jointly operate a small research network with openly registered researchers and claim-backed handoff between trusted operators. Researchers supply formal questions and proof material; validators select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
