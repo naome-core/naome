@@ -14,6 +14,38 @@ The older lab and CI reports below qualify only their named historical snapshots
 They do not qualify the current v6 implementation. There is one supported
 prerelease model; fresh genesis and stores are required for it.
 
+## Portable v6 pilot evidence on 2026-09-27
+
+The portable pilot tooling at code commit
+`63558f5a3deb515571bff3c0601cbe314dfe5a69` passed a fresh four-process
+rehearsal on one macOS machine with pinned Rust 1.97.1 release binaries,
+`compact` limits, `short-test` timing and manual agenda votes. The private raw
+report is `/private/tmp/naome-v6-pilot-63558f5/rehearsal-report.json` (SHA-256
+`e3e51df7ed0426e5282bec7afc1f81e3af8befa2dbbe1fe078305d8cf6244608`).
+Its source digest is
+`681a118178e08c2e42a49bb05195e3a8e7edf0fbbb43a5c7529e7723bc7e549d`.
+The live comparison report SHA-256 is
+`b1b973f4de6535ae7a4b2db12c37e667500eda14e6c04b51049538aff41eec02`;
+the archive comparison report SHA-256 is
+`4307d436086cac7228070af0858efaf131b345771c0906164334f2393c89d10f`.
+
+| Gate | Local rehearsal | Physical pilot |
+| --- | --- | --- |
+| Bidirectional TCP | Twelve directed loopback connections passed. | Unverified; no second host was available. |
+| Remote authentication and placement | Four private bundles moved to separate directories on one Mac. | Unverified; the previously used laptop timed out on SSH port 22, and no remote bundle was transferred. |
+| Validator startup and finalized agreement | Four processes started; a proof with one validator offline finalized, then all four reached height 11 and matching live head and state. | Unverified. |
+| Restart and catch-up | The offline validator caught up, then all four cold reopened on the same state. | Unverified. |
+| Independent archive replay | Four exports replayed and agreed; corrupt archive, duplicate exports and missing signer anchor were rejected. | Unverified. |
+| Participant submission | A locally held author key produced a submission with a finalized receipt. | Exact signed-action transfer and receipt return to a remote participant remain unverified. |
+
+No new proxy-delay run was performed for this tooling patch. The rehearsal
+does not qualify `lab` or `research` timing, a real agenda agent, independent
+machines, network faults, or a 32-host capacity result. The 32-seat roster
+ceiling is a protocol bound; performance at 32 physical hosts needs a separate
+run. Python pilot tests passed 38 cases, and pinned release-profile process
+tests passed for both `naome-validator` and `naome-verifier` after a matching
+`--no-run` build barrier.
+
 ## Current state-v6 roster decision
 
 The current v6 protocol installs four bootstrap validators and permits earned
