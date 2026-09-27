@@ -164,6 +164,11 @@ fn rejects_free_variables_assumptions_imports_and_bad_syntax() {
         "foundation = \"other\" statement = forall(x,equal(x,x))".to_owned(),
         "foundation = \"naome:zfc\" assumptions = [] statement = forall(x,equal(x,x))".to_owned(),
         "foundation = \"naome:zfc\" definitions: h = \"abc\" statement = h(x)".to_owned(),
+        "foundation = \"naome:zfc\" references = [] statement = forall(x,equal(x,x))".to_owned(),
+        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) limits = {target_nodes: 2}"
+            .to_owned(),
+        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) allow_substitution = false"
+            .to_owned(),
         source("forall(x,equal(x,x)) proof: return p"),
     ] {
         assert!(

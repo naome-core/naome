@@ -128,8 +128,14 @@ Inspect every committed bound and preview exact question identity before use:
 "$BIN" compile-question "$RUN/genesis.bin" examples/state-workflow/question-a.nao
 ```
 
-The question preview shows its normalized statement, negation parity, and shared
-resolution family. The submit command also displays its compiled preview.
+`profile-info` shows the immutable limits and the supported question and proof
+admission policy. A question source accepts only the fixed Foundation, a closed
+statement, and optional `success = "resolve"`; it cannot add assumptions,
+references, definitions, substitution controls, or its own limits. Definitions
+can be checked offline by the authoring compiler but are not published by this
+prototype's proof-only settlement path. The question preview shows its normalized
+statement, negation parity, and shared resolution family. The submit command
+also displays its compiled preview.
 
 ## Start, inspect, and restart
 
