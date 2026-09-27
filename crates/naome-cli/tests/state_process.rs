@@ -99,7 +99,7 @@ impl Lab {
         let configured = command(&[
             "setup".into(),
             path(&root),
-            "short-test".into(),
+            "process-test".into(),
             "128".into(),
             base.to_string(),
             path(&order_path),

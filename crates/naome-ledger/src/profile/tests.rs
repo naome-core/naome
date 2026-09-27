@@ -213,7 +213,10 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
     assert_eq!(short.name(), "state-v6-short-test");
-    assert_eq!(short.timing().voting_seconds, 45);
+    assert_eq!(short.timing().voting_seconds, 15);
+    let process = Profile::process_test();
+    assert_eq!(process.timing().voting_seconds, 45);
+    assert_ne!(short.id(), process.id());
     assert_eq!(ci.timing().voting_seconds, 1);
     assert_eq!(ci.name(), "state-v6-ci-test");
     assert_ne!(lab.id(), research.id());
@@ -228,7 +231,7 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(lab.maximum_run_storage_bytes().unwrap(), 5_528_700_257_280);
     assert_eq!(lab.operating_storage_floor_bytes().unwrap(), 678_952_696);
     assert_eq!(lab.maximum_issuance_atoms().unwrap(), 8_192_000_000_000);
-    for p in [lab, research, short, ci] {
+    for p in [lab, research, short, process, ci] {
         assert_eq!(Profile::decode(&p.encode()).unwrap(), p);
     }
 }

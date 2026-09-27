@@ -227,7 +227,9 @@ async fn run_owned(
     };
     if matches!(
         genesis.profile().kind(),
-        naome_ledger::profile::TimingKind::ShortTest | naome_ledger::profile::TimingKind::CiTest
+        naome_ledger::profile::TimingKind::ShortTest
+            | naome_ledger::profile::TimingKind::ProcessTest
+            | naome_ledger::profile::TimingKind::CiTest
     ) {
         let roster = genesis.validators().len() as u64;
         // Rebuilding a record candidate and retry fanout on every 50 ms tick

@@ -67,6 +67,8 @@ pub enum TimingKind {
     Research,
     /// Explicitly accelerated testing only; never lab acceptance evidence.
     ShortTest,
+    /// Process integration tests with time for real quorum delivery.
+    ProcessTest,
     /// Dedicated, shorter CI qualification windows; never lab acceptance evidence.
     CiTest,
 }
@@ -224,6 +226,9 @@ impl Profile {
     pub fn short_test() -> Self {
         Self::preset(TimingKind::ShortTest)
     }
+    pub fn process_test() -> Self {
+        Self::preset(TimingKind::ProcessTest)
+    }
     pub fn ci_test() -> Self {
         Self::preset(TimingKind::CiTest)
     }
@@ -232,9 +237,10 @@ impl Profile {
         let (voting_seconds, commitment_seconds, reveal_seconds, queue_seconds) = match kind {
             TimingKind::Lab => (300, 120, 120, 1800),
             TimingKind::Research => (604800, 86400, 86400, 2592000),
+            TimingKind::ShortTest => (15, 45, 45, 120),
             // Leave room for independent CLI commands and durable quorum
             // delivery under concurrent CI compilation and process scheduling.
-            TimingKind::ShortTest => (45, 45, 45, 120),
+            TimingKind::ProcessTest => (45, 45, 45, 120),
             // This qualification submits no approval ballots. Keep a complete
             // nonzero certified window while minimizing its CI-only floor.
             TimingKind::CiTest => (1, 8, 8, 120),
@@ -279,6 +285,7 @@ impl Profile {
             TimingKind::Lab => "state-v6-lab",
             TimingKind::Research => "state-v6-research",
             TimingKind::ShortTest => "state-v6-short-test",
+            TimingKind::ProcessTest => "state-v6-process-test",
             TimingKind::CiTest => "state-v6-ci-test",
         }
     }
@@ -449,6 +456,7 @@ impl Profile {
             TimingKind::Lab => 0,
             TimingKind::Research => 1,
             TimingKind::ShortTest => 2,
+            TimingKind::ProcessTest => 4,
             TimingKind::CiTest => 3,
         });
         for value in [
@@ -475,6 +483,7 @@ impl Profile {
             1 => TimingKind::Research,
             2 => TimingKind::ShortTest,
             3 => TimingKind::CiTest,
+            4 => TimingKind::ProcessTest,
             _ => return Err(LedgerError::Invalid("timing kind")),
         };
         let timing = Timing {
