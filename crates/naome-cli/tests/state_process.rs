@@ -174,6 +174,7 @@ impl Lab {
                             "queued": status.as_ref().map(|s| &s["queued"]),
                             "pending": status.as_ref().map(|s| &s["pending_operations"]),
                             "paid": status.as_ref().map(|s| &s["paid_completions"]),
+                            "transport": status.as_ref().map(|s| &s["transport_diagnostics"]),
                             "recent_errors": recent_errors,
                         })
                     })
@@ -185,7 +186,9 @@ impl Lab {
                     caller.line()
                 );
             }
-            thread::sleep(Duration::from_millis(40));
+            // A status query starts a fresh CLI process and reads durable
+            // state. Frequent polls compete with the validators being tested.
+            thread::sleep(Duration::from_millis(250));
         }
     }
     fn stop(&mut self, index: usize) {

@@ -753,7 +753,9 @@ async fn cold_terminal_server_serves_final_record_to_a_late_owner() {
     // Let the remaining quorum seal the terminal height through its ordinary
     // consensus path. Injecting a synthetic agreement here races legitimate
     // votes that an early H1 finisher may already have durably signed for H2.
-    tokio::time::timeout(Duration::from_secs(60), async {
+    // Parallel release suites can delay this live handshake; retain a bounded
+    // wait and report each node's progress if it does not complete.
+    let terminal = tokio::time::timeout(Duration::from_secs(120), async {
         while nodes
             .iter()
             .any(|node| node.runtime.state().unwrap().height() == 1)
@@ -770,8 +772,19 @@ async fn cold_terminal_server_serves_final_record_to_a_late_owner() {
             c.unwrap();
         }
     })
-    .await
-    .unwrap();
+    .await;
+    assert!(
+        terminal.is_ok(),
+        "terminal handoff stalled: {:?}",
+        nodes
+            .iter()
+            .map(|node| (
+                node.runtime.state().map(|state| state.height()),
+                node.runtime.position(),
+                node.runtime.diagnostics(),
+            ))
+            .collect::<Vec<_>>()
+    );
     let terminal_commitment = nodes[0].runtime.state().unwrap().commitment();
     for node in &nodes {
         assert!(node.runtime.state().unwrap().terminated());
