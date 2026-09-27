@@ -425,6 +425,7 @@ impl StateRuntime {
                 StateRecord::decode(agreement.proposal().record_bytes(), parent.genesis())?;
             self.prepare_handoff_network(&parent, &record, &agreement)?;
         }
+        self.network.resume_handoff_dials_if_old_disconnected();
 
         if let Some(custody) = &self.next_custody {
             let local_key = custody.consensus_key().verifying_key().to_bytes();

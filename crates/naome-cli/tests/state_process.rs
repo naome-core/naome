@@ -421,6 +421,16 @@ impl Lab {
         }
     }
     fn restore_four_keyed_slots(&self, phase: &str, first_quantifiers: usize) -> Value {
+        const MAX_REENTRY_PERIODS: usize = 3;
+        // Each unpaid question consumes the complete process-test voting
+        // window; leave the former 90-second allowance for three handoffs.
+        let budget = Duration::from_secs(
+            naome_ledger::profile::Profile::process_test()
+                .timing()
+                .voting_seconds
+                * MAX_REENTRY_PERIODS as u64
+                + 90,
+        );
         let started = Instant::now();
         let mut settled = self
             .nodes
@@ -429,7 +439,7 @@ impl Lab {
             .filter(|(_, child)| child.is_some())
             .find_map(|(index, _)| self.status(index))
             .expect("running validator status");
-        for attempt in 0..=3 {
+        for attempt in 0..=MAX_REENTRY_PERIODS {
             if settled["active"].is_null()
                 && settled["queued"] == 0
                 && settled["authority"]["active_slots"] == 4
@@ -437,12 +447,12 @@ impl Lab {
                 break;
             }
             assert!(
-                attempt < 3,
+                attempt < MAX_REENTRY_PERIODS,
                 "{phase}: four keyed slots did not return after three periods"
             );
             assert!(
-                started.elapsed() < Duration::from_secs(90),
-                "{phase}: four keyed reentry exceeded 90 seconds"
+                started.elapsed() < budget,
+                "{phase}: four keyed reentry exceeded {budget:?}"
             );
             // Each distinct unpaid question must pass a real vote and handoff.
             // Vary the statement as well as the file name so a known question
@@ -471,8 +481,8 @@ impl Lab {
             let submission = self.submit(ingress, 4, source, &label);
             settled = self.wait(ingress, |status| {
                 assert!(
-                    started.elapsed() < Duration::from_secs(90),
-                    "{phase}: four keyed reentry exceeded 90 seconds"
+                    started.elapsed() < budget,
+                    "{phase}: four keyed reentry exceeded {budget:?}"
                 );
                 if !status["active"].is_null() || status["queued"] != 0 {
                     return false;

@@ -413,6 +413,90 @@ async fn seal_height_with(
 }
 
 #[tokio::test]
+async fn prepared_lane_recovers_when_outgoing_mesh_is_gone_before_ready_quorum() {
+    let endpoints = free_endpoints();
+    let g = genesis_at(&endpoints);
+    let mut nodes: Vec<_> = (0..4).map(|index| start(index, &g, &endpoints)).collect();
+    let mut offers: Vec<_> = nodes
+        .iter()
+        .map(|node| {
+            node.runtime
+                .next_custody
+                .as_ref()
+                .unwrap()
+                .offer()
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    offers.sort_by_key(NextPeriodKeys::unit);
+    let keys: Vec<_> = (0..4).map(consensus).collect();
+    let agreement = agreement(
+        nodes[0].runtime.node.branch().unwrap(),
+        HandoffPlan::new(offers, None).unwrap(),
+        &keys,
+        101,
+    );
+    let bytes = agreement.encode().unwrap();
+
+    for node in &mut nodes {
+        node.runtime.node.accept_agreement(&bytes).unwrap();
+        node.runtime.advance_handoff().unwrap();
+        assert_eq!(
+            node.runtime
+                .network
+                .active()
+                .unwrap()
+                .connected_static_peers(),
+            0
+        );
+        assert!(node.runtime.network.staged().is_some());
+        // The signed agreement is durable, but every old-key connection has
+        // disappeared before READY reaches quorum. Keep recovery out of this
+        // test so only prepared-key delivery can complete the seal.
+        node.runtime.last_recovery_probe = Instant::now() + Duration::from_secs(30);
+        for peer in node.runtime.peers.clone() {
+            node.runtime
+                .network
+                .active_mut()
+                .unwrap()
+                .set_state_peer_enabled(peer, false)
+                .unwrap();
+        }
+    }
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while nodes
+            .iter()
+            .any(|node| node.runtime.state().unwrap().height() == 0)
+        {
+            let (a, rest) = nodes.split_at_mut(1);
+            let (b, rest) = rest.split_at_mut(1);
+            let (c, d) = rest.split_at_mut(1);
+            let (a, b, c, d) = tokio::join!(
+                a[0].runtime.step(),
+                b[0].runtime.step(),
+                c[0].runtime.step(),
+                d[0].runtime.step(),
+            );
+            for result in [a, b, c, d] {
+                result.unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node.runtime.state().unwrap().height() == 1)
+    );
+    assert!(nodes.iter().all(|node| {
+        node.runtime.state().unwrap().commitment() == nodes[0].runtime.state().unwrap().commitment()
+    }));
+}
+
+#[tokio::test]
 async fn live_outgoing_quorum_cannot_vote_for_a_roster_with_only_two_live_ready_owners() {
     let endpoints = free_endpoints();
     let g = genesis_at(&endpoints);

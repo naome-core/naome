@@ -95,6 +95,9 @@ impl Behaviour {
     }
 
     pub(super) fn set_static_dialing_enabled(&mut self, enabled: bool) {
+        if self.static_dialing_enabled == enabled {
+            return;
+        }
         self.static_dialing_enabled = enabled;
         self.retry_timer = None;
     }
