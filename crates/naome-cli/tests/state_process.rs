@@ -14,6 +14,9 @@ use std::{
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "cases/gateway.rs"]
+mod gateway;
+
 #[path = "cases/state_safety.rs"]
 mod state_safety;
 

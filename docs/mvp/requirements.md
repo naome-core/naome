@@ -291,6 +291,16 @@ Candidates are evaluated completely on temporary state. Only a valid finalized r
 
 A confirmed reveal requires durable, available bytes, not merely a hash or transport receipt. A crash after durable storage but before the response is resolved through identity and replay. An uncertain write situation stops the affected path until verified recovery. Incorrectly decoded complete journal frames, anchor mismatches, or verified conflicting finality are not automatically “repaired.”
 
+The participant gateway forwards exact, genesis-bound signed actions to a
+validator's bounded pending journal and stores no separate action history.
+Public chain/account context is a finalized snapshot for preparing a signature,
+not an admission guarantee. A gateway `transported` response is local durable
+intake only; `pending`, `deferred`, and `rejected` are local outcomes. Only a
+receipt derived from sealed selected history is `finalized`. Gateway restart
+cannot grant consensus authority, erase validator custody, or change replay.
+The loopback transport and trusted-group access policy are specified in the
+[operating guide](operations.md#participant-action-gateway).
+
 Each owner durably anchors its fresh period key offer before advertising it. For a fresh proposal without retained lock or earlier quorum evidence, a live pilot node declines a plan that omits its prepared offer while retaining its owner. Valid candidate replacement remains permitted. This local voting policy prevents a cached offline offer from displacing a delayed live owner before agreement; it does not change record validity or recover a lost incoming quorum after agreement. Incoming READY binds the exact agreed predecessor and successor. After an incoming quorum, the outgoing signer anchors TERMINAL, writes STOP, drops its signing key, closes old transport sessions and deletes locally controlled secret files before releasing TERMINAL evidence. Crash recovery reuses saved evidence and never regenerates missing anchored keys. Only fully sealed selected history activates an incoming signer. A selected terminal run deletes its staged incoming keys without activating them.
 
 This is a local custody guarantee under an honest operator assumption. External backups, copied seeds, hostile host memory and simultaneous malicious rollback of all anchors are outside the guarantee. Operators must not restore retired signing capabilities. Lost quorum never lowers the denominator or installs unverified validators. Recovery uses a fresh owner-authorized transport and configured reachable endpoints; it confers history access only and does not revive a retired key.

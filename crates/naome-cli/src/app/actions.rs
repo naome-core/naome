@@ -2,6 +2,7 @@ use super::{
     Result,
     control::{self, Request},
     files,
+    gateway::{self, GatewayRequest},
     setup::NodeConfig,
 };
 use naome_ledger::{
@@ -23,6 +24,9 @@ use zeroize::Zeroizing;
 mod tests;
 
 fn nonce(status: &Value, author: AccountId) -> Result<u64> {
+    if let Some(next) = status["next_nonce"].as_u64() {
+        return Ok(next);
+    }
     status["accounts"]
         .as_array()
         .and_then(|a| {
@@ -59,27 +63,87 @@ fn round(status: &Value, phase: &str) -> Result<SolutionRoundId> {
             .ok_or("solution round unavailable")?,
     )?))
 }
-async fn send(config: &NodeConfig, operation: &SignedOperation) -> Result<()> {
-    operation.verify_signature(&config.genesis()?)?;
-    let response = control::call(
-        config,
-        Request::Submit {
-            bytes: files::hex(&operation.encode()),
-        },
-    )
-    .await?;
+enum Source {
+    Local(NodeConfig),
+    Remote { address: String, genesis: Genesis },
+}
+impl Source {
+    fn genesis(&self) -> Result<Genesis> {
+        match self {
+            Self::Local(config) => config.genesis(),
+            Self::Remote { genesis, .. } => Ok(genesis.clone()),
+        }
+    }
+    async fn status(&self, author: AccountId, command: &str) -> Result<Value> {
+        match self {
+            Self::Local(config) => {
+                if command == "submit" {
+                    control::call(
+                        config,
+                        Request::Progress {
+                            account: Some(files::hex(author.as_bytes())),
+                        },
+                    )
+                    .await
+                } else {
+                    control::call(config, Request::Status {}).await
+                }
+            }
+            Self::Remote { address, genesis } => {
+                let context = gateway::call(
+                    address,
+                    GatewayRequest::Context {
+                        account: files::hex(author.as_bytes()),
+                    },
+                )
+                .await?;
+                if context["genesis"] != files::hex(genesis.id().as_bytes())
+                    || context["genesis_bytes"] != files::hex(&genesis.encode())
+                {
+                    return Err(
+                        "gateway context differs from the independently held genesis".into(),
+                    );
+                }
+                Ok(context)
+            }
+        }
+    }
+    async fn submit(&self, operation: &SignedOperation) -> Result<Value> {
+        let bytes = files::hex(&operation.encode());
+        match self {
+            Self::Local(config) => control::call(config, Request::Submit { bytes }).await,
+            Self::Remote { address, .. } => {
+                let response = gateway::call(address, GatewayRequest::Submit { bytes }).await?;
+                if response["operation"] != files::hex(operation.id().as_bytes()) {
+                    return Err("gateway returned different operation identity".into());
+                }
+                if !matches!(
+                    response["result"]["status"].as_str(),
+                    Some("transported" | "finalized")
+                ) {
+                    return Err("gateway returned an invalid action acknowledgement".into());
+                }
+                Ok(response["result"].clone())
+            }
+        }
+    }
+}
+async fn send(source: &Source, operation: &SignedOperation) -> Result<()> {
+    let genesis = source.genesis()?;
+    operation.verify_signature(&genesis)?;
+    let response = source.submit(operation).await?;
     let mut result = json!({"operation":files::hex(operation.id().as_bytes()),"result":response,"notice":"transported actions are not finalized receipts or settlement"});
     if let OperationBody::Submit { question, .. } =
-        OperationBody::decode(operation.payload(), &config.genesis()?)?
+        OperationBody::decode(operation.payload(), &genesis)?
     {
         result["compiled_question"] = super::inspect::compiled_question(&question);
     }
     println!("{result}");
     Ok(())
 }
-async fn save_send(config: &NodeConfig, path: &str, operation: &SignedOperation) -> Result<()> {
+async fn save_send(source: &Source, path: &str, operation: &SignedOperation) -> Result<()> {
     files::create_or_match(Path::new(path), &operation.encode(), true)?;
-    send(config, operation).await
+    send(source, operation).await
 }
 struct SecretBundle {
     round: SolutionRoundId,
@@ -173,7 +237,7 @@ pub async fn account(args: &[String]) -> Result<()> {
             // Nonce one and an empty body make retries byte-identical, even
             // after registration finalizes or later account nonces are used.
             let operation = OperationBody::Register.sign(&config.genesis()?, 1, &key)?;
-            save_send(&config, &args[3], &operation).await
+            save_send(&Source::Local(config), &args[3], &operation).await
         }
         _ => Err("usage: account create KEY; account register CONFIG KEY ACTION".into()),
     }
@@ -209,15 +273,57 @@ pub async fn run(args: &[String]) -> Result<()> {
     if args.len() != expected {
         return Err("usage: submit CONFIG KEY SOURCE PURPOSE ACTION; vote CONFIG KEY YES|NO ACTION; commit CONFIG KEY PACKAGE SECRET ACTION; reveal CONFIG KEY SECRET ACTION; join-intent CONFIG AUTHOR_KEY FAMILY_HEX CONSENSUS_KEY TRANSPORT_KEY ENDPOINT ACTION; send CONFIG ACTION".into());
     }
-    let config = NodeConfig::read(Path::new(&args[1]))?;
-    let genesis = config.genesis()?;
+    let source = Source::Local(NodeConfig::read(Path::new(&args[1]))?);
+    run_action(args, source).await
+}
+pub async fn remote(args: &[String]) -> Result<()> {
+    if args.len() < 4 {
+        return Err("usage: remote-COMMAND ADDRESS GENESIS KEY ... ACTION".into());
+    }
+    let command = args[0]
+        .strip_prefix("remote-")
+        .ok_or("invalid remote command")?;
+    let genesis = Genesis::decode(&files::read(Path::new(&args[2]), 128 * 1024, false)?)?;
+    let source = Source::Remote {
+        address: args[1].clone(),
+        genesis,
+    };
+    let mut local = Vec::with_capacity(args.len() - 1);
+    local.push(command.to_owned());
+    local.push(args[1].clone());
+    local.extend_from_slice(&args[3..]);
+    if command == "register" {
+        if local.len() != 4 {
+            return Err("usage: remote-register ADDRESS GENESIS KEY ACTION".into());
+        }
+        let key = files::key(Path::new(&local[2]), 1)?;
+        let operation = OperationBody::Register.sign(&source.genesis()?, 1, &key)?;
+        return save_send(&source, &local[3], &operation).await;
+    }
+    run_action(&local, source).await
+}
+async fn run_action(args: &[String], source: Source) -> Result<()> {
+    let command = args[0].as_str();
+    let expected = match command {
+        "submit" => 6,
+        "vote" => 5,
+        "commit" => 6,
+        "reveal" => 5,
+        "join-intent" => 8,
+        "send" => 3,
+        _ => return Err("unknown signed operation".into()),
+    };
+    if args.len() != expected {
+        return Err("invalid signed action arguments".into());
+    }
+    let genesis = source.genesis()?;
     if command == "send" {
         let op = SignedOperation::decode(&files::read(
             Path::new(&args[2]),
             genesis.profile().limits().record_bytes as usize,
             true,
         )?)?;
-        return send(&config, &op).await;
+        return send(&source, &op).await;
     }
     let key = files::key(Path::new(&args[2]), 1)?;
     let author = AccountId::for_key(key.verifying_key().as_bytes());
@@ -234,7 +340,7 @@ pub async fn run(args: &[String]) -> Result<()> {
         {
             return Err("existing reveal does not match the retained secret and original".into());
         }
-        return send(&config, &operation).await;
+        return send(&source, &operation).await;
     }
     if command == "commit" && Path::new(&args[4]).try_exists()? {
         let bundle = SecretBundle::read(Path::new(&args[4]), &genesis, author)?;
@@ -249,19 +355,9 @@ pub async fn run(args: &[String]) -> Result<()> {
         if package.encode()? != bundle.original.package().encode()? {
             return Err("existing secret belongs to a different original package".into());
         }
-        return save_send(&config, &args[5], &bundle.commit).await;
+        return save_send(&source, &args[5], &bundle.commit).await;
     }
-    let status = if command == "submit" {
-        control::call(
-            &config,
-            Request::Progress {
-                account: Some(files::hex(author.as_bytes())),
-            },
-        )
-        .await?
-    } else {
-        control::call(&config, Request::Status {}).await?
-    };
+    let status = source.status(author, command).await?;
     if status["genesis"] != files::hex(genesis.id().as_bytes()) {
         return Err("node and local genesis disagree".into());
     }
@@ -338,7 +434,7 @@ pub async fn run(args: &[String]) -> Result<()> {
                 commit,
             };
             files::create(Path::new(&args[4]), &bundle.encode(&genesis)?, true)?;
-            return save_send(&config, &args[5], &bundle.commit).await;
+            return save_send(&source, &args[5], &bundle.commit).await;
         }
         "reveal" => {
             let bundle = SecretBundle::read(Path::new(&args[3]), &genesis, author)?;
@@ -380,5 +476,5 @@ pub async fn run(args: &[String]) -> Result<()> {
         _ => return Err("unknown signed operation".into()),
     };
     let operation = body.sign(&genesis, next, &key)?;
-    save_send(&config, output, &operation).await
+    save_send(&source, output, &operation).await
 }
