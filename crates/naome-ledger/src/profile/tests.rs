@@ -213,6 +213,10 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
     assert_eq!(short.name(), "state-v6-short-test");
+    assert_eq!(short.timing().voting_seconds, 15);
+    let process = Profile::process_test();
+    assert_eq!(process.timing().voting_seconds, 45);
+    assert_ne!(short.id(), process.id());
     assert_eq!(ci.timing().voting_seconds, 1);
     assert_eq!(ci.name(), "state-v6-ci-test");
     assert_ne!(lab.id(), research.id());
@@ -224,10 +228,10 @@ fn profile_presets_and_storage_reservation() {
     );
     // Full 8192-record run, all 65 consensus rounds per height, complete signer
     // journals, per-height handoff/custody, two archives and a 100% margin.
-    assert_eq!(lab.maximum_run_storage_bytes().unwrap(), 5_527_626_515_456);
-    assert_eq!(lab.operating_storage_floor_bytes().unwrap(), 674_758_392);
+    assert_eq!(lab.maximum_run_storage_bytes().unwrap(), 5_528_700_257_280);
+    assert_eq!(lab.operating_storage_floor_bytes().unwrap(), 678_952_696);
     assert_eq!(lab.maximum_issuance_atoms().unwrap(), 8_192_000_000_000);
-    for p in [lab, research, short, ci] {
+    for p in [lab, research, short, process, ci] {
         assert_eq!(Profile::decode(&p.encode()).unwrap(), p);
     }
 }
@@ -709,8 +713,8 @@ fn finite_signer_budget_includes_every_round_and_terminal_capacity() {
         },
     )
     .unwrap();
-    assert_eq!(reduced.maximum_run_storage_bytes().unwrap(), 19_698_101_248);
-    assert_eq!(reduced.operating_storage_floor_bytes().unwrap(), 76_931_368);
+    assert_eq!(reduced.maximum_run_storage_bytes().unwrap(), 20_771_843_072);
+    assert_eq!(reduced.operating_storage_floor_bytes().unwrap(), 79_028_520);
     assert!(
         reduced.operating_storage_floor_bytes().unwrap()
             < p.operating_storage_floor_bytes().unwrap()
@@ -737,7 +741,7 @@ fn operating_storage_headroom_does_not_reserve_the_entire_run() {
     };
     let short = compact(65);
     let long = compact(296);
-    assert_eq!(short.operating_storage_floor_bytes().unwrap(), 76_931_368);
+    assert_eq!(short.operating_storage_floor_bytes().unwrap(), 79_028_520);
     assert_eq!(
         short.operating_storage_floor_bytes(),
         long.operating_storage_floor_bytes()

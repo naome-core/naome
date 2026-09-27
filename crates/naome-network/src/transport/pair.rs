@@ -159,6 +159,20 @@ impl StateTransportPair {
             staged.resume_static_dials();
         }
     }
+    /// When the outgoing mesh has no live peers, a signer waiting for READY
+    /// cannot rely on that mesh to receive signatures from owners that have
+    /// already retired. Open its prepared lane so dial ownership cannot leave
+    /// both sides passive while the old local identity still exists.
+    pub fn resume_handoff_dials_if_old_disconnected(&mut self) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|old| old.connected_static_peers() == 0)
+            && let Some(staged) = self.staged.as_mut()
+        {
+            staged.resume_static_dials();
+        }
+    }
     /// Reuses the prepared fresh-key sessions after the caller has verified
     /// and durably selected this exact successor. A changed roster or any
     /// outgoing courier leaves the pair untouched for a fresh rebuild.

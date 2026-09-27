@@ -361,6 +361,14 @@ impl StateRuntime {
         peers.extend(self.handoff_peers.iter().copied().filter(|peer| {
             !old_lane
                 || !prepared_evidence
+                // A selected candidate first learns the agreement through
+                // its configured parent courier. Its prepared listener does
+                // not exist until that agreement has been accepted.
+                || (matches!(&body, StateRequestBody::Agreement(_))
+                    && self
+                        .network
+                        .active()
+                        .is_some_and(|active| active.is_configured_peer(peer)))
                 || self
                     .network
                     .staged()

@@ -19,7 +19,7 @@ A proposal combines a readable purpose with an exact mathematical task. Validato
 
 A paid completion credits the bounded profile's Test-NAO accounts and creates a nontransferable eligibility claim for its authenticated solution author. This claim provides a possible route to validation; holdings confer no voting weight.
 
-This discussion copy describes the proposed fresh v6 profile with a four-to-32-unit sealed electorate. The ceiling is a prototype/testnet limit, not physical 32-host qualification. It makes no in-place upgrade claim for an existing v5 chain. Material rules still requiring definition are collected in Section 9.2. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
+This discussion copy describes the implemented fresh v6 prototype profile with a four-to-32-unit sealed electorate. The ceiling is a prototype/testnet limit, not physical 32-host qualification. It makes no in-place upgrade claim for an existing v5 chain. The prototype's question syntax, proof admission and numerical limits are fixed by its immutable genesis profile and implementation; a question cannot select different rules. Material public-network rules still requiring definition are collected in Section 9.2. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
 
 ## 2. Network model and research lifecycle
 
@@ -49,11 +49,11 @@ For example, three of four owners may approve a question, after which a contribu
 
 ### 3.1. The mathematical obligation
 
-A question's <i>.nao</i> source declares a Foundation, a closed statement <i>Q</i>, permitted library dependencies, a bounded policy for new helpers and replacement by older proofs, resource bounds and <i>success = "resolve"</i>. A closed statement has no free variables. Its formal obligation must compile before voting begins; a solution need not accompany the proposal. The readable purpose must match the formal statement. Compilation checks syntax and bounds, not the fidelity or scientific value of the translation.
+A prototype question's <i>.nao</i> source contains exactly <i>foundation = "naome:zfc"</i> and one closed <i>statement = Q</i>, followed optionally by <i>success = "resolve"</i>. A closed statement has no free variables. Assumption declarations, proof or library imports, definitions, reference permissions, substitution switches and per-question resource bounds are not accepted fields. The source must compile before voting begins; a solution need not accompany it. The readable purpose is judged by owners against the formal statement. Compilation checks syntax and profile bounds, not the fidelity or scientific value of the translation.
 
-The Foundation <i>naome:zfc</i> consists of classical first-order logic with equality over sets, ZFC axioms, and the Separation and Replacement schemas. A certificate supplies axiom or schema instances, inference steps and checked references. Verification establishes derivability under this rulebook. The interpretation of that result relies on sound checking and a consistent Foundation. Unapproved assumptions are forbidden.
+The Foundation <i>naome:zfc</i> consists of classical first-order logic with equality over sets, ZFC axioms, and the Separation and Replacement schemas. A certificate supplies axiom or schema instances, inference steps and checked proof references. Verification establishes derivability under this rulebook. The interpretation of that result relies on sound checking and a consistent Foundation. The prototype accepts no question-specific assumptions.
 
-Approval covers both possible outcomes. A certificate must prove one of two exact conclusions determined before voting. A counterexample qualifies only when a checked certificate establishes the refutation target with the required domain and assumptions. Failure to find a proof leaves the question unresolved. A proof of the disjunction <i>Q or not-Q</i> alone selects neither outcome. Some statements have neither a proof nor a refutation in the chosen Foundation.
+Approval covers both possible outcomes. A certificate must prove one of two exact conclusions determined before voting. A counterexample qualifies only when a checked certificate establishes the exact refutation target under the fixed Foundation. Failure to find a proof leaves the question unresolved. A proof of the disjunction <i>Q or not-Q</i> alone selects neither outcome. Some statements have neither a proof nor a refutation in the chosen Foundation.
 
 ### 3.2. Question families and resolution identity
 
@@ -73,7 +73,7 @@ After refutation, the rejected claim is not entered as a theorem. If certificate
 
 A bundle contains a root certificate for the approved question and helper certificates for their own closed statements. Surviving helpers become reusable proof blocks when the group settles; internal inference steps are not separate publications. Appendix B specifies publication and attribution.
 
-Definitions introduce notation. Relations abbreviate primitive graphs; a function with one or more inputs requires a selected proof that its expanded graph gives exactly one output for every input. Definitions expand before checking and introduce no new axioms. Recursion, zero-input relations or functions, and standalone constants are excluded.
+The authoring compiler can check conservative definitions offline. Relations abbreviate primitive graphs; a function with one or more inputs requires a selected proof that its expanded graph gives exactly one output for every input. This does not publish a definition or make it available to prototype questions or settlement certificates: ledger admission rejects definition references and publishes proof blocks only. A future public network would need an explicit definition-publication rule. Recursion, zero-input relations or functions, and standalone constants are excluded from the offline authoring form.
 
 Helpers may be developed after approval within the frozen dependency context and used by later certificates in the normalized group. This checking order does not make them older proofs for payment. Appendix A distinguishes statements, derivations, certificates and typed artifacts; Appendix B gives the admission rules.
 
@@ -121,7 +121,7 @@ An unresolved solution phase expires without recording a refutation, issuing mon
 
 ## 5. Proof acceptance and publication
 
-Acceptance connects an authenticated submission to a reusable public result. Both the original bundle and its final form must validate. Under the question's frozen policy, normalization may replace duplicate helpers with admissible older proofs and remove material no longer used by the root. Appendix B specifies the exact matching, pruning, authorization and validation rules.
+Acceptance connects an authenticated submission to a reusable public result. Both the original bundle and its final form must validate. The fixed v6 rule replaces an exact duplicate helper with an admissible proof from the sealed settlement parent, then removes material no longer used by the root. The question source cannot alter this rule. Appendix B specifies the exact matching, pruning, authorization and validation rules.
 
 [FIG:helpers]
 
@@ -139,7 +139,7 @@ Other valid bounded-profile records may carry research and control operations wi
 
 Each paid research completion credits exactly one Test-NAO in the bounded profile, equally for proof and refutation: 0.20 funds validator service, 0.10 enters the reserve, and 0.70 funds the solution author and a citation pool of <i>P</i>. The author receives 0.70 minus <i>P</i>. Each completion has one pool within this budget; helper admission adds no issuance. These accounting units have no established market value.
 
-Section 9.2 gives the bounded profile's citation terms and identifies remaining allocation choices. The applicable terms must be fixed before the affected question is approved.
+Section 9.2 gives the immutable bounded profile's citation terms and identifies open choices for a broader network. The prototype's terms apply to every question opened under that profile.
 
 [FIG:payments]
 
@@ -280,11 +280,11 @@ Durable recovery and archive storage support later checking and incur costs even
 
 Sections 4 and 6 specify the voting interval and completion budget. The strict quorum and once-only completion rules are separate from capacity settings and monetary allocation choices.
 
-Genesis and the adopted policy supply four initial units, their authority and retirement order, queue and execution bounds, phase expiries, join limits, clock-error bounds and Test-NAO allocations. The v6 roster may grow to 32 through sealed claims; each exact snapshot determines its own quorum. These values determine capacity and operating costs and must support Appendix E.1's reservations and service conditions.
+Genesis commits the prototype's four initial units, their authority and retirement order, queue and execution bounds, phase expiries, join limits, clock-error bounds and Test-NAO allocations. The v6 roster may grow to 32 through sealed claims; each exact snapshot determines its own quorum. The CLI's <i>profile-info</i> command displays the profile limits and fixed research-admission policy. These values determine capacity and operating costs and must support Appendix E.1's reservations and service conditions.
 
 ### 9.2. Bounded profile and open rules
 
-Within the bounded v6 profile, parent-proof selection is deterministic: earliest admission height, operation order, then raw ProofId. Distinct new certificates with the same exact statement in one package are rejected, including a root/helper collision. Permitted identical aliases are checked and removed before publication. Reuse substitutes an eligible older proof with its existing attribution, prunes unused material and checks the normalized group. A versioned normalization receipt binds the original submission, selected parent and final result. New proofs in one package have one author who is also their recipient; joint authorship and separate-recipient authorization require further rules.
+Within the bounded v6 profile, parent-proof selection is deterministic: earliest admission height, operation order, then raw ProofId. Distinct new certificates with the same exact statement in one package are rejected, including a root/helper collision. Permitted identical aliases are checked and removed before publication. The fixed admission rule substitutes an eligible older proof with its existing attribution, prunes unused material and checks the normalized group; no question-specific reuse permission exists. A versioned normalization receipt binds the original submission, selected parent and final result. New proofs in one package have one author who is also their recipient; joint authorship and separate-recipient authorization require further rules.
 
 Each first completion credits one Test-NAO, or 1,000,000,000 atoms. Without eligible citations, the solution author receives 0.70 Test-NAO. With citations, the author receives 0.60 and the distinct first older boundary proofs share a 0.10 pool. Integer division precedes aggregation by beneficiary; remainder atoms follow canonical boundary order. The 0.20 validator service pool is split across all installed outgoing units under the selected parent. Each receives the integer quotient; remaining atoms follow canonical slot order. The reserve receives 0.10. Credits are independent of the agreement and seal signature subsets, including when a successor joins in the same record.
 
@@ -310,7 +310,7 @@ The proposed amendment gate calls for greater-than-two-thirds frozen-snapshot ap
 
 ## Appendix A. Canonical objects and identities
 
-Canonicalization expands permitted notation, removes unreachable material, orders dependencies, normalizes variables and merges exactly identical nodes. It neither minimizes proofs nor recognizes arbitrary mathematical equivalence. Parent-state substitution follows the separate rules in Appendix B.2. An identifier match is insufficient evidence of validity: referenced bytes, dependencies and checking evidence remain necessary.
+Canonicalization expands supported formula notation, removes unreachable material, orders dependencies, normalizes variables and merges exactly identical nodes. It neither minimizes proofs nor recognizes arbitrary mathematical equivalence. Parent-state substitution follows the fixed rule in Appendix B.2. An identifier match is insufficient evidence of validity: referenced bytes, dependencies and checking evidence remain necessary.
 
 [IDENTITIES]
 
@@ -320,7 +320,7 @@ Inlining or citing a derivation preserves its DerivationId. Typed ArtifactIds us
 
 Changed derivations and certificates receive recomputed identities; existing referenced proofs retain theirs. Appendix B.3 binds these changes to the authenticated original. The artifact set uses a Merkle-Patricia root for presence and absence witnesses under an adopted trusted root.
 
-Versioned identities preserve exact sealed references; historical migration follows Section 9.4. Permitted definitions expand within the approved resource bounds.
+Versioned identities preserve exact sealed references; historical migration follows Section 9.4. Offline definition authoring is separate from the proof-only selected library and cannot change a prototype question's targets or limits.
 
 ## Appendix B. Proof admission and reuse
 
@@ -330,29 +330,29 @@ A commitment binds the solution author, payment recipient, chain, research attem
 
 The original authenticated submission must satisfy its original well-formedness rules: its graph must be acyclic, helpers canonically ordered before their uses, every certificate and dependency valid, and its root a proof of an approved target. Lookup may precede costly checking, but substitution and pruning cannot repair an invalid original submission.
 
-The approved context fixes targets, Foundation, assumptions, permitted reference and substitution rules, definitions and total resource limits. It authorizes bounded helpers whose certificates may be developed later. Replacement must already be authorized by the question's frozen policy and satisfy its assumption, reference and resource bounds; older approved questions are not silently broadened. Helpers cannot change the target or add axioms.
+The approved question fixes its two targets and is bound to the immutable genesis profile, checker namespace and selected library root at opening. The v6 implementation supplies the same proof-reference, exact duplicate-helper substitution and resource-limit rules for every question under that profile. It permits bounded helper certificates developed after approval, but no question-specific assumptions, definition publication, reference permissions or per-question limits. Helpers cannot change the target or add axioms. A broader network with selectable question policies would require new explicit authorization and compatibility rules.
 
 ### B.2. Exact replacement and pruning
 
-Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the same Foundation and assumption context. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. Where the frozen policy permits, replace the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 gives the bounded profile's deterministic selector and single-author restriction.
+Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the fixed Foundation. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. The fixed v6 rule replaces the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 gives the bounded profile's deterministic selector and single-author restriction.
 
 After replacement, recursively remove every helper, dependency and citation no longer reachable from the root through actual proof uses. Recompute the surviving graph, canonical order and affected identities before checking it.
 
 [FIG:reuse]
 
-[CAPTION] Parent proof C establishes H's exact conclusion under the same Foundation and assumptions. Replacing H leaves F using A and C; B, used only by H, is pruned with its unused dependencies. Only F and A are new. C retains its beneficiary; discarded citations receive no payment.
+[CAPTION] Parent proof C establishes H's exact conclusion under the fixed Foundation. Replacing H leaves F using A and C; B, used only by H, is pruned with its unused dependencies. Only F and A are new. C retains its beneficiary; discarded citations receive no payment.
 
 ### B.3. Final validation and the normalization receipt
 
 The normalized graph must be acyclic, with each surviving helper ordered before its uses and reachable from the root through checked dependencies. Validate the root, every surviving helper and all actual final dependencies, including replaced references and their validity evidence. All required bytes must be available. Both this validation and B.1 are required within the capacity reserved under E.1; any failure prevents publication and settlement of the whole group.
 
-A deterministic <i>normalization receipt</i> binds the original commitment receipt and submission hash, selected sealed parent, frozen policy version, helper-to-existing-proof replacement map, final normalized bundle and recomputed identities. It also embeds the outgoing service-authority snapshot used to calculate service rewards. This permits historical inspection after later key and membership changes; the embedded snapshot is a claim until full history replay proves that it matches the selected parent. The receipt records an authorized derivation from the authenticated original while leaving its commitment, signed bytes and signatures intact. An original signature does not authorize the rewritten bytes. Validators reproduce the transformation and check both forms. Joint authorization needs the further rules identified in Section 9.2.
+A deterministic <i>normalization receipt</i> binds the original commitment receipt and submission hash, selected sealed parent, immutable profile identity, helper-to-existing-proof replacement map, final normalized bundle and recomputed identities. It also embeds the outgoing service-authority snapshot used to calculate service rewards. This permits historical inspection after later key and membership changes; the embedded snapshot is a claim until full history replay proves that it matches the selected parent. The receipt records the deterministic transformation from the authenticated original while leaving its commitment, signed bytes and signatures intact. An original signature does not authorize the rewritten bytes. Validators reproduce the transformation and check both forms. Joint authorization needs the further rules identified in Section 9.2.
 
 If the proposed settlement parent changes, recompute and revalidate lookup, normalization, receipt, identities, citation eligibility and bounds against that parent. Timely valid disclosures remain eligible for later settlement subject to these checks; replacements, identities, beneficiaries and resource use may change.
 
 ### B.4. The direct bundle boundary
 
-Follow validated dependencies from the normalized root through surviving helpers and every reached proof absent from the sealed parent. Stop each path at the first proof selected in that parent: these proofs form the <i>direct bundle boundary</i>. Traversal also crosses permitted intermediate proofs admitted earlier in the current record. Deduplicate by selected proof identity once per completion pool; repeated references and multiple paths add no entitlement. Ancestors behind the boundary receive no automatic payment, although dependencies required for validity still need checking. No proof admitted anywhere in the current record earns a citation payment anywhere in that record; eligibility uses the selected sealed parent before the entire record.
+Follow validated dependencies from the normalized root through surviving helpers. Stop each path at the first proof selected in the sealed parent: these proofs form the <i>direct bundle boundary</i>. Deduplicate by selected proof identity once per completion pool; repeated references and multiple paths add no entitlement. Ancestors behind the boundary receive no automatic payment, although dependencies required for validity still need checking. Newly admitted proofs earn no citation payment in their own settlement record; eligibility uses the selected sealed parent before that record.
 
 Replacement by an eligible old proof directs the citation allocation to its recorded beneficiary within <i>P</i>. Pruned helpers and discarded citations receive nothing. Section 6 defines the pool's funding; Section 9.2 gives the bounded allocation and identifies remaining choices.
 
@@ -368,7 +368,7 @@ The settlement outputs in Section 5 enter the canonical state together. Any inva
 
 ### C.1. Ballot and closure rules
 
-A sealed opening fixes the exact proposal, attempt number, policy version, parent configuration, its <i>N<sub>open</sub></i> owner accounts in the frozen electorate and certified time <i>T</i>. The deadline and threshold are defined in Section 4.3. A ballot binds chain, proposal, attempt, snapshot and YES or NO. It counts only as the first valid recorded ballot by that owner for that attempt, in a subsequent sealed record with time strictly below <i>D</i>. Missing or malformed output creates no ballot; NO and absent weight remain in <i>W</i>.
+A sealed opening fixes the exact proposal, attempt number, immutable profile identity, parent configuration, its <i>N<sub>open</sub></i> owner accounts in the frozen electorate and certified time <i>T</i>. The deadline and threshold are defined in Section 4.3. A ballot binds chain, proposal, attempt, snapshot and YES or NO. It counts only as the first valid recorded ballot by that owner for that attempt, in a subsequent sealed record with time strictly below <i>D</i>. Missing or malformed output creates no ballot; NO and absent weight remain in <i>W</i>.
 
 Profile edits, repeated inference and changed keys cannot overwrite an existing ballot. Owners may deliberate before signing. Authorized key rotation or revocation affects subsequent ballot admission, with no change to recorded votes or snapshot weight; a replacement key grants no second vote. Retired owners keep only the research mandate of the opening snapshot until closure. New owners have no vote on that attempt. Owner account authorization for that mandate remains separate from retired consensus and transport keys.
 
@@ -442,7 +442,7 @@ successor.
 
 Authenticated proposals enter the bounded queue in finalized receipt order, using height and operation index. Per-record openings and ballot bytes are bounded. Allocation follows queue order as capacity becomes available. The parent must already contain an opening's required capacity; closures in the same record cannot supply immediately reusable slots. An opening reserves a voting slot, ballot and closure capacity, and maximum solution-phase capacity. Reservations bound helper count, original and final bytes, dependency depth, expansion and traversal, parent-match searches, normalization and both original and final validation. A small pruned result does not excuse an oversized or invalid original submission.
 
-Queued entries expire after the policy-defined waiting interval without starting a vote; retry places them at the tail. A family has at most one queued, voting or approved live attempt. Later attempts require fresh admission, a new snapshot and a new full window; a completed family cannot reopen. Rejection releases the solution reservation. Approval retains it until settlement or expiry without a timely valid disclosure; timely valid disclosures remain settleable. Consumed or expired reservations cannot be reused.
+Queued entries expire after the immutable profile's waiting interval without starting a vote; retry places them at the tail. A family has at most one queued, voting or approved live attempt. Later attempts require fresh admission, a new snapshot and a new full window; a completed family cannot reopen. Rejection releases the solution reservation. Approval retains it until settlement or expiry without a timely valid disclosure; timely valid disclosures remain settleable. Consumed or expired reservations cannot be reused.
 
 Join intents enter a 32-family queue in finalized receipt order. Revisions retain the first receipt and expiry. Each record plan may use the oldest eligible claim once; without its candidate offer, the record rotates keys instead. Expired, stale or consumed claims cannot join. Service assumes honest proposers, bounded verification and eventual delivery. Churn or censorship can extend waits. Continuous submission has no fixed question quota, but admission remains bounded.
 
@@ -456,7 +456,7 @@ Archive and handoff evidence require continuing storage and funding. Section 8.4
 
 Every distinct authorizing account signs the complete operation and consumes its nonce once, even when it fills several roles. The bounded profile credits whole-atom Test-NAO balances and records a separate nontransferable author eligibility claim. It has no transfer, withdrawal or reserve-spending operation; an empty control record cannot spend the reserve. Broader monetary claims or payments would need explicit authorization and conservation rules.
 
-Policy changes require current and replacement-policy consent. Without preconfigured recovery, a lost authorizing key has no administrative remedy. Protocol amendments and preservation of historical obligations follow Section 9.4.
+A broader network's policy-change mechanism would require consent under both the current and replacement rules; this prototype has no live amendment operation. Without preconfigured recovery, a lost authorizing key has no administrative remedy. Proposed protocol amendments and preservation of historical obligations follow Section 9.4.
 
 ## Reference
 

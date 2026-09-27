@@ -85,6 +85,45 @@ pub(super) fn prepare(runtime: &mut StateRuntime, now: u64) -> naome_chain::Stat
     naome_chain::StateRecord::decode(&bytes, runtime.state().unwrap().genesis()).unwrap()
 }
 
+#[test]
+fn another_finalized_action_consuming_the_nonce_durably_rejects_local_intake() {
+    let (directory, anchors, mut runtime) = registration_runtime();
+    let genesis = runtime.state().unwrap().genesis().clone();
+    runtime.pending_store =
+        Some(StatePendingActions::create(&directory.0, &anchors.0, genesis.clone()).unwrap());
+    let selected = operation(&genesis, 1);
+    let competing = match OperationBody::decode(selected.payload(), &genesis).unwrap() {
+        OperationBody::Submit { question, .. } => OperationBody::Submit {
+            purpose: "different signed content at nonce one".into(),
+            question,
+        }
+        .sign(&genesis, 1, &account(4))
+        .unwrap(),
+        _ => panic!("fixture submission"),
+    };
+    let id = competing.id();
+    runtime.submit_operation(competing).unwrap();
+    finalize(
+        &mut runtime,
+        &directory,
+        &anchors,
+        genesis.start_utc() + 1,
+        vec![selected],
+    );
+    assert!(runtime.state().unwrap().receipt(id).is_none());
+    assert!(
+        runtime
+            .operation_rejection(id)
+            .unwrap()
+            .contains("nonce consumed")
+    );
+    drop(runtime);
+    let store = StatePendingActions::open(&directory.0, &anchors.0, genesis).unwrap();
+    assert!(
+        matches!(store.status(id), Some(PendingActionStatus::Rejected(reason)) if reason.contains("nonce consumed"))
+    );
+}
+
 #[tokio::test]
 async fn registration_is_pending_until_finality_and_ordinary_authority_starts_at_nonce_two() {
     let (_directory, _anchors, mut runtime) = registration_runtime();

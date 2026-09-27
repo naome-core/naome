@@ -217,6 +217,7 @@ fn every_timing_profile_preserves_complete_certified_phase_windows() {
         (Profile::lab(), 300, 120, 120),
         (Profile::research(), 604800, 86400, 86400),
         (Profile::short_test(), 15, 45, 45),
+        (Profile::process_test(), 45, 45, 45),
         (Profile::ci_test(), 1, 8, 8),
     ] {
         let mut state = LedgerState::new(super::test_support::genesis_with_profile(profile));

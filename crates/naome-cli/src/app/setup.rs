@@ -97,7 +97,7 @@ fn parameters(args: &[String]) -> Result<(Profile, Vec<String>, Vec<usize>)> {
         || ((6..=8).contains(&args.len()) && matches!(args[5].as_str(), "compact" | "standard")))
     {
         return Err(
-            "usage: setup DIRECTORY lab|research|short-test|ci-test RUN_RECORDS BASE_PORT RETIREMENT_ORDER_JSON [standard|compact [ENDPOINTS_JSON [HANDOFF_ENDPOINTS_JSON]]]".into(),
+            "usage: setup DIRECTORY lab|research|short-test|process-test|ci-test RUN_RECORDS BASE_PORT RETIREMENT_ORDER_JSON [standard|compact [ENDPOINTS_JSON [HANDOFF_ENDPOINTS_JSON]]]".into(),
         );
     }
     // The plan names generated node indices, not the canonical validator list.
@@ -122,8 +122,9 @@ fn parameters(args: &[String]) -> Result<(Profile, Vec<String>, Vec<usize>)> {
         "lab" => TimingKind::Lab,
         "research" => TimingKind::Research,
         "short-test" => TimingKind::ShortTest,
+        "process-test" => TimingKind::ProcessTest,
         "ci-test" => TimingKind::CiTest,
-        _ => return Err("choose lab, research, short-test, or ci-test".into()),
+        _ => return Err("choose lab, research, short-test, process-test, or ci-test".into()),
     };
     let mut limits = Limits {
         run_records: args[2].parse()?,
@@ -331,6 +332,11 @@ pub fn run(args: &[String]) -> Result<()> {
             genesis.clone(),
             maximum_round,
         )?;
+        drop(naome_storage::state::StatePendingActions::create(
+            &config.history,
+            &config.history_anchor,
+            genesis.clone(),
+        )?);
         let signer = naome_storage::state::StateSigner::create(
             &config.signer,
             &config.signer_anchor,
@@ -383,7 +389,7 @@ pub fn profile_info(path: &Path) -> Result<()> {
     let rewards = profile.rewards();
     println!(
         "{}",
-        serde_json::json!({"genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(profile.id().as_bytes()),"retirement_order":genesis.retirement_order().iter().map(|id| files::hex(id.as_bytes())).collect::<Vec<_>>(),"kind":format!("{:?}",profile.kind()),"limits":profile.limits().named_values().collect::<std::collections::BTreeMap<_,_>>(),"timing":{"voting_seconds":timing.voting_seconds,"commitment_seconds":timing.commitment_seconds,"reveal_seconds":timing.reveal_seconds,"queue_seconds":timing.queue_seconds,"clock_error_seconds":timing.clock_error_seconds,"agent_call_seconds":timing.agent_call_seconds},"rewards":{"issuance_atoms":rewards.issuance_atoms.to_string(),"author_without_citations_atoms":rewards.author_without_citations_atoms.to_string(),"author_with_citations_atoms":rewards.author_with_citations_atoms.to_string(),"citation_pool_atoms":rewards.citation_pool_atoms.to_string(),"validator_pool_atoms":rewards.validator_pool_atoms.to_string(),"reserve_atoms":rewards.reserve_atoms.to_string()},"required_storage_bytes_per_node":profile.operating_storage_floor_bytes()?,"storage_floor_kind":"one_height_operating_headroom","maximum_run_storage_bytes_per_node":profile.maximum_run_storage_bytes()?,"canonical_profile":files::hex(&profile.encode())})
+        serde_json::json!({"genesis":files::hex(genesis.id().as_bytes()),"profile":files::hex(profile.id().as_bytes()),"retirement_order":genesis.retirement_order().iter().map(|id| files::hex(id.as_bytes())).collect::<Vec<_>>(),"kind":format!("{:?}",profile.kind()),"limits":profile.limits().named_values().collect::<std::collections::BTreeMap<_,_>>(),"research_policy":super::inspect::research_policy(),"timing":{"voting_seconds":timing.voting_seconds,"commitment_seconds":timing.commitment_seconds,"reveal_seconds":timing.reveal_seconds,"queue_seconds":timing.queue_seconds,"clock_error_seconds":timing.clock_error_seconds,"agent_call_seconds":timing.agent_call_seconds},"rewards":{"issuance_atoms":rewards.issuance_atoms.to_string(),"author_without_citations_atoms":rewards.author_without_citations_atoms.to_string(),"author_with_citations_atoms":rewards.author_with_citations_atoms.to_string(),"citation_pool_atoms":rewards.citation_pool_atoms.to_string(),"validator_pool_atoms":rewards.validator_pool_atoms.to_string(),"reserve_atoms":rewards.reserve_atoms.to_string()},"required_storage_bytes_per_node":profile.operating_storage_floor_bytes()?,"storage_floor_kind":"one_height_operating_headroom","maximum_run_storage_bytes_per_node":profile.maximum_run_storage_bytes()?,"canonical_profile":files::hex(&profile.encode())})
     );
     Ok(())
 }

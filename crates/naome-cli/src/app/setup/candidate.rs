@@ -262,6 +262,11 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         genesis.clone(),
         config.maximum_round,
     )?;
+    drop(naome_storage::state::StatePendingActions::create(
+        &config.history,
+        &config.history_anchor,
+        genesis.clone(),
+    )?);
     let maximum = genesis.profile().limits().transport_frame_bytes as usize;
     for height in 1..=manifest.height {
         let bytes = files::read(

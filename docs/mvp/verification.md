@@ -14,6 +14,38 @@ The older lab and CI reports below qualify only their named historical snapshots
 They do not qualify the current v6 implementation. There is one supported
 prerelease model; fresh genesis and stores are required for it.
 
+## Portable v6 pilot evidence on 2026-09-27
+
+The portable pilot tooling at code commit
+`63558f5a3deb515571bff3c0601cbe314dfe5a69` passed a fresh four-process
+rehearsal on one macOS machine with pinned Rust 1.97.1 release binaries,
+`compact` limits, `short-test` timing and manual agenda votes. The private raw
+report is `/private/tmp/naome-v6-pilot-63558f5/rehearsal-report.json` (SHA-256
+`e3e51df7ed0426e5282bec7afc1f81e3af8befa2dbbe1fe078305d8cf6244608`).
+Its source digest is
+`681a118178e08c2e42a49bb05195e3a8e7edf0fbbb43a5c7529e7723bc7e549d`.
+The live comparison report SHA-256 is
+`b1b973f4de6535ae7a4b2db12c37e667500eda14e6c04b51049538aff41eec02`;
+the archive comparison report SHA-256 is
+`4307d436086cac7228070af0858efaf131b345771c0906164334f2393c89d10f`.
+
+| Gate | Local rehearsal | Physical pilot |
+| --- | --- | --- |
+| Bidirectional TCP | Twelve directed loopback connections passed. | Unverified; no second host was available. |
+| Remote authentication and placement | Four private bundles moved to separate directories on one Mac. | Unverified; the previously used laptop timed out on SSH port 22, and no remote bundle was transferred. |
+| Validator startup and finalized agreement | Four processes started; a proof with one validator offline finalized, then all four reached height 11 and matching live head and state. | Unverified. |
+| Restart and catch-up | The offline validator caught up, then all four cold reopened on the same state. | Unverified. |
+| Independent archive replay | Four exports replayed and agreed; corrupt archive, duplicate exports and missing signer anchor were rejected. | Unverified. |
+| Participant submission | A locally held author key produced a submission with a finalized receipt. | Exact signed-action transfer and receipt return to a remote participant remain unverified. |
+
+No new proxy-delay run was performed for this tooling patch. The rehearsal
+does not qualify `lab` or `research` timing, a real agenda agent, independent
+machines, network faults, or a 32-host capacity result. The 32-seat roster
+ceiling is a protocol bound; performance at 32 physical hosts needs a separate
+run. Python pilot tests passed 38 cases, and pinned release-profile process
+tests passed for both `naome-validator` and `naome-verifier` after a matching
+`--no-run` build barrier.
+
 ## Current state-v6 roster decision
 
 The current v6 protocol installs four bootstrap validators and permits earned
@@ -610,10 +642,10 @@ See the [Kev runbook](kev.md) for repeatable software and integration checks.
 | Authentication/time | [Action authentication](../../crates/naome-ledger/src/authentication/tests.rs), [signed time](../../crates/naome-ledger/src/time/tests.rs) |
 | Consensus/node | [Consensus kernel](../../crates/naome-consensus/src/state/tests.rs), [node recovery](../../crates/naome-node/src/state/tests.rs) |
 | Safety model | [Bounded explorer and mutation controls](../../crates/naome-node/src/state/safety_model/model.rs), [real signer/reopen replay](../../crates/naome-node/src/state/safety_model/replay.rs), [weighted arithmetic oracle](../../crates/naome-consensus/src/weight_oracle.rs) |
-| Storage | [State history/signer/settlement recovery](../../crates/naome-storage/src/state/tests.rs), [journal I/O faults](../../crates/naome-storage/src/state/log_tests.rs) |
+| Storage | [State history/signer/settlement recovery and anchored pending-action custody](../../crates/naome-storage/src/state/tests.rs), [journal I/O faults](../../crates/naome-storage/src/state/log_tests.rs) |
 | Transport/runtime | [Network exchange](../../crates/naome-network/src/transport/state_exchange/tests.rs), [exact frame limits](../../crates/naome-network/src/transport/state_exchange/tests/boundary.rs), [peer isolation and lifecycle](../../crates/naome-network/src/transport/state_exchange/tests/lifecycle.rs), [wire protocol](../../crates/naome-protocol/src/state_exchange/tests.rs), [runtime intake](../../crates/naome-runtime/src/state/tests.rs) |
 | CLI | [Agent](../../crates/naome-cli/src/app/agent/tests.rs), [durable actions](../../crates/naome-cli/src/app/actions/tests.rs), [private files](../../crates/naome-cli/src/app/files/tests.rs), [setup/local profile](../../crates/naome-cli/src/app/setup/tests.rs) |
-| Process | [four_process_state_recovery_partition_and_independent_replay](../../crates/naome-cli/tests/state_process.rs): accelerated independent processes |
+| Process | [four_process_state_recovery_partition_and_independent_replay](../../crates/naome-cli/tests/state_process.rs) and [signed_action_survives_intake_crash_and_lost_ack_retry](../../crates/naome-cli/tests/cases/lifecycle.rs): accelerated independent processes |
 | LAB | [state_lab_acceptance.py](../../tools/state_lab_acceptance.py): real windows, actual provider, separate four-process state; report required |
 
 ## Requirement mapping
@@ -651,11 +683,11 @@ identify runner actions and fields in the recorded acceptance report.
 | MVP-26 | Accounting exact distribution/overflow tests; Consensus: `finality_evidence_subset_and_consensus_round_do_not_change_value_or_successor`; LAB total accounts plus reserve equals three billion atoms after three completions. |
 | MVP-27 | Receipts tests; Process export/verify; LAB question queries, inspection outputs, network download and independent `check-proof` of A/B/D roots with dependencies. |
 | MVP-28 | CLI tests and complete Process/LAB command paths. [Operating guide](operations.md) distinguishes transported, finalized and settled states. |
-| MVP-29 | Authentication: `every_wire_byte_is_bound_or_strictly_rejected`, `exact_action_roundtrip_and_roles`; State old-attempt and nonce tests; CLI exact commitment/reveal/agent retry tests; Runtime duplicate receipt test. |
+| MVP-29 | Authentication: `every_wire_byte_is_bound_or_strictly_rejected`, `exact_action_roundtrip_and_roles`; State old-attempt and nonce tests; CLI exact commitment/reveal/agent retry tests; Runtime duplicate receipt and `another_finalized_action_consuming_the_nonce_durably_rejects_local_intake`; Storage `pending_action_journal_reopens_exact_bytes_and_durable_outcomes`; Process `signed_action_survives_intake_crash_and_lost_ack_retry`. |
 | MVP-30 | Node: `cold_restart_resends_identical_completed_precommit_and_retains_record`, `all_validators_restart_after_prevoting_and_recover_the_durable_proposal`, `asymmetric_nil_quorum_delivery_recovers_after_full_cold_restart`; Storage: `proposal_and_both_votes_replay_for_exact_resend_until_round_changes`; Process/LAB returning-node catch-up. |
 | MVP-31 | Storage: `actual_settlement_journal_crash_images_recover_only_old_complete_or_halted_state`, actual anchor-fault test, `signing_anchor_faults_never_publish_and_preparation_faults_never_use_key`; journal scripted I/O faults. These are explicit crash/fault experiments, separate from graceful process restart. |
 | MVP-32 | Node: `absent_proposer_advances_by_nil_quorums_then_three_nodes_finalize_and_fourth_catches_up`, `clean_two_two_partition_does_not_consume_round_budget_and_heals`, `asymmetric_nil_quorum_delivery_recovers_after_full_cold_restart`; Process/LAB three live validators, 2:2 partition, restored links and convergence. |
-| MVP-33 | State queue/capacity tests, `minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement`, and `multiple_reveals_share_budget_before_any_additional_checker_call`; Library count/byte/step/depth tests; Transport exact bounds/retention; Storage: `exhausted_signing_bytes_or_frames_never_use_key_and_pending_intent_recovers`. |
+| MVP-33 | State queue/capacity tests, `minimum_run_reserves_all_sixteen_authors_through_delayed_atomic_settlement`, and `multiple_reveals_share_budget_before_any_additional_checker_call`; Library count/byte/step/depth tests; Transport exact bounds/retention; Storage: `exhausted_signing_bytes_or_frames_never_use_key_and_pending_intent_recovers`, `pending_action_capacity_refuses_new_intake_without_losing_accepted_bytes`. |
 | MVP-34 | Library `qualification_actual_4096_steps_and_near_64k_certificate`, `qualification_17_used_nodes_near_compact_and_default_package_bounds`, `qualification_64_verified_older_citations_and_65th_reject_before_checker`, `qualification_near_2mib_older_closure_sixteen_authenticated_candidates`; exact queue/depth/frame tests; minimum 65/66-record state tests; LAB resource/timing report. Preserve measured output from both pinned profiles. |
 | MVP-35 | Storage observer/full cold replay, `historical_conflicting_finality_is_verified_and_persistently_halts`; journal complete-corruption rejection; Process/LAB independent replay and corrupted export rejection. |
 | MVP-36 | Account-admission State `registration_is_zero_starting_nonce_bound_and_idempotent_without_validator_rights`, `full_registry_preserves_existing_research_and_rejects_new_keys_atomically`, `registration_cannot_ride_on_reserved_progress_or_automatic_opening`; Process `new_researcher_registers_proves_receives_reward_and_survives_replay_and_restart`. The current combined run is recorded above; historical v2/v3 runs remain separately identified. |
@@ -697,3 +729,28 @@ throughput or multi-machine performance.
 Reports identify the exact source snapshot that was measured. Earlier successful
 runs do not qualify later code changes. Local checks, CI, lab execution, and
 multi-machine qualification remain separate evidence.
+
+## Operator supervisor local process evidence (2026-09-27)
+
+The bounded operator scenario in `devnet/research_supervisor_scenario.py` passed
+on one macOS ARM64 host with four separate validator processes, a compact
+128-record run, and the explicitly accelerated `short-test` timing profile.
+Operators supplied both questions, both checked proof sources, helper sources,
+and four owner YES policies. The supervisor settled A as PROVED and B as REFUTED,
+reused H with a positive citation payment, recovered an exact saved B submission
+after an operator-process interruption, and stopped after the two-item plan.
+Four independent node exports replayed to the same height 22 and state
+`40ae7a6df6b1ef20063851ab43286639a037acb307dc2e00b149fdfa71fc5bf9`;
+paid completions were 2. Elapsed scenario time was 228.883 seconds.
+
+The run started from prototype tree `ffa7c86a9a407830e0053d5d69b2e9527a093136` with
+uncommitted supervisor/scenario files; their SHA-256 values at run start were
+`f74d968adac8fe77f1f4492c492710504c11f94086b67677ccfb87e4d48d61cf`
+and `8246bb7b4229800d1cfd4f389d1b60b98fa885be6e172ad88942eb785fbd3e4d`,
+respectively. The pinned Rust 1.97.1 build and all-target focused no-run barrier
+passed. Pinned CLI library tests passed (43), as did validator interface (1)
+and verifier canonical (4) tests; `cargo fmt --all -- --check` and Python
+syntax checks passed. This evidence is a one-host process run with manual owner
+policies, not real-agent, real-time Lab/research, or physical multi-machine
+qualification. Required multi-platform, two-profile CI is assessed separately
+on the PR.

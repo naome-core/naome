@@ -450,6 +450,37 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     assert_eq!(cut["authority"], quiet["authority"]);
     assert!(cut["consensus_position"].is_object());
     let after_stop = cut["height"].as_u64().unwrap();
+    // Seal the first offline handoff before opening a question whose votes
+    // must finalize inside the short test window. This unpaid question still
+    // exercises the four remaining signers and their new period keys.
+    let handoff_question = lab.file("successor-handoff-question.nao");
+    fs::write(
+        &handoff_question,
+        "foundation = \"naome:zfc\"\nstatement = forall(t, forall(z, forall(y, forall(x, equal(x, x)))))\n",
+    )
+    .unwrap();
+    let handoff = lab.submit(4, 4, PathBuf::from(handoff_question), "successor-handoff");
+    let ready = lab.wait(4, |status| {
+        if status["height"].as_u64() <= Some(after_stop)
+            || !status["active"].is_null()
+            || status["queued"] != 0
+            || status["consensus_position"].is_null()
+        {
+            return false;
+        }
+        let question = raw(&["question".into(), lab.config(4), handoff.clone()]);
+        question.status.success()
+            && serde_json::from_slice::<Value>(&question.stdout)
+                .is_ok_and(|result| result["status"] == "NotApproved")
+    });
+    let remaining = [bootstrap[0], bootstrap[1], bootstrap[2], 4];
+    lab.assert_same(&remaining, &ready);
+    for index in remaining {
+        lab.wait(index, |status| {
+            status["height"] == ready["height"] && status["consensus_position"].is_object()
+        });
+    }
+    let after_stop = ready["height"].as_u64().unwrap();
     // Supply substantive work before demanding the next record. An idle
     // proposal intentionally does not consume this finite run merely to
     // rotate period keys.
@@ -459,24 +490,7 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
         "foundation = \"naome:zfc\"\nstatement = forall(z, forall(y, forall(x, equal(x, x))))\n",
     )
     .unwrap();
-    let submission = lab.submit(
-        active_ingress(&lab),
-        4,
-        PathBuf::from(question),
-        "successor-service",
-    );
-    let successor = lab.wait(4, |status| {
-        status["height"]
-            .as_u64()
-            .is_some_and(|height| height > after_stop)
-            && status["validators"].as_array().is_some_and(|units| {
-                units
-                    .iter()
-                    .any(|unit| unit["owner"] == author && unit["available"] == true)
-            })
-    });
-    assert!(successor["consensus_position"].is_object());
-
+    // Prepare the checked proof before opening the short voting window.
     // The next completion pays the earned owner from the outgoing service
     // snapshot. Its author is a different account, making the service share
     // separately measurable.
@@ -494,11 +508,29 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
         package.clone(),
         solution,
     ]);
+    let submission = lab.submit(
+        active_ingress(&lab),
+        4,
+        PathBuf::from(question),
+        "successor-service",
+    );
     lab.approve(
         &[bootstrap[0], bootstrap[1], bootstrap[2], 6],
         "successor-service",
         &submission,
     );
+    let successor = lab.wait(4, |status| {
+        status["height"]
+            .as_u64()
+            .is_some_and(|height| height > after_stop)
+            && status["validators"].as_array().is_some_and(|units| {
+                units
+                    .iter()
+                    .any(|unit| unit["owner"] == author && unit["available"] == true)
+            })
+    });
+    assert!(successor["consensus_position"].is_object());
+
     lab.solve(
         active_ingress(&lab),
         4,

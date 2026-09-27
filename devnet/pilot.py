@@ -107,7 +107,8 @@ def binaries(directory):
 def source():
     paths = [REPO / n for n in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml')]
     paths += [p for p in (REPO / 'crates').rglob('*') if p.suffix in ('.rs', '.toml')]
-    paths += [Path(__file__).resolve(), Path(__file__).with_name('rehearse_pilot.py').resolve()]
+    paths += [Path(__file__).resolve(), Path(__file__).with_name('rehearse_pilot.py').resolve(),
+              Path(__file__).with_name('pilot_observe.py').resolve()]
     manifest = {str(p.relative_to(REPO)): digest(p) for p in sorted(paths) if p.is_file()}
     encoded = json.dumps(manifest, sort_keys=True).encode()
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip()
@@ -190,6 +191,14 @@ def check(bundle, native):
     require(config['version'] == 6 and config['simulation'] is False,
             'pilot requires configuration v6 with simulation disabled')
     require(all(config[k] == v for k, v in PATHS.items()), 'bundle paths were changed')
+    recovery = config['recovery_endpoints']
+    index = manifest['node_index']
+    require(isinstance(recovery, list) and len(recovery) == 8
+            and all(isinstance(endpoint, str) for endpoint in recovery)
+            and len(set(recovery)) == 8 and recovery[:4] == manifest['endpoints']
+            and config['primary_endpoint'] == recovery[index]
+            and config['handoff_endpoint'] == recovery[4 + index],
+            'configured primary/handoff endpoints differ from pilot plan')
     for parent in ('data', 'anchors'):
         private(bundle / parent, True)
     for field in STORES:

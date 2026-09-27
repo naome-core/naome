@@ -99,7 +99,7 @@ impl Lab {
         let configured = command(&[
             "setup".into(),
             path(&root),
-            "short-test".into(),
+            "process-test".into(),
             "128".into(),
             base.to_string(),
             path(&order_path),
@@ -174,6 +174,7 @@ impl Lab {
                             "queued": status.as_ref().map(|s| &s["queued"]),
                             "pending": status.as_ref().map(|s| &s["pending_operations"]),
                             "paid": status.as_ref().map(|s| &s["paid_completions"]),
+                            "transport": status.as_ref().map(|s| &s["transport_diagnostics"]),
                             "recent_errors": recent_errors,
                         })
                     })
@@ -185,7 +186,9 @@ impl Lab {
                     caller.line()
                 );
             }
-            thread::sleep(Duration::from_millis(40));
+            // A status query starts a fresh CLI process and reads durable
+            // state. Frequent polls compete with the validators being tested.
+            thread::sleep(Duration::from_millis(250));
         }
     }
     fn stop(&mut self, index: usize) {
@@ -253,6 +256,7 @@ impl Lab {
     fn wait_active_phase(&self, submission: &str, phase: &str) -> usize {
         let start = Instant::now();
         loop {
+            let mut question_ingress = None;
             for index in 0..self.nodes.len() {
                 if self.nodes[index].is_none() {
                     continue;
@@ -260,6 +264,7 @@ impl Lab {
                 let Some(status) = self.status(index) else {
                     continue;
                 };
+                question_ingress.get_or_insert(index);
                 // A research owner may remain in the frozen vote electorate
                 // while its validator is vacant after a 3-of-4 handoff.
                 if status["consensus_position"].is_null() {
@@ -270,13 +275,38 @@ impl Lab {
                 {
                     return index;
                 }
+            }
+            // One question lookup is enough to detect a terminal state. Polling
+            // every process with a fresh CLI command every 40 ms competes with
+            // the four validator processes during timed phase transitions.
+            if let Some(index) = question_ingress {
                 self.assert_question_can_progress(index, submission);
             }
-            assert!(
-                start.elapsed() < Duration::from_secs(90),
-                "no active validator reached {phase} for question {submission}"
-            );
-            thread::sleep(Duration::from_millis(40));
+            if start.elapsed() >= Duration::from_secs(180) {
+                let nodes: Vec<_> = (0..self.nodes.len())
+                    .map(|index| {
+                        let status = self.status(index);
+                        let errors =
+                            fs::read_to_string(self.root.join(format!("node-{index}.errors")))
+                                .unwrap_or_default();
+                        serde_json::json!({
+                            "node": index,
+                            "running": self.nodes[index].is_some(),
+                            "height": status.as_ref().map(|s| &s["height"]),
+                            "head": status.as_ref().map(|s| &s["head"]),
+                            "authority": status.as_ref().map(|s| &s["authority"]),
+                            "position": status.as_ref().map(|s| &s["consensus_position"]),
+                            "active": status.as_ref().map(|s| &s["active"]),
+                            "transport": status.as_ref().map(|s| &s["transport_diagnostics"]),
+                            "recent_errors": errors.lines().rev().take(6).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                panic!(
+                    "no active validator reached {phase} for question {submission}; node diagnostics={nodes:?}"
+                );
+            }
+            thread::sleep(Duration::from_millis(250));
         }
     }
     fn wait_receipt(
@@ -316,11 +346,14 @@ impl Lab {
         });
     }
     fn approve(&self, owners: &[usize], label: &str, submission: &str) {
+        // All owners can sign against the same finalized Voting view. Waiting
+        // for that view once avoids four competing status/question pollers in
+        // the short voting window after an authority handoff.
+        let ingress = self.wait_active_phase(submission, "Voting");
         let votes = thread::scope(|scope| {
             let mut handles = Vec::new();
             for &index in owners {
                 handles.push(scope.spawn(move || {
-                    let ingress = self.wait_active_phase(submission, "Voting");
                     let args = [
                         "vote".into(),
                         self.config(ingress),
@@ -388,6 +421,16 @@ impl Lab {
         }
     }
     fn restore_four_keyed_slots(&self, phase: &str, first_quantifiers: usize) -> Value {
+        const MAX_REENTRY_PERIODS: usize = 3;
+        // Each unpaid question consumes the complete process-test voting
+        // window; leave the former 90-second allowance for three handoffs.
+        let budget = Duration::from_secs(
+            naome_ledger::profile::Profile::process_test()
+                .timing()
+                .voting_seconds
+                * MAX_REENTRY_PERIODS as u64
+                + 90,
+        );
         let started = Instant::now();
         let mut settled = self
             .nodes
@@ -396,7 +439,7 @@ impl Lab {
             .filter(|(_, child)| child.is_some())
             .find_map(|(index, _)| self.status(index))
             .expect("running validator status");
-        for attempt in 0..=3 {
+        for attempt in 0..=MAX_REENTRY_PERIODS {
             if settled["active"].is_null()
                 && settled["queued"] == 0
                 && settled["authority"]["active_slots"] == 4
@@ -404,12 +447,12 @@ impl Lab {
                 break;
             }
             assert!(
-                attempt < 3,
+                attempt < MAX_REENTRY_PERIODS,
                 "{phase}: four keyed slots did not return after three periods"
             );
             assert!(
-                started.elapsed() < Duration::from_secs(90),
-                "{phase}: four keyed reentry exceeded 90 seconds"
+                started.elapsed() < budget,
+                "{phase}: four keyed reentry exceeded {budget:?}"
             );
             // Each distinct unpaid question must pass a real vote and handoff.
             // Vary the statement as well as the file name so a known question
@@ -438,8 +481,8 @@ impl Lab {
             let submission = self.submit(ingress, 4, source, &label);
             settled = self.wait(ingress, |status| {
                 assert!(
-                    started.elapsed() < Duration::from_secs(90),
-                    "{phase}: four keyed reentry exceeded 90 seconds"
+                    started.elapsed() < budget,
+                    "{phase}: four keyed reentry exceeded {budget:?}"
                 );
                 if !status["active"].is_null() || status["queued"] != 0 {
                     return false;
@@ -558,6 +601,39 @@ fn four_process_state_recovery_partition_and_independent_replay() {
                 .is_some_and(|status| !status["consensus_position"].is_null())
         })
         .unwrap();
+    // Seal the first period with the provider offline before opening B's
+    // short voting window. The remaining three signers must agree on that
+    // handoff, then B can test approval and proof fetch on a ready period.
+    let offline_question = lab.file("before-b-offline.nao");
+    fs::write(
+        &offline_question,
+        "foundation = \"naome:zfc\"\nstatement = forall(x, implies(equal(x, x), equal(x, x)))\n",
+    )
+    .unwrap();
+    let offline = lab.submit(
+        b_ingress,
+        5,
+        PathBuf::from(offline_question),
+        "before-b-offline",
+    );
+    let ready = lab.wait(b_ingress, |status| {
+        if status["height"].as_u64() <= before_b["height"].as_u64()
+            || !status["active"].is_null()
+            || status["queued"] != 0
+        {
+            return false;
+        }
+        let question = raw(&["question".into(), lab.config(b_ingress), offline.clone()]);
+        question.status.success()
+            && serde_json::from_slice::<Value>(&question.stdout)
+                .is_ok_and(|result| result["status"] == "NotApproved")
+    });
+    lab.assert_same(&[1, 2, 3], &ready);
+    for index in 1..4 {
+        lab.wait(index, |status| {
+            status["height"] == ready["height"] && status["consensus_position"].is_object()
+        });
+    }
     let b = lab.submit(b_ingress, 5, example("question-b.nao"), "b");
     lab.wait(b_ingress, |status| {
         status["active"]["submission"] == b && status["active"]["phase"] == "Voting"
