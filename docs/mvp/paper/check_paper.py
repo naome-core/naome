@@ -48,8 +48,6 @@ for page in reader.pages:
             assert any(k in descriptor.get_object() for k in ('/FontFile', '/FontFile2', '/FontFile3'))
 links = {a.get_object().get('/A', {}).get('/URI') for page in reader.pages for a in page.get('/Annots', [])}
 assert links == ({'https://arxiv.org/html/1807.04938v3'} if variant else {'https://arxiv.org/html/1807.04938v3',
-                 'https://bitcoin.org/bitcoin.pdf',
-                 'https://developer.bitcoin.org/devguide/block_chain.html',
                  'https://ethereum.org/guides/how-to-create-an-ethereum-account/',
                  'https://ethereum.org/developers/docs/gas/',
                  'https://ethereum.org/developers/docs/consensus-mechanisms/pos/attestations'})
