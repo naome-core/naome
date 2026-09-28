@@ -218,6 +218,41 @@ On the participant machine, with the forwarded endpoint at `127.0.0.1:45800`:
 "$BIN" remote-send 127.0.0.1:45800 participant-genesis.bin submit.action
 ```
 
+Discover finalized research from the same forwarded loopback endpoint:
+
+```sh
+"$BIN" gateway results 127.0.0.1:45800
+"$BIN" gateway results 127.0.0.1:45800 NEXT_CURSOR
+"$BIN" gateway result 127.0.0.1:45800 SUBMISSION_ID
+"$BIN" gateway download-proof 127.0.0.1:45800 participant-genesis.bin ROOT_PROOF_ID proof-files
+"$BIN" check-proof participant-genesis.bin proof-files/ROOT_PROOF_ID.proof proof-files/DEPENDENCY_ID.proof
+"$BIN" package participant-genesis.bin author.key later.package later-root.nao --reference proof-files/ROOT_PROOF_ID.proof
+```
+
+`results` returns at most 20 finalized question submissions in deterministic
+admission-coordinate and submission-ID order. Use `--limit 1` through
+`--limit 20` after the address or cursor for a smaller page. An exclusive
+`next_cursor` appears when more rows are present. Each row also has a cursor.
+The cursor binds the genesis and finalized head plus the row's height, index,
+and ID. If state grows, an old cursor is rejected as stale; restart from the
+first page to avoid skipped results, including across successor runs. The
+result detail identifies a selected root when the family has one. `gateway
+proof` returns one selected certificate and direct dependency IDs; `gateway
+download-proof` follows the bounded dependency closure, checks every certificate
+locally, and saves each by ProofId. Pass dependency files in the reported
+`dependency_order` before the root when checking manually. Reuse a selected
+proof as an explicit `--reference` in later authoring. The client needs only
+the forwarded port and public genesis file; it does not need a node socket or
+validator files.
+
+The catalogue, detail, and proof responses report the connected node's
+finalized state view and its head. Local `check-proof` establishes certificate
+mathematics against the supplied Foundation and dependencies; it does not
+establish that the gateway's selected-history claim is true. Independently
+replay an exported archive with `verify` or `verify-lineage` for that separate
+finality check. The gateway never sends raw archive frames, pending actions,
+reveal secrets, validator configuration, or keys.
+
 Compare the genesis ID from `profile-info` with the operator's authenticated,
 out-of-band genesis ID before signing. `remote-vote`, `remote-commit`,
 `remote-reveal`, and `remote-join-intent` use the same `ADDRESS GENESIS` prefix
