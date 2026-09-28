@@ -672,7 +672,7 @@ Roman, Arial Unicode and Andale Mono fonts and writes `whitepaper-en.pdf`. Rende
 and visually inspect every page after changes; structural checks alone do not
 qualify layout. The draft states an open-ended permissionless target and its
 unresolved protocol choices, including a non-mining committee candidate and
-separate research competition.
+separate Proof of Useful Work research competition.
 The [candidate architecture](requirements.md#candidate-non-mining-public-consensus-and-research-competition-proposal)
 is a design and staged test plan; these commands exercise the current finite
 v7 roster, not proposed public authority. The requirement and verification

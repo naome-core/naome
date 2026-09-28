@@ -74,7 +74,7 @@ no proposed public authority inherits that finality automatically. Branch
 conflicts, irreversible settlement, archive anchors and amendment consent must
 be resolved before a public finality claim.
 
-**State and parallel research competition.** Each accepted record applies atomically to
+**State and parallel Proof of Useful Work.** Each accepted record applies atomically to
 its exact parent state. Full nodes check author signatures and nonces, canonical
 proof bytes and dependencies, bounded checker work, family uniqueness,
 beneficiaries and any authorized payment. Candidate operations include
@@ -88,9 +88,14 @@ deadlines, and settlement. Reserve capacity for `C` concurrent windows, at most
 review and delivery work. Opening and settlement order must be deterministic
 when several windows become due in one record.
 
-**Shortest valid proof for each question.** After a fixed commitment window and
-a later fixed disclosure window, compare only timely, completely valid
-submissions for that question against its frozen context. Score the original
+**Proof of Useful Work (PoUW) for each question.** In this public research
+candidate, fewer canonically counted proof steps for the same frozen question
+is better. This is useful formal proof-search work, separate from record-ordering
+authority. A fixed commitment window followed by a disclosure window is one
+candidate for determining eligible submissions; a rolling contest needs
+replacement and payout-finality rules. The choice is open. Compare only timely,
+completely valid submissions for that question against its frozen context.
+Score the original
 signed complete bundle: count every canonical proof-normal-form derivation step
 in its root and all submitted new helpers, including helpers later pruned from
 publication. Aliases and citations cannot hide new helper work. An older certified
@@ -106,18 +111,18 @@ eligibility, anti-farming rules and separate hard depth/work/byte caps for full
 validation. The exact normalization and scoring units remain a protocol
 decision. Minimize the chosen length; break equal lengths by finalized
 commitment-receipt order, then canonical
-submission hash. Missing, late or invalid disclosures are ineligible. A
-question without a valid disclosure expires unresolved, and its capacity is
-released by a deterministic record. These rules choose the shortest *eligible
-submitted* proof in that window, not a globally shortest mathematical proof.
+submission hash. Under the fixed-window option, missing, late or invalid
+disclosures are ineligible; a question without a valid disclosure expires
+unresolved and releases capacity through a deterministic record. These rules
+choose the shortest *eligible submitted* proof in that window, not a globally
+shortest mathematical proof.
 For example, if simultaneous questions A and B have valid lengths 18 and 12,
 and 7 and 9 respectively, A selects 12 and B selects 7; A's entries never
-compete with B's. A rolling record-by-record contest would need a separate
-replacement and payout-finality rule and remains an open alternative.
+compete with B's. The examples compare results only within their own questions.
 Question admission, reference charging and rewards still need explicit decisions.
-An unanswered question must not stop ordinary record production; proof length
-ranks a verified result for that question, but does not certify the author's
-discovery effort or supply Sybil-resistant consensus influence, continuous
+An unanswered question must not stop ordinary record production. PoUW ranks a
+verified result for that question; step count does not certify the author's
+spent CPU time or supply Sybil-resistant consensus influence, continuous
 record production or finality. Per-question comparison avoids ranking unlike
 questions against one another.
 

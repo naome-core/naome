@@ -3,7 +3,7 @@
 
 [META] Whitepaper · Draft v0.2 · 28 September 2026 · Public-network target and bounded v7
 
-[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, earliest valid commitment completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside multiple simultaneous questions whose valid submissions are compared by proof length within each question. Authority, admission, scoring, rewards and migration remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
+[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, earliest valid commitment completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside parallel research questions ranked separately by shortest valid proof as Proof of Useful Work. Authority, admission, scoring details, rewards and migration remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
 
 ## 1. Purpose and scope
 
@@ -363,7 +363,7 @@ These are open design decisions, not rules adopted by the current profile.
 Founder control remains an explicit risk until a specified and observed
 redistribution of effective authority changes it.
 
-### 9.4. Candidate public committee and parallel research competition
+### 9.4. Candidate public committee and Proof of Useful Work
 
 The public candidate uses no competitive nonce or hash search. Cryptographic
 hashes bind identities, commitments and state roots without granting votes.
@@ -389,8 +389,11 @@ bytes, review and delivery capacity across all <i>C</i> windows and at most
 order. Current v7 still allows only one active attempt and selects the
 earliest eligible valid commitment receipt.
 
-For each proposed question, a fixed commitment window followed by a fixed
-disclosure window defines eligible proofs. Score the original signed bundle:
+For each proposed question, Proof of Useful Work (PoUW) ranks valid submitted
+proofs by canonically counted derivation steps: fewer steps for the same frozen
+question is better. A fixed commitment and disclosure window is one way to
+define eligible submissions. A rolling contest is another, needing replacement
+and payout-finality rules; this timing choice remains open. Score the original signed bundle:
 count every canonical proof-normal-form step in the root and all submitted new
 helpers, including those later pruned from publication. The current proof
 normal form treats a certified older reference as a leaf and does not minimize
@@ -403,15 +406,15 @@ reference eligibility, anti-farming rules and separate depth, work and byte
 caps for complete validation. Define normalization and scoring units before
 adoption. Among timely, fully valid submissions, choose the smallest score;
 break ties by finalized commitment receipt, then canonical submission hash.
-Missing, late or invalid disclosures cannot win. No valid disclosure leaves
-the question unresolved and releases its capacity. This selects the shortest
-eligible <i>submitted</i> proof, not a globally shortest mathematical proof.
+Under the fixed-window option, missing, late or invalid disclosures cannot
+win; no valid disclosure leaves the question unresolved and releases its
+capacity. This selects the shortest eligible <i>submitted</i> proof, not a
+globally shortest mathematical proof.
 
 For example, simultaneous A has valid lengths 18 and 12, while B has 7 and 9.
-A selects 12 and B selects 7; their lengths never compete. A rolling contest
-is an open alternative needing replacement and payout-finality rules. Proof
-length ranks a verified result for one question, not the author's discovery
-effort; it grants no Sybil-resistant voting influence, record liveness or
+A selects 12 and B selects 7; their lengths never compete. PoUW rewards useful
+proof-search results, while step count measures the proof rather than spent CPU
+time. It grants no Sybil-resistant voting influence, record liveness or
 finality. Question admission, payments and service funding remain undecided.
 
 Bound operation bytes, signatures, proof work, library lookup, state growth
@@ -446,7 +449,7 @@ permissionless pseudonymous access and a verifiable, bounded path to validator
 authority. The v7 implementation demonstrates a finite trust-based slice,
 including sealed proof attribution and linked successor replay. It does not resolve founder control, Sybil cost, resource funding or public transport.
 The non-mining committee candidate separates record production from research
-competition, but its authority, finality, reward, question and migration rules
+PoUW, but its authority, finality, reward, question and migration rules
 remain open.
 Those choices and separate-machine evidence are prerequisites to a public
 safety or continuous-service claim.
