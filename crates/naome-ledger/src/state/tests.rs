@@ -99,6 +99,41 @@ fn state_with_claim() -> (LedgerState, ResolutionId, AccountId) {
 }
 
 #[test]
+fn terminal_continuation_preserves_paid_family_and_claim_without_repaying() {
+    let (mut state, family, author) = state_with_claim();
+    state.height = 1;
+    while state.capacity.remaining() >= state.genesis.profile().minimum_run_records_for(4).unwrap()
+    {
+        state.capacity.ordinary_record().unwrap();
+    }
+    state
+        .capacity
+        .terminate(state.genesis.profile(), state.authority.units().len())
+        .unwrap();
+    state.terminated = true;
+    let before_balance = state.balances.accounts().clone();
+    let before_reserve = state.balances.reserve();
+    let before_paid = state.balances.paid_completions();
+    let result = state.continue_terminal().unwrap();
+    assert_eq!(result.balances.accounts(), &before_balance);
+    assert_eq!(result.balances.reserve(), before_reserve);
+    assert_eq!(result.balances.paid_completions(), before_paid);
+    assert_eq!(result.claims.get(&family).unwrap().author, author);
+    assert!(matches!(
+        result.families.get(&family),
+        Some(FamilyResult::Completed { author: paid_author, .. }) if *paid_author == author
+    ));
+    assert_eq!(result.used_period_keys, state.used_period_keys);
+    assert_eq!(result.height, 0);
+    assert_eq!(result.lineage_height, 1);
+    assert!(!result.terminated);
+    assert_eq!(
+        result.capacity.remaining(),
+        result.genesis.profile().limits().run_records
+    );
+}
+
+#[test]
 fn only_earlier_paid_claim_author_can_finalize_an_intent() {
     let (state, family, author) = state_with_claim();
     let consensus = candidate(71);

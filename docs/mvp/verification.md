@@ -1,6 +1,6 @@
 # Trusted research MVP verification
 
-The current authority-period implementation uses canonical `state-v6` history through
+The current authority-period implementation uses canonical `state-v7` history through
 `naome`, `naome-validator`, and `naome-verifier`. The checked artifact DAG is the
 proof-library component of that complete state. The historical `state-v1`
 qualification recorded source identities, commands, output hashes, the real-agent
@@ -11,8 +11,9 @@ below identify executable test sources; a source pointer is not a passing run.
 Every recorded run establishes evidence only for its named snapshot.
 
 The older lab and CI reports below qualify only their named historical snapshots.
-They do not qualify the current v6 implementation. There is one supported
-prerelease model; fresh genesis and stores are required for it.
+They do not qualify the current v7 implementation. There is one supported
+prerelease model. An opening run needs fresh genesis and stores; a linked run
+needs its exact sealed predecessor and new stores.
 
 ## Portable v6 pilot evidence on 2026-09-27
 
@@ -46,14 +47,15 @@ run. Python pilot tests passed 38 cases, and pinned release-profile process
 tests passed for both `naome-validator` and `naome-verifier` after a matching
 `--no-run` build barrier.
 
-## Current state-v6 roster decision
+## Current state-v7 roster decision
 
-The current v6 protocol installs four bootstrap validators and permits earned
+The current v7 protocol installs four bootstrap validators and permits earned
 admission through 32 installed slots. At 32, a valid new claimant replaces the
 oldest installed unit. The installed-slot quorum is 22 at the ceiling. Genesis,
 snapshot, handoff, vote, time and seal decoding enforce the same 32-slot bound.
 This is a controlled testnet limit, not a production sizing result.
 
+The following roster measurements belong to earlier v6 source snapshots.
 The optimized 32-process direct runs below converged at one common height-two
 head and state in 27.103–36.653 seconds; the paired local proxy runs with
 50 ms one-way delay converged in 36.852 and 36.919 seconds. Two clean
@@ -755,3 +757,17 @@ syntax checks passed. This evidence is a one-host process run with manual owner
 policies, not real-agent, real-time Lab/research, or physical multi-machine
 qualification. Required multi-platform, two-profile CI is assessed separately
 on the PR.
+
+## Terminal-linked successor local evidence (2026-09-28)
+
+The explicit `paid_proof_survives_terminal_successor_and_is_cited_once` process
+test passed on one macOS host in the pinned Rust `test` profile (302.88 seconds).
+Four validator processes finalized a paid proof and terminal record, then
+restarted from independently replayed predecessor history with the sealed
+successor keys. The successor preserved balances, reserve, claims and proof
+count, rejected an old signed action, cited a predecessor proof, and paid the
+predecessor family only its new citation reward. Independent lineage replay
+accepted both archives and rejected changed or missing predecessor finality.
+This is one-host process evidence; it does not qualify separate-machine
+operation. The current PR's two-profile CI and any physical-host run are
+reported separately.

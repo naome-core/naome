@@ -1,6 +1,7 @@
 use super::{Result, files};
 use naome_ledger::{LedgerState, OperationId, receipt::NormalizationReceipt, state::FamilyResult};
 use serde_json::{Value, json};
+use sha2::Digest;
 
 /// Human-readable summary of the fixed research admission rules. Numerical
 /// ceilings remain in the immutable profile's `limits` output.
@@ -41,11 +42,26 @@ pub fn question(state: &LedgerState, id: OperationId) -> Result<Value> {
             normalization_receipt,
             ..
         }) => {
-            let decoded =
-                NormalizationReceipt::decode_recorded(normalization_receipt, state.genesis())?;
             value["outcome"] = json!(format!("{outcome:?}").to_uppercase());
             value["completion_ordinal"] = json!(ordinal);
-            value["normalization"] = receipt(&decoded);
+            let recorded_genesis = normalization_receipt
+                .get(2..34)
+                .ok_or("historical normalization receipt truncated")?;
+            value["normalization"] = if recorded_genesis == state.genesis().id().as_bytes() {
+                receipt(&NormalizationReceipt::decode_recorded(
+                    normalization_receipt,
+                    state.genesis(),
+                )?)
+            } else if state.genesis().predecessor().is_some() {
+                json!({
+                    "historical_genesis": files::hex(recorded_genesis),
+                    "recorded_sha256": files::hex(&sha2::Sha256::digest(normalization_receipt)),
+                    "recorded_len": normalization_receipt.len(),
+                    "detail": "inspect the original run archive for the decoded receipt"
+                })
+            } else {
+                return Err("normalization receipt belongs to another genesis".into());
+            };
             let selected = state
                 .library()
                 .lookup(*proof)

@@ -2,9 +2,10 @@ use super::*;
 
 impl LedgerState {
     pub(super) fn write_state(&self, w: &mut Writer) {
-        w.u16(6);
+        w.u16(7);
         w.fixed(self.genesis.id().as_bytes());
         w.u64(self.height);
+        w.u64(self.lineage_height);
         w.u64(self.time);
         w.bytes(&self.authority.encode())
             .expect("bounded authority snapshot");

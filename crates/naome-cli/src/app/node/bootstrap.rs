@@ -17,12 +17,38 @@ pub(super) fn open(
     runtime_config: StateRuntimeConfig,
 ) -> Result<StateRuntime> {
     let genesis = config.genesis()?;
-    let history = StateHistory::open(
-        &config.history,
-        &config.history_anchor,
-        genesis.clone(),
-        config.maximum_round,
-    )?;
+    let history = if genesis.predecessor().is_some() {
+        let pairs = config
+            .lineage
+            .iter()
+            .map(|p| (p.genesis.as_path(), p.archive.as_path()))
+            .collect::<Vec<_>>();
+        let predecessor = crate::archive::replay_lineage(&pairs)?;
+        let terminal = predecessor
+            .last_finality
+            .as_ref()
+            .ok_or("predecessor terminal finality missing")?;
+        let initial = naome_consensus::state::StateBranch::from_terminal_finality(terminal)?;
+        if initial.state().genesis() != &genesis {
+            return Err("configured successor genesis differs from terminal plan".into());
+        }
+        StateHistory::open_successor(
+            &config.history,
+            &config.history_anchor,
+            terminal,
+            config.maximum_round,
+        )?
+    } else {
+        if !config.lineage.is_empty() {
+            return Err("opening genesis cannot name predecessor archives".into());
+        }
+        StateHistory::open(
+            &config.history,
+            &config.history_anchor,
+            genesis.clone(),
+            config.maximum_round,
+        )?
+    };
     let owner = files::key(&config.account_key, 1)?;
     let owner_id = AccountId::for_key(owner.verifying_key().as_bytes());
     StateSigner::retire_predecessors(
@@ -66,14 +92,9 @@ pub(super) fn open(
         },
     )?;
     let state = history.head()?.state().clone();
-    if state.terminated() {
-        StatePeriodCustody::retire_terminal_selected(
-            &config.custody,
-            &config.custody_anchor,
-            &history,
-            &owner,
-        )?;
-    }
+    // A terminal successor plan retains its selected incoming key custody.
+    // The explicit continuation step verifies and transfers it before any
+    // new-run signer can open.
     let candidate_family = config
         .candidate_family
         .as_deref()

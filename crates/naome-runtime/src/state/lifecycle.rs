@@ -645,16 +645,10 @@ impl StateRuntime {
             self.retire_outgoing()?;
         }
         if selected.terminated() {
-            if let Some(custody) = self.next_custody.take() {
-                custody.retire()?;
-            } else {
-                StatePeriodCustody::retire_terminal_selected(
-                    &custody_dir,
-                    &custody_anchor,
-                    self.node.history(),
-                    &setup_owner,
-                )?;
-            }
+            // The terminal seal fixes the only linked successor. Retain the
+            // selected fresh keys for an explicit, crash-safe successor setup;
+            // the terminated branch itself never opens their old-run signer.
+            self.next_custody.take();
             let mut seed = Zeroizing::new(recovery_key.to_bytes());
             let identity = Keypair::ed25519_from_bytes(&mut *seed)
                 .map_err(|error| StateRuntimeError::Transport(error.to_string()))?;

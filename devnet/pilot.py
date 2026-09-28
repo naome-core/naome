@@ -188,8 +188,8 @@ def check(bundle, native):
     config, manifest = read(bundle / 'node.json'), read(bundle / 'pilot.json')
     require(manifest['version'] == 1 and type(manifest['node_index']) is int
             and 0 <= manifest['node_index'] < 4, 'unsupported pilot bundle')
-    require(config['version'] == 6 and config['simulation'] is False,
-            'pilot requires configuration v6 with simulation disabled')
+    require(config['version'] == 7 and config['simulation'] is False,
+            'pilot requires configuration v7 with simulation disabled')
     require(all(config[k] == v for k, v in PATHS.items()), 'bundle paths were changed')
     recovery = config['recovery_endpoints']
     index = manifest['node_index']

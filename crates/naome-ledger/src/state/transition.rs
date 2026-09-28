@@ -88,7 +88,10 @@ impl LedgerState {
             }
             for (index, operation) in operations.iter().enumerate() {
                 let coordinate = AdmissionCoordinate {
-                    height,
+                    height: self
+                        .lineage_height
+                        .checked_add(height)
+                        .ok_or(LedgerError::Overflow)?,
                     operation_index: index as u32,
                 };
                 let (accepted, active) =
@@ -816,7 +819,10 @@ impl LedgerState {
         // System settlement has a separate fixed coordinate after the bounded
         // ordinary-operation index range, so it cannot collide with a user receipt.
         let coordinate = AdmissionCoordinate {
-            height: self.height,
+            height: self
+                .lineage_height
+                .checked_add(self.height)
+                .ok_or(LedgerError::Overflow)?,
             operation_index: self.genesis.profile().limits().operations_per_record as u32,
         };
         self.library.publish(&normalized, coordinate)?;

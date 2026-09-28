@@ -9,12 +9,21 @@ use naome_ledger::{
 use serde::{Deserialize, Serialize};
 
 pub(super) mod candidate;
+pub(super) mod successor;
 #[cfg(test)]
 mod tests;
 use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[derive(Clone)]
+pub struct ArchivePair {
+    pub genesis: PathBuf,
+    pub archive: PathBuf,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +54,10 @@ pub struct NodeConfig {
     pub handoff_endpoint: String,
     #[serde(default)]
     pub handoff_listen_address: Option<std::net::SocketAddr>,
+    /// Complete predecessor archives, oldest first. A linked run cannot
+    /// reopen until every predecessor is replayed and its bridge checked.
+    #[serde(default)]
+    pub lineage: Vec<ArchivePair>,
 }
 impl NodeConfig {
     pub fn read(path: &Path) -> Result<Self> {
@@ -80,6 +93,17 @@ impl NodeConfig {
         ] {
             if field.is_relative() {
                 *field = parent.join(&*field);
+            }
+        }
+        if config.lineage.len() > 32 {
+            return Err("too many predecessor archives".into());
+        }
+        for pair in &mut config.lineage {
+            if pair.genesis.is_relative() {
+                pair.genesis = parent.join(&pair.genesis);
+            }
+            if pair.archive.is_relative() {
+                pair.archive = parent.join(&pair.archive);
             }
         }
         Ok(config)
@@ -290,6 +314,7 @@ pub fn run(args: &[String]) -> Result<()> {
             listen_address: None,
             handoff_endpoint: handoff_endpoints[index].clone(),
             handoff_listen_address: None,
+            lineage: Vec::new(),
         });
     }
     let retirement_order = retirement_indices

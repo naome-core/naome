@@ -129,7 +129,7 @@ impl Directory {
     }
     fn config(&self) -> NodeConfig {
         NodeConfig {
-            version: 6,
+            version: naome_ledger::profile::STATE_PROTOCOL_VERSION,
             primary_endpoint: "127.0.0.1:44000".into(),
             candidate_family: None,
             recovery_endpoints: vec!["127.0.0.1:44000".into(), "127.0.0.1:44004".into()],
@@ -152,6 +152,7 @@ impl Directory {
             listen_address: None,
             handoff_endpoint: "127.0.0.1:44004".into(),
             handoff_listen_address: None,
+            lineage: Vec::new(),
         }
     }
 }

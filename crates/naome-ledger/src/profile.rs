@@ -11,13 +11,15 @@ use ed25519_dalek::VerifyingKey;
 
 use crate::LedgerError;
 use crate::codec::{Reader, Writer};
-use crate::identity::{AccountId, GenesisId, ProfileId, ValidatorId, hash};
+use crate::identity::{
+    AccountId, GenesisId, ProfileId, RecordId, StateCommitment, ValidatorId, hash,
+};
 
 /// Supported checker and research normalization contract. Unknown namespaces
 /// require a distinct implementation and are rejected before a run starts.
 pub const STATE_CHECKER_PROFILE: &str = "naome:zfc:checker:state-v1";
 /// Research protocol with sealed authority periods and a bounded growing roster.
-pub const STATE_PROTOCOL_VERSION: u16 = 6;
+pub const STATE_PROTOCOL_VERSION: u16 = 7;
 pub const MIN_VALIDATORS: usize = 4;
 pub const MAX_VALIDATORS: usize = 32;
 /// Strictly more than two thirds of installed slots, including vacant slots.
@@ -53,8 +55,8 @@ pub const SIGNER_STOP_FRAME_BYTES: u64 = 1 + 8 + 32 + 36;
 /// One parent-bound offer journal, optional candidate import, secret files and anchors.
 pub const PERIOD_CUSTODY_BYTES_BOUND: u64 = 8192;
 
-const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF6";
-const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS6";
+const PROFILE_MAGIC: &[u8; 8] = b"NAOPROF7";
+const GENESIS_MAGIC: &[u8; 8] = b"NAOGENS7";
 const MAX_PROFILE_BYTES: usize = 4096;
 const MAX_GENESIS_BYTES: usize = 128 * 1024;
 
@@ -282,11 +284,11 @@ impl Profile {
     }
     pub fn name(&self) -> &'static str {
         match self.kind {
-            TimingKind::Lab => "state-v6-lab",
-            TimingKind::Research => "state-v6-research",
-            TimingKind::ShortTest => "state-v6-short-test",
-            TimingKind::ProcessTest => "state-v6-process-test",
-            TimingKind::CiTest => "state-v6-ci-test",
+            TimingKind::Lab => "state-v7-lab",
+            TimingKind::Research => "state-v7-research",
+            TimingKind::ShortTest => "state-v7-short-test",
+            TimingKind::ProcessTest => "state-v7-process-test",
+            TimingKind::CiTest => "state-v7-ci-test",
         }
     }
     /// Minimum finite run for an opening electorate, including the terminal
@@ -505,7 +507,7 @@ impl Profile {
         Ok(result)
     }
     pub fn id(&self) -> ProfileId {
-        ProfileId::from_bytes(hash(b"naome:state:profile:v6\0", &[&self.encode()]))
+        ProfileId::from_bytes(hash(b"naome:state:profile:v7\0", &[&self.encode()]))
     }
 }
 
@@ -542,6 +544,40 @@ impl ValidatorRegistration {
 
 /// Canonically ordered, validated genesis. The private fields prevent mutation
 /// after validation; constructing another value produces another run identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PredecessorLink {
+    genesis: GenesisId,
+    terminal_head: RecordId,
+    terminal_state: StateCommitment,
+    terminal_authority: [u8; 32],
+    terminal_height: u64,
+    cumulative_height: u64,
+    run_index: u64,
+}
+impl PredecessorLink {
+    pub const fn genesis(&self) -> GenesisId {
+        self.genesis
+    }
+    pub const fn terminal_head(&self) -> RecordId {
+        self.terminal_head
+    }
+    pub const fn terminal_state(&self) -> StateCommitment {
+        self.terminal_state
+    }
+    pub const fn terminal_authority(&self) -> &[u8; 32] {
+        &self.terminal_authority
+    }
+    pub const fn terminal_height(&self) -> u64 {
+        self.terminal_height
+    }
+    pub const fn cumulative_height(&self) -> u64 {
+        self.cumulative_height
+    }
+    pub const fn run_index(&self) -> u64 {
+        self.run_index
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Genesis {
     profile: Profile,
@@ -555,6 +591,10 @@ pub struct Genesis {
     /// Explicit order in which bootstrap slots may eventually be retired.
     /// It records policy only; it does not authorize a retirement.
     retirement_order: Vec<ValidatorId>,
+    /// An exact terminal predecessor. The bootstrap roster above remains the
+    /// original identity template; selected successor authority is carried
+    /// from sealed predecessor state, including earned and vacant slots.
+    predecessor: Option<PredecessorLink>,
 }
 
 impl Genesis {
@@ -589,6 +629,7 @@ impl Genesis {
             accounts,
             validators,
             retirement_order,
+            predecessor: None,
         };
         result.validate()?;
         Ok(result)
@@ -608,6 +649,14 @@ impl Genesis {
         }
         if self.protocol_version != STATE_PROTOCOL_VERSION || self.run_nonce == [0; 32] {
             return Err(LedgerError::Invalid("genesis version or run nonce"));
+        }
+        if let Some(link) = self.predecessor
+            && (link.terminal_height == 0
+                || link.run_index == 0
+                || link.cumulative_height < link.terminal_height
+                || self.run_nonce != successor_nonce(link))
+        {
+            return Err(LedgerError::Invalid("successor genesis link"));
         }
         // Leave enough UTC range for every timing interval without wrapping.
         self.start_utc
@@ -716,6 +765,36 @@ impl Genesis {
     pub fn retirement_order(&self) -> &[ValidatorId] {
         &self.retirement_order
     }
+    pub const fn predecessor(&self) -> Option<PredecessorLink> {
+        self.predecessor
+    }
+    pub(crate) fn successor(
+        &self,
+        terminal_head: RecordId,
+        terminal_state: StateCommitment,
+        terminal_authority: [u8; 32],
+        terminal_height: u64,
+        cumulative_height: u64,
+        start_utc: u64,
+    ) -> Result<Self, LedgerError> {
+        let link = PredecessorLink {
+            genesis: self.id(),
+            terminal_head,
+            terminal_state,
+            terminal_authority,
+            terminal_height,
+            cumulative_height,
+            run_index: self.predecessor.map_or(Ok(1), |prior| {
+                prior.run_index.checked_add(1).ok_or(LedgerError::Overflow)
+            })?,
+        };
+        let mut next = self.clone();
+        next.start_utc = start_utc;
+        next.run_nonce = successor_nonce(link);
+        next.predecessor = Some(link);
+        next.validate()?;
+        Ok(next)
+    }
     pub fn account_key(&self, id: AccountId) -> Option<&[u8; 32]> {
         self.accounts
             .binary_search_by_key(&id, AccountRegistration::id)
@@ -753,6 +832,18 @@ impl Genesis {
         w.u16(self.retirement_order.len() as u16);
         for id in &self.retirement_order {
             w.fixed(id.as_bytes());
+        }
+        if let Some(link) = self.predecessor {
+            w.u8(1);
+            w.fixed(link.genesis.as_bytes());
+            w.fixed(link.terminal_head.as_bytes());
+            w.fixed(link.terminal_state.as_bytes());
+            w.fixed(&link.terminal_authority);
+            w.u64(link.terminal_height);
+            w.u64(link.cumulative_height);
+            w.u64(link.run_index);
+        } else {
+            w.u8(0);
         }
         w.finish()
     }
@@ -800,6 +891,19 @@ impl Genesis {
         for _ in 0..count {
             retirement_order.push(ValidatorId::from_bytes(r.fixed()?));
         }
+        let predecessor = match r.u8()? {
+            0 => None,
+            1 => Some(PredecessorLink {
+                genesis: GenesisId::from_bytes(r.fixed()?),
+                terminal_head: RecordId::from_bytes(r.fixed()?),
+                terminal_state: StateCommitment::from_bytes(r.fixed()?),
+                terminal_authority: r.fixed()?,
+                terminal_height: r.u64()?,
+                cumulative_height: r.u64()?,
+                run_index: r.u64()?,
+            }),
+            _ => return Err(LedgerError::Invalid("successor genesis link tag")),
+        };
         r.finish()?;
         // Do not normalize hostile wire order: exactly one representation is valid.
         let result = Self {
@@ -812,13 +916,29 @@ impl Genesis {
             accounts,
             validators,
             retirement_order,
+            predecessor,
         };
         result.validate()?;
         Ok(result)
     }
     pub fn id(&self) -> GenesisId {
-        GenesisId::from_bytes(hash(b"naome:state:genesis:v6\0", &[&self.encode()]))
+        GenesisId::from_bytes(hash(b"naome:state:genesis:v7\0", &[&self.encode()]))
     }
+}
+
+fn successor_nonce(link: PredecessorLink) -> [u8; 32] {
+    hash(
+        b"naome:state:successor-nonce:v7\0",
+        &[
+            link.genesis.as_bytes(),
+            link.terminal_head.as_bytes(),
+            link.terminal_state.as_bytes(),
+            &link.terminal_authority,
+            &link.terminal_height.to_be_bytes(),
+            &link.cumulative_height.to_be_bytes(),
+            &link.run_index.to_be_bytes(),
+        ],
+    )
 }
 
 fn valid_key(key: &[u8; 32]) -> Result<(), LedgerError> {

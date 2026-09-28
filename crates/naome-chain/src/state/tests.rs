@@ -693,7 +693,7 @@ fn streaming_state_commitment_matches_materialized_canonical_bytes() {
         let bytes = snapshot.canonical_bytes();
         assert_eq!(
             snapshot.commitment().as_bytes(),
-            &hash(b"naome:state:state:v6\0", &[&bytes])
+            &hash(b"naome:state:state:v7\0", &[&bytes])
         );
     }
 }

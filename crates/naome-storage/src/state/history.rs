@@ -57,6 +57,7 @@ struct Context {
     prefix: Vec<u8>,
     limits: Limits,
     genesis: Genesis,
+    initial: StateBranch,
     maximum_round: u64,
 }
 struct Replay {
@@ -72,7 +73,7 @@ struct Replay {
 }
 impl Replay {
     fn new(context: &Context) -> Result<Self, Error> {
-        let branch = StateBranch::from_genesis(LedgerState::new(context.genesis.clone()))?;
+        let branch = context.initial.clone();
         let commitment = branch.commitment();
         Ok(Self {
             branch,
@@ -142,7 +143,7 @@ impl Replay {
             .coordinates
             .get((height - 1) as usize)
             .ok_or(Error::Invalid("historical coordinate"))?;
-        let mut branch = StateBranch::from_genesis(LedgerState::new(context.genesis.clone()))?;
+        let mut branch = context.initial.clone();
         #[cfg(test)]
         self.historical_replays
             .set(self.historical_replays.get() + 1);
@@ -180,6 +181,57 @@ impl Replay {
 }
 
 impl StateHistory {
+    /// A linked history starts only from the predecessor's verified terminal
+    /// finality. The new journal prefix still commits the exact new genesis.
+    pub fn create_successor(
+        directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        terminal: &StateFinality,
+        maximum_round: u64,
+    ) -> Result<Self, Error> {
+        let initial = StateBranch::from_terminal_finality(terminal)?;
+        let context = context_with_initial(directory.as_ref(), initial, maximum_round)?;
+        let replay = Replay::new(&context)?;
+        let log = FileLog::create(
+            directory.as_ref(),
+            anchor_directory.as_ref(),
+            crate::JOURNAL_FILE_NAME,
+            crate::LOCK_FILE_NAME,
+            ANCHOR,
+            &context.prefix,
+            context.limits,
+        )?;
+        Ok(Self {
+            log,
+            replay,
+            context,
+        })
+    }
+    pub fn open_successor(
+        directory: impl AsRef<Path>,
+        anchor_directory: impl AsRef<Path>,
+        terminal: &StateFinality,
+        maximum_round: u64,
+    ) -> Result<Self, Error> {
+        let initial = StateBranch::from_terminal_finality(terminal)?;
+        let context = context_with_initial(directory.as_ref(), initial, maximum_round)?;
+        let mut replay = Replay::new(&context)?;
+        let log = FileLog::open(
+            directory.as_ref(),
+            anchor_directory.as_ref(),
+            crate::JOURNAL_FILE_NAME,
+            crate::LOCK_FILE_NAME,
+            ANCHOR,
+            &context.prefix,
+            context.limits,
+            |body| replay.apply(body, &context),
+        )?;
+        Ok(Self {
+            log,
+            replay,
+            context,
+        })
+    }
     #[cfg(test)]
     pub(super) fn historical_replay_count(&self) -> usize {
         self.replay.historical_replays.get()
@@ -254,9 +306,7 @@ impl StateHistory {
             return Ok(self.replay.branch.clone());
         }
         if height == 0 {
-            return Ok(StateBranch::from_genesis(LedgerState::new(
-                self.context.genesis.clone(),
-            ))?);
+            return Ok(self.context.initial.clone());
         }
         self.replay.parent(
             height
@@ -279,7 +329,7 @@ impl StateHistory {
             .last()
             .ok_or(Error::Invalid("selected history coordinate"))?;
         let mut previous = None;
-        let mut branch = StateBranch::from_genesis(LedgerState::new(self.context.genesis.clone()))?;
+        let mut branch = self.context.initial.clone();
         let mut height = 0usize;
         log::prefix_replay(
             &self.context.directory,
@@ -477,6 +527,24 @@ impl SelectedStateHistory for StateObserver {
 }
 
 fn context(directory: &Path, genesis: Genesis, maximum_round: u64) -> Result<Context, Error> {
+    if genesis.predecessor().is_some() {
+        return Err(Error::Invalid(
+            "linked history requires predecessor finality",
+        ));
+    }
+    let initial = StateBranch::from_genesis(LedgerState::new(genesis))?;
+    context_with_initial(directory, initial, maximum_round)
+}
+
+fn context_with_initial(
+    directory: &Path,
+    initial: StateBranch,
+    maximum_round: u64,
+) -> Result<Context, Error> {
+    if initial.state().height() != 0 || initial.state().terminated() {
+        return Err(Error::Invalid("invalid opening history state"));
+    }
+    let genesis = initial.state().genesis().clone();
     if maximum_round > genesis.profile().limits().consensus_rounds {
         return Err(Error::Limit("round replay ceiling"));
     }
@@ -511,6 +579,7 @@ fn context(directory: &Path, genesis: Genesis, maximum_round: u64) -> Result<Con
         prefix,
         limits,
         genesis,
+        initial,
         maximum_round,
     })
 }

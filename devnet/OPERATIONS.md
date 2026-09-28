@@ -82,9 +82,39 @@ time includes all threads in that validator process. Envelope bytes exclude
 Noise, TCP, libp2p framing, and retransmissions. Queue peaks come from status
 polls and can miss shorter spikes.
 
-The current v6 harness accepts four through 32 validators. This is a controlled
+The current v7 harness accepts four through 32 validators. This is a controlled
 local testnet ceiling; the larger historical runs in the verification record do
 not qualify a separate-machine deployment at that size.
+
+## Terminal successor continuation
+
+At the sealed terminal record, export each predecessor history while its
+terminal recovery service is running, then stop each validator. Independently
+verify the exported history before preparing a successor.
+Each operator then runs `naome continue-node PREDECESSOR_CONFIG
+PREDECESSOR_ARCHIVE NEW_DIRECTORY` with its own old node configuration and a
+new private directory. The command replays the full predecessor lineage,
+checks the local selected head against the archive, transfers only the sealed
+incoming keys, retires the old custody, and creates the successor history and
+signer. Repeating the command against the same directory resumes the transfer
+after an interrupted setup. It refuses an incomplete terminal seal or an
+archive that differs from local selected history.
+
+Start the successor validators with their new `node.json` files. Export the
+successor histories and run `naome-verifier verify-lineage` with ordered
+`GENESIS ARCHIVE` pairs from the opening run through the successor. Every pair
+is replayed from public genesis or the exact preceding terminal finality. A
+linked genesis by itself is not sufficient verification evidence. The first
+bridge retains installed owners and slot order, while the sealed handoff fixes
+fresh consensus and transport keys. Operators should retain all predecessor
+archives for independent verification of later runs.
+For a detailed successor question report, `naome inspect-lineage` takes the
+same ordered pairs followed by `SUBMISSION_ID OUTPUT_DIRECTORY`.
+For a candidate joining during a linked run, `candidate-setup` takes a final
+`PREDECESSOR_ARCHIVES_JSON` argument: an ordered JSON array of objects with
+`genesis` and `archive` paths. Its observer import replays these archives before
+the current run's export. A claim from a prior run still needs a fresh join
+intent signed for the current genesis.
 
 The forecast script prints assumed network-only propagation and envelope
 serialization components. It does not infer total wall time on 32 machines

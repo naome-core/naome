@@ -881,7 +881,9 @@ async fn cold_terminal_server_serves_final_record_to_a_late_owner() {
         assert!(node.runtime.network.staged().is_none());
         assert!(node.runtime.network.recovery().is_some());
         assert!(!node.directory.0.join("state-period-0.secret").exists());
-        assert!(!node.directory.0.join("state-period-1.secret").exists());
+        // The exact sealed incoming pair stays in custody for the explicit
+        // successor setup; it has no old-run signing authority.
+        assert!(node.directory.0.join("state-period-1.secret").exists());
     }
 
     // Shut down and reopen a completed peer before bringing the lagging node
@@ -932,7 +934,7 @@ async fn cold_terminal_server_serves_final_record_to_a_late_owner() {
     );
     assert_eq!(late.runtime.position().unwrap(), None);
     assert!(!late.directory.0.join("state-period-0.secret").exists());
-    assert!(!late.directory.0.join("state-period-1.secret").exists());
+    assert!(late.directory.0.join("state-period-1.secret").exists());
 }
 
 #[tokio::test]

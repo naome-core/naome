@@ -64,14 +64,17 @@ fn round(status: &Value, phase: &str) -> Result<SolutionRoundId> {
     )?))
 }
 enum Source {
-    Local(NodeConfig),
-    Remote { address: String, genesis: Genesis },
+    Local(Box<NodeConfig>),
+    Remote {
+        address: String,
+        genesis: Box<Genesis>,
+    },
 }
 impl Source {
     fn genesis(&self) -> Result<Genesis> {
         match self {
             Self::Local(config) => config.genesis(),
-            Self::Remote { genesis, .. } => Ok(genesis.clone()),
+            Self::Remote { genesis, .. } => Ok((**genesis).clone()),
         }
     }
     async fn status(&self, author: AccountId, command: &str) -> Result<Value> {
@@ -237,7 +240,7 @@ pub async fn account(args: &[String]) -> Result<()> {
             // Nonce one and an empty body make retries byte-identical, even
             // after registration finalizes or later account nonces are used.
             let operation = OperationBody::Register.sign(&config.genesis()?, 1, &key)?;
-            save_send(&Source::Local(config), &args[3], &operation).await
+            save_send(&Source::Local(Box::new(config)), &args[3], &operation).await
         }
         _ => Err("usage: account create KEY; account register CONFIG KEY ACTION".into()),
     }
@@ -273,7 +276,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     if args.len() != expected {
         return Err("usage: submit CONFIG KEY SOURCE PURPOSE ACTION; vote CONFIG KEY YES|NO ACTION; commit CONFIG KEY PACKAGE SECRET ACTION; reveal CONFIG KEY SECRET ACTION; join-intent CONFIG AUTHOR_KEY FAMILY_HEX CONSENSUS_KEY TRANSPORT_KEY ENDPOINT ACTION; send CONFIG ACTION".into());
     }
-    let source = Source::Local(NodeConfig::read(Path::new(&args[1]))?);
+    let source = Source::Local(Box::new(NodeConfig::read(Path::new(&args[1]))?));
     run_action(args, source).await
 }
 pub async fn remote(args: &[String]) -> Result<()> {
@@ -286,7 +289,7 @@ pub async fn remote(args: &[String]) -> Result<()> {
     let genesis = Genesis::decode(&files::read(Path::new(&args[2]), 128 * 1024, false)?)?;
     let source = Source::Remote {
         address: args[1].clone(),
-        genesis,
+        genesis: Box::new(genesis),
     };
     let mut local = Vec::with_capacity(args.len() - 1);
     local.push(command.to_owned());

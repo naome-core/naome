@@ -7,7 +7,7 @@ For a restartable operator process over an explicit sequence of supplied
 questions, proofs, and owner vote policies, see the
 [operator supervisor](operator-supervisor.md).
 
-These commands use a four-validator starting genesis on Unix. Fresh v6 genesis
+These commands use a four-validator starting genesis on Unix. Fresh v7 genesis
 may install four to 32 validators; the example below starts with four. The
 finite run needs at least `max(64, N + 2K + 7) + 1` records for its opening
 roster of `N` owners and commitment limit `K` (72 at 32 owners with `K=16`).
@@ -21,9 +21,14 @@ These checks do not establish multi-machine operation or public-network
 security. Track acceptance separately
 in [requirements.md](requirements.md).
 
-The current canonical protocol is `state-v6` and node configuration version 6.
+The current canonical protocol is `state-v7` and node configuration version 7.
 Use a fresh genesis and run directory. Incompatible earlier development data is
 rejected; this executable provides one current implementation and no migration.
+At a sealed terminal, v7 can start a new linked run from the exact terminal
+handoff. Operators must keep the predecessor archive and use the explicit
+`continue-node` step; a successor genesis file alone cannot reopen historical
+state. The [terminal continuation procedure](../../devnet/OPERATIONS.md#terminal-successor-continuation)
+records the restart and independent `verify-lineage` commands.
 The current files include `state.journal`, `state-finality.anchor`, per-period
 `state-signer-KEY.*`, `state-period-HEIGHT.*` custody, and `state-handoff-HEIGHT.*`.
 Each store has an independent anchor directory. Do not rename authority files,
@@ -57,8 +62,8 @@ overwrites an existing run. A non-signing observer can independently replay an
 exported completed run with `naome-verifier verify GENESIS EXPORT_DIRECTORY`;
 that entry point accepts only offline verification of the canonical state history
 on Unix and Windows. Validator operation still requires Unix durable custody.
-The validator accepts only `start CONFIG`; the verifier accepts only `verify`
-and help. Former V0 commands and the `state` prefix are unsupported and fail
+The validator accepts only `start CONFIG`; the verifier accepts `verify`,
+`verify-lineage`, and help. Former V0 commands and the `state` prefix are unsupported and fail
 without creating or converting authority.
 A short absolute path also leaves room for Unix
 control-socket path limits. The eight ports beginning at `44100` must be available: four primary endpoints

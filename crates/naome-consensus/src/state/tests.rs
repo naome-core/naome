@@ -1051,7 +1051,7 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
     let record_length = p.record_bytes().len();
     let first = proposal.len() - record_length;
     proposal[first] ^= 1;
-    let mut bytes = b"NSCF6".to_vec();
+    let mut bytes = b"NSCF7".to_vec();
     super::codec::bytes(&mut bytes, &proposal).unwrap();
     super::codec::bytes(&mut bytes, &[0, 0]).unwrap();
     super::codec::bytes(&mut bytes, &[]).unwrap();
@@ -1059,7 +1059,7 @@ fn finality_authentication_rejects_missing_quorum_before_record_decoding() {
         StateFinality::authenticate(&bytes, branch.state(), MAX_ROUND),
         Err(StateConsensusError::Limit("vote set"))
     );
-    let mut authenticated_bad = b"NSCF6".to_vec();
+    let mut authenticated_bad = b"NSCF7".to_vec();
     super::codec::bytes(&mut authenticated_bad, &proposal).unwrap();
     super::codec::bytes(&mut authenticated_bad, &qc.encode()).unwrap();
     super::codec::bytes(&mut authenticated_bad, &[]).unwrap();
@@ -1093,3 +1093,4 @@ fn provisional_ledger_execution_cannot_initialize_a_finalized_branch() {
 }
 
 mod handoff;
+mod successor;

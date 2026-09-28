@@ -21,11 +21,11 @@ use super::{
     log::{FileLog, Limits},
 };
 
-const MAGIC: &[u8; 8] = b"NAOSKEY6";
-const JOURNAL_MAGIC: &[u8; 8] = b"NAOSOFJ6";
+const MAGIC: &[u8; 8] = b"NAOSKEY7";
+const JOURNAL_MAGIC: &[u8; 8] = b"NAOSOFJ7";
 const OFFER: u8 = 1;
 const SIGNER_READY: u8 = 2;
-const CANDIDATE_MAGIC: &[u8; 8] = b"NAOCAND6";
+const CANDIDATE_MAGIC: &[u8; 8] = b"NAOCAND7";
 const KEY_FILE_MAX: u64 = 2048;
 const OFFER_BYTES_MAX: usize = 1024;
 type CustodyFiles = (Vec<u8>, Limits, String, String, String, String);
@@ -717,8 +717,8 @@ impl StatePeriodCustody {
         fs::remove_file(path)?;
         sync_secret_directory(directory)
     }
-    /// A selected finite terminal record never activates its incoming keys.
-    /// Complete their local retirement without reloading private material.
+    /// Remove a terminal bridge source only after the exact successor has
+    /// durably copied its selected fresh keys into new-run initial custody.
     pub fn retire_terminal_selected(
         directory: impl AsRef<Path>,
         anchor_directory: impl AsRef<Path>,
