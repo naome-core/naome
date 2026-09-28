@@ -112,8 +112,8 @@ another's previously accepted proofs, but no family may be paid twice for the
 same completed target. Define how a target proved through another question
 becomes known or settled without blocking valid citations.
 
-When valid results for different questions are ready together, the user wants
-shorter proofs processed first. This is an ordering rule, not a winner rule:
+When valid results for different questions are ready together, the candidate
+rule processes the shorter proof first. This orders results across questions;
 A's first solver and B's first solver each keep their own prize. The exact
 meaning of "ready together" (one record, one settlement batch or another
 finalized boundary), and whether order changes only inclusion or also service
