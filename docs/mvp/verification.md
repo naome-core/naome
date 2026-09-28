@@ -31,6 +31,7 @@ The older v6 256-seat experiments below remain historical local evidence.
 The non-mining committee architecture in [requirements](requirements.md#candidate-non-mining-public-consensus-and-research-competition-proposal)
 and the main paper is a design candidate only. No current test establishes an
 objective, Sybil-resistant public entry rule, open-ended committee rotation,
+concurrent question windows, per-question shortest-valid-proof settlement,
 public governance or long-run liveness and finality. Its proposed acceptance
 tests are future gates, not entries in the passing evidence below.
 

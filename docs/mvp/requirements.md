@@ -27,8 +27,8 @@ limits, and its behavior under founder censorship are open protocol decisions.
 Acceptance for this target requires a versioned rulebook and executable tests
 showing (1) public pseudonymous account admission within bounded per-action
 work, (2) objective, Sybil-resistant validator entry and rotation across finite
-active snapshots without a lifetime participation cap, (3) bounded admission
-and verification under adversarial load, (4) durable continuation and exact
+active snapshots without a lifetime participation cap, (3) bounded parallel
+question admission and verification under adversarial load, (4) durable continuation and exact
 verification of any imported v7 terminal history without duplicate rewards
 or lost proof attribution, and (5) physical multi-machine measurements of
 storage growth, throughput, recovery, and participation under churn. Passing
@@ -74,20 +74,52 @@ no proposed public authority inherits that finality automatically. Branch
 conflicts, irreversible settlement, archive anchors and amendment consent must
 be resolved before a public finality claim.
 
-**State and research competition.** Each accepted record applies atomically to
+**State and parallel research competition.** Each accepted record applies atomically to
 its exact parent state. Full nodes check author signatures and nonces, canonical
 proof bytes and dependencies, bounded checker work, family uniqueness,
 beneficiaries and any authorized payment. Candidate operations include
 registration, question admission, commitment, disclosure and settlement;
-versioned bytes and timing remain open. A question may use a finite commitment
-window followed by a finite disclosure window. The suggested fewest-proof-steps
-criterion is a research-scoring idea only. A candidate deterministic score could
-compare canonical checker steps, expanded dependency work, encoded bytes and
-dependency count after full validation and hard per-submission bounds, with
-receipt order and canonical submission hash breaking ties. Raw step count alone
-can hide expensive dependencies. The score and cost model need a public rule
-and measurements before adoption. An unanswered question gives no proof reward
-and must not stop ordinary record production.
+versioned bytes and timing remain open. Unlike the one-slot v7 profile, a public
+candidate may have up to a specified finite number `C` of active questions.
+Each question has its own family, frozen formal target, Foundation/checker
+version, admissible library/reference snapshot, commitment and disclosure
+deadlines, and settlement. Reserve capacity for `C` concurrent windows, at most
+`K` submissions per window, and the combined worst-case validation, storage,
+review and delivery work. Opening and settlement order must be deterministic
+when several windows become due in one record.
+
+**Shortest valid proof for each question.** After a fixed commitment window and
+a later fixed disclosure window, compare only timely, completely valid
+submissions for that question against its frozen context. Score the original
+signed complete bundle: count every canonical proof-normal-form derivation step
+in its root and all submitted new helpers, including helpers later pruned from
+publication. Aliases and citations cannot hide new helper work. An older certified
+proof reference is a leaf in the current [proof normal form](../../specs/proof-protocol.md#canonical-proof-normal-form),
+which does not minimize proofs. The proposed scoring rule is therefore new and must choose how
+to charge each distinct permitted older dependency. A reuse-aware option counts
+each older certified reference as one step, rewarding concise new work built on
+published results; a full-lineage option recursively charges the referenced
+proof's steps once per canonical dependency identity, limiting cheap chains of
+references but discouraging reuse. Recommend the reuse-aware option for the
+research goal, conditional on verified dependency closure, versioned reference
+eligibility, anti-farming rules and separate hard depth/work/byte caps for full
+validation. The exact normalization and scoring units remain a protocol
+decision. Minimize the chosen length; break equal lengths by finalized
+commitment-receipt order, then canonical
+submission hash. Missing, late or invalid disclosures are ineligible. A
+question without a valid disclosure expires unresolved, and its capacity is
+released by a deterministic record. These rules choose the shortest *eligible
+submitted* proof in that window, not a globally shortest mathematical proof.
+For example, if simultaneous questions A and B have valid lengths 18 and 12,
+and 7 and 9 respectively, A selects 12 and B selects 7; A's entries never
+compete with B's. A rolling record-by-record contest would need a separate
+replacement and payout-finality rule and remains an open alternative.
+Question admission, reference charging and rewards still need explicit decisions.
+An unanswered question must not stop ordinary record production; proof length
+ranks a verified result for that question, but does not certify the author's
+discovery effort or supply Sybil-resistant consensus influence, continuous
+record production or finality. Per-question comparison avoids ranking unlike
+questions against one another.
 
 The candidate invariants are identical replay of each finalized history at
 independent full nodes; no second selected settlement or eligibility effect for
@@ -100,7 +132,8 @@ claims exactly once; prevent old signatures and rewards from replaying under a
 new version. A successor commitment alone does not prove predecessor validity.
 
 **Resource, transport and security budget.** Bound record bytes, operations,
-registrations, open questions, commitments, proof work, lookup, state growth and
+registrations, concurrent open questions, commitments, aggregate proof work,
+lookup, state growth and
 peer buffers. Define objective question admission and a sustainable funding rule
 for validation, archival storage and network service without assuming that a
 fee, stake or new reward is already approved. Test key splitting, coordinated
@@ -112,8 +145,9 @@ an external market or security budget.
 
 **Initial bounded prototype acceptance.** On a pinned candidate profile,
 exercise independent committee members and full nodes with empty or control-only
-records, public key registration, competing valid and invalid disclosures, an
-older proof citation, and a single exact settlement. Reject unauthorized
+records, public key registration, two simultaneous questions with independent
+shortest valid winners, competing valid and invalid disclosures, an older proof
+citation, and exactly one settlement per family. Reject unauthorized
 proposals or votes, invalid signatures, excessive bytes or work, wrong state
 roots, invalid proofs, duplicate family effects and unauthorized spends. Force
 partitions, rotation, restart, lost acknowledgements, conflicting histories and
@@ -126,8 +160,9 @@ influence, finite committee selection, rotation, safety and liveness rules;
 pin authority and record vectors. (2) Implement and test bounded signed
 operations, resource metering and public research admission. (3) Specify and
 test continuation, exact migration of any v7 terminal state, once-only
-settlement and independent archive replay. (4) Test the finite research
-competition and its measured deterministic scoring rule. (5) Qualify public
+settlement and independent archive replay. (4) Test concurrent finite research
+competitions, frozen contexts, complete step accounting and independent
+shortest valid winners, including both reference-charging alternatives. (5) Qualify public
 discovery, home-NAT participation, multi-host churn, archival funding and
 governance. Each slice requires its own reviewed rule and evidence gate; this
 documentation authorizes no automatic implementation sequence.

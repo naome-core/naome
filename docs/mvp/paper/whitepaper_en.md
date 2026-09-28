@@ -3,7 +3,7 @@
 
 [META] Whitepaper · Draft v0.2 · 28 September 2026 · Public-network target and bounded v7
 
-[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, first valid completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside a separate finite research competition. Authority, admission, scoring, rewards and migration remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
+[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, earliest valid commitment completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside multiple simultaneous questions whose valid submissions are compared by proof length within each question. Authority, admission, scoring, rewards and migration remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
 
 ## 1. Purpose and scope
 
@@ -85,7 +85,7 @@ Helpers developed after approval may be used by later certificates in the normal
 
 Anyone may submit a question with its purpose and exact terms. Admission checks formalization and byte limits and reserves capacity; it does not imply approval. Finalized receipts establish queue position. Raw arrival at a peer carries no position guarantee.
 
-The bounded profile admits one active research attempt from opening through settlement or expiry; other questions wait. Increasing <i>N</i> changes the number of voters, not this capacity or the amount of proof checking per result. A future design with <i>C</i> simultaneous attempts would need separate reservation, closure, review and delivery bounds. Queue waiting adds to the voting window, which guarantees neither a ballot from every owner nor fair admission under flooding.
+The bounded profile admits one active research attempt from opening through settlement or expiry; other questions wait. Increasing <i>N</i> changes the number of voters, not this capacity or the amount of proof checking per result. The proposed public design with <i>C</i> simultaneous attempts needs separate reservation, closure, review and delivery bounds for each question and an aggregate bound across all active questions. Queue waiting adds to the voting window, which guarantees neither a ballot from every owner nor fair admission under flooding.
 
 Reservations cover voting and the bounded solution phase, including work on the original submission. For a frozen electorate of <i>N</i> and at most <i>K</i> commitments, the active-record reserve is at least max(64, <i>N</i> + 2<i>K</i> + 7), allowing each owner to vote in a separate record. A fresh genesis needs that reserve plus a terminal record; later growth may end question intake if too few records remain. Appendix E.1 specifies queue order, expiry, retries, family uniqueness, capacity reuse and join service.
 
@@ -363,72 +363,70 @@ These are open design decisions, not rules adopted by the current profile.
 Founder control remains an explicit risk until a specified and observed
 redistribution of effective authority changes it.
 
-### 9.4. Candidate public committee and research competition
+### 9.4. Candidate public committee and parallel research competition
 
-The proposed public direction does not use competitive nonce or hash searching
-for block production. Cryptographic hashes still bind canonical identities,
-commitments and state roots; calculating them grants no consensus weight.
-Research proofs are checked content, not a source of votes. This section
-proposes a finite active committee with open, objective, Sybil-resistant entry
-and rotation, without selecting the scarce influence mechanism or an
-implementation profile. The current v7 READY/TERMINAL seal remains its own
-bounded rule, not automatic public finality.
+The public candidate uses no competitive nonce or hash search. Cryptographic
+hashes bind identities, commitments and state roots without granting votes.
+Research proofs are checked content, not votes.
+A finite active committee could order bounded records under open, objective,
+Sybil-resistant entry and rotation. Its scarce-influence rule, selection,
+quorum, timeout, replacement, governance and amendment consent are undecided.
+Records must continue when no question is solved. Founder concentration can
+still censor entry or stop service. Every accepting full node checks signatures,
+resource bounds, formal results and state; question supporters alone cannot
+authorize consensus effects. The current v7 READY/TERMINAL seal is not
+automatic public finality.
 
-A committee could order bounded records even when no question or valid answer
-is available. Specify its membership snapshot, proposer selection, quorum,
-timeouts, replacement, partitions and recovery under explicit safety and
-liveness assumptions. Cheap pseudonymous keys cannot establish independent
-influence. Founder control of a majority could still censor entry or stop
-service. Define an objective entry resource, concentration limits, governance
-and amendment consent before claiming permissionless authority. Independent
-full nodes must verify each accepted record, its signatures, resource use,
-formal certificates and resulting state; question supporters alone cannot
-authorize consensus effects.
+Record bytes, signed domains and state commitments need exact vectors and
+atomic replay. Public continuation needs conflict, finality, archive and
+migration rules preserving attribution and once-only family settlement.
 
-Record encodings, canonical hashes, signed operation domains and state
-commitments need exact vectors. Applying a record to its parent must be
-atomic and deterministic. A continuing public history needs a selected
-conflict rule, finality boundary and archive anchor that protect proof bytes,
-authors, beneficiaries and once-only family settlement. None is inherited
-merely from v7 or from the fact that a hash identifies a record.
+The proposal permits at most a finite <i>C</i> simultaneous questions, each
+with its own family, frozen formal target, Foundation/checker version,
+permitted library/reference snapshot, deadlines and settlement. Reserve work,
+bytes, review and delivery capacity across all <i>C</i> windows and at most
+<i>K</i> submissions per question. Close coincident deadlines in canonical
+order. Current v7 still allows only one active attempt and selects the
+earliest eligible valid commitment receipt.
 
-The suggested fewest-proof-steps criterion belongs only to a separate
-research competition. A finite commitment interval and later finite
-disclosure interval could bound eligible submissions. A candidate score
-compares canonical checker steps, expanded dependency work, encoded bytes and
-dependency count after full proof validation and hard per-submission bounds,
-then receipt order and canonical submission hash. Raw step count hides costly
-dependencies. The scoring units, question-admission rule and payout remain
-open. An unanswered question gives no proof reward and cannot halt ordinary
-record production.
+For each proposed question, a fixed commitment window followed by a fixed
+disclosure window defines eligible proofs. Score the original signed bundle:
+count every canonical proof-normal-form step in the root and all submitted new
+helpers, including those later pruned from publication. The current proof
+normal form treats a certified older reference as a leaf and does not minimize
+proofs; scoring must be a new versioned rule. Two choices remain for older
+references: count each distinct certified reference as one step to reward
+reuse, or recursively charge its full lineage once per canonical dependency
+to discourage cheap reference chains. The reuse-aware count is recommended
+for cumulative research, conditional on verified dependency closure,
+reference eligibility, anti-farming rules and separate depth, work and byte
+caps for complete validation. Define normalization and scoring units before
+adoption. Among timely, fully valid submissions, choose the smallest score;
+break ties by finalized commitment receipt, then canonical submission hash.
+Missing, late or invalid disclosures cannot win. No valid disclosure leaves
+the question unresolved and releases its capacity. This selects the shortest
+eligible <i>submitted</i> proof, not a globally shortest mathematical proof.
 
-The candidate must bound operation bytes, signature and proof checks,
-parent-library lookup, state additions, networking and archive growth.
-Admission pricing or quotas, service funding and any new reward economics
-require separate decisions; Ethereum gas illustrates metering without
-supplying NAOME's schedule. Public discovery and authenticated relay must
-support changing addresses and home NAT without opened inbound ports. Test
-floods, eclipse attempts, key splitting, founder concentration and separate
-host recovery before claiming public service.
+For example, simultaneous A has valid lengths 18 and 12, while B has 7 and 9.
+A selects 12 and B selects 7; their lengths never compete. A rolling contest
+is an open alternative needing replacement and payout-finality rules. Proof
+length ranks a verified result for one question, not the author's discovery
+effort; it grants no Sybil-resistant voting influence, record liveness or
+finality. Question admission, payments and service funding remain undecided.
 
-A v7 terminal bridge carries account nonces, proof bytes and beneficiaries,
-family outcomes, balances, claims and consumed-claim markers under its own
-sealed finality. A successor may import one independently verified v7
-terminal state only after a specified consent and migration rule maps these
-objects exactly once and prevents old signatures or rewards from replaying.
-A bare successor commitment proves no predecessor validity.
+Bound operation bytes, signatures, proof work, library lookup, state growth
+and peer buffers. Public relay needs changing endpoints and home-NAT access
+without opened inbound ports. Test floods, key splitting, concentration,
+partitions, rotation and independent archive replay across separate hosts.
+An imported v7 terminal state requires independent predecessor verification,
+consent and an exact once-only map of accounts, nonces, proofs, beneficiaries,
+outcomes, balances and claims; a successor commitment alone is insufficient.
 
-A bounded prototype should show independent committee members and verifying
-full nodes agreeing on empty or control-only records, key registration,
-competing valid and invalid proofs, an older citation and one exact family
-settlement. Test invalid authority, signatures and formal results, duplicate
-effects, partitions, rotation, restart and independent archive replay.
-Measure complete-node convergence, validation, retained state and recovery on
-separate hosts. The decision sequence is (1) scarce influence and committee
-safety/liveness, (2) bounded signed operations and research admission,
-(3) continuation and once-only settlement, (4) finite research competition,
-and (5) public transport, governance and economic qualification. Each step
-needs reviewed rules and evidence; none is automatically authorized.
+A bounded prototype should show committee members and full nodes agreeing on
+empty records, two parallel questions with independent winners, invalid and
+missing disclosures, an older citation and one settlement per family. Test
+both older-reference scoring options, invalid authority, conflicting histories,
+restart and aggregate resource limits.
 
 ### 9.5. Required operating properties
 
