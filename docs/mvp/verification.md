@@ -31,10 +31,15 @@ The older v6 256-seat experiments below remain historical local evidence.
 The non-mining committee architecture in [requirements](requirements.md#candidate-non-mining-public-consensus-and-research-competition-proposal)
 and the main paper is a design candidate only. No current test establishes an
 objective, Sybil-resistant public entry rule, open-ended committee rotation,
-concurrent Proof of Useful Work questions, public first-solver priority and
-proof-length ordering across results ready together,
+concurrent Proof of Useful Work questions, public first-disclosure prizes,
+cross-question helper credit and same-block proof-length ordering,
 public governance or long-run liveness and finality. Its proposed acceptance
 tests are future gates, not entries in the passing evidence below.
+The selected next milestone is a fresh, versioned pre-release replacement
+operated first by four trusted validators. It does not import v7 state or
+continue the legacy chain; current v7 evidence remains historical until the
+replacement exists. This milestone does not qualify public validator entry
+or independent initial authority.
 
 ## Portable v6 pilot evidence on 2026-09-27
 

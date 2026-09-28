@@ -28,9 +28,8 @@ Acceptance for this target requires a versioned rulebook and executable tests
 showing (1) public pseudonymous account admission within bounded per-action
 work, (2) objective, Sybil-resistant validator entry and rotation across finite
 active snapshots without a lifetime participation cap, (3) bounded parallel
-question admission and verification under adversarial load, (4) durable continuation and exact
-verification of any imported v7 terminal history without duplicate rewards
-or lost proof attribution, and (5) physical multi-machine measurements of
+question admission and verification under adversarial load, (4) durable continuation and independent replay of the new history without
+duplicate rewards or lost proof attribution, and (5) physical multi-machine measurements of
 storage growth, throughput, recovery, and participation under churn. Passing
 local process tests alone does not qualify this milestone.
 
@@ -114,52 +113,49 @@ or unverified proof citable. Replay checks parent-state inclusion, dependency
 closure and exact authorship for every disclosure. A changed selected history
 must recheck that parent relation. Concurrent questions may therefore use one
 another's previously accepted proofs, but no family may be paid twice for the
-same completed target. Define how a target proved through another question
-becomes known or settled without blocking valid citations.
+same completed target. If a verified new helper in submission A exactly
+proves approved open question B, its accepted on-chain disclosure is also a
+valid first-solver event for B. Credit B's own prize to that helper's original
+authenticated author without requiring a separate B submission. Compare it
+against other B solutions by canonical accepted disclosure order. Keep the
+helper citable from later blocks. Pin collision handling when one helper
+matches multiple targets, opposite outcomes or simultaneous B disclosures;
+do not create duplicate family settlement or invent an extra payment.
 
-When the first valid results for different questions are ready in the same
-bounded processing step, the candidate rule processes the shorter proof first.
-This orders results across questions;
-A's first solver and B's first solver each keep their own prize. The exact
-meaning of "ready together" (one record, one settlement batch or another
-finalized boundary), and whether order changes only inclusion or also service
-priority, remain open. A proof of question A need not be intrinsically easier
-than one of B merely because its derivation has fewer steps; define any
-cross-question normalization or fairness policy before adoption. For example,
-if A's first valid solver has 18 steps and B's has 7, and both are ready in the
-same specified batch, the proposed length order processes B before A. Both
-retain their separate first-solver prizes. A later 12-step proof of A cannot
-replace A's settled first solver.
+When first valid results for different questions appear in the same confirmed
+block, process them by canonical proof-step length, shortest first. This orders
+results across questions; each first solver keeps that question's prize. The
+scope of same-block inclusion fairness remains open. A proof of question A
+need not be intrinsically easier than one of B merely because its derivation
+has fewer steps. For example, if A's first valid solver has 18 steps and B's
+has 7 in one confirmed block, process B before A. Both retain their separate
+first-solver prizes. A later 12-step proof of A cannot replace A's settled
+first solver, and a later block cannot retroactively reorder that block.
 
 **Canonical step accounting.** Score the original signed complete bundle:
 count every canonical proof-normal-form derivation step in the root and all
 submitted new helpers, including helpers later pruned from publication. An
 older certified proof reference is a leaf in the current
 [proof normal form](../../specs/proof-protocol.md#canonical-proof-normal-form),
-which does not minimize proofs. The new ordering rule must choose how to charge
-each distinct permitted older dependency. A reuse-aware option counts each
-older certified reference as one step, rewarding new work built on published
-results; a full-lineage option recursively charges referenced steps once per
-canonical dependency identity, limiting cheap reference chains but
-penalizing reuse. Recommend reuse-aware counting for cumulative research,
-conditional on verified dependency closure, anti-farming rules and separate
-hard depth, work and byte caps for full validation. Record each proof's score
+which does not minimize proofs. Charge each distinct previously verified,
+parent-eligible cited proof exactly one step. Full dependency closure remains
+mandatory for validity and has separate hard depth, work and byte caps;
+one-step scoring never skips that checking. Record each proof's score
 against its eligible admission-parent dependencies so later library growth
 cannot retroactively alter it. Equal scores need a canonical tie-break.
-The exact units and older-reference choice remain open; step count measures
+The exact normalization units remain open; step count measures
 the useful proof result, not the author's spent CPU time or Sybil-resistant
 voting influence. Record production and finality must continue independently
 when no question is solved.
 
-The candidate invariants are identical replay of each finalized history at
-independent full nodes; no second selected settlement or eligibility effect for
-a family; preservation of checked proof bytes, author and beneficiary across
-continuation; and exact accounting under whichever reward rules are later
-chosen. Historical v7 terminal state may be imported only after independent
-verification and an explicit consent and mapping rule. Map accounts, nonces,
-selected proofs, beneficiaries, family outcomes, balances, claims and consumed
-claims exactly once; prevent old signatures and rewards from replaying under a
-new version. A successor commitment alone does not prove predecessor validity.
+The candidate invariants are identical replay of each finalized new-profile
+history at independent full nodes; no second settlement or eligibility effect
+for a family; preservation of checked proof bytes, author and beneficiary
+across that profile's continuation; and exact accounting under whichever
+reward rules are later chosen. This pre-release replacement starts from its
+own versioned genesis, without importing v7 accounts, proofs, balances or
+claims. Keep the v7 archive and its acceptance evidence as historical records;
+the replacement makes no claim that those records are part of its chain.
 
 **Resource, transport and security budget.** Bound record bytes, operations,
 registrations, concurrent open questions, commitments, aggregate proof work,
@@ -173,33 +169,47 @@ consensus influence; the chosen scarcity mechanism must be measured against
 concentration and adversarial acquisition. No existing Test-NAO balance proves
 an external market or security budget.
 
-**Initial bounded prototype acceptance.** On a pinned candidate profile,
-exercise independent committee members and full nodes with empty or control-only
-records, public key registration, two simultaneous questions with separate
-first-solver prizes and length-ordered ready results, a later shorter proof that
-cannot displace a settled prize, valid and invalid disclosures, a citation to
-a proof accepted after another question opened, and exactly one
-settlement per family. Reject same-block and unverified references, unauthorized
-proposals or votes, invalid signatures, excessive bytes or work, wrong state
-roots, invalid proofs, duplicate family effects and unauthorized spends. Force
-partitions, rotation, restart, lost acknowledgements, conflicting histories and
-complete independent archive replay. Measure complete-node convergence,
-validation time, state growth, recovery and participation across separate hosts.
-Local process tests alone cannot establish public security or physical capacity.
+**First implementation milestone: bounded research prototype.** Replace the
+pre-release v7 protocol with a fresh, explicitly versioned research profile
+operated initially by four trusted validators. Use a new genesis and no v7
+state migration or legacy-chain carryover. The current v7 code and evidence
+remain the historical baseline until the replacement exists; its one-attempt,
+commitment-priority and linked-successor rules are not the new profile's rules.
+Implement bounded parallel questions, dynamic parent-state citations, first
+valid disclosure prizes, cross-question helper credit and same-block proof
+length ordering before public validator admission. This is a research
+milestone, not permissionless consensus or public-network acceptance. Pin
+concurrency, resource limits and same-block inclusion fairness before coding.
 
-**Ordered implementation and decision gates.** (1) Decide the objective scarce
-influence, finite committee selection, rotation, safety and liveness rules;
-pin authority and record vectors. (2) Implement and test bounded signed
-operations, resource metering and public research admission. (3) Specify and
-test continuation, exact migration of any v7 terminal state, once-only
-settlement and independent archive replay. (4) Test concurrent finite research
-competitions, parent-state citation eligibility, first-solver priority and
-length ordering across simultaneously ready questions, including a later
-shorter proof with no prize reversal. Test both reference-charging alternatives.
-(5) Qualify public
-discovery, home-NAT participation, multi-host churn, archival funding and
-governance. Each slice requires its own reviewed rule and evidence gate; this
-documentation authorizes no automatic implementation sequence.
+**Initial bounded prototype acceptance.** Verify fresh versioned genesis,
+no v7 state import, replay isolation from old signatures, and a preserved
+read-only v7 archive for historical evidence. On the pinned new profile,
+exercise the four validators and independent verifying full nodes with empty
+or control-only records, public key registration, two simultaneous questions
+with separate first-solver prizes and same-block length-ordered results, a
+later shorter proof that cannot displace a settled prize, a helper solving
+another open question, valid and invalid disclosures, a citation to a proof
+accepted after another question opened, and exactly one settlement per family.
+Reject same-block and unverified references, unauthorized proposals or votes,
+invalid signatures, excessive bytes or work, wrong state roots, invalid proofs,
+duplicate family effects and unauthorized spends. Force partitions, rotation,
+restart, lost acknowledgements, conflicting histories and complete independent
+archive replay. Measure complete-node convergence, validation time, state
+growth, recovery and participation across separate hosts. Local process tests
+alone cannot establish public security or physical capacity.
+
+**Ordered implementation and decision gates.** (1) Pin the fresh versioned
+four-validator research profile and its isolated genesis. Test concurrent
+questions, parent-state citation eligibility, first-disclosure prizes,
+same-block length ordering, cross-question helper credit and no prize reversal
+with separate dependency-verification bounds. (2) Test durable continuation,
+once-only settlement and independent archive replay within the new profile;
+retain v7 history separately as historical evidence. (3) Separately decide
+scarce influence, public committee selection, rotation, safety and liveness;
+pin authority vectors. (4) Qualify bounded public admission, discovery,
+home-NAT participation, multi-host churn, archival funding and governance.
+Each slice requires its own reviewed rule and evidence gate; this documentation
+authorizes no automatic implementation sequence.
 
 Comparison: [Ethereum gas guide](https://ethereum.org/developers/docs/gas/)
 illustrates metered execution, but does not set NAOME's rules or economics.

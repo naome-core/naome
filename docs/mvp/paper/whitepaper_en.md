@@ -3,7 +3,7 @@
 
 [META] Whitepaper · Draft v0.2 · 28 September 2026 · Public-network target and bounded v7
 
-[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, earliest valid commitment completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside parallel research questions under Proof of Useful Work: each question has its own first-solver prize, while proof length orders results ready together across questions. Citation eligibility would follow the accepted parent chain, not a library frozen at question opening. Canonical valid disclosure sets first-solver priority; batching, authority, admission, rewards and migration rules remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
+[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, earliest valid commitment completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside parallel research questions under Proof of Useful Work: each question awards its own earliest fully valid on-chain disclosure, while proof length orders results confirmed in the same block across questions. Citation eligibility would follow the accepted parent chain, not a library frozen at question opening. Canonical valid disclosure sets first-solver priority; public authority, admission and rewards remain undecided. The first pre-release research prototype replaces v7 with a fresh versioned genesis and does not carry v7 state. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
 
 ## 1. Purpose and scope
 
@@ -375,7 +375,7 @@ founder concentration can still censor or stop service. Every full node
 checks signatures, resource bounds, formal results and state. Current v7
 READY/TERMINAL seals do not automatically give a successor public finality.
 Public records need exact bytes and atomic replay, plus conflict, finality,
-archive and migration rules preserving attribution and once-only settlement.
+archive and later-version rules preserving attribution and once-only settlement within the new profile.
 
 At most a finite <i>C</i> questions may be active, each with a fixed family,
 formal target and Foundation/checker version. The library stays live: any
@@ -398,37 +398,53 @@ parent-eligible dependencies before assigning the prize. A later shorter
 proof cannot revoke it. Finality, deadlines and invalid-input rules remain
 to be defined. Current v7 instead prioritizes eligible commitment receipts.
 
-If first valid results for different questions are ready in the same bounded
-processing step, the shorter proof is processed first; each keeps its own
-prize. Define that step (one block, settlement batch or another finalized
-boundary), inclusion fairness, and any cross-question normalization. Fixed
-and rolling submission schedules remain open. For example, A's first valid
-proof has 18 steps and B's has 7. A joint batch processes B then A; both
-win their own questions. A later 12-step proof cannot replace A's winner.
+If first valid results for different questions appear in the same confirmed
+block, process them by canonical proof-step length, shortest first. Each
+keeps its own prize; a later block cannot reorder this one. Same-block
+inclusion fairness still needs a rule. If A's first valid proof has 18 steps
+and B's has 7 in one block, process B then A; both win. A later 12-step
+proof cannot replace A's winner.
 
-The proposed step score counts every canonical proof-normal-form step in the
-original signed root and all new helpers, even helpers later pruned. The
-current normal form treats an older reference as a leaf without minimizing
-proofs. A new rule must choose whether each distinct certified reference
-costs one step to reward reuse, or its recursively expanded lineage to limit
-cheap reference chains. Reuse-aware counting is recommended for cumulative
-research only with verified closure, anti-farming rules and separate hard
-validation caps. A score binds to admission-parent dependencies and cannot
-change with later library growth. Equal scores need a canonical tie-break.
-Step count measures the proof result, not spent CPU time or voting weight.
+The step score counts every canonical proof-normal-form step in the
+original signed root and all new helpers, even helpers later pruned. Charge
+each distinct previously verified, parent-eligible cited proof one step.
+Full dependency closure and separate hard depth, work and byte caps remain
+mandatory for validity; a short score never skips checking. Bind the score
+to admission-parent dependencies so later library growth cannot change it.
+Equal scores need a canonical tie-break. Step count measures the proof
+result, not spent CPU time or voting weight.
 
-A proof published through another question becomes citable in a later block,
-but a completed target cannot earn a second paid completion. Specify its
-known or settled state. Bound proof and lookup work, bytes, state growth and
+If a verified new helper in submission A exactly solves approved open
+question B, its accepted on-chain disclosure is a first-solver event for B.
+Credit B's own prize to the helper's original authenticated author without
+a separate B submission, subject to earlier valid B disclosures and
+once-only family settlement. The helper becomes citable in later blocks.
+Multiple matching targets, conflicting outcomes and simultaneous B events
+need exact rules; no extra prize is implied. Proof length does not supply
+record liveness or finality. Appendix B's no-helper-settlement rule describes
+current v7, not this proposed research profile.
+
+Bound proof and lookup work, bytes, state growth and
 peer buffers. Public relay needs home-NAT access; test floods, partitions,
-concentration and independent archive replay on separate hosts. Importing a
-v7 terminal state needs independent verification, consent and an exact
-once-only map of accounts, proofs, outcomes, balances and claims.
+concentration and independent archive replay on separate hosts. The
+pre-release replacement uses a fresh versioned genesis without importing v7
+accounts, proofs, balances or claims; v7 archives remain historical evidence.
 
-A prototype should show empty records, parallel questions with independent
-first-solver prizes and length-ordered ready results, later shorter proofs
-without prize reversal, invalid disclosures, post-opening citations, and
-one settlement per family. Test reference-score alternatives, authority,
+The selected first implementation milestone is a bounded, versioned
+pre-release replacement operated by four trusted validators. It starts from
+fresh genesis without v7 migration or legacy-chain carryover. Current v7
+code and acceptance evidence remain historical until replacement exists;
+its one-attempt, commitment-priority and linked-successor rules do not govern
+the new profile. The replacement adds parallel questions, live parent-state
+citations, first-disclosure prizes and same-block length ordering before public
+validator admission changes. Founder control persists; aggregate limits and
+same-block inclusion fairness must be pinned before coding.
+
+That prototype should show empty records, parallel questions with independent
+first-solver prizes and same-block length-ordered results, later shorter
+proofs without prize reversal, a helper solving another open question,
+invalid disclosures, post-opening citations, and one settlement per family.
+Test dependency bounds and authority,
 conflicting histories, restart and aggregate resource limits.
 
 ### 9.5. Required operating properties
@@ -440,17 +456,16 @@ The safety, progress and recovery conditions in Section 8 and Appendices C throu
 Amendments preserve sealed history, selected proofs and approved obligations. Changing the Foundation or identity rules requires an explicit mapping of historical completions that preserves their once-only effects and records conflicting polarities. A change cannot erase an earlier completion or issue a replacement eligibility claim. Voting-duration changes apply only to later openings; changes to question terms and reward shares apply prospectively and cannot reprice an approved obligation.
 
 The proposed amendment gate calls for greater-than-two-thirds frozen-snapshot approval, two full intervening cycles, more-than-two-thirds outgoing migration readiness and the READY/TERMINAL gates. Its delay cannot be applied until the cycle boundaries noted in Section 9.2 are defined. The account and policy consent rules in Appendix E.3 also apply.
-This roster-oriented amendment proposal does not automatically govern a
-public successor; activation and any migration from v7 need an explicit
-adoption rule.
+This roster-oriented v7 amendment proposal is historical; the pre-release
+replacement starts with fresh versioned genesis and does not import v7 state.
 
 The intended destination is an open-ended public research network with
 permissionless pseudonymous access and a verifiable, bounded path to validator
 authority. The v7 implementation demonstrates a finite trust-based slice,
 including sealed proof attribution and linked successor replay. It does not resolve founder control, Sybil cost, resource funding or public transport.
 The non-mining committee candidate separates record production from research
-PoUW, but its authority, finality, reward, question and migration rules
-remain open.
+PoUW, but its public authority, finality, reward and question rules remain
+open.
 Those choices and separate-machine evidence are prerequisites to a public
 safety or continuous-service claim.
 
