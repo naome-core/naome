@@ -1,9 +1,9 @@
 # NAOME
 # A Public Network for Formal Research
 
-[META] Whitepaper · Draft v0.1 · 24 September 2026 · Project design and bounded prototype
+[META] Whitepaper · Draft v0.2 · 28 September 2026 · Public-network target and bounded v7
 
-[ABSTRACT] NAOME proposes a public network for selecting mathematical research questions, checking formal answers and preserving reusable results. Validator owners decide which questions receive resources; contributors submit proofs or refutations under a declared rulebook. A valid first completion publishes the result and its used helpers, records a bounded reward and gives the solution author an optional route to validator membership. Agreement records these decisions in a shared history without treating a vote as mathematical evidence. A bounded fresh-genesis prototype supports four to 32 equal validator units, one active research attempt and test accounting. Public-network operation requires further rules, independent infrastructure and qualification.
+[ABSTRACT] NAOME proposes a public network for selecting mathematical research questions, checking formal answers and preserving reusable results. Validator owners decide which questions receive resources; contributors submit proofs or refutations under a declared rulebook. A valid first completion publishes the result and its used helpers, records a bounded reward and gives the solution author an optional route to validator membership. Agreement records these decisions in a shared history without treating a vote as mathematical evidence. The current state-v7 implementation is a finite, fresh-genesis profile with four to 32 equal validator units, one active research attempt and Test-NAO accounting. The target has no fixed lifetime cap on research accounts, participants, records or eventual validator participation, but every operation and active authority snapshot must remain bounded. All four starting units may be founder-controlled, allowing censorship, halted progress and quorum control. Public operation requires unresolved authority, Sybil, resource and continuation rules plus physical qualification.
 
 ## 1. Purpose and scope
 
@@ -11,9 +11,9 @@ NAOME coordinates three decisions in shared mathematical research: which questio
 
 [FIG:system]
 
-[CAPTION] Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. A terminal seal ends the bounded run.
+[CAPTION] Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. The current terminal seal can select one linked successor run; open-ended continuation remains a proposed public-network property.
 
-This design draft discusses a public-network protocol and a bounded prototype. The companion variable-roster discussion copy gives the exact fresh-v6 question syntax, fixed proof-admission rules and immutable profile limits. Question-specific policies and definition publication discussed as broader design possibilities here are not active v6 inputs. The 32-unit ceiling is a prototype/testnet limit, not physical 32-host qualification. The research profile's seven-day live run, physical multi-machine acceptance and public-network operation remain separate qualifications.
+This paper sets out an intended permissionless, open-ended public network while identifying the current bounded state-v7 implementation. The companion variable-roster paper is a historical fresh-v6 discussion copy; current rules are in the v7 authority-period specification and profile. Question-specific policies and definition publication discussed here are proposals, not active v7 inputs. The 32-unit active ceiling is a testnet limit, not a lifetime participation policy or physical 32-host qualification. Seven-day live operation, physical multi-machine acceptance and public-network operation remain unverified.
 
 NAOME's research path can span many sealed records. An unapproved or expired attempt produces no paid result. A solution author's join request is optional and grants no voting weight until a separate handoff is sealed.
 
@@ -21,7 +21,7 @@ A proposal combines a readable purpose with an exact mathematical task. Validato
 
 A paid completion credits the bounded profile's Test-NAO accounts and creates a nontransferable eligibility claim for its authenticated solution author. This claim provides a possible route to validation; holdings confer no voting weight.
 
-The fresh v6 profile uses a sealed four-to-32-unit electorate and does not upgrade an existing v5 chain in place. Material public-network rules still requiring definition are collected in Section 9.2. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
+The current v7 profile uses a sealed four-to-32-unit electorate and a linked terminal successor; it does not reinterpret an existing v5 chain in place. Material public-network decisions still requiring definition are collected in Section 9.3. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
 
 ## 2. Network model and research lifecycle
 
@@ -29,7 +29,7 @@ The fresh v6 profile uses a sealed four-to-32-unit electorate and does not upgra
 
 A <i>question author</i> proposes a task through a registered research account. A <i>solution author</i> authenticates a submitted bundle containing the solution and its helper proofs. A <i>validator</i> checks records and participates in agreement; its <i>owner</i> controls the associated authority. Each installed unit has a distinct owner account ID, though one person may control several accounts. A local <i>agent</i> assists its owner in reviewing research questions.
 
-The installed electorate begins with four equal voting units in genesis and may grow through sealed handoffs to <i>N ≤ 32</i>. Its owners authorize research and membership handoffs. Section 7 describes how qualifying authors may add a unit until the limit is reached, then request replacement of the oldest unit. Equal units do not by themselves establish dispersed ownership.
+The current installed electorate begins with four equal voting units in genesis and may grow through sealed handoffs to <i>N ≤ 32</i>. Its owners authorize research and membership handoffs. Section 7 describes how qualifying authors may add a unit until the limit is reached, then request replacement of the oldest unit. The founder may control all four starting units. Separate account IDs and keys do not establish independent control, and no present rule prevents founder censorship or quorum control.
 
 In the bounded profile, the solution author is also the recipient for all new proofs in a submission. Each reusable proof block records authenticated <i>proof authorship</i> and payment attribution; eligible later use may generate a citation payment to its recorded beneficiary. A broader network design could permit a separate <i>research-payment recipient</i> or several authors, but their authorization rules remain open. A <i>record proposer</i> packages operations for agreement and acquires no authorship merely by including them.
 
@@ -41,7 +41,7 @@ A <i>proof block</i> is an independently addressable library object containing a
 
 ### 2.2. From a question to a settled result
 
-A researcher with a registered account submits a readable purpose and an exact formal question. The question enters a bounded queue; when the one active attempt slot is free, a sealed record opens a vote on its fixed terms. More than two thirds of the opening electorate's full weight must approve before a separate solution phase begins. The research profile specifies a seven-day vote; Section 4.3 distinguishes that rule from current runtime evidence.
+In the proposed public network, any pseudonymous key holder should be able to seek research admission without a human-identity test or manual selection. That does not make keys unique people or grant validator authority. In the current finite run, a researcher with a registered account submits a readable purpose and an exact formal question. The question enters a bounded queue; when the one active attempt slot is free, a sealed record opens a vote on its fixed terms. More than two thirds of the opening electorate's full weight must approve before a separate solution phase begins. The research profile specifies a seven-day vote; Section 4.3 distinguishes that rule from current runtime evidence.
 
 Contributors commit to concealed proof bundles before disclosing them. The earliest eligible receipt with a valid disclosure wins across the approved outcomes. Acceptance checks the original submission, applies permitted reuse and pruning, and checks the final proof. Sections 4 and 5 explain this path.
 
@@ -51,7 +51,7 @@ For example, three of four owners may approve a question, after which a contribu
 
 ### 3.1. The mathematical obligation
 
-A v6 question's <i>.nao</i> source contains <i>foundation = "naome:zfc"</i> and one closed <i>statement = Q</i>, with optional <i>success = "resolve"</i>. A closed statement has no free variables. The source cannot set assumptions, definitions, reference permissions, substitution rules or resource bounds; those would require broader public-network rules. Its formal obligation must compile before voting begins; a solution need not accompany the proposal. Owners judge whether the readable purpose matches the formal statement. Compilation checks syntax and profile bounds, not the fidelity or scientific value of the translation.
+A v7 question's <i>.nao</i> source contains <i>foundation = "naome:zfc"</i> and one closed <i>statement = Q</i>, with optional <i>success = "resolve"</i>. A closed statement has no free variables. The source cannot set assumptions, definitions, reference permissions, substitution rules or resource bounds; those would require broader public-network rules. Its formal obligation must compile before voting begins; a solution need not accompany the proposal. Owners judge whether the readable purpose matches the formal statement. Compilation checks syntax and profile bounds, not the fidelity or scientific value of the translation.
 
 The Foundation <i>naome:zfc</i> consists of classical first-order logic with equality over sets, ZFC axioms, and the Separation and Replacement schemas. A certificate supplies axiom or schema instances, inference steps and checked references. Verification establishes derivability under this rulebook. The interpretation of that result relies on sound checking and a consistent Foundation. Unapproved assumptions are forbidden.
 
@@ -75,7 +75,7 @@ After refutation, the rejected claim is not entered as a theorem. If certificate
 
 A bundle contains a root certificate for the approved question and helper certificates for their own closed statements. Surviving helpers become reusable proof blocks when the group settles; internal inference steps are not separate publications. Appendix B specifies publication and attribution.
 
-The authoring compiler can check conservative definitions offline. Relations abbreviate primitive graphs; a function with one or more inputs requires a selected proof that its expanded graph gives exactly one output for every input. The v6 ledger does not publish definitions or admit their references in questions or settlement certificates; a broader network needs a definition-publication rule. Recursion, zero-input relations or functions, and standalone constants are excluded from the offline authoring form.
+The authoring compiler can check conservative definitions offline. Relations abbreviate primitive graphs; a function with one or more inputs requires a selected proof that its expanded graph gives exactly one output for every input. The v7 ledger does not publish definitions or admit their references in questions or settlement certificates; a broader network needs a definition-publication rule. Recursion, zero-input relations or functions, and standalone constants are excluded from the offline authoring form.
 
 Helpers developed after approval may be used by later certificates in the normalized group without becoming older proofs for payment. Appendices A and B define their identities, admission and attribution.
 
@@ -125,7 +125,7 @@ An unresolved solution phase expires without recording a refutation, issuing mon
 
 ## 5. Proof acceptance and publication
 
-Acceptance connects an authenticated submission to a reusable public result. Both the original bundle and its final form must validate. The fixed v6 rule replaces exact duplicate helpers with admissible older proofs and removes material no longer used by the root; a question cannot change that rule. Appendix B specifies the exact matching, pruning, authorization and validation rules.
+Acceptance connects an authenticated submission to a reusable public result. Both the original bundle and its final form must validate. The fixed v7 rule replaces exact duplicate helpers with admissible older proofs and removes material no longer used by the root; a question cannot change that rule. Appendix B specifies the exact matching, pruning, authorization and validation rules.
 
 [FIG:helpers]
 
@@ -175,7 +175,7 @@ An empty reserve does not invalidate control transitions. Review, agreement, sto
 
 ### 7.1. Bounded growth and contribution-ordered replacement
 
-The v6 electorate starts with four installed, equal-weight units in genesis and may grow to <i>32</i>. Each record uses one finite snapshot with <i>4 ≤ N ≤ 32</i>; there is no undefined or unbounded set of voters for that record. A slot keeps its identity when its occupant or keys change. Each unit has an owner account and an immutable age: a genesis retirement rank for a bootstrap unit or the original paid-completion ordinal for an earned unit. Installed units have distinct owner account IDs. That is not a per-person cap or an independent-identity assertion.
+The v7 electorate starts with four installed, equal-weight units in genesis and may grow to <i>32</i>. Each record uses one finite snapshot with <i>4 ≤ N ≤ 32</i>; there is no undefined or unbounded set of voters for that record. A slot keeps its identity when its occupant or keys change. Each unit has an owner account and an immutable age: a genesis retirement rank for a bootstrap unit or the original paid-completion ordinal for an earned unit. Installed units have distinct owner account IDs. That is not a per-person cap or an independent-identity assertion.
 
 A winning author may voluntarily request admission using the completion's nontransferable claim, independently of payment. An authenticated join intent binds the exact claim, owner, candidate consensus and transport keys, and a literal network endpoint; both candidate keys prove possession. It grants no weight. A later, exact-parent admission offer must match that finalized intent and the oldest eligible claim in the bounded queue. The claim must be unused and newer than the oldest installed unit. A revised intent retains its first queue position and expiry.
 
@@ -189,11 +189,11 @@ The ordinal does not change with delayed joining, retry, key rotation or re-regi
 
 Every height rotates active consensus and transport keys through at least <i>q(N) = floor(2N/3) + 1</i> owner-authorized offers. Activation requires a previously sealed completion, author consent, agreement under the outgoing snapshot, incoming READY and outgoing TERMINAL. New weight cannot authorize its own installation. Section 8 and Appendix D describe the seal and the availability consequences of a vacant unit.
 
-Genesis supplies the initial allocation, retirement order, capacity and join-service limits. This initial authority is adopted trust. The membership rule describes later growth and replacement; it does not establish that either the initial allocation or subsequent acquisition of claims is fair.
+Genesis supplies the initial allocation, retirement order, capacity and join-service limits. The founder may hold all four starting units. This initial authority is adopted trust, with no independence assumption. The membership rule describes later growth and replacement; it does not establish that either the initial allocation or subsequent acquisition of claims is fair.
 
 ### 7.2. Distribution of authority
 
-Formal checking limits which certificates may settle a task. It does not establish the independence of authors or equal costs of acquiring eligibility. Incumbents influence the research agenda and may favor specialties, approve easy distinct targets, fragment work, buy solutions or censor questions and join requests. Owners' agents may share errors or respond to malicious descriptions. Authors can stockpile solutions or bank unused eligibility claims while the participation boundary is stationary.
+A founder controlling the four initial units can form a quorum, censor questions or joins, and halt the service. The one-third exposure assumption below is not met against a malicious founder; the current system provides no takeover resistance in that case. Formal checking limits which certificates may settle a task. It does not establish the independence of authors or equal costs of acquiring eligibility. Incumbents influence the research agenda and may favor specialties, approve easy distinct targets, fragment work, buy solutions or censor questions and join requests. Owners' agents may share errors or respond to malicious descriptions. Authors can stockpile solutions or bank unused eligibility claims while the participation boundary is stationary.
 
 Adding or replacing one unit changes a coalition's share and may cross the one-third safety boundary. Growth can dilute incumbents, but repeated earned admissions can also concentrate control in one operator using distinct accounts. Its active share can differ substantially from its lifetime contribution share. Contribution ordering prevents re-dating; it supplies no lower bound on the cost of acquiring control. Safety therefore requires the explicit concentration and exposure assumption in Section 8.3, alongside the membership rule.
 
@@ -255,10 +255,7 @@ finality evidence without granting an incoming vote or reviving old signing powe
 complete seal against their selected parent before adopting its successor.
 Late recovery also depends on continued access to that sealed history.
 
-A configured terminal record seals final history without opening another
-ordinary signing period. Late readers still need a reachable history holder or
-an independently verified export; evidence transport grants no new voting
-authority.
+A configured terminal record can seal one exact linked successor plan. The next run uses new stores and fresh keys while preserving carried ledger state; independent archive replay must verify the predecessor, bridge and successor. This current mechanism has finite limits in each run and does not establish perpetual storage or public service. Late readers still need a reachable history holder or an independently verified export; evidence transport grants no new voting authority.
 
 ### 8.3. Safety and progress assumptions
 
@@ -266,7 +263,7 @@ For signing period <i>h</i>, let <i>W<sub>h</sub></i> be installed weight and <i
 
 [EQ] 3A<sub>h</sub> &lt; W<sub>h</sub>.
 
-Purchased control, stolen copies and regenerating seeds count toward this exposure. Changing victims does not reset it. Safety also depends on correct checking, cryptography and effective capability retirement. Retirement of a voting unit alone does not stop retained historical keys from signing a fabricated past. Service assumptions count the union of faulty or exposed owners over the applicable service cycle. Its boundaries remain unspecified, as recorded in Section 9.2.
+Purchased control, stolen copies and regenerating seeds count toward this exposure. Changing victims does not reset it. If one party controls all four starting units, the stated safety assumption fails against that party. Safety also depends on correct checking, cryptography and effective capability retirement. Retirement of a voting unit alone does not stop retained historical keys from signing a fabricated past. Service assumptions count the union of faulty or exposed owners over the applicable service cycle. Its boundaries remain unspecified, as recorded in Section 9.2.
 
 Progress requires more than two thirds correct and available outgoing and incoming weight, bounded work and eventual message delivery within a delay bound. At least one third unavailable or withholding weight can block agreement and the membership replacements that might change participation. Unavailable weight remains in the denominator. Recovery outside these assumptions requires an explicit trust decision; neither elapsed time nor a reduced set of responders changes authority.
 
@@ -284,11 +281,11 @@ Durable recovery and archive storage support later checking and incur costs even
 
 Sections 4 and 6 specify the voting interval and completion budget. The strict quorum and once-only completion rules are separate from capacity settings and monetary allocation choices.
 
-Genesis and the adopted policy supply four initial units, their authority and retirement order, queue and execution bounds, phase expiries, join limits, clock-error bounds and Test-NAO allocations. The v6 roster may grow to 32 through sealed claims; each exact snapshot determines its own quorum. These values determine capacity and operating costs and must support Appendix E.1's reservations and service conditions.
+Genesis and the adopted policy supply four initial units, their authority and retirement order, queue and execution bounds, phase expiries, join limits, clock-error bounds and Test-NAO allocations. The v7 roster may grow to 32 through sealed claims; each exact snapshot determines its own quorum. These values determine capacity and operating costs and must support Appendix E.1's reservations and service conditions.
 
 ### 9.2. Bounded profile and open rules
 
-Within the bounded v6 profile, parent-proof selection is deterministic: earliest admission height, operation order, then raw ProofId. Distinct new certificates with the same exact statement in one package are rejected, including a root/helper collision. Permitted identical aliases are checked and removed before publication. Reuse substitutes an eligible older proof with its existing attribution, prunes unused material and checks the normalized group. A versioned normalization receipt binds the original submission, selected parent and final result. New proofs in one package have one author who is also their recipient; joint authorship and separate-recipient authorization require further rules.
+Within the bounded v7 profile, parent-proof selection is deterministic: earliest admission height, operation order, then raw ProofId. Distinct new certificates with the same exact statement in one package are rejected, including a root/helper collision. Permitted identical aliases are checked and removed before publication. Reuse substitutes an eligible older proof with its existing attribution, prunes unused material and checks the normalized group. A versioned normalization receipt binds the original submission, selected parent and final result. New proofs in one package have one author who is also their recipient; joint authorship and separate-recipient authorization require further rules.
 
 Each first completion credits one Test-NAO, or 1,000,000,000 atoms. Without eligible citations, the solution author receives 0.70 Test-NAO. With citations, the author receives 0.60 and the distinct first older boundary proofs share a 0.10 pool. Integer division precedes aggregation by beneficiary; remainder atoms follow canonical boundary order. The 0.20 validator service pool is split across all installed outgoing units under the selected parent. Each receives the integer quotient; remaining atoms follow canonical slot order. The reserve receives 0.10. Credits are independent of the agreement and seal signature subsets, including when a successor joins in the same record.
 
@@ -296,19 +293,96 @@ The bounded profile's balances are whole Test-NAO atoms, not fractional funded c
 
 At opening, an exact target already answered by an admitted unpaid helper closes as KNOWN_UNPAID, with no retrospective reward or claim. A paid family remains completed. Commitments bind the genesis, research attempt, author and authenticated original submission with secret randomness; the attempt differs from a consensus agreement round. Its reservation protects disclosure and settlement capacity. Expiry without a valid timely disclosure leaves the family unresolved.
 
-The v6 profile includes bounded account registration, claim-backed finalized join intent, one contribution-ordered addition or replacement per sealed transition, stable-slot proposer priorities, per-height key rotation and incoming READY plus outgoing TERMINAL quorums. It starts from a fresh genesis; existing v5 history is not reinterpreted or upgraded in place. Broader public-network rules remain to be defined for multiple simultaneous research attempts, specialized proof-checking groups, joint authorship and separate recipients, historical-key security across external backups, sustainable recovery, reserve spending and live amendments. The exposure-service cycle and amendment-cycle duration and boundaries also remain undefined; neither is an agreement round, research attempt, voting window or signing period.
+The v7 profile includes bounded account registration, claim-backed finalized join intent, one contribution-ordered addition or replacement per sealed transition, stable-slot proposer priorities, per-height key rotation and incoming READY plus outgoing TERMINAL quorums. A terminal may select a linked successor run, but existing v5 history is not reinterpreted or upgraded in place. Broader public-network rules remain to be defined for multiple simultaneous research attempts, specialized proof-checking groups, joint authorship and separate recipients, historical-key security across external backups, sustainable recovery, reserve spending and live amendments. The exposure-service cycle and amendment-cycle duration and boundaries also remain undefined; neither is an agreement round, research attempt, voting window or signing period.
 
-The v6 profile's genesis bounds records, storage and consensus retries; restart cannot reset those bounds. Such finite bounds do not establish continuous operation, which requires safe storage, synchronization and upgrade rules. Formal proof validity and the membership rule alone do not establish resistance to cheap-proof farming, manufactured citations, agenda censorship, concentrated ownership or historical-key compromise.
+The v7 profile's genesis bounds records, storage and consensus retries; restart cannot reset those bounds. Such finite bounds do not establish continuous operation, which requires safe storage, synchronization and upgrade rules. Formal proof validity and the membership rule alone do not establish resistance to cheap-proof farming, manufactured citations, agenda censorship, concentrated ownership or historical-key compromise.
 
-### 9.3. Required operating properties
+### 9.3. Open-ended public-network target and decisions
+
+The target admits pseudonymous research keys without invitation and has no
+fixed protocol-wide lifetime cap for accounts, participants, records or eventual
+validator participation. It does not promise infinite physical capacity or an
+unbounded set of voters on one record. Each action, verification step, record,
+queue and active authority snapshot needs a finite work and byte budget. A
+new key proves control of that key, not one-human-one-account. Research access,
+network relay and voting authority are separate rights.
+
+The current v7 bounds are 512 genesis accounts, 1,024 total accounts, 8,192
+records per standard run, one active attempt and four to 32 installed units.
+Linked successors carry state but do not remove these profile limits or prove
+indefinite operation. Static literal peer endpoints and a bounded loopback
+participant gateway do not provide public discovery or NAT traversal. The
+founder may control all four starting units and thus a quorum; claims of
+independent startup, resistance to founder censorship, and public safety are
+not supported. The historical v6 256-seat experiments are not the current
+v7 profile or physical multi-machine evidence.
+
+The following choices require a versioned, agreed rule before this target can
+be specified or implemented:
+
+<b>Validator entry and Sybil cost.</b> Possible paths include earned proof
+  claims with an objective anti-farming test, a bonded scarce resource, or a
+  hybrid. Define account splitting, source and verification of the resource,
+  queue fairness and exit. Acceptance requires adversarial tests showing that
+  one controller gains no unintended voting advantage by splitting keys, and
+  that valid outsiders can enter despite minority censorship under an explicit
+  honest-quorum assumption. A malicious founder controlling the full starting
+  quorum can prevent entry; no admission rule alone overcomes that authority
+  without a separately adopted recovery or transition rule.
+
+<b>Active-set scale.</b> Choose finite rotating snapshots, sharded checking with
+  a separately specified consensus set, or another bounded committee rule.
+  Specify selection, churn, quorum intersections, reconfiguration and recovery.
+  Demonstrate safety and measured progress as eventual participant count grows,
+  including faulty and unavailable operators. No rule here grants every key a
+  simultaneous vote.
+
+<b>Work and state growth.</b> Choose enforceable admission pricing, quotas with
+  fair access, rent or another resource mechanism; define who funds validation
+  and archives, and whether safe pruning or verified checkpoints are allowed.
+  Measure worst-case bytes and checking time per action and sustained separate
+  machine service. No reward or test balance has established outside value.
+
+<b>Continuation and amendments.</b> Choose the authority and consent rule for
+  changing limits, active membership and software versions. Verify a unique
+  linked history across transitions, preserve old proof IDs and beneficiaries,
+  prevent a second settlement or eligibility claim for a completed family,
+  and specify archive availability and conflicting-branch handling.
+
+<b>Public transport.</b> Choose authenticated discovery and reachable routing
+  for changing endpoints and NAT; bound connection and replay work. Test
+  separate hosts under churn and hostile traffic. The current static peer
+  list and loopback gateway do not meet this requirement.
+
+Bitcoin ties block-production influence to proof of work and pays miners
+transaction fees [2, 3]. Ethereum permits wallet-created accounts, meters
+execution with gas and a block limit, and weights validator participation
+by staked resources [4, 5, 6]. These illustrate separate bounds on work and
+influence; none is a selected NAOME rule. A NAOME rule must address formal
+proof-checking costs, fabricated proof and citation chains, quorum handoff,
+and founder censorship on its own terms.
+
+These are open design decisions, not rules adopted by the current profile.
+Founder control remains an explicit risk until a specified and observed
+redistribution of effective authority changes it.
+
+### 9.4. Required operating properties
 
 The safety, progress and recovery conditions in Section 8 and Appendices C through E are operating requirements. Choosing numerical parameters or approving a research question does not establish them.
 
-### 9.4. Amendments and historical obligations
+### 9.5. Amendments and historical obligations
 
 Amendments preserve sealed history, selected proofs and approved obligations. Changing the Foundation or identity rules requires an explicit mapping of historical completions that preserves their once-only effects and records conflicting polarities. A change cannot erase an earlier completion or issue a replacement eligibility claim. Voting-duration changes apply only to later openings; changes to question terms and reward shares apply prospectively and cannot reprice an approved obligation.
 
 The proposed amendment gate calls for greater-than-two-thirds frozen-snapshot approval, two full intervening cycles, more-than-two-thirds outgoing migration readiness and the READY/TERMINAL gates. Its delay cannot be applied until the cycle boundaries noted in Section 9.2 are defined. The account and policy consent rules in Appendix E.3 also apply.
+
+The intended destination is an open-ended public research network with
+permissionless pseudonymous access and a verifiable, bounded path to validator
+authority. The v7 implementation demonstrates a finite trust-based slice,
+including sealed proof attribution and linked successor replay. It does not
+resolve founder control, Sybil cost, resource funding or public transport.
+Those choices and separate-machine evidence are prerequisites to a public
+safety or continuous-service claim.
 
 <!-- APPENDICES -->
 
@@ -324,7 +398,7 @@ Inlining or citing a derivation preserves its DerivationId. Typed ArtifactIds us
 
 Changed derivations and certificates receive recomputed identities; existing referenced proofs retain theirs. Appendix B.3 binds these changes to the authenticated original. The artifact set uses a Merkle-Patricia root for presence and absence witnesses under an adopted trusted root.
 
-Versioned identities preserve exact sealed references; historical migration follows Section 9.4. Offline definition authoring is separate from the proof-only selected library and cannot change a prototype question's targets or limits.
+Versioned identities preserve exact sealed references; historical migration follows Section 9.5. Offline definition authoring is separate from the proof-only selected library and cannot change a prototype question's targets or limits.
 
 ## Appendix B. Proof admission and reuse
 
@@ -334,11 +408,11 @@ A commitment binds the solution author, payment recipient, chain, research attem
 
 The original authenticated submission must satisfy its original well-formedness rules: its graph must be acyclic, helpers canonically ordered before their uses, every certificate and dependency valid, and its root a proof of an approved target. Lookup may precede costly checking, but substitution and pruning cannot repair an invalid original submission.
 
-The approved v6 question fixes its targets and is bound to the immutable genesis profile, checker and selected library root at opening. The profile supplies the same proof-reference, exact duplicate-helper substitution and resource-limit rules for every question. It permits bounded helper certificates developed after approval, but no question-specific assumptions, definitions, reference permissions or limits. A broader network with selectable question policies would need explicit authorization and compatibility rules. Helpers cannot change the target or add axioms.
+The approved v7 question fixes its targets and is bound to the immutable genesis profile, checker and selected library root at opening. The profile supplies the same proof-reference, exact duplicate-helper substitution and resource-limit rules for every question. It permits bounded helper certificates developed after approval, but no question-specific assumptions, definitions, reference permissions or limits. A broader network with selectable question policies would need explicit authorization and compatibility rules. Helpers cannot change the target or add axioms.
 
 ### B.2. Exact replacement and pruning
 
-Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the fixed Foundation. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. The fixed v6 rule replaces the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 gives the bounded profile's deterministic selector and single-author restriction.
+Before final validation, compare every submitted helper with proofs selected in the immutable sealed parent of the proposed settlement record. A duplicate requires matching StatementId and exact canonical actual-conclusion bytes under the fixed Foundation. A shared ResolutionId, opposite conclusion or arbitrary logically equivalent statement is insufficient. The fixed v7 rule replaces the helper's uses with a citation to an admissible existing proof. The existing proof retains its recorded author and payment beneficiary, including when its author is the submitter; the duplicate creates no new block or attribution. Section 9.2 gives the bounded profile's deterministic selector and single-author restriction.
 
 After replacement, recursively remove every helper, dependency and citation no longer reachable from the root through actual proof uses. Recompute the surviving graph, canonical order and affected identities before checking it.
 
@@ -460,8 +534,18 @@ Archive and handoff evidence require continuing storage and funding. Section 8.4
 
 Every distinct authorizing account signs the complete operation and consumes its nonce once, even when it fills several roles. The bounded profile credits whole-atom Test-NAO balances and records a separate nontransferable author eligibility claim. It has no transfer, withdrawal or reserve-spending operation; an empty control record cannot spend the reserve. Broader monetary claims or payments would need explicit authorization and conservation rules.
 
-Policy changes require current and replacement-policy consent. Without preconfigured recovery, a lost authorizing key has no administrative remedy. Protocol amendments and preservation of historical obligations follow Section 9.4.
+Policy changes require current and replacement-policy consent. Without preconfigured recovery, a lost authorizing key has no administrative remedy. Protocol amendments and preservation of historical obligations follow Section 9.5.
 
 ## Reference
 
 [REF1] E. Buchman, J. Kwon and Z. Milosevic. The latest gossip on BFT consensus. 2019, version 3. <link href="https://arxiv.org/html/1807.04938v3" color="#222222">Algorithm 1 and agreement argument</link>.
+
+[REF2] Bitcoin. <link href="https://bitcoin.org/bitcoin.pdf" color="#222222">Bitcoin: A Peer-to-Peer Electronic Cash System</link>, Sections 4 and 6.
+
+[REF3] Bitcoin developer guide. <link href="https://developer.bitcoin.org/devguide/block_chain.html" color="#222222">Block chain, proof of work and transaction fees</link>.
+
+[REF4] Ethereum.org. <link href="https://ethereum.org/guides/how-to-create-an-ethereum-account/" color="#222222">How to create an Ethereum account</link>.
+
+[REF5] Ethereum.org. <link href="https://ethereum.org/developers/docs/gas/" color="#222222">Gas and fees</link>.
+
+[REF6] Ethereum.org. <link href="https://ethereum.org/developers/docs/consensus-mechanisms/pos/attestations" color="#222222">Attestations and effective balance</link>.

@@ -18,10 +18,11 @@ assert re.findall(r'^## Appendix ([A-E])\.', raw, re.M) == list('ABCDE')
 figures = ['system', 'graph', 'agenda', 'delivery', 'helpers', 'payments', 'citation', 'membership', 'agreement', 'reuse']
 assert re.findall(r'^\[FIG:([^\]]+)\]', raw, re.M) == figures
 assert raw.index('[FIG:system]') < raw.index('## 2.')
-assert '4 ≤ N ≤ 32' in raw and '256' not in raw
+assert '4 ≤ N ≤ 32' in raw
+assert ('256' not in raw) if variant else ('historical v6 256-seat' in raw)
 assert all(term not in raw for term in ('Implementation status', 'state-v5 pilot'))
-assert ('Variable-roster proposal v0.2' if variant else 'Draft v0.1') in raw
-assert '24 September 2026' in raw
+assert ('Variable-roster proposal v0.2' if variant else 'Draft v0.2') in raw
+assert ('24 September 2026' if variant else '28 September 2026') in raw
 if variant:
     assert all(term not in raw for term in ('K = 4', 'three-of-four', 'READY 3/4', 'TERMINAL 3/4', 'four owner accounts'))
 reader = PdfReader(pdf)
@@ -31,7 +32,7 @@ with pdfplumber.open(pdf) as document:
     for term in ('Purpose and scope', 'Bounded profile and open rules', 'KNOWN_UNPAID', 'Test-NAO', 'READY', 'TERMINAL',
                  'ProofId', 'QuestionId', 'ResolutionId', 'source', 'seven-day'):
         assert term in text, term
-    for term in (('Variable-roster proposal v0.2', '32-unit ceiling', 'READY', 'TERMINAL') if variant else ('Draft v0.1',)):
+    for term in (('Variable-roster proposal v0.2', '32-unit ceiling', 'READY', 'TERMINAL') if variant else ('Draft v0.2', 'founder', 'state-v7',)):
         assert term in text, term
     assert 'Implementation status' not in text
     for n, page in enumerate(document.pages, 1):
@@ -46,7 +47,12 @@ for page in reader.pages:
         if descriptor:
             assert any(k in descriptor.get_object() for k in ('/FontFile', '/FontFile2', '/FontFile3'))
 links = {a.get_object().get('/A', {}).get('/URI') for page in reader.pages for a in page.get('/Annots', [])}
-assert links == {'https://arxiv.org/html/1807.04938v3'}
+assert links == ({'https://arxiv.org/html/1807.04938v3'} if variant else {'https://arxiv.org/html/1807.04938v3',
+                 'https://bitcoin.org/bitcoin.pdf',
+                 'https://developer.bitcoin.org/devguide/block_chain.html',
+                 'https://ethereum.org/guides/how-to-create-an-ethereum-account/',
+                 'https://ethereum.org/developers/docs/gas/',
+                 'https://ethereum.org/developers/docs/consensus-mechanisms/pos/attestations'})
 print(json.dumps({'structural_checks': 'passed', 'variant': 'variable' if variant else 'base', 'pages': len(reader.pages),
                   'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
                   'pdf_sha256': hashlib.sha256(pdf.read_bytes()).hexdigest(),

@@ -1,18 +1,67 @@
-# NAOME trusted MVP: requirements, rules, and acceptance
+# NAOME public-network target and trusted MVP acceptance
 
-This document records the four-seat trusted MVP baseline and its historical
-`state-v5` acceptance contract. The fresh `state-v6` four-to-32-seat extension
-is specified in [authority periods](../../specs/authority-periods.md) and the
-[v6 discussion copy](whitepaper-variable-proposal-en.pdf); its evidence is tracked
-separately in [verification](verification.md). The trusted MVP baseline adopts
-rules R1–R11 and their parameters. Acceptance
-uses four independent local validator processes with separate keys and durable
-stores, including simulated partitions and failures. A real two-machine run
-remains later qualification. The [English design draft](whitepaper-en.pdf)
-also discusses broader public-network rules. Its question-selected policy and
-definition-publication options are outside the implemented v6 profile; the v6
-discussion copy gives the fixed prototype rules. The [pilot runbook](pilot.md) defines the next
-separate-machine qualification and its evidence requirements.
+## Public-network milestone (target proposal; not implemented)
+
+The intended milestone is a permissionless, open-ended research network. A person
+may generate a pseudonymous research key and seek admission without an invitation
+or manual choice of who may participate. Research access is distinct from
+validator authority: publishing an account or a valid proof does not itself
+grant a vote. No protocol-wide fixed lifetime cap is intended for research
+accounts, participants, records, or eventual validator participation. Each
+admitted action, record, proof check, and authority snapshot must still have
+finite, enforceable resource bounds. Physical storage, bandwidth, and throughput
+remain finite; continuing service needs measured capacity and sustainable
+resource accounting.
+
+The four starting validator units may all be controlled by the founder. Distinct
+keys and account IDs do not make them independent operators. In that state the
+founder can censor research and joins, stop progress, and control a quorum;
+the prototype supplies no permissionless safety guarantee against that control.
+Later participation needs an objective, reviewable authority path rather than
+manual selection of identities. The path, its Sybil cost and concentration
+limits, and its behavior under founder censorship are open protocol decisions.
+
+Acceptance for this target requires a versioned rulebook and executable tests
+showing (1) public pseudonymous account admission within bounded per-action
+work, (2) a finite active validator snapshot with a defined route for unbounded
+eventual participation across snapshots, (3) bounded admission and verification
+under adversarial load, (4) durable continuation and archive replay across run
+boundaries without duplicate rewards or lost proof attribution, and (5)
+physical multi-machine measurements of storage growth, throughput, recovery,
+and participation under churn. Passing local process tests alone does not
+qualify this milestone.
+
+**Open choices:** Select an objective validator-entry and Sybil resource rule
+(for example, contribution-backed claims with an anti-farming rule, a bonded
+resource, or a hybrid), and specify what evidence makes entry independently
+checkable. Choose finite active-set admission and exit scheduling that does
+not permanently cap eventual participation; demonstrate quorum safety,
+progress, and resistance to capture under explicit adversarial assumptions.
+Choose state growth funding, archival availability, and any pruning with proof
+and finality preservation; measure worst-case retained bytes per participant
+and replay from genesis or a verified checkpoint. Define amendment consent and
+cross-version activation so sealed history and once-only effects survive.
+Choose public transport and endpoint discovery, including NAT operation, and
+test reachability and denial-of-service limits on separate machines. None of
+these options is adopted by this document.
+
+## Current bounded implementation and historical acceptance
+
+The current `state-v7` implementation has a fresh-genesis, finite run with
+four to 32 installed validator units, one active research attempt, at most 512
+genesis and 1,024 total research accounts across carried history, and at most
+8,192 records under the
+standard profile. A linked successor may carry sealed state into a new run;
+this is not an indefinite public-network service guarantee. The normative
+[current authority-period rules](../../specs/authority-periods.md), the
+[operating guide](operations.md), and [verification](verification.md) define
+the current implementation and its evidence. The
+[variable-roster paper](whitepaper-variable-proposal-en.pdf) is a historical
+fresh-v6 discussion copy, and the acceptance checklist below records the
+earlier four-seat `state-v5` contract. Those historical limits and checkboxes
+must not be read as the v7 profile or the public-network target. The
+[main paper](whitepaper-en.pdf) describes the target with the current boundary;
+the [pilot runbook](pilot.md) is separate-machine qualification.
 
 **Goal:** Four stable validator slots jointly operate a small research network with openly registered researchers and claim-backed handoff between trusted operators. Researchers supply formal questions and proof material; validators select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
 
