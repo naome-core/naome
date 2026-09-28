@@ -6,15 +6,17 @@ use super::{
     control::{self, Request},
     files,
 };
+use naome_checker::{ArtifactState, check_normal_form_with_state};
 use naome_ledger::{
     AccountId,
     authentication::{SIGNED_OPERATION_MAX_BYTES, SignedOperation},
     profile::Genesis,
 };
+use naome_proof::ProofCertificate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -29,7 +31,7 @@ use tokio::{
 // A hex-encoded maximum action plus a short JSON envelope. One request per
 // connection, with no retained request bodies or unbounded task queue.
 const MAX_FRAME: usize = 2 * SIGNED_OPERATION_MAX_BYTES + 512;
-const MAX_RESPONSE: usize = 512 * 1024;
+const MAX_RESPONSE: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 16;
 const WINDOW: Duration = Duration::from_secs(60);
 const GLOBAL_REQUESTS: u16 = 512;
@@ -42,6 +44,9 @@ pub(super) enum GatewayRequest {
     Context { account: String },
     Submit { bytes: String },
     Receipt { id: String },
+    Results { cursor: Option<String>, limit: u8 },
+    Result { id: String },
+    Proof { id: String },
 }
 
 struct Limits {
@@ -169,6 +174,25 @@ async fn handle(server: &Server, request: GatewayRequest) -> Result<Value> {
             let _: [u8; 32] = files::unhex(&id)?;
             control::call_socket(&server.socket, Request::ActionStatus { id }).await
         }
+        GatewayRequest::Results { cursor, limit } => {
+            if let Some(ref value) = cursor {
+                if value.len() != 152 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("invalid result cursor".into());
+                }
+            }
+            if !(1..=20).contains(&limit) {
+                return Err("result page limit must be 1 through 20".into());
+            }
+            control::call_socket(&server.socket, Request::Results { cursor, limit }).await
+        }
+        GatewayRequest::Result { id } => {
+            let _: [u8; 32] = files::unhex(&id)?;
+            control::call_socket(&server.socket, Request::ResultDetail { id }).await
+        }
+        GatewayRequest::Proof { id } => {
+            let _: [u8; 32] = files::unhex(&id)?;
+            control::call_socket(&server.socket, Request::ResultProof { id }).await
+        }
     }
 }
 
@@ -198,7 +222,10 @@ async fn connection(mut stream: TcpStream, ip: IpAddr, server: Arc<Server>) {
             json!({"error":"gateway request timed out; query receipt before retrying exact bytes"})
         }
     };
-    if let Ok(bytes) = serde_json::to_vec(&value) {
+    if let Ok(mut bytes) = serde_json::to_vec(&value) {
+        if bytes.len() > MAX_RESPONSE {
+            bytes = br#"{"error":"gateway response exceeds byte limit"}"#.to_vec();
+        }
         let _ = tokio::time::timeout(
             Duration::from_secs(2),
             write_frame(&mut stream, &bytes, MAX_RESPONSE),
@@ -331,6 +358,29 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
             println!("{response}");
             Ok(())
         }
+        [command, address] if command == "results" => {
+            println!("{}",call(address, GatewayRequest::Results {cursor:None,limit:20}).await?); Ok(())
+        }
+        [command, address, cursor] if command == "results" => {
+            println!("{}",call(address, GatewayRequest::Results {cursor:Some(cursor.clone()),limit:20}).await?); Ok(())
+        }
+        [command, address, flag, size] if command == "results" && flag == "--limit" => {
+            println!("{}",call(address, GatewayRequest::Results {cursor:None,limit:size.parse()?}).await?); Ok(())
+        }
+        [command, address, cursor, flag, size] if command == "results" && flag == "--limit" => {
+            println!("{}",call(address, GatewayRequest::Results {cursor:Some(cursor.clone()),limit:size.parse()?}).await?); Ok(())
+        }
+        [command, address, id] if command == "result" => {
+            let _: [u8; 32] = files::unhex(id)?;
+            println!("{}",call(address, GatewayRequest::Result {id:id.clone()}).await?); Ok(())
+        }
+        [command, address, id] if command == "proof" => {
+            let _: [u8; 32] = files::unhex(id)?;
+            println!("{}",call(address, GatewayRequest::Proof {id:id.clone()}).await?); Ok(())
+        }
+        [command, address, genesis, id, directory] if command == "download-proof" => {
+            download_proof(address, Path::new(genesis), id, Path::new(directory)).await
+        }
         [command, address, genesis_path, action] if command == "submit" => {
             let genesis = Genesis::decode(&files::read(Path::new(genesis_path), 128 * 1024, false)?)?;
             let bytes = files::read(
@@ -359,8 +409,124 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
             println!("{response}");
             Ok(())
         }
-        _ => Err("usage: gateway serve GENESIS CONTROL_SOCKET LOOPBACK_IP:PORT; gateway genesis ADDRESS OUTPUT; gateway context ADDRESS ACCOUNT; gateway submit ADDRESS GENESIS ACTION; gateway receipt ADDRESS OPERATION_ID".into()),
+        _ => Err("usage: gateway serve GENESIS CONTROL_SOCKET LOOPBACK_IP:PORT; gateway genesis ADDRESS OUTPUT; gateway context ADDRESS ACCOUNT; gateway submit ADDRESS GENESIS ACTION; gateway receipt ADDRESS OPERATION_ID; gateway results ADDRESS [CURSOR]; gateway result ADDRESS SUBMISSION_ID; gateway proof ADDRESS PROOF_ID; gateway download-proof ADDRESS GENESIS PROOF_ID DIRECTORY".into()),
     }
+}
+
+async fn download_proof(
+    address: &str,
+    genesis_path: &Path,
+    root: &str,
+    directory: &Path,
+) -> Result<()> {
+    let root = files::hex(&files::unhex::<32>(root)?);
+    let genesis = Genesis::decode(&files::read(genesis_path, 128 * 1024, false)?)?;
+    let context = call(
+        address,
+        GatewayRequest::Context {
+            account: "00".repeat(32),
+        },
+    )
+    .await?;
+    if context["genesis"] != files::hex(genesis.id().as_bytes()) {
+        return Err("gateway genesis differs from supplied genesis".into());
+    }
+    let limits = genesis.profile().limits();
+    let mut stack = vec![(root.clone(), false)];
+    let mut fetched = BTreeMap::<String, (Vec<u8>, Vec<String>)>::new();
+    let mut visiting = BTreeSet::new();
+    let mut order = Vec::new();
+    let mut total = 0u64;
+    while let Some((id, expanded)) = stack.pop() {
+        if expanded {
+            visiting.remove(&id);
+            order.push(id);
+            continue;
+        }
+        if order.contains(&id) {
+            continue;
+        }
+        if !visiting.insert(id.clone()) {
+            return Err("cyclic proof dependency".into());
+        }
+        if !fetched.contains_key(&id) {
+            if fetched.len() >= limits.dependency_proofs as usize + 1 {
+                return Err("dependency proof limit".into());
+            }
+            let value = match call(address, GatewayRequest::Proof { id: id.clone() }).await {
+                Ok(value) => value,
+                Err(error) if error.to_string().contains("request rate limit") => {
+                    tokio::time::sleep(WINDOW).await;
+                    call(address, GatewayRequest::Proof { id: id.clone() }).await?
+                }
+                Err(error) => return Err(error),
+            };
+            if value["proof"] != id || value["status"] != "node_finalized_view" {
+                return Err("gateway returned a different proof".into());
+            }
+            let hex = value["bytes"].as_str().ok_or("missing proof bytes")?;
+            if hex.len() > 2 * limits.certificate_bytes as usize {
+                return Err("certificate byte limit".into());
+            }
+            let bytes = decode_hex(hex)?;
+            total = total
+                .checked_add(bytes.len() as u64)
+                .ok_or("dependency byte overflow")?;
+            if total > limits.dependency_bytes + limits.certificate_bytes as u64 {
+                return Err("dependency byte limit".into());
+            }
+            let deps: Vec<String> = value["dependencies"]
+                .as_array()
+                .ok_or("missing dependencies")?
+                .iter()
+                .map(|v| -> Result<String> {
+                    Ok(v.as_str().ok_or("invalid dependency")?.to_string())
+                })
+                .collect::<Result<Vec<String>>>()?;
+            for dep in &deps {
+                let _: [u8; 32] = files::unhex(dep)?;
+            }
+            fetched.insert(id.clone(), (bytes, deps));
+        }
+        stack.push((id.clone(), true));
+        let deps = &fetched[&id].1;
+        for dep in deps.iter().rev() {
+            if visiting.contains(dep) {
+                return Err("cyclic proof dependency".into());
+            }
+            if !order.contains(dep) {
+                stack.push((dep.clone(), false));
+            }
+        }
+    }
+    let mut context = ArtifactState::new();
+    for id in &order {
+        let checked = check_normal_form_with_state(
+            ProofCertificate::from_canonical_bytes(&fetched[id].0)?.into_unchecked_normal_form(),
+            &context,
+        )?;
+        if files::hex(checked.proof_id().as_bytes()) != *id {
+            return Err("proof identity mismatch".into());
+        }
+        context.register_proof_for_verification(checked)?;
+    }
+    if !directory.exists() {
+        files::directory(directory)?;
+    }
+    for id in &order {
+        files::create_or_match(
+            &directory.join(format!("{id}.proof")),
+            &fetched[id].0,
+            false,
+        )?;
+    }
+    println!(
+        "{}",
+        json!({"verification":"mathematical certificates checked offline",
+        "root":root,"dependency_order":order,"directory":directory,
+        "notice":"node result selection is not independently verified; replay an archive for finality"})
+    );
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,7 +1,9 @@
 use super::{Result, files};
 use naome_ledger::{LedgerState, OperationId, receipt::NormalizationReceipt, state::FamilyResult};
+use naome_proof::ProofId;
 use serde_json::{Value, json};
 use sha2::Digest;
+use std::collections::BTreeMap;
 
 /// Human-readable summary of the fixed research admission rules. Numerical
 /// ceilings remain in the immutable profile's `limits` output.
@@ -99,6 +101,141 @@ pub fn question(state: &LedgerState, id: OperationId) -> Result<Value> {
         None => {}
     }
     Ok(value)
+}
+
+// Successors restart heights. A cursor belongs to one selected state snapshot.
+fn result_snapshot(state: &LedgerState) -> String {
+    let mut digest = sha2::Sha256::new();
+    digest.update(state.genesis().id().as_bytes());
+    digest.update(state.head().as_bytes());
+    files::hex(&digest.finalize())
+}
+fn result_cursor(state: &LedgerState, height: u64, index: u32, id: OperationId) -> String {
+    format!(
+        "{}{height:016x}{index:08x}{}",
+        result_snapshot(state),
+        files::hex(id.as_bytes())
+    )
+}
+
+pub fn results(state: &LedgerState, cursor: Option<&str>, limit: u8) -> Result<Value> {
+    if !(1..=20).contains(&limit) {
+        return Err("result page limit must be 1 through 20".into());
+    }
+    let after = match cursor {
+        Some(value) => {
+            if value.len() != 152 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("invalid result cursor".into());
+            }
+            if value[..64] != result_snapshot(state) {
+                return Err("result cursor is stale; restart discovery".into());
+            }
+            let height = u64::from_str_radix(&value[64..80], 16)?;
+            let index = u32::from_str_radix(&value[80..88], 16)?;
+            let id = OperationId::from_bytes(files::unhex(&value[88..])?);
+            Some((height, index, id))
+        }
+        None => None,
+    };
+    let mut entries = BTreeMap::new();
+    let mut found_cursor = after.is_none();
+    for q in state.questions() {
+        let key = (
+            q.admitted().height,
+            q.admitted().operation_index,
+            q.submission(),
+        );
+        if after == Some(key) {
+            found_cursor = true;
+        }
+        if after.is_some_and(|previous| key <= previous) {
+            continue;
+        }
+        entries.insert(key, q);
+        if entries.len() > usize::from(limit) + 1 {
+            entries.pop_last();
+        }
+    }
+    if !found_cursor {
+        return Err("result cursor does not name a finalized question".into());
+    }
+    let mut page = Vec::new();
+    let mut next = None;
+    for ((height, index, id), q) in entries {
+        if page.len() == usize::from(limit) {
+            next = page
+                .last()
+                .map(|(cursor, _): &(String, Value)| cursor.clone());
+            break;
+        }
+        let family = state.families().get(&q.question().resolution_id());
+        let root = match family {
+            Some(FamilyResult::Completed { proof, .. } | FamilyResult::KnownUnpaid { proof }) => {
+                Some(files::hex(proof.as_bytes()))
+            }
+            None => None,
+        };
+        let cursor = result_cursor(state, height, index, id);
+        page.push((cursor.clone(),json!({"submission":files::hex(id.as_bytes()),"cursor":cursor,
+            "purpose":q.purpose(),
+            "status":format!("{:?}",q.status()),"family":files::hex(q.question().resolution_id().as_bytes()),
+            "root_proof":root,"admission":{"height":height,"operation_index":index}})));
+    }
+    Ok(
+        json!({"status":"node_finalized_view","height":state.height(),"head":files::hex(state.head().as_bytes()),
+        "items":page.into_iter().map(|(_,value)|value).collect::<Vec<_>>(),"next_cursor":next,
+        "notice":"node view; independently replay an archive to verify finality"}),
+    )
+}
+
+pub fn result_detail(state: &LedgerState, id: OperationId) -> Result<Value> {
+    let q = state
+        .question(id)
+        .ok_or("question not in finalized state")?;
+    let family = state.families().get(&q.question().resolution_id());
+    let (root, outcome) = match family {
+        Some(FamilyResult::Completed { proof, outcome, .. }) => (
+            Some(files::hex(proof.as_bytes())),
+            Some(format!("{outcome:?}").to_uppercase()),
+        ),
+        Some(FamilyResult::KnownUnpaid { proof }) => (Some(files::hex(proof.as_bytes())), None),
+        None => (None, None),
+    };
+    Ok(
+        json!({"status":"node_finalized_view","submission":files::hex(id.as_bytes()),
+        "question_status":format!("{:?}",q.status()),"source":q.question().source(),
+        "purpose":q.purpose(),"author":files::hex(q.author().as_bytes()),
+        "question":q.opened_question().map(|id|files::hex(id.as_bytes())),
+        "family":files::hex(q.question().resolution_id().as_bytes()),
+        "formal_targets":{"R":q.question().positive_target().to_source(),
+            "not_R":q.question().negative_target().to_source()},
+        "root_proof":root,"outcome":outcome,
+        "admission":{"height":q.admitted().height,"operation_index":q.admitted().operation_index},
+        "height":state.height(),"head":files::hex(state.head().as_bytes()),
+        "notice":"node view; independently replay an archive to verify finality"}),
+    )
+}
+
+pub fn result_proof(state: &LedgerState, id: ProofId) -> Result<Value> {
+    let proof = state
+        .library()
+        .lookup(id)
+        .ok_or("proof not in finalized library")?;
+    let limits = state.genesis().profile().limits();
+    if proof.canonical_bytes().len() > limits.certificate_bytes as usize {
+        return Err("selected proof exceeds response bound".into());
+    }
+    Ok(
+        json!({"status":"node_finalized_view","proof":files::hex(id.as_bytes()),
+        "bytes":files::hex(proof.canonical_bytes()),"dependencies":proof.dependencies().iter()
+            .map(|id|files::hex(id.as_bytes())).collect::<Vec<_>>(),
+        "statement":files::hex(proof.statement_id().as_bytes()),
+        "conclusion":proof.conclusion().to_source(),
+        "author":files::hex(proof.author().as_bytes()),
+        "admission":{"height":proof.coordinate().height,"operation_index":proof.coordinate().operation_index},
+        "height":state.height(),"head":files::hex(state.head().as_bytes()),
+        "notice":"check certificate mathematics locally; archive replay separately verifies finality"}),
+    )
 }
 
 pub fn compiled_question(question: &naome_ledger::question::CompiledQuestion) -> Value {

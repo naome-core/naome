@@ -1,4 +1,5 @@
 use super::*;
+use std::net::TcpListener;
 
 /// Slow local process qualification: four independent validator processes
 /// finish one paid run, restart from the terminal bridge, and cite its proof.
@@ -93,6 +94,88 @@ fn paid_proof_survives_terminal_successor_and_is_cited_once() {
     lab.stop(0);
     lab.start(0);
     lab.wait(0, |status| status["paid_completions"] == 1);
+    let available = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gateway_address = available.local_addr().unwrap().to_string();
+    drop(available);
+    let successor_genesis = path(Path::new(&lab.file("successor-0")).join("genesis.bin"));
+    let mut gateway = Command::new(BIN)
+        .args([
+            "gateway",
+            "serve",
+            &successor_genesis,
+            &lab.file("successor-0/control.sock"),
+            &gateway_address,
+        ])
+        .stdout(File::create(lab.root.join("result-gateway.log")).unwrap())
+        .stderr(File::create(lab.root.join("result-gateway.errors")).unwrap())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !raw(&["gateway".into(), "results".into(), gateway_address.clone()])
+        .status
+        .success()
+    {
+        assert!(started.elapsed() < Duration::from_secs(10));
+        thread::sleep(Duration::from_millis(50));
+    }
+    let catalogue = command(&["gateway".into(), "results".into(), gateway_address.clone()]);
+    assert_eq!(catalogue["items"][0]["submission"], first);
+    let stale_cursor = catalogue["items"][0]["cursor"].as_str().unwrap().to_owned();
+    let detail = command(&[
+        "gateway".into(),
+        "result".into(),
+        gateway_address.clone(),
+        first.clone(),
+    ]);
+    assert_eq!(detail["question_status"], "Completed");
+    let root = detail["root_proof"].as_str().unwrap().to_owned();
+    let participant_genesis = lab.file("result-client-genesis.bin");
+    command(&[
+        "gateway".into(),
+        "genesis".into(),
+        gateway_address.clone(),
+        participant_genesis.clone(),
+    ]);
+    let proof_directory = lab.file("result-client-proofs");
+    let downloaded = command(&[
+        "gateway".into(),
+        "download-proof".into(),
+        gateway_address.clone(),
+        participant_genesis.clone(),
+        root.clone(),
+        proof_directory.clone(),
+    ]);
+    assert_eq!(downloaded["root"], root);
+    assert!(downloaded["dependency_order"].as_array().unwrap().len() >= 2);
+    let mut check_args = vec![
+        "check-proof".into(),
+        participant_genesis,
+        path(Path::new(&proof_directory).join(format!("{root}.proof"))),
+    ];
+    for id in downloaded["dependency_order"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+    {
+        if id != root {
+            check_args.push(path(
+                Path::new(&proof_directory).join(format!("{id}.proof")),
+            ));
+        }
+    }
+    assert_eq!(command(&check_args)["proof"], root);
+    assert!(
+        raw(&[
+            "gateway".into(),
+            "result".into(),
+            gateway_address.clone(),
+            "zz".repeat(32)
+        ])
+        .status
+        .code()
+            != Some(0)
+    );
     let helper =
         naome_authoring::compile(&fs::read_to_string(example("helper-h.nao")).unwrap()).unwrap();
     let helper_id = helper
@@ -102,12 +185,11 @@ fn paid_proof_survives_terminal_successor_and_is_cited_once() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let proof = lab.file("predecessor-helper.proof");
-    command(&[
-        "fetch-proof".into(),
-        lab.config(0),
-        helper_id,
-        proof.clone(),
-    ]);
+    fs::copy(
+        Path::new(&proof_directory).join(format!("{helper_id}.proof")),
+        &proof,
+    )
+    .unwrap();
     let second_package = lab.file("second.package");
     command(&[
         "package".into(),
@@ -124,6 +206,42 @@ fn paid_proof_survives_terminal_successor_and_is_cited_once() {
     lab.approve(&[0, 1, 2], "second", &second);
     lab.solve(0, 5, &second_package, "second", &second);
     let cited = lab.wait(0, |status| status["paid_completions"] == 2);
+    for index in 1..4 {
+        lab.stop(index);
+    }
+    let stale = raw(&[
+        "gateway".into(),
+        "results".into(),
+        gateway_address.clone(),
+        stale_cursor,
+    ]);
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("stale"));
+    let first_page = command(&[
+        "gateway".into(),
+        "results".into(),
+        gateway_address.clone(),
+        "--limit".into(),
+        "1".into(),
+    ]);
+    assert_eq!(first_page["items"].as_array().unwrap().len(), 1);
+    let cursor = first_page["next_cursor"].as_str().unwrap().to_owned();
+    let second_page = command(&[
+        "gateway".into(),
+        "results".into(),
+        gateway_address.clone(),
+        cursor,
+        "--limit".into(),
+        "1".into(),
+    ]);
+    let seen = [
+        first_page["items"][0]["submission"].as_str().unwrap(),
+        second_page["items"][0]["submission"].as_str().unwrap(),
+    ];
+    assert!(seen.contains(&first.as_str()) && seen.contains(&second.as_str()));
+    assert!(second_page["next_cursor"].is_null());
+    gateway.kill().unwrap();
+    gateway.wait().unwrap();
     assert_eq!(cited["claims"].as_array().unwrap().len(), 2);
     let cited_first_balance = cited["accounts"]
         .as_array()

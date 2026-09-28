@@ -457,6 +457,17 @@ fn handle(runtime: &mut StateRuntime, request: Request) -> Result<Value> {
             runtime.state()?,
             OperationId::from_bytes(files::unhex(&id)?),
         )?,
+        Request::Results { cursor, limit } => {
+            super::inspect::results(runtime.state()?, cursor.as_deref(), limit)?
+        }
+        Request::ResultDetail { id } => super::inspect::result_detail(
+            runtime.state()?,
+            OperationId::from_bytes(files::unhex(&id)?),
+        )?,
+        Request::ResultProof { id } => super::inspect::result_proof(
+            runtime.state()?,
+            naome_proof::ProofId::from_bytes(files::unhex(&id)?),
+        )?,
         Request::History { height } => {
             json!({"height":height,"bytes":files::hex(&runtime.finality_bytes(height)?)})
         }

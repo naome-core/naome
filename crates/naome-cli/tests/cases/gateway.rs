@@ -85,6 +85,12 @@ fn separate_author_gateway_and_validator_recover_exact_action_and_receipt() {
     assert!(context.get("accounts").is_none());
     assert!(context.get("validators").is_none());
     assert!(context.get("control_socket").is_none());
+    assert!(
+        command(&["gateway".into(), "results".into(), address.clone()])["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         command(&[
             "gateway".into(),
@@ -213,6 +219,69 @@ fn separate_author_gateway_and_validator_recover_exact_action_and_receipt() {
     ]);
     assert_eq!(final_receipt["status"], "finalized");
     assert_eq!(final_receipt["nonce"], 1);
+    let catalogue = command(&["gateway".into(), "results".into(), address.clone()]);
+    assert_eq!(catalogue["items"][0]["submission"], id);
+    assert_eq!(catalogue["next_cursor"], Value::Null);
+    let mut forged_cursor = catalogue["items"][0]["cursor"].as_str().unwrap().to_owned();
+    let replacement = if forged_cursor.ends_with("ff") {
+        "00"
+    } else {
+        "ff"
+    };
+    forged_cursor.replace_range(150..152, replacement);
+    assert!(
+        wire(
+            &address,
+            serde_json::json!({"command":"results","cursor":forged_cursor,"limit":20})
+                .to_string()
+                .as_bytes()
+        )["error"]
+            .as_str()
+            .unwrap()
+            .contains("cursor")
+    );
+    let detail = command(&[
+        "gateway".into(),
+        "result".into(),
+        address.clone(),
+        id.clone(),
+    ]);
+    assert!(detail["question_status"].is_string());
+    assert_eq!(detail["submission"], id);
+    assert!(detail.get("join_intent").is_none());
+    assert!(
+        wire(
+            &address,
+            serde_json::json!({"command":"results","cursor":"bad","limit":20})
+                .to_string()
+                .as_bytes()
+        )["error"]
+            .as_str()
+            .unwrap()
+            .contains("cursor")
+    );
+    assert!(
+        wire(
+            &address,
+            serde_json::json!({"command":"results","cursor":null,"limit":21})
+                .to_string()
+                .as_bytes()
+        )["error"]
+            .as_str()
+            .unwrap()
+            .contains("limit")
+    );
+    assert!(
+        wire(
+            &address,
+            serde_json::json!({"command":"proof","id":"00".repeat(32)})
+                .to_string()
+                .as_bytes()
+        )["error"]
+            .as_str()
+            .unwrap()
+            .contains("finalized library")
+    );
     assert_eq!(
         command(&[
             "remote-send".into(),
@@ -274,6 +343,15 @@ fn separate_author_gateway_and_validator_recover_exact_action_and_receipt() {
         if output.status.success() {
             let recovered: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(recovered, final_receipt);
+            assert_eq!(
+                command(&[
+                    "gateway".into(),
+                    "result".into(),
+                    restarted_address.clone(),
+                    id.clone()
+                ])["submission"],
+                id
+            );
             break;
         }
         assert!(started.elapsed() < Duration::from_secs(10));
@@ -298,6 +376,23 @@ fn separate_author_gateway_and_validator_recover_exact_action_and_receipt() {
     }
     assert!(limited);
     assert_eq!(lab.status(0).unwrap()["pending_operations"], 0);
+    let mut read_limited = false;
+    for _ in 0..64 {
+        let response = wire(
+            &restarted_address,
+            serde_json::json!({"command":"results","cursor":null,"limit":20})
+                .to_string()
+                .as_bytes(),
+        );
+        if response["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("request rate limit"))
+        {
+            read_limited = true;
+            break;
+        }
+    }
+    assert!(read_limited);
     drop(gateway);
 }
 

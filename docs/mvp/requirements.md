@@ -298,6 +298,15 @@ not an admission guarantee. A gateway `transported` response is local durable
 intake only; `pending`, `deferred`, and `rejected` are local outcomes. Only a
 receipt derived from sealed selected history is `finalized`. Gateway restart
 cannot grant consensus authority, erase validator custody, or change replay.
+The same gateway may expose a bounded page of finalized question summaries,
+one question detail, or one selected proof and its dependency identities from
+the connected node's selected state. A page cursor belongs to one exact state
+genesis and finalized head and must fail after state growth; the client restarts discovery.
+Certificate bytes can be checked locally against their dependency closure.
+These reads are the node's view, not a compact independent finality proof;
+archive replay remains the independent selected-history check. Pending actions,
+reveal secrets, validator configuration, and private archive frames are not
+participant result responses.
 The loopback transport and trusted-group access policy are specified in the
 [operating guide](operations.md#participant-action-gateway).
 
