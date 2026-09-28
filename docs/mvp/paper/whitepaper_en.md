@@ -3,7 +3,7 @@
 
 [META] Whitepaper · Draft v0.2 · 28 September 2026 · Public-network target and bounded v7
 
-[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, earliest valid commitment completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside parallel research questions ranked separately by shortest valid proof as Proof of Useful Work. Authority, admission, scoring details, rewards and migration remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
+[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, earliest valid commitment completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed non-mining successor investigates finite active validator committees with open, objective, Sybil-resistant entry and rotation, alongside parallel research questions under Proof of Useful Work: each question has its own first-solver prize, while proof length orders results ready together across questions. Citation eligibility would follow the accepted parent chain, not a library frozen at question opening. Exact priority, authority, admission, rewards and migration rules remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
 
 ## 1. Purpose and scope
 
@@ -382,42 +382,58 @@ atomic replay. Public continuation needs conflict, finality, archive and
 migration rules preserving attribution and once-only family settlement.
 
 The proposal permits at most a finite <i>C</i> simultaneous questions, each
-with its own family, frozen formal target, Foundation/checker version,
-permitted library/reference snapshot, deadlines and settlement. Reserve work,
-bytes, review and delivery capacity across all <i>C</i> windows and at most
-<i>K</i> submissions per question. Close coincident deadlines in canonical
-order. Current v7 still allows only one active attempt and selects the
-earliest eligible valid commitment receipt.
+with its own family, fixed formal target and Foundation/checker version.
+The library remains live: any proof already verified and included in the
+accepted parent chain may be cited, including one published after the
+question opened. At full proof-disclosure admission, check citation inclusion
+and dependency closure against that exact parent state. Neither a commitment
+nor an earlier operation in the same block makes an unverified or same-block
+proof citable. Replay or a changed selected history repeats this check.
+The opening-library root in Appendix B describes current v7 only.
+Reserve aggregate work, bytes, review and delivery capacity for <i>C</i>
+questions and at most <i>K</i> submissions each. Close coincident deadlines
+in canonical order. Current v7 still allows one active attempt and selects
+the earliest eligible valid commitment receipt.
 
-For each proposed question, Proof of Useful Work (PoUW) ranks valid submitted
-proofs by canonically counted derivation steps: fewer steps for the same frozen
-question is better. A fixed commitment and disclosure window is one way to
-define eligible submissions. A rolling contest is another, needing replacement
-and payout-finality rules; this timing choice remains open. Score the original signed bundle:
-count every canonical proof-normal-form step in the root and all submitted new
-helpers, including those later pruned from publication. The current proof
-normal form treats a certified older reference as a leaf and does not minimize
-proofs; scoring must be a new versioned rule. Two choices remain for older
-references: count each distinct certified reference as one step to reward
-reuse, or recursively charge its full lineage once per canonical dependency
-to discourage cheap reference chains. The reuse-aware count is recommended
-for cumulative research, conditional on verified dependency closure,
-reference eligibility, anti-farming rules and separate depth, work and byte
-caps for complete validation. Define normalization and scoring units before
-adoption. Among timely, fully valid submissions, choose the smallest score;
-break ties by finalized commitment receipt, then canonical submission hash.
-Under the fixed-window option, missing, late or invalid disclosures cannot
-win; no valid disclosure leaves the question unresolved and releases its
-capacity. This selects the shortest eligible <i>submitted</i> proof, not a
-globally shortest mathematical proof.
+Proof of Useful Work (PoUW) is useful formal proof search. Each approved
+question has its own first fully valid solver prize; a later shorter proof
+cannot revoke that settled prize. Private discovery time is unobservable.
+The public priority coordinate for "first" remains to be specified: finalized
+valid disclosure, earlier eligible commitment followed by validation, or
+another canonical chain event. Deadlines, invalid reveals and ties also need
+exact rules. Current v7 uses earliest eligible valid commitment receipt.
 
-For example, simultaneous A has valid lengths 18 and 12, while B has 7 and 9.
-A selects 12 and B selects 7; their lengths never compete. PoUW rewards useful
-proof-search results, while step count measures the proof rather than spent CPU
-time. It grants no Sybil-resistant voting influence, record liveness or
-finality. Question admission, payments and service funding remain undecided.
+Proof length serves a separate purpose. When valid results for different
+questions are ready together, shorter proofs should be processed first, but
+both questions retain their own first-solver prizes. Define the shared
+readiness boundary (one block, settlement batch or another finalized event),
+whether order affects inclusion or service, and any fair cross-question
+normalization. A fixed submission window and a rolling contest remain timing
+alternatives. For example, if A's first valid solver has 18 steps and B's has
+7, a length-ordered joint batch processes B first, then A; both receive their
+separate prizes. A later 12-step proof of A does not replace A's winner.
 
-Bound operation bytes, signatures, proof work, library lookup, state growth
+The proposed step score counts every canonical proof-normal-form derivation
+step in the original signed root and all new helpers, even helpers later
+pruned from publication. The current normal form treats an older reference
+as a leaf and does not minimize proofs. A new versioned rule must choose to
+charge each distinct certified older proof as one step, rewarding reuse, or
+to charge its recursively expanded lineage once per dependency, limiting
+cheap reference chains. Reuse-aware counting is recommended for cumulative
+research, conditional on verified dependency closure, anti-farming rules and
+separate hard depth, work and byte caps for full validation. A score binds to
+the proof's admission-parent dependencies; later library growth cannot
+rescore it. Equal scores need a deterministic tie-break. Step count measures
+the proof result, not spent CPU time or Sybil-resistant vote weight.
+
+A proof admitted through another concurrent question becomes citable from
+a later accepted parent block, but a completed target cannot earn a second
+paid completion. Specify whether such a target is marked known or settled
+under the public rule. Proof length does not supply record liveness or
+finality; these remain separate committee decisions.
+
+Bound operation bytes, signatures, proof work, parent-library lookup and
+dependency closure, state growth
 and peer buffers. Public relay needs changing endpoints and home-NAT access
 without opened inbound ports. Test floods, key splitting, concentration,
 partitions, rotation and independent archive replay across separate hosts.
@@ -426,10 +442,11 @@ consent and an exact once-only map of accounts, nonces, proofs, beneficiaries,
 outcomes, balances and claims; a successor commitment alone is insufficient.
 
 A bounded prototype should show committee members and full nodes agreeing on
-empty records, two parallel questions with independent winners, invalid and
-missing disclosures, an older citation and one settlement per family. Test
-both older-reference scoring options, invalid authority, conflicting histories,
-restart and aggregate resource limits.
+empty records, two parallel questions with separate first-solver prizes and
+length-ordered ready results, a later shorter proof without prize reversal,
+invalid disclosures, a post-opening citation and one settlement per family.
+Test both older-reference scoring options, invalid authority, conflicting
+histories, restart and aggregate resource limits.
 
 ### 9.5. Required operating properties
 

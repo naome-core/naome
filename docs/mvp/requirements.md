@@ -81,50 +81,69 @@ beneficiaries and any authorized payment. Candidate operations include
 registration, question admission, commitment, disclosure and settlement;
 versioned bytes and timing remain open. Unlike the one-slot v7 profile, a public
 candidate may have up to a specified finite number `C` of active questions.
-Each question has its own family, frozen formal target, Foundation/checker
-version, admissible library/reference snapshot, commitment and disclosure
-deadlines, and settlement. Reserve capacity for `C` concurrent windows, at most
-`K` submissions per window, and the combined worst-case validation, storage,
+Each question has its own family, fixed formal target and Foundation/checker
+version. Its permitted reference policy is versioned, but the set of citable
+proofs grows with accepted blocks rather than freezing when the question opens.
+This differs from the current v7 one-attempt library rule below.
+Reserve capacity for `C` concurrent windows, at most `K` submissions per
+window, and the combined worst-case validation, storage,
 review and delivery work. Opening and settlement order must be deterministic
 when several windows become due in one record.
 
-**Proof of Useful Work (PoUW) for each question.** In this public research
-candidate, fewer canonically counted proof steps for the same frozen question
-is better. This is useful formal proof-search work, separate from record-ordering
-authority. A fixed commitment window followed by a disclosure window is one
-candidate for determining eligible submissions; a rolling contest needs
-replacement and payout-finality rules. The choice is open. Compare only timely,
-completely valid submissions for that question against its frozen context.
-Score the original
-signed complete bundle: count every canonical proof-normal-form derivation step
-in its root and all submitted new helpers, including helpers later pruned from
-publication. Aliases and citations cannot hide new helper work. An older certified
-proof reference is a leaf in the current [proof normal form](../../specs/proof-protocol.md#canonical-proof-normal-form),
-which does not minimize proofs. The proposed scoring rule is therefore new and must choose how
-to charge each distinct permitted older dependency. A reuse-aware option counts
-each older certified reference as one step, rewarding concise new work built on
-published results; a full-lineage option recursively charges the referenced
-proof's steps once per canonical dependency identity, limiting cheap chains of
-references but discouraging reuse. Recommend the reuse-aware option for the
-research goal, conditional on verified dependency closure, versioned reference
-eligibility, anti-farming rules and separate hard depth/work/byte caps for full
-validation. The exact normalization and scoring units remain a protocol
-decision. Minimize the chosen length; break equal lengths by finalized
-commitment-receipt order, then canonical
-submission hash. Under the fixed-window option, missing, late or invalid
-disclosures are ineligible; a question without a valid disclosure expires
-unresolved and releases capacity through a deterministic record. These rules
-choose the shortest *eligible submitted* proof in that window, not a globally
-shortest mathematical proof.
-For example, if simultaneous questions A and B have valid lengths 18 and 12,
-and 7 and 9 respectively, A selects 12 and B selects 7; A's entries never
-compete with B's. The examples compare results only within their own questions.
-Question admission, reference charging and rewards still need explicit decisions.
-An unanswered question must not stop ordinary record production. PoUW ranks a
-verified result for that question; step count does not certify the author's
-spent CPU time or supply Sybil-resistant consensus influence, continuous
-record production or finality. Per-question comparison avoids ranking unlike
-questions against one another.
+**Proof of Useful Work (PoUW) and independent first-solver prizes.**
+Every approved question has its own first fully valid solver prize. A later,
+shorter proof does not revoke a settled prize, and there is no single global
+prize for the shortest proof. Private discovery time cannot be observed by
+validators. The versioned public rule must decide whether priority follows
+finalized valid disclosure order, an earlier eligible commitment receipt after
+valid disclosure, or another canonical chain coordinate. Ties, deadlines and
+missing or invalid disclosures need deterministic treatment. The current v7
+rule below uses earliest eligible commitment receipt and remains unchanged.
+
+The question's formal target and Foundation/checker version stay fixed. Its
+proof library does not: at admission of a full proof disclosure, each cited
+older proof must already be verified and included in the accepted parent chain
+state. A proof added after question opening is citable from a later block.
+Neither a commitment nor an earlier operation in the same block makes a new
+or unverified proof citable. Replay checks parent-state inclusion, dependency
+closure and exact authorship for every disclosure. A changed selected history
+must recheck that parent relation. Concurrent questions may therefore use one
+another's previously accepted proofs, but no family may be paid twice for the
+same completed target. Define how a target proved through another question
+becomes known or settled without blocking valid citations.
+
+When valid results for different questions are ready together, the user wants
+shorter proofs processed first. This is an ordering rule, not a winner rule:
+A's first solver and B's first solver each keep their own prize. The exact
+meaning of "ready together" (one record, one settlement batch or another
+finalized boundary), and whether order changes only inclusion or also service
+priority, remain open. A proof of question A need not be intrinsically easier
+than one of B merely because its derivation has fewer steps; define any
+cross-question normalization or fairness policy before adoption. For example,
+if A's first valid solver has 18 steps and B's has 7, and both are ready in the
+same specified batch, the proposed length order processes B before A. Both
+retain their separate first-solver prizes. A later 12-step proof of A cannot
+replace A's settled first solver.
+
+**Canonical step accounting.** Score the original signed complete bundle:
+count every canonical proof-normal-form derivation step in the root and all
+submitted new helpers, including helpers later pruned from publication. An
+older certified proof reference is a leaf in the current
+[proof normal form](../../specs/proof-protocol.md#canonical-proof-normal-form),
+which does not minimize proofs. The new ordering rule must choose how to charge
+each distinct permitted older dependency. A reuse-aware option counts each
+older certified reference as one step, rewarding new work built on published
+results; a full-lineage option recursively charges referenced steps once per
+canonical dependency identity, limiting cheap reference chains but
+penalizing reuse. Recommend reuse-aware counting for cumulative research,
+conditional on verified dependency closure, anti-farming rules and separate
+hard depth, work and byte caps for full validation. Record each proof's score
+against its eligible admission-parent dependencies so later library growth
+cannot retroactively alter it. Equal scores need a canonical tie-break.
+The exact units and older-reference choice remain open; step count measures
+the useful proof result, not the author's spent CPU time or Sybil-resistant
+voting influence. Record production and finality must continue independently
+when no question is solved.
 
 The candidate invariants are identical replay of each finalized history at
 independent full nodes; no second selected settlement or eligibility effect for
@@ -138,7 +157,7 @@ new version. A successor commitment alone does not prove predecessor validity.
 
 **Resource, transport and security budget.** Bound record bytes, operations,
 registrations, concurrent open questions, commitments, aggregate proof work,
-lookup, state growth and
+parent-library lookup and dependency closure, state growth and
 peer buffers. Define objective question admission and a sustainable funding rule
 for validation, archival storage and network service without assuming that a
 fee, stake or new reward is already approved. Test key splitting, coordinated
@@ -150,9 +169,11 @@ an external market or security budget.
 
 **Initial bounded prototype acceptance.** On a pinned candidate profile,
 exercise independent committee members and full nodes with empty or control-only
-records, public key registration, two simultaneous questions with independent
-shortest valid winners, competing valid and invalid disclosures, an older proof
-citation, and exactly one settlement per family. Reject unauthorized
+records, public key registration, two simultaneous questions with separate
+first-solver prizes and length-ordered ready results, a later shorter proof that
+cannot displace a settled prize, valid and invalid disclosures, a citation to
+a proof accepted after another question opened, and exactly one
+settlement per family. Reject same-block and unverified references, unauthorized
 proposals or votes, invalid signatures, excessive bytes or work, wrong state
 roots, invalid proofs, duplicate family effects and unauthorized spends. Force
 partitions, rotation, restart, lost acknowledgements, conflicting histories and
@@ -166,8 +187,10 @@ pin authority and record vectors. (2) Implement and test bounded signed
 operations, resource metering and public research admission. (3) Specify and
 test continuation, exact migration of any v7 terminal state, once-only
 settlement and independent archive replay. (4) Test concurrent finite research
-competitions, frozen contexts, complete step accounting and independent
-shortest valid winners, including both reference-charging alternatives. (5) Qualify public
+competitions, parent-state citation eligibility, first-solver priority and
+length ordering across simultaneously ready questions, including a later
+shorter proof with no prize reversal. Test both reference-charging alternatives.
+(5) Qualify public
 discovery, home-NAT participation, multi-host churn, archival funding and
 governance. Each slice requires its own reviewed rule and evidence gate; this
 documentation authorizes no automatic implementation sequence.
