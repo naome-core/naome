@@ -1,18 +1,236 @@
-# NAOME trusted MVP: requirements, rules, and acceptance
+# NAOME public-network target and trusted MVP acceptance
 
-This document records the four-seat trusted MVP baseline and its historical
-`state-v5` acceptance contract. The fresh `state-v6` four-to-32-seat extension
-is specified in [authority periods](../../specs/authority-periods.md) and the
-[v6 discussion copy](whitepaper-variable-proposal-en.pdf); its evidence is tracked
-separately in [verification](verification.md). The trusted MVP baseline adopts
-rules R1–R11 and their parameters. Acceptance
-uses four independent local validator processes with separate keys and durable
-stores, including simulated partitions and failures. A real two-machine run
-remains later qualification. The [English design draft](whitepaper-en.pdf)
-also discusses broader public-network rules. Its question-selected policy and
-definition-publication options are outside the implemented v6 profile; the v6
-discussion copy gives the fixed prototype rules. The [pilot runbook](pilot.md) defines the next
-separate-machine qualification and its evidence requirements.
+## Public-network milestone (target proposal; not implemented)
+
+The intended milestone is a permissionless, open-ended research network. A person
+may generate a pseudonymous research key and seek admission without an invitation
+or manual choice of who may participate. Research access is distinct from
+validator authority: publishing an account or a valid proof does not itself
+grant a vote. No protocol-wide fixed lifetime cap is intended for research
+accounts, participants, records, or eventual consensus participation. A
+non-mining candidate uses finite active validator snapshots with open-ended
+entry across successive snapshots and independent verifying full nodes. Each
+admitted action, record, proof check, and authority snapshot must still have
+finite, enforceable resource bounds. Physical storage, bandwidth, and throughput
+remain finite; continuing service needs measured capacity and sustainable
+resource accounting.
+
+In the current v7 roster bootstrap, the four starting validator units may all
+be controlled by the founder. Distinct keys and account IDs do not make them
+independent operators. In that state the founder can censor research and joins,
+stop progress, and control a quorum; the prototype supplies no permissionless
+safety guarantee against that control.
+Later participation needs an objective, reviewable authority path rather than
+manual selection of identities. The path, its Sybil cost and concentration
+limits, and its behavior under founder censorship are open protocol decisions.
+
+Acceptance for this target requires a versioned rulebook and executable tests
+showing (1) public pseudonymous account admission within bounded per-action
+work, (2) objective, Sybil-resistant validator entry and rotation across finite
+active snapshots without a lifetime participation cap, (3) bounded parallel
+question admission and verification under adversarial load, (4) durable continuation and independent replay of the new history without
+duplicate rewards or lost proof attribution, and (5) physical multi-machine measurements of
+storage growth, throughput, recovery, and participation under churn. Passing
+local process tests alone does not qualify this milestone.
+
+**Open choices:** Select a scarce and objectively verifiable source of
+validator influence, an active-committee selection and rotation rule, and
+governance that resists founder censorship and key splitting. Separately choose
+objective research-question admission, proof-farming safeguards and payout
+rules. Specify bounded work, state-growth funding, archival availability,
+any safe pruning, amendment consent, public transport and NAT discovery.
+Acceptance requires explicit adversary assumptions, separate-machine
+measurements and replay across version changes. None of these choices is
+adopted by the current implementation.
+
+### Candidate non-mining public consensus and research competition (proposal)
+
+**Direction.** Competitive nonce or hash searching, as in Bitcoin mining, is
+not the desired consensus mechanism. Ordinary cryptographic hashes still bind
+canonical identities, signed operations, commitments and state roots; computing
+those hashes does not grant block-production authority. Research proofs remain
+checked content, not a shortcut to consensus influence. This section is a
+candidate for review, not a change to `state-v7`.
+
+**Authority and records.** A finite active committee could order bounded records
+under a versioned authority snapshot. Anyone may generate research keys, run a
+verifying full node and seek validator entry under an objective public rule.
+The scarce-influence rule, committee size, selection, rotation, expiry and
+replacement schedule are open. One key, account, IP address or proof cannot
+simply count as one independent vote. Every accepting full node must check the
+selected record, formal results and resource bounds; a question's supporters
+cannot validate its consensus effects alone. Define canonical record and state
+commitments, signatures and replay domains with exact test vectors before an
+executable public profile.
+
+**Progress and finality.** A finite committee needs a specified quorum,
+proposer schedule, timeout and recovery path to keep producing records even
+when no research question or solution exists. Define safety and liveness under
+an explicit Byzantine and availability assumption, including partitions,
+founder concentration, committee changes and absent eligible entrants. The
+current v7 READY/TERMINAL seal and linked successor have their own exact rules;
+no proposed public authority inherits that finality automatically. Branch
+conflicts, irreversible settlement, archive anchors and amendment consent must
+be resolved before a public finality claim.
+
+**State and parallel Proof of Useful Work.** Each accepted record applies atomically to
+its exact parent state. Full nodes check author signatures and nonces, canonical
+proof bytes and dependencies, bounded checker work, family uniqueness,
+beneficiaries and any authorized payment. Candidate operations include
+registration, question admission, commitment, disclosure and settlement;
+versioned bytes and timing remain open. Unlike the one-slot v7 profile, a public
+candidate may have up to a specified finite number `C` of active questions.
+Each question has its own family, fixed formal target and Foundation/checker
+version. Its permitted reference policy is versioned, but the set of citable
+proofs grows with accepted blocks rather than freezing when the question opens.
+This differs from the current v7 one-attempt library rule below.
+Reserve capacity for `C` concurrent windows, at most `K` submissions per
+window, and the combined worst-case validation, storage,
+review and delivery work. Opening and settlement order must be deterministic
+when several windows become due in one record.
+
+**Proof of Useful Work (PoUW) and independent first-solver prizes.**
+Every approved question has its own first fully valid solver prize. A later,
+shorter proof does not revoke a settled prize, and there is no single global
+prize for the shortest proof. Private discovery time cannot be observed by
+validators. The proposed public priority is the earliest fully valid proof
+disclosure confirmed in canonical finalized chain order: compare the finalized
+block height and canonical operation position. A commitment may protect a
+submission from copying, but reserves no winner priority. An earlier
+unrevealed or invalid commitment cannot delay a valid disclosure. Confirm and
+check the full original proof and its eligible dependencies before assigning
+the prize; a later shorter proof cannot overturn it. The public finality rule,
+disclosure deadlines and invalid-input handling still need specification.
+The current v7 rule below uses earliest eligible commitment receipt and remains
+unchanged.
+
+The question's formal target and Foundation/checker version stay fixed. Its
+proof library does not: at admission of a full proof disclosure, each cited
+older proof must already be verified and included in the accepted parent chain
+state. A proof added after question opening is citable from a later block.
+Neither a commitment nor an earlier operation in the same block makes a new
+or unverified proof citable. Replay checks parent-state inclusion, dependency
+closure and exact authorship for every disclosure. A changed selected history
+must recheck that parent relation. Concurrent questions may therefore use one
+another's previously accepted proofs, but no family may be paid twice for the
+same completed target. If a verified new helper in submission A exactly
+proves approved open question B, its accepted on-chain disclosure is also a
+valid first-solver event for B. Credit B's own prize to that helper's original
+authenticated author without requiring a separate B submission. Compare it
+against other B solutions by canonical accepted disclosure order. Keep the
+helper citable from later blocks. Pin collision handling when one helper
+matches multiple targets, opposite outcomes or simultaneous B disclosures;
+do not create duplicate family settlement or invent an extra payment.
+
+When first valid results for different questions appear in the same confirmed
+block, process them by canonical proof-step length, shortest first. This orders
+results across questions; each first solver keeps that question's prize. The
+scope of same-block inclusion fairness remains open. A proof of question A
+need not be intrinsically easier than one of B merely because its derivation
+has fewer steps. For example, if A's first valid solver has 18 steps and B's
+has 7 in one confirmed block, process B before A. Both retain their separate
+first-solver prizes. A later 12-step proof of A cannot replace A's settled
+first solver, and a later block cannot retroactively reorder that block.
+
+**Canonical step accounting.** Score the original signed complete bundle:
+count every canonical proof-normal-form derivation step in the root and all
+submitted new helpers, including helpers later pruned from publication. An
+older certified proof reference is a leaf in the current
+[proof normal form](../../specs/proof-protocol.md#canonical-proof-normal-form),
+which does not minimize proofs. Charge each distinct previously verified,
+parent-eligible cited proof exactly one step. Full dependency closure remains
+mandatory for validity and has separate hard depth, work and byte caps;
+one-step scoring never skips that checking. Record each proof's score
+against its eligible admission-parent dependencies so later library growth
+cannot retroactively alter it. Equal scores need a canonical tie-break.
+The exact normalization units remain open; step count measures
+the useful proof result, not the author's spent CPU time or Sybil-resistant
+voting influence. Record production and finality must continue independently
+when no question is solved.
+
+The candidate invariants are identical replay of each finalized new-profile
+history at independent full nodes; no second settlement or eligibility effect
+for a family; preservation of checked proof bytes, author and beneficiary
+across that profile's continuation; and exact accounting under whichever
+reward rules are later chosen. This pre-release replacement starts from its
+own versioned genesis, without importing v7 accounts, proofs, balances or
+claims. Keep the v7 archive and its acceptance evidence as historical records;
+the replacement makes no claim that those records are part of its chain.
+
+**Resource, transport and security budget.** Bound record bytes, operations,
+registrations, concurrent open questions, commitments, aggregate proof work,
+parent-library lookup and dependency closure, state growth and
+peer buffers. Define objective question admission and a sustainable funding rule
+for validation, archival storage and network service without assuming that a
+fee, stake or new reward is already approved. Test key splitting, coordinated
+operators, founder censorship, invalid-input floods, eclipse attempts, NAT
+participation and changing peer addresses. Cheap keys cannot imply cheap
+consensus influence; the chosen scarcity mechanism must be measured against
+concentration and adversarial acquisition. No existing Test-NAO balance proves
+an external market or security budget.
+
+**First implementation milestone: bounded research prototype.** Replace the
+pre-release v7 protocol with a fresh, explicitly versioned research profile
+operated initially by four trusted validators. Use a new genesis and no v7
+state migration or legacy-chain carryover. The current v7 code and evidence
+remain the historical baseline until the replacement exists; its one-attempt,
+commitment-priority and linked-successor rules are not the new profile's rules.
+Implement bounded parallel questions, dynamic parent-state citations, first
+valid disclosure prizes, cross-question helper credit and same-block proof
+length ordering before public validator admission. This is a research
+milestone, not permissionless consensus or public-network acceptance. Pin
+concurrency, resource limits and same-block inclusion fairness before coding.
+
+**Initial bounded prototype acceptance.** Verify fresh versioned genesis,
+no v7 state import, replay isolation from old signatures, and a preserved
+read-only v7 archive for historical evidence. On the pinned new profile,
+exercise the four validators and independent verifying full nodes with empty
+or control-only records, public key registration, two simultaneous questions
+with separate first-solver prizes and same-block length-ordered results, a
+later shorter proof that cannot displace a settled prize, a helper solving
+another open question, valid and invalid disclosures, a citation to a proof
+accepted after another question opened, and exactly one settlement per family.
+Reject same-block and unverified references, unauthorized proposals or votes,
+invalid signatures, excessive bytes or work, wrong state roots, invalid proofs,
+duplicate family effects and unauthorized spends. Force partitions, rotation,
+restart, lost acknowledgements, conflicting histories and complete independent
+archive replay. Measure complete-node convergence, validation time, state
+growth, recovery and participation across separate hosts. Local process tests
+alone cannot establish public security or physical capacity.
+
+**Ordered implementation and decision gates.** (1) Pin the fresh versioned
+four-validator research profile and its isolated genesis. Test concurrent
+questions, parent-state citation eligibility, first-disclosure prizes,
+same-block length ordering, cross-question helper credit and no prize reversal
+with separate dependency-verification bounds. (2) Test durable continuation,
+once-only settlement and independent archive replay within the new profile;
+retain v7 history separately as historical evidence. (3) Separately decide
+scarce influence, public committee selection, rotation, safety and liveness;
+pin authority vectors. (4) Qualify bounded public admission, discovery,
+home-NAT participation, multi-host churn, archival funding and governance.
+Each slice requires its own reviewed rule and evidence gate; this documentation
+authorizes no automatic implementation sequence.
+
+Comparison: [Ethereum gas guide](https://ethereum.org/developers/docs/gas/)
+illustrates metered execution, but does not set NAOME's rules or economics.
+
+## Current bounded implementation and historical acceptance
+
+The current `state-v7` implementation has a fresh-genesis, finite run with
+four to 32 installed validator units, one active research attempt, at most 512
+genesis and 1,024 total research accounts across carried history, and at most
+8,192 records under the
+standard profile. A linked successor may carry sealed state into a new run;
+this is not an indefinite public-network service guarantee. The normative
+[current authority-period rules](../../specs/authority-periods.md), the
+[operating guide](operations.md), and [verification](verification.md) define
+the current implementation and its evidence. The
+[variable-roster paper](whitepaper-variable-proposal-en.pdf) is a historical
+fresh-v6 discussion copy, and the acceptance checklist below records the
+earlier four-seat `state-v5` contract. Those historical limits and checkboxes
+must not be read as the v7 profile or the public-network target. The
+[main paper](whitepaper-en.pdf) describes the target with the current boundary;
+the [pilot runbook](pilot.md) is separate-machine qualification.
 
 **Goal:** Four stable validator slots jointly operate a small research network with openly registered researchers and claim-backed handoff between trusted operators. Researchers supply formal questions and proof material; validators select tasks, check proofs or refutations, publish reusable results, and record the same rewards on every machine. They use the command line to operate the system.
 

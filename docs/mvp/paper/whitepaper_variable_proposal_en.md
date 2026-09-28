@@ -19,7 +19,7 @@ A proposal combines a readable purpose with an exact mathematical task. Validato
 
 A paid completion credits the bounded profile's Test-NAO accounts and creates a nontransferable eligibility claim for its authenticated solution author. This claim provides a possible route to validation; holdings confer no voting weight.
 
-This discussion copy describes the implemented fresh v6 prototype profile with a four-to-32-unit sealed electorate. The ceiling is a prototype/testnet limit, not physical 32-host qualification. It makes no in-place upgrade claim for an existing v5 chain. The prototype's question syntax, proof admission and numerical limits are fixed by its immutable genesis profile and implementation; a question cannot select different rules. Material public-network rules still requiring definition are collected in Section 9.2. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
+Historical edition: this discussion copy describes the formerly implemented fresh v6 prototype profile with a four-to-32-unit sealed electorate. The ceiling is a prototype/testnet limit, not physical 32-host qualification. It makes no in-place upgrade claim for an existing v5 chain. The prototype's question syntax, proof admission and numerical limits are fixed by its immutable genesis profile and implementation; a question cannot select different rules. Material public-network rules still requiring definition are collected in Section 9.2. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
 
 ## 2. Network model and research lifecycle
 

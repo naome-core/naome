@@ -15,6 +15,32 @@ They do not qualify the current v7 implementation. There is one supported
 prerelease model. An opening run needs fresh genesis and stores; a linked run
 needs its exact sealed predecessor and new stores.
 
+## Public-network target evidence boundary
+
+The [requirements](requirements.md#public-network-milestone-target-proposal-not-implemented)
+and [main paper](paper/whitepaper_en.md) describe a proposed permissionless,
+open-ended network. No current v7 test establishes unbounded lifetime admission,
+a Sybil-resistant authority rule, independent initial owners, sustainable
+storage or throughput, public NAT transport, or physical multi-machine
+operation. A founder controlling all four initial units controls a quorum.
+Current limits are finite: four to 32 installed units per snapshot,
+512 genesis and 1,024 total research accounts across carried history, 8,192
+standard-profile records per run, and one active research attempt. Linked successor replay preserves exact
+history across a run boundary but is not evidence of indefinite public service.
+The older v6 256-seat experiments below remain historical local evidence.
+The non-mining committee architecture in [requirements](requirements.md#candidate-non-mining-public-consensus-and-research-competition-proposal)
+and the main paper is a design candidate only. No current test establishes an
+objective, Sybil-resistant public entry rule, open-ended committee rotation,
+concurrent Proof of Useful Work questions, public first-disclosure prizes,
+cross-question helper credit and same-block proof-length ordering,
+public governance or long-run liveness and finality. Its proposed acceptance
+tests are future gates, not entries in the passing evidence below.
+The selected next milestone is a fresh, versioned pre-release replacement
+operated first by four trusted validators. It does not import v7 state or
+continue the legacy chain; current v7 evidence remains historical until the
+replacement exists. This milestone does not qualify public validator entry
+or independent initial authority.
+
 ## Portable v6 pilot evidence on 2026-09-27
 
 The portable pilot tooling at code commit

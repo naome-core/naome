@@ -314,8 +314,9 @@ A researcher can create an account key and register through a running node:
 Use the operation ID printed by `account register`, and wait for `finalized`
 before submitting research. Registration starts with zero balance and consumes
 nonce 1; the first ordinary operation uses nonce 2. Genesis accounts already
-start registered with ordinary nonce 1. Up to 256 total accounts, including the
-genesis accounts, can register in one run. Admission uses unreserved record
+start registered with ordinary nonce 1. Up to 1,024 total accounts, including the
+genesis accounts, can exist in the carried linked history; a successor
+does not reset the registry. Admission uses unreserved record
 capacity and may wait behind protected attempt progress. The 16-entry local
 pending queue remains separate from this registry limit.
 
@@ -669,13 +670,18 @@ available, run `python3 docs/mvp/paper/build_whitepaper.py en` and
 `python3 docs/mvp/paper/check_paper.py`. The builder uses the system Times New
 Roman, Arial Unicode and Andale Mono fonts and writes `whitepaper-en.pdf`. Render
 and visually inspect every page after changes; structural checks alone do not
-qualify layout. The draft discusses broader public-network policy options;
-the requirement and verification documents define implemented scope and actual
-evidence.
+qualify layout. The draft states an open-ended permissionless target and its
+unresolved protocol choices, including a non-mining committee candidate and
+separate Proof of Useful Work research competition.
+The [candidate architecture](requirements.md#candidate-non-mining-public-consensus-and-research-competition-proposal)
+is a design and staged test plan; these commands exercise the current finite
+v7 roster, not proposed public authority. The requirement and verification
+documents define the current finite implementation and actual evidence; neither
+the paper nor this operating guide qualifies public-network service.
 
 The separate [variable-roster proposal source](paper/whitepaper_variable_proposal_en.md)
 builds with `python3 docs/mvp/paper/build_whitepaper.py variable-en` and checks
 with `python3 docs/mvp/paper/check_paper.py variable-en`. It writes
-`whitepaper-variable-proposal-en.pdf`. This discussion copy gives the fresh v6
+`whitepaper-variable-proposal-en.pdf`. This historical discussion copy gives the fresh v6
 four-to-32-seat profile's fixed question syntax and proof-admission rules.
 Section 9.2 identifies remaining public-network decisions and evidence limits.

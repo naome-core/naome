@@ -1,6 +1,8 @@
 # Trusted multi-machine pilot
 
-This is the physical-host qualification for the four-slot authority-period MVP. Tooling is
+This is the physical-host qualification procedure for the four-slot authority-period MVP.
+It does not test the proposed permissionless, open-ended public network or
+independent founder control. Tooling is
 prepared locally; a successful local rehearsal is not a multi-machine result.
 Use four Linux/macOS hosts where possible, or at least two physical machines.
 Two validators on one machine share its failure domain: losing that machine
