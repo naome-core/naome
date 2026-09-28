@@ -175,10 +175,10 @@ async fn handle(server: &Server, request: GatewayRequest) -> Result<Value> {
             control::call_socket(&server.socket, Request::ActionStatus { id }).await
         }
         GatewayRequest::Results { cursor, limit } => {
-            if let Some(ref value) = cursor {
-                if value.len() != 152 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err("invalid result cursor".into());
-                }
+            if cursor.as_ref().is_some_and(|value| {
+                value.len() != 152 || !value.bytes().all(|b| b.is_ascii_hexdigit())
+            }) {
+                return Err("invalid result cursor".into());
             }
             if !(1..=20).contains(&limit) {
                 return Err("result page limit must be 1 through 20".into());
@@ -450,7 +450,7 @@ async fn download_proof(
             return Err("cyclic proof dependency".into());
         }
         if !fetched.contains_key(&id) {
-            if fetched.len() >= limits.dependency_proofs as usize + 1 {
+            if fetched.len() > limits.dependency_proofs as usize {
                 return Err("dependency proof limit".into());
             }
             let value = match call(address, GatewayRequest::Proof { id: id.clone() }).await {
