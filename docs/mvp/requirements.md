@@ -94,11 +94,16 @@ when several windows become due in one record.
 Every approved question has its own first fully valid solver prize. A later,
 shorter proof does not revoke a settled prize, and there is no single global
 prize for the shortest proof. Private discovery time cannot be observed by
-validators. The versioned public rule must decide whether priority follows
-finalized valid disclosure order, an earlier eligible commitment receipt after
-valid disclosure, or another canonical chain coordinate. Ties, deadlines and
-missing or invalid disclosures need deterministic treatment. The current v7
-rule below uses earliest eligible commitment receipt and remains unchanged.
+validators. The proposed public priority is the earliest fully valid proof
+disclosure confirmed in canonical finalized chain order: compare the finalized
+block height and canonical operation position. A commitment may protect a
+submission from copying, but reserves no winner priority. An earlier
+unrevealed or invalid commitment cannot delay a valid disclosure. Confirm and
+check the full original proof and its eligible dependencies before assigning
+the prize; a later shorter proof cannot overturn it. The public finality rule,
+disclosure deadlines and invalid-input handling still need specification.
+The current v7 rule below uses earliest eligible commitment receipt and remains
+unchanged.
 
 The question's formal target and Foundation/checker version stay fixed. Its
 proof library does not: at admission of a full proof disclosure, each cited
@@ -112,8 +117,9 @@ another's previously accepted proofs, but no family may be paid twice for the
 same completed target. Define how a target proved through another question
 becomes known or settled without blocking valid citations.
 
-When valid results for different questions are ready together, the candidate
-rule processes the shorter proof first. This orders results across questions;
+When the first valid results for different questions are ready in the same
+bounded processing step, the candidate rule processes the shorter proof first.
+This orders results across questions;
 A's first solver and B's first solver each keep their own prize. The exact
 meaning of "ready together" (one record, one settlement batch or another
 finalized boundary), and whether order changes only inclusion or also service
