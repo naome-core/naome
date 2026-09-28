@@ -3,15 +3,15 @@
 
 [META] Whitepaper · Draft v0.2 · 28 September 2026 · Public-network target and bounded v7
 
-[ABSTRACT] NAOME proposes a public network for selecting mathematical research questions, checking formal answers and preserving reusable results. Validator owners decide which questions receive resources; contributors submit proofs or refutations under a declared rulebook. A valid first completion publishes the result and its used helpers, records a bounded reward and gives the solution author an optional route to validator membership. Agreement records these decisions in a shared history without treating a vote as mathematical evidence. The current state-v7 implementation is a finite, fresh-genesis profile with four to 32 equal validator units, one active research attempt and Test-NAO accounting. The target has no fixed lifetime cap on research accounts, participants, records or eventual validator participation, but every operation and active authority snapshot must remain bounded. All four starting units may be founder-controlled, allowing censorship, halted progress and quorum control. Public operation requires unresolved authority, Sybil, resource and continuation rules plus physical qualification.
+[ABSTRACT] NAOME aims to coordinate formal research on an open-ended public network: participants submit questions and checkable proofs, while a shared history preserves attribution and prevents duplicate settlement. The current state-v7 prototype uses four to 32 validator units, owner-approved questions, first valid completion, earned-validator claims, one active attempt and finite Test-NAO accounting. Its four starting units may all be founder-controlled. A proposed successor architecture instead investigates Bitcoin-style hash proof of work for continuous block production and a separate finite research competition; question admission, scoring, rewards and migration remain undecided. Every full node must check consensus-relevant proofs and bounded resource use. Public safety, physical capacity and independence are unqualified.
 
 ## 1. Purpose and scope
 
-NAOME coordinates three decisions in shared mathematical research: which questions receive resources, which answers satisfy their formal obligations, and which history assigns the resulting rights. The agenda directs finite attention, checking and storage capacity. The public library preserves checked results for later use. Agreement establishes submission order, completed question families, payments and validator membership.
+NAOME coordinates three decisions in shared mathematical research: which questions receive resources, which answers satisfy their formal obligations, and which history assigns the resulting rights. The agenda directs finite attention, checking and storage capacity. The public library preserves checked results for later use. Current v7 agreement establishes submission order, completed question families, payments and validator membership; the candidate PoW chain would need different inclusion and authority rules.
 
 [FIG:system]
 
-[CAPTION] Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. The current terminal seal can select one linked successor run; open-ended continuation remains a proposed public-network property.
+[CAPTION] This diagram shows the current v7 research lifecycle; a proposed PoW chain would replace roster agreement, not formal checking. Continuing records repeat this path. An accepted result enters the library and creates payment and an author claim; a separate handoff may change the electorate. The current terminal seal can select one linked successor run; open-ended continuation remains a proposed public-network property.
 
 This paper sets out an intended permissionless, open-ended public network while identifying the current bounded state-v7 implementation. The companion variable-roster paper is a historical fresh-v6 discussion copy; current rules are in the v7 authority-period specification and profile. Question-specific policies and definition publication discussed here are proposals, not active v7 inputs. The 32-unit active ceiling is a testnet limit, not a lifetime participation policy or physical 32-host qualification. Seven-day live operation, physical multi-machine acceptance and public-network operation remain unverified.
 
@@ -19,15 +19,15 @@ NAOME's research path can span many sealed records. An unapproved or expired att
 
 A proposal combines a readable purpose with an exact mathematical task. Validator owners judge whether to authorize it; contributors seek a proof of an approved conclusion under the declared Foundation, or formal rulebook. Approval expresses a research preference, while checking establishes derivability. The shared history records both without treating either as evidence for the other.
 
-A paid completion credits the bounded profile's Test-NAO accounts and creates a nontransferable eligibility claim for its authenticated solution author. This claim provides a possible route to validation; holdings confer no voting weight.
+Under current v7 rules, a paid completion credits the bounded profile's Test-NAO accounts and creates a nontransferable eligibility claim for its authenticated solution author. This claim provides a possible route to validation; holdings confer no voting weight.
 
-The current v7 profile uses a sealed four-to-32-unit electorate and a linked terminal successor; it does not reinterpret an existing v5 chain in place. Material public-network decisions still requiring definition are collected in Section 9.3. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
+The current v7 profile uses a sealed four-to-32-unit electorate and a linked terminal successor; it does not reinterpret an existing v5 chain in place. Material public-network decisions and the PoW candidate are collected in Sections 9.3 and 9.4. Applicable rules and bounds must be fixed before the affected question is approved. Safety and service also depend on the distribution, exposure and availability of authority; mathematical checking does not establish those conditions.
 
 ## 2. Network model and research lifecycle
 
 ### 2.1. Participants, records and rights
 
-A <i>question author</i> proposes a task through a registered research account. A <i>solution author</i> authenticates a submitted bundle containing the solution and its helper proofs. A <i>validator</i> checks records and participates in agreement; its <i>owner</i> controls the associated authority. Each installed unit has a distinct owner account ID, though one person may control several accounts. A local <i>agent</i> assists its owner in reviewing research questions.
+A <i>question author</i> proposes a task through a registered research account. A <i>solution author</i> authenticates a submitted bundle containing the solution and its helper proofs. In v7, a <i>validator</i> checks records and participates in agreement; its <i>owner</i> controls the associated authority. Each installed unit has a distinct owner account ID, though one person may control several accounts. A local <i>agent</i> assists its owner in reviewing research questions. Candidate PoW miners and full nodes have different roles, described in Section 9.4.
 
 The current installed electorate begins with four equal voting units in genesis and may grow through sealed handoffs to <i>N ≤ 32</i>. Its owners authorize research and membership handoffs. Section 7 describes how qualifying authors may add a unit until the limit is reached, then request replacement of the oldest unit. The founder may control all four starting units. Separate account IDs and keys do not establish independent control, and no present rule prevents founder censorship or quorum control.
 
@@ -197,6 +197,12 @@ A founder controlling the four initial units can form a quorum, censor questions
 
 Adding or replacing one unit changes a coalition's share and may cross the one-third safety boundary. Growth can dilute incumbents, but repeated earned admissions can also concentrate control in one operator using distinct accounts. Its active share can differ substantially from its lifetime contribution share. Contribution ordering prevents re-dating; it supplies no lower bound on the cost of acquiring control. Safety therefore requires the explicit concentration and exposure assumption in Section 8.3, alongside the membership rule.
 
+A PoW candidate would replace roster-vote influence with verified hash work,
+not with one vote per key or one vote per research proof. This is a proposed
+successor architecture, not a v7 handoff variant. It needs a separately defined
+genesis and migration rule; the current earned-validator bootstrap remains a
+v7 mechanism until a reviewed transition selects otherwise.
+
 ## 8. Agreement, security and operation
 
 ### 8.1. Agreement on the shared state
@@ -320,22 +326,12 @@ v7 profile or physical multi-machine evidence.
 The following choices require a versioned, agreed rule before this target can
 be specified or implemented:
 
-<b>Validator entry and Sybil cost.</b> Possible paths include earned proof
-  claims with an objective anti-farming test, a bonded scarce resource, or a
-  hybrid. Define account splitting, source and verification of the resource,
-  queue fairness and exit. Acceptance requires adversarial tests showing that
-  one controller gains no unintended voting advantage by splitting keys, and
-  that valid outsiders can enter despite minority censorship under an explicit
-  honest-quorum assumption. A malicious founder controlling the full starting
-  quorum can prevent entry; no admission rule alone overcomes that authority
-  without a separately adopted recovery or transition rule.
-
-<b>Active-set scale.</b> Choose finite rotating snapshots, sharded checking with
-  a separately specified consensus set, or another bounded committee rule.
-  Specify selection, churn, quorum intersections, reconfiguration and recovery.
-  Demonstrate safety and measured progress as eventual participant count grows,
-  including faulty and unavailable operators. No rule here grants every key a
-  simultaneous vote.
+<b>Influence and research abuse.</b> In the PoW candidate, verified hash
+  work, not accounts or earned claims, controls block production. Specify
+  proof-farming resistance separately from mining, and test key-splitting,
+  miner concentration and minority censorship. A founder majority can
+  censor entry or reorganize history. Bonded or claim-based voting remains
+  an alternative only if PoW is rejected.
 
 <b>Work and state growth.</b> Choose enforceable admission pricing, quotas with
   fair access, rent or another resource mechanism; define who funds validation
@@ -355,9 +351,9 @@ be specified or implemented:
   list and loopback gateway do not meet this requirement.
 
 Bitcoin ties block-production influence to proof of work and pays miners
-transaction fees [2, 3]. Ethereum permits wallet-created accounts, meters
-execution with gas and a block limit, and weights validator participation
-by staked resources [4, 5, 6]. These illustrate separate bounds on work and
+transaction fees [2, 3]. Ethereum permits <link href="https://ethereum.org/guides/how-to-create-an-ethereum-account/" color="#222222">wallet-created accounts</link>, meters
+execution with <link href="https://ethereum.org/developers/docs/gas/" color="#222222">gas and a block limit</link>, and weights <link href="https://ethereum.org/developers/docs/consensus-mechanisms/pos/attestations" color="#222222">validator participation</link>
+by staked resources. These illustrate separate bounds on work and
 influence; none is a selected NAOME rule. A NAOME rule must address formal
 proof-checking costs, fabricated proof and citation chains, quorum handoff,
 and founder censorship on its own terms.
@@ -366,21 +362,102 @@ These are open design decisions, not rules adopted by the current profile.
 Founder control remains an explicit risk until a specified and observed
 redistribution of effective authority changes it.
 
-### 9.4. Required operating properties
+### 9.4. Candidate PoW chain and research competition
+
+The user has directed examination of Bitcoin-style hash proof of work for
+continuous block production. This candidate is not an adopted protocol rule.
+A permissionless miner would search for a bounded block header hash below a
+target; full nodes would accept only a block whose ordered body, formal
+certificates, resource use and resulting state are valid. Cheap account keys
+would create no voting weight. The chain could extend with empty or
+control-only blocks while a research question has no solution. The current
+v7 READY/TERMINAL roster seal would not be silently reused as PoW finality
+[2, 3].
+
+A candidate header binds network/version, parent, height, ordered-body and
+post-state commitments, timestamp, target and search field. Every node
+recomputes the hash, target, commitments and atomic parent-relative state
+transition. A branch is chosen by greatest verified cumulative work, not
+height or first arrival. A same-work tie remains provisional. Exact hash
+function, target encoding, retarget window, timestamp median and future-drift
+rule are open decisions with overflow and timestamp-manipulation tests.
+A fixed-difficulty private prototype may isolate basic branch logic; it
+cannot support a public security claim.
+
+Publication and payments would be branch-relative. A reorganization rolls
+back the disconnected suffix and replays the selected branch; proof bytes
+retain their content identity, while publication, older-proof eligibility,
+citation payment and family completion follow the selected history. A
+duplicate family cannot pay twice, including after a branch switch. Miner and
+research credits need a selected maturity or reversible-credit rule. A
+confirmation policy communicates growing confidence, not deterministic
+finality. The depth and any checkpoint rule are undecided; a checkpoint
+that overrides accumulated work is an explicit new trust choice.
+
+The suggested fewest-proof-steps criterion is a research-competition idea,
+not a block-production rule. A finite commitment and disclosure window
+would fix its selected-branch opening, deadline, library parent and eligible
+submissions. A recommended candidate score compares canonical checker work,
+expanded dependency work, encoded bytes and dependency count after complete
+proof validation and hard per-submission bounds, then receipt order and
+submission hash. Raw step count alone omits expensive dependencies. The
+scoring units and question-admission rule remain open. Whether a question
+enters by a fee, an objective budget or another public rule, all full nodes
+must validate its consensus effects; supporters alone cannot do so.
+
+Work pricing, miner subsidy, transaction fees, research payout, maturity and
+long-run security budget are also undecided. Ethereum gas shows a method of
+metering execution and limiting a block, without supplying NAOME's cost
+schedule. The candidate must bound body bytes, signature and proof
+checking, parent-library lookup, state additions, networking and archive
+growth before assigning any price. Majority hash-power control could censor
+or reorganize; the founder may hold most early hash power. A recommended
+prototype publishes independently checkable genesis and gives founder keys
+no special post-genesis mining privilege, while measuring their actual work
+share. The exact
+adversary, hardware market, honest-work margin and costs of full-node storage
+must be measured rather than inferred from permissionless keys.
+
+The v7 terminal bridge carries account nonces, proof bytes and
+beneficiaries, family outcomes, balances, claims and consumed-claim markers
+under deterministic sealed finality. A PoW genesis could import one
+independently verified v7 terminal state only after a specified consent and
+migration rule maps those objects exactly once and prevents old signatures
+and rewards from replaying. A bare successor-genesis claim proves no
+predecessor validity. Static peers and the loopback gateway also require
+public discovery, bounded relay and NAT testing.
+
+An initial bounded prototype should show independent miners and full nodes
+converging under honest cumulative work; empty blocks; public key
+registration; competing valid and invalid proofs; an older citation; and
+reorganizations across a deadline and a payout. It must reject malformed
+work, invalid formal results and duplicate effects, and replay the chosen
+branch from genesis. Measure validation, propagation, orphan rate, state
+growth and mining concentration on separate hosts. The ordered slices are
+(1) header/work/time/fork choice, (2) bounded signed transactions and
+resource policy, (3) reorg-safe proof and reward state, (4) finite research
+competition, and (5) public networking and economic qualification. Each
+has an explicit go/no-go evidence gate in the requirements; no slice
+authorizes the next by itself.
+
+### 9.5. Required operating properties
 
 The safety, progress and recovery conditions in Section 8 and Appendices C through E are operating requirements. Choosing numerical parameters or approving a research question does not establish them.
 
-### 9.5. Amendments and historical obligations
+### 9.6. Amendments and historical obligations
 
 Amendments preserve sealed history, selected proofs and approved obligations. Changing the Foundation or identity rules requires an explicit mapping of historical completions that preserves their once-only effects and records conflicting polarities. A change cannot erase an earlier completion or issue a replacement eligibility claim. Voting-duration changes apply only to later openings; changes to question terms and reward shares apply prospectively and cannot reprice an approved obligation.
 
 The proposed amendment gate calls for greater-than-two-thirds frozen-snapshot approval, two full intervening cycles, more-than-two-thirds outgoing migration readiness and the READY/TERMINAL gates. Its delay cannot be applied until the cycle boundaries noted in Section 9.2 are defined. The account and policy consent rules in Appendix E.3 also apply.
+This roster-oriented amendment proposal does not govern a PoW chain; PoW
+activation and any migration from v7 need their own explicit adoption rule.
 
 The intended destination is an open-ended public research network with
 permissionless pseudonymous access and a verifiable, bounded path to validator
 authority. The v7 implementation demonstrates a finite trust-based slice,
-including sealed proof attribution and linked successor replay. It does not
-resolve founder control, Sybil cost, resource funding or public transport.
+including sealed proof attribution and linked successor replay. It does not resolve founder control, Sybil cost, resource funding or public transport.
+The PoW candidate separates chain production from research competition, but
+remains subject to reviewed fork, reward, question and migration rules.
 Those choices and separate-machine evidence are prerequisites to a public
 safety or continuous-service claim.
 
@@ -398,7 +475,7 @@ Inlining or citing a derivation preserves its DerivationId. Typed ArtifactIds us
 
 Changed derivations and certificates receive recomputed identities; existing referenced proofs retain theirs. Appendix B.3 binds these changes to the authenticated original. The artifact set uses a Merkle-Patricia root for presence and absence witnesses under an adopted trusted root.
 
-Versioned identities preserve exact sealed references; historical migration follows Section 9.5. Offline definition authoring is separate from the proof-only selected library and cannot change a prototype question's targets or limits.
+Versioned identities preserve exact sealed references; historical migration follows Section 9.6. Offline definition authoring is separate from the proof-only selected library and cannot change a prototype question's targets or limits.
 
 ## Appendix B. Proof admission and reuse
 
@@ -534,7 +611,7 @@ Archive and handoff evidence require continuing storage and funding. Section 8.4
 
 Every distinct authorizing account signs the complete operation and consumes its nonce once, even when it fills several roles. The bounded profile credits whole-atom Test-NAO balances and records a separate nontransferable author eligibility claim. It has no transfer, withdrawal or reserve-spending operation; an empty control record cannot spend the reserve. Broader monetary claims or payments would need explicit authorization and conservation rules.
 
-Policy changes require current and replacement-policy consent. Without preconfigured recovery, a lost authorizing key has no administrative remedy. Protocol amendments and preservation of historical obligations follow Section 9.5.
+Policy changes require current and replacement-policy consent. Without preconfigured recovery, a lost authorizing key has no administrative remedy. Protocol amendments and preservation of historical obligations follow Section 9.6.
 
 ## Reference
 
@@ -543,9 +620,3 @@ Policy changes require current and replacement-policy consent. Without preconfig
 [REF2] Bitcoin. <link href="https://bitcoin.org/bitcoin.pdf" color="#222222">Bitcoin: A Peer-to-Peer Electronic Cash System</link>, Sections 4 and 6.
 
 [REF3] Bitcoin developer guide. <link href="https://developer.bitcoin.org/devguide/block_chain.html" color="#222222">Block chain, proof of work and transaction fees</link>.
-
-[REF4] Ethereum.org. <link href="https://ethereum.org/guides/how-to-create-an-ethereum-account/" color="#222222">How to create an Ethereum account</link>.
-
-[REF5] Ethereum.org. <link href="https://ethereum.org/developers/docs/gas/" color="#222222">Gas and fees</link>.
-
-[REF6] Ethereum.org. <link href="https://ethereum.org/developers/docs/consensus-mechanisms/pos/attestations" color="#222222">Attestations and effective balance</link>.

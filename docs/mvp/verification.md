@@ -28,6 +28,11 @@ Current limits are finite: four to 32 installed units per snapshot,
 standard-profile records per run, and one active research attempt. Linked successor replay preserves exact
 history across a run boundary but is not evidence of indefinite public service.
 The older v6 256-seat experiments below remain historical local evidence.
+The PoW architecture in [requirements](requirements.md#candidate-architecture-for-an-initial-pow-prototype-proposal)
+and the main paper is a design candidate only. There are no PoW blocks,
+fork-choice tests, reorg-safe research payouts, mining measurements, or
+physical hash-power security results for NAOME. Its proposed acceptance
+tests are future gates, not entries in the passing evidence below.
 
 ## Portable v6 pilot evidence on 2026-09-27
 

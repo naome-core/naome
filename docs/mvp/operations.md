@@ -671,7 +671,10 @@ available, run `python3 docs/mvp/paper/build_whitepaper.py en` and
 Roman, Arial Unicode and Andale Mono fonts and writes `whitepaper-en.pdf`. Render
 and visually inspect every page after changes; structural checks alone do not
 qualify layout. The draft states an open-ended permissionless target and its unresolved protocol
-choices. The requirement and verification documents define the current finite
+choices, including a candidate PoW chain and separate research competition.
+The [candidate architecture](requirements.md#candidate-architecture-for-an-initial-pow-prototype-proposal)
+is a design and staged test plan; none of the commands in this guide mine
+blocks or validate PoW forks. The requirement and verification documents define the current finite
 implementation and actual evidence; neither the paper nor this operating guide
 qualifies public-network service.
 

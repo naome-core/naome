@@ -31,19 +31,189 @@ physical multi-machine measurements of storage growth, throughput, recovery,
 and participation under churn. Passing local process tests alone does not
 qualify this milestone.
 
-**Open choices:** Select an objective validator-entry and Sybil resource rule
-(for example, contribution-backed claims with an anti-farming rule, a bonded
-resource, or a hybrid), and specify what evidence makes entry independently
-checkable. Choose finite active-set admission and exit scheduling that does
-not permanently cap eventual participation; demonstrate quorum safety,
-progress, and resistance to capture under explicit adversarial assumptions.
-Choose state growth funding, archival availability, and any pruning with proof
-and finality preservation; measure worst-case retained bytes per participant
-and replay from genesis or a verified checkpoint. Define amendment consent and
-cross-version activation so sealed history and once-only effects survive.
-Choose public transport and endpoint discovery, including NAT operation, and
-test reachability and denial-of-service limits on separate machines. None of
-these options is adopted by this document.
+**Open choices:** The prioritized candidate below uses verifiable hash work
+for permissionless block production. Select its hash/target/time and
+fork-choice rules, and separately choose objective research-question
+admission, proof-farming safeguards and payout rules. If roster consensus
+is retained instead, select a scarce validator-entry resource and a
+finite active-set schedule without a lifetime participation cap. Either
+path must specify bounded work, state-growth funding, archival availability,
+any safe pruning, amendment consent, public transport and NAT discovery.
+Acceptance requires explicit adversary assumptions, separate-machine
+measurements and replay across version changes. None of these choices is
+adopted by the current implementation.
+
+### Candidate architecture for an initial PoW prototype (proposal)
+
+**Direction already requested:** investigate Bitcoin-style hash proof of work
+for continuous block production. Research proofs remain checked content, not
+the scarce consensus resource. The suggested “fewest proof steps wins the
+block” rule belongs, if adopted, inside a separately timed research
+competition. It cannot keep the chain producing blocks when no question or
+solution exists. Likewise, a question's supporters cannot be the only
+validators of its consensus effects: every accepting full node must check the
+same formal result. This section is a candidate rulebook for review, not a
+change to `state-v7`.
+
+**Roles and chain object.** Anyone may create keys, run a full node, relay
+transactions, or attempt mining; no roster or account identity confers mining
+weight. A miner proposes a bounded block even when it contains no research
+result. Its canonical header would bind network/version, previous block hash,
+height, a commitment to ordered transaction bytes, a commitment to the
+post-state, timestamp, target encoding, and nonce or other specified search
+field. The body would contain a bounded reward operation and ordered,
+signed registration, question, commitment, disclosure, settlement, and
+ordinary control operations. The header hash must satisfy the target; a
+separate full execution must validate every body operation and recompute
+both commitments. A valid hash never makes invalid proof material valid.
+All encodings, hash domains and duplicate-operation rules need test vectors
+before a first executable profile.
+
+**Fork choice and time.** A full node would accept only a valid branch and
+select the branch with greatest *cumulative verified work*, rather than
+greatest height or first arrival. Define per-header work from its encoded
+target using checked integer arithmetic. Equal-work branches remain
+provisional until a deterministic local tie policy and later work resolve
+them; the tie policy must not be mistaken for finality. Every target and
+timestamp is checked against an explicitly specified retarget window,
+median-past-time rule, maximum future drift, minimum/maximum target, and
+overflow-safe encoding. Exact algorithm, hash function, interval and
+numeric bounds are **open**. A recommended prototype uses a simple
+fixed-difficulty private test mode first, then tests a candidate retarget
+rule against timestamp manipulation, abrupt hash-rate changes, partitions
+and long gaps before public use. No confirmation count can be called
+deterministic finality.
+
+**State transition and reorganization.** Applying one block to its exact
+parent must be deterministic and atomic. It checks author signatures and
+nonces, resource budgets, canonical proof bytes, every dependency, selected
+proof-parent use and beneficiary, family uniqueness, and exact rewards.
+Candidate transitions are `Register(key, nonce)` to one branch-local account;
+`Question(terms, budget)` to a waiting or opened family only under the
+selected admission policy; `Commit(family, hash, author)` before the
+commitment deadline; `Reveal(original, secret)` after its closure and before
+the disclosure deadline; and `Settle(family, winning receipt, result)` only
+after deterministic scoring and complete checking. A block reward applies
+only after every other operation succeeds. Each transition consumes an
+explicit nonce or unique family/attempt key. These are candidate message
+shapes; versioned bytes and exact timing are still to be defined.
+The candidate invariants are: (I1) only fully valid parent-to-child blocks
+contribute work; (I2) replay of a selected branch yields identical state and
+work at every full node; (I3) a selected family has at most one payout and
+no duplicate eligibility effect for any carried v7 claim; (I4) any proof that remains selected after a
+branch switch keeps its checked bytes, author and beneficiary, while citations
+to removed proofs are invalid; and (I5) the total selected balances and
+reversible or mature credits equal the specified
+issuance plus fees less any explicitly authorized burn. The last equation
+cannot be instantiated until reward and fee rules are chosen.
+Proofs, citations, balances, claims, and receipts are branch-relative until
+the branch is chosen; a reorganization reverses the disconnected suffix and
+replays the new suffix from a verified ancestor. An old proof ID keeps its
+content identity, but publication height, citation eligibility, payout and
+completion status follow the selected branch. Only one selected settlement
+per family may pay or create eligibility, including after retry or reorg.
+Clients must label inclusion as provisional and state a chosen confirmation
+policy before treating it as operationally settled. Miner and research
+rewards must have a maturity or reversible-credit rule so orphaned branches
+cannot spend rewards. Confirmation depth, maturity and any checkpoint
+policy remain open; a checkpoint that overrides cumulative work requires a
+separate trust and amendment decision.
+
+**Research competition.** A question needs a deterministic admission and
+authorization rule that does not count accounts, IP addresses or miners as
+one-person votes. Options are fee-backed admission with objective limits,
+an explicit question-market budget, or another publicly checkable rule.
+Full nodes enforce the rule and the exact Foundation/checker version.
+Once a question opens, a finite committed interval and a later disclosure
+interval protect submissions from simple copying. The selected branch fixes
+the opening height, deadline, parent library, competing receipts and
+winner. The user's minimum-step idea can be a scoring component, but raw
+step count alone rewards compressed expensive dependencies. Recommended
+candidate score: lexicographically minimize a canonical vector of
+checker-step work, expanded dependency work, encoded bytes and dependency
+count, after validity and per-submission budgets; break exact ties by
+commitment receipt order and canonical submission hash. The vector and
+checker cost model must be specified and benchmarked before adoption.
+Expired or unproved questions produce no proof reward, while miners may
+still produce empty or control-only blocks. Branch changes that move an
+opening or deadline must deterministically replay all competition states.
+
+**Resource and security budget.** Bound header/body bytes, operations,
+transactions, new registrations per block, open questions, commitments,
+proof and dependency work, historical lookup, state growth per block and transport
+buffers. The public target has no fixed lifetime account ceiling; these are
+per-action, per-block and incremental-state bounds. A metered fee schedule is
+one possible way to fund inclusion and discourage spam; Ethereum gas is a
+comparison, not an NAOME rule. Specify
+upfront worst-case reservations so rejected or losing research disclosures
+cannot make validation unbounded. Miner issuance, research payout, fee
+recipient/burn, supply accounting and archive funding remain undecided.
+Before claiming security, estimate the cost of a majority hash-power attack
+under the chosen hardware and reward market, and measure whether honest
+miners and archival full nodes can cover their costs. Cheap keys do not
+imply cheap consensus influence under PoW, but concentrated hash power can
+reorganize or censor; a founder with most early hash power retains that risk.
+
+**Networking and migration.** Discovery and relaying must authenticate
+content while allowing changing addresses and NAT strategies; peer identity
+does not establish mining authority. Test eclipse, flood, invalid-block and
+large-proof behavior with bounded peer work. The v7 sealed linked history has
+deterministic selected finality and allows sealed roster and key handoffs;
+PoW has provisional branch selection. A PoW genesis may reference a
+separately verified v7 terminal commitment as a migration input only after
+an explicit trust/adoption rule.
+For bootstrapping, the recommended prototype publishes genesis bytes and the
+initial target for independent checking, permits any miner key from the first
+block, and gives founder keys no special post-genesis mining privilege.
+This does not distribute hardware or hash power: measure founder share and
+model a founder majority censoring or reorganizing. A trusted initial
+checkpoint, premine, or special founder reward would require a separate
+visible decision.
+That migration rule must map all accounts, nonces, selected proofs, beneficiaries, family
+outcomes, balances, claims and consumed-claim markers exactly once, while
+preventing v7 signatures or rewards from replaying as PoW actions. A
+standalone PoW genesis cannot assert that the v7 predecessor was valid.
+The active earned-validator bootstrap work belongs to v7 until such a
+transition is chosen; this proposal neither replaces its authority nor
+changes its current acceptance contract. See
+[authority periods](../../specs/authority-periods.md#terminal-linked-successor-genesis)
+and [proof admission](../../specs/artifact-admission.md).
+
+**Initial bounded prototype acceptance.** On a pinned candidate profile,
+execute independent miners and full nodes with empty blocks, public key
+registration, one question, competing valid and invalid disclosures, a
+used older proof and an exact citation payout. Assert that every full node
+rejects invalid headers, incorrect targets/times, excessive work or bytes,
+wrong state roots, invalid proofs, duplicate family effects and
+unauthorized spends. Force equal-height unequal-work forks, partitions,
+reorgs across publication/payment/deadline boundaries, a lost acknowledgement,
+restart and complete archive replay; all honest nodes must converge to the
+same selected state once connectivity and honest work assumptions hold.
+Measure worst-case block validation, retained state, replay, propagation,
+orphan rate and miner concentration on separate hosts. Record the workload,
+hash-rate and adversary assumptions; a local toy-difficulty run is not
+permissionless security evidence.
+
+**Ordered implementation slices and decision gates.** (1) Freeze a candidate
+header, PoW hash/target/time/fork-choice rule and vectors; implement bounded
+empty-block mining and full validation. Go only if competing branches replay
+and converge under the stated work assumption. (2) Add canonical signed
+transactions, fees or another paid admission policy, and resource metering;
+go only if flood and invalid-input budgets are enforced. (3) Add
+branch-relative proof publication, attribution, once-only settlements,
+reorg-safe credits and independent archive replay; go only if adversarial
+fork tests conserve balances and lineage. (4) Add the finite research
+competition and its measured scoring rule; go only if all full nodes choose
+the same winner and checking stays bounded. (5) Test public discovery,
+multi-host churn and economic security before any open launch. Each slice
+needs its own reviewed protocol decision and exact-profile evidence; this
+documentation does not authorize implementation or a PR sequence.
+
+Primary comparisons: [Bitcoin whitepaper](https://bitcoin.org/bitcoin.pdf)
+and [Bitcoin block-chain validation guide](https://developer.bitcoin.org/devguide/block_chain.html)
+for work-based branch choice and full validation;
+[Ethereum gas guide](https://ethereum.org/developers/docs/gas/) for metered
+execution. Their parameters and incentives are not inherited by NAOME.
 
 ## Current bounded implementation and historical acceptance
 
