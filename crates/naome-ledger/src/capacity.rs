@@ -26,6 +26,9 @@ impl Capacity {
     pub(crate) fn remaining(&self) -> u64 {
         self.remaining
     }
+    pub(crate) fn is_terminated(&self) -> bool {
+        self.terminated
+    }
     pub(crate) fn reserved(&self) -> u64 {
         self.active
     }

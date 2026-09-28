@@ -22,7 +22,7 @@ pub use offer::NextPeriodKeys;
 mod plan;
 pub use plan::{CandidateAdmissionOffer, HANDOFF_PLAN_MAX_BYTES, HandoffPlan};
 
-const MAGIC: &[u8; 5] = b"NSAU6";
+const MAGIC: &[u8; 5] = b"NSAU7";
 pub const AUTHORITY_SNAPSHOT_MAX_BYTES: usize =
     5 + 32 + 8 + 2 + MAX_VALIDATORS * (32 + 32 + 32 + 1 + 32 + 8 + 2 + 1 + 32 + 32 + 4 + 128);
 const ENDPOINT_MAX_BYTES: usize = 128;
@@ -239,6 +239,14 @@ impl AuthoritySnapshot {
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(genesis.id(), 1, units)
     }
+    /// Carry exact installed slots, owners, age order and selected fresh keys
+    /// into the first signing period of the linked run.
+    pub(crate) fn rebind_successor(&self, genesis: GenesisId) -> Result<Self, LedgerError> {
+        if self.active_count() < self.quorum() {
+            return Err(LedgerError::Invalid("successor opening quorum"));
+        }
+        Self::new(genesis, 1, self.units.clone())
+    }
     fn new(
         genesis: GenesisId,
         effective_height: u64,
@@ -395,7 +403,7 @@ impl AuthoritySnapshot {
         Self::new(self.genesis, height, units)
     }
     pub fn id(&self) -> [u8; 32] {
-        hash(b"naome:state:authority-snapshot:v6\0", &[&self.encode()])
+        hash(b"naome:state:authority-snapshot:v7\0", &[&self.encode()])
     }
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();

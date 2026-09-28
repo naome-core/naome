@@ -202,6 +202,9 @@ pub struct LedgerState {
     authority: AuthoritySnapshot,
     used_period_keys: BTreeSet<[u8; 32]>,
     height: u64,
+    /// Number of finalized records in all predecessor runs. Admission
+    /// coordinates remain strictly ordered when local heights restart at one.
+    lineage_height: u64,
     head: RecordId,
     time: u64,
     library: ProofLibrary,
@@ -226,6 +229,7 @@ pub struct LedgerState {
 impl LedgerState {
     /// Constructs the empty adopted test genesis. All balances and proof sets are zero.
     pub fn new(genesis: Genesis) -> Self {
+        let linked_without_history = genesis.predecessor().is_some();
         let head = RecordId::from_bytes(hash(
             b"naome:state:genesis-record:v1\0",
             &[genesis.id().as_bytes()],
@@ -251,6 +255,7 @@ impl LedgerState {
             authority,
             used_period_keys,
             height: 0,
+            lineage_height: 0,
             head,
             time,
             library: ProofLibrary::new(),
@@ -269,8 +274,54 @@ impl LedgerState {
             join_queue: VecDeque::new(),
             consumed_claims: BTreeSet::new(),
             capacity,
-            terminated: false,
+            terminated: linked_without_history,
         }
+    }
+    /// Deterministic state carried from a fully sealed terminal predecessor.
+    /// Callers must obtain the terminal state through finality replay; a
+    /// stand-alone linked genesis cannot create this state.
+    pub fn continue_terminal(&self) -> Result<Self, LedgerError> {
+        if !self.terminated
+            || !self.capacity.is_terminated()
+            || self.height == 0
+            || self.active.is_some()
+        {
+            return Err(LedgerError::Invalid("successor requires terminal state"));
+        }
+        let cumulative = self
+            .lineage_height
+            .checked_add(self.height)
+            .ok_or(LedgerError::Overflow)?;
+        let genesis = self.genesis.successor(
+            self.head,
+            self.commitment(),
+            self.authority.id(),
+            self.height,
+            cumulative,
+            self.time,
+        )?;
+        let authority = self.authority.rebind_successor(genesis.id())?;
+        let mut next = self.clone();
+        next.genesis = Arc::new(genesis);
+        next.authority = authority;
+        next.height = 0;
+        next.lineage_height = cumulative;
+        next.head = RecordId::from_bytes(hash(
+            b"naome:state:genesis-record:v7\0",
+            &[next.genesis.id().as_bytes()],
+        ));
+        next.capacity = Capacity::new(next.genesis.profile());
+        next.terminated = false;
+        // Old intent signatures bind the predecessor genesis. Keep their
+        // successful receipts and claims, but require new consent for joining.
+        next.join_intents.clear();
+        next.join_queue.clear();
+        next.balances
+            .verify_conservation(&next.genesis, &next.accounts)?;
+        Ok(next)
+    }
+    pub const fn lineage_height(&self) -> u64 {
+        self.lineage_height
     }
     pub fn genesis(&self) -> &Genesis {
         &self.genesis
@@ -578,7 +629,7 @@ impl LedgerState {
     pub fn commitment(&self) -> StateCommitment {
         let mut count = Writer::counting();
         self.write_state(&mut count);
-        let mut digest = Writer::hashing(b"naome:state:state:v6\0", count.len());
+        let mut digest = Writer::hashing(b"naome:state:state:v7\0", count.len());
         self.write_state(&mut digest);
         StateCommitment::from_bytes(digest.finish_hash())
     }

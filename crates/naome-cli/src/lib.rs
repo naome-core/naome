@@ -13,6 +13,11 @@ pub fn verify_archive(
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
     archive::verify(genesis, directory)
 }
+pub fn verify_lineage(
+    pairs: &[(&std::path::Path, &std::path::Path)],
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    archive::verify_lineage(pairs)
+}
 
 /// Read-only verifier process interface. Operator commands are never dispatched.
 pub fn run_verifier_args(args: Vec<String>) -> std::process::ExitCode {
@@ -20,7 +25,7 @@ pub fn run_verifier_args(args: Vec<String>) -> std::process::ExitCode {
         None | Some("help" | "--help") => {
             let _ = output::message(
                 output::Stream::Out,
-                "Usage: naome-verifier verify GENESIS EXPORT_DIRECTORY",
+                "Usage: naome-verifier verify GENESIS EXPORT_DIRECTORY | verify-lineage GENESIS ARCHIVE GENESIS ARCHIVE [GENESIS ARCHIVE]...",
                 std::time::Duration::from_secs(2),
             );
             std::process::ExitCode::SUCCESS
@@ -47,10 +52,30 @@ pub fn run_verifier_args(args: Vec<String>) -> std::process::ExitCode {
                 }
             }
         }
+        Some("verify-lineage") if args.len() >= 5 && args.len() % 2 == 1 => {
+            let pairs = args[1..]
+                .chunks_exact(2)
+                .map(|p| (std::path::Path::new(&p[0]), std::path::Path::new(&p[1])))
+                .collect::<Vec<_>>();
+            match verify_lineage(&pairs) {
+                Ok(report) if output::report(&report.to_string()).is_ok() => {
+                    std::process::ExitCode::SUCCESS
+                }
+                Ok(_) => std::process::ExitCode::FAILURE,
+                Err(error) => {
+                    let _ = output::message(
+                        output::Stream::Error,
+                        &format!("naome-verifier: {error}"),
+                        std::time::Duration::from_millis(250),
+                    );
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
         _ => {
             let _ = output::message(
                 output::Stream::Error,
-                "naome-verifier only supports: verify GENESIS EXPORT_DIRECTORY",
+                "naome-verifier supports verify and verify-lineage with complete genesis/archive pairs",
                 std::time::Duration::from_millis(250),
             );
             std::process::ExitCode::FAILURE

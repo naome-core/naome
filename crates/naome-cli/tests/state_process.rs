@@ -23,6 +23,9 @@ mod state_safety;
 #[path = "cases/admission.rs"]
 mod admission;
 
+#[path = "cases/successor.rs"]
+mod successor;
+
 fn process_guard() -> std::sync::MutexGuard<'static, ()> {
     static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     ACTIVE
@@ -77,9 +80,13 @@ struct Lab {
     root: PathBuf,
     nodes: Vec<Option<Child>>,
     base: u16,
+    successor_configs: Option<Vec<String>>,
 }
 impl Lab {
     fn new() -> Self {
+        Self::new_with_records(128)
+    }
+    fn new_with_records(run_records: u64) -> Self {
         let mut random = [0; 4];
         getrandom::fill(&mut random).unwrap();
         let root = PathBuf::from(format!(
@@ -103,7 +110,7 @@ impl Lab {
             "setup".into(),
             path(&root),
             "process-test".into(),
-            "128".into(),
+            run_records.to_string(),
             base.to_string(),
             path(&order_path),
             "compact".into(),
@@ -118,10 +125,14 @@ impl Lab {
             root,
             nodes: (0..5).map(|_| None).collect(),
             base,
+            successor_configs: None,
         }
     }
     fn config(&self, index: usize) -> String {
-        path(self.root.join(format!("node-{index}/node.json")))
+        self.successor_configs
+            .as_ref()
+            .and_then(|configs| configs.get(index).cloned())
+            .unwrap_or_else(|| path(self.root.join(format!("node-{index}/node.json"))))
     }
     fn key(&self, index: usize) -> String {
         path(self.root.join(format!("accounts/account-{index}.key")))

@@ -1,6 +1,6 @@
 //! Provision an independent observer and imported custody for a finalized claimant.
 
-use super::{NodeConfig, Result, files};
+use super::{ArchivePair, NodeConfig, Result, files};
 use crate::archive::{self, Manifest};
 use ed25519_dalek::SigningKey;
 use naome_ledger::{AccountId, ResolutionId};
@@ -8,7 +8,7 @@ use naome_storage::state::{StateHandoffJournal, StateHistory, StatePeriodCustody
 use serde_json::json;
 use std::{fs, net::SocketAddr, path::Path};
 
-const USAGE: &str = "usage: candidate-setup DIRECTORY GENESIS EXPORT_DIRECTORY OWNER_KEY FAMILY_HEX CONSENSUS_KEY TRANSPORT_KEY PRIMARY_ENDPOINT HANDOFF_ENDPOINT RECOVERY_ENDPOINTS_JSON";
+const USAGE: &str = "usage: candidate-setup DIRECTORY GENESIS EXPORT_DIRECTORY OWNER_KEY FAMILY_HEX CONSENSUS_KEY TRANSPORT_KEY PRIMARY_ENDPOINT HANDOFF_ENDPOINT RECOVERY_ENDPOINTS_JSON [PREDECESSOR_ARCHIVES_JSON]";
 
 fn source_key(path: &Path, role: u8) -> Result<Option<SigningKey>> {
     match fs::symlink_metadata(path) {
@@ -56,7 +56,7 @@ fn endpoint(value: &str) -> Result<SocketAddr> {
 }
 
 pub(crate) fn run(args: &[String]) -> Result<()> {
-    if args.len() != 10 {
+    if !(args.len() == 10 || args.len() == 11) {
         return Err(USAGE.into());
     }
     let requested = Path::new(&args[0]);
@@ -108,8 +108,52 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         return Err("candidate source keys are required before first import".into());
     }
 
-    // Verify the entire exported chain before creating any authority store.
-    let replayed = archive::replay(genesis_path, export, None)?;
+    // Verify the entire exported chain, including every predecessor, before
+    // creating any authority store. Linked genesis bytes alone carry no state.
+    let requested_genesis =
+        naome_ledger::profile::Genesis::decode(&files::read(genesis_path, 128 * 1024, false)?)?;
+    let lineage: Vec<ArchivePair> = if let Some(path) = args.get(10) {
+        let mut pairs: Vec<ArchivePair> =
+            serde_json::from_slice(&files::read(Path::new(path), 65536, false)?)?;
+        if pairs.is_empty() || pairs.len() > 32 {
+            return Err("candidate predecessor archive count".into());
+        }
+        for pair in &mut pairs {
+            pair.genesis = pair.genesis.canonicalize()?;
+            pair.archive = pair.archive.canonicalize()?;
+        }
+        pairs
+    } else {
+        Vec::new()
+    };
+    let predecessor = if requested_genesis.predecessor().is_some() {
+        let pairs = lineage
+            .iter()
+            .map(|pair| (pair.genesis.as_path(), pair.archive.as_path()))
+            .collect::<Vec<_>>();
+        let replayed = archive::replay_lineage(&pairs)?;
+        let terminal = replayed
+            .last_finality
+            .as_ref()
+            .ok_or("candidate predecessor terminal finality missing")?;
+        let initial = naome_consensus::state::StateBranch::from_terminal_finality(terminal)?;
+        if initial.state().genesis() != &requested_genesis {
+            return Err("candidate successor differs from predecessor terminal plan".into());
+        }
+        Some(replayed)
+    } else {
+        if !lineage.is_empty() {
+            return Err("opening candidate cannot name predecessor archives".into());
+        }
+        None
+    };
+    let replayed = if let Some(previous) = predecessor.as_ref() {
+        let terminal = previous.last_finality.as_ref().unwrap();
+        let initial = naome_consensus::state::StateBranch::from_terminal_finality(terminal)?;
+        archive::replay_from_initial(&requested_genesis, initial, export, None)?
+    } else {
+        archive::replay(genesis_path, export, None)?
+    };
     let state = replayed.branch.state();
     let genesis = state.genesis().clone();
     let manifest: Manifest =
@@ -183,6 +227,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         listen_address: None,
         handoff_endpoint: handoff.to_string(),
         handoff_listen_address: None,
+        lineage,
     };
     if resume {
         let actual = NodeConfig::read(&root.join("node.json"))?;
@@ -191,12 +236,21 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         {
             return Err("candidate configuration differs from requested import".into());
         }
-        let history = StateHistory::open(
-            &actual.history,
-            &actual.history_anchor,
-            genesis.clone(),
-            actual.maximum_round,
-        )?;
+        let history = if let Some(previous) = predecessor.as_ref() {
+            StateHistory::open_successor(
+                &actual.history,
+                &actual.history_anchor,
+                previous.last_finality.as_ref().unwrap(),
+                actual.maximum_round,
+            )?
+        } else {
+            StateHistory::open(
+                &actual.history,
+                &actual.history_anchor,
+                genesis.clone(),
+                actual.maximum_round,
+            )?
+        };
         if history.head()?.commitment() != replayed.branch.commitment() {
             return Err("candidate selected history differs from verified export".into());
         }
@@ -256,12 +310,21 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     ] {
         files::directory(directory)?;
     }
-    let mut history = StateHistory::create(
-        &config.history,
-        &config.history_anchor,
-        genesis.clone(),
-        config.maximum_round,
-    )?;
+    let mut history = if let Some(previous) = predecessor.as_ref() {
+        StateHistory::create_successor(
+            &config.history,
+            &config.history_anchor,
+            previous.last_finality.as_ref().unwrap(),
+            config.maximum_round,
+        )?
+    } else {
+        StateHistory::create(
+            &config.history,
+            &config.history_anchor,
+            genesis.clone(),
+            config.maximum_round,
+        )?
+    };
     drop(naome_storage::state::StatePendingActions::create(
         &config.history,
         &config.history_anchor,

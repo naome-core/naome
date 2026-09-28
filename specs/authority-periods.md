@@ -1,4 +1,4 @@
-# Authority periods and sealed handoff (state-v6)
+# Authority periods and sealed handoff (state-v7)
 
 A selected parent at height `h-1` contains the authority snapshot `S_h` for
 record `h`. It has `N` equal-weight installed slots, where `4 <= N <= 32`.
@@ -111,7 +111,39 @@ same history. Each receiver verifies the proof against its selected parent.
 After the finite run's terminal record, live and restarted nodes bind their
 configured primary address using a fresh recovery-only identity. This bounded
 owner-authenticated history service lets a cold peer fetch the terminal proof
-after all period signing keys and old Noise sessions have been retired.
+after outgoing period signing keys and old Noise sessions have been retired.
+The selected incoming key custody remains sealed for the explicit successor
+continuation step.
+
+## Terminal-linked successor genesis
+
+Version 7 treats the finite terminal record as an ordinary agreed record whose
+embedded handoff plan also fixes one exact next-run roster and key set. The
+terminal plan rejects candidate admission, preserving installed owners, slots,
+and age order even when a join intent is pending. The
+existing READY and TERMINAL quorums must both seal that terminal record. An
+unsealed agreement, a conflicting plan, or missing predecessor history grants
+no successor signing authority. The bridge starts a new genesis identified by
+the predecessor genesis, terminal head, terminal state commitment, terminal
+authority ID, terminal height, cumulative height, and run index. Its opening
+state is derived only from replaying the predecessor's terminal finality.
+
+The first bridge retains installed owners, stable slots and age order. It
+carries accounts, balances and reserve, nonces and receipts, selected proof
+bytes and attribution, paid and known-unpaid family outcomes, attempts, claims,
+consumed claims, and the complete used-key set. It resets the finite run's
+record and byte capacity and terminal flag. Pending predecessor join intents
+remain historical receipts but cannot activate without fresh consent signed
+for the new genesis. New actions bind the new genesis and old signed actions
+cannot be replayed. Foundation, checker, identity and reward rules stay fixed.
+
+Each node independently replays the predecessor and verifies its own selected
+terminal head before transferring only the sealed incoming keys into new-run
+custody. Old-run custody is retired before a new-run signer is created. A
+crash between these steps leaves a resumable local setup, never an alternative
+genesis choice. Independent verification replays every predecessor archive,
+the exact terminal bridge, and all successor finalities; a standalone linked
+genesis is insufficient evidence.
 
 ## Candidate provisioning and evidence boundary
 
@@ -122,9 +154,12 @@ private observer history and anchored candidate custody, and records primary,
 handoff, and explicit recovery endpoints. Source candidate key files are
 removed after durable import. The owner key remains separate. Candidate
 startup has no ordinary signer until a sealed selected period installs it.
+For a linked run, provisioning also requires ordered predecessor archives and
+replays them before the current export.
 
-The v6 code and local tests implement these checks for a fresh genesis; v5
-history is not accepted or upgraded in place. A local replay or process
+The v7 code and local tests implement these checks for a fresh genesis and its
+terminal-linked successor; v5 and v6 history are not accepted or upgraded in
+place. A local replay or process
 rehearsal does not demonstrate separate-machine operation,
 long-running availability, or erasure of external backups. The verification
 record must report test, CI, Docker, and physical-host evidence separately.

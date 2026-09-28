@@ -95,14 +95,14 @@ impl AuthorityUnitId {
     /// Identifies one bootstrap unit throughout key rotations.
     pub fn for_bootstrap(validator: ValidatorId) -> Self {
         Self(hash(
-            b"naome:state:bootstrap-unit:v6\0",
+            b"naome:state:bootstrap-unit:v7\0",
             &[validator.as_bytes()],
         ))
     }
 
     /// Identifies the unit installed from one paid completion claim.
     pub fn for_claim(family: ResolutionId) -> Self {
-        Self(hash(b"naome:state:claim-unit:v6\0", &[family.as_bytes()]))
+        Self(hash(b"naome:state:claim-unit:v7\0", &[family.as_bytes()]))
     }
 }
 
@@ -110,7 +110,7 @@ impl AuthoritySlotId {
     /// Keeps one genesis slot stable after its original unit is retired.
     pub fn for_bootstrap(validator: ValidatorId) -> Self {
         Self(hash(
-            b"naome:state:authority-slot:v6\0",
+            b"naome:state:authority-slot:v7\0",
             &[validator.as_bytes()],
         ))
     }
@@ -118,7 +118,7 @@ impl AuthoritySlotId {
     /// Allocates one stable voting slot when an earned claim grows the roster.
     pub fn for_claim(family: ResolutionId) -> Self {
         Self(hash(
-            b"naome:state:earned-authority-slot:v6\0",
+            b"naome:state:earned-authority-slot:v7\0",
             &[family.as_bytes()],
         ))
     }

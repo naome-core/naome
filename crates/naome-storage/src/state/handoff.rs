@@ -22,7 +22,7 @@ use super::{
     signer::StateSigner,
 };
 
-const MAGIC: &[u8; 8] = b"NAOSHOF6";
+const MAGIC: &[u8; 8] = b"NAOSHOF7";
 const STAGE: u8 = 1;
 const READY_INTENT: u8 = 2;
 const READY_DONE: u8 = 3;

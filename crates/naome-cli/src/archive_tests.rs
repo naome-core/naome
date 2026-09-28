@@ -127,6 +127,16 @@ fn independent_archive_replays_authenticated_golden_without_writing_or_keys() {
 }
 
 #[test]
+fn lineage_rejects_an_unsealed_predecessor_without_writing() {
+    let fixture = Fixture::new();
+    let before = fixture.image();
+    let genesis = fixture.0.join("genesis.bin");
+    let pairs = [(genesis.as_path(), fixture.0.as_path()); 2];
+    assert!(verify_lineage(&pairs).is_err());
+    assert_eq!(fixture.image(), before);
+}
+
+#[test]
 fn archive_corruption_context_and_bounds_fail_without_repair() {
     let fixture = Fixture::new();
     let frame = vector("finality");

@@ -4,11 +4,11 @@ use super::*;
 use crate::OperationId;
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
-const PLAN_MAGIC: &[u8; 5] = b"NSHP6";
-const CANDIDATE_MAGIC: &[u8; 5] = b"NSCA6";
-const OWNER_DOMAIN: &[u8] = b"naome:state:candidate-ready-owner:v6\0";
-const CONSENSUS_DOMAIN: &[u8] = b"naome:state:candidate-ready-consensus:v6\0";
-const TRANSPORT_DOMAIN: &[u8] = b"naome:state:candidate-ready-transport:v6\0";
+const PLAN_MAGIC: &[u8; 5] = b"NSHP7";
+const CANDIDATE_MAGIC: &[u8; 5] = b"NSCA7";
+const OWNER_DOMAIN: &[u8] = b"naome:state:candidate-ready-owner:v7\0";
+const CONSENSUS_DOMAIN: &[u8] = b"naome:state:candidate-ready-consensus:v7\0";
+const TRANSPORT_DOMAIN: &[u8] = b"naome:state:candidate-ready-transport:v7\0";
 pub const HANDOFF_PLAN_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -3,10 +3,10 @@
 use super::*;
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
-const MAGIC: &[u8; 5] = b"NSKO6";
-const OWNER_DOMAIN: &[u8] = b"naome:state:period-owner-offer:v6\0";
-const CONSENSUS_DOMAIN: &[u8] = b"naome:state:period-consensus-possession:v6\0";
-const TRANSPORT_DOMAIN: &[u8] = b"naome:state:period-transport-possession:v6\0";
+const MAGIC: &[u8; 5] = b"NSKO7";
+const OWNER_DOMAIN: &[u8] = b"naome:state:period-owner-offer:v7\0";
+const CONSENSUS_DOMAIN: &[u8] = b"naome:state:period-consensus-possession:v7\0";
+const TRANSPORT_DOMAIN: &[u8] = b"naome:state:period-transport-possession:v7\0";
 const MAX_BYTES: usize = 5 + 32 + 32 + 32 + 32 + 8 + 32 + 32 + 4 + 128 + 3 * 64;
 
 /// An owner proposes fresh credentials for one unit. The exact sealed

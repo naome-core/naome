@@ -12,28 +12,58 @@ use serde_json::json;
 use std::path::Path;
 
 pub async fn run(args: &[String]) -> Result<()> {
-    if args[0] == "verify" || args[0] == "inspect" {
-        if (args[0] == "verify" && args.len() != 3) || (args[0] == "inspect" && args.len() != 5) {
-            return Err("usage: verify GENESIS EXPORT_DIRECTORY; inspect GENESIS EXPORT_DIRECTORY SUBMISSION_ID OUTPUT_DIRECTORY".into());
+    if args[0] == "verify-lineage" {
+        if args.len() < 5 || args.len() % 2 != 1 {
+            return Err(
+                "usage: verify-lineage GENESIS ARCHIVE GENESIS ARCHIVE [GENESIS ARCHIVE]...".into(),
+            );
         }
-        let archive = crate::archive::replay(
-            Path::new(&args[1]),
-            Path::new(&args[2]),
-            (args[0] == "inspect").then(|| args[3].as_str()),
-        )?;
+        let pairs = args[1..]
+            .chunks_exact(2)
+            .map(|p| (Path::new(&p[0]), Path::new(&p[1])))
+            .collect::<Vec<_>>();
+        println!("{}", crate::archive::verify_lineage(&pairs)?);
+        return Ok(());
+    }
+    if matches!(args[0].as_str(), "verify" | "inspect" | "inspect-lineage") {
+        if (args[0] == "verify" && args.len() != 3)
+            || (args[0] == "inspect" && args.len() != 5)
+            || (args[0] == "inspect-lineage" && (args.len() < 7 || args.len().is_multiple_of(2)))
+        {
+            return Err("usage: verify GENESIS EXPORT_DIRECTORY; inspect GENESIS EXPORT_DIRECTORY SUBMISSION_ID OUTPUT_DIRECTORY; inspect-lineage GENESIS ARCHIVE GENESIS ARCHIVE [GENESIS ARCHIVE]... SUBMISSION_ID OUTPUT_DIRECTORY".into());
+        }
+        let inspect_index = if args[0] == "inspect-lineage" {
+            args.len() - 2
+        } else {
+            3
+        };
+        let archive = if args[0] == "inspect-lineage" {
+            let pairs = args[1..inspect_index]
+                .chunks_exact(2)
+                .map(|pair| (Path::new(&pair[0]), Path::new(&pair[1])))
+                .collect::<Vec<_>>();
+            crate::archive::replay_lineage_inspected(&pairs, Some(&args[inspect_index]))?
+        } else {
+            crate::archive::replay(
+                Path::new(&args[1]),
+                Path::new(&args[2]),
+                (args[0] == "inspect").then(|| args[inspect_index].as_str()),
+            )?
+        };
         let branch = archive.branch;
         let originals = archive.originals;
         let genesis = branch.state().genesis();
-        if args[0] == "inspect" {
-            let id = naome_ledger::OperationId::from_bytes(files::unhex(&args[3])?);
+        if args[0] != "verify" {
+            let id = naome_ledger::OperationId::from_bytes(files::unhex(&args[inspect_index])?);
             let report = super::inspect::question(branch.state(), id)?;
             let q = branch.state().question(id).ok_or("question not found")?;
-            let output = Path::new(&args[4]);
+            let output = Path::new(&args[inspect_index + 1]);
             files::directory(output)?;
             if let Some(naome_ledger::state::FamilyResult::Completed {
                 normalization_receipt,
                 ..
             }) = branch.state().families().get(&q.question().resolution_id())
+                && normalization_receipt.get(2..34) == Some(genesis.id().as_bytes().as_slice())
             {
                 let receipt = naome_ledger::receipt::NormalizationReceipt::decode_recorded(
                     normalization_receipt,
@@ -199,7 +229,25 @@ pub async fn run(args: &[String]) -> Result<()> {
             }
             let root = Path::new(&args[2]);
             files::directory(root)?;
-            let mut branch = StateBranch::from_genesis(LedgerState::new(genesis.clone()))?;
+            let mut branch = if genesis.predecessor().is_some() {
+                let pairs = config
+                    .lineage
+                    .iter()
+                    .map(|p| (p.genesis.as_path(), p.archive.as_path()))
+                    .collect::<Vec<_>>();
+                let predecessor = crate::archive::replay_lineage(&pairs)?;
+                let terminal = predecessor
+                    .last_finality
+                    .as_ref()
+                    .ok_or("predecessor terminal evidence absent")?;
+                let initial = StateBranch::from_terminal_finality(terminal)?;
+                if initial.state().genesis() != &genesis {
+                    return Err("export successor genesis differs from predecessor".into());
+                }
+                initial
+            } else {
+                StateBranch::from_genesis(LedgerState::new(genesis.clone()))?
+            };
             for n in 1..=height {
                 let response = control::call(&config, Request::History { height: n }).await?;
                 let bytes = decode_bytes(

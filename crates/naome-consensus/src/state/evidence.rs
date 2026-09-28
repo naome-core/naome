@@ -7,7 +7,7 @@ use naome_ledger::{
     profile::{Genesis, MAX_VALIDATORS},
 };
 
-const MAGIC: &[u8; 5] = b"NSCV6";
+const MAGIC: &[u8; 5] = b"NSCV7";
 /// Fixed width of one versioned state vote, including key and signature.
 pub const STATE_VOTE_BYTES: usize = 5 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 32 + 32 + 64;
 pub const STATE_QUORUM_MAX_BYTES: usize = 2 + MAX_VALIDATORS * STATE_VOTE_BYTES;
@@ -48,8 +48,8 @@ impl VoteBody {
     }
     pub(super) fn signing_bytes(self, signer: ConsensusKey) -> Vec<u8> {
         let domain: &[u8] = match self.role {
-            ConsensusVoteRole::Prevote => b"naome:state:prevote:v6\0",
-            ConsensusVoteRole::Precommit => b"naome:state:precommit:v6\0",
+            ConsensusVoteRole::Prevote => b"naome:state:prevote:v7\0",
+            ConsensusVoteRole::Precommit => b"naome:state:precommit:v7\0",
         };
         let mut bytes = domain.to_vec();
         bytes.extend(self.encode());

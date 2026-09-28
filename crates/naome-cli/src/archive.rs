@@ -1,7 +1,7 @@
 //! Read-only canonical archive replay shared by the operator and verifier.
 //! No control socket, private key, signing, or state-directory writes are used.
 
-use naome_consensus::state::StateBranch;
+use naome_consensus::state::{StateBranch, StateFinality};
 use naome_ledger::{LedgerState, PackageHash, operations::SignedOriginal, profile::Genesis};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -27,6 +27,7 @@ pub(crate) struct Manifest {
 pub(crate) struct ReplayedArchive {
     pub(crate) branch: StateBranch,
     pub(crate) originals: BTreeMap<PackageHash, SignedOriginal>,
+    pub(crate) last_finality: Option<StateFinality>,
 }
 
 pub(crate) fn replay(
@@ -35,7 +36,22 @@ pub(crate) fn replay(
     inspected: Option<&str>,
 ) -> Result<ReplayedArchive> {
     let genesis = Genesis::decode(&read(genesis_path, 128 * 1024)?)?;
+    if genesis.predecessor().is_some() {
+        return Err("linked genesis requires full predecessor archive replay".into());
+    }
+    let initial = StateBranch::from_genesis(LedgerState::new(genesis.clone()))?;
+    replay_from_initial(&genesis, initial, root, inspected)
+}
 
+pub(crate) fn replay_from_initial(
+    genesis: &Genesis,
+    mut branch: StateBranch,
+    root: &Path,
+    inspected: Option<&str>,
+) -> Result<ReplayedArchive> {
+    if branch.state().height() != 0 || branch.state().genesis().id() != genesis.id() {
+        return Err("archive opening branch context".into());
+    }
     let manifest: Manifest = serde_json::from_slice(&read(&root.join("manifest.json"), 16384)?)?;
     if manifest.version != 1
         || manifest.genesis != hex(genesis.id().as_bytes())
@@ -45,8 +61,8 @@ pub(crate) fn replay(
         return Err("archive manifest context or bounds mismatch".into());
     }
     let maximum = genesis.profile().limits().transport_frame_bytes as usize;
-    let mut branch = StateBranch::from_genesis(LedgerState::new(genesis.clone()))?;
     let mut originals = std::collections::BTreeMap::new();
+    let mut last_finality = None;
     for height in 1..=manifest.height {
         let bytes = read(&root.join(format!("{height:08}.finality")), maximum)?;
         let finality = branch.decode_finality(&bytes, manifest.maximum_round)?;
@@ -57,23 +73,28 @@ pub(crate) fn replay(
                 .is_some_and(|a| inspected == Some(hex(a.submission.as_bytes()).as_str()))
         {
             let record =
-                naome_chain::StateRecord::decode(finality.proposal().record_bytes(), &genesis)?;
+                naome_chain::StateRecord::decode(finality.proposal().record_bytes(), genesis)?;
             for operation in record.operations() {
                 if let naome_ledger::operations::OperationBody::Reveal { original, .. } =
-                    naome_ledger::operations::OperationBody::decode(operation.payload(), &genesis)?
+                    naome_ledger::operations::OperationBody::decode(operation.payload(), genesis)?
                 {
                     originals.insert(original.original_hash(), original);
                 }
             }
         }
-        branch = finality.into_branch();
+        branch = finality.branch().clone();
+        last_finality = Some(finality);
     }
     if manifest.head != hex(branch.state().head().as_bytes())
         || manifest.state != hex(branch.state().commitment().as_bytes())
     {
         return Err("replayed tip does not match archive manifest".into());
     }
-    Ok(ReplayedArchive { branch, originals })
+    Ok(ReplayedArchive {
+        branch,
+        originals,
+        last_finality,
+    })
 }
 
 pub(crate) fn verify(genesis_path: &Path, root: &Path) -> Result<Value> {
@@ -83,6 +104,61 @@ pub(crate) fn verify(genesis_path: &Path, root: &Path) -> Result<Value> {
     report["verification"] = json!("independent full finality and mathematical replay");
     report["consensus_commitment"] = json!(hex(&archive.branch.commitment()));
     Ok(report)
+}
+
+/// Replay every run from its public beginning. Each successor must equal the
+/// deterministic state derived from the preceding archive's terminal seal.
+pub(crate) fn verify_lineage(pairs: &[(&Path, &Path)]) -> Result<Value> {
+    if pairs.len() < 2 {
+        return Err("lineage verification requires predecessor and successor".into());
+    }
+    let previous = replay_lineage(pairs)?;
+    let mut report = status(previous.branch.state());
+    report["verification"] =
+        json!("independent predecessor, bridge, and successor finality replay");
+    report["consensus_commitment"] = json!(hex(&previous.branch.commitment()));
+    report["runs"] = json!(pairs.len());
+    Ok(report)
+}
+
+pub(crate) fn replay_lineage(pairs: &[(&Path, &Path)]) -> Result<ReplayedArchive> {
+    replay_lineage_inspected(pairs, None)
+}
+
+pub(crate) fn replay_lineage_inspected(
+    pairs: &[(&Path, &Path)],
+    inspected: Option<&str>,
+) -> Result<ReplayedArchive> {
+    if pairs.is_empty() {
+        return Err("lineage replay requires an opening archive".into());
+    }
+    let mut previous = replay(
+        pairs[0].0,
+        pairs[0].1,
+        if pairs.len() == 1 { inspected } else { None },
+    )?;
+    for (index, &(genesis_path, archive_root)) in pairs[1..].iter().enumerate() {
+        let terminal = previous
+            .last_finality
+            .as_ref()
+            .ok_or("missing predecessor terminal finality")?;
+        let initial = StateBranch::from_terminal_finality(terminal)?;
+        let genesis = Genesis::decode(&read(genesis_path, 128 * 1024)?)?;
+        if genesis != *initial.state().genesis() {
+            return Err("successor genesis differs from sealed predecessor".into());
+        }
+        previous = replay_from_initial(
+            &genesis,
+            initial,
+            archive_root,
+            if index + 2 == pairs.len() {
+                inspected
+            } else {
+                None
+            },
+        )?;
+    }
+    Ok(previous)
 }
 
 fn read(path: &Path, maximum: usize) -> Result<Vec<u8>> {

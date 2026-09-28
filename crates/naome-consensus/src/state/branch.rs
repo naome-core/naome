@@ -15,9 +15,9 @@ use naome_ledger::{
     GenesisId, LedgerState, ProfileId, RecordId, StateCommitment, authority::AuthoritySnapshot,
 };
 
-const VALUE_MAGIC: &[u8; 5] = b"NSCB6";
+const VALUE_MAGIC: &[u8; 5] = b"NSCB7";
 const VALUE_BYTES: usize = 5 + 9 * 32 + 8;
-const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP6";
+const PROPOSAL_MAGIC: &[u8; 5] = b"NSCP7";
 
 /// Evidence-free header binding a complete state record and proposer state.
 /// Neither observing nor decoding this header grants application authority.
@@ -106,7 +106,7 @@ impl StateValue {
     }
     pub fn signing_root(&self) -> ProposalSigningRoot {
         ProposalSigningRoot::from_bytes(digest(
-            b"naome:state:consensus-value:v6\0",
+            b"naome:state:consensus-value:v7\0",
             &[&self.encode()],
         ))
     }
@@ -131,9 +131,21 @@ pub struct StateBranch {
 }
 impl StateBranch {
     pub fn from_genesis(state: LedgerState) -> Result<Self> {
-        if state.height() != 0 {
+        if state.height() != 0 || state.terminated() || state.genesis().predecessor().is_some() {
             return Err(Error::Invalid("state branch requires genesis"));
         }
+        let proposer = stable_proposer(state.authority())?;
+        Ok(Self { state, proposer })
+    }
+    /// A verified terminal finality is the only authority source for a linked
+    /// successor. Its exact selected state fixes the new genesis and opening
+    /// roster; neither a decoded genesis nor a checkpoint can replace it.
+    pub fn from_terminal_finality(finality: &StateFinality) -> Result<Self> {
+        let state = finality
+            .branch()
+            .state()
+            .continue_terminal()
+            .map_err(Error::from)?;
         let proposer = stable_proposer(state.authority())?;
         Ok(Self { state, proposer })
     }
@@ -384,7 +396,7 @@ impl StateBranch {
             .limits()
             .transport_frame_bytes as usize;
         let mut r = Reader::new(input, maximum)?;
-        if r.fixed::<5>()? != *b"NSAG6" {
+        if r.fixed::<5>()? != *b"NSAG7" {
             return Err(Error::Invalid("agreement format"));
         }
         let proposal_bytes = r.bytes(maximum)?;
@@ -455,7 +467,7 @@ fn branch_commitment(
     proposer: [u8; 32],
 ) -> [u8; 32] {
     digest(
-        b"naome:state:consensus-state:v6\0",
+        b"naome:state:consensus-state:v7\0",
         &[
             genesis.as_bytes(),
             &height.to_be_bytes(),
@@ -489,7 +501,7 @@ fn validate_valid_quorum(
     Ok(())
 }
 fn proposal_signing_bytes(value: StateValue, round: u64, proposer: ConsensusKey) -> Vec<u8> {
-    let mut bytes = b"naome:state:proposal:v6\0".to_vec();
+    let mut bytes = b"naome:state:proposal:v7\0".to_vec();
     bytes.extend(value.encode());
     bytes.extend_from_slice(&round.to_be_bytes());
     bytes.extend_from_slice(proposer.as_bytes());
@@ -615,7 +627,7 @@ impl StateAgreement {
         &self.quorum
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let mut out = b"NSAG6".to_vec();
+        let mut out = b"NSAG7".to_vec();
         bytes(&mut out, &self.proposal.encode()?)?;
         bytes(&mut out, &self.quorum.encode())?;
         Ok(out)

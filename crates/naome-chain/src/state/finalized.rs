@@ -2,7 +2,7 @@ use super::codec::{Reader, Writer};
 use naome_ledger::LedgerError;
 use naome_ledger::profile::MAX_VALIDATORS;
 
-const MAGIC: &[u8; 5] = b"NSCF6";
+const MAGIC: &[u8; 5] = b"NSCF7";
 const MAX_SEAL_BYTES: usize = 5 + 4 + 2 * MAX_VALIDATORS * (5 + 32 * 6 + 8 + 1 + 32 + 64);
 
 /// Canonical wire record binding a complete state proposal to finality evidence.

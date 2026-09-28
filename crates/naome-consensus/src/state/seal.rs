@@ -112,8 +112,8 @@ pub struct SealSignature {
 impl SealSignature {
     pub fn signing_bytes(role: SealRole, context: SealContext, signer: ConsensusKey) -> Vec<u8> {
         let mut bytes = match role {
-            SealRole::Ready => b"naome:state:ready:v6\0".to_vec(),
-            SealRole::Terminal => b"naome:state:terminal:v6\0".to_vec(),
+            SealRole::Ready => b"naome:state:ready:v7\0".to_vec(),
+            SealRole::Terminal => b"naome:state:terminal:v7\0".to_vec(),
         };
         bytes.extend(context.encode());
         bytes.push(role.tag());
@@ -184,7 +184,7 @@ impl SealSignature {
             .map_err(|_| Error::Invalid("seal signature"))
     }
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = b"NSSG6".to_vec();
+        let mut bytes = b"NSSG7".to_vec();
         bytes.extend(self.context.encode());
         bytes.push(self.role.tag());
         bytes.extend_from_slice(self.signer.as_bytes());
@@ -194,7 +194,7 @@ impl SealSignature {
     /// Bounded structural decoding, with no authority inferred from wire fields.
     pub fn decode(input: &[u8]) -> Result<Self> {
         let mut r = Reader::new(input, SEAL_SIGNATURE_BYTES)?;
-        if r.fixed::<5>()? != *b"NSSG6" {
+        if r.fixed::<5>()? != *b"NSSG7" {
             return Err(Error::Invalid("seal signature format"));
         }
         let context = SealContext::read(&mut r)?;
@@ -265,7 +265,7 @@ impl StateSeal {
         &self.terminal
     }
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = b"NSSL6".to_vec();
+        let mut bytes = b"NSSL7".to_vec();
         for set in [&self.ready, &self.terminal] {
             bytes.extend_from_slice(&(set.len() as u16).to_be_bytes());
             for signature in set {
@@ -276,7 +276,7 @@ impl StateSeal {
     }
     pub fn decode(input: &[u8]) -> Result<Self> {
         let mut r = Reader::new(input, STATE_SEAL_MAX_BYTES)?;
-        if r.fixed::<5>()? != *b"NSSL6" {
+        if r.fixed::<5>()? != *b"NSSL7" {
             return Err(Error::Invalid("seal format"));
         }
         let mut read = || -> Result<Vec<SealSignature>> {

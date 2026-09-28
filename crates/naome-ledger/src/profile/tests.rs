@@ -212,13 +212,13 @@ fn profile_presets_and_storage_reservation() {
     assert_eq!(lab.timing().reveal_seconds, 120);
     assert_eq!(research.timing().voting_seconds, 604800);
     assert_eq!(research.timing().queue_seconds, 2592000);
-    assert_eq!(short.name(), "state-v6-short-test");
+    assert_eq!(short.name(), "state-v7-short-test");
     assert_eq!(short.timing().voting_seconds, 15);
     let process = Profile::process_test();
     assert_eq!(process.timing().voting_seconds, 45);
     assert_ne!(short.id(), process.id());
     assert_eq!(ci.timing().voting_seconds, 1);
-    assert_eq!(ci.name(), "state-v6-ci-test");
+    assert_eq!(ci.name(), "state-v7-ci-test");
     assert_ne!(lab.id(), research.id());
     assert_ne!(lab.id(), short.id());
     assert_ne!(short.id(), ci.id());
@@ -637,7 +637,7 @@ fn lab_profile_golden_encoding_and_identity() {
         4096, 64, 2097152, 32, 64, 16, 1, 1048576, 8192, 64, 1, 2, 4, 4194304, 2592, 75497472,
         10616832, 1114112, 1310720, 64, 64,
     ];
-    let mut bytes = b"NAOPROF6\0".to_vec();
+    let mut bytes = b"NAOPROF7\0".to_vec();
     for value in values {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -656,8 +656,8 @@ fn lab_profile_golden_encoding_and_identity() {
     assert_eq!(
         Profile::lab().id().as_bytes(),
         &[
-            57, 145, 65, 102, 224, 142, 55, 136, 11, 205, 47, 101, 51, 206, 114, 171, 116, 58, 17,
-            153, 65, 146, 102, 18, 177, 135, 97, 220, 238, 103, 196, 164
+            33, 176, 216, 220, 24, 35, 182, 117, 178, 129, 157, 209, 26, 131, 2, 151, 12, 78, 207,
+            179, 95, 211, 13, 239, 136, 36, 185, 173, 200, 41, 174, 108
         ]
     );
 }
