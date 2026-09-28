@@ -7,7 +7,9 @@ may generate a pseudonymous research key and seek admission without an invitatio
 or manual choice of who may participate. Research access is distinct from
 validator authority: publishing an account or a valid proof does not itself
 grant a vote. No protocol-wide fixed lifetime cap is intended for research
-accounts, participants, records, or eventual validator participation. Each
+accounts, participants, records, or eventual consensus participation. In a
+roster design this means validators over successive finite snapshots; in the
+PoW candidate it means permissionless miners and verifying full nodes. Each
 admitted action, record, proof check, and authority snapshot must still have
 finite, enforceable resource bounds. Physical storage, bandwidth, and throughput
 remain finite; continuing service needs measured capacity and sustainable
@@ -23,8 +25,10 @@ limits, and its behavior under founder censorship are open protocol decisions.
 
 Acceptance for this target requires a versioned rulebook and executable tests
 showing (1) public pseudonymous account admission within bounded per-action
-work, (2) a finite active validator snapshot with a defined route for unbounded
-eventual participation across snapshots, (3) bounded admission and verification
+work, (2) permissionless mining with bounded block validation and a measured
+honest-hash-power assumption for the PoW candidate, or finite snapshots with
+open-ended eventual validator entry if a roster design is retained,
+(3) bounded admission and verification
 under adversarial load, (4) durable continuation and archive replay across run
 boundaries without duplicate rewards or lost proof attribution, and (5)
 physical multi-machine measurements of storage growth, throughput, recovery,

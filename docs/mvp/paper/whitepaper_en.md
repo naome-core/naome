@@ -307,7 +307,9 @@ The v7 profile's genesis bounds records, storage and consensus retries; restart 
 
 The target admits pseudonymous research keys without invitation and has no
 fixed protocol-wide lifetime cap for accounts, participants, records or eventual
-validator participation. It does not promise infinite physical capacity or an
+consensus participation: roster validators across snapshots in one design, or
+permissionless miners and full nodes in the PoW candidate. It does not promise
+infinite physical capacity or an
 unbounded set of voters on one record. Each action, verification step, record,
 queue and active authority snapshot needs a finite work and byte budget. A
 new key proves control of that key, not one-human-one-account. Research access,
