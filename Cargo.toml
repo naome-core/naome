@@ -8,6 +8,7 @@ members = [
     "crates/naome-ledger",
     "crates/naome-network",
     "crates/naome-node",
+    "crates/naome-pouw",
     "crates/naome-proof",
     "crates/naome-protocol",
     "crates/naome-cli",
