@@ -51,10 +51,10 @@ class Parameters:
     def __post_init__(self) -> None:
         if not _prime(self.q):
             raise ValueError("q must be a prime smaller than 2^64")
-        if not isinstance(self.n, int) or isinstance(self.n, bool) or self.n < 2:
-            raise ValueError("n must be at least two")
-        if not isinstance(self.r, int) or isinstance(self.r, bool) or not 0 < self.r < self.n or self.n % self.r:
-            raise ValueError("r must be a proper positive divisor of n")
+        if not isinstance(self.n, int) or isinstance(self.n, bool) or self.n < 1:
+            raise ValueError("n must be positive")
+        if not isinstance(self.r, int) or isinstance(self.r, bool) or not 0 < self.r <= self.n or self.n % self.r:
+            raise ValueError("r must be a positive divisor of n")
 
 
 @dataclass(frozen=True)

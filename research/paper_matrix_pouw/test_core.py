@@ -130,9 +130,11 @@ class PaperCoreTests(unittest.TestCase):
         for q in (1, 4, 9, 2**64):
             with self.assertRaises(ValueError):
                 Parameters(q, 4, 2)
-        for n, r in ((4, 0), (4, 3), (4, 4)):
+        for n, r in ((0, 0), (4, 0), (4, 3), (4, 5)):
             with self.assertRaises(ValueError):
                 Parameters(101, n, r)
+        self.assertEqual(Parameters(7, 1, 1).n, 1)
+        self.assertEqual(Parameters(7, 4, 4).r, 4)
         with self.assertRaises(ValueError):
             solve(self.p, self.sigma, ((101,) * 4,) * 4, self.b)
 
