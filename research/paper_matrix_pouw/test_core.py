@@ -4,7 +4,8 @@ from dataclasses import replace
 import random
 import unittest
 
-from core import Parameters, Proof, Sigma, encode, sample_sigma, solve, tiled_product, verify
+from core import (OverviewProof, Parameters, Proof, Sigma, encode, sample_sigma,
+                  solve, solve_overview, tiled_product, verify, verify_overview)
 
 
 def reference_product(a, b, q):
@@ -81,6 +82,39 @@ class PaperCoreTests(unittest.TestCase):
         self.assertFalse(verify(self.p, self.sigma, replace(proof, a=changed_a)))
         changed_el = ((self.sigma.el[0][0] + 1,) + self.sigma.el[0][1:],) + self.sigma.el[1:]
         self.assertFalse(verify(self.p, replace(self.sigma, el=changed_el), proof))
+
+    def test_section_two_oracle_and_threshold_boundaries(self):
+        # This is a deterministic test double for the ideal random oracle,
+        # deliberately not a concrete hash or a security instantiation.
+        p = Parameters(7, 2, 1)
+        sigma = Sigma(el=((1,), (2,)), er=((1, 3),),
+                      fl=((2,), (1,)), fr=((1, 2),))
+        a, b = ((1, 2), (3, 4)), ((5, 6), (0, 1))
+        _, known_trace = tiled_product(p, *encode(p, sigma, a, b))
+
+        class TestOracle:
+            def factors(self, pp, challenge, aa, bb):
+                if (pp, challenge, aa, bb) == (p, 9, a, b):
+                    return sigma
+                return replace(sigma, el=((2,), (2,)))
+
+            def transcript_value(self, pp, trace, lambda_bits):
+                assert pp == p and lambda_bits == 4
+                return 2 if trace == known_trace else 7
+
+        oracle = TestOracle()
+        c, proof = solve_overview(p, 9, a, b, oracle, 4)
+        self.assertEqual(c, ((5, 1), (1, 1)))
+        self.assertEqual(proof, OverviewProof(a, b, 2))
+        self.assertTrue(verify_overview(p, 9, proof, oracle, 4, 2))  # 2 < 4
+        self.assertFalse(verify_overview(p, 9, proof, oracle, 4, 3))  # 2 !< 2
+        self.assertTrue(verify_overview(p, 9, proof, oracle, 4, 0))
+        self.assertFalse(verify_overview(p, 9, replace(proof, z=3), oracle, 4, 2))
+        self.assertFalse(verify_overview(p, 9, replace(proof, z=16), oracle, 4, 2))
+        self.assertFalse(verify_overview(p, 10, proof, oracle, 4, 2))
+        self.assertFalse(verify_overview(p, 9, replace(proof, a=((2, 2), (3, 4))), oracle, 4, 2))
+        with self.assertRaises(ValueError):
+            verify_overview(p, 9, proof, oracle, 4, 5)
 
     def test_uniform_factor_sampling_and_random_cases(self):
         rng = random.Random(1402)

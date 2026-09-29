@@ -1,13 +1,14 @@
-"""Literal arithmetic reference for Algorithms 6.1, 6.2, and 6.4 of arXiv:2504.09971v4.
+"""Oracle-level reference for §§2, 6.1, 6.3, and 6.5 of arXiv:2504.09971v4.
 
-This module implements the section 6.3 *full-transcript* proof. It is not the
-section 2 hash-and-threshold lottery or a consensus acceptance rule. In
-particular, callers must supply an independently fresh, unpredictable sigma.
+The section 2 hash-and-threshold rule is modeled with an abstract random
+oracle. No concrete hash encoding, challenge source, or parameter profile is
+selected here. The literal section 6.3 full-transcript variant is retained
+separately because Algorithm 6.2 prints a different proof/Verify rule.
 """
 
 from dataclasses import dataclass
 import secrets
-from typing import Callable
+from typing import Callable, Protocol
 
 
 Matrix = tuple[tuple[int, ...], ...]
@@ -71,6 +72,23 @@ class Proof:
     a: Matrix
     b: Matrix
     z: Transcript  # Algorithm 6.2: z is the entire transcript, not its hash
+
+
+@dataclass(frozen=True)
+class OverviewProof:
+    a: Matrix
+    b: Matrix
+    z: int  # §2: oracle value of the complete transcript, in [0, 2^lambda)
+
+
+class RandomOracle(Protocol):
+    """The ideal oracle operations in §2; no wire encoding is implied."""
+
+    def factors(self, p: Parameters, challenge: int, a: Matrix, b: Matrix) -> Sigma:
+        """Derive the four independent uniform factors from O(sigma, A, B)."""
+
+    def transcript_value(self, p: Parameters, transcript: Transcript, lambda_bits: int) -> int:
+        """Return O(transcript) as a uniform lambda-bit integer."""
 
 
 def _check(m: Matrix, rows: int, cols: int, q: int) -> None:
@@ -179,5 +197,57 @@ def verify(p: Parameters, sigma: Sigma, proof: Proof) -> bool:
         for tile in proof.z:
             _check(tile, p.r, p.r, p.q)
         return proof.z == expected
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _threshold(lambda_bits: int, difficulty_bits: int) -> int:
+    """§2 threshold 2^(lambda - log2(1/epsilon)), for epsilon=2^-difficulty."""
+    if (not isinstance(lambda_bits, int) or isinstance(lambda_bits, bool) or lambda_bits < 1
+            or not isinstance(difficulty_bits, int) or isinstance(difficulty_bits, bool)
+            or not 0 <= difficulty_bits <= lambda_bits):
+        raise ValueError("need 0 <= difficulty_bits <= lambda_bits and lambda_bits > 0")
+    return 1 << (lambda_bits - difficulty_bits)
+
+
+def _challenge(challenge: int, lambda_bits: int) -> None:
+    if (not isinstance(challenge, int) or isinstance(challenge, bool)
+            or not 0 <= challenge < 1 << lambda_bits):
+        raise ValueError("challenge must be a lambda-bit string represented as an integer")
+
+
+def _oracle_value(value: int, lambda_bits: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < 1 << lambda_bits:
+        raise ValueError("oracle value must be a lambda-bit string represented as an integer")
+
+
+def solve_overview(p: Parameters, challenge: int, a: Matrix, b: Matrix,
+                   oracle: RandomOracle, lambda_bits: int) -> tuple[Matrix, OverviewProof]:
+    """§2 Solve, resolving the §6.3 discrepancy in favor of a hashed transcript."""
+    _threshold(lambda_bits, 0)
+    _challenge(challenge, lambda_bits)
+    # The oracle, not this reference, owns the still-undecided concrete
+    # challenge binding and uniform factor expansion.
+    sigma = oracle.factors(p, challenge, a, b)
+    a_prime, b_prime = encode(p, sigma, a, b)
+    c_prime, trace = tiled_product(p, a_prime, b_prime)
+    z = oracle.transcript_value(p, trace, lambda_bits)
+    _oracle_value(z, lambda_bits)
+    return decode(p, sigma, a, b, c_prime), OverviewProof(a, b, z)
+
+
+def verify_overview(p: Parameters, challenge: int, proof: OverviewProof,
+                    oracle: RandomOracle, lambda_bits: int, difficulty_bits: int) -> bool:
+    """§2 Verify: recompute O(transcript), compare z, then apply the threshold."""
+    threshold = _threshold(lambda_bits, difficulty_bits)
+    try:
+        _challenge(challenge, lambda_bits)
+        _oracle_value(proof.z, lambda_bits)
+        sigma = oracle.factors(p, challenge, proof.a, proof.b)
+        a_prime, b_prime = encode(p, sigma, proof.a, proof.b)
+        _, trace = tiled_product(p, a_prime, b_prime)
+        expected = oracle.transcript_value(p, trace, lambda_bits)
+        _oracle_value(expected, lambda_bits)
+        return proof.z == expected and proof.z < threshold
     except (AttributeError, TypeError, ValueError):
         return False
