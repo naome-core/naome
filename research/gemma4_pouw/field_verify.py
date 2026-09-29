@@ -34,11 +34,19 @@ def encode(a,b,seed,q):
 
 def product(a,b,q):
     m,k=a.shape;n=b.shape[0];chunks=(k+CHUNK-1)//CHUNK
+    # Encoded entries lie in [0, q). Every exact integer product and every
+    # partial sum fits in a float64 significand for this fixed workload, so
+    # BLAS can calculate each chunk faster than NumPy's integer matmul. Cast
+    # the exact integer result back before modular reduction.
+    require(k*(q-1)**2 < 2**53,'inexact float64 product bound')
+    require(a.min()>=0 and a.max()<q and b.min()>=0 and b.max()<q,'encoded field range')
+    af=a.astype(np.float64);bf=b.astype(np.float64)
     partials=np.empty((m,n,chunks),dtype=np.uint32)
     c=np.zeros((m,n),dtype=np.int64)
     for i in range(chunks):
         start=i*CHUNK;end=min(start+CHUNK,k)
-        c=(c+a[:,start:end].astype(np.int64)@b[:,start:end].astype(np.int64).T)%q
+        chunk=(af[:,start:end]@bf[:,start:end].T).astype(np.int64)
+        c=(c+chunk)%q
         partials[:,:,i]=c
     return c.astype(np.uint32),partials
 

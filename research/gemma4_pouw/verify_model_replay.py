@@ -33,7 +33,7 @@ def verify(json_path,npz_path,proof_path,expected_predecessor,check_weights=True
     with tempfile.TemporaryDirectory(prefix='naome-gemma-replay-') as tmp:
         cmd=[PYTHON,str(ROOT/'gemma_field_infer.py'),'--predecessor',expected_predecessor,
              '--nonce',meta['job_nonce_hex'],'--output-dir',tmp,'--name','replay',
-             '--prompt-file',str(prompt_path)]
+             '--prompt-file',str(prompt_path),'--skip-witness-output']
         if meta.get('prompt_binding'):cmd.append('--bind-prompt')
         run=subprocess.run(cmd,cwd=REPO,capture_output=True,text=True)
         require(run.returncode==0,'Gemma replay failed: '+run.stderr[-1000:])

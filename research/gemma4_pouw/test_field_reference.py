@@ -1,11 +1,31 @@
 """Small independent arithmetic invariants for the research field scheme."""
 import hashlib,multiprocessing as mp,tempfile,threading,unittest
 import numpy as np
-from field_verify import PRIMES,encode,product,decode,crt,sha
+from field_verify import PRIMES,CHUNK,encode,product,decode,crt,sha
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from chain_demo import genesis_for,block_hash,node_loop,PROFILE
 
 class FieldReferenceTests(unittest.TestCase):
+    def test_float64_chunks_match_integer_reference(self):
+        rng=np.random.default_rng(20260930)
+        for q in PRIMES:
+            a=rng.integers(0,q,(17,257),dtype=np.uint32)
+            b=rng.integers(0,q,(19,257),dtype=np.uint32)
+            # Include the largest possible entry and the full 3840-wide K
+            # bound used by the Gemma projection.
+            cases=((a,b),
+                   (np.full((3,3840),q-1,dtype=np.uint32),
+                    np.full((5,3840),q-1,dtype=np.uint32)))
+            for left,right in cases:
+                got,partials=product(left,right,q)
+                expected=np.zeros(got.shape,dtype=np.int64)
+                for i in range(partials.shape[-1]):
+                    start=i*CHUNK;end=min(start+CHUNK,left.shape[1])
+                    term=left[:,start:end].astype(np.int64)@right[:,start:end].astype(np.int64).T
+                    expected=(expected+term)%q
+                    self.assertTrue(np.array_equal(partials[:,:,i],expected))
+                self.assertTrue(np.array_equal(got,expected))
+
     def test_two_field_decode_and_all_partials(self):
         rng=np.random.default_rng(20260929)
         a=rng.integers(-63,64,(17,133),dtype=np.int8)

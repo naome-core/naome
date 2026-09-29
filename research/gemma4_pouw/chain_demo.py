@@ -2,7 +2,7 @@
 
 Version 1 is an execution/validation prototype, not permissionless consensus.
 """
-import hashlib,json,multiprocessing as mp,os,pathlib,subprocess,sys,time
+import hashlib,json,multiprocessing as mp,os,pathlib,subprocess,sys,tempfile,time
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,Ed25519PublicKey
 from field_verify import verify as verify_field,require
 from verify_model_replay import verify as verify_model,hash_file,SHARDS
@@ -49,7 +49,8 @@ def validate_block(block_dir,block,genesis,expected_height,expected_prev,check_w
     require(meta.get('prompt_binding') is True,'challenge-bound inference prompt')
     prompt=PROMPTS[h['prompt_id']]
     require(hash_file(prompt)==genesis['body']['prompt_sha256'][h['prompt_id']],'genesis prompt')
-    verify_field(receipt,witness,proof,h['prev'],prompt)
+    # verify_model performs the full independent field check before replaying
+    # Gemma. Do not calculate the same transcript twice for every vote.
     verify_model(receipt,witness,proof,h['prev'],check_weights=check_weights,prompt_path=prompt)
     return True
 
@@ -174,8 +175,59 @@ def replay_chain(output_dir,full_model=True):
         tip=b['hash']
     return {'valid':True,'height':2,'tip':tip,'full_model':full_model}
 
+def revalidate_saved(output_dir):
+    """Recheck saved blocks in four fresh processes without rerunning the miner."""
+    out=pathlib.Path(output_dir)
+    genesis=json.loads((out/'genesis.json').read_text())
+    require(genesis['hash']==digest(b'naome-research-genesis-v1\0',genesis['body']),'genesis hash')
+    key_bytes=[bytes.fromhex(s) for s in json.loads((out/'validator_private_keys.json').read_text())]
+    require(len(key_bytes)==4,'saved validator keys')
+    require(genesis_for([Ed25519PrivateKey.from_private_bytes(k) for k in key_bytes])==genesis,
+            'saved validator identities')
+    with tempfile.TemporaryDirectory(prefix='naome-gemma-revalidate-') as temp:
+        ctx=mp.get_context('spawn');nodes=[];summary={'blocks':[]}
+        for i,key in enumerate(key_bytes):
+            parent,child=ctx.Pipe()
+            proc=ctx.Process(target=node_loop,args=(i,key,genesis,str(pathlib.Path(temp)/f'node{i}'),child))
+            proc.start();nodes.append((proc,parent))
+        try:
+            tip=genesis['hash']
+            for height in (1,2):
+                block_dir=out/f'block{height}'
+                block=json.loads((block_dir/'block.json').read_text())
+                require(block['header']['height']==height and block['header']['prev']==tip,'saved linkage')
+                verify_qc(block,genesis)
+                timings=[]
+                for i,(proc,pipe) in enumerate(nodes):
+                    start=time.perf_counter()
+                    pipe.send({'op':'verify','dir':str(block_dir),'block':block})
+                    result=pipe.recv()
+                    timings.append(round(time.perf_counter()-start,3))
+                    require(result['ok'],'saved validator rejection: '+str(result))
+                    saved_vote=next(v for v in block['votes'] if v['validator']==i)
+                    require(result['signature']==saved_vote['signature'],'saved validator vote')
+                for proc,pipe in nodes:
+                    pipe.send({'op':'commit','block':block})
+                    require(pipe.recv()['ok'],'saved validator commit')
+                tip=block['hash']
+                summary['blocks'].append({'height':height,'tip':tip,'validation_s':timings})
+            old=json.loads((out/'block1'/'block.json').read_text())
+            nodes[0][1].send({'op':'verify','dir':str(out/'block1'),'block':old})
+            summary['replayed_block_rejected']=not nodes[0][1].recv()['ok']
+            require(summary['replayed_block_rejected'],'saved replay guard')
+            for i in range(4):
+                lines=(pathlib.Path(temp)/f'node{i}'/'ledger.jsonl').read_text().splitlines()
+                require(len(lines)==2 and [json.loads(s)['hash'] for s in lines]==
+                        [entry['tip'] for entry in summary['blocks']],'saved validator ledger')
+            return summary
+        finally:
+            for proc,pipe in nodes:
+                if proc.is_alive():pipe.send({'op':'stop'})
+            for proc,pipe in nodes:proc.join(timeout=10)
+
 if __name__=='__main__':
-    if len(sys.argv)!=3:raise SystemExit('usage: chain_demo.py run|replay OUTPUT_DIR')
+    if len(sys.argv)!=3:raise SystemExit('usage: chain_demo.py run|replay|revalidate OUTPUT_DIR')
     if sys.argv[1]=='run':run_demo(sys.argv[2])
     elif sys.argv[1]=='replay':print(json.dumps(replay_chain(sys.argv[2])))
+    elif sys.argv[1]=='revalidate':print(json.dumps(revalidate_saved(sys.argv[2])))
     else:raise SystemExit('unknown command')
