@@ -1,0 +1,14 @@
+# Gemma 4 field-work chain: local result
+
+Date: 2026-09-29. Machine: Apple M4, 16 GB unified memory. Model: `mlx-community/gemma-4-12b-it-4bit` revision `73bcf09092aa277861d5a191b989b666f7f32e8f`; the two weight shard hashes are pinned in `verify_model_replay.py`. The experiment uses four local processes with independently generated Ed25519 validator keys. They verify in sequence to fit memory on this one machine.
+
+The post-fix run finalized two predecessor-linked blocks. Every node independently checked the field witness, replayed the pinned Gemma inference, ran the NAOME proof checker, and signed each block. Each block collected four valid votes against a quorum of three. A separate full replay accepted the two-block chain and reproduced its final tip. The run rejected a prior finalized block and a valid alternate successor at the finalized tip. Negative vectors rejected modified signatures, a missing quorum, changed predecessor or block hash, and nine modified work inputs or commitments. Three focused reference tests passed.
+
+| Block | Prompt result | Proof ID | Production | Validator replay per node | Peak model memory |
+| --- | --- | --- | ---: | ---: | ---: |
+| 1 | `forall(x, equal(x, x))` | `c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73` | 12.662 s | 19.433–19.619 s | 7.20 GB |
+| 2 | `forall(x, forall(y, equal(x, x)))` | `cf1e45207a65105303c6abdb98c68fcc02dc5ff8b53889d6a6fd374255b7c1e4` | 14.282 s | 19.023–19.219 s | 7.25 GB |
+
+The exact run output, generated receipts, witnesses, proofs, blocks, signatures, and per-node ledgers are under `.local/gemma4-chain-final`. The run writes validator private keys there for local inspection; they are disposable test keys. To reproduce, follow `USAGE.txt` from the repository root. Both prompts provide the applicable proof rules; the second also states the derivation order, so its accepted result is a plumbing test rather than evidence of autonomous proof discovery.
+
+This is a functional local research chain, not a security claim for Proof of Useful Work. The challenge-derived rank-one finite-field encoding and full intermediate transcript are independently recomputed, but this workload does not establish the paper's hardness assumption. An exact shortcut exists for the earlier static-prompt variant. Challenge bytes now enter the actual Gemma prompt and change its first projection activation, which defeats that particular cached-input shortcut but does not rule out other shortcuts. Verification costs more than the work being checked because every node replays the full model. There is no calibrated difficulty, secure fork choice, open validator admission, anti-Sybil mechanism, or physical multi-machine result. The two proof templates are fixed; the run does not demonstrate new research discovery.
