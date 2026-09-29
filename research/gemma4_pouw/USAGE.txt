@@ -1,0 +1,53 @@
+Gemma 4 12B field-work chain research prototype, version 1
+
+This is a local four-process execution and validation experiment. It is not
+production consensus, permissionless admission, a Pearl-compatible certificate,
+or a proved Proof-of-Useful-Work security mechanism. Every validator replays the
+entire pinned model and field computation; verification is more expensive than
+checking a succinct proof. Blocks contain two fixed research question templates
+only. The predecessor hash and job nonce enter the actual model prompt, so the
+first projection activation changes with each challenge.
+
+Model: mlx-community/gemma-4-12b-it-4bit at revision
+73bcf09092aa277861d5a191b989b666f7f32e8f. The two safetensors SHA-256
+digests are pinned in verify_model_replay.py. Download this revision to
+/private/tmp/naome-gemma4-12b or set NAOME_GEMMA_MODEL. Python 3.12 with the
+packages in requirements.txt is expected at /private/tmp/naome-llm-venv/bin/python;
+set NAOME_GEMMA_PYTHON to use another environment. MLX requires Apple Metal.
+Build the repository's naome-author binary before running the demo.
+
+From the repository root:
+
+  cargo build -p naome-authoring --bin naome-author --locked
+  /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/chain_demo.py run .local/gemma4-chain-run
+  /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/chain_demo.py replay .local/gemma4-chain-run
+
+The run command starts four separate validator processes. To fit a 16 GB Mac,
+they replay the model one at a time. Each independently checks the witness and
+Gemma output, runs the NAOME checker, signs the block hash with Ed25519, and
+commits after a 3-of-4 certificate. Two predecessor-bound blocks are finalized;
+an old block and a valid alternate successor are then rejected by finalized-tip
+rules. The replay command checks genesis, hashes, signatures, arithmetic, model
+weights, generated token sequence, and checker output again.
+
+The demo writes its generated private validator keys into the chosen output
+directory for repeatable local inspection. Keep that directory private. It is
+not a deployment key workflow. KEV and existing chain state are untouched.
+
+Negative receipt vectors can be run with:
+
+  /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/attack_vectors.py .local/gemma4-chain-run/block1/work research/gemma4_pouw/gemma4_12b_universal_reflexivity.prompt.txt
+
+Arithmetic: two prime fields (65521, 65519), rank-one challenge-derived noise,
+128-wide K chunks, full cumulative intermediate transcript, and CRT decode to
+the int7 x int7 -> int32 product. The decoded and scaled projection is fed back
+into the same Gemma inference that generates the .nao proof. The CPU verifier
+recomputes all intermediate values. The paper's Assumption 6.4 is not proven or
+directly instantiated for this rectangular, rank-one, coarse-chunk workload.
+shortcut_demo.py reproduces an exact amortized shortcut for earlier static
+prompts: cached ordinary AB partials plus rank-one cross terms recreate fresh
+challenge transcripts without a fresh full encoded GEMM. Binding challenge
+bytes to the model prompt makes those cached partials challenge-specific, but
+does not prove transcript unpredictability or rule out other shortcuts.
+There is no difficulty, calibrated work weight, open-validator anti-Sybil rule,
+longest-chain selection, or efficient verification claim.
