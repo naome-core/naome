@@ -84,6 +84,8 @@ def main():
     ap.add_argument('--name',default='gemma_field_infer')
     ap.add_argument('--prompt-file',default=str(DEFAULT_PROMPT))
     ap.add_argument('--bind-prompt',action='store_true')
+    ap.add_argument('--skip-witness-output',action='store_true',
+                    help='replay only: calculate and commit to witness values without writing another NPZ')
     args=ap.parse_args()
     predecessor=bytes.fromhex(args.predecessor);nonce=bytes.fromhex(args.nonce)
     if len(predecessor)!=32 or len(nonce)!=32:raise ValueError('predecessor and nonce must be 32 bytes')
@@ -113,7 +115,8 @@ def main():
     payload=hook.payload
     if payload is None:raise RuntimeError('field projection was not used')
     arrays={k:payload.pop(k) for k in ('a','b','a_scale','b_scale','c_int32')}
-    np.savez_compressed(outdir/(stem+'.npz'),**arrays)
+    if not args.skip_witness_output:
+        np.savez_compressed(outdir/(stem+'.npz'),**arrays)
     payload.update({'profile':'naome-gemma-field-research-v1','model_revision':'73bcf09092aa277861d5a191b989b666f7f32e8f',
                     'prompt_sha256':prompt_hash.hex(),'prompt_binding':args.bind_prompt,
                     'prompt_tokens':len(tok.encode(text)),

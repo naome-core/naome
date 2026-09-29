@@ -21,6 +21,7 @@ From the repository root:
   cargo build -p naome-authoring --bin naome-author --locked
   /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/chain_demo.py run .local/gemma4-chain-run
   /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/chain_demo.py replay .local/gemma4-chain-run
+  /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/chain_demo.py revalidate .local/gemma4-chain-run
 
 The run command starts four separate validator processes. To fit a 16 GB Mac,
 they replay the model one at a time. Each independently checks the witness and
@@ -29,6 +30,11 @@ commits after a 3-of-4 certificate. Two predecessor-bound blocks are finalized;
 an old block and a valid alternate successor are then rejected by finalized-tip
 rules. The replay command checks genesis, hashes, signatures, arithmetic, model
 weights, generated token sequence, and checker output again.
+The revalidate command starts four fresh validator processes against the saved
+two blocks, compares their signatures and ledgers, and reports time per
+validator without mining new blocks. It requires the local test keys saved by
+run. Replay computes all witness values again but skips writing a second,
+unused compressed witness file.
 
 The demo writes its generated private validator keys into the chosen output
 directory for repeatable local inspection. Keep that directory private. It is
@@ -37,6 +43,7 @@ not a deployment key workflow. KEV and existing chain state are untouched.
 Negative receipt vectors can be run with:
 
   /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/attack_vectors.py .local/gemma4-chain-run/block1/work research/gemma4_pouw/gemma4_12b_universal_reflexivity.prompt.txt
+  /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/chain_attack_vectors.py .local/gemma4-chain-run
 
 Arithmetic: two prime fields (65521, 65519), rank-one challenge-derived noise,
 128-wide K chunks, full cumulative intermediate transcript, and CRT decode to
@@ -51,3 +58,5 @@ bytes to the model prompt makes those cached partials challenge-specific, but
 does not prove transcript unpredictability or rule out other shortcuts.
 There is no difficulty, calibrated work weight, open-validator anti-Sybil rule,
 longest-chain selection, or efficient verification claim.
+RESULTS.md pins the compared paper version and gives a claim-to-code matrix,
+measured baseline, optimization results, and rejected optimization candidates.
