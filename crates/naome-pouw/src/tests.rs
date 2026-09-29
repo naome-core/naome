@@ -77,6 +77,22 @@ fn scalar_transcript(p: Parameters, a: &Matrix, b: &Matrix) -> Vec<u64> {
     result
 }
 
+// Literal Algorithm 6.2 equality check, kept separate from the selected §2
+// hash-and-threshold API. The expected tiles come from scalar dot products,
+// without calling the production tiled_product implementation.
+fn literal_transcript_matches(
+    p: Parameters,
+    factors: &Factors,
+    a: &Matrix,
+    b: &Matrix,
+    claimed: &Transcript,
+) -> bool {
+    let Ok((a_prime, b_prime)) = encode(p, factors, a, b) else {
+        return false;
+    };
+    claimed.entries() == scalar_transcript(p, &a_prime, &b_prime)
+}
+
 #[test]
 fn hand_calculated_paper_vector() {
     let (p, oracle, a, b) = hand_vector();
@@ -86,9 +102,95 @@ fn hand_calculated_paper_vector() {
     let (cp, transcript) = tiled_product(p, &ap, &bp, limits()).unwrap();
     assert_eq!(cp.entries(), &[5, 0, 3, 3]);
     assert_eq!(transcript.entries(), &[0, 5, 6, 0, 0, 3, 1, 3]);
+    assert!(literal_transcript_matches(
+        p,
+        &oracle.0,
+        &a,
+        &b,
+        &transcript
+    ));
     let solution = solve(p, &[9; 32], a, b, &oracle, limits()).unwrap();
     assert_eq!(solution.c.entries(), &[5, 1, 1, 1]);
     assert!(verify(p, &[9; 32], &solution, &oracle, limits(), 0).unwrap());
+}
+
+#[test]
+fn literal_full_transcript_reference_rejects_changed_or_missing_tiles() {
+    let (p, oracle, a, b) = hand_vector();
+    let (a_prime, b_prime) = encode(p, &oracle.0, &a, &b).unwrap();
+    let (_, transcript) = tiled_product(p, &a_prime, &b_prime, limits()).unwrap();
+    let mut changed = transcript.clone();
+    changed.entries[0] = 1;
+    assert!(!literal_transcript_matches(p, &oracle.0, &a, &b, &changed));
+    let mut missing = transcript.clone();
+    missing.entries.pop();
+    assert!(!literal_transcript_matches(p, &oracle.0, &a, &b, &missing));
+    let mut noncanonical = transcript.clone();
+    noncanonical.entries[0] = p.q();
+    assert!(!literal_transcript_matches(
+        p,
+        &oracle.0,
+        &a,
+        &b,
+        &noncanonical
+    ));
+    let changed_a = matrix(2, 2, &[2, 2, 3, 4], p.q());
+    assert!(!literal_transcript_matches(
+        p,
+        &oracle.0,
+        &changed_a,
+        &b,
+        &transcript
+    ));
+    let mut changed_factors = oracle.0;
+    changed_factors.el = matrix(2, 1, &[2, 2], p.q());
+    assert!(!literal_transcript_matches(
+        p,
+        &changed_factors,
+        &a,
+        &b,
+        &transcript
+    ));
+}
+
+#[test]
+fn zero_and_identity_vectors_match_scalar_reference() {
+    let p = Parameters::new(101, 4, 2).unwrap();
+    let zero = matrix(4, 4, &[0; 16], p.q());
+    let identity = matrix(
+        4,
+        4,
+        &[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        p.q(),
+    );
+    let work = matrix(
+        4,
+        4,
+        &[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53],
+        p.q(),
+    );
+    let factors = Factors {
+        el: matrix(4, 2, &[1, 2, 0, 1, 3, 4, 2, 5], p.q()),
+        er: matrix(2, 4, &[2, 0, 1, 3, 1, 4, 2, 0], p.q()),
+        fl: matrix(4, 2, &[2, 1, 3, 0, 1, 2, 0, 4], p.q()),
+        fr: matrix(2, 4, &[1, 3, 0, 2, 4, 1, 2, 3], p.q()),
+    };
+    let oracle = FixedOracle(factors);
+    for (a, b) in [(zero.clone(), zero), (identity, work)] {
+        let (a_prime, b_prime) = encode(p, &oracle.0, &a, &b).unwrap();
+        let (c_prime, transcript) = tiled_product(p, &a_prime, &b_prime, limits()).unwrap();
+        assert_eq!(c_prime.entries(), scalar_product(&a_prime, &b_prime, p.q()));
+        assert!(literal_transcript_matches(
+            p,
+            &oracle.0,
+            &a,
+            &b,
+            &transcript
+        ));
+        let solution = solve(p, &[7; 32], a.clone(), b.clone(), &oracle, limits()).unwrap();
+        assert_eq!(solution.c.entries(), scalar_product(&a, &b, p.q()));
+        assert!(verify(p, &[7; 32], &solution, &oracle, limits(), 0).unwrap());
+    }
 }
 
 #[test]
@@ -189,7 +291,7 @@ fn research_oracle_binds_challenge_and_work_even_for_zero_product() {
     let zero = matrix(4, 4, &[0; 16], 101);
     let oracle = ResearchSha256Oracle;
     let first = solve(p, &[1; 32], zero.clone(), zero.clone(), &oracle, limits()).unwrap();
-    // Independent hashlib/Python vector for the v1 parameter and oracle bytes.
+    // Pinned expected factors and digest for the documented v1 byte contract.
     let factors = oracle.factors(p, &[1; 32], &zero, &zero).unwrap();
     assert_eq!(factors.el.entries(), &[92, 0, 63, 62, 84, 38, 68, 58]);
     assert_eq!(factors.er.entries(), &[41, 91, 69, 58, 2, 21, 61, 24]);
@@ -214,6 +316,37 @@ fn research_oracle_binds_challenge_and_work_even_for_zero_product() {
     let mut reused = second;
     reused.proof.z = first.proof.z;
     assert!(!verify(p, &[2; 32], &reused, &oracle, limits(), 0).unwrap());
+}
+
+#[test]
+fn research_oracle_samples_twenty_inputs_and_wide_field_boundary() {
+    let p = Parameters::new(101, 4, 2).unwrap();
+    let oracle = ResearchSha256Oracle;
+    for seed in 0..20u8 {
+        let data = |salt: usize| {
+            (0..16)
+                .map(|index| ((index * 37 + usize::from(seed) * 29 + salt * 13) % 101) as u64)
+                .collect()
+        };
+        let a = Matrix::new(4, 4, data(0), p.q()).unwrap();
+        let b = Matrix::new(4, 4, data(1), p.q()).unwrap();
+        oracle
+            .factors(p, &[seed; 32], &a, &b)
+            .unwrap()
+            .check(p)
+            .unwrap();
+        let solution = solve(p, &[seed; 32], a.clone(), b.clone(), &oracle, limits()).unwrap();
+        assert_eq!(solution.c.entries(), scalar_product(&a, &b, p.q()));
+        assert!(verify(p, &[seed; 32], &solution, &oracle, limits(), 0).unwrap());
+    }
+
+    let q = 18_446_744_073_709_551_557;
+    let p = Parameters::new(q, 1, 1).unwrap();
+    let a = matrix(1, 1, &[q - 1], q);
+    let b = matrix(1, 1, &[q - 1], q);
+    let solution = solve(p, &[42; 32], a, b, &oracle, limits()).unwrap();
+    assert_eq!(solution.c.entries(), &[1]);
+    assert!(verify(p, &[42; 32], &solution, &oracle, limits(), 0).unwrap());
 }
 
 #[test]
