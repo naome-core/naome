@@ -54,8 +54,14 @@ directly instantiated for this rectangular, rank-one, coarse-chunk workload.
 shortcut_demo.py reproduces an exact amortized shortcut for earlier static
 prompts: cached ordinary AB partials plus rank-one cross terms recreate fresh
 challenge transcripts without a fresh full encoded GEMM. Binding challenge
-bytes to the model prompt makes those cached partials challenge-specific, but
-does not prove transcript unpredictability or rule out other shortcuts.
+bytes to the model prompt changes the activation, but the saved alternate
+successor reuses 393 of 399 activation rows and admits the same row-cache
+reconstruction. To reproduce that counterexample on the saved vectors:
+
+  /private/tmp/naome-llm-venv/bin/python research/gemma4_pouw/shortcut_demo.py .local/gemma4-chain-final/block2/work .local/gemma4-chain-final/fork2/work
+
+This algebraic shortcut does not show a wall-clock advantage over the fast CPU
+product on this Mac. It also does not prove transcript unpredictability.
 There is no difficulty, calibrated work weight, open-validator anti-Sybil rule,
 longest-chain selection, or efficient verification claim.
 RESULTS.md pins the compared paper version and gives a claim-to-code matrix,
