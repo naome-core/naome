@@ -689,7 +689,7 @@ fn solve_prompt(
 ) -> Result<String, String> {
     let available = available_projection(state);
     Ok(format!(
-        "{FORMAL_INSTRUCTIONS}\nTASK solve. Interest projection: {}. Exact published ACTIVE UNSOLVED question_id {}. Title: {}. Context: {}. Exact statement: {}. Conservative definition source context: {}. Recent already checked available artifact projection: {}. Use proof_id exactly in cite(\"proof_id\") and definition_id exactly in import = \"definition_id\". Return this exact question_id and a .nao proof source with outcome proof or refutation. dependencies is an ordered necessary checked .nao helper closure, may be empty. Already published helpers need not be supplied again. Answer the exact statement, never another easier claim. Private duration and computation cost have no effect on settlement.",
+        "{FORMAL_INSTRUCTIONS}\nTASK solve. Interest projection: {}. Exact published ACTIVE UNSOLVED question_id {}. Title: {}. Context: {}. Exact statement: {}. Conservative definition source context: {}. Recent already checked available artifact projection: {}. Use proof_id exactly in cite(\"proof_id\"). Import a definition under the definitions: section with alias = \"definition_id\". Return this exact question_id and a .nao proof source with outcome proof or refutation. dependencies is an ordered necessary checked .nao helper closure, may be empty. Already published helpers need not be supplied again. Answer the exact statement, never another easier claim. Private duration and computation cost have no effect on settlement.",
         serde_json::to_string(interests).unwrap(),
         hex(&id),
         q.title,

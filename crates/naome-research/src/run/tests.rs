@@ -363,3 +363,76 @@ fn actual_solve_prompt_exports_a_resolver_proof_id_that_can_be_cited() {
     fs::remove_dir_all(&root).unwrap();
     fs::remove_dir_all(config.participants[0].provider.codex_home.clone()).unwrap();
 }
+
+#[test]
+fn solve_context_exports_a_conservative_definition_id_that_can_be_imported() {
+    let coordinator = SigningKey::from_bytes(&[91; 32]);
+    let participant = SigningKey::from_bytes(&[92; 32]);
+    let genesis = SignedGenesis::sign(
+        Genesis::new(
+            "definition-projection-fixture".into(),
+            coordinator.verifying_key().to_bytes(),
+            vec![
+                participant.verifying_key().to_bytes(),
+                SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+            ],
+            PoolConfig::default(),
+        )
+        .unwrap(),
+        &coordinator,
+    )
+    .unwrap();
+    let mut state = ResearchState::new(genesis).unwrap();
+    let mut question = equality_question(0);
+    question.definitions.push(
+        "foundation = \"naome:zfc\"\ndefinition self_equal = relation(x):\n equal(x, x)\n".into(),
+    );
+    let id = question.id().unwrap();
+    state
+        .confirm(
+            SignedAction::sign(
+                state.genesis().genesis.id(),
+                1,
+                Action::Publish {
+                    question: question.clone(),
+                },
+                &participant,
+            ),
+            &coordinator,
+        )
+        .unwrap();
+    let prompt = solve_prompt(
+        &Interests {
+            topics: vec!["Equality".into()],
+            context: String::new(),
+        },
+        id,
+        &question,
+        &state,
+    )
+    .unwrap();
+    let projected = prompt
+        .split("Recent already checked available artifact projection: ")
+        .nth(1)
+        .unwrap()
+        .split(". Use proof_id")
+        .next()
+        .unwrap();
+    let artifacts: Vec<crate::formal::AvailableArtifact> = serde_json::from_str(projected).unwrap();
+    let crate::formal::AvailableArtifact::Definition { definition_id, .. } = &artifacts[0] else {
+        panic!("published definition must be projected");
+    };
+    let answer = AnswerFile {
+        source: format!(
+            "foundation = \"naome:zfc\"\ndefinitions:\n self_equal = \"{definition_id}\"\nstatement = forall(x0, self_equal(x0))\nproof:\n p0 = equality_reflexivity(x0)\n p1 = generalization(p0, x0)\n return p1\n"
+        ),
+        dependencies: Vec::new(),
+    };
+    crate::formal::check_answer(
+        &answer,
+        &question.formula.to_formula().unwrap(),
+        Outcome::Proof,
+        state.artifacts(),
+    )
+    .unwrap();
+}
