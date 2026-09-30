@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Restartable operator policy runner over the NAOME CLI's saved-action boundary.
 
-This process never owns node custody or selected history. See docs/mvp/operator-supervisor.md.
+This process never owns node custody or selected history. Operator procedures:
+https://chatgpt.com/space/page_eb91ee5e27d081918e14b247ebdb2fff
 """
 import argparse
 import fcntl
