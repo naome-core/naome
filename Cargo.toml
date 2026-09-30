@@ -10,6 +10,7 @@ members = [
     "crates/naome-node",
     "crates/naome-pouw",
     "crates/naome-proof",
+    "crates/naome-research",
     "crates/naome-protocol",
     "crates/naome-cli",
     "crates/naome-runtime",

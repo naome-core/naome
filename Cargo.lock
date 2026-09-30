@@ -1875,6 +1875,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-research"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "naome-authoring",
+ "naome-checker",
+ "naome-foundation",
+ "naome-proof",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "naome-runtime"
 version = "0.1.0"
 dependencies = [

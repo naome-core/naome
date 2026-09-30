@@ -1,0 +1,25 @@
+[package]
+name = "naome-research"
+default-run = "naome-research"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+naome-authoring = { path = "../naome-authoring" }
+naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
+naome-proof = { path = "../naome-proof" }
+ed25519-dalek.workspace = true
+sha2.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+getrandom = "0.4.3"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["process"] }
+
+[lints]
+workspace = true
