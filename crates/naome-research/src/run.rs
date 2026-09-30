@@ -144,6 +144,7 @@ struct Reservation {
     participant: String,
     phase: String,
     prompt: Id,
+    prompt_text: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,6 +155,22 @@ struct Receipt {
     provider: Value,
     error: Option<String>,
     head: Id,
+    response_digest: Option<Id>,
+}
+
+enum ApplyError {
+    Semantic(String),
+    Storage(String),
+}
+impl From<String> for ApplyError {
+    fn from(value: String) -> Self {
+        Self::Semantic(value)
+    }
+}
+impl From<&str> for ApplyError {
+    fn from(value: &str) -> Self {
+        Self::Semantic(value.into())
+    }
 }
 
 pub fn read_config(path: &Path) -> Result<RunConfig, String> {
@@ -343,6 +360,7 @@ where
             participant: participant.label.clone(),
             phase: phase_name,
             prompt: hash(b"naome:research:prompt:v1\0", &prompt),
+            prompt_text: prompt.clone(),
         };
         // Consume the reservation durably before contacting any provider.
         write_new(
@@ -386,8 +404,21 @@ where
         let mut error = None;
         let mut usage = Value::Null;
         let mut provider = Value::Null;
+        let mut response_digest = None;
         match response {
             Ok((reply, info)) => {
+                if reply.raw_response.len() > participant.provider.max_output_bytes
+                    || serde_json::from_str::<Value>(&reply.raw_response)
+                        .ok()
+                        .as_ref()
+                        != Some(&reply.value)
+                {
+                    return Err("provider response preservation contract failed; reservation remains consumed".into());
+                }
+                // Original final text is retained before semantic checking or any
+                // durable state transition, including rejected provider outputs.
+                write_new(&call_path.join(format!("response-{calls:04}.json")), &reply)?;
+                response_digest = Some(hash(b"naome:research:response:v1\0", &reply.raw_response));
                 usage = reply.usage;
                 provider = info;
                 if let Err(reason) = apply_reply(
@@ -399,9 +430,18 @@ where
                     signing,
                     &coordinator,
                 ) {
-                    status = "rejected".into();
-                    error = Some(reason.clone());
-                    rejections.push(reason);
+                    match reason {
+                        ApplyError::Semantic(reason) => {
+                            status = "rejected".into();
+                            error = Some(reason.clone());
+                            rejections.push(reason);
+                        }
+                        ApplyError::Storage(reason) => {
+                            return Err(format!(
+                                "durable append failed; research stops with consumed reservation: {reason}"
+                            ));
+                        }
+                    }
                 }
             }
             Err(failure) => {
@@ -421,6 +461,7 @@ where
             provider,
             error: error.clone(),
             head: state.head(),
+            response_digest,
         };
         write_new(
             &call_path.join(format!("receipt-{calls:04}.json")),
@@ -467,7 +508,7 @@ fn apply_reply(
     journal: &Journal,
     signing: &SigningKey,
     coordinator: &SigningKey,
-) -> Result<(), String> {
+) -> Result<(), ApplyError> {
     let mut actions = Vec::new();
     match phase {
         0 => {
@@ -543,7 +584,7 @@ fn apply_reply(
         events.push(next.confirm(signed, coordinator)?);
     }
     for event in events {
-        journal.append(&event)?;
+        journal.append(&event).map_err(ApplyError::Storage)?;
     }
     *state = next;
     Ok(())
@@ -646,26 +687,9 @@ fn solve_prompt(
     q: &Question,
     state: &ResearchState,
 ) -> Result<String, String> {
-    let mut available = Vec::new();
-    let mut bytes = 0;
-    for event in state.events().iter().rev() {
-        if let (Some(result), Action::Answer { file, .. }) =
-            (&event.body.result, &event.body.action.body.action)
-        {
-            for (id, source) in result.artifact_ids.iter().zip(
-                file.dependencies
-                    .iter()
-                    .chain(std::iter::once(&file.source)),
-            ) {
-                if available.len() < 8 && bytes + source.len() <= 12 * 1024 {
-                    bytes += source.len();
-                    available.push(json!({"artifact_id":id,"source":source}));
-                }
-            }
-        }
-    }
+    let available = available_projection(state);
     Ok(format!(
-        "{FORMAL_INSTRUCTIONS}\nTASK solve. Interest projection: {}. Exact published ACTIVE UNSOLVED question_id {}. Title: {}. Context: {}. Exact statement: {}. Conservative definition source context: {}. Recent already checked available artifact projection: {}. Return this exact question_id and a .nao proof source with outcome proof or refutation. dependencies is an ordered necessary checked .nao helper closure, may be empty. Already published helpers need not be supplied again. Answer the exact statement, never another easier claim. Private duration and computation cost have no effect on settlement.",
+        "{FORMAL_INSTRUCTIONS}\nTASK solve. Interest projection: {}. Exact published ACTIVE UNSOLVED question_id {}. Title: {}. Context: {}. Exact statement: {}. Conservative definition source context: {}. Recent already checked available artifact projection: {}. Use proof_id exactly in cite(\"proof_id\") and definition_id exactly in import = \"definition_id\". Return this exact question_id and a .nao proof source with outcome proof or refutation. dependencies is an ordered necessary checked .nao helper closure, may be empty. Already published helpers need not be supplied again. Answer the exact statement, never another easier claim. Private duration and computation cost have no effect on settlement.",
         serde_json::to_string(interests).unwrap(),
         hex(&id),
         q.title,
@@ -674,6 +698,49 @@ fn solve_prompt(
         serde_json::to_string(&q.definitions).unwrap(),
         serde_json::to_string(&available).unwrap()
     ))
+}
+
+fn available_projection(state: &ResearchState) -> Vec<crate::formal::AvailableArtifact> {
+    let mut available = Vec::new();
+    let mut bytes = 0;
+    let mut inspected = 0;
+    let mut identities = std::collections::BTreeSet::new();
+    for event in state.events().iter().rev() {
+        let sources: Vec<&str> = match &event.body.action.body.action {
+            Action::Answer { file, .. } if event.body.result.is_some() => file
+                .dependencies
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once(file.source.as_str()))
+                .collect(),
+            Action::Publish { question } => {
+                question.definitions.iter().map(String::as_str).collect()
+            }
+            _ => Vec::new(),
+        };
+        for source in sources {
+            if available.len() == 8 || inspected == 16 {
+                return available;
+            }
+            inspected += 1;
+            if bytes + source.len() > 12 * 1024 {
+                continue;
+            }
+            bytes += source.len();
+            if let Some(artifact) = crate::formal::available_artifact(source, state.artifacts()) {
+                let identity = match &artifact {
+                    crate::formal::AvailableArtifact::Proof { proof_id, .. } => proof_id,
+                    crate::formal::AvailableArtifact::Definition { definition_id, .. } => {
+                        definition_id
+                    }
+                };
+                if identities.insert(identity.clone()) {
+                    available.push(artifact);
+                }
+            }
+        }
+    }
+    available
 }
 
 /// Creates a bounded example configuration; users sign into each Codex home
@@ -687,6 +754,13 @@ pub fn prepare(
     if !root.is_absolute() || !codex_home.is_absolute() || model.is_empty() {
         return Err("absolute paths and explicit model required".into());
     }
+    let codex_binary = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|directory| directory.join(if cfg!(windows) { "codex.exe" } else { "codex" }))
+        .find(|path| path.is_file())
+        .ok_or("Codex CLI must be installed and available on PATH")?;
+    let codex_binary = fs::canonicalize(codex_binary).map_err(|e| e.to_string())?;
     fs::create_dir(root).map_err(|e| e.to_string())?;
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let mut seed = [0; 32];
@@ -721,7 +795,7 @@ pub fn prepare(
             signing_key_file,
             interests_file,
             provider: ProviderConfig {
-                codex_binary: PathBuf::from("codex"),
+                codex_binary: codex_binary.clone(),
                 codex_home: home,
                 model: model.into(),
                 timeout_seconds: 90,

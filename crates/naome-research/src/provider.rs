@@ -73,6 +73,7 @@ impl std::error::Error for ProviderError {}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderReply {
     pub value: Value,
+    pub raw_response: String,
     /// Official per-turn token usage, or null when the server did not report it.
     pub usage: Value,
 }
@@ -136,6 +137,7 @@ pub struct AppServer {
     effort: String,
     deferred_events: VecDeque<Value>,
     lifecycle_deadline: Instant,
+    required_disables: Vec<String>,
 }
 
 // Installed 0.153.4 accepts these keys under --strict-config. The official
@@ -282,7 +284,40 @@ impl AppServer {
                 "Invalid bounded App Server configuration",
             ));
         }
+        let deadline = Instant::now() + Duration::from_secs(config.timeout_seconds);
+        let mut server = Self::launch(config, deadline, &[])?;
         let mut budget = Budget::new(config);
+        budget.deadline = deadline;
+        if let Err(error) = server.handshake(&mut budget) {
+            let required = std::mem::take(&mut server.required_disables);
+            server.stop();
+            if required.is_empty() {
+                return Err(error);
+            }
+            // The bootstrap has no research thread or turn. Restart once with
+            // every inherited registry entry explicitly disabled; an empty CLI
+            // table merges with participant configuration instead of clearing it.
+            let mut isolated = Self::launch(config, deadline, &required)?;
+            if let Err(error) = isolated.handshake(&mut budget) {
+                isolated.stop();
+                return Err(ProviderError::new(
+                    error.kind,
+                    &format!("Isolated restart: {}", error.message),
+                ));
+            }
+            return Ok(isolated);
+        }
+        Ok(server)
+    }
+
+    fn launch(
+        config: &ProviderConfig,
+        deadline: Instant,
+        disables: &[String],
+    ) -> Result<Self, ProviderError> {
+        let mut budget = Budget::new(config);
+        budget.deadline = deadline;
+        budget.remaining()?;
         let cwd = create_empty_directory()?;
         let runtime_dir = match create_empty_directory() {
             Ok(directory) => directory,
@@ -321,6 +356,9 @@ impl AppServer {
                 .arg("-c")
                 .arg(format!("{key}={}", toml_value(&value)));
         }
+        for override_value in disables {
+            command.arg("-c").arg(override_value);
+        }
         // Keep native Codex state and logs separate from both credentials and the
         // empty research cwd. Ephemeral threads do not persist research history.
         for key in ["sqlite_home", "log_dir"] {
@@ -330,6 +368,11 @@ impl AppServer {
         }
         command.arg("-c").arg("approval_policy=\"never\"");
         command.arg("-c").arg("sandbox_mode=\"read-only\"");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         let child = match command.spawn() {
             Ok(child) => child,
             Err(_) => {
@@ -341,12 +384,7 @@ impl AppServer {
                 ));
             }
         };
-        let mut server = Self::attach(config.clone(), cwd, runtime_dir, child, budget.deadline)?;
-        if let Err(error) = server.handshake(&mut budget) {
-            server.stop();
-            return Err(error);
-        }
-        Ok(server)
+        Self::attach(config.clone(), cwd, runtime_dir, child, budget.deadline)
     }
 
     fn attach(
@@ -400,6 +438,7 @@ impl AppServer {
             effort: String::new(),
             deferred_events: VecDeque::new(),
             lifecycle_deadline,
+            required_disables: Vec::new(),
         })
     }
 
@@ -425,6 +464,12 @@ impl AppServer {
             json!({"includeLayers":false,"cwd":self.cwd}),
             budget,
         )?;
+        self.required_disables = registry_disables(&effective["config"])?;
+        if !self.required_disables.is_empty() {
+            return Err(ProviderError::contract(
+                "Inherited registries require explicit isolated disables",
+            ));
+        }
         verify_isolation_config(&effective["config"])?;
         let mut cursor = Value::Null;
         let mut selected = None;
@@ -617,7 +662,11 @@ impl AppServer {
                     let value = serde_json::from_str(&text).map_err(|_| {
                         ProviderError::contract("Final response is not a single JSON value")
                     })?;
-                    return Ok(ProviderReply { value, usage });
+                    return Ok(ProviderReply {
+                        value,
+                        raw_response: text,
+                        usage,
+                    });
                 }
                 _ => {}
             }
@@ -799,11 +848,45 @@ impl AppServer {
         // Disconnect the bounded reader channel before joining its sender thread.
         self.receiver.take();
         if let Some(mut child) = self.child.take() {
+            #[cfg(unix)]
+            {
+                if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
+                    let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+                }
+            }
+            #[cfg(windows)]
+            {
+                // The OS utility targets only this configured subprocess tree.
+                if let Some(root) = std::env::var_os("SYSTEMROOT") {
+                    let mut task = Command::new(PathBuf::from(root).join("System32/taskkill.exe"));
+                    task.args(["/PID", &child.id().to_string(), "/T", "/F"])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                    if let Ok(mut killer) = task.spawn() {
+                        let cutoff = Instant::now() + Duration::from_millis(100);
+                        while Instant::now() < cutoff && killer.try_wait().ok().flatten().is_none()
+                        {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        let _ = killer.kill();
+                        let _ = killer.wait();
+                    }
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
+        let cutoff = Instant::now() + Duration::from_millis(100);
         for worker in self.workers.drain(..) {
-            let _ = worker.join();
+            while !worker.is_finished() && Instant::now() < cutoff {
+                thread::sleep(Duration::from_millis(1));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            }
+            // A detached OS pipe owner cannot extend this client's deadline.
+            // The finite run budget also bounds such exceptional detached workers.
         }
         let _ = fs::remove_dir_all(&self.cwd);
         let _ = fs::remove_dir_all(&self.runtime_dir);
@@ -853,13 +936,66 @@ fn create_empty_directory() -> Result<PathBuf, ProviderError> {
 fn verify_isolation_config(config: &Value) -> Result<(), ProviderError> {
     for (key, expected) in isolation_overrides() {
         let pointer = format!("/{}", key.replace('.', "/"));
+        if ["mcp_servers", "plugins"].contains(&key)
+            && registry_is_disabled(config.pointer(&pointer))
+        {
+            continue;
+        }
         if config.pointer(&pointer) != Some(&expected) {
+            let shape = match config.pointer(&pointer) {
+                Some(Value::Object(values)) => format!("object with {} entries", values.len()),
+                Some(Value::Array(values)) => format!("array with {} entries", values.len()),
+                Some(Value::Null) => "null".into(),
+                Some(Value::Bool(value)) => format!("boolean {value}"),
+                Some(_) => "scalar".into(),
+                None => "absent".into(),
+            };
             return Err(ProviderError::contract(&format!(
-                "Effective Codex configuration did not preserve isolation: {key}"
+                "Effective Codex configuration did not preserve isolation: {key} ({shape})"
             )));
         }
     }
     Ok(())
+}
+
+fn registry_is_disabled(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_object).is_some_and(|entries| {
+        entries
+            .values()
+            .all(|entry| entry.get("enabled") == Some(&Value::Bool(false)))
+    })
+}
+
+fn registry_disables(config: &Value) -> Result<Vec<String>, ProviderError> {
+    let mut keys = Vec::new();
+    for registry in ["mcp_servers", "plugins"] {
+        let entries = config
+            .get(registry)
+            .and_then(Value::as_object)
+            .ok_or_else(|| ProviderError::contract("Invalid inherited capability registry"))?;
+        if entries.len() > 64 {
+            return Err(ProviderError::contract(
+                "Inherited capability registry exceeds bound",
+            ));
+        }
+        let mut disabled_entries = Vec::new();
+        for (name, entry) in entries {
+            if name.len() > 256 || !entry.is_object() {
+                return Err(ProviderError::contract(
+                    "Invalid inherited capability entry",
+                ));
+            }
+            if entry.get("enabled") != Some(&Value::Bool(false)) {
+                disabled_entries.push(format!("{}={{enabled=false}}", json!(name)));
+            }
+        }
+        if !disabled_entries.is_empty() {
+            // CLI paths are split on dots without TOML key unquoting. Use a
+            // root inline table so quoted registry names remain exact keys.
+            keys.push(format!("{registry}={{{}}}", disabled_entries.join(",")));
+        }
+    }
+    Ok(keys)
 }
 
 fn verify_thread(started: &Value, model: &str) -> Result<(), ProviderError> {
@@ -1013,14 +1149,37 @@ mod tests {
 use std::io::{self, BufRead, Write};
 fn emit(message: &str) { println!("{message}"); io::stdout().flush().unwrap(); }
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--hold-pipes") {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return;
+    }
     let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
     let mode = std::fs::read_to_string(home.join("mode")).unwrap();
-    let config = std::fs::read_to_string(home.join("effective.json")).unwrap();
+    let mut config = std::fs::read_to_string(home.join("effective.json")).unwrap();
     assert!(std::env::var_os("OPENAI_API_KEY").is_none());
     assert!(std::env::var_os("CODEX_ACCESS_TOKEN").is_none());
     assert_eq!(std::fs::read_dir(std::env::current_dir().unwrap()).unwrap().count(), 0);
     let args: Vec<String> = std::env::args().collect();
     assert!(args.iter().any(|arg| arg == "--strict-config"));
+    if mode == "inherited" {
+        let launches = home.join("launches");
+        let count: usize = std::fs::read_to_string(&launches).unwrap_or_else(|_| "0".into()).parse().unwrap();
+        std::fs::write(launches, (count + 1).to_string()).unwrap();
+        if args.iter().any(|arg| arg == r#"mcp_servers={"fixture.server"={enabled=false}}"#) {
+            config = config.replace(r#""fixture.server":{"enabled":true}"#, r#""fixture.server":{"enabled":false}"#);
+        } else {
+            assert_eq!(count, 0);
+        }
+    }
+    if mode == "descendant" {
+        let _child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--hold-pipes")
+            .stdin(std::process::Stdio::inherit()).stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::null()).spawn().unwrap();
+        emit(r#"{"method":"configWarning","params":{}}"#);
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return;
+    }
     for line in io::stdin().lock().lines() {
         let line = line.unwrap();
         if !line.contains("\"id\":") { continue; }
@@ -1240,6 +1399,37 @@ fn main() {
         value["features"]["shell_tool"] = json!(true);
         fs::write(file, value.to_string()).unwrap();
         assert!(AppServer::start(&fixture.config).is_err());
+    }
+
+    #[test]
+    fn inherited_registry_names_are_disabled_by_one_bounded_restart() {
+        let fixture = Fixture::new("inherited");
+        let file = fixture.home.join("effective.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        value["mcp_servers"]["fixture.server"] = json!({"enabled":true});
+        fs::write(file, value.to_string()).unwrap();
+        let mut server = AppServer::start(&fixture.config).unwrap();
+        assert_eq!(
+            fs::read_to_string(fixture.home.join("launches")).unwrap(),
+            "2"
+        );
+        assert_eq!(
+            server.request("Vote.", schema()).unwrap().value,
+            json!({"vote":true})
+        );
+    }
+
+    #[test]
+    fn descendant_pipe_owner_cannot_extend_shutdown_deadline() {
+        let mut fixture = Fixture::new("descendant");
+        fixture.config.timeout_seconds = 1;
+        let started = Instant::now();
+        let error = match AppServer::start(&fixture.config) {
+            Ok(_) => panic!("warning should stop startup"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, ProviderErrorKind::Contract);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

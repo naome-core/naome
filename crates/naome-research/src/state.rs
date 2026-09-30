@@ -356,6 +356,9 @@ impl ResearchState {
     pub fn results(&self) -> &[ResultBlock] {
         &self.results
     }
+    pub(crate) fn artifacts(&self) -> &ArtifactState {
+        &self.artifacts
+    }
     pub fn questions(&self) -> &BTreeMap<Id, Question> {
         &self.questions
     }

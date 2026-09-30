@@ -681,6 +681,20 @@ mod tests {
         let first_summary = run_fixture(&root).unwrap();
         let second_summary = run_fixture(&second).unwrap();
         assert_eq!(first_summary, second_summary);
+        // These fixed vectors pin the versioned typed serialization, hash
+        // domains, participant signatures and complete result/log projection.
+        assert_eq!(
+            first_summary["genesis"],
+            "9bdeb80a20f2b0deb1ebeacee84194a8d6fb7c2ff6356a6ba8cf55cadf08b14a"
+        );
+        assert_eq!(
+            first_summary["journal_head"],
+            "6a354bde71c72616f7c79b15eb6a988578ee9a1a2c46197de1ef28303bbf9783"
+        );
+        assert_eq!(
+            first_summary["result_blocks"][0]["id"],
+            "bf6a4b3913ec4cca6aff5d7a0702cb5a8420a72ddc8580359ddbc937ec547923"
+        );
         assert_eq!(first_summary["result_blocks"].as_array().unwrap().len(), 3);
         assert_eq!(first_summary["provider_turns"], 0);
         assert_eq!(first_summary["active_target"], 2);

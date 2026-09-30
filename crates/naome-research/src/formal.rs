@@ -251,6 +251,41 @@ enum CheckedArtifact {
     Definition(CheckedDefinition),
 }
 
+/// Only concrete identities present in the current resolver can be imported.
+/// A valid duplicate derivation may answer a question without publishing an alias.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum AvailableArtifact {
+    Proof {
+        proof_id: String,
+        source: String,
+    },
+    Definition {
+        definition_id: String,
+        source: String,
+    },
+}
+
+pub(crate) fn available_artifact(source: &str, state: &ArtifactState) -> Option<AvailableArtifact> {
+    match compile_checked(source, state).ok()? {
+        CheckedArtifact::Proof(proof) if state.contains_proof(proof.proof_id()) => {
+            Some(AvailableArtifact::Proof {
+                proof_id: hex(proof.proof_id().as_bytes()),
+                source: source.into(),
+            })
+        }
+        CheckedArtifact::Definition(definition)
+            if state.contains_definition(definition.definition_id()) =>
+        {
+            Some(AvailableArtifact::Definition {
+                definition_id: hex(definition.definition_id().as_bytes()),
+                source: source.into(),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn charge_artifact(artifact: &CheckedArtifact, total: &mut usize) -> Result<(), String> {
     let length = 1 + match artifact {
         CheckedArtifact::Proof(proof) => proof.normal_form().canonical_bytes().len(),
@@ -684,6 +719,8 @@ mod tests {
                 .contains_proof(helper.proof_id())
         );
         assert!(!cited_answer.resulting_state.contains_proof(citation_id));
+        assert!(available_artifact(SELF_EQUAL, &cited_answer.resulting_state).is_some());
+        assert!(available_artifact(&citation, &cited_answer.resulting_state).is_none());
         let mut redundant = answer(&citation);
         redundant.dependencies.push(SELF_EQUAL.into());
         assert!(

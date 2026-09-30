@@ -359,6 +359,89 @@ fn tied_candidates_use_stable_canonical_identity() {
 }
 
 #[test]
+fn question_capacity_includes_settled_questions_and_rejects_the_sixty_fifth() {
+    let mut h = Harness::new(PoolConfig::default());
+    let settled = h.publish(equality_question(0));
+    h.vote(0, settled, true);
+    h.tick();
+    h.answer(1, settled, 0);
+    assert!(h.state.solved(settled));
+
+    // Six independent syntax choices give 64 distinct, bounded closed inputs.
+    // They are capacity fixtures, not evidence of novel mathematical questions.
+    let capacity_question = |bits: u32| {
+        let mut body = FormulaInput::Equal { left: 0, right: 0 };
+        for bit in 0..6 {
+            let mut leaf = FormulaInput::Equal { left: 0, right: 0 };
+            if bits & (1 << bit) != 0 {
+                leaf = FormulaInput::Not {
+                    body: Box::new(leaf),
+                };
+            }
+            body = FormulaInput::Implies {
+                left: Box::new(leaf),
+                right: Box::new(body),
+            };
+        }
+        Question {
+            title: format!("Stored-question capacity fixture {bits}"),
+            context: "A bounded deterministic input for the total stored-question limit.".into(),
+            formula: FormulaInput::Forall {
+                variable: 0,
+                body: Box::new(body),
+            },
+            definitions: Vec::new(),
+        }
+    };
+    let mut identities = BTreeSet::from([settled]);
+    for bits in 0..63 {
+        let question = capacity_question(bits);
+        assert!(
+            identities.insert(question.id().unwrap()),
+            "capacity inputs must have distinct canonical identities"
+        );
+        h.publish(question);
+    }
+    assert_eq!(h.state.questions().len(), 64);
+    assert_eq!(h.state.results().len(), 1);
+    assert!(
+        h.state.questions().contains_key(&settled),
+        "settled questions remain stored and count toward capacity"
+    );
+
+    let sixty_fifth = capacity_question(63);
+    assert!(identities.insert(sixty_fifth.id().unwrap()));
+    assert_eq!(identities.len(), 65);
+    let participant = h.participants[2].verifying_key().to_bytes();
+    let nonce = h.state.next_nonce(participant);
+    let before = snapshot(&h.state);
+    let error = h.reject(
+        2,
+        Action::Publish {
+            question: sixty_fifth,
+        },
+    );
+    assert!(error.contains("capacity"));
+    assert_eq!(snapshot(&h.state), before);
+    assert_eq!(h.state.next_nonce(participant), nonce);
+
+    // The same still-available nonce can commit an allowed action afterward.
+    let existing = capacity_question(0).id().unwrap();
+    let event = h.accept(
+        2,
+        Action::Vote {
+            question: existing,
+            yes: true,
+        },
+    );
+    assert_eq!(event.body.action.body.nonce, nonce);
+    assert_eq!(h.state.questions().len(), 64);
+    assert_eq!(h.state.results().len(), 1);
+    let replayed = ResearchState::replay(h.state.genesis().clone(), h.state.events()).unwrap();
+    assert_eq!(snapshot(&replayed), snapshot(&h.state));
+}
+
+#[test]
 fn invalid_or_inactive_answers_do_not_reserve_a_winner_or_poison_artifacts() {
     let mut h = Harness::new(PoolConfig::default());
     let ids = h.publish_eligible(3);
@@ -596,6 +679,83 @@ fn answers_reset_drought_and_shrink_only_at_tick_with_cooldown() {
         "no immediate reversal during shrink cooldown"
     );
     assert_eq!(h.state.questions().len() - h.state.results().len(), 2);
+}
+
+#[test]
+fn demoted_question_rejects_a_late_answer_then_accepts_its_retained_file_after_tick_readmission() {
+    let mut h = Harness::new(PoolConfig::default());
+    let ids = h.publish_eligible(5);
+    for id in &ids[..2] {
+        h.vote(1, *id, true);
+    }
+    h.vote(1, ids[2], true);
+    h.vote(2, ids[2], true);
+    for _ in 0..4 {
+        h.tick();
+    }
+    assert_eq!(h.state.target(), 3);
+    h.answer(1, ids[0], 0);
+    h.answer(2, ids[1], 1);
+    h.tick();
+    assert_eq!(h.state.tick(), 5);
+    assert!(h.state.active().contains(&ids[3]));
+    assert!(h.state.active().contains(&ids[4]));
+
+    // Keep already valid files while their questions still have active leases.
+    let retained: BTreeMap<_, _> =
+        [(ids[3], equality_answer(3)), (ids[4], equality_answer(4))].into();
+    let checked: BTreeMap<_, _> = retained
+        .iter()
+        .map(|(id, file)| {
+            let target = h.state.questions().get(id).unwrap().formula().unwrap();
+            let answer = check_answer(file, &target, Outcome::Proof, &h.state.artifacts).unwrap();
+            (*id, answer.canonical_bytes)
+        })
+        .collect();
+    h.tick();
+    h.tick();
+    assert_eq!(h.state.tick(), 7);
+    assert_eq!(h.state.target(), 2);
+    let candidates = h.state.ranked_candidates();
+    assert_eq!(candidates.len(), 1);
+    let demoted = candidates[0];
+    assert!(retained.contains_key(&demoted));
+    assert!(!h.state.active().contains(&demoted));
+    assert!(!h.state.solved(demoted));
+    assert!(h.state.questions().contains_key(&demoted));
+
+    let file = retained.get(&demoted).unwrap().clone();
+    let original_file_bytes = serde_json::to_vec(&file).unwrap();
+    let late = h.signed(2, answer_action(demoted, file));
+    let retained_nonce = late.body.nonce;
+    assert!(h.reject_signed(late.clone()).contains("active"));
+    assert_eq!(h.state.results().len(), 2);
+
+    h.answer(0, ids[2], 2); // Vacate a retained active lease without refilling.
+    assert!(!h.state.active().contains(&demoted));
+    h.tick();
+    assert_eq!(h.state.tick(), 8);
+    assert!(h.state.active().contains(&demoted));
+    assert!(!h.state.solved(demoted));
+    assert_eq!(h.state.target(), 2);
+
+    // The rejected action consumed nothing: exact file, nonce and signature
+    // remain usable once Tick has legitimately readmitted the exact question.
+    let Action::Answer { file, .. } = &late.body.action else {
+        panic!("retained action must be an answer")
+    };
+    assert_eq!(serde_json::to_vec(file).unwrap(), original_file_bytes);
+    let event = h.state.confirm(late, &h.coordinator).unwrap();
+    assert_eq!(event.body.action.body.nonce, retained_nonce);
+    let block = event.body.result.unwrap();
+    assert_eq!(block.question, demoted);
+    assert_eq!(block.winner, h.participants[2].verifying_key().to_bytes());
+    assert_eq!(block.canonical_proof, *checked.get(&demoted).unwrap());
+    assert!(h.state.solved(demoted));
+    assert!(h.state.questions().contains_key(&demoted));
+    assert_eq!(h.state.results().len(), 4);
+    let replayed = ResearchState::replay(h.state.genesis().clone(), h.state.events()).unwrap();
+    assert_eq!(snapshot(&replayed), snapshot(&h.state));
 }
 
 #[test]
