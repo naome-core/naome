@@ -101,6 +101,10 @@ pub fn read_bounded<T: DeserializeOwned>(path: &Path, maximum: u64) -> Result<T,
 
 pub fn write_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    write_bytes_new(path, &bytes)
+}
+
+pub(crate) fn write_bytes_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -109,7 +113,7 @@ pub fn write_new<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         options.mode(0o600);
     }
     let mut file = options.open(path).map_err(|e| e.to_string())?;
-    file.write_all(&bytes)
+    file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())
 }

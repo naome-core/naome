@@ -15,7 +15,8 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const MAX_INPUT_BYTES: usize = 32 * 1024;
+pub(crate) const MAX_INPUT_BYTES: usize = 32 * 1024;
+pub(crate) const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_EVENTS: usize = 4096;
 const MAX_MODEL_PAGES: usize = 8;
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +31,24 @@ pub struct ProviderConfig {
     pub model: String,
     pub timeout_seconds: u64,
     pub max_output_bytes: usize,
+}
+
+impl ProviderConfig {
+    pub(crate) fn validate(&self) -> Result<(), ProviderError> {
+        if !self.codex_binary.is_absolute()
+            || !self.codex_home.is_absolute()
+            || self.model.is_empty()
+            || self.model.len() > 128
+            || self.timeout_seconds == 0
+            || self.timeout_seconds > 600
+            || !(4096..=MAX_OUTPUT_BYTES).contains(&self.max_output_bytes)
+        {
+            return Err(ProviderError::contract(
+                "Invalid bounded App Server configuration",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,7 +167,6 @@ fn isolation_overrides() -> Vec<(&'static str, Value)> {
     let mut overrides = vec![
         ("model_provider", json!("openai")),
         ("model_providers", json!({})),
-        ("forced_login_method", json!("chatgpt")),
         ("web_search", json!("disabled")),
         ("mcp_servers", json!({})),
         ("plugins", json!({})),
@@ -272,18 +290,7 @@ fn read_lines(
 
 impl AppServer {
     pub fn start(config: &ProviderConfig) -> Result<Self, ProviderError> {
-        if !config.codex_binary.is_absolute()
-            || !config.codex_home.is_absolute()
-            || config.model.is_empty()
-            || config.model.len() > 128
-            || config.timeout_seconds == 0
-            || config.timeout_seconds > 600
-            || !(4096..=4 * 1024 * 1024).contains(&config.max_output_bytes)
-        {
-            return Err(ProviderError::contract(
-                "Invalid bounded App Server configuration",
-            ));
-        }
+        config.validate()?;
         let deadline = Instant::now() + Duration::from_secs(config.timeout_seconds);
         let mut server = Self::launch(config, deadline, &[])?;
         let mut budget = Budget::new(config);
@@ -1161,6 +1168,7 @@ fn main() {
     assert_eq!(std::fs::read_dir(std::env::current_dir().unwrap()).unwrap().count(), 0);
     let args: Vec<String> = std::env::args().collect();
     assert!(args.iter().any(|arg| arg == "--strict-config"));
+    assert!(!args.iter().any(|arg| arg.starts_with("forced_login_method=")));
     if mode == "inherited" {
         let launches = home.join("launches");
         let count: usize = std::fs::read_to_string(&launches).unwrap_or_else(|_| "0".into()).parse().unwrap();

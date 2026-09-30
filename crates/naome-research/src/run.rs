@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::{
     formal::{AnswerFile, FormulaInput, Outcome},
-    journal::{Journal, read_bounded, write_new},
+    journal::{Journal, read_bounded, write_bytes_new, write_new},
     provider::{AppServer, ProviderConfig, ProviderError, ProviderErrorKind, ProviderReply},
     state::{
         Action, Genesis, Id, PoolConfig, Question, ResearchState, SignedAction, SignedGenesis,
@@ -24,6 +24,20 @@ use crate::{
 };
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+// JSON escaping can expand one UTF-8 source byte to six serialized bytes.
+const MAX_INTEREST_BYTES: u64 = 6 * (16 * 256 + 2048) + 4096;
+const MAX_RESERVATION_BYTES: u64 = 6 * crate::provider::MAX_INPUT_BYTES as u64 + 8192;
+const MAX_RESPONSE_BYTES: u64 = 8 * crate::provider::MAX_OUTPUT_BYTES as u64 + 8192;
+const MAX_RECEIPT_BYTES: u64 = MAX_RESERVATION_BYTES + MAX_RESPONSE_BYTES;
+
+fn write_record<T: Serialize>(path: &Path, value: &T, maximum: u64) -> Result<(), String> {
+    // Compact serialization avoids depth-dependent pretty-print expansion.
+    let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > maximum {
+        return Err("provider record exceeds its serialized byte limit".into());
+    }
+    write_bytes_new(path, &bytes)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +101,7 @@ impl RunConfig {
         let mut interests = BTreeSet::new();
         let mut keys = BTreeSet::new();
         for p in &self.participants {
+            p.provider.validate().map_err(|e| e.to_string())?;
             if p.label.is_empty() || p.label.len() > 64 {
                 return Err("participant label invalid".into());
             }
@@ -134,7 +149,7 @@ struct SolveReply {
     dependencies: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reservation {
     config: Id,
@@ -199,7 +214,7 @@ where
     let mut participants = Vec::new();
     for p in &config.participants {
         let signing = key(&p.signing_key_file)?;
-        let interests: Interests = read_bounded(&p.interests_file, 8192)?;
+        let interests: Interests = read_bounded(&p.interests_file, MAX_INTEREST_BYTES)?;
         interests.validate()?;
         participants.push((signing, interests));
     }
@@ -249,18 +264,38 @@ where
     let mut stopped = None;
     let mut retry_task = None;
     while call_path.join(format!("call-{calls:04}.json")).exists() {
-        let reservation: Reservation =
-            read_bounded(&call_path.join(format!("call-{calls:04}.json")), 8192)?;
-        if reservation.ordinal != calls || reservation.config != config_id {
+        let reservation: Reservation = read_bounded(
+            &call_path.join(format!("call-{calls:04}.json")),
+            MAX_RESERVATION_BYTES,
+        )?;
+        if reservation.ordinal != calls
+            || reservation.config != config_id
+            || reservation.prompt_text.len() > crate::provider::MAX_INPUT_BYTES
+            || reservation.prompt != hash(b"naome:research:prompt:v1\0", &reservation.prompt_text)
+        {
             return Err("provider reservation mismatch".into());
         }
         let receipt_file = call_path.join(format!("receipt-{calls:04}.json"));
         if !receipt_file.exists() {
             return Err("unfinished provider reservation; call budget remains consumed, inspect before resuming".into());
         }
-        let receipt: Receipt = read_bounded(&receipt_file, MAX_CONFIG_BYTES)?;
-        if receipt.reservation.ordinal != calls || receipt.reservation.config != config_id {
+        let receipt: Receipt = read_bounded(&receipt_file, MAX_RECEIPT_BYTES)?;
+        if receipt.reservation != reservation {
             return Err("provider receipt mismatch".into());
+        }
+        if let Some(digest) = receipt.response_digest {
+            let reply: ProviderReply = read_bounded(
+                &call_path.join(format!("response-{calls:04}.json")),
+                MAX_RESPONSE_BYTES,
+            )?;
+            if digest != hash(b"naome:research:response:v1\0", &reply.raw_response)
+                || serde_json::from_str::<Value>(&reply.raw_response)
+                    .ok()
+                    .as_ref()
+                    != Some(&reply.value)
+            {
+                return Err("saved provider response provenance mismatch".into());
+            }
         }
         if reservation.attempt > 1 {
             return Err("provider retry bound exceeded".into());
@@ -350,6 +385,9 @@ where
                 )
             }
         };
+        if prompt.len() > crate::provider::MAX_INPUT_BYTES {
+            return Err("research prompt exceeds provider input bound before reservation".into());
+        }
         let phase_name = ["discovery", "vote", "solve"][phase].to_owned();
         let attempt = usize::from(retry_task == Some(task));
         let reservation = Reservation {
@@ -363,9 +401,10 @@ where
             prompt_text: prompt.clone(),
         };
         // Consume the reservation durably before contacting any provider.
-        write_new(
+        write_record(
             &call_path.join(format!("call-{calls:04}.json")),
             &reservation,
+            MAX_RESERVATION_BYTES,
         )?;
         let mut bounded = participant.provider.clone();
         bounded.timeout_seconds = bounded.timeout_seconds.min(
@@ -417,7 +456,11 @@ where
                 }
                 // Original final text is retained before semantic checking or any
                 // durable state transition, including rejected provider outputs.
-                write_new(&call_path.join(format!("response-{calls:04}.json")), &reply)?;
+                write_record(
+                    &call_path.join(format!("response-{calls:04}.json")),
+                    &reply,
+                    MAX_RESPONSE_BYTES,
+                )?;
                 response_digest = Some(hash(b"naome:research:response:v1\0", &reply.raw_response));
                 usage = reply.usage;
                 provider = info;
@@ -463,9 +506,10 @@ where
             head: state.head(),
             response_digest,
         };
-        write_new(
+        write_record(
             &call_path.join(format!("receipt-{calls:04}.json")),
             &receipt,
+            MAX_RECEIPT_BYTES,
         )?;
         calls += 1;
         if status == "stopped" {

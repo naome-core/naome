@@ -157,6 +157,89 @@ fn quota_stops_and_restart_does_not_spend_again() {
 }
 
 #[test]
+fn maximum_interest_prompts_and_json_escape_overhead_survive_stopped_restart() {
+    for interests in [
+        Interests {
+            topics: vec!["x".repeat(256); 16],
+            context: "c".repeat(2048),
+        },
+        Interests {
+            topics: vec!["\\\"\u{0001}".repeat(85); 16],
+            context: "\\\"\u{0001}".repeat(682),
+        },
+    ] {
+        let (root, config) = config();
+        interests.validate().unwrap();
+        fs::write(
+            &config.participants[0].interests_file,
+            serde_json::to_vec_pretty(&interests).unwrap(),
+        )
+        .unwrap();
+        let result = execute(&config, |_, prompt, _| {
+            assert!(prompt.len() > 8192);
+            assert!(prompt.len() <= crate::provider::MAX_INPUT_BYTES);
+            Err(ProviderError {
+                kind: ProviderErrorKind::Quota,
+                message: "fixture quota".into(),
+            })
+        })
+        .unwrap();
+        assert_eq!(result["provider_calls_consumed"], 1);
+        assert!(
+            fs::metadata(config.directory.join("provider_calls/call-0000.json"))
+                .unwrap()
+                .len()
+                > 8192
+        );
+        let restarted = execute(&config, |_, _, _| {
+            panic!("stopped maximum-input run cannot spend again")
+        })
+        .unwrap();
+        assert_eq!(restarted["status"], "stopped");
+        assert_eq!(restarted["provider_calls_consumed"], 1);
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(root.with_extension("home")).unwrap();
+    }
+}
+
+#[test]
+fn large_escaped_rejected_response_restarts_with_verified_original_provenance() {
+    let (root, mut config) = config();
+    config.max_calls = 1;
+    let result = execute(&config, |provider, prompt, _| {
+        let mut value = fixture_reply(prompt);
+        value["title"] = json!("\u{0001}".repeat(20_000));
+        let raw_response = serde_json::to_string(&value).unwrap();
+        assert!(raw_response.len() <= provider.max_output_bytes);
+        Ok((
+            ProviderReply {
+                raw_response,
+                value,
+                usage: Value::Null,
+            },
+            Value::Null,
+        ))
+    })
+    .unwrap();
+    assert_eq!(result["run"]["provider_calls_consumed"], 1);
+    assert_eq!(result["rejected_replies"].as_array().unwrap().len(), 1);
+    let response_file = config.directory.join("provider_calls/response-0000.json");
+    assert!(fs::metadata(&response_file).unwrap().len() > MAX_CONFIG_BYTES);
+    let restarted = execute(&config, |_, _, _| {
+        panic!("restart cannot spend beyond saved bound")
+    })
+    .unwrap();
+    assert_eq!(restarted["run"]["provider_calls_consumed"], 1);
+    let mut reply: ProviderReply = read_bounded(&response_file, MAX_RESPONSE_BYTES).unwrap();
+    reply.raw_response.push(' ');
+    fs::write(response_file, serde_json::to_vec(&reply).unwrap()).unwrap();
+    let error = execute(&config, |_, _, _| panic!("changed provenance cannot spend")).unwrap_err();
+    assert!(error.contains("response provenance mismatch"));
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(root.with_extension("home")).unwrap();
+}
+
+#[test]
 fn transient_failure_backs_off_once_then_stops_with_consumed_budget() {
     let (root, config) = config();
     let mut calls = 0;
