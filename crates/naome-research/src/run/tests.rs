@@ -27,6 +27,7 @@ fn pure_js_observations_are_preserved_and_rechecked_without_proof_authority() {
             native_host_sha256: digest(&binary),
             host_proxy_sha256: digest(&binary),
             package_manifest_sha256: digest(&manifest),
+            macos_bundle: None,
         });
     }
     let report = execute(&config, |_, prompt, _| {

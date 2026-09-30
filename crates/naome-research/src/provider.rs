@@ -53,6 +53,41 @@ pub struct PureJsConfig {
     pub native_host_sha256: String,
     pub host_proxy_sha256: String,
     pub package_manifest_sha256: String,
+    /// Preserve the signed desktop bundle when the native macOS CLI belongs to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos_bundle: Option<MacosBundleConfig>,
+}
+
+/// Fixed public package support files; contents are copied without interpretation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacosBundleConfig {
+    pub info_plist_sha256: String,
+    pub provision_profile_sha256: String,
+    pub legacy_code_resources_sha256: String,
+    pub code_signature_resources_sha256: String,
+    pub launcher_sha256: String,
+}
+
+impl MacosBundleConfig {
+    fn files(&self) -> [(&'static str, &str); 5] {
+        [
+            ("CodexCLI.app/Contents/Info.plist", &self.info_plist_sha256),
+            (
+                "CodexCLI.app/Contents/embedded.provisionprofile",
+                &self.provision_profile_sha256,
+            ),
+            (
+                "CodexCLI.app/Contents/CodeResources",
+                &self.legacy_code_resources_sha256,
+            ),
+            (
+                "CodexCLI.app/Contents/_CodeSignature/CodeResources",
+                &self.code_signature_resources_sha256,
+            ),
+            ("bin/codex", &self.launcher_sha256),
+        ]
+    }
 }
 
 impl PureJsConfig {
@@ -100,8 +135,100 @@ impl PureJsConfig {
                 "Unsupported audited package manifest",
             ));
         }
+        if let Some(bundle) = &self.macos_bundle {
+            if !cfg!(target_os = "macos") {
+                return Err(ProviderError::contract("macOS bundle requires macOS"));
+            }
+            let root = self
+                .package_manifest
+                .parent()
+                .ok_or_else(|| ProviderError::contract("Invalid signed package root"))?;
+            if codex_binary != root.join("CodexCLI.app/Contents/MacOS/codex") {
+                return Err(ProviderError::contract(
+                    "Native CLI is outside pinned bundle",
+                ));
+            }
+            if fs::symlink_metadata(codex_binary)
+                .map_err(|_| ProviderError::contract("Cannot inspect bundled native CLI"))?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(ProviderError::contract(
+                    "Bundled native CLI must be a regular file",
+                ));
+            }
+            for relative in [
+                "CodexCLI.app",
+                "CodexCLI.app/Contents",
+                "CodexCLI.app/Contents/MacOS",
+                "CodexCLI.app/Contents/_CodeSignature",
+                "bin",
+            ] {
+                let metadata = fs::symlink_metadata(root.join(relative)).map_err(|_| {
+                    ProviderError::contract("Cannot inspect signed package directory")
+                })?;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(ProviderError::contract("Invalid signed package directory"));
+                }
+            }
+            for (relative, expected) in bundle.files() {
+                if !valid_digest(expected) || bundle_file_digest(&root.join(relative))? != expected
+                {
+                    return Err(ProviderError::contract("Signed package identity mismatch"));
+                }
+            }
+        } else if cfg!(target_os = "macos")
+            && codex_binary
+                .ancestors()
+                .any(|path| path.extension().is_some_and(|ext| ext == "app"))
+        {
+            return Err(ProviderError::contract(
+                "Signed macOS CLI requires bundle metadata",
+            ));
+        }
         Ok(())
     }
+}
+
+fn valid_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn bundle_file_digest(path: &std::path::Path) -> Result<String, ProviderError> {
+    Ok(bytes_digest(&read_bundle_file(path)?))
+}
+
+fn bytes_digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn read_bundle_file(path: &std::path::Path) -> Result<Vec<u8>, ProviderError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| ProviderError::contract("Cannot inspect signed package file"))?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() == 0
+        || metadata.len() > 1024 * 1024
+    {
+        return Err(ProviderError::contract(
+            "Invalid bounded signed package file",
+        ));
+    }
+    // Read at most one byte beyond the support-file bound, including a growth race.
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(1024 * 1024 + 1).read_to_end(&mut bytes))
+        .map_err(|_| ProviderError::contract("Cannot hash signed package file"))?;
+    if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+        return Err(ProviderError::contract("Signed package file exceeds bound"));
+    }
+    Ok(bytes)
 }
 
 fn executable_digest(path: &std::path::Path) -> Result<String, ProviderError> {
@@ -419,6 +546,16 @@ fn is_pure_js_origin_key(key: &str) -> bool {
     key.starts_with("features.code_mode.") || key.starts_with("features.code_mode_host.")
 }
 
+fn staged_codex_path(pure: &PureJsConfig, runtime_dir: &std::path::Path) -> PathBuf {
+    if pure.macos_bundle.is_some() {
+        runtime_dir.join("CodexCLI.app/Contents/MacOS/codex")
+    } else {
+        runtime_dir
+            .join("bin")
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" })
+    }
+}
+
 fn stage_pure_js(
     config: &ProviderConfig,
     runtime_dir: &std::path::Path,
@@ -432,7 +569,35 @@ fn stage_pure_js(
     let bin = runtime_dir.join("bin");
     fs::create_dir(&bin)
         .map_err(|_| ProviderError::contract("Cannot stage package bin directory"))?;
-    let cli = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+    let cli = staged_codex_path(pure, runtime_dir);
+    if let Some(bundle) = &pure.macos_bundle {
+        pure.validate(&config.codex_binary)?;
+        fs::create_dir_all(runtime_dir.join("CodexCLI.app/Contents/MacOS"))
+            .and_then(|()| fs::create_dir(runtime_dir.join("CodexCLI.app/Contents/_CodeSignature")))
+            .map_err(|_| ProviderError::contract("Cannot stage signed package directories"))?;
+        let root = pure
+            .package_manifest
+            .parent()
+            .ok_or_else(|| ProviderError::contract("Invalid signed package root"))?;
+        for (relative, expected) in bundle.files() {
+            let source = root.join(relative);
+            let bytes = read_bundle_file(&source)?;
+            if bytes_digest(&bytes) != expected {
+                return Err(ProviderError::contract(
+                    "Signed package changed before staging",
+                ));
+            }
+            let target = runtime_dir.join(relative);
+            fs::write(&target, bytes)
+                .and_then(|()| fs::set_permissions(&target, fs::metadata(&source)?.permissions()))
+                .map_err(|_| ProviderError::contract("Cannot stage signed package file"))?;
+            if bundle_file_digest(&target)? != expected {
+                return Err(ProviderError::contract(
+                    "Staged signed package identity mismatch",
+                ));
+            }
+        }
+    }
     let proxy = bin.join(if cfg!(windows) {
         "codex-code-mode-host.exe"
     } else {
@@ -813,7 +978,7 @@ impl AppServer {
                 "proxySha256":pure.host_proxy_sha256,
                 "packageManifestSha256":pure.package_manifest_sha256,
                 "nativeUserAgent":initialized["userAgent"],
-                "resolvedCodexPath":self.runtime_dir.join("bin").join(if cfg!(windows) {"codex.exe"} else {"codex"}),
+                "resolvedCodexPath":staged_codex_path(pure, &self.runtime_dir),
                 "resolvedProxyPath":self.runtime_dir.join("bin").join(if cfg!(windows) {"codex-code-mode-host.exe"} else {"codex-code-mode-host"}),
                 "resolvedNativeHostPath":self.runtime_dir.join(if cfg!(windows) {"native-code-mode-host.exe"} else {"native-code-mode-host"}),
                 "ownershipPolicy":if cfg!(unix) {"proxy_verifies_own_group_native_inherits"} else {"retained_child_tree_bounded_cleanup"},
@@ -821,6 +986,12 @@ impl AppServer {
                 "hardHeapLimit":false,
                 "traceCoverage":"standard_v2_exec_wait_outputs"
             });
+            if let Some(bundle) = &pure.macos_bundle {
+                self.info["hostRuntime"]["macosBundleSha256"] = serde_json::to_value(bundle)
+                    .map_err(|_| {
+                        ProviderError::contract("Cannot record signed package identity")
+                    })?;
+            }
         }
         Ok(())
     }
@@ -1963,6 +2134,7 @@ fn main() {
                 host_proxy_sha256: digest,
                 package_manifest_sha256: executable_digest(&self.home.join("codex-package.json"))
                     .unwrap(),
+                macos_bundle: None,
             });
             let mut effective = json!({"config":{},"origins":{},"layers":[{
                 "name":{"type":"sessionFlags"},"version":"fixture-v1","config":{}}]});
@@ -2072,6 +2244,98 @@ fn main() {
         assert_eq!(host.timeout_millis, fixture.config.timeout_seconds * 1000);
         fs::remove_dir_all(directory).unwrap();
         fixture.config.pure_js.as_mut().unwrap().native_host_sha256 = "0".repeat(64);
+        assert!(fixture.config.validate().is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signed_bundle_staging_preserves_fixed_support_bytes_and_rejects_tampering() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("pure_success");
+        fixture.enable_pure_js();
+        let original_cli = fixture.config.codex_binary.clone();
+        let bundle_cli = fixture.home.join("CodexCLI.app/Contents/MacOS/codex");
+        fs::create_dir_all(bundle_cli.parent().unwrap()).unwrap();
+        fs::create_dir(fixture.home.join("CodexCLI.app/Contents/_CodeSignature")).unwrap();
+        fs::create_dir(fixture.home.join("bin")).unwrap();
+        fs::copy(original_cli, &bundle_cli).unwrap();
+        fixture.config.codex_binary = bundle_cli;
+        assert!(fixture.config.validate().is_err());
+        let mut metadata = MacosBundleConfig {
+            info_plist_sha256: String::new(),
+            provision_profile_sha256: String::new(),
+            legacy_code_resources_sha256: String::new(),
+            code_signature_resources_sha256: String::new(),
+            launcher_sha256: String::new(),
+        };
+        for (index, (relative, _)) in metadata.files().iter().enumerate() {
+            // The two CodeResources files intentionally have different bytes.
+            fs::write(
+                fixture.home.join(relative),
+                format!("public package file {index}"),
+            )
+            .unwrap();
+        }
+        let hashes = metadata
+            .files()
+            .map(|(relative, _)| bundle_file_digest(&fixture.home.join(relative)).unwrap());
+        metadata.info_plist_sha256 = hashes[0].clone();
+        metadata.provision_profile_sha256 = hashes[1].clone();
+        metadata.legacy_code_resources_sha256 = hashes[2].clone();
+        metadata.code_signature_resources_sha256 = hashes[3].clone();
+        metadata.launcher_sha256 = hashes[4].clone();
+        fixture.config.pure_js.as_mut().unwrap().macos_bundle = Some(metadata.clone());
+        fixture.config.validate().unwrap();
+        let staged = create_empty_directory().unwrap();
+        let (actual_cli, _) = stage_pure_js(&fixture.config, &staged).unwrap();
+        assert_eq!(actual_cli, staged.join("CodexCLI.app/Contents/MacOS/codex"));
+        for (relative, expected) in metadata.files() {
+            assert_eq!(
+                bundle_file_digest(&staged.join(relative)).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            executable_digest(&actual_cli).unwrap(),
+            fixture.config.pure_js.as_ref().unwrap().codex_binary_sha256
+        );
+        assert!(!staged.join("codex-resources").exists());
+        assert!(staged.join("bin/codex-code-mode-host").is_file());
+        fs::remove_dir_all(staged).unwrap();
+        let info = fixture.home.join("CodexCLI.app/Contents/Info.plist");
+        fs::write(&info, "modified").unwrap();
+        assert!(fixture.config.validate().is_err());
+        fs::remove_file(&info).unwrap();
+        symlink(fixture.home.join("bin/codex"), &info).unwrap();
+        assert!(fixture.config.validate().is_err());
+        fs::remove_file(&info).unwrap();
+        fs::write(&info, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        assert!(fixture.config.validate().is_err());
+        fixture
+            .config
+            .pure_js
+            .as_mut()
+            .unwrap()
+            .macos_bundle
+            .as_mut()
+            .unwrap()
+            .info_plist_sha256 = "A".repeat(64);
+        assert!(fixture.config.validate().is_err());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn signed_bundle_metadata_is_rejected_on_other_platforms() {
+        let mut fixture = Fixture::new("pure_success");
+        fixture.enable_pure_js();
+        let hash = "0".repeat(64);
+        fixture.config.pure_js.as_mut().unwrap().macos_bundle = Some(MacosBundleConfig {
+            info_plist_sha256: hash.clone(),
+            provision_profile_sha256: hash.clone(),
+            legacy_code_resources_sha256: hash.clone(),
+            code_signature_resources_sha256: hash.clone(),
+            launcher_sha256: hash,
+        });
         assert!(fixture.config.validate().is_err());
     }
 
@@ -2208,6 +2472,7 @@ fn main() {
             codex_binary_sha256: String::new(),
             native_host_sha256: String::new(),
             host_proxy_sha256: String::new(),
+            macos_bundle: None,
         });
         validate_computation(std::slice::from_ref(&valid), &enabled).unwrap();
         assert!(validate_computation(&[valid.clone(), valid], &enabled).is_err());
