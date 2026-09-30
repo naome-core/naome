@@ -162,6 +162,15 @@ impl Lab {
     }
     #[track_caller]
     fn wait(&self, index: usize, predicate: impl Fn(&Value) -> bool) -> Value {
+        self.wait_with_expected(index, predicate, None)
+    }
+    #[track_caller]
+    fn wait_with_expected(
+        &self,
+        index: usize,
+        predicate: impl Fn(&Value) -> bool,
+        expected: Option<&Value>,
+    ) -> Value {
         let start = Instant::now();
         loop {
             if let Some(status) = self.status(index)
@@ -182,6 +191,7 @@ impl Lab {
                             "running": self.nodes[peer].is_some(),
                             "height": status.as_ref().map(|s| &s["height"]),
                             "head": status.as_ref().map(|s| &s["head"]),
+                            "state": status.as_ref().map(|s| &s["state"]),
                             "authority": status.as_ref().map(|s| &s["authority"]),
                             "position": status.as_ref().map(|s| &s["consensus_position"]),
                             "active": status.as_ref().map(|s| &s["active"]),
@@ -194,8 +204,11 @@ impl Lab {
                     })
                     .collect();
                 let caller = std::panic::Location::caller();
+                let expected_tip = expected.map(|status| serde_json::json!({
+                    "height": status["height"], "head": status["head"], "state": status["state"],
+                }));
                 panic!(
-                    "node {index} timeout at {}:{}; public node diagnostics={nodes:?}",
+                    "node {index} timeout at {}:{}; expected tip={expected_tip:?}; public node diagnostics={nodes:?}",
                     caller.file(),
                     caller.line()
                 );
@@ -417,9 +430,11 @@ impl Lab {
         ]);
         self.wait_receipt(reveal_ingress, submission, &reveal, "reveal", label);
     }
+    #[track_caller]
     fn assert_same(&self, indices: &[usize], expected: &Value) {
         for &index in indices {
-            let status = self.wait(index, |s| s["state"] == expected["state"]);
+            let status =
+                self.wait_with_expected(index, |s| s["state"] == expected["state"], Some(expected));
             for field in [
                 "state",
                 "head",

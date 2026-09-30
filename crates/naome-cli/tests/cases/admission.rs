@@ -340,7 +340,76 @@ fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_resta
     assert!(!std::path::Path::new(&consensus_key).exists());
     assert!(!std::path::Path::new(&transport_key).exists());
     lab.start(4);
-    lab.assert_same(&[4], &settled);
+    // Catch-up can itself finish the queued join and move every peer beyond the
+    // archived four-slot snapshot. Compare a current common tip, while retaining
+    // the registration, reward, proof and intent facts already replayed above.
+    let retained_fields = [
+        "accounts",
+        "registered_accounts",
+        "remaining_account_slots",
+        "reserve_atoms",
+        "claims",
+        "library_root",
+        "paid_completions",
+        "join_intents_count",
+    ];
+    let caught_up = lab.wait_with_expected(
+        4,
+        |status| {
+            if status["height"].as_u64() < settled["height"].as_u64() {
+                return false;
+            }
+            let Some(peers) = (0..4)
+                .map(|index| lab.status(index))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            if !peers.iter().all(|peer| {
+                ["height", "head", "state"]
+                    .iter()
+                    .all(|field| peer[*field] == status[*field])
+            }) {
+                return false;
+            }
+            for (index, peer) in peers.iter().enumerate() {
+                for field in retained_fields {
+                    assert_eq!(peer[field], settled[field], "node {index} catch-up {field}");
+                }
+            }
+            true
+        },
+        Some(&settled),
+    );
+    for field in retained_fields {
+        assert_eq!(
+            caught_up[field], settled[field],
+            "candidate catch-up {field}"
+        );
+    }
+    let queued = caught_up["join_queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|claim| claim == &family);
+    let consumed = caught_up["consumed_claims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|claim| claim == &family);
+    assert_ne!(
+        queued, consumed,
+        "earned claim must remain queued or be consumed by installation"
+    );
+    if consumed {
+        assert!(
+            caught_up["validators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|unit| unit["owner"] == author)
+        );
+    }
     // A new record gives the prepared candidate a canonical handoff point.
     let mut handoff_submission = lab.submit(
         active_ingress(&lab),
