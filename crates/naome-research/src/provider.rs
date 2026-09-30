@@ -1165,16 +1165,29 @@ fn verify_thread(started: &Value, model: &str) -> Result<(), ProviderError> {
         || started["modelProvider"] != "openai"
         || started["approvalPolicy"] != "never"
         || started.pointer("/sandbox/type").and_then(Value::as_str) != Some("readOnly")
-        || !started["instructionSources"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
-        || !started["runtimeWorkspaceRoots"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
     {
         return Err(ProviderError::contract(
             "New thread did not preserve the requested model and isolation",
         ));
+    }
+    // These two Vec fields default to empty in the pinned response contract.
+    // Only omission has that meaning; null and malformed values still fail.
+    for (field, message) in [
+        (
+            "instructionSources",
+            "Thread instruction sources must be absent or empty; use a separate Codex home without AGENTS.md or AGENTS.override.md and complete its managed ChatGPT login",
+        ),
+        (
+            "runtimeWorkspaceRoots",
+            "New thread did not preserve empty runtime workspace roots",
+        ),
+    ] {
+        if !started
+            .get(field)
+            .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
+        {
+            return Err(ProviderError::contract(message));
+        }
     }
     Ok(())
 }
@@ -1372,9 +1385,17 @@ fn main() {
             assert!(line.contains("\"dynamicTools\":[]"));
             assert!(line.contains("\"ephemeral\":true"));
             assert!(line.contains("\"allowProviderModelFallback\":false"));
-            r#"{"model":"fixture-model","modelProvider":"openai","approvalPolicy":"never","sandbox":{"type":"readOnly"},"instructionSources":[],"runtimeWorkspaceRoots":[],"thread":{"id":"fixture-thread"}}"#.to_owned()
+            let lists = match mode.as_str() {
+                "thread_defaults" => "",
+                "thread_null" => r#", "instructionSources":null,"runtimeWorkspaceRoots":[]"#,
+                "thread_source_nonempty" => r#", "instructionSources":["/private-source/AGENTS.md"],"runtimeWorkspaceRoots":[]"#,
+                "thread_roots_nonempty" => r#", "instructionSources":[],"runtimeWorkspaceRoots":["/unexpected"]"#,
+                _ => r#", "instructionSources":[],"runtimeWorkspaceRoots":[]"#,
+            };
+            format!(r#"{{"model":"fixture-model","modelProvider":"openai","approvalPolicy":"never","sandbox":{{"type":"readOnly"}}{lists},"thread":{{"id":"fixture-thread"}}}}"#)
         }
         else if line.contains("\"method\":\"turn/start\"") {
+            std::fs::write(home.join("turn-started"), "true").unwrap();
             assert!(line.contains("\"outputSchema\":"));
             assert!(line.contains("\"environments\":[]"));
             emit(&format!("{{\"id\":{id},\"result\":{{\"turn\":{{\"id\":\"fixture-turn\"}}}}}}"));
@@ -1465,6 +1486,94 @@ fn main() {
 
     fn schema() -> Value {
         json!({"type":"object","properties":{"vote":{"type":"boolean"}},"required":["vote"],"additionalProperties":false})
+    }
+
+    #[test]
+    fn thread_response_defaults_accept_only_missing_or_empty_lists() {
+        let complete = json!({"model":"fixture-model","modelProvider":"openai",
+            "approvalPolicy":"never","sandbox":{"type":"readOnly"},
+            "instructionSources":[],"runtimeWorkspaceRoots":[]});
+        for omitted in [
+            vec![],
+            vec!["instructionSources"],
+            vec!["runtimeWorkspaceRoots"],
+            vec!["instructionSources", "runtimeWorkspaceRoots"],
+        ] {
+            let mut response = complete.clone();
+            for field in omitted {
+                response.as_object_mut().unwrap().remove(field);
+            }
+            verify_thread(&response, "fixture-model").unwrap();
+        }
+        for field in ["instructionSources", "runtimeWorkspaceRoots"] {
+            for invalid in [
+                Value::Null,
+                json!(""),
+                json!({}),
+                json!(false),
+                json!(0),
+                json!([null]),
+                json!(["/unexpected"]),
+            ] {
+                let mut response = complete.clone();
+                response[field] = invalid;
+                assert!(
+                    verify_thread(&response, "fixture-model").is_err(),
+                    "{field}: {response}"
+                );
+            }
+        }
+        for field in ["model", "modelProvider", "approvalPolicy", "sandbox"] {
+            for invalid in [
+                Value::Null,
+                json!("changed"),
+                json!([]),
+                json!({"type":"workspaceWrite"}),
+            ] {
+                let mut response = complete.clone();
+                response[field] = invalid;
+                assert!(
+                    verify_thread(&response, "fixture-model").is_err(),
+                    "{field}: {response}"
+                );
+            }
+            let mut response = complete.clone();
+            response.as_object_mut().unwrap().remove(field);
+            assert!(
+                verify_thread(&response, "fixture-model").is_err(),
+                "missing {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn stdio_thread_defaults_reach_turn_and_invalid_lists_stop_before_turn() {
+        for mode in [
+            "thread_defaults",
+            "thread_null",
+            "thread_source_nonempty",
+            "thread_roots_nonempty",
+        ] {
+            let fixture = Fixture::new(mode);
+            let mut server = AppServer::start(&fixture.config).unwrap();
+            let reply = server.request("Vote.", schema());
+            let accepted = mode == "thread_defaults";
+            assert_eq!(reply.is_ok(), accepted, "{mode}");
+            assert_eq!(
+                fixture.home.join("turn-started").exists(),
+                accepted,
+                "{mode}"
+            );
+            if !accepted {
+                let error = reply.unwrap_err();
+                assert_eq!(error.kind, ProviderErrorKind::Contract);
+                if mode == "thread_source_nonempty" {
+                    assert!(error.message.contains("separate Codex home"));
+                    assert!(!error.message.contains("private-source"));
+                }
+                assert!(server.child.is_none());
+            }
+        }
     }
 
     #[test]
