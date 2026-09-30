@@ -1,10 +1,12 @@
 //! Bounded, participant-local access to the official Codex App Server.
 //!
 //! Authentication stays inside Codex. This client never reads credentials and never
-//! supports API keys, externally injected tokens, a hosted proxy, or tool execution.
+//! supports API keys, externally injected tokens, or a hosted proxy. An explicit
+//! participant option permits bounded pure JavaScript through an owned local host.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -34,6 +36,106 @@ pub struct ProviderConfig {
     /// Optional exact inherited names to disable on the initial process launch.
     #[serde(default, skip_serializing_if = "DisabledRegistries::is_empty")]
     pub disabled_registries: DisabledRegistries,
+    /// Explicit local-mathematics exception; omission preserves the text-only path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pure_js: Option<PureJsConfig>,
+}
+
+/// Exact executable bytes for the audited Codex 0.159.2 host protocol.
+/// `codex_binary` must be the direct native executable, rather than a launcher.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PureJsConfig {
+    pub native_host_binary: PathBuf,
+    pub host_proxy_binary: PathBuf,
+    pub package_manifest: PathBuf,
+    pub codex_binary_sha256: String,
+    pub native_host_sha256: String,
+    pub host_proxy_sha256: String,
+    pub package_manifest_sha256: String,
+}
+
+impl PureJsConfig {
+    fn validate(&self, codex_binary: &std::path::Path) -> Result<(), ProviderError> {
+        for (path, expected) in [
+            (codex_binary, &self.codex_binary_sha256),
+            (self.native_host_binary.as_path(), &self.native_host_sha256),
+            (self.host_proxy_binary.as_path(), &self.host_proxy_sha256),
+            (
+                self.package_manifest.as_path(),
+                &self.package_manifest_sha256,
+            ),
+        ] {
+            if !path.is_absolute()
+                || expected.len() != 64
+                || !expected
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || executable_digest(path)? != *expected
+            {
+                return Err(ProviderError::contract(
+                    "Pure JavaScript executable identity mismatch",
+                ));
+            }
+        }
+        let mut manifest = Vec::new();
+        fs::File::open(&self.package_manifest)
+            .and_then(|file| file.take(4097).read_to_end(&mut manifest))
+            .map_err(|_| ProviderError::contract("Cannot read pinned package manifest"))?;
+        if manifest.len() > 4096 {
+            return Err(ProviderError::contract("Package manifest exceeds bound"));
+        }
+        let metadata: Value = serde_json::from_slice(&manifest)
+            .map_err(|_| ProviderError::contract("Invalid package manifest"))?;
+        if metadata["layoutVersion"] != 1
+            || metadata["version"] != "0.159.2"
+            || metadata["entrypoint"]
+                != if cfg!(windows) {
+                    "bin/codex.exe"
+                } else {
+                    "bin/codex"
+                }
+        {
+            return Err(ProviderError::contract(
+                "Unsupported audited package manifest",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn executable_digest(path: &std::path::Path) -> Result<String, ProviderError> {
+    let mut file = fs::File::open(path)
+        .map_err(|_| ProviderError::contract("Cannot read configured executable"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| ProviderError::contract("Cannot inspect configured executable"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 256 * 1024 * 1024 {
+        return Err(ProviderError::contract("Invalid bounded executable file"));
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|_| ProviderError::contract("Cannot hash configured executable"))?;
+        if count == 0 {
+            break;
+        }
+        total = total.saturating_add(count as u64);
+        if total > 256 * 1024 * 1024 {
+            return Err(ProviderError::contract(
+                "Executable changed beyond bounded size",
+            ));
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -98,7 +200,11 @@ impl ProviderConfig {
                 "Invalid bounded App Server configuration",
             ));
         }
-        self.disabled_registries.validate()
+        self.disabled_registries.validate()?;
+        if let Some(config) = &self.pure_js {
+            config.validate(&self.codex_binary)?;
+        }
+        Ok(())
     }
 }
 
@@ -146,6 +252,10 @@ pub struct ProviderReply {
     pub raw_response: String,
     /// Official per-turn token usage, or null when the server did not report it.
     pub usage: Value,
+    /// Bounded standard-v2 exec/wait output observations; these are not full
+    /// JavaScript source traces or an execution authorization boundary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub computation: Vec<Value>,
 }
 
 struct Budget {
@@ -208,6 +318,7 @@ pub struct AppServer {
     deferred_events: VecDeque<Value>,
     lifecycle_deadline: Instant,
     required_disables: Vec<String>,
+    host_status_seen: bool,
 }
 
 // Installed 0.153.4 accepts these keys under --strict-config. The official
@@ -279,6 +390,88 @@ fn isolation_overrides() -> Vec<(&'static str, Value)> {
     }
     overrides.push(("features.skip_host_skill_discovery", json!(true)));
     overrides
+}
+
+fn provider_overrides(config: &ProviderConfig) -> Vec<(&'static str, Value)> {
+    let mut overrides = isolation_overrides();
+    if config.pure_js.is_some() {
+        overrides
+            .retain(|(key, _)| !["features.code_mode", "features.code_mode_host"].contains(key));
+        overrides.extend([
+            ("features.code_mode.enabled", json!(true)),
+            (
+                "features.code_mode.excluded_tool_namespaces",
+                json!(["functions", "clock"]),
+            ),
+            ("features.code_mode.direct_only_tool_namespaces", json!([])),
+            ("features.code_mode_host.enabled", json!(true)),
+            (
+                "features.code_mode_host.disable_in_process_fallback",
+                json!(true),
+            ),
+            ("suppress_unstable_features_warning", json!(true)),
+        ]);
+    }
+    overrides
+}
+
+fn is_pure_js_origin_key(key: &str) -> bool {
+    key.starts_with("features.code_mode.") || key.starts_with("features.code_mode_host.")
+}
+
+fn stage_pure_js(
+    config: &ProviderConfig,
+    runtime_dir: &std::path::Path,
+) -> Result<(PathBuf, Option<String>), ProviderError> {
+    let Some(pure) = &config.pure_js else {
+        return Ok((config.codex_binary.clone(), None));
+    };
+    // InstallContext::code_mode_host_program in audited ff6aec9 resolves an
+    // executable-adjacent host. Copying exact bytes creates that supported layout
+    // without changing an installed package or relying on an undocumented key.
+    let bin = runtime_dir.join("bin");
+    fs::create_dir(&bin)
+        .map_err(|_| ProviderError::contract("Cannot stage package bin directory"))?;
+    let cli = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+    let proxy = bin.join(if cfg!(windows) {
+        "codex-code-mode-host.exe"
+    } else {
+        "codex-code-mode-host"
+    });
+    let native = runtime_dir.join(if cfg!(windows) {
+        "native-code-mode-host.exe"
+    } else {
+        "native-code-mode-host"
+    });
+    for (source, target, expected) in [
+        (&config.codex_binary, &cli, &pure.codex_binary_sha256),
+        (&pure.host_proxy_binary, &proxy, &pure.host_proxy_sha256),
+        (&pure.native_host_binary, &native, &pure.native_host_sha256),
+        (
+            &pure.package_manifest,
+            &runtime_dir.join("codex-package.json"),
+            &pure.package_manifest_sha256,
+        ),
+    ] {
+        fs::copy(source, target)
+            .map_err(|_| ProviderError::contract("Cannot stage owned code host"))?;
+        if executable_digest(target)? != *expected {
+            return Err(ProviderError::contract(
+                "Staged code host identity mismatch",
+            ));
+        }
+    }
+    let host = crate::host_proxy::HostProxyConfig {
+        native_binary: native,
+        status_file: runtime_dir.join("host-status.json"),
+        timeout_millis: config.timeout_seconds * 1000,
+        max_output_bytes: config.max_output_bytes,
+    };
+    host.validate()
+        .map_err(|_| ProviderError::contract("Invalid owned host configuration"))?;
+    let encoded = serde_json::to_string(&host)
+        .map_err(|_| ProviderError::contract("Cannot encode owned host configuration"))?;
+    Ok((cli, Some(encoded)))
 }
 
 fn toml_value(value: &Value) -> String {
@@ -384,7 +577,15 @@ impl AppServer {
                 return Err(error);
             }
         };
-        let mut command = Command::new(&config.codex_binary);
+        let (executable, host_config) = match stage_pure_js(config, &runtime_dir) {
+            Ok(staged) => staged,
+            Err(error) => {
+                let _ = fs::remove_dir(&cwd);
+                let _ = fs::remove_dir_all(&runtime_dir);
+                return Err(error);
+            }
+        };
+        let mut command = Command::new(executable);
         command
             .arg("app-server")
             .arg("--stdio")
@@ -397,6 +598,9 @@ impl AppServer {
             .stdout(Stdio::piped())
             // Diagnostics may contain private account or configuration details.
             .stderr(Stdio::null());
+        if let Some(host_config) = host_config {
+            command.env("NAOME_RESEARCH_HOST_CONFIG", host_config);
+        }
         for key in [
             "HOME",
             "USERPROFILE",
@@ -409,7 +613,7 @@ impl AppServer {
                 command.env(key, value);
             }
         }
-        for (key, value) in isolation_overrides() {
+        for (key, value) in provider_overrides(config) {
             command
                 .arg("-c")
                 .arg(format!("{key}={}", toml_value(&value)));
@@ -502,11 +706,12 @@ impl AppServer {
             deferred_events: VecDeque::new(),
             lifecycle_deadline,
             required_disables: Vec::new(),
+            host_status_seen: false,
         })
     }
 
     fn handshake(&mut self, budget: &mut Budget) -> Result<(), ProviderError> {
-        self.rpc(
+        let initialized = self.rpc(
             "initialize",
             json!({
                 "clientInfo": {"name":"naome_research", "version":env!("CARGO_PKG_VERSION")},
@@ -514,6 +719,18 @@ impl AppServer {
             }),
             budget,
         )?;
+        if self.config.pure_js.is_some()
+            && !initialized["userAgent"].as_str().is_some_and(|agent| {
+                agent
+                    .split_ascii_whitespace()
+                    .next()
+                    .is_some_and(|token| token.ends_with("/0.159.2"))
+            })
+        {
+            return Err(ProviderError::contract(
+                "Owned host requires audited native Codex 0.159.2",
+            ));
+        }
         self.send(json!({"method":"initialized"}), budget)?;
         let account = self.rpc("account/read", json!({"refreshToken":false}), budget)?;
         if account.pointer("/account/type").and_then(Value::as_str) != Some("chatgpt") {
@@ -533,7 +750,7 @@ impl AppServer {
                 "Inherited registries require explicit isolated disables",
             ));
         }
-        verify_isolation_config(&effective)?;
+        verify_provider_config(&effective, &self.config)?;
         let mut cursor = Value::Null;
         let mut selected = None;
         for _ in 0..MAX_MODEL_PAGES {
@@ -576,7 +793,7 @@ impl AppServer {
             .ok_or_else(|| ProviderError::contract("Model advertises no bounded reasoning effort"))?
             .to_owned();
         let limits = self.rpc("account/rateLimits/read", json!({}), budget)?;
-        self.rate_limits = sanitize_limits(&limits);
+        self.rate_limits = sanitize_limits(&limits)?;
         self.info = json!({
             "accountMode":"chatgpt", "planType":account.pointer("/account/planType"),
             "model":self.config.model, "reasoningEffort":self.effort,
@@ -584,8 +801,27 @@ impl AppServer {
             "timeoutSeconds":self.config.timeout_seconds,
             "maxOutputBytes":self.config.max_output_bytes,
             "maxInputBytes":MAX_INPUT_BYTES, "maxEvents":MAX_EVENTS,
-            "toolConfigVerification":"origin_bound_session_flags"
+            "toolConfigVerification":"origin_bound_session_flags",
+            "localComputation": if self.config.pure_js.is_some() { "bounded_pure_js" } else { "none" }
         });
+        if let Some(pure) = &self.config.pure_js {
+            self.info["hostRuntime"] = json!({
+                "auditedCodexVersion":"0.159.2",
+                "sourceRevision":"ff6aec96948b70d94983af2641a6b67c94faeff5",
+                "codexSha256":pure.codex_binary_sha256,
+                "nativeHostSha256":pure.native_host_sha256,
+                "proxySha256":pure.host_proxy_sha256,
+                "packageManifestSha256":pure.package_manifest_sha256,
+                "nativeUserAgent":initialized["userAgent"],
+                "resolvedCodexPath":self.runtime_dir.join("bin").join(if cfg!(windows) {"codex.exe"} else {"codex"}),
+                "resolvedProxyPath":self.runtime_dir.join("bin").join(if cfg!(windows) {"codex-code-mode-host.exe"} else {"codex-code-mode-host"}),
+                "resolvedNativeHostPath":self.runtime_dir.join(if cfg!(windows) {"native-code-mode-host.exe"} else {"native-code-mode-host"}),
+                "ownershipPolicy":if cfg!(unix) {"proxy_verifies_own_group_native_inherits"} else {"retained_child_tree_bounded_cleanup"},
+                "executeEnabledTools":"required_empty_before_forward",
+                "hardHeapLimit":false,
+                "traceCoverage":"standard_v2_exec_wait_outputs"
+            });
+        }
         Ok(())
     }
 
@@ -631,6 +867,17 @@ impl AppServer {
                 "ChatGPT quota is exhausted",
             ));
         }
+        let (base_instructions, developer_instructions) = if self.config.pure_js.is_some() {
+            (
+                "Return only the requested JSON. You may use exec/wait for bounded pure JavaScript mathematics and string computation. The local host exposes no external tools. Only the local formal checker decides proof validity.",
+                "Use only supplied research context. Pure JavaScript may compute numbers and strings; never request filesystem, network, terminal, media, credentials, plugins, other agents, or user input. Finish with the exact JSON output schema.",
+            )
+        } else {
+            (
+                "Return only the requested JSON. You have no tools or environment access. A proposal is never proof validity; only the local formal checker decides validity.",
+                "Use only the supplied research context. Never request tools, shell, files, web, credentials, plugins, or another agent. Return the exact output schema.",
+            )
+        };
         let started = self.rpc(
             "thread/start",
             json!({
@@ -638,8 +885,8 @@ impl AppServer {
                 "cwd":self.cwd,"ephemeral":true,"approvalPolicy":"never","sandbox":"read-only",
                 "environments":[],"dynamicTools":[],"selectedCapabilityRoots":[],
                 "runtimeWorkspaceRoots":[],"allowProviderModelFallback":false,
-                "baseInstructions":"Return only the requested JSON. You have no tools or environment access. A proposal is never proof validity; only the local formal checker decides validity.",
-                "developerInstructions":"Use only the supplied research context. Never request tools, shell, files, web, credentials, plugins, or another agent. Return the exact output schema."
+                "baseInstructions":base_instructions,
+                "developerInstructions":developer_instructions
             }),
             budget,
         )?;
@@ -668,6 +915,8 @@ impl AppServer {
         self.active_turn = Some((thread_id.clone(), turn_id.clone()));
         let mut final_text = None;
         let mut usage = Value::Null;
+        let mut completed_code_items = BTreeSet::new();
+        let mut computation = Vec::new();
         loop {
             let message = match self.deferred_events.pop_front() {
                 Some(message) => message,
@@ -697,6 +946,17 @@ impl AppServer {
             match method {
                 "item/completed" => {
                     let item = &params["item"];
+                    if item["type"] == "functionCallOutput" {
+                        let id = item["id"].as_str().unwrap_or("");
+                        if completed_code_items.len() >= 48
+                            || !completed_code_items.insert(id.to_owned())
+                        {
+                            return Err(ProviderError::contract(
+                                "Duplicate or excessive code wrapper output",
+                            ));
+                        }
+                        computation.push(item.clone());
+                    }
                     if item["type"] == "agentMessage" && item["phase"] != "commentary" {
                         if final_text.is_some() {
                             return Err(ProviderError::contract(
@@ -726,10 +986,21 @@ impl AppServer {
                     let value = serde_json::from_str(&text).map_err(|_| {
                         ProviderError::contract("Final response is not a single JSON value")
                     })?;
+                    if self.config.pure_js.is_some() {
+                        let path = self.runtime_dir.join("host-status.json");
+                        let present = verify_host_status(&path, false)?.is_some();
+                        if self.host_status_seen || !computation.is_empty() || present {
+                            self.info["hostRuntime"]["observedStatus"] =
+                                verify_host_status(&path, true)?.ok_or_else(|| {
+                                    ProviderError::contract("Missing verified code host status")
+                                })?;
+                        }
+                    }
                     return Ok(ProviderReply {
                         value,
                         raw_response: text,
                         usage,
+                        computation,
                     });
                 }
                 _ => {}
@@ -842,6 +1113,20 @@ impl AppServer {
     }
 
     fn inspect_message(&mut self, message: &Value) -> Result<(), ProviderError> {
+        if self.config.pure_js.is_some() {
+            match verify_host_status(&self.runtime_dir.join("host-status.json"), false)? {
+                Some(status) => {
+                    self.host_status_seen = true;
+                    self.info["hostRuntime"]["observedStatus"] = status;
+                }
+                None if self.host_status_seen => {
+                    return Err(ProviderError::contract(
+                        "Owned code host status disappeared",
+                    ));
+                }
+                None => {}
+            }
+        }
         if message.get("method").is_some() && message.get("id").is_some() {
             // No approvals, externally owned auth refresh, elicitation or tool calls.
             return Err(ProviderError::contract(
@@ -859,7 +1144,7 @@ impl AppServer {
                 }
             }
             "account/rateLimits/updated" => {
-                self.rate_limits = sanitize_limits(params);
+                self.rate_limits = sanitize_limits(params)?;
                 if quota_exhausted(&self.rate_limits) {
                     return Err(ProviderError::new(
                         ProviderErrorKind::Quota,
@@ -870,7 +1155,10 @@ impl AppServer {
             "item/started" | "item/completed" => {
                 let item = &params["item"];
                 let kind = item["type"].as_str().unwrap_or("");
-                if !matches!(kind, "userMessage" | "agentMessage" | "reasoning") {
+                if kind == "functionCallOutput" && self.config.pure_js.is_some() {
+                    verify_host_status(&self.runtime_dir.join("host-status.json"), true)?;
+                    verify_code_output(item)?;
+                } else if !matches!(kind, "userMessage" | "agentMessage" | "reasoning") {
                     return Err(ProviderError::contract(
                         "Provider attempted an unsupported item or tool",
                     ));
@@ -1008,9 +1296,21 @@ fn create_empty_directory() -> Result<PathBuf, ProviderError> {
     ))
 }
 
+#[cfg(test)]
 fn verify_isolation_config(effective: &Value) -> Result<(), ProviderError> {
+    verify_overrides(effective, isolation_overrides())
+}
+
+fn verify_provider_config(
+    effective: &Value,
+    provider: &ProviderConfig,
+) -> Result<(), ProviderError> {
+    verify_overrides(effective, provider_overrides(provider))
+}
+
+fn verify_overrides(effective: &Value, overrides: Vec<(&str, Value)>) -> Result<(), ProviderError> {
     let config = &effective["config"];
-    for (key, expected) in isolation_overrides() {
+    for (key, expected) in overrides {
         let pointer = format!("/{}", key.replace('.', "/"));
         if ["mcp_servers", "plugins"].contains(&key)
             && registry_is_disabled(config.pointer(&pointer))
@@ -1028,6 +1328,7 @@ fn verify_isolation_config(effective: &Value) -> Result<(), ProviderError> {
             "tools.experimental_request_user_input.enabled",
         ]
         .contains(&key)
+            || is_pure_js_origin_key(key)
         {
             origin_bound_tool_value(effective, key)
         } else {
@@ -1045,6 +1346,145 @@ fn verify_isolation_config(effective: &Value) -> Result<(), ProviderError> {
             return Err(ProviderError::contract(&format!(
                 "Effective Codex configuration did not preserve isolation: {key} ({shape})"
             )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_code_output(item: &Value) -> Result<(), ProviderError> {
+    let text_only = match item.get("output") {
+        Some(Value::String(_)) => true,
+        Some(Value::Array(items)) => items.iter().all(|content| {
+            content["type"] == "inputText"
+                && content["text"].is_string()
+                && content.as_object().is_some_and(|fields| fields.len() == 2)
+        }),
+        _ => false,
+    };
+    if item["type"] != "functionCallOutput"
+        || !item.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .all(|key| ["type", "id", "name", "namespace", "output"].contains(&key.as_str()))
+        })
+        || !item["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id.len() <= 256)
+        || !matches!(item["name"].as_str(), Some("exec" | "wait"))
+        || !item
+            .get("namespace")
+            .is_none_or(|value| value.is_null() || matches!(value.as_str(), Some("" | "functions")))
+        || !text_only
+    {
+        return Err(ProviderError::contract("Unsupported code wrapper output"));
+    }
+    Ok(())
+}
+
+fn verify_host_status(
+    path: &std::path::Path,
+    required: bool,
+) -> Result<Option<Value>, ProviderError> {
+    let failed = || {
+        crate::host_proxy::has_host_failed(path)
+            .map_err(|_| ProviderError::contract("Cannot inspect owned code host failure latch"))
+    };
+    if failed()? {
+        return Err(ProviderError::contract(
+            "Owned code host failure is permanent",
+        ));
+    }
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if !required && error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(ProviderError::contract(
+                "Owned code host status is unavailable",
+            ));
+        }
+    };
+    let mut bytes = Vec::new();
+    file.take(1025)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ProviderError::contract("Cannot read owned code host status"))?;
+    if failed()? {
+        return Err(ProviderError::contract(
+            "Owned code host failure is permanent",
+        ));
+    }
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ProviderError::contract("Invalid owned code host status"))?;
+    let fields = value
+        .as_object()
+        .ok_or_else(|| ProviderError::contract("Invalid owned code host status"))?;
+    if bytes.len() > 1024
+        || fields.len() != 4
+        || !["state", "proxy_pid", "native_pid", "process_group"]
+            .iter()
+            .all(|key| fields.contains_key(*key))
+        || !value["proxy_pid"]
+            .as_u64()
+            .is_some_and(|pid| pid > 0 && pid <= i32::MAX as u64)
+    {
+        return Err(ProviderError::contract("Invalid owned code host identity"));
+    }
+    if value["state"] == "starting" && !required && value["native_pid"].is_null() {
+        return Ok(Some(value));
+    }
+    if value["state"] != "running"
+        || !value["native_pid"].as_u64().is_some_and(|pid| {
+            pid > 0 && pid <= i32::MAX as u64 && value["native_pid"] != value["proxy_pid"]
+        })
+    {
+        return Err(ProviderError::contract(
+            "Owned code host stopped or failed its guard",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        let proxy =
+            rustix::process::Pid::from_raw(value["proxy_pid"].as_u64().unwrap() as i32).unwrap();
+        let native =
+            rustix::process::Pid::from_raw(value["native_pid"].as_u64().unwrap() as i32).unwrap();
+        if value["process_group"].as_u64() != value["proxy_pid"].as_u64()
+            || rustix::process::getpgid(Some(proxy)).ok() != Some(proxy)
+            || rustix::process::getpgid(Some(native)).ok() != Some(proxy)
+        {
+            return Err(ProviderError::contract(
+                "Owned code host process-group verification failed",
+            ));
+        }
+    }
+    #[cfg(windows)]
+    if !value["process_group"].is_null() {
+        return Err(ProviderError::contract(
+            "Unexpected Windows process-group claim",
+        ));
+    }
+    Ok(Some(value))
+}
+
+pub(crate) fn validate_computation(
+    items: &[Value],
+    config: &ProviderConfig,
+) -> Result<(), ProviderError> {
+    if items.len() > 48 || (config.pure_js.is_none() && !items.is_empty()) {
+        return Err(ProviderError::contract(
+            "Unexpected or excessive computation observations",
+        ));
+    }
+    let bytes = serde_json::to_vec(items)
+        .map_err(|_| ProviderError::contract("Cannot encode computation observations"))?;
+    if bytes.len() > config.max_output_bytes {
+        return Err(ProviderError::contract(
+            "Computation observations exceed output budget",
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for item in items {
+        verify_code_output(item)?;
+        if !ids.insert(item["id"].as_str().unwrap_or("")) {
+            return Err(ProviderError::contract("Duplicate computation observation"));
         }
     }
     Ok(())
@@ -1231,7 +1671,7 @@ fn classify_error(error: &Value) -> ProviderError {
     }
 }
 
-fn sanitize_limits(value: &Value) -> Value {
+fn sanitize_limits(value: &Value) -> Result<Value, ProviderError> {
     fn snapshot(value: &Value) -> Value {
         let mut output = serde_json::Map::new();
         for key in ["planType", "rateLimitReachedType", "spendControlReached"] {
@@ -1257,6 +1697,12 @@ fn sanitize_limits(value: &Value) -> Value {
         Value::Object(output)
     }
     let mut output = serde_json::Map::new();
+    if let Some(allowed) = value.get("ordinaryUsageAllowed") {
+        if !allowed.is_null() && !allowed.is_boolean() {
+            return Err(ProviderError::contract("Invalid ordinary usage permission"));
+        }
+        output.insert("ordinaryUsageAllowed".to_owned(), allowed.clone());
+    }
     if let Some(limits) = value.get("rateLimits") {
         output.insert("rateLimits".to_owned(), snapshot(limits));
     }
@@ -1271,7 +1717,7 @@ fn sanitize_limits(value: &Value) -> Value {
             ),
         );
     }
-    Value::Object(output)
+    Ok(Value::Object(output))
 }
 
 fn quota_exhausted(value: &Value) -> bool {
@@ -1280,6 +1726,7 @@ fn quota_exhausted(value: &Value) -> bool {
             (key == "usedPercent" && value.as_i64().is_some_and(|used| used >= 100))
                 || (key == "rateLimitReachedType" && !value.is_null())
                 || (key == "spendControlReached" && value == &Value::Bool(true))
+                || (key == "ordinaryUsageAllowed" && value == &Value::Bool(false))
                 || quota_exhausted(value)
         }),
         _ => false,
@@ -1361,7 +1808,11 @@ fn main() {
         let line = line.unwrap();
         if !line.contains("\"id\":") { continue; }
         let id: u64 = line.split("\"id\":").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
-        let result = if line.contains("\"method\":\"initialize\"") { "{}".to_owned() }
+        let result = if line.contains("\"method\":\"initialize\"") {
+            if mode == "pure_old_version" { r#"{"userAgent":"naome_research/0.153.4"}"#.to_owned() }
+            else if mode.starts_with("pure") { r#"{"userAgent":"naome_research/0.159.2 (test)"}"#.to_owned() }
+            else { "{}".to_owned() }
+        }
         else if line.contains("\"method\":\"account/read\"") {
             assert!(line.contains("\"refreshToken\":false"));
             if mode == "api_key" { r#"{"account":{"type":"apiKey"}}"#.to_owned() }
@@ -1369,6 +1820,10 @@ fn main() {
         }
         else if line.contains("\"method\":\"config/read\"") {
             assert!(line.contains("\"includeLayers\":true"));
+            if mode.starts_with("pure") {
+                emit(&format!(r#"{{"id":{id},"result":{}}}"#, std::fs::read_to_string(home.join("effective-response.json")).unwrap()));
+                continue;
+            }
             let projection = config.replace(r#""tools":{"experimental_request_user_input":{"enabled":false},"update_plan":{"enabled":false}}"#, r#""tools":{}"#);
             format!(r#"{{"config":{projection},"origins":{{"tools.update_plan.enabled":{{"name":{{"type":"sessionFlags"}},"version":"fixture-v1"}},"tools.experimental_request_user_input.enabled":{{"name":{{"type":"sessionFlags"}},"version":"fixture-v1"}}}},"layers":[{{"name":{{"type":"sessionFlags"}},"version":"fixture-v1","config":{config}}}]}}"#)
         }
@@ -1377,6 +1832,7 @@ fn main() {
             else { r#"{"data":[{"model":"fixture-model","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low"}]}],"nextCursor":null}"#.to_owned() }
         }
         else if line.contains("\"method\":\"account/rateLimits/read\"") {
+            if mode == "ordinary_denied" { emit(&format!(r#"{{"id":{id},"result":{{"ordinaryUsageAllowed":false,"rateLimits":{{"primary":{{"usedPercent":1}}}}}}}}"#)); continue; }
             let used = if mode == "quota" { 100 } else { 17 };
             format!("{{\"rateLimits\":{{\"primary\":{{\"usedPercent\":{used},\"resetsAt\":123}}}},\"accountId\":\"private-account\"}}")
         }
@@ -1408,6 +1864,22 @@ fn main() {
             if mode == "async_delivery" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","phase":"final_answer","delivery":"async","text":"{\"vote\":true}"}}}"#); continue; }
             if mode == "async_questions" { emit(r#"{"method":"item/started","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","phase":"final_answer","questions":[],"text":"{\"vote\":true}"}}}"#); continue; }
             if mode == "wrong_turn" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"other-turn","item":{"type":"agentMessage","text":"{}"}}}"#); continue; }
+            if mode.starts_with("pure") {
+                let host = std::env::var("NAOME_RESEARCH_HOST_CONFIG").unwrap();
+                let path = host.split("\"status_file\":\"").nth(1).unwrap().split('"').next().unwrap().replace("\\\\", "\\");
+                let native = std::process::Command::new(std::env::current_exe().unwrap())
+                    .arg("--hold-pipes").stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+                let proxy = std::process::id();
+                let group = if cfg!(unix) { proxy.to_string() } else { "null".to_owned() };
+                let state = if mode == "pure_host_failed" { "failed" } else { "running" };
+                std::fs::write(path, format!("{{\"state\":\"{state}\",\"proxy_pid\":{proxy},\"native_pid\":{},\"process_group\":{group}}}", native.id())).unwrap();
+                let name = if mode == "pure_wrong_name" { "exec_command" } else { "exec" };
+                let output = if mode == "pure_media" { r#"[{"type":"inputImage","imageUrl":"unused"}]"# } else { r#"[{"type":"inputText","text":"2"}]"# };
+                let frame = format!(r#"{{"method":"item/completed","params":{{"threadId":"fixture-thread","turnId":"fixture-turn","item":{{"id":"cell-output","type":"functionCallOutput","name":"{name}","namespace":"functions","output":{output}}}}}}}"#);
+                emit(&frame);
+                if mode == "pure_duplicate" { emit(&frame); }
+            }
             if mode == "malformed" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","text":"not json"}}}"#); }
             else { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"answer","type":"agentMessage","phase":"final_answer","text":"{\"vote\":true}"}}}"#); }
             emit(r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"fixture-thread","turnId":"fixture-turn","tokenUsage":{"last":{"inputTokens":10,"outputTokens":4,"totalTokens":14},"private":"secret"}}}"#);
@@ -1472,9 +1944,48 @@ fn main() {
                     timeout_seconds: 3,
                     max_output_bytes: 64 * 1024,
                     disabled_registries: Default::default(),
+                    pure_js: None,
                 },
                 home,
             }
+        }
+
+        fn enable_pure_js(&mut self) {
+            let manifest = json!({"layoutVersion":1,"version":"0.159.2","entrypoint":if cfg!(windows) {"bin/codex.exe"} else {"bin/codex"}});
+            fs::write(self.home.join("codex-package.json"), manifest.to_string()).unwrap();
+            let digest = executable_digest(&self.config.codex_binary).unwrap();
+            self.config.pure_js = Some(PureJsConfig {
+                native_host_binary: self.config.codex_binary.clone(),
+                host_proxy_binary: self.config.codex_binary.clone(),
+                package_manifest: self.home.join("codex-package.json"),
+                codex_binary_sha256: digest.clone(),
+                native_host_sha256: digest.clone(),
+                host_proxy_sha256: digest,
+                package_manifest_sha256: executable_digest(&self.home.join("codex-package.json"))
+                    .unwrap(),
+            });
+            let mut effective = json!({"config":{},"origins":{},"layers":[{
+                "name":{"type":"sessionFlags"},"version":"fixture-v1","config":{}}]});
+            for (key, value) in provider_overrides(&self.config) {
+                for root in ["/config", "/layers/0/config"] {
+                    let mut parent = effective.pointer_mut(root).unwrap();
+                    let parts = key.split('.').collect::<Vec<_>>();
+                    for part in &parts[..parts.len() - 1] {
+                        if parent.get(part).is_none() {
+                            parent[*part] = json!({});
+                        }
+                        parent = &mut parent[*part];
+                    }
+                    parent[parts[parts.len() - 1]] = value.clone();
+                }
+                effective["origins"][key] =
+                    json!({"name":{"type":"sessionFlags"},"version":"fixture-v1"});
+            }
+            fs::write(
+                self.home.join("effective-response.json"),
+                effective.to_string(),
+            )
+            .unwrap();
         }
     }
 
@@ -1486,6 +1997,163 @@ fn main() {
 
     fn schema() -> Value {
         json!({"type":"object","properties":{"vote":{"type":"boolean"}},"required":["vote"],"additionalProperties":false})
+    }
+
+    #[test]
+    fn ordinary_usage_permission_preserves_unknown_and_blocks_explicit_denial() {
+        for source in [
+            json!({}),
+            json!({"ordinaryUsageAllowed":null}),
+            json!({"ordinaryUsageAllowed":true}),
+        ] {
+            let safe = sanitize_limits(&source).unwrap();
+            assert_eq!(
+                safe.get("ordinaryUsageAllowed"),
+                source.get("ordinaryUsageAllowed")
+            );
+            assert!(!quota_exhausted(&safe));
+        }
+        let fixture = Fixture::new("ordinary_denied");
+        let mut server = AppServer::start(&fixture.config).unwrap();
+        assert_eq!(server.limits()["ordinaryUsageAllowed"], false);
+        assert_eq!(
+            server
+                .request("bounded question", schema())
+                .unwrap_err()
+                .kind,
+            ProviderErrorKind::Quota
+        );
+        assert!(!fixture.home.join("turn-started").exists());
+        for invalid in [json!(0), json!("false"), json!([]), json!({})] {
+            assert!(sanitize_limits(&json!({"ordinaryUsageAllowed":invalid})).is_err());
+        }
+    }
+
+    #[test]
+    fn pure_js_staging_pins_bytes_and_origin_bound_configuration() {
+        let mut fixture = Fixture::new("pure_success");
+        fixture.enable_pure_js();
+        fixture.config.validate().unwrap();
+        let effective: Value = serde_json::from_slice(
+            &fs::read(fixture.home.join("effective-response.json")).unwrap(),
+        )
+        .unwrap();
+        verify_provider_config(&effective, &fixture.config).unwrap();
+        for key in [
+            "features.code_mode.excluded_tool_namespaces",
+            "features.code_mode_host.disable_in_process_fallback",
+        ] {
+            let mut altered = effective.clone();
+            altered["origins"][key]["version"] = json!("other");
+            assert!(verify_provider_config(&altered, &fixture.config).is_err());
+        }
+        let directory = create_empty_directory().unwrap();
+        let (cli, encoded) = stage_pure_js(&fixture.config, &directory).unwrap();
+        assert_eq!(cli.parent(), Some(directory.join("bin").as_path()));
+        assert_eq!(
+            executable_digest(&cli).unwrap(),
+            fixture.config.pure_js.as_ref().unwrap().codex_binary_sha256
+        );
+        assert!(
+            directory
+                .join("bin")
+                .join(if cfg!(windows) {
+                    "codex-code-mode-host.exe"
+                } else {
+                    "codex-code-mode-host"
+                })
+                .is_file()
+        );
+        assert!(directory.join("codex-package.json").exists());
+        assert!(!directory.join("codex-resources").exists());
+        let host: crate::host_proxy::HostProxyConfig =
+            serde_json::from_str(&encoded.unwrap()).unwrap();
+        assert_eq!(host.native_binary.parent(), Some(directory.as_path()));
+        assert_eq!(host.timeout_millis, fixture.config.timeout_seconds * 1000);
+        fs::remove_dir_all(directory).unwrap();
+        fixture.config.pure_js.as_mut().unwrap().native_host_sha256 = "0".repeat(64);
+        assert!(fixture.config.validate().is_err());
+    }
+
+    #[test]
+    fn pure_js_stdio_path_preserves_bounded_outputs_and_rejects_contract_changes() {
+        let mut fixture = Fixture::new("pure_success");
+        fixture.enable_pure_js();
+        let mut server = AppServer::start(&fixture.config).unwrap();
+        let response = server.request("bounded mathematics", schema()).unwrap();
+        assert_eq!(response.computation.len(), 1);
+        assert_eq!(response.value, json!({"vote":true}));
+        assert_eq!(
+            server.info()["hostRuntime"]["auditedCodexVersion"],
+            "0.159.2"
+        );
+        for mode in [
+            "pure_wrong_name",
+            "pure_media",
+            "pure_duplicate",
+            "pure_old_version",
+            "pure_host_failed",
+        ] {
+            let mut fixture = Fixture::new(mode);
+            fixture.enable_pure_js();
+            let result = AppServer::start(&fixture.config)
+                .and_then(|mut server| server.request("bounded mathematics", schema()));
+            assert_eq!(
+                result.unwrap_err().kind,
+                ProviderErrorKind::Contract,
+                "{mode}"
+            );
+            if mode == "pure_old_version" {
+                assert!(!fixture.home.join("turn-started").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn code_wrapper_outputs_allow_only_exact_native_names_and_text() {
+        let valid = json!({"type":"functionCallOutput","id":"cell-output","name":"exec","namespace":"functions","output":[{"type":"inputText","text":"1"}]});
+        verify_code_output(&valid).unwrap();
+        for (field, value) in [
+            ("namespace", json!("clock")),
+            ("name", json!("exec_command")),
+            ("id", json!("")),
+            ("output", json!([{"type":"inputImage","imageUrl":"x"}])),
+            ("output", json!({"text":"1"})),
+        ] {
+            let mut altered = valid.clone();
+            altered[field] = value;
+            assert!(verify_code_output(&altered).is_err());
+        }
+        let fixture = Fixture::new("success");
+        assert!(validate_computation(std::slice::from_ref(&valid), &fixture.config).is_err());
+        let mut enabled = fixture.config.clone();
+        enabled.pure_js = Some(PureJsConfig {
+            native_host_binary: enabled.codex_binary.clone(),
+            host_proxy_binary: enabled.codex_binary.clone(),
+            package_manifest: enabled.codex_binary.clone(),
+            package_manifest_sha256: String::new(),
+            codex_binary_sha256: String::new(),
+            native_host_sha256: String::new(),
+            host_proxy_sha256: String::new(),
+        });
+        validate_computation(std::slice::from_ref(&valid), &enabled).unwrap();
+        assert!(validate_computation(&[valid.clone(), valid], &enabled).is_err());
+    }
+
+    #[test]
+    fn permanent_host_failure_is_rejected_even_without_an_observation() {
+        let directory = create_empty_directory().unwrap();
+        let status = directory.join("host-status.json");
+        assert!(verify_host_status(&status, false).unwrap().is_none());
+        fs::write(directory.join("host-status.json.failed"), []).unwrap();
+        assert!(verify_host_status(&status, false).is_err());
+        fs::write(
+            &status,
+            r#"{"state":"starting","proxy_pid":1,"native_pid":null,"process_group":1}"#,
+        )
+        .unwrap();
+        assert!(verify_host_status(&status, false).is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

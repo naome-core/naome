@@ -1,5 +1,6 @@
 [package]
 name = "naome-research"
+default-run = "naome-research"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

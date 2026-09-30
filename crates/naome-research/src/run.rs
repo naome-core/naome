@@ -171,6 +171,8 @@ struct Receipt {
     error: Option<String>,
     head: Id,
     response_digest: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    response_record_digest: Option<Id>,
 }
 
 enum ApplyError {
@@ -296,6 +298,13 @@ where
             {
                 return Err("saved provider response provenance mismatch".into());
             }
+            if let Some(record_digest) = receipt.response_record_digest {
+                if record_digest != hash(b"naome:research:response-record:v1\0", &reply) {
+                    return Err("saved provider computation provenance mismatch".into());
+                }
+            } else if !reply.computation.is_empty() {
+                return Err("saved computation has no record digest".into());
+            }
         }
         if reservation.attempt > 1 {
             return Err("provider retry bound exceeded".into());
@@ -350,7 +359,7 @@ where
         }
         let (signing, interests) = &participants[index];
         let participant = &config.participants[index];
-        let (prompt, schema, target) = match phase {
+        let (mut prompt, schema, target) = match phase {
             0 => (discover_prompt(interests), discovery_schema(), None),
             1 => {
                 if state.questions().keys().all(|id| state.solved(*id)) {
@@ -385,6 +394,10 @@ where
                 )
             }
         };
+        if participant.provider.pure_js.is_some() {
+            prompt = prompt.replace("You have no tools or environment access.",
+                "You may use bounded pure JavaScript mathematics and strings through exec/wait. No filesystem, network, terminal or external tools are available.");
+        }
         if prompt.len() > crate::provider::MAX_INPUT_BYTES {
             return Err("research prompt exceeds provider input bound before reservation".into());
         }
@@ -444,6 +457,7 @@ where
         let mut usage = Value::Null;
         let mut provider = Value::Null;
         let mut response_digest = None;
+        let mut response_record_digest = None;
         match response {
             Ok((reply, info)) => {
                 if reply.raw_response.len() > participant.provider.max_output_bytes
@@ -454,6 +468,8 @@ where
                 {
                     return Err("provider response preservation contract failed; reservation remains consumed".into());
                 }
+                crate::provider::validate_computation(&reply.computation, &participant.provider)
+                    .map_err(|_| "provider computation preservation contract failed; reservation remains consumed")?;
                 // Original final text is retained before semantic checking or any
                 // durable state transition, including rejected provider outputs.
                 write_record(
@@ -462,6 +478,10 @@ where
                     MAX_RESPONSE_BYTES,
                 )?;
                 response_digest = Some(hash(b"naome:research:response:v1\0", &reply.raw_response));
+                if participant.provider.pure_js.is_some() {
+                    response_record_digest =
+                        Some(hash(b"naome:research:response-record:v1\0", &reply));
+                }
                 usage = reply.usage;
                 provider = info;
                 if let Err(reason) = apply_reply(
@@ -505,6 +525,7 @@ where
             error: error.clone(),
             head: state.head(),
             response_digest,
+            response_record_digest,
         };
         write_record(
             &call_path.join(format!("receipt-{calls:04}.json")),
@@ -845,6 +866,7 @@ pub fn prepare(
                 timeout_seconds: 90,
                 max_output_bytes: 256 * 1024,
                 disabled_registries: Default::default(),
+                pure_js: None,
             },
         });
     }

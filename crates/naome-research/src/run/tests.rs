@@ -3,6 +3,58 @@ use crate::scenario::{equality_answer, equality_question, refutation_answer, ref
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn pure_js_observations_are_preserved_and_rechecked_without_proof_authority() {
+    use sha2::Digest;
+    let (root, mut config) = config();
+    let manifest = root.join("codex-package.json");
+    fs::write(
+        &manifest,
+        serde_json::to_vec(&json!({"layoutVersion":1,"version":"0.159.2",
+        "entrypoint":if cfg!(windows) {"bin/codex.exe"} else {"bin/codex"}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let digest = |path: &Path| hex(&sha2::Sha256::digest(fs::read(path).unwrap()));
+    for participant in &mut config.participants {
+        let binary = participant.provider.codex_binary.clone();
+        participant.provider.pure_js = Some(crate::provider::PureJsConfig {
+            native_host_binary: binary.clone(),
+            host_proxy_binary: binary.clone(),
+            package_manifest: manifest.clone(),
+            codex_binary_sha256: digest(&binary),
+            native_host_sha256: digest(&binary),
+            host_proxy_sha256: digest(&binary),
+            package_manifest_sha256: digest(&manifest),
+        });
+    }
+    let report = execute(&config, |_, prompt, _| {
+        assert!(!prompt.contains("You have no tools or environment access."));
+        assert!(prompt.contains("bounded pure JavaScript"));
+        let value = fixture_reply(prompt);
+        Ok((ProviderReply {
+            raw_response:serde_json::to_string(&value).unwrap(), value, usage:Value::Null,
+            computation:vec![json!({"type":"functionCallOutput","id":"output-1","name":"exec","output":"42"})],
+        },json!({"fixture":true})))
+    }).unwrap();
+    assert_eq!(report["run"]["result_blocks"], 2);
+    let saved = config.directory.join("provider_calls/response-0000.json");
+    let mut reply: Value = serde_json::from_slice(&fs::read(&saved).unwrap()).unwrap();
+    assert_eq!(reply["computation"][0]["output"], "42");
+    execute(&config, |_, _, _| {
+        panic!("completed run must not contact provider")
+    })
+    .unwrap();
+    reply["computation"][0]["output"] = json!("43");
+    fs::write(saved, serde_json::to_vec(&reply).unwrap()).unwrap();
+    let error = execute(&config, |_, _, _| {
+        panic!("corrupt provenance must stop before provider")
+    })
+    .unwrap_err();
+    assert!(error.contains("computation provenance"));
+    fs::remove_dir_all(root).unwrap();
+}
 fn config() -> (PathBuf, RunConfig) {
     let root = std::env::temp_dir().join(format!(
         "naome-research-run-tests-{}-{}",
@@ -45,6 +97,7 @@ fn config() -> (PathBuf, RunConfig) {
                 timeout_seconds: 2,
                 max_output_bytes: 256 * 1024,
                 disabled_registries: Default::default(),
+                pure_js: None,
             },
         });
     }
@@ -109,6 +162,7 @@ fn autonomous_interest_discovery_votes_proof_refutation_and_restart_consume_six_
                 value: fixture_reply(prompt),
                 raw_response: serde_json::to_string(&fixture_reply(prompt)).unwrap(),
                 usage: json!({"fixture":true}),
+                computation: Vec::new(),
             },
             json!({"fixture":true}),
         ))
@@ -217,6 +271,7 @@ fn large_escaped_rejected_response_restarts_with_verified_original_provenance() 
                 raw_response,
                 value,
                 usage: Value::Null,
+                computation: Vec::new(),
             },
             Value::Null,
         ))
@@ -290,6 +345,7 @@ fn schema_valid_substitution_and_invalid_proof_never_confirm() {
                 raw_response: serde_json::to_string(&reply).unwrap(),
                 value: reply,
                 usage: Value::Null,
+                computation: Vec::new(),
             },
             Value::Null,
         ))
@@ -316,6 +372,7 @@ fn partial_vote_append_failure_stops_before_another_provider_call_and_replays_tr
                 raw_response: serde_json::to_string(&value).unwrap(),
                 value,
                 usage: Value::Null,
+                computation: Vec::new(),
             },
             Value::Null,
         ))
