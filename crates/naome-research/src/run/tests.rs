@@ -44,6 +44,7 @@ fn config() -> (PathBuf, RunConfig) {
                 model: "fixture-model".into(),
                 timeout_seconds: 2,
                 max_output_bytes: 256 * 1024,
+                disabled_registries: Default::default(),
             },
         });
     }

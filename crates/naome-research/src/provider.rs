@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
@@ -31,6 +31,57 @@ pub struct ProviderConfig {
     pub model: String,
     pub timeout_seconds: u64,
     pub max_output_bytes: usize,
+    /// Optional exact inherited names to disable on the initial process launch.
+    #[serde(default, skip_serializing_if = "DisabledRegistries::is_empty")]
+    pub disabled_registries: DisabledRegistries,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisabledRegistries {
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub plugins: Vec<String>,
+}
+
+impl DisabledRegistries {
+    fn is_empty(&self) -> bool {
+        self.mcp_servers.is_empty() && self.plugins.is_empty()
+    }
+
+    fn validate(&self) -> Result<(), ProviderError> {
+        for names in [&self.mcp_servers, &self.plugins] {
+            if names.len() > 64
+                || names.iter().any(|name| {
+                    name.is_empty() || name.len() > 256 || name.chars().any(char::is_control)
+                })
+                || names.iter().collect::<BTreeSet<_>>().len() != names.len()
+            {
+                return Err(ProviderError::contract(
+                    "Invalid bounded initial registry names",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn overrides(&self) -> Vec<String> {
+        [
+            ("mcp_servers", &self.mcp_servers),
+            ("plugins", &self.plugins),
+        ]
+        .into_iter()
+        .filter(|(_, names)| !names.is_empty())
+        .map(|(registry, names)| {
+            let entries = names
+                .iter()
+                .map(|name| format!("{}={{enabled=false}}", json!(name)))
+                .collect::<Vec<_>>();
+            format!("{registry}={{{}}}", entries.join(","))
+        })
+        .collect()
+    }
 }
 
 impl ProviderConfig {
@@ -47,7 +98,7 @@ impl ProviderConfig {
                 "Invalid bounded App Server configuration",
             ));
         }
-        Ok(())
+        self.disabled_registries.validate()
     }
 }
 
@@ -363,7 +414,12 @@ impl AppServer {
                 .arg("-c")
                 .arg(format!("{key}={}", toml_value(&value)));
         }
-        for override_value in disables {
+        for override_value in config
+            .disabled_registries
+            .overrides()
+            .iter()
+            .chain(disables)
+        {
             command.arg("-c").arg(override_value);
         }
         // Keep native Codex state and logs separate from both credentials and the
@@ -468,7 +524,7 @@ impl AppServer {
         }
         let effective = self.rpc(
             "config/read",
-            json!({"includeLayers":false,"cwd":self.cwd}),
+            json!({"includeLayers":true,"cwd":self.cwd}),
             budget,
         )?;
         self.required_disables = registry_disables(&effective["config"])?;
@@ -477,7 +533,7 @@ impl AppServer {
                 "Inherited registries require explicit isolated disables",
             ));
         }
-        verify_isolation_config(&effective["config"])?;
+        verify_isolation_config(&effective)?;
         let mut cursor = Value::Null;
         let mut selected = None;
         for _ in 0..MAX_MODEL_PAGES {
@@ -527,7 +583,8 @@ impl AppServer {
             "transport":"stdio", "environmentAccess":false,
             "timeoutSeconds":self.config.timeout_seconds,
             "maxOutputBytes":self.config.max_output_bytes,
-            "maxInputBytes":MAX_INPUT_BYTES, "maxEvents":MAX_EVENTS
+            "maxInputBytes":MAX_INPUT_BYTES, "maxEvents":MAX_EVENTS,
+            "toolConfigVerification":"origin_bound_session_flags"
         });
         Ok(())
     }
@@ -811,10 +868,21 @@ impl AppServer {
                 }
             }
             "item/started" | "item/completed" => {
-                let kind = params["item"]["type"].as_str().unwrap_or("");
+                let item = &params["item"];
+                let kind = item["type"].as_str().unwrap_or("");
                 if !matches!(kind, "userMessage" | "agentMessage" | "reasoning") {
                     return Err(ProviderError::contract(
                         "Provider attempted an unsupported item or tool",
+                    ));
+                }
+                // The native async question utility is catalog-gated separately
+                // from the synchronous input setting. Its trace is an agent
+                // message, so kind alone cannot establish an ordinary response.
+                if kind == "agentMessage"
+                    && (!item["delivery"].is_null() || !item["questions"].is_null())
+                {
+                    return Err(ProviderError::contract(
+                        "Provider attempted asynchronous user input",
                     ));
                 }
             }
@@ -940,7 +1008,8 @@ fn create_empty_directory() -> Result<PathBuf, ProviderError> {
     ))
 }
 
-fn verify_isolation_config(config: &Value) -> Result<(), ProviderError> {
+fn verify_isolation_config(effective: &Value) -> Result<(), ProviderError> {
+    let config = &effective["config"];
     for (key, expected) in isolation_overrides() {
         let pointer = format!("/{}", key.replace('.', "/"));
         if ["mcp_servers", "plugins"].contains(&key)
@@ -948,8 +1017,24 @@ fn verify_isolation_config(config: &Value) -> Result<(), ProviderError> {
         {
             continue;
         }
-        if config.pointer(&pointer) != Some(&expected) {
-            let shape = match config.pointer(&pointer) {
+        if key == "hooks" && hook_lists_are_empty(config.pointer(&pointer)) {
+            continue;
+        }
+        // ApiConfig's typed ToolsV2 retains only web_search in 0.153.4.
+        // Verify the two omitted booleans in the actual enabled CLI layer and
+        // require their effective origin to match that layer's name/version.
+        let actual = if [
+            "tools.update_plan.enabled",
+            "tools.experimental_request_user_input.enabled",
+        ]
+        .contains(&key)
+        {
+            origin_bound_tool_value(effective, key)
+        } else {
+            config.pointer(&pointer)
+        };
+        if actual != Some(&expected) {
+            let shape = match actual {
                 Some(Value::Object(values)) => format!("object with {} entries", values.len()),
                 Some(Value::Array(values)) => format!("array with {} entries", values.len()),
                 Some(Value::Null) => "null".into(),
@@ -963,6 +1048,76 @@ fn verify_isolation_config(config: &Value) -> Result<(), ProviderError> {
         }
     }
     Ok(())
+}
+
+fn origin_bound_tool_value<'a>(effective: &'a Value, key: &str) -> Option<&'a Value> {
+    let origin = effective.get("origins")?.get(key)?;
+    if origin.pointer("/name/type")?.as_str()? != "sessionFlags" {
+        return None;
+    }
+    let version = origin.get("version")?.as_str()?;
+    if version.is_empty() || version.len() > 256 {
+        return None;
+    }
+    let layers = effective.get("layers")?.as_array()?;
+    if layers.len() > 64 {
+        return None;
+    }
+    let mut matches = layers.iter().filter(|layer| {
+        layer.get("name") == origin.get("name") && layer.get("version") == origin.get("version")
+    });
+    let layer = matches.next()?;
+    if matches.next().is_some() || !layer.get("disabledReason").is_none_or(Value::is_null) {
+        return None;
+    }
+    layer
+        .get("config")?
+        .pointer(&format!("/{}", key.replace('.', "/")))
+}
+
+fn hook_lists_are_empty(value: Option<&Value>) -> bool {
+    // HooksToml serializes empty event lists plus stored enabled/trusted-hash
+    // metadata. State entries contain no executable hook; features.hooks=false
+    // is independently required by verify_isolation_config.
+    const EVENTS: [&str; 12] = [
+        "Interrupt",
+        "PermissionRequest",
+        "PostCompact",
+        "PostToolUse",
+        "PreCompact",
+        "PreToolUse",
+        "SessionEnd",
+        "SessionStart",
+        "Stop",
+        "SubagentStart",
+        "SubagentStop",
+        "UserPromptSubmit",
+    ];
+    value.and_then(Value::as_object).is_some_and(|fields| {
+        fields.iter().all(|(key, value)| {
+            if EVENTS.contains(&key.as_str()) {
+                value.as_array().is_some_and(Vec::is_empty)
+            } else if key == "state" {
+                value.as_object().is_some_and(|entries| {
+                    entries.len() <= 64
+                        && entries.iter().all(|(name, entry)| {
+                            name.len() <= 256
+                                && entry.as_object().is_some_and(|fields| {
+                                    fields.iter().all(|(key, value)| match key.as_str() {
+                                        "enabled" => value.is_boolean(),
+                                        "trusted_hash" => {
+                                            value.as_str().is_some_and(|hash| hash.len() <= 128)
+                                        }
+                                        _ => false,
+                                    })
+                                })
+                        })
+                })
+            } else {
+                false
+            }
+        })
+    })
 }
 
 fn registry_is_disabled(value: Option<&Value>) -> bool {
@@ -986,17 +1141,17 @@ fn registry_disables(config: &Value) -> Result<Vec<String>, ProviderError> {
             ));
         }
         let mut disabled_entries = Vec::new();
+        let mut needs_disable = false;
         for (name, entry) in entries {
             if name.len() > 256 || !entry.is_object() {
                 return Err(ProviderError::contract(
                     "Invalid inherited capability entry",
                 ));
             }
-            if entry.get("enabled") != Some(&Value::Bool(false)) {
-                disabled_entries.push(format!("{}={{enabled=false}}", json!(name)));
-            }
+            needs_disable |= entry.get("enabled") != Some(&Value::Bool(false));
+            disabled_entries.push(format!("{}={{enabled=false}}", json!(name)));
         }
-        if !disabled_entries.is_empty() {
+        if needs_disable {
             // CLI paths are split on dots without TOML key unquoting. Use a
             // root inline table so quoted registry names remain exact keys.
             keys.push(format!("{registry}={{{}}}", disabled_entries.join(",")));
@@ -1173,10 +1328,11 @@ fn main() {
         let launches = home.join("launches");
         let count: usize = std::fs::read_to_string(&launches).unwrap_or_else(|_| "0".into()).parse().unwrap();
         std::fs::write(launches, (count + 1).to_string()).unwrap();
-        if args.iter().any(|arg| arg == r#"mcp_servers={"fixture.server"={enabled=false}}"#) {
-            config = config.replace(r#""fixture.server":{"enabled":true}"#, r#""fixture.server":{"enabled":false}"#);
-        } else {
-            assert_eq!(count, 0);
+        for (registry, name) in [("mcp_servers", "fixture.server"), ("mcp_servers", "fixture.initial"), ("plugins", "fixture@vendor")] {
+            let needle = format!("\"{name}\"={{enabled=false}}");
+            if args.iter().any(|arg| arg.starts_with(&format!("{registry}={{")) && arg.contains(&needle)) {
+                config = config.replace(&format!("\"{name}\":{{\"enabled\":true}}"), &format!("\"{name}\":{{\"enabled\":false}}"));
+            }
         }
     }
     if mode == "descendant" {
@@ -1198,7 +1354,11 @@ fn main() {
             if mode == "api_key" { r#"{"account":{"type":"apiKey"}}"#.to_owned() }
             else { r#"{"account":{"type":"chatgpt","email":"private@example.test","planType":"pro"}}"#.to_owned() }
         }
-        else if line.contains("\"method\":\"config/read\"") { format!("{{\"config\":{config}}}") }
+        else if line.contains("\"method\":\"config/read\"") {
+            assert!(line.contains("\"includeLayers\":true"));
+            let projection = config.replace(r#""tools":{"experimental_request_user_input":{"enabled":false},"update_plan":{"enabled":false}}"#, r#""tools":{}"#);
+            format!(r#"{{"config":{projection},"origins":{{"tools.update_plan.enabled":{{"name":{{"type":"sessionFlags"}},"version":"fixture-v1"}},"tools.experimental_request_user_input.enabled":{{"name":{{"type":"sessionFlags"}},"version":"fixture-v1"}}}},"layers":[{{"name":{{"type":"sessionFlags"}},"version":"fixture-v1","config":{config}}}]}}"#)
+        }
         else if line.contains("\"method\":\"model/list\"") {
             if mode == "missing_model" { r#"{"data":[],"nextCursor":null}"#.to_owned() }
             else { r#"{"data":[{"model":"fixture-model","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low"}]}],"nextCursor":null}"#.to_owned() }
@@ -1224,6 +1384,8 @@ fn main() {
             if mode == "server_request" { emit(r#"{"id":22,"method":"item/commandExecution/requestApproval","params":{}}"#); continue; }
             if mode == "external_auth" { emit(r#"{"method":"account/updated","params":{"authMode":"chatgptAuthTokens"}}"#); continue; }
             if mode == "tool" { emit(r#"{"method":"item/started","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"commandExecution","command":"touch forbidden"}}}"#); continue; }
+            if mode == "async_delivery" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","phase":"final_answer","delivery":"async","text":"{\"vote\":true}"}}}"#); continue; }
+            if mode == "async_questions" { emit(r#"{"method":"item/started","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","phase":"final_answer","questions":[],"text":"{\"vote\":true}"}}}"#); continue; }
             if mode == "wrong_turn" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"other-turn","item":{"type":"agentMessage","text":"{}"}}}"#); continue; }
             if mode == "malformed" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","text":"not json"}}}"#); }
             else { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"answer","type":"agentMessage","phase":"final_answer","text":"{\"vote\":true}"}}}"#); }
@@ -1288,6 +1450,7 @@ fn main() {
                     model: "fixture-model".to_owned(),
                     timeout_seconds: 3,
                     max_output_bytes: 64 * 1024,
+                    disabled_registries: Default::default(),
                 },
                 home,
             }
@@ -1358,6 +1521,8 @@ fn main() {
             "malformed",
             "oversized",
             "flood",
+            "async_delivery",
+            "async_questions",
         ] {
             let fixture = Fixture::new(mode);
             let mut server = AppServer::start(&fixture.config).unwrap();
@@ -1425,6 +1590,141 @@ fn main() {
             server.request("Vote.", schema()).unwrap().value,
             json!({"vote":true})
         );
+    }
+
+    #[test]
+    fn initial_registry_names_avoid_restart_and_unknown_names_still_trigger_one() {
+        for unknown_server in [false, true] {
+            let mut fixture = Fixture::new("inherited");
+            fixture.config.disabled_registries = DisabledRegistries {
+                mcp_servers: vec!["fixture.initial".into()],
+                plugins: vec!["fixture@vendor".into()],
+            };
+            let file = fixture.home.join("effective.json");
+            let mut value: Value =
+                serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+            value["mcp_servers"]["fixture.initial"] = json!({"enabled":true});
+            value["plugins"]["fixture@vendor"] = json!({"enabled":true});
+            if unknown_server {
+                value["mcp_servers"]["fixture.server"] = json!({"enabled":true});
+            }
+            fs::write(file, value.to_string()).unwrap();
+            let mut server = AppServer::start(&fixture.config).unwrap();
+            assert_eq!(
+                fs::read_to_string(fixture.home.join("launches")).unwrap(),
+                if unknown_server { "2" } else { "1" }
+            );
+            assert_eq!(
+                server.request("Vote.", schema()).unwrap().value,
+                json!({"vote":true})
+            );
+        }
+    }
+
+    fn effective_layer(fixture: &Fixture) -> Value {
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(fixture.home.join("effective.json")).unwrap())
+                .unwrap();
+        let mut projection = config.clone();
+        projection["tools"] = json!({});
+        json!({
+            "config":projection,
+            "origins":{
+                "tools.update_plan.enabled":{"name":{"type":"sessionFlags"},"version":"fixture-v1"},
+                "tools.experimental_request_user_input.enabled":{"name":{"type":"sessionFlags"},"version":"fixture-v1"}
+            },
+            "layers":[{"name":{"type":"sessionFlags"},"version":"fixture-v1","config":config}]
+        })
+    }
+
+    #[test]
+    fn omitted_tool_settings_require_matching_enabled_effective_origins() {
+        let fixture = Fixture::new("success");
+        let effective = effective_layer(&fixture);
+        assert!(
+            effective["config"]
+                .pointer("/tools/update_plan/enabled")
+                .is_none()
+        );
+        verify_isolation_config(&effective).unwrap();
+        for case in 0..9 {
+            let mut value = effective.clone();
+            match case {
+                0 => {
+                    value["origins"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("tools.update_plan.enabled");
+                }
+                1 => value["origins"]["tools.update_plan.enabled"]["name"]["type"] = json!("user"),
+                2 => value["origins"]["tools.update_plan.enabled"]["version"] = json!("other"),
+                3 => value["layers"][0]["disabledReason"] = json!(""),
+                4 => value["layers"] = json!([]),
+                5 => {
+                    let layer = value["layers"][0].clone();
+                    value["layers"].as_array_mut().unwrap().push(layer);
+                }
+                6 => value["layers"][0]["config"]["tools"]["update_plan"]["enabled"] = json!(true),
+                7 => {
+                    value["layers"][0]["config"]["tools"]["experimental_request_user_input"] =
+                        Value::Null
+                }
+                8 => {
+                    value["origins"]["tools.experimental_request_user_input.enabled"]["version"] =
+                        json!("")
+                }
+                _ => unreachable!(),
+            }
+            assert!(verify_isolation_config(&value).is_err(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn native_empty_hook_defaults_and_inert_state_require_no_executable_groups() {
+        let fixture = Fixture::new("success");
+        let mut effective = effective_layer(&fixture);
+        effective["config"]["hooks"] = json!({
+            "Interrupt":[], "PermissionRequest":[], "PostCompact":[], "PostToolUse":[],
+            "PreCompact":[], "PreToolUse":[], "SessionEnd":[], "SessionStart":[], "Stop":[],
+            "SubagentStart":[], "SubagentStop":[], "UserPromptSubmit":[],
+            "state":{"stored-hook":{"enabled":true,"trusted_hash":"inert-hash"}}
+        });
+        verify_isolation_config(&effective).unwrap();
+        for case in 0..5 {
+            let mut value = effective.clone();
+            match case {
+                0 => value["config"]["hooks"]["Stop"] = json!([{}]),
+                1 => value["config"]["hooks"]["UnknownEvent"] = json!([]),
+                2 => {
+                    value["config"]["hooks"]["state"]["stored-hook"]["command"] =
+                        json!("unsupported")
+                }
+                3 => value["config"]["hooks"]["state"]["stored-hook"]["enabled"] = json!("false"),
+                4 => value["config"]["features"]["hooks"] = json!(true),
+                _ => unreachable!(),
+            }
+            assert!(verify_isolation_config(&value).is_err(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn initial_registry_names_are_bounded_and_empty_configuration_preserves_old_bytes() {
+        let fixture = Fixture::new("success");
+        let serialized = serde_json::to_value(&fixture.config).unwrap();
+        assert!(serialized.get("disabled_registries").is_none());
+        let restored: ProviderConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), serialized);
+        for names in [
+            vec!["duplicate".into(), "duplicate".into()],
+            vec!["".into()],
+            vec!["x".repeat(257)],
+            vec!["line\nbreak".into()],
+            vec!["x".into(); 65],
+        ] {
+            let mut config = fixture.config.clone();
+            config.disabled_registries.mcp_servers = names;
+            assert!(config.validate().is_err());
+        }
     }
 
     #[test]
