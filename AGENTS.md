@@ -1,5 +1,32 @@
 # Codex repository instructions
 
+## Language defaults
+
+Write chat replies, progress updates and questions in German by default. Write
+durable outputs in English, including Space content, visual labels, code,
+comments, documentation, work records, commit messages and PR content. Keep
+each artifact consistent; preserve quotations, archived sources, fixed bytes
+and established identifiers. An explicit language request for the task takes
+precedence.
+
+## Documentation and task routing
+
+Maintain NAOME documentation, whitepapers, research, decisions, evidence and work
+tracking in the [NAOME Space](https://chatgpt.com/space/page_6abd15f8b06c8191849e7d5b25f0550e).
+Use `$naome-space`, read its [Agent operating guide](https://chatgpt.com/space/page_b7369d115b688191a1f45fda42b1c8fb)
+and the relevant domain Pages, and update affected records within the authorized
+scope. Keep code, executable experiments, fixtures, licenses and this bootstrap
+in Git; build, test and runtime operation must not require cloud access.
+Follow the guide's **Choose the format for the reader** rule: use editable
+documents, sheets, presentations or visuals when they make the task clearer,
+with one authoritative source and explicit provenance for derived artifacts.
+
+Originating chats coordinate substantial repository work with
+`$main-task-coordinator`; dispatched workers use `$implementation-task-worker`
+and do not redispatch the same assignment. A direct request to work in the
+current chat takes precedence. Completion reports authorize only the read-only
+next-work assessment, not another implementation scope or PR.
+
 ## Guarded pull-request automation
 
 The user grants standing authorization for pull requests created by Codex in
