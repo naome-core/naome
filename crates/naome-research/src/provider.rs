@@ -983,6 +983,7 @@ impl AppServer {
                 "resolvedNativeHostPath":self.runtime_dir.join(if cfg!(windows) {"native-code-mode-host.exe"} else {"native-code-mode-host"}),
                 "ownershipPolicy":if cfg!(unix) {"proxy_verifies_own_group_native_inherits"} else {"retained_child_tree_bounded_cleanup"},
                 "executeEnabledTools":"required_empty_before_forward",
+                "effectiveControls":pure_js_controls(&effective)?,
                 "hardHeapLimit":false,
                 "traceCoverage":"standard_v2_exec_wait_outputs"
             });
@@ -1494,7 +1495,9 @@ fn verify_overrides(effective: &Value, overrides: Vec<(&str, Value)>) -> Result<
         // ApiConfig's typed ToolsV2 retains only web_search in 0.153.4.
         // Verify the two omitted booleans in the actual enabled CLI layer and
         // require their effective origin to match that layer's name/version.
-        let actual = if [
+        let actual = if is_code_array_key(key) {
+            origin_bound_code_array_value(effective, key)
+        } else if [
             "tools.update_plan.enabled",
             "tools.experimental_request_user_input.enabled",
         ]
@@ -1684,6 +1687,89 @@ fn origin_bound_tool_value<'a>(effective: &'a Value, key: &str) -> Option<&'a Va
     layer
         .get("config")?
         .pointer(&format!("/{}", key.replace('.', "/")))
+}
+
+fn is_code_array_key(key: &str) -> bool {
+    matches!(
+        key,
+        "features.code_mode.excluded_tool_namespaces"
+            | "features.code_mode.direct_only_tool_namespaces"
+    )
+}
+
+fn origin_bound_code_array_value<'a>(effective: &'a Value, key: &str) -> Option<&'a Value> {
+    // Codex 0.159.2 records array origins per scalar element, and no leaf for [].
+    // Bind the raw array to the unique enabled CLI layer through code_mode.enabled,
+    // require the typed effective array to agree, and verify every element origin.
+    if !is_code_array_key(key)
+        || origin_bound_tool_value(effective, "features.code_mode.enabled")
+            != Some(&Value::Bool(true))
+    {
+        return None;
+    }
+    let origin = effective
+        .get("origins")?
+        .get("features.code_mode.enabled")?;
+    let layer = effective.get("layers")?.as_array()?.iter().find(|layer| {
+        layer.get("name") == origin.get("name") && layer.get("version") == origin.get("version")
+    })?;
+    let pointer = format!("/{}", key.replace('.', "/"));
+    let actual = effective.get("config")?.pointer(&pointer)?;
+    let array = actual.as_array()?;
+    if array.len() > 64 || layer.get("config")?.pointer(&pointer) != Some(actual) {
+        return None;
+    }
+    for index in 0..array.len() {
+        let element_origin = effective.get("origins")?.get(format!("{key}.{index}"))?;
+        if element_origin.get("name") != origin.get("name")
+            || element_origin.get("version") != origin.get("version")
+        {
+            return None;
+        }
+    }
+    Some(actual)
+}
+
+fn pure_js_controls(effective: &Value) -> Result<Value, ProviderError> {
+    let mut controls = serde_json::Map::new();
+    for key in [
+        "features.code_mode.enabled",
+        "features.code_mode.excluded_tool_namespaces",
+        "features.code_mode.direct_only_tool_namespaces",
+        "features.code_mode_host.enabled",
+        "features.code_mode_host.disable_in_process_fallback",
+    ] {
+        let is_array = is_code_array_key(key);
+        let value = if is_array {
+            origin_bound_code_array_value(effective, key)
+        } else {
+            origin_bound_tool_value(effective, key)
+        }
+        .ok_or_else(|| ProviderError::contract("Cannot record verified code controls"))?;
+        let anchor = if is_array {
+            "features.code_mode.enabled"
+        } else {
+            key
+        };
+        let origin = &effective["origins"][anchor];
+        let mut observation = json!({
+            "value":value,
+            "cliLayer":{"type":"sessionFlags","version":origin["version"]},
+            "provenance":if is_array {"effective_array_and_enabled_cli_layer"} else {"scalar_origin"}
+        });
+        if let Some(array) = value.as_array() {
+            observation["elementOrigins"] = Value::Array(
+                (0..array.len())
+                    .map(|index| {
+                        let origin = &effective["origins"][format!("{key}.{index}")];
+                        json!({"index":index,"type":"sessionFlags","version":origin["version"]})
+                    })
+                    .collect(),
+            );
+        }
+        controls.insert(key.into(), observation);
+    }
+    Ok(Value::Object(controls))
 }
 
 fn hook_lists_are_empty(value: Option<&Value>) -> bool {
@@ -2150,8 +2236,14 @@ fn main() {
                     }
                     parent[parts[parts.len() - 1]] = value.clone();
                 }
-                effective["origins"][key] =
-                    json!({"name":{"type":"sessionFlags"},"version":"fixture-v1"});
+                let origin = json!({"name":{"type":"sessionFlags"},"version":"fixture-v1"});
+                if let Some(array) = value.as_array() {
+                    for index in 0..array.len() {
+                        effective["origins"][format!("{key}.{index}")] = origin.clone();
+                    }
+                } else {
+                    effective["origins"][key] = origin;
+                }
             }
             fs::write(
                 self.home.join("effective-response.json"),
@@ -2216,7 +2308,12 @@ fn main() {
             "features.code_mode_host.disable_in_process_fallback",
         ] {
             let mut altered = effective.clone();
-            altered["origins"][key]["version"] = json!("other");
+            let origin_key = if is_code_array_key(key) {
+                format!("{key}.0")
+            } else {
+                key.to_owned()
+            };
+            altered["origins"][origin_key]["version"] = json!("other");
             assert!(verify_provider_config(&altered, &fixture.config).is_err());
         }
         let directory = create_empty_directory().unwrap();
@@ -2245,6 +2342,77 @@ fn main() {
         fs::remove_dir_all(directory).unwrap();
         fixture.config.pure_js.as_mut().unwrap().native_host_sha256 = "0".repeat(64);
         assert!(fixture.config.validate().is_err());
+    }
+
+    #[test]
+    fn code_arrays_require_effective_raw_cli_and_every_element_origin_agreement() {
+        let mut fixture = Fixture::new("pure_success");
+        fixture.enable_pure_js();
+        let effective: Value = serde_json::from_slice(
+            &fs::read(fixture.home.join("effective-response.json")).unwrap(),
+        )
+        .unwrap();
+        let excluded = "features.code_mode.excluded_tool_namespaces";
+        let direct = "features.code_mode.direct_only_tool_namespaces";
+        assert!(effective["origins"].get(excluded).is_none());
+        assert!(effective["origins"].get(direct).is_none());
+        verify_provider_config(&effective, &fixture.config).unwrap();
+        for index in 0..2 {
+            let key = format!("{excluded}.{index}");
+            for invalid in [
+                Value::Null,
+                json!({"name":{"type":"user"},"version":"fixture-v1"}),
+                json!({"name":{"type":"sessionFlags"},"version":"different"}),
+            ] {
+                let mut altered = effective.clone();
+                altered["origins"][&key] = invalid;
+                assert!(verify_provider_config(&altered, &fixture.config).is_err());
+            }
+            let mut absent = effective.clone();
+            absent["origins"].as_object_mut().unwrap().remove(&key);
+            // A whole-array origin cannot substitute for any actual element origin.
+            absent["origins"][excluded] = effective["origins"][format!("{excluded}.0")].clone();
+            assert!(verify_provider_config(&absent, &fixture.config).is_err());
+        }
+        for key in ["excluded_tool_namespaces", "direct_only_tool_namespaces"] {
+            for value in [Value::Null, json!({}), json!(["unexpected"])] {
+                for pointer in [
+                    "/config/features/code_mode",
+                    "/layers/0/config/features/code_mode",
+                ] {
+                    let mut altered = effective.clone();
+                    altered.pointer_mut(pointer).unwrap()[key] = value.clone();
+                    assert!(verify_provider_config(&altered, &fixture.config).is_err());
+                }
+            }
+            let mut missing = effective.clone();
+            missing
+                .pointer_mut("/layers/0/config/features/code_mode")
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            assert!(verify_provider_config(&missing, &fixture.config).is_err());
+        }
+        let mut duplicate = effective.clone();
+        duplicate["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(effective["layers"][0].clone());
+        assert!(verify_provider_config(&duplicate, &fixture.config).is_err());
+        for origin in [
+            json!({"name":{"type":"user"},"version":"fixture-v1"}),
+            json!({"name":{"type":"sessionFlags"},"version":"different"}),
+        ] {
+            let mut altered = effective.clone();
+            altered["origins"]["features.code_mode.enabled"] = origin;
+            assert!(verify_provider_config(&altered, &fixture.config).is_err());
+        }
+        for disabled in [json!(""), json!(false)] {
+            let mut altered = effective.clone();
+            altered["layers"][0]["disabledReason"] = disabled;
+            assert!(verify_provider_config(&altered, &fixture.config).is_err());
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -2419,6 +2587,27 @@ fn main() {
             tick_mode: TickMode::SignedFixture,
         };
         let mut returned = None;
+        let assert_controls = |controls: &Value| {
+            let excluded = &controls["features.code_mode.excluded_tool_namespaces"];
+            let direct = &controls["features.code_mode.direct_only_tool_namespaces"];
+            assert_eq!(excluded["value"], json!(["functions", "clock"]));
+            assert_eq!(direct["value"], json!([]));
+            for array in [excluded, direct] {
+                assert_eq!(
+                    array["cliLayer"],
+                    json!({"type":"sessionFlags","version":"fixture-v1"})
+                );
+                assert_eq!(array["provenance"], "effective_array_and_enabled_cli_layer");
+            }
+            assert_eq!(
+                excluded["elementOrigins"],
+                json!([
+                    {"index":0,"type":"sessionFlags","version":"fixture-v1"},
+                    {"index":1,"type":"sessionFlags","version":"fixture-v1"}
+                ])
+            );
+            assert_eq!(direct["elementOrigins"], json!([]));
+        };
         let report = crate::run::execute(&config, |provider, prompt, schema| {
             let (reply, info) = crate::run::request_once(provider, prompt, schema)?;
             assert_eq!(
@@ -2430,6 +2619,7 @@ fn main() {
                     .as_u64()
                     .is_some()
             );
+            assert_controls(&info["account"]["hostRuntime"]["effectiveControls"]);
             returned = Some(info.clone());
             Ok((reply, info))
         })
@@ -2440,6 +2630,7 @@ fn main() {
         )
         .unwrap();
         assert_eq!(receipt["provider"], returned.unwrap());
+        assert_controls(&receipt["provider"]["account"]["hostRuntime"]["effectiveControls"]);
         assert_eq!(
             receipt["provider"]["account"]["hostRuntime"]["observedStatus"]["state"],
             "running"
