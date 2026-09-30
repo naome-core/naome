@@ -198,12 +198,20 @@ pub fn live(config: &RunConfig) -> Result<Value, String> {
     if config.tick_mode != TickMode::LocalTimer {
         return Err("authentic provider execution requires local_timer ticks".into());
     }
-    execute(config, |provider, prompt, schema| {
-        let mut server = AppServer::start(provider)?;
-        let info = server.info();
-        let reply = server.request(prompt, schema)?;
-        Ok((reply, json!({"account":info,"rate_limits":server.limits()})))
-    })
+    execute(config, request_once)
+}
+
+pub(crate) fn request_once(
+    provider: &ProviderConfig,
+    prompt: &str,
+    schema: Value,
+) -> Result<(ProviderReply, Value), ProviderError> {
+    let mut server = AppServer::start(provider)?;
+    let reply = server.request(prompt, schema)?;
+    Ok((
+        reply,
+        json!({"account":server.info(),"rate_limits":server.limits()}),
+    ))
 }
 
 /// A factory boundary permits offline typed-provider scenarios without inference.

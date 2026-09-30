@@ -2110,6 +2110,79 @@ fn main() {
     }
 
     #[test]
+    fn production_request_boundary_returns_and_persists_verified_host_observation() {
+        use crate::run::{Interests, ParticipantConfig, RunConfig, TickMode};
+        let mut fixture = Fixture::new("pure_success");
+        fixture.enable_pure_js();
+        let coordinator = fixture.home.join("coordinator-key.json");
+        fs::write(&coordinator, serde_json::to_vec(&[90u8; 32]).unwrap()).unwrap();
+        let mut participants = Vec::new();
+        for index in 0..2u8 {
+            let signing_key_file = fixture.home.join(format!("participant-{index}-key.json"));
+            let interests_file = fixture
+                .home
+                .join(format!("participant-{index}-interests.json"));
+            fs::write(
+                &signing_key_file,
+                serde_json::to_vec(&[91u8 + index; 32]).unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                &interests_file,
+                serde_json::to_vec(&Interests {
+                    topics: vec!["Elementary equality".into()],
+                    context: String::new(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            participants.push(ParticipantConfig {
+                label: format!("participant-{index}"),
+                signing_key_file,
+                interests_file,
+                provider: fixture.config.clone(),
+            });
+        }
+        let config = RunConfig {
+            directory: fixture.home.join("research-run"),
+            run_label: "observed-host-fixture".into(),
+            coordinator_key_file: coordinator,
+            participants,
+            pool: crate::state::PoolConfig::default(),
+            max_calls: 1,
+            max_seconds: 10,
+            shared_plan_sample: true,
+            tick_mode: TickMode::SignedFixture,
+        };
+        let mut returned = None;
+        let report = crate::run::execute(&config, |provider, prompt, schema| {
+            let (reply, info) = crate::run::request_once(provider, prompt, schema)?;
+            assert_eq!(
+                info["account"]["hostRuntime"]["observedStatus"]["state"],
+                "running"
+            );
+            assert!(
+                info["account"]["hostRuntime"]["observedStatus"]["native_pid"]
+                    .as_u64()
+                    .is_some()
+            );
+            returned = Some(info.clone());
+            Ok((reply, info))
+        })
+        .unwrap();
+        assert_eq!(report["run"]["provider_calls_consumed"], 1);
+        let receipt: Value = serde_json::from_slice(
+            &fs::read(config.directory.join("provider_calls/receipt-0000.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["provider"], returned.unwrap());
+        assert_eq!(
+            receipt["provider"]["account"]["hostRuntime"]["observedStatus"]["state"],
+            "running"
+        );
+    }
+
+    #[test]
     fn code_wrapper_outputs_allow_only_exact_native_names_and_text() {
         let valid = json!({"type":"functionCallOutput","id":"cell-output","name":"exec","namespace":"functions","output":[{"type":"inputText","text":"1"}]});
         verify_code_output(&valid).unwrap();

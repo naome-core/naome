@@ -541,13 +541,18 @@ fn frame_shape(direction: Direction, bytes: &[u8]) -> Result<(), String> {
         Direction::Client => {
             let frame: ClientFrame = serde_json::from_slice(bytes)
                 .map_err(|_| "Malformed or forbidden client code host frame".to_string())?;
-            if let ClientFrame::Request {
-                request: Request::Execute { request, .. },
-                ..
-            } = frame
-                && !request.enabled_tools.is_empty()
-            {
-                return Err("Code host nested tools are forbidden".into());
+            match frame {
+                ClientFrame::Cancel { id } => {
+                    let _ = id;
+                    return Err("Code host cancellation stops its owned lifetime".into());
+                }
+                ClientFrame::Request {
+                    request: Request::Execute { request, .. },
+                    ..
+                } if !request.enabled_tools.is_empty() => {
+                    return Err("Code host nested tools are forbidden".into());
+                }
+                _ => {}
             }
         }
         Direction::Host => {
@@ -842,7 +847,10 @@ impl Protocol {
                 self.offered.extend(self.required.iter().cloned());
                 self.hello = true;
             }
-            ClientFrame::Cancel { id } | ClientFrame::Yield { id } => {
+            ClientFrame::Cancel { .. } => {
+                return Err("Code host cancellation stops its owned lifetime".into());
+            }
+            ClientFrame::Yield { id } => {
                 if !self.ready || !self.pending.contains_key(&id) {
                     return Err("Code host control refers to an unknown request".into());
                 }

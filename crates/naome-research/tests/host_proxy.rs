@@ -297,6 +297,26 @@ fn deadline_stops_native_host_holding_stdio() {
 }
 
 #[test]
+fn pending_cancellation_stops_owned_host_before_forwarding_the_control() {
+    let mut proxy = Proxy::start("pending", 10_000, 4096);
+    proxy.open();
+    let execute = execute(json!([]));
+    proxy.send(&execute);
+    proxy.expect(STARTED);
+    proxy.send(br#"{"type":"operation/cancel","id":2}"#);
+    assert!(proxy.stopped().is_empty());
+    assert_eq!(
+        proxy.received(),
+        vec![HELLO.as_bytes(), OPEN.as_bytes(), &execute]
+    );
+    let status: Value =
+        serde_json::from_slice(&fs::read(proxy.directory.join("host-status.json")).unwrap())
+            .unwrap();
+    assert_eq!(status["state"], "failed");
+    assert!(proxy.directory.join("host-status.json.failed").exists());
+}
+
+#[test]
 fn parent_eof_stops_independent_host_group_and_all_stdout_holders() {
     let mut proxy = Proxy::start("hold", 10_000, 4096);
     proxy.open();
@@ -371,7 +391,7 @@ fn main() {
         return;
     }
     fs::write(directory.join("native.pid"), std::process::id().to_string()).unwrap();
-    let _helper = if mode == "hold" {
+    let _helper = if mode == "hold" || mode == "pending" {
         Some(Command::new(std::env::current_exe().unwrap()).env("NAOME_TEST_HOST_MODE", "helper")
             .stdin(Stdio::null()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).spawn().unwrap())
     } else { None };
@@ -392,6 +412,7 @@ fn main() {
             _ => {
                 send(r#"{"type":"operation/response","id":2,"result":{"status":"ok","value":{"type":"execution/started","cellId":"cell-1"}}}"#);
                 match mode.as_str() {
+                    "pending" => {},
                     "delegate" => send(r#"{"type":"delegate/request","id":8,"sessionId":"s1","request":{"type":"notification/send","callId":"c","cellId":"cell-1","text":"42"}}"#),
                     "media" => send(r#"{"type":"execute/initialResponse","id":2,"result":{"status":"ok","value":{"Result":{"cell_id":"cell-1","content_items":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}],"error_text":null,"code_mode_host_duration_ns":0}}}}"#),
                     "large-prefix" => { let mut out = std::io::stdout(); out.write_all(&u32::MAX.to_le_bytes()).unwrap(); out.flush().unwrap(); },
