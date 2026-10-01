@@ -877,3 +877,188 @@ fn cold_journal_restart_checks_result_history_and_rejects_external_tampering() {
     assert!(Journal::open(&root).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// Run explicitly in release mode for comparable offline staging measurements.
+#[test]
+#[ignore]
+fn retained_history_staging_measurement() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut h = Harness::new(PoolConfig::default());
+    for index in 0..8 {
+        let id = h.publish(equality_question(index));
+        h.vote(0, id, true);
+        h.tick();
+        let mut file = equality_answer(index);
+        file.source.push_str(&" ".repeat(4096));
+        h.accept(0, answer_action(id, file));
+    }
+    let ids: Vec<_> = (8..16)
+        .map(|index| {
+            let id = h.publish(equality_question(index));
+            h.vote(0, id, true);
+            id
+        })
+        .collect();
+    for history in [64, 512, 2048] {
+        while h.state.events().len() < history {
+            h.tick();
+        }
+        for (label, actions, signer) in [
+            ("tick", vec![Action::Tick], &h.coordinator),
+            (
+                "eight_votes",
+                ids.iter()
+                    .map(|question| Action::Vote {
+                        question: *question,
+                        yes: true,
+                    })
+                    .collect(),
+                &h.participants[1],
+            ),
+        ] {
+            let stage = || {
+                h.state
+                    .stage_actions(actions.clone(), signer, &h.coordinator)
+                    .unwrap()
+            };
+            let (_, expected) = stage();
+            let digest = hex(&hash(b"staging-measurement\0", &expected));
+            for _ in 0..5 {
+                black_box(stage());
+            }
+            let mut samples = Vec::new();
+            for _ in 0..21 {
+                let start = Instant::now();
+                for _ in 0..10 {
+                    black_box(stage());
+                }
+                samples.push(start.elapsed().as_nanos() / 10);
+            }
+            samples.sort_unstable();
+            println!(
+                "staging history={history} history_bytes={} results={} workload={label} min_ns={} median_ns={} max_ns={} suffix_digest={digest}",
+                h.state.history_bytes,
+                h.state.results().len(),
+                samples[0],
+                samples[10],
+                samples[20]
+            );
+        }
+    }
+}
+
+#[test]
+fn staged_answers_match_individual_confirmation_and_keep_clones_independent() {
+    let mut h = Harness::new(PoolConfig::default());
+    let ids = h.publish_eligible(2);
+    h.tick();
+    let before = snapshot(&h.state);
+    let actions: Vec<_> = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| answer_action(*id, equality_answer(index as u32)))
+        .collect();
+    let mut individual = h.state.clone();
+    let mut expected = Vec::new();
+    for action in actions.clone() {
+        let signed = SignedAction::sign(
+            individual.genesis().genesis.id(),
+            individual.next_nonce(h.participants[1].verifying_key().to_bytes()),
+            action,
+            &h.participants[1],
+        );
+        expected.push(individual.confirm(signed, &h.coordinator).unwrap());
+    }
+    let (mut staged, events) = h
+        .state
+        .stage_actions(actions, &h.participants[1], &h.coordinator)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&events).unwrap(),
+        serde_json::to_vec(&expected).unwrap()
+    );
+    assert_eq!(snapshot(&staged), snapshot(&individual));
+    assert_eq!(snapshot(&h.state), before);
+    for index in 0..2 {
+        let source = equality_answer(index).source;
+        assert!(crate::formal::available_artifact(&source, &h.state.artifacts).is_none());
+        assert!(crate::formal::available_artifact(&source, &staged.artifacts).is_some());
+    }
+    let last = events.last().unwrap();
+    let unchanged = snapshot(&staged);
+    assert_eq!(
+        staged
+            .confirm(last.body.action.clone(), &h.coordinator)
+            .unwrap(),
+        *last
+    );
+    assert_eq!(snapshot(&staged), unchanged);
+    h.vote(2, ids[0], false);
+    assert_eq!(
+        snapshot(&staged),
+        unchanged,
+        "original mutations cannot change the staged clone"
+    );
+    let replayed = ResearchState::replay(staged.genesis().clone(), staged.events()).unwrap();
+    assert_eq!(snapshot(&replayed), unchanged);
+}
+
+#[test]
+fn staged_failure_discards_prior_actions_artifacts_and_history_charges() {
+    let mut h = Harness::new(PoolConfig::default());
+    let ids = h.publish_eligible(2);
+    h.tick();
+    let before = snapshot(&h.state);
+    let first = answer_action(ids[0], equality_answer(0));
+    let bad_second = answer_action(ids[1], equality_answer(0));
+    assert!(
+        h.state
+            .stage_actions(
+                vec![first.clone(), bad_second],
+                &h.participants[1],
+                &h.coordinator
+            )
+            .is_err()
+    );
+    assert_eq!(snapshot(&h.state), before);
+    assert!(
+        crate::formal::available_artifact(&equality_answer(0).source, &h.state.artifacts).is_none()
+    );
+
+    let (_, events) = h
+        .state
+        .stage_actions(
+            vec![first.clone(), answer_action(ids[1], equality_answer(1))],
+            &h.participants[1],
+            &h.coordinator,
+        )
+        .unwrap();
+    // Permit the first event, but force failure after the second answer was checked.
+    h.state.history_bytes = MAX_HISTORY_BYTES - serde_json::to_vec(&events[0]).unwrap().len();
+    let before = snapshot(&h.state);
+    assert_eq!(
+        h.state
+            .stage_actions(
+                vec![first.clone(), answer_action(ids[1], equality_answer(1))],
+                &h.participants[1],
+                &h.coordinator
+            )
+            .err()
+            .unwrap(),
+        "history byte limit"
+    );
+    assert_eq!(snapshot(&h.state), before);
+    assert!(
+        crate::formal::available_artifact(&equality_answer(0).source, &h.state.artifacts).is_none()
+    );
+    assert!(
+        crate::formal::available_artifact(&equality_answer(1).source, &h.state.artifacts).is_none()
+    );
+    h.state.history_bytes = MAX_HISTORY_BYTES;
+    assert!(h.reject(1, first).contains("history byte limit"));
+    assert!(
+        crate::formal::available_artifact(&equality_answer(0).source, &h.state.artifacts).is_none()
+    );
+}

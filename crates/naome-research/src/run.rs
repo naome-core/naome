@@ -17,10 +17,7 @@ use crate::{
     formal::{AnswerFile, FormulaInput, Outcome},
     journal::{Journal, read_bounded, write_bytes_new, write_new},
     provider::{AppServer, ProviderConfig, ProviderError, ProviderErrorKind, ProviderReply},
-    state::{
-        Action, Genesis, Id, PoolConfig, Question, ResearchState, SignedAction, SignedGenesis,
-        hash, hex,
-    },
+    state::{Action, Genesis, Id, PoolConfig, Question, ResearchState, SignedGenesis, hash, hex},
 };
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -644,18 +641,8 @@ fn apply_reply(
             });
         }
     }
-    // Validate the entire typed reply against a clone before recording any action.
-    let mut next = state.clone();
-    let mut events = Vec::new();
-    for action in actions {
-        let signed = SignedAction::sign(
-            next.genesis().genesis.id(),
-            next.next_nonce(signing.verifying_key().to_bytes()),
-            action,
-            signing,
-        );
-        events.push(next.confirm(signed, coordinator)?);
-    }
+    // Validate the entire typed reply before recording any action.
+    let (next, events) = state.stage_actions(actions, signing, coordinator)?;
     for event in events {
         journal.append(&event).map_err(ApplyError::Storage)?;
     }
@@ -681,15 +668,10 @@ fn append_tick(
     journal: &Journal,
     coordinator: &SigningKey,
 ) -> Result<(), String> {
-    let mut next = state.clone();
-    let action = SignedAction::sign(
-        next.genesis().genesis.id(),
-        next.next_nonce(coordinator.verifying_key().to_bytes()),
-        Action::Tick,
-        coordinator,
-    );
-    let event = next.confirm(action, coordinator)?;
-    journal.append(&event)?;
+    let (next, events) = state.stage_actions(vec![Action::Tick], coordinator, coordinator)?;
+    for event in events {
+        journal.append(&event)?;
+    }
     *state = next;
     Ok(())
 }
