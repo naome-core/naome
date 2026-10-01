@@ -87,13 +87,37 @@ impl Drop for Fixture {
     }
 }
 
+#[cfg(unix)]
+struct ChildGuard(Option<std::process::Child>);
+
+#[cfg(unix)]
+impl ChildGuard {
+    fn child(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().unwrap()
+    }
+    fn output(mut self) -> std::process::Output {
+        self.0.take().unwrap().wait_with_output().unwrap()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[test]
 fn cli_run_requires_existing_initialized_store_and_snapshot_is_read_only() {
     let f = Fixture::new();
     let output = f.command("node-run").output().unwrap();
     assert!(!output.status.success());
     assert!(!f.config.directory.exists());
-    let node = Node::initialize(f.config.clone(), 1_790_841_600).unwrap();
+    assert!(f.command("init-node").output().unwrap().status.success());
+    let node = Node::open(f.config.clone()).unwrap();
     let before = node.checkpoint().clone();
     let output = f.command("node-status").output().unwrap();
     assert!(output.status.success());
@@ -103,6 +127,7 @@ fn cli_run_requires_existing_initialized_store_and_snapshot_is_read_only() {
     // An independent reader is permitted; another writer cannot acquire this store.
     let output = f.command("node-run").output().unwrap();
     assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exclusive node lock unavailable"));
     assert_eq!(node.checkpoint(), &before);
 }
 
@@ -110,45 +135,62 @@ fn cli_run_requires_existing_initialized_store_and_snapshot_is_read_only() {
 #[test]
 fn dormant_cli_sigterm_stops_and_restart_preserves_checkpoint_and_single_identity() {
     let f = Fixture::new();
-    assert!(f.command("init-node").output().unwrap().status.success());
+    // A fixed earlier clock makes the child's first durable observation a
+    // readiness receipt. Readers must not acquire the competing writer lock.
+    drop(Node::initialize(f.config.clone(), 1_790_841_600).unwrap());
     let before = f.command("node-status").output().unwrap();
     let before: Value = serde_json::from_slice(&before.stdout).unwrap();
-    let mut child = f
-        .command("node-run")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let initial_clock = before["greatest_observed_clock"].as_i64().unwrap();
+    let reader = Node::inspect(f.config.clone()).unwrap();
+    let initial_checkpoint = reader.checkpoint().clone();
+    let mut child = ChildGuard(Some(
+        f.command("node-run")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
     let started = Instant::now();
     loop {
-        if Node::open(f.config.clone()).is_err() {
+        if child.child().try_wait().unwrap().is_some() {
+            let result = child.output();
+            panic!(
+                "CLI exited before its readiness checkpoint: {}: {}",
+                result.status,
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        let observed = Node::inspect(f.config.clone()).unwrap();
+        if observed.checkpoint().state["clock"].as_i64().unwrap() > initial_clock {
             break;
         }
         assert!(
             started.elapsed() < Duration::from_secs(3),
-            "CLI must take the writer lock"
+            "CLI must publish its readiness checkpoint"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Check writer exclusion only after observing the child's durable progress.
+    let error = Node::open(f.config.clone()).err().unwrap();
+    assert!(error.contains("exclusive node lock unavailable"), "{error}");
     // The signal listener registers before this bounded offline observation.
     std::thread::sleep(Duration::from_millis(80));
     let snapshot = f.command("node-status").output().unwrap();
     assert!(snapshot.status.success());
     assert!(
         Command::new("kill")
-            .args(["-TERM", &child.id().to_string()])
+            .args(["-TERM", &child.child().id().to_string()])
             .status()
             .unwrap()
             .success()
     );
-    while child.try_wait().unwrap().is_none() {
+    while child.child().try_wait().unwrap().is_none() {
         if started.elapsed() > Duration::from_secs(5) {
-            let _ = child.kill();
             panic!("dormant signal stop watchdog");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let result = child.wait_with_output().unwrap();
+    let result = child.output();
     assert!(
         result.status.success(),
         "{}",
@@ -157,6 +199,7 @@ fn dormant_cli_sigterm_stops_and_restart_preserves_checkpoint_and_single_identit
     let stopped: Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(stopped["lifecycle"], "stopped");
     assert_eq!(stopped["attempts_admitted"], 0);
+    assert_eq!(reader.checkpoint(), &initial_checkpoint);
     let reopened = Node::open(f.config.clone()).unwrap();
     assert!(
         reopened.checkpoint().state["clock"].as_i64().unwrap()
