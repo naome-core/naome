@@ -850,6 +850,7 @@ pub fn prepare(
             signing_key_file,
             interests_file,
             provider: ProviderConfig {
+                responses: None,
                 codex_binary: codex_binary.clone(),
                 codex_home: home,
                 model: model.into(),

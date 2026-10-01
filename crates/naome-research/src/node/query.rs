@@ -31,6 +31,9 @@ impl Node {
             "response_pending_recovery":self.state.received,"accounting_unknown":self.state.usage_unknown,
             "budgets":{"discovery_attempts":phase(Phase::Discover),"evaluation_attempts":phase(Phase::Evaluate),"research_reported_tokens":phase(Phase::Solve)},
             "greatest_observed_clock":self.state.clock,"active_lease_target":self.state.target,
+            "provider":{"route":if self.config.provider.responses.is_some(){"public_responses_siwc"}else{"legacy_native_codex"},
+                "account_id":self.config.provider.responses.as_ref().map(|c|&c.account_id),"model":self.config.provider.model,
+                "manage_usage":self.config.provider.responses.as_ref().map(|_|crate::chatgpt::USAGE_SETTINGS),"credential_status":"not_read_by_offline_status"},
             "active_leases":self.state.leases.iter().map(|lease|hex(&lease.question)).collect::<Vec<_>>(),
             "evidence":"Local serialized checked proof possession and configured local credit; no public finality, issuance, scientific usefulness or measured work claim"}),
         )

@@ -59,6 +59,10 @@ impl Control {
     pub fn stopped(&self) -> bool {
         self.stopped.load(Ordering::SeqCst)
     }
+    /// Shared cancellation for the operator's OAuth/HTTP operation.
+    pub fn cancellation(&self) -> Arc<AtomicBool> {
+        self.stopped.clone()
+    }
     /// A bounded mailbox wakes the single writer without granting another
     /// process direct access to the store or provider admission ledger.
     pub fn submit(
@@ -352,7 +356,7 @@ impl Node {
     }
 
     /// The caller owns the clock and provider boundary. Tests can inject both;
-    /// production uses one fresh native App Server/thread per reservation.
+    /// production uses the configured direct request or explicit legacy adapter.
     pub fn run_with<C, F>(
         &mut self,
         control: &Control,
@@ -413,7 +417,30 @@ impl Node {
         }
     }
     pub fn run(&mut self, control: &Control) -> Result<Value, String> {
+        if control.stopped() {
+            return self.status("stopped");
+        }
         let provider = self.config.provider.clone();
+        if let Some(account) = &provider.responses {
+            if [
+                self.config.budgets.research.amount,
+                self.config.budgets.discoveries.amount,
+                self.config.budgets.evaluations.amount,
+            ]
+            .iter()
+            .any(|n| *n != 0)
+            {
+                crate::chatgpt::preflight(account, &provider.model, control.cancellation())?;
+            }
+            return self.run_with(control, wall_time, |reservation, control| {
+                crate::chatgpt::request(
+                    &provider,
+                    &reservation.prompt_text,
+                    reservation.schema.clone(),
+                    control.cancellation(),
+                )
+            });
+        }
         self.run_with(
             control,
             wall_time,

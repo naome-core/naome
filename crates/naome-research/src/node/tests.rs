@@ -42,6 +42,7 @@ impl Fixture {
                 context: "Offline checked fixture".into(),
             },
             provider: ProviderConfig {
+                responses: None,
                 codex_binary: root.join("never-started"),
                 codex_home: root.join("unused-home"),
                 model: "offline-fixture".into(),
@@ -1679,4 +1680,144 @@ fn idle_observed_clock_high_water_blocks_same_window_rollback_across_restart() {
         panic!("catch-up resumes the affordable evaluation")
     };
     assert_eq!(next.phase, Phase::Evaluate);
+}
+
+#[test]
+fn frozen_native_b7_profile_digest_and_bytes_survive_the_direct_provider_extension() {
+    use sha2::{Digest, Sha256};
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/research-v2-b7");
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["producer_commit"],
+        "b7b53ea966a4581935e696b49c30992d456a0414"
+    );
+    for (path, expected) in manifest["files"].as_object().unwrap() {
+        assert_eq!(
+            hex(&Sha256::digest(fs::read(root.join(path)).unwrap())),
+            expected.as_str().unwrap(),
+            "{path}"
+        );
+    }
+    let config: Config =
+        serde_json::from_slice(&fs::read(root.join("node-config.json")).unwrap()).unwrap();
+    assert!(config.provider.responses.is_none());
+    assert!(
+        serde_json::to_value(&config).unwrap()["provider"]
+            .get("responses")
+            .is_none()
+    );
+    let profile: Profile =
+        serde_json::from_slice(&fs::read(root.join("node/profile.json")).unwrap()).unwrap();
+    profile.verify(&config).unwrap();
+    assert_eq!(profile.config, config.digest());
+    assert_eq!(
+        hex(&profile.id()),
+        manifest["expected_status"]["profile"].as_str().unwrap()
+    );
+    #[cfg(unix)]
+    {
+        let f = Fixture::new();
+        fn copy(source: &std::path::Path, destination: &std::path::Path) {
+            fs::create_dir(destination).unwrap();
+            for entry in fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                let target = destination.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy(&entry.path(), &target);
+                } else {
+                    fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        let mut config = config;
+        config.directory = f.root.join("old-b7-prefix");
+        config.identity_file = f.root.join("old-b7-public-key.json");
+        fs::copy(root.join("node-key.json"), &config.identity_file).unwrap();
+        copy(&root.join("node"), &config.directory);
+        let node = Node::open(config.clone()).unwrap();
+        let status = node.status("legacy_compatibility").unwrap();
+        assert_eq!(status["profile"], manifest["expected_status"]["profile"]);
+        assert_eq!(
+            status["checkpoint"],
+            manifest["expected_status"]["checkpoint"]
+        );
+        assert_eq!(status["budgets"]["discovery_attempts"]["spent"], 1);
+        assert!(status["accounting_unknown"].is_string());
+        let head = node.checkpoint().head;
+        let count = node.checkpoint().count;
+        drop(node);
+        let replay = Node::replay(
+            config.clone(),
+            &f.root.join("old-b7-replay"),
+            Some((head, count)),
+        )
+        .unwrap();
+        assert_eq!(replay["records_verified"], 3);
+        assert_eq!(
+            replay["report"]["budgets"]["discovery_attempts"]["spent"],
+            1
+        );
+        assert!(replay["report"]["accounting_unknown"].is_string());
+        config.provider.responses = Some(crate::chatgpt::ResponsesConfig {
+            version: 1,
+            credential_directory: f.root.join("unused-credentials"),
+            account_id: "a".repeat(64),
+        });
+        config.provider.codex_binary = PathBuf::new();
+        config.provider.codex_home = PathBuf::new();
+        assert!(Node::open(config).is_err());
+    }
+}
+
+#[test]
+fn direct_profile_offline_init_status_replay_and_zero_allowance_do_not_open_credentials() {
+    let mut f = Fixture::new();
+    f.config.provider.responses = Some(crate::chatgpt::ResponsesConfig {
+        version: 1,
+        credential_directory: f.root.join("credentials-never-created"),
+        account_id: "a".repeat(64),
+    });
+    f.config.provider.codex_binary = PathBuf::new();
+    f.config.provider.codex_home = PathBuf::new();
+    f.config.budgets.research.amount = 0;
+    f.config.budgets.discoveries.amount = 0;
+    f.config.budgets.evaluations.amount = 0;
+    let mut node = f.init();
+    let before = node.checkpoint().clone();
+    assert_eq!(
+        node.status("offline").unwrap()["provider"]["route"],
+        "public_responses_siwc"
+    );
+    let control = Control::default();
+    control.stop();
+    node.run(&control).unwrap();
+    assert_eq!(node.checkpoint(), &before);
+    assert!(
+        !f.config
+            .provider
+            .responses
+            .as_ref()
+            .unwrap()
+            .credential_directory
+            .exists()
+    );
+    drop(node);
+    let replay = Node::replay(
+        f.config.clone(),
+        &f.root.join("offline-direct-replay"),
+        Some((before.head, before.count)),
+    )
+    .unwrap();
+    assert_eq!(replay["provider_turns"], 0);
+    assert!(
+        !f.config
+            .provider
+            .responses
+            .as_ref()
+            .unwrap()
+            .credential_directory
+            .exists()
+    );
 }

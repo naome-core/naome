@@ -45,6 +45,7 @@ impl Fixture {
                 context: "Offline CLI fixture".into(),
             },
             provider: ProviderConfig {
+                responses: None,
                 codex_binary: root.join("provider-never-created"),
                 codex_home: root.join("never-authenticated"),
                 model: "offline-model".into(),

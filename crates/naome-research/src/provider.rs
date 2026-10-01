@@ -39,6 +39,9 @@ pub struct ProviderConfig {
     /// Explicit local-mathematics exception; omission preserves the text-only path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pure_js: Option<PureJsConfig>,
+    /// Explicit direct SIWC route. Omission preserves legacy serialized bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses: Option<crate::chatgpt::ResponsesConfig>,
 }
 
 /// Exact executable bytes for the audited Codex 0.159.2 host protocol.
@@ -315,9 +318,7 @@ impl DisabledRegistries {
 
 impl ProviderConfig {
     pub(crate) fn validate(&self) -> Result<(), ProviderError> {
-        if !self.codex_binary.is_absolute()
-            || !self.codex_home.is_absolute()
-            || self.model.is_empty()
+        if self.model.is_empty()
             || self.model.len() > 128
             || self.timeout_seconds == 0
             || self.timeout_seconds > 600
@@ -325,6 +326,25 @@ impl ProviderConfig {
         {
             return Err(ProviderError::contract(
                 "Invalid bounded App Server configuration",
+            ));
+        }
+        if let Some(responses) = &self.responses {
+            if !self.codex_binary.as_os_str().is_empty()
+                || !self.codex_home.as_os_str().is_empty()
+                || !self.disabled_registries.is_empty()
+                || self.pure_js.is_some()
+            {
+                return Err(ProviderError::contract(
+                    "Direct Responses and native controls cannot be combined",
+                ));
+            }
+            return responses
+                .validate()
+                .map_err(|_| ProviderError::contract("Invalid direct SIWC configuration"));
+        }
+        if !self.codex_binary.is_absolute() || !self.codex_home.is_absolute() {
+            return Err(ProviderError::contract(
+                "Absolute native Codex and home paths required",
             ));
         }
         self.disabled_registries.validate()?;
@@ -353,14 +373,14 @@ pub struct ProviderError {
 }
 
 impl ProviderError {
-    fn new(kind: ProviderErrorKind, message: &str) -> Self {
+    pub(crate) fn new(kind: ProviderErrorKind, message: &str) -> Self {
         Self {
             kind,
             message: message.to_owned(),
         }
     }
 
-    fn contract(message: &str) -> Self {
+    pub(crate) fn contract(message: &str) -> Self {
         Self::new(ProviderErrorKind::Contract, message)
     }
 }
@@ -704,6 +724,11 @@ fn read_lines(
 impl AppServer {
     pub fn start(config: &ProviderConfig) -> Result<Self, ProviderError> {
         config.validate()?;
+        if config.responses.is_some() {
+            return Err(ProviderError::contract(
+                "Direct SIWC profiles cannot launch native Codex",
+            ));
+        }
         let deadline = Instant::now() + Duration::from_secs(config.timeout_seconds);
         let mut server = Self::launch(config, deadline, &[])?;
         let mut budget = Budget::new(config);
@@ -2412,6 +2437,7 @@ fn main() {
             fs::write(home.join("effective.json"), effective.to_string()).unwrap();
             Self {
                 config: ProviderConfig {
+                    responses: None,
                     codex_binary: binary,
                     codex_home: home.clone(),
                     model: "fixture-model".to_owned(),

@@ -93,6 +93,7 @@ fn config() -> (PathBuf, RunConfig) {
             signing_key_file,
             interests_file,
             provider: ProviderConfig {
+                responses: None,
                 codex_binary: std::env::current_exe().unwrap(),
                 codex_home: home.clone(),
                 model: "fixture-model".into(),

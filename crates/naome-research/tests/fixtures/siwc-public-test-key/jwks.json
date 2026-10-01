@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "alg": "RS256",
+      "use": "sig",
+      "kid": "naome-public-fixture",
+      "n": "7SGB44FOuFtoifujqiz3Dc9fadcKibp6o_ECRnQBG09LWVNUHjJBK02wKP5mx5ZDyUpzQWKg10K0u1wQjnNyQiH10UoBBsfMI12qt6HK2e0JAVDMeS2iD33gsmYnNBkSUTDmd9St9qKoAwTGWHYg_d5LhpLNdJJxfoyA1MoSgT1s6rFDojnBBc424c3jI8172ByfcdWixQL2Acw2GarGRvVY2tKmicNU-hKZWIsXkKcTmGzgNyhsmUIjdyGelv6HnQe9BTmnvsq2vH7T1QMucFWFCDvE5h_geX9QzXlXZ8O1FS4oZUYhsJstZNlkCAYjwCTXjmsk4Hlx_W0OjE7Vzw",
+      "e": "AQAB"
+    }
+  ]
+}

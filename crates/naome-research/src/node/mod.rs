@@ -7,13 +7,14 @@ mod index;
 mod model;
 mod operator;
 mod query;
+mod sample;
 mod scheduler;
 mod store;
 pub use engine::{ActionReceipt, Node, QuestionRow, WindowLedger};
 pub use model::{
     Action, Config, Finalization, PendingBlock, Profile, ProviderOutcome, Reservation, SignedAction,
 };
-pub use operator::{prepare, read_config};
+pub use operator::{prepare, prepare_direct, read_config};
 pub use scheduler::{Control, Step, WaitReason};
 pub use store::Checkpoint;
 

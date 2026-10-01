@@ -27,6 +27,46 @@ pub fn prepare(root: &Path, binary: &Path, home: &Path, model: &str) -> Result<P
                 .into(),
         );
     }
+    prepare_with_provider(
+        root,
+        ProviderConfig {
+            responses: None,
+            codex_binary: binary.into(),
+            codex_home: home.into(),
+            model: model.into(),
+            timeout_seconds: 90,
+            max_output_bytes: 256 * 1024,
+            disabled_registries: Default::default(),
+            pure_js: None,
+        },
+    )
+}
+/// Prepare the default direct profile after the CLI verifies account/model access.
+/// Static configuration, initialization and replay never open credentials.
+pub fn prepare_direct(
+    root: &Path,
+    account: crate::chatgpt::ResponsesConfig,
+    model: &str,
+) -> Result<PathBuf, String> {
+    prepare_with_provider(
+        root,
+        ProviderConfig {
+            responses: Some(account),
+            codex_binary: PathBuf::new(),
+            codex_home: PathBuf::new(),
+            model: model.into(),
+            timeout_seconds: 90,
+            max_output_bytes: 256 * 1024,
+            disabled_registries: Default::default(),
+            pure_js: None,
+        },
+    )
+}
+fn prepare_with_provider(root: &Path, provider: ProviderConfig) -> Result<PathBuf, String> {
+    if !root.is_absolute() {
+        return Err("Node preparation directory must be absolute".into());
+    }
+    provider.validate().map_err(|e| e.to_string())?;
     fs::create_dir(root).map_err(|e| e.to_string())?;
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let mut seed = [0; 32];
@@ -42,15 +82,7 @@ pub fn prepare(root: &Path, binary: &Path, home: &Path, model: &str) -> Result<P
             topics: vec!["Formal mathematical foundations".into()],
             context: "Investigate exact closed questions and reusable checked proofs.".into(),
         },
-        provider: ProviderConfig {
-            codex_binary: binary.into(),
-            codex_home: home.into(),
-            model: model.into(),
-            timeout_seconds: 90,
-            max_output_bytes: 256 * 1024,
-            disabled_registries: Default::default(),
-            pure_js: None,
-        },
+        provider,
         budgets: Budgets {
             timezone: "Europe/Berlin".into(),
             research: Allowance {

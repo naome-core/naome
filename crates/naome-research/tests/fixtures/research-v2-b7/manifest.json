@@ -1,0 +1,228 @@
+{
+  "producer_commit": "b7b53ea966a4581935e696b49c30992d456a0414",
+  "base_commit": "3907ff9fe7d1f0b0b9ffe875c81b740522dcc890",
+  "binary_sha256": "7eeaa34823fe79f23771e7e2086ad859d5a25e583aa0df19f248655a07e3ed6a",
+  "public_fixture_key": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "fixture_only_not_participant_key": true,
+  "provider_model_requests": 0,
+  "native_program": "/usr/bin/false",
+  "expected_status": {
+    "accounting_unknown": "provider token accounting unknown or invalid",
+    "active_lease_target": 2,
+    "active_leases": [],
+    "attempts_admitted": 1,
+    "budgets": {
+      "discovery_attempts": {
+        "allocation": 1,
+        "overrun": 0,
+        "period": "hour",
+        "remaining": 0,
+        "spent": 1,
+        "window": {
+          "end": 1790888400,
+          "start": 1790884800
+        }
+      },
+      "evaluation_attempts": {
+        "allocation": 0,
+        "overrun": 0,
+        "period": "hour",
+        "remaining": 0,
+        "spent": 0,
+        "window": {
+          "end": 1790888400,
+          "start": 1790884800
+        }
+      },
+      "research_reported_tokens": {
+        "allocation": 0,
+        "overrun": 0,
+        "period": "day",
+        "remaining": 0,
+        "spent": 0,
+        "window": {
+          "end": 1790892000,
+          "start": 1790805600
+        }
+      }
+    },
+    "checkpoint": {
+      "count": 3,
+      "head": [
+        98,
+        148,
+        208,
+        149,
+        96,
+        247,
+        200,
+        31,
+        144,
+        223,
+        15,
+        138,
+        222,
+        130,
+        102,
+        51,
+        225,
+        42,
+        50,
+        85,
+        97,
+        67,
+        30,
+        243,
+        197,
+        111,
+        105,
+        192,
+        12,
+        122,
+        194,
+        110
+      ],
+      "root": [
+        26,
+        178,
+        42,
+        43,
+        239,
+        211,
+        218,
+        238,
+        227,
+        164,
+        51,
+        42,
+        63,
+        234,
+        242,
+        106,
+        104,
+        239,
+        121,
+        181,
+        75,
+        116,
+        166,
+        145,
+        102,
+        3,
+        33,
+        38,
+        39,
+        61,
+        158,
+        134
+      ],
+      "state": {
+        "attempts": 1,
+        "backoff_until": [
+          0,
+          0,
+          0
+        ],
+        "clock": 1790886469,
+        "discovery": {
+          "used": 1,
+          "window": {
+            "end": 1790888400,
+            "start": 1790884800
+          }
+        },
+        "drought": 0,
+        "eligible": 0,
+        "evaluated_cursor": 0,
+        "evaluation": {
+          "used": 0,
+          "window": {
+            "end": 1790888400,
+            "start": 1790884800
+          }
+        },
+        "finalized": 0,
+        "in_flight": 0,
+        "last_adjustment": null,
+        "leases": [],
+        "next_tick": 1790886529,
+        "pending": 0,
+        "phase_cursor": 1,
+        "pool_cursor": 0,
+        "questions": 0,
+        "received": 1,
+        "recent_results": [],
+        "research": {
+          "used": 0,
+          "window": {
+            "end": 1790892000,
+            "start": 1790805600
+          }
+        },
+        "solve_cursor": 0,
+        "target": 2,
+        "tick": 0,
+        "unreviewed": 0,
+        "usage_unknown": "provider token accounting unknown or invalid"
+      }
+    },
+    "evidence": "Local serialized checked proof possession and configured local credit; no public finality, issuance, scientific usefulness or measured work claim",
+    "finalized_blocks": 0,
+    "greatest_observed_clock": 1790886469,
+    "lifecycle": "selected_snapshot",
+    "local_credit": 0,
+    "pending_blocks": 0,
+    "profile": "5315ff071fd404e96750aea297b87debe445656244ad629bf5540f9c904c30f7",
+    "questions": 0,
+    "response_pending_recovery": 1,
+    "unresolved_reservation": 0,
+    "unreviewed": 0,
+    "version": 2
+  },
+  "files": {
+    "node/checkpoint.json": "81a1cfca17615c2d98496aca9da574fc6acaaeb87bb61be3c6a5e1b279cb26a6",
+    "node/index/1a/1ab22a2befd3daeee3a4332a3feaf26a68ef79b54b74a69166032126273d9e86.json": "795b5cfcadcf5f2497fd8bbfc95bf8c1e86d90d8a6f701327773d10b1b9f0a3e",
+    "node/index/9a/9ad133d1f7713babc58e6f1ef9033411fad7b9603e15ee827794510e1eb31c76.json": "8358cb463c60d38e451fc34b5bf052a13ae6a075d923647fb519bbc360cd4de3",
+    "node/index/b3/b3b32e31c49f5e0f03be4e53d03af5bd3da0501ce883867c06ac8bfd1cb17a40.json": "64d5d8a0e2608ddb1735baca1370e959f1ecb53cddade775cdba7c28cfb66965",
+    "node/initial.json": "fc5d56873bfe541892f2791b77ceabb9ab2e3c0d6910a755114b5f7d268d9135",
+    "node/profile.json": "175240d3b2b22304ac22933485cf57c7b4f00574296fdd1b97590c88b2c14679",
+    "node/records/00000000000000/00.json": "60a6ade529e3198fae96ee7327f1d6e4c23dc75c0500e50be06cd507ce372a25",
+    "node/records/00000000000000/01.json": "93917bd58cf700dc98509a2d9da20974830bde887921d1ef96245925478e2477",
+    "node/records/00000000000000/02.json": "1a1f58c54cba32293a44acb69db935104ecec1b416e8fe67e06b537a5561a9cc",
+    "node-config.json": "91b2492217b336a030e027abc92bbaa14daf0e71df3543d6e8abc41b44505b30",
+    "node-key.json": "02631793446ba2fdec361263e03697504cacc7f408974ff620ae7843df37b843"
+  }
+}

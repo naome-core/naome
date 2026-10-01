@@ -19,12 +19,14 @@ pub(super) const CHECKER_REVISION: &str = "1f7e38ffd7edfcda2dd87ecc5500f070766df
 pub(super) const TIMEZONE_RULES: &str = "chrono-tz-0.10.4";
 pub(super) const PAGE_SIZE: usize = 16;
 
-// Two independently charged native streams (startup and one request), at most
-// six JSON-escape bytes per decoded byte, and at most two persisted views of a
-// stream field (raw + parsed reply or reply + known usage). Computation and
-// startup provenance use the same charged streams. Added/default usage fields
+// Native: two charged streams and at most two persisted views of a field.
+// Direct: one charged SSE stream and at most four views, including the raw
+// terminal receipt, parsed/raw model text and repeated explicit usage. At most
+// six JSON-escape bytes per decoded byte makes both bounds 24 times the wire
+// allowance. Native computation/startup use those same streams. Added usage
+// fields, bounded direct account/model metadata and diagnostic envelopes,
 // for 4096 responses, the <=96 KiB signed candidate, <=32 KiB checkpoint and
-// small record/provenance envelope fit the separate fixed 2 MiB allowance.
+// and the small record/provenance envelope fit the separate fixed 2 MiB allowance.
 const RESPONSE_WIRE_EXPANSION: usize = 2 * 6 * 2;
 const RESPONSE_FIXED_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const NODE_MAX_OUTPUT_BYTES: usize =

@@ -1,5 +1,6 @@
 //! Experimental local research orchestration; no public consensus authority.
 
+pub mod chatgpt;
 pub mod formal;
 pub mod host_proxy;
 pub mod journal;
