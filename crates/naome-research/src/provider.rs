@@ -446,6 +446,10 @@ pub struct AppServer {
     lifecycle_deadline: Instant,
     required_disables: Vec<String>,
     host_status_seen: bool,
+    observed_usage: Value,
+    observed_response: Option<String>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    accounted_native: bool,
 }
 
 // Installed 0.153.4 accepts these keys under --strict-config. The official
@@ -872,6 +876,10 @@ impl AppServer {
             lifecycle_deadline,
             required_disables: Vec::new(),
             host_status_seen: false,
+            observed_usage: Value::Null,
+            observed_response: None,
+            cancel: None,
+            accounted_native: false,
         })
     }
 
@@ -884,6 +892,12 @@ impl AppServer {
             }),
             budget,
         )?;
+        self.accounted_native = initialized["userAgent"].as_str().is_some_and(|agent| {
+            agent
+                .split_ascii_whitespace()
+                .next()
+                .is_some_and(|token| token.ends_with("/0.159.2"))
+        });
         if self.config.pure_js.is_some()
             && !initialized["userAgent"].as_str().is_some_and(|agent| {
                 agent
@@ -1005,6 +1019,18 @@ impl AppServer {
         self.rate_limits.clone()
     }
 
+    /// Known partial counts survive an accounting failure; completeness is
+    /// never inferred from this projection.
+    pub fn observed_usage(&self) -> Value {
+        self.observed_usage.clone()
+    }
+    pub fn observed_response(&self) -> Option<String> {
+        self.observed_response.clone()
+    }
+    pub fn set_cancel(&mut self, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.cancel = Some(stop);
+    }
+
     pub fn request(
         &mut self,
         prompt: &str,
@@ -1017,7 +1043,31 @@ impl AppServer {
         }
         let mut budget = Budget::new(&self.config);
         budget.deadline = budget.deadline.min(self.lifecycle_deadline);
-        let result = self.request_inner(prompt, output_schema, &mut budget);
+        let result = self.request_inner(prompt, output_schema, &mut budget, false);
+        if result.is_err() {
+            self.stop();
+        }
+        result
+    }
+
+    /// Version 2 requires exact usage on every observed upstream completion.
+    /// This source-pinned experimental capability has no total-token cap.
+    pub fn request_accounted(
+        &mut self,
+        prompt: &str,
+        output_schema: Value,
+    ) -> Result<ProviderReply, ProviderError> {
+        if !self.accounted_native {
+            return Err(ProviderError::contract(
+                "Accounted requests require source-pinned native Codex 0.159.2",
+            ));
+        }
+        if self.child.is_none() {
+            return Err(ProviderError::contract("App Server is closed"));
+        }
+        let mut budget = Budget::new(&self.config);
+        budget.deadline = budget.deadline.min(self.lifecycle_deadline);
+        let result = self.request_inner(prompt, output_schema, &mut budget, true);
         if result.is_err() {
             self.stop();
         }
@@ -1029,6 +1079,7 @@ impl AppServer {
         prompt: &str,
         output_schema: Value,
         budget: &mut Budget,
+        account_usage: bool,
     ) -> Result<ProviderReply, ProviderError> {
         if prompt.is_empty() || prompt.len() > MAX_INPUT_BYTES || !output_schema.is_object() {
             return Err(ProviderError::contract("Invalid bounded provider input"));
@@ -1057,6 +1108,7 @@ impl AppServer {
                 "cwd":self.cwd,"ephemeral":true,"approvalPolicy":"never","sandbox":"read-only",
                 "environments":[],"dynamicTools":[],"selectedCapabilityRoots":[],
                 "runtimeWorkspaceRoots":[],"allowProviderModelFallback":false,
+                "experimentalRawEvents":account_usage,
                 "baseInstructions":base_instructions,
                 "developerInstructions":developer_instructions
             }),
@@ -1087,6 +1139,11 @@ impl AppServer {
         self.active_turn = Some((thread_id.clone(), turn_id.clone()));
         let mut final_text = None;
         let mut usage = Value::Null;
+        let mut usage_trace = UsageTrace::default();
+        if account_usage {
+            self.observed_usage = Value::Null;
+            self.observed_response = None;
+        }
         let mut completed_code_items = BTreeSet::new();
         let mut computation = Vec::new();
         loop {
@@ -1099,7 +1156,12 @@ impl AppServer {
             let params = &message["params"];
             if matches!(
                 method,
-                "item/started" | "item/completed" | "thread/tokenUsage/updated" | "turn/completed"
+                "item/started"
+                    | "item/completed"
+                    | "thread/tokenUsage/updated"
+                    | "turn/completed"
+                    | "rawResponse/completed"
+                    | "rawResponseItem/completed"
             ) {
                 if params["threadId"].as_str() != Some(&thread_id) {
                     return Err(ProviderError::contract(
@@ -1143,12 +1205,34 @@ impl AppServer {
                                 })?
                                 .to_owned(),
                         );
+                        if account_usage {
+                            self.observed_response = final_text.clone();
+                        }
                     }
                 }
-                "thread/tokenUsage/updated" => usage = sanitize_usage(&params["tokenUsage"]),
+                "thread/tokenUsage/updated" => {
+                    if account_usage {
+                        self.observed_response = final_text.clone();
+                    }
+                    if account_usage {
+                        usage_trace.cumulative(&params["tokenUsage"])?;
+                    }
+                    usage = sanitize_usage(&params["tokenUsage"]);
+                    if account_usage {
+                        self.observed_usage = usage_trace.partial();
+                    }
+                }
+                "rawResponse/completed" if account_usage => {
+                    usage_trace.response(params)?;
+                    self.observed_usage = usage_trace.partial();
+                }
                 "turn/completed" => {
                     self.active_turn = None;
                     let turn = &params["turn"];
+                    if account_usage {
+                        usage = usage_trace.finish(usage)?;
+                        self.observed_usage = usage.clone();
+                    }
                     if turn["status"] != "completed" {
                         return Err(classify_error(&turn["error"]));
                     }
@@ -1212,20 +1296,39 @@ impl AppServer {
     }
 
     fn receive(&mut self, budget: &mut Budget) -> Result<Value, ProviderError> {
-        let bytes = self
-            .receiver
-            .as_ref()
-            .ok_or_else(|| ProviderError::contract("App Server is closed"))?
-            .recv_timeout(budget.remaining()?)
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => ProviderError::new(
+        let bytes = loop {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|stop| stop.load(Ordering::SeqCst))
+            {
+                return Err(ProviderError::new(
                     ProviderErrorKind::TimeBudget,
-                    "App Server wall time exhausted",
-                ),
-                mpsc::RecvTimeoutError::Disconnected => {
-                    ProviderError::new(ProviderErrorKind::Transient, "App Server reader stopped")
+                    "Provider operation stopped by operator",
+                ));
+            }
+            let remaining = budget.remaining()?;
+            let timeout = if self.cancel.is_some() {
+                remaining.min(Duration::from_millis(200))
+            } else {
+                remaining
+            };
+            match self
+                .receiver
+                .as_ref()
+                .ok_or_else(|| ProviderError::contract("App Server is closed"))?
+                .recv_timeout(timeout)
+            {
+                Ok(bytes) => break bytes?,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(ProviderError::new(
+                        ProviderErrorKind::Transient,
+                        "App Server reader stopped",
+                    ));
                 }
-            })??;
+            }
+        };
         budget.charge(bytes.len())?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| ProviderError::contract("Malformed App Server JSON line"))?;
@@ -1269,6 +1372,8 @@ impl AppServer {
                         | "item/completed"
                         | "thread/tokenUsage/updated"
                         | "turn/completed"
+                        | "rawResponse/completed"
+                        | "rawResponseItem/completed"
                 )
             ) {
                 // Notifications can precede the request's response. Retain them
@@ -1990,6 +2095,97 @@ fn quota_exhausted(value: &Value) -> bool {
     }
 }
 
+#[derive(Default)]
+struct UsageTrace {
+    responses: std::collections::BTreeMap<String, crate::node::budget::Usage>,
+    cumulative: Option<crate::node::budget::Usage>,
+}
+impl UsageTrace {
+    fn partial(&self) -> Value {
+        json!({"complete":false,"responses":self.responses.iter().map(|(id,usage)|json!({"responseId":id,"usage":usage})).collect::<Vec<_>>(),"cumulative":self.cumulative})
+    }
+    fn cumulative(&mut self, value: &Value) -> Result<(), ProviderError> {
+        let next = crate::node::budget::Usage::from_provider(value)
+            .map_err(|_| ProviderError::contract("Missing or invalid cumulative usage"))?;
+        if self.cumulative.is_some_and(|before| !next.follows(&before)) {
+            return Err(ProviderError::contract("Regressive cumulative usage"));
+        }
+        self.cumulative = Some(next);
+        Ok(())
+    }
+    fn response(&mut self, params: &Value) -> Result<(), ProviderError> {
+        let id = params["responseId"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+            .ok_or_else(|| ProviderError::contract("Missing upstream response identity"))?;
+        let usage = crate::node::budget::Usage::from_provider(&json!({"total":params["usage"]}))
+            .map_err(|_| {
+                ProviderError::contract("Upstream response has unknown or invalid usage")
+            })?;
+        if let Some(previous) = self.responses.get(id) {
+            if *previous != usage {
+                return Err(ProviderError::contract("Conflicting response usage"));
+            }
+        } else {
+            if self.responses.len() >= MAX_EVENTS {
+                return Err(ProviderError::contract(
+                    "Per-operation response count bound",
+                ));
+            }
+            self.responses.insert(id.to_owned(), usage);
+        }
+        Ok(())
+    }
+    fn finish(self, mut usage: Value) -> Result<Value, ProviderError> {
+        let final_total = self
+            .cumulative
+            .ok_or_else(|| ProviderError::contract("Final cumulative usage unavailable"))?;
+        if self.responses.is_empty() {
+            return Err(ProviderError::contract(
+                "Raw completion accounting unavailable",
+            ));
+        }
+        let mut sum = crate::node::budget::Usage {
+            input: 0,
+            output: 0,
+            total: 0,
+            cached: 0,
+            reasoning: 0,
+        };
+        for response in self.responses.values() {
+            sum.input = sum
+                .input
+                .checked_add(response.input)
+                .ok_or_else(|| ProviderError::contract("Usage overflow"))?;
+            sum.output = sum
+                .output
+                .checked_add(response.output)
+                .ok_or_else(|| ProviderError::contract("Usage overflow"))?;
+            sum.total = sum
+                .total
+                .checked_add(response.total)
+                .ok_or_else(|| ProviderError::contract("Usage overflow"))?;
+            sum.cached = sum
+                .cached
+                .checked_add(response.cached)
+                .ok_or_else(|| ProviderError::contract("Usage overflow"))?;
+            sum.reasoning = sum
+                .reasoning
+                .checked_add(response.reasoning)
+                .ok_or_else(|| ProviderError::contract("Usage overflow"))?;
+        }
+        if sum != final_total {
+            return Err(ProviderError::contract(
+                "Incomplete response usage accounting",
+            ));
+        }
+        usage["complete"] = json!(true);
+        usage["responses"] = json!(self.responses.len());
+        usage["responseUsage"] = json!(self.responses.iter().map(|(id,usage)|json!({"responseId":id,"inputTokens":usage.input,"outputTokens":usage.output,"totalTokens":usage.total,"cachedInputTokens":usage.cached,"reasoningOutputTokens":usage.reasoning})).collect::<Vec<_>>());
+        Ok(usage)
+    }
+}
+
 fn sanitize_usage(value: &Value) -> Value {
     let mut output = serde_json::Map::new();
     for key in ["last", "total"] {
@@ -2067,7 +2263,7 @@ fn main() {
         let id: u64 = line.split("\"id\":").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
         let result = if line.contains("\"method\":\"initialize\"") {
             if mode == "pure_old_version" { r#"{"userAgent":"naome_research/0.153.4"}"#.to_owned() }
-            else if mode.starts_with("pure") { r#"{"userAgent":"naome_research/0.159.2 (test)"}"#.to_owned() }
+            else if mode.starts_with("pure") || mode.starts_with("accounted") { r#"{"userAgent":"naome_research/0.159.2 (test)"}"#.to_owned() }
             else { "{}".to_owned() }
         }
         else if line.contains("\"method\":\"account/read\"") {
@@ -2111,8 +2307,11 @@ fn main() {
             std::fs::write(home.join("turn-started"), "true").unwrap();
             assert!(line.contains("\"outputSchema\":"));
             assert!(line.contains("\"environments\":[]"));
+            if mode == "accounted_early" {
+                emit(r#"{"method":"rawResponse/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","responseId":"response-1","usage":{"inputTokens":10,"outputTokens":4,"totalTokens":14}}}"#);
+            }
             emit(&format!("{{\"id\":{id},\"result\":{{\"turn\":{{\"id\":\"fixture-turn\"}}}}}}"));
-            if mode == "timeout" { std::thread::sleep(std::time::Duration::from_secs(30)); }
+            if mode == "timeout" || mode == "accounted_timeout" { std::thread::sleep(std::time::Duration::from_secs(30)); }
             if mode == "oversized" { emit(&"x".repeat(80000)); continue; }
             if mode == "flood" { for _ in 0..4500 { emit(r#"{"method":"ignored"}"#); } continue; }
             if mode == "server_request" { emit(r#"{"id":22,"method":"item/commandExecution/requestApproval","params":{}}"#); continue; }
@@ -2137,9 +2336,26 @@ fn main() {
                 emit(&frame);
                 if mode == "pure_duplicate" { emit(&frame); }
             }
-            if mode == "malformed" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","text":"not json"}}}"#); }
+            if mode == "malformed" || mode == "accounted_malformed" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","text":"not json"}}}"#); }
             else { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"answer","type":"agentMessage","phase":"final_answer","text":"{\"vote\":true}"}}}"#); }
-            emit(r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"fixture-thread","turnId":"fixture-turn","tokenUsage":{"last":{"inputTokens":10,"outputTokens":4,"totalTokens":14},"private":"secret"}}}"#);
+            if mode.starts_with("accounted") {
+                let raw=r#"{"method":"rawResponse/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","responseId":"response-1","usage":{"inputTokens":10,"outputTokens":4,"totalTokens":14}}}"#;
+                if mode != "accounted_no_raw" && mode != "accounted_early" { emit(raw); }
+                if mode == "accounted_duplicate" { emit(raw); }
+                if mode == "accounted_conflict" { emit(&raw.replace("\"inputTokens\":10", "\"inputTokens\":11").replace("\"totalTokens\":14", "\"totalTokens\":15")); }
+                if mode == "accounted_wrong_turn" { emit(&raw.replace("fixture-turn", "another-turn")); }
+                if mode == "accounted_missing_later" { emit(r#"{"method":"rawResponse/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","responseId":"response-2","usage":null}}"#); }
+                if mode == "accounted_multi" { emit(r#"{"method":"rawResponse/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","responseId":"response-2","usage":{"inputTokens":2,"outputTokens":3,"totalTokens":5}}}"#); }
+                let cumulative=if mode == "accounted_multi" {
+                    r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"fixture-thread","turnId":"fixture-turn","tokenUsage":{"last":{"inputTokens":2,"outputTokens":3,"totalTokens":5},"total":{"inputTokens":12,"outputTokens":7,"totalTokens":19}}}}"#
+                } else {
+                    r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"fixture-thread","turnId":"fixture-turn","tokenUsage":{"last":{"inputTokens":10,"outputTokens":4,"totalTokens":14},"total":{"inputTokens":10,"outputTokens":4,"totalTokens":14}}}}"#
+                };
+                emit(cumulative);
+                if mode == "accounted_regressive" { emit(&cumulative.replace("\"inputTokens\":10","\"inputTokens\":9").replace("\"totalTokens\":14","\"totalTokens\":13")); }
+            } else {
+                emit(r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"fixture-thread","turnId":"fixture-turn","tokenUsage":{"last":{"inputTokens":10,"outputTokens":4,"totalTokens":14},"private":"secret"}}}"#);
+            }
             emit(r#"{"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"completed"}}}"#);
             continue;
         }
@@ -2261,6 +2477,97 @@ fn main() {
 
     fn schema() -> Value {
         json!({"type":"object","properties":{"vote":{"type":"boolean"}},"required":["vote"],"additionalProperties":false})
+    }
+
+    #[test]
+    fn accounted_raw_process_completions_sum_once_and_preserve_early_events() {
+        for mode in [
+            "accounted_success",
+            "accounted_duplicate",
+            "accounted_early",
+            "accounted_multi",
+        ] {
+            let fixture = Fixture::new(mode);
+            let mut server = AppServer::start(&fixture.config).unwrap();
+            let reply = server
+                .request_accounted("offline fixture", schema())
+                .unwrap();
+            let usage = crate::node::budget::Usage::from_complete_provider(&reply.usage).unwrap();
+            assert_eq!(usage.total, if mode == "accounted_multi" { 19 } else { 14 });
+            assert_eq!(
+                reply.usage["responses"],
+                if mode == "accounted_multi" { 2 } else { 1 }
+            );
+            assert_eq!(server.observed_usage(), reply.usage);
+        }
+    }
+
+    #[test]
+    fn accounted_process_rejects_missing_conflicting_regressive_or_foreign_usage() {
+        for mode in [
+            "accounted_no_raw",
+            "accounted_missing_later",
+            "accounted_conflict",
+            "accounted_regressive",
+            "accounted_wrong_turn",
+        ] {
+            let fixture = Fixture::new(mode);
+            let mut server = AppServer::start(&fixture.config).unwrap();
+            assert!(
+                server
+                    .request_accounted("offline fixture", schema())
+                    .is_err(),
+                "{mode}"
+            );
+            assert!(
+                crate::node::budget::Usage::from_complete_provider(&server.observed_usage())
+                    .is_err()
+            );
+            assert!(server.child.is_none());
+        }
+    }
+
+    #[test]
+    fn malformed_answer_keeps_complete_usage_and_raw_reply() {
+        let fixture = Fixture::new("accounted_malformed");
+        let mut server = AppServer::start(&fixture.config).unwrap();
+        assert!(
+            server
+                .request_accounted("offline fixture", schema())
+                .is_err()
+        );
+        assert_eq!(
+            crate::node::budget::Usage::from_complete_provider(&server.observed_usage())
+                .unwrap()
+                .total,
+            14
+        );
+        assert_eq!(server.observed_response().as_deref(), Some("not json"));
+    }
+
+    #[test]
+    fn accounted_operation_stop_bounds_owned_process_cleanup() {
+        let mut fixture = Fixture::new("accounted_timeout");
+        fixture.config.timeout_seconds = 10;
+        let mut server = AppServer::start(&fixture.config).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        server.set_cancel(stop.clone());
+        let trigger = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            stop.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        assert!(
+            server
+                .request_accounted("offline fixture", schema())
+                .is_err()
+        );
+        trigger.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(server.child.is_none());
+        assert!(
+            crate::node::budget::Usage::from_complete_provider(&server.observed_usage()).is_err()
+        );
     }
 
     #[test]
