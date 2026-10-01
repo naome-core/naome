@@ -877,3 +877,83 @@ fn cold_journal_restart_checks_result_history_and_rejects_external_tampering() {
     assert!(Journal::open(&root).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// Run explicitly in release mode for comparable offline staging measurements.
+#[test]
+#[ignore]
+fn retained_history_staging_measurement() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut h = Harness::new(PoolConfig::default());
+    for index in 0..8 {
+        let id = h.publish(equality_question(index));
+        h.vote(0, id, true);
+        h.tick();
+        let mut file = equality_answer(index);
+        file.source.push_str(&" ".repeat(4096));
+        h.accept(0, answer_action(id, file));
+    }
+    let ids: Vec<_> = (8..16)
+        .map(|index| {
+            let id = h.publish(equality_question(index));
+            h.vote(0, id, true);
+            id
+        })
+        .collect();
+    for history in [64, 512, 2048] {
+        while h.state.events().len() < history {
+            h.tick();
+        }
+        for (label, actions, signer) in [
+            ("tick", vec![Action::Tick], &h.coordinator),
+            (
+                "eight_votes",
+                ids.iter()
+                    .map(|question| Action::Vote {
+                        question: *question,
+                        yes: true,
+                    })
+                    .collect(),
+                &h.participants[1],
+            ),
+        ] {
+            let stage = || {
+                let mut next = h.state.clone();
+                let mut events = Vec::new();
+                for action in actions.clone() {
+                    let signed = SignedAction::sign(
+                        next.genesis().genesis.id(),
+                        next.next_nonce(signer.verifying_key().to_bytes()),
+                        action,
+                        signer,
+                    );
+                    events.push(next.confirm(signed, &h.coordinator).unwrap());
+                }
+                (next, events)
+            };
+            let (_, expected) = stage();
+            let digest = hex(&hash(b"staging-measurement\0", &expected));
+            for _ in 0..5 {
+                black_box(stage());
+            }
+            let mut samples = Vec::new();
+            for _ in 0..21 {
+                let start = Instant::now();
+                for _ in 0..10 {
+                    black_box(stage());
+                }
+                samples.push(start.elapsed().as_nanos() / 10);
+            }
+            samples.sort_unstable();
+            println!(
+                "staging history={history} history_bytes={} results={} workload={label} min_ns={} median_ns={} max_ns={} suffix_digest={digest}",
+                h.state.history_bytes,
+                h.state.results().len(),
+                samples[0],
+                samples[10],
+                samples[20]
+            );
+        }
+    }
+}
