@@ -635,12 +635,7 @@ pub(super) fn sign_in_with_http(
     let mut started = false;
     let mut connections = 0;
     loop {
-        if cancel.load(Ordering::Acquire) {
-            return Err("ChatGPT sign-in cancelled".into());
-        }
-        if Instant::now() >= deadline {
-            return Err("ChatGPT sign-in timed out; start a fresh sign-in".into());
-        }
+        callback_active(&cancel, deadline)?;
         let (mut stream, peer) = match listener.accept() {
             Ok(value) => value,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -653,9 +648,10 @@ pub(super) fn sign_in_with_http(
         if !peer.ip().is_loopback() || connections > 128 {
             return Err("OAuth listener operation bound exceeded".into());
         }
-        let target = match local_request(&mut stream, port) {
+        let target = match local_request(&mut stream, port, &cancel, deadline) {
             Ok(target) => target,
             Err(_) => {
+                callback_active(&cancel, deadline)?;
                 local_reply(
                     &mut stream,
                     "400 Bad Request",
@@ -750,7 +746,26 @@ pub(super) fn sign_in_with_http(
         }
     }
 }
-fn local_request(stream: &mut TcpStream, port: u16) -> Result<String, String> {
+fn callback_active(cancel: &AtomicBool, deadline: Instant) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("ChatGPT sign-in cancelled".into());
+    }
+    if Instant::now() >= deadline {
+        return Err("ChatGPT sign-in timed out; start a fresh sign-in".into());
+    }
+    Ok(())
+}
+fn local_request(
+    stream: &mut TcpStream,
+    port: u16,
+    cancel: &AtomicBool,
+    deadline: Instant,
+) -> Result<String, String> {
+    // Darwin inherits the listener's nonblocking mode on accept. Normalize it
+    // before applying the bounded reads used by the browser callback parser.
+    stream
+        .set_nonblocking(false)
+        .map_err(|_| "Cannot configure callback stream")?;
     stream
         .set_read_timeout(Some(Duration::from_millis(200)))
         .map_err(|_| "Cannot bound callback read")?;
@@ -760,14 +775,26 @@ fn local_request(stream: &mut TcpStream, port: u16) -> Result<String, String> {
     let mut bytes = Vec::new();
     let mut chunk = [0; 1024];
     while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
-        let count = stream
-            .read(&mut chunk)
-            .map_err(|_| "Incomplete local callback")?;
+        callback_active(cancel, deadline)?;
+        stream
+            .set_read_timeout(Some(
+                Duration::from_millis(200).min(deadline.saturating_duration_since(Instant::now())),
+            ))
+            .map_err(|_| "Cannot bound callback read")?;
+        let count = match stream.read(&mut chunk) {
+            Ok(count) => count,
+            Err(_) => {
+                callback_active(cancel, deadline)?;
+                return Err("Incomplete local callback".into());
+            }
+        };
+        callback_active(cancel, deadline)?;
         if count == 0 || bytes.len() + count > 16 * 1024 {
             return Err("Local callback exceeds operation bound".into());
         }
         bytes.extend_from_slice(&chunk[..count]);
     }
+    callback_active(cancel, deadline)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "Invalid local callback encoding")?;
     let mut lines = text.split("\r\n");
     let first = lines.next().ok_or("Local callback request missing")?;
@@ -892,4 +919,116 @@ fn trusted_revoke(value: &str, http: &Http) -> bool {
             && url.query().is_none()
             && url.fragment().is_none()
     })
+}
+
+#[cfg(test)]
+mod socket_tests {
+    use super::*;
+
+    #[test]
+    fn local_callback_reader_waits_for_delayed_fragments_on_a_nonblocking_accepted_socket() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (ready, wait) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            wait.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            let request = format!(
+                "GET /auth/callback?state=fixture&code=fixture&client_id=fixture HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+            );
+            for chunk in request.as_bytes().chunks(40) {
+                stream.write_all(chunk).unwrap();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        ready.send(()).unwrap();
+        let result = local_request(
+            &mut stream,
+            port,
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(3),
+        );
+        writer.join().unwrap();
+        assert_eq!(
+            result.unwrap(),
+            "/auth/callback?state=fixture&code=fixture&client_id=fixture"
+        );
+    }
+
+    #[test]
+    fn local_callback_read_deadline_remains_bounded_after_socket_normalization() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let idle = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let before = Instant::now();
+        assert_eq!(
+            local_request(
+                &mut stream,
+                port,
+                &AtomicBool::new(false),
+                Instant::now() + Duration::from_secs(3)
+            )
+            .unwrap_err(),
+            "Incomplete local callback"
+        );
+        assert!(before.elapsed() >= Duration::from_millis(100));
+        assert!(before.elapsed() < Duration::from_secs(3));
+        drop(idle);
+    }
+    #[test]
+    fn fragmented_callback_observes_cancellation_and_parent_deadline() {
+        for cancellation in [true, false] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let done = Arc::new(AtomicBool::new(false));
+            let (ready, wait) = std::sync::mpsc::channel();
+            let writer_cancel = cancel.clone();
+            let writer_done = done.clone();
+            let writer = std::thread::spawn(move || {
+                let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                wait.recv().unwrap();
+                for i in 0..20 {
+                    if writer_done.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if cancellation && i == 2 {
+                        writer_cancel.store(true, Ordering::Release);
+                        break;
+                    }
+                    if stream.write_all(b"G").is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+            });
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(true).unwrap();
+            let before = Instant::now();
+            let deadline = before
+                + if cancellation {
+                    Duration::from_secs(3)
+                } else {
+                    Duration::from_millis(150)
+                };
+            ready.send(()).unwrap();
+            let result = local_request(&mut stream, port, &cancel, deadline);
+            done.store(true, Ordering::Release);
+            writer.join().unwrap();
+            assert_eq!(
+                result.unwrap_err(),
+                if cancellation {
+                    "ChatGPT sign-in cancelled"
+                } else {
+                    "ChatGPT sign-in timed out; start a fresh sign-in"
+                }
+            );
+            assert!(before.elapsed() < Duration::from_secs(3));
+        }
+    }
 }

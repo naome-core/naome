@@ -24,7 +24,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 // This RSA key is deliberately public test material, never a participant key.
@@ -79,14 +79,12 @@ impl Directory {
 impl Drop for Directory {
     fn drop(&mut self) {
         #[cfg(windows)]
-        if let Ok(value) = fs::read(self.0.join("credentials/accounts.json")) {
-            if let Ok(value) = serde_json::from_slice::<Value>(&value) {
-                if let Some(host) = value["host_id"].as_str() {
-                    if let Ok(entry) = keyring::Entry::new("NAOME SIWC credentials", host) {
-                        let _ = entry.delete_credential();
-                    }
-                }
-            }
+        if let Ok(bytes) = fs::read(self.0.join("credentials/accounts.json"))
+            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            && let Some(host) = value["host_id"].as_str()
+            && let Ok(entry) = keyring::Entry::new("NAOME SIWC credentials", host)
+        {
+            let _ = entry.delete_credential();
         }
         let _ = fs::remove_dir_all(&self.0);
     }
@@ -94,6 +92,8 @@ impl Drop for Directory {
 #[derive(Default)]
 struct State {
     calls: Vec<(String, String, String, String)>,
+    accepted: usize,
+    reader_failures: Vec<(&'static str, std::io::ErrorKind, usize, usize)>,
     nonce: Option<String>,
     challenge: Option<String>,
     token_error: Option<(u16, Value)>,
@@ -119,59 +119,44 @@ impl Server {
         let st = state.clone();
         let halt = stop.clone();
         let worker = thread::spawn(move || {
+            let mut handlers: Vec<thread::JoinHandle<()>> = Vec::new();
+            let mut failed = false;
             while !halt.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((mut socket, _)) => {
-                        let Some((method, path, body, bearer)) = read_request(&mut socket) else {
-                            continue;
-                        };
-                        let (status, kind, value, delay) = {
-                            let mut s = st.lock().unwrap();
-                            s.calls
-                                .push((method.clone(), path.clone(), body.clone(), bearer));
-                            match path.as_str() {
-                                "/discovery"=>(200,"application/json",serde_json::to_vec(&json!({"issuer":ISSUER,"authorization_endpoint":format!("{b}/authorize"),"token_endpoint":format!("{b}/token"),"jwks_uri":format!("{b}/jwks"),"revocation_endpoint":format!("{b}/revoke"),"id_token_signing_alg_values_supported":["RS256"]})).unwrap(),false),
-                                "/jwks"=>(200,"application/json",serde_json::to_vec(&jwks()).unwrap(),false),
-                                "/token"=>{
-                                    let fields=url::form_urlencoded::parse(body.as_bytes()).map(|(k,v)|(k.into_owned(),v.into_owned())).collect::<std::collections::BTreeMap<_,_>>();
-                                    assert_eq!(fields["client_id"],"client_fixture");
-                                    if fields["grant_type"]=="authorization_code" {
-                                        assert_eq!(fields["code"],"one-use-fixture-code");assert_eq!(URL_SAFE_NO_PAD.encode(Sha256::digest(fields["code_verifier"].as_bytes())),s.challenge.as_deref().unwrap());
-                                        assert!(fields["redirect_uri"].starts_with("http://127.0.0.1:"));assert!(fields["redirect_uri"].ends_with("/auth/callback"));
-                                    } else {assert_eq!(fields["grant_type"],"refresh_token");assert_eq!(fields["refresh_token"],"fake-refresh-only");}
-                                    let (status,value)=s.token_error.clone().unwrap_or_else(||{let mut value=tokens("client_fixture",s.nonce.as_deref(),"fixture-subject");if fields["grant_type"]=="refresh_token" {value["access_token"]=json!("fake-access-rotated");value["refresh_token"]=json!("fake-refresh-rotated");}(200,value)});
-                                    (status,"application/json",serde_json::to_vec(&value).unwrap(),false)
-                                },
-                                "/v1/models"=>(200,"application/json",serde_json::to_vec(&json!({"models":[{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","visibility":if s.model_hidden{"hidden"}else{"list"}}]})).unwrap(),false),
-                                "/v1/responses"=>{
-                                    let (status,value)=s.response.clone().unwrap_or_else(||(200,frame(&terminal("completed",usage(),"{}"))));
-                                    (status,if status==200{"text/event-stream"}else{"application/json"},value,s.response_delay)
-                                },
-                                "/revoke"=>(s.revoke_status.unwrap_or(200),"application/json",vec![],false),
-                                _=>(404,"application/json",b"{}".to_vec(),false),
-                            }
-                        };
-                        if delay {
-                            for _ in 0..60 {
-                                if halt.load(Ordering::Acquire) {
-                                    break;
-                                }
-                                thread::sleep(Duration::from_millis(25));
-                            }
+                let mut i = 0;
+                while i < handlers.len() {
+                    if handlers[i].is_finished() {
+                        if handlers.swap_remove(i).join().is_err() {
+                            failed = true;
+                            halt.store(true, Ordering::Release);
                         }
-                        let header = format!(
-                            "HTTP/1.1 {status} Fixture\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nOpenAI-Request-ID: fixture-request\r\n\r\n",
-                            value.len()
-                        );
-                        let _ = socket.write_all(header.as_bytes());
-                        let _ = socket.write_all(&value);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if halt.load(Ordering::Acquire) {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((socket, _)) => {
+                        st.lock().unwrap().accepted += 1;
+                        let b = b.clone();
+                        let st = st.clone();
+                        let halt = halt.clone();
+                        handlers.push(thread::spawn(move || serve_connection(socket, b, st, halt)));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5))
+                        thread::sleep(Duration::from_millis(5));
                     }
-                    Err(e) => panic!("fixture listener: {e}"),
+                    Err(_) => {
+                        failed = true;
+                        halt.store(true, Ordering::Release);
+                    }
                 }
             }
+            for handler in handlers {
+                failed |= handler.join().is_err();
+            }
+            assert!(!failed, "fixture connection handler failed");
         });
         Self {
             base,
@@ -204,26 +189,114 @@ impl Server {
             .filter(|(_, p, _, _)| p == path)
             .count()
     }
+    fn diagnostics(&self) -> String {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let routes = state
+            .calls
+            .iter()
+            .map(|(method, path, _, _)| (method, path))
+            .collect::<Vec<_>>();
+        format!(
+            "routes={routes:?}; reader_failures={:?}",
+            state.reader_failures
+        )
+    }
 }
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         let result = self.worker.take().unwrap().join();
+        if thread::panicking() {
+            eprintln!("Fixture HTTP diagnostic: {}", self.diagnostics());
+        }
         if !thread::panicking() {
             assert!(result.is_ok(), "fixture server panicked");
         }
     }
 }
-fn read_request(socket: &mut TcpStream) -> Option<(String, String, String, String)> {
+fn serve_connection(
+    mut socket: TcpStream,
+    b: String,
+    st: Arc<Mutex<State>>,
+    halt: Arc<AtomicBool>,
+) {
+    socket.set_nonblocking(false).unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let (method, path, body, bearer) = match read_request(&mut socket, &halt) {
+        Ok(request) => request,
+        Err(failure) => {
+            st.lock().unwrap().reader_failures.push(failure);
+            return;
+        }
+    };
+    let (status, kind, value, delay) = {
+        let mut s = st.lock().unwrap();
+        s.calls
+            .push((method.clone(), path.clone(), body.clone(), bearer));
+        match path.as_str() {
+                                "/discovery"=>(200,"application/json",serde_json::to_vec(&json!({"issuer":ISSUER,"authorization_endpoint":format!("{b}/authorize"),"token_endpoint":format!("{b}/token"),"jwks_uri":format!("{b}/jwks"),"revocation_endpoint":format!("{b}/revoke"),"id_token_signing_alg_values_supported":["RS256"]})).unwrap(),false),
+                                "/jwks"=>(200,"application/json",serde_json::to_vec(&jwks()).unwrap(),false),
+                                "/token"=>{
+                                    let fields=url::form_urlencoded::parse(body.as_bytes()).map(|(k,v)|(k.into_owned(),v.into_owned())).collect::<std::collections::BTreeMap<_,_>>();
+                                    assert_eq!(fields["client_id"],"client_fixture");
+                                    if fields["grant_type"]=="authorization_code" {
+                                        assert_eq!(fields["code"],"one-use-fixture-code");assert_eq!(URL_SAFE_NO_PAD.encode(Sha256::digest(fields["code_verifier"].as_bytes())),s.challenge.as_deref().unwrap());
+                                        assert!(fields["redirect_uri"].starts_with("http://127.0.0.1:"));assert!(fields["redirect_uri"].ends_with("/auth/callback"));
+                                    } else {assert_eq!(fields["grant_type"],"refresh_token");assert_eq!(fields["refresh_token"],"fake-refresh-only");}
+                                    let (status,value)=s.token_error.clone().unwrap_or_else(||{let mut value=tokens("client_fixture",s.nonce.as_deref(),"fixture-subject");if fields["grant_type"]=="refresh_token" {value["access_token"]=json!("fake-access-rotated");value["refresh_token"]=json!("fake-refresh-rotated");}(200,value)});
+                                    (status,"application/json",serde_json::to_vec(&value).unwrap(),false)
+                                },
+                                "/v1/models"=>(200,"application/json",serde_json::to_vec(&json!({"models":[{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","visibility":if s.model_hidden{"hidden"}else{"list"}}]})).unwrap(),false),
+                                "/v1/responses"=>{
+                                    let (status,value)=s.response.clone().unwrap_or_else(||(200,frame(&terminal("completed",usage(),"{}"))));
+                                    (status,if status==200{"text/event-stream"}else{"application/json"},value,s.response_delay)
+                                },
+                                "/revoke"=>(s.revoke_status.unwrap_or(200),"application/json",vec![],false),
+                                _=>(404,"application/json",b"{}".to_vec(),false),
+                            }
+    };
+    if delay {
+        for _ in 0..60 {
+            if halt.load(Ordering::Acquire) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+    let header = format!(
+        "HTTP/1.1 {status} Fixture\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nOpenAI-Request-ID: fixture-request\r\n\r\n",
+        value.len()
+    );
+    let _ = socket.write_all(header.as_bytes());
+    let _ = socket.write_all(&value);
+}
+
+// Every accepted connection has an owner. Shutdown observes at most the
+// existing read deadline; an idle peer cannot hold the listener itself.
+fn read_part(socket: &mut TcpStream, part: &mut [u8], stop: &AtomicBool) -> std::io::Result<usize> {
+    if stop.load(Ordering::Acquire) {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
+    socket.read(part)
+}
+type FixtureRequest = (String, String, String, String);
+type ReaderFailure = (&'static str, std::io::ErrorKind, usize, usize);
+fn read_request(
+    socket: &mut TcpStream,
+    stop: &AtomicBool,
+) -> Result<FixtureRequest, ReaderFailure> {
     socket
         .set_read_timeout(Some(Duration::from_millis(300)))
         .unwrap();
     let mut bytes = vec![];
     let mut part = [0; 4096];
     let (end, length) = loop {
-        let n = socket.read(&mut part).ok()?;
+        let n =
+            read_part(socket, &mut part, stop).map_err(|e| ("header", e.kind(), bytes.len(), 0))?;
         if n == 0 {
-            return None;
+            return Err(("header", std::io::ErrorKind::UnexpectedEof, bytes.len(), 0));
         }
         bytes.extend_from_slice(&part[..n]);
         assert!(bytes.len() < 1024 * 1024);
@@ -238,9 +311,15 @@ fn read_request(socket: &mut TcpStream) -> Option<(String, String, String, Strin
         }
     };
     while bytes.len() < end + length {
-        let n = socket.read(&mut part).ok()?;
+        let n = read_part(socket, &mut part, stop)
+            .map_err(|e| ("body", e.kind(), bytes.len(), end + length))?;
         if n == 0 {
-            return None;
+            return Err((
+                "body",
+                std::io::ErrorKind::UnexpectedEof,
+                bytes.len(),
+                end + length,
+            ));
         }
         bytes.extend_from_slice(&part[..n]);
     }
@@ -254,7 +333,7 @@ fn read_request(socket: &mut TcpStream) -> Option<(String, String, String, Strin
         .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
         .map_or("", |(_, v)| v.trim())
         .into();
-    Some((
+    Ok((
         method,
         path,
         String::from_utf8(bytes[end..end + length].to_vec()).unwrap(),
@@ -392,6 +471,41 @@ fn complete_browser(url: &str, state: Arc<Mutex<State>>) -> thread::JoinHandle<(
         assert!(reply.starts_with("HTTP/1.1 200") || reply.starts_with("HTTP/1.1 400"));
     })
 }
+#[test]
+fn delayed_preconnection_does_not_block_http_or_fixture_shutdown() {
+    let server = Server::new();
+    let endpoint = url::Url::parse(&format!("{}/discovery", server.base)).unwrap();
+    let mut idle = TcpStream::connect(("127.0.0.1", endpoint.port().unwrap())).unwrap();
+    idle.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert!(local_get(&endpoint).starts_with("HTTP/1.1 200"));
+    write!(
+        idle,
+        "GET /discovery HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        endpoint.port().unwrap()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    idle.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"));
+    let still_idle = TcpStream::connect(("127.0.0.1", endpoint.port().unwrap())).unwrap();
+    let admitted = Instant::now() + Duration::from_secs(3);
+    while server.state.lock().unwrap().accepted < 3 {
+        assert!(
+            Instant::now() < admitted,
+            "idle fixture connection was not accepted"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let before = Instant::now();
+    drop(server);
+    assert!(
+        before.elapsed() < Duration::from_secs(3),
+        "fixture shutdown did not join the idle handler"
+    );
+    drop(still_idle);
+}
+
 #[test]
 fn actual_loopback_mock_sign_in_consumes_code_and_saves_issued_registration() {
     let directory = Directory::new();
@@ -691,7 +805,12 @@ fn unconfirmed_revocation_is_reported_while_local_tokens_are_cleared() {
     server.state.lock().unwrap().revoke_status = Some(503);
     let report = auth::sign_out_with_http(&directory.config(), server.http(5)).unwrap();
     assert_eq!(report["remote_revocation_confirmed"], false);
-    assert_eq!(server.calls("/revoke"), 3);
+    assert_eq!(
+        server.calls("/revoke"),
+        3,
+        "Observed fixture HTTP: {}",
+        server.diagnostics()
+    );
     let store = Store::open(&directory.config().credential_directory, false).unwrap();
     assert!(
         store
@@ -719,6 +838,7 @@ fn full_direct_mock_discover_evaluate_pending_solve_finalize_and_replay() {
     config.budgets.research.amount = 1500;
     let mut node = Node::initialize(config.clone(), 1_790_841_600).unwrap();
     let control = node::Control::default();
+    let _watchdog = FixtureRunWatchdog::new(control.clone());
     let provider = config.provider.clone();
     let formula = json!({"op":"forall","variable":0,"body":{"op":"equal","left":0,"right":0}});
     let report=node.run_with(&control,||Ok(1_790_841_600),|reservation,control| {
@@ -732,6 +852,7 @@ fn full_direct_mock_discover_evaluate_pending_solve_finalize_and_replay() {
         server.state.lock().unwrap().response=Some((200,frame(&terminal("completed",usage(),&value.to_string()))));
         let session=Session::with_http(&directory.config(),server.http(5)).unwrap();let mut stream=Stream::new(provider.max_output_bytes);
         let result=stream::request_with_session(&provider,&reservation.prompt_text,reservation.schema.clone(),&session,&mut stream);
+        if result.is_err() { control.stop(); }
         crate::node::ProviderOutcome::from_provider_result(result,stream.usage(),stream.receipt.clone(),Some(stream.text.clone()))
     }).unwrap();
     assert_eq!(report["finalized_blocks"], 1);
@@ -752,6 +873,42 @@ fn full_direct_mock_discover_evaluate_pending_solve_finalize_and_replay() {
     assert_eq!(replay["report"]["finalized_blocks"], 1);
     assert_eq!(replay["provider_turns"], 0);
     assert_eq!(server.calls("/v1/responses"), 3);
+}
+
+// The fixture owns this timer, so failed early phases cannot strand its fixed
+// clock in the production scheduler's intentional indefinite idle state.
+struct FixtureRunWatchdog {
+    done: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl FixtureRunWatchdog {
+    fn new(control: node::Control) -> Self {
+        let done = Arc::new(AtomicBool::new(false));
+        let completed = done.clone();
+        let worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !completed.load(Ordering::Acquire) {
+                if Instant::now() >= deadline {
+                    control.stop();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        });
+        Self {
+            done,
+            worker: Some(worker),
+        }
+    }
+}
+impl Drop for FixtureRunWatchdog {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Release);
+        let result = self.worker.take().unwrap().join();
+        if !thread::panicking() {
+            assert!(result.is_ok(), "fixture watchdog failed");
+        }
+    }
 }
 
 #[test]
