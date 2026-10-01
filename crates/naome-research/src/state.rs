@@ -402,15 +402,55 @@ impl ResearchState {
         action: SignedAction,
         coordinator: &SigningKey,
     ) -> Result<Event, String> {
-        if coordinator.verifying_key().to_bytes() != self.genesis.genesis.coordinator {
-            return Err("wrong coordinator".into());
-        }
+        self.check_coordinator(coordinator)?;
         if let Some(existing) = self.events.iter().find(|e| e.body.action == action) {
             return Ok(existing.clone());
         }
         // Failed checking cannot mutate state or reserve a confirmation position.
         let mut next = self.clone();
-        let result = next.apply(&action)?;
+        let event = next.append_confirmation(action, coordinator)?;
+        *self = next;
+        Ok(event)
+    }
+
+    /// Validate a whole local transaction in one isolated snapshot.
+    /// The caller publishes it only after every returned event is persisted.
+    pub(crate) fn stage_actions(
+        &self,
+        actions: Vec<Action>,
+        signing: &SigningKey,
+        coordinator: &SigningKey,
+    ) -> Result<(Self, Vec<Event>), String> {
+        let mut next = self.clone();
+        let mut events = Vec::new();
+        for action in actions {
+            next.check_coordinator(coordinator)?;
+            let signed = SignedAction::sign(
+                next.genesis.genesis.id(),
+                next.next_nonce(signing.verifying_key().to_bytes()),
+                action,
+                signing,
+            );
+            events.push(next.append_confirmation(signed, coordinator)?);
+        }
+        Ok((next, events))
+    }
+
+    fn check_coordinator(&self, coordinator: &SigningKey) -> Result<(), String> {
+        if coordinator.verifying_key().to_bytes() != self.genesis.genesis.coordinator {
+            return Err("wrong coordinator".into());
+        }
+        Ok(())
+    }
+
+    // Only mutate a disposable snapshot; any failure discards the entire state.
+    // Callers check coordinator identity and supply a fresh action (or handle retry).
+    fn append_confirmation(
+        &mut self,
+        action: SignedAction,
+        coordinator: &SigningKey,
+    ) -> Result<Event, String> {
+        let result = self.apply(&action)?;
         let body = EventBody {
             index: self.events.len() as u64,
             previous: self.head(),
@@ -422,9 +462,8 @@ impl ResearchState {
             .to_bytes()
             .to_vec();
         let event = Event { body, signature };
-        next.charge_history(&event)?;
-        next.events.push(event.clone());
-        *self = next;
+        self.charge_history(&event)?;
+        self.events.push(event.clone());
         Ok(event)
     }
 

@@ -1,5 +1,6 @@
 use super::*;
 use crate::scenario::{equality_answer, equality_question, refutation_answer, refutation_question};
+use crate::state::SignedAction;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -577,4 +578,121 @@ fn solve_context_exports_a_conservative_definition_id_that_can_be_imported() {
         state.artifacts(),
     )
     .unwrap();
+}
+
+#[test]
+fn reply_validation_and_partial_persistence_keep_memory_at_the_original_prefix() {
+    let coordinator = SigningKey::from_bytes(&[81; 32]);
+    let signing = SigningKey::from_bytes(&[82; 32]);
+    let other = SigningKey::from_bytes(&[83; 32]);
+    let genesis = SignedGenesis::sign(
+        Genesis::new(
+            "reply-staging-fixture".into(),
+            coordinator.verifying_key().to_bytes(),
+            vec![
+                signing.verifying_key().to_bytes(),
+                other.verifying_key().to_bytes(),
+            ],
+            PoolConfig::default(),
+        )
+        .unwrap(),
+        &coordinator,
+    )
+    .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "naome-research-reply-staging-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let journal = Journal::create(&root, &genesis).unwrap();
+    let mut state = ResearchState::new(genesis).unwrap();
+    let mut ids = Vec::new();
+    for index in 0..2 {
+        let question = equality_question(index);
+        ids.push(question.id().unwrap());
+        let signed = SignedAction::sign(
+            state.genesis().genesis.id(),
+            state.next_nonce(signing.verifying_key().to_bytes()),
+            Action::Publish { question },
+            &signing,
+        );
+        let event = state.confirm(signed, &coordinator).unwrap();
+        journal.append(&event).unwrap();
+    }
+    let before = state.clone();
+    let original_bytes = serde_json::to_vec(state.events()).unwrap();
+    // A later duplicate invalidates the whole typed reply before any append.
+    let invalid = json!({"votes":[{"question_id":hex(&ids[0]),"yes":true},
+        {"question_id":hex(&ids[0]),"yes":true}]});
+    assert!(
+        apply_reply(
+            1,
+            None,
+            invalid,
+            &mut state,
+            &journal,
+            &signing,
+            &coordinator
+        )
+        .is_err()
+    );
+    assert_eq!(serde_json::to_vec(state.events()).unwrap(), original_bytes);
+    assert_eq!(Journal::open(&root).unwrap().1.head(), before.head());
+
+    // The first write succeeds; the second fails. No staged state is published.
+    let blocked = root.join(format!("event-{:06}.json", state.events().len() + 1));
+    fs::create_dir(&blocked).unwrap();
+    let reply = json!({"votes":ids.iter().map(|id| json!({"question_id":hex(id),"yes":true})).collect::<Vec<_>>()});
+    assert!(matches!(
+        apply_reply(1, None, reply, &mut state, &journal, &signing, &coordinator),
+        Err(ApplyError::Storage(_))
+    ));
+    assert_eq!(serde_json::to_vec(state.events()).unwrap(), original_bytes);
+    assert_eq!(
+        state.next_nonce(signing.verifying_key().to_bytes()),
+        before.next_nonce(signing.verifying_key().to_bytes())
+    );
+    assert_eq!(state.vote(signing.verifying_key().to_bytes(), ids[0]), None);
+    fs::remove_dir(&blocked).unwrap();
+    let mut prefix = before.clone();
+    let signed = SignedAction::sign(
+        prefix.genesis().genesis.id(),
+        prefix.next_nonce(signing.verifying_key().to_bytes()),
+        Action::Vote {
+            question: ids[0],
+            yes: true,
+        },
+        &signing,
+    );
+    prefix.confirm(signed, &coordinator).unwrap();
+    let (_, recovered) = Journal::open_at(&root, prefix.head(), prefix.events().len()).unwrap();
+    assert_eq!(
+        serde_json::to_vec(recovered.events()).unwrap(),
+        serde_json::to_vec(prefix.events()).unwrap()
+    );
+
+    // A failed Tick append likewise cannot publish its clock or nonce changes.
+    let blocked = root.join(format!("event-{:06}.json", recovered.events().len()));
+    fs::create_dir(&blocked).unwrap();
+    let mut state = recovered;
+    let head = state.head();
+    let tick = state.tick();
+    let nonce = state.next_nonce(coordinator.verifying_key().to_bytes());
+    assert!(append_tick(&mut state, &journal, &coordinator).is_err());
+    assert_eq!(
+        (
+            state.head(),
+            state.tick(),
+            state.next_nonce(coordinator.verifying_key().to_bytes())
+        ),
+        (head, tick, nonce)
+    );
+    fs::remove_dir(&blocked).unwrap();
+    append_tick(&mut state, &journal, &coordinator).unwrap();
+    let (_, replayed) = Journal::open_at(&root, state.head(), state.events().len()).unwrap();
+    assert_eq!(
+        serde_json::to_vec(replayed.events()).unwrap(),
+        serde_json::to_vec(state.events()).unwrap()
+    );
+    fs::remove_dir_all(root).unwrap();
 }
