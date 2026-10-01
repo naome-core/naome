@@ -9,7 +9,7 @@ mod operator;
 mod query;
 mod scheduler;
 mod store;
-pub use engine::{ActionReceipt, Node, WindowLedger};
+pub use engine::{ActionReceipt, Node, QuestionRow, WindowLedger};
 pub use model::{
     Action, Config, Finalization, PendingBlock, Profile, ProviderOutcome, Reservation, SignedAction,
 };

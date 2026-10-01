@@ -182,9 +182,6 @@ impl Store {
     pub fn get<T: DeserializeOwned>(&self, key: Id) -> Result<Option<T>, String> {
         self.index.get(self.checkpoint.root, key)
     }
-    pub fn get_at<T: DeserializeOwned>(&self, root: Id, key: Id) -> Result<Option<T>, String> {
-        self.index.get(root, key)
-    }
     pub fn initial(&self) -> Result<Checkpoint, String> {
         let signed: SignedCheckpoint =
             read_bounded(&self.directory.join("initial.json"), MAX_CHECKPOINT_BYTES)?;

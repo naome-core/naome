@@ -257,12 +257,17 @@ fn copied_proof_and_early_citation_survive_more_than_64_results() {
         let signed = answer(&mut node, id, source, Outcome::Proof);
         let result = node.submit(signed).unwrap().finalization.unwrap();
         if n == 0 {
-            early = Some((id, result.artifact_ids.last().unwrap().clone()));
+            let address = crate::run::parse_id(result.artifact_ids.last().unwrap()).unwrap();
+            let artifact = node
+                .artifact(super::context::Reference::Artifact(address))
+                .unwrap()
+                .unwrap();
+            early = Some((address, hex(&artifact.reference_id)));
         }
     }
     assert_eq!(node.state.questions, 70);
     assert_eq!(node.state.finalized, 70);
-    let (_, proof) = early.unwrap();
+    let (address, proof) = early.unwrap();
     let mut all = std::collections::BTreeSet::new();
     for cursor in (0..70).step_by(16) {
         for (id, _, pending, finalized) in node.questions(cursor, 16).unwrap() {
@@ -276,11 +281,7 @@ fn copied_proof_and_early_citation_survive_more_than_64_results() {
     assert!(node.questions(71, 16).is_err());
     drop(node);
     let mut node = Node::open(f.config.clone()).unwrap();
-    assert!(
-        node.artifact_source(crate::run::parse_id(&proof).unwrap())
-            .unwrap()
-            .is_some()
-    );
+    assert!(node.artifact_source(address).unwrap().is_some());
     // The old proof is selected by exact ID even outside the recent projection.
     let (mut q, _) = theorem(0);
     q.formula = FormulaInput::Not {
@@ -646,8 +647,24 @@ fn all_zero_allocations_wait_dormant_and_stop_wakes_without_provider() {
 fn segmented_history_crosses_4096_records_and_32_mib_with_streamed_replay() {
     let mut f = Fixture::new();
     f.config.budgets.discoveries.amount = 1000;
+    f.config.provider.max_output_bytes = super::model::NODE_MAX_OUTPUT_BYTES;
     let mut node = f.init();
-    for n in 0..850 {
+    let (early_question, source) = theorem(0);
+    let early_id = publish(&mut node, early_question.clone());
+    admit(&mut node, early_id);
+    let signed = answer(&mut node, early_id, source, Outcome::Proof);
+    let first = node.submit(signed).unwrap().finalization.unwrap();
+    let address = crate::run::parse_id(first.artifact_ids.last().unwrap()).unwrap();
+    let proof_id = hex(&node
+        .artifact(super::context::Reference::Artifact(address))
+        .unwrap()
+        .unwrap()
+        .reference_id);
+    // A few larger injected outcomes cross the byte boundary; monotone clock
+    // observations cross the record boundary without repeatedly rebuilding
+    // unrelated ledger paths. Both use the actual durable commit/replay path.
+    // This is storage stress, not an authentic provider-envelope qualification.
+    for n in 0..170 {
         let now = node.state.clock + 60;
         let reservation = node
             .reserve(
@@ -662,13 +679,17 @@ fn segmented_history_crosses_4096_records_and_32_mib_with_streamed_replay() {
             reply: None,
             error: Some("offline invalid output".into()),
             known_usage: usage(1, 1),
-            provenance: json!({"offline_padding":"a".repeat(40*1024)}),
-            retained_raw_response: Some("invalid fixture".into()),
+            provenance: json!({"offline":true}),
+            retained_raw_response: Some("a".repeat(200 * 1024)),
         };
         node.record_response(&reservation, outcome).unwrap();
         assert!(node.recover_provider().unwrap());
         assert_eq!(node.state.attempts, n + 1);
     }
+    while node.checkpoint().count <= 4096 {
+        node.observe(node.state.clock + 1).unwrap();
+    }
+    assert_eq!(node.state.attempts, 170);
     let selected = node.checkpoint().clone();
     assert!(selected.count > 4096);
     let mut bytes = 0;
@@ -680,9 +701,28 @@ fn segmented_history_crosses_4096_records_and_32_mib_with_streamed_replay() {
     drop(node);
     let mut node = Node::open(f.config.clone()).unwrap();
     assert_eq!(node.checkpoint(), &selected);
-    let (q, _) = theorem(45);
+    assert!(node.artifact_source(address).unwrap().is_some());
+    let target = FormulaInput::Forall {
+        variable: 9,
+        body: Box::new(early_question.formula),
+    };
+    let q = Question {
+        title: "Early proof after segmented archive growth".into(),
+        context: String::new(),
+        formula: target.clone(),
+        definitions: vec![],
+    };
     let id = publish(&mut node, q);
     assert!(node.question(id).unwrap().is_some());
+    admit(&mut node, id);
+    let source = format!(
+        "foundation = \"naome:zfc\"\nstatement = {}\nproof:\n p0 = cite(\"{proof_id}\")\n p1 = generalization(p0, x9)\n return p1\n",
+        target.to_nao().unwrap()
+    );
+    let signed = answer(&mut node, id, source, Outcome::Proof);
+    node.submit(signed).unwrap();
+    assert_eq!(node.state.finalized, 2);
+    assert_eq!(node.credit(node.profile.coordinator).unwrap(), 6);
     let selected = node.checkpoint().clone();
     drop(node);
     let report = Node::replay(
@@ -1086,7 +1126,7 @@ fn transitive_proof_helpers_recheck_after_restart_and_failed_order_is_atomic() {
         "foundation = \"naome:zfc\"\nformulas:\n h = forall(x, equal(x, x))\nstatement = implies(h, h)\nproof:\n p0 = cite(\"{h_id}\")\n p1 = simplification(h, h)\n p2 = modus_ponens(p0, p1)\n return p2\n"
     );
     let (_, prepared) = super::context::prepare(&[H, &helper], |_| Ok(None)).unwrap();
-    let b_id = hex(&prepared[1].id);
+    let b_id = hex(&prepared[1].reference_id);
     let source = format!(
         "foundation = \"naome:zfc\"\nformulas:\n h = forall(x, equal(x, x))\n b = implies(h, h)\nstatement = implies(h, b)\nproof:\n p0 = cite(\"{b_id}\")\n p1 = simplification(b, h)\n p2 = modus_ponens(p0, p1)\n return p2\n"
     );
@@ -1138,7 +1178,20 @@ fn transitive_proof_helpers_recheck_after_restart_and_failed_order_is_atomic() {
         .unwrap();
     let finalized = node.submit(signed).unwrap().finalization.unwrap();
     assert_eq!(finalized.artifact_ids.len(), 3);
-    let final_id = finalized.artifact_ids.last().unwrap();
+    let address = crate::run::parse_id(finalized.artifact_ids.last().unwrap()).unwrap();
+    let final_id = hex(&node
+        .artifact(super::context::Reference::Artifact(address))
+        .unwrap()
+        .unwrap()
+        .reference_id);
+    assert!(
+        node.available_artifacts()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| artifact["proof_id"] == final_id)
+    );
     drop(node);
     let mut node = Node::open(f.config.clone()).unwrap();
     let next_target = FormulaInput::Forall {
@@ -1241,6 +1294,17 @@ fn function_definition_resolver_loads_exact_obligation_from_signed_disk_after_re
         .is_ok()
     );
     assert!(context::prepare(&[source], |reference| lookup(reference, true)).is_err());
+    assert!(
+        context::prepare(&[source], |reference| {
+            lookup(reference, false).map(|artifact| {
+                artifact.map(|mut artifact| {
+                    artifact.reference_id[0] ^= 1;
+                    artifact
+                })
+            })
+        })
+        .is_err()
+    );
 }
 
 #[test]
@@ -1545,6 +1609,16 @@ fn bounded_prompts_preserve_definition_identity_and_handle_json_escape_expansion
     assert_eq!(solve.phase, Phase::Solve);
     assert!(solve.prompt_text.len() <= crate::provider::MAX_INPUT_BYTES);
     assert!(solve.prompt_text.contains("definition_id"));
+    let naome_authoring::CompiledArtifact::Definition(definition) =
+        naome_authoring::compile_artifact(&q.definitions[0]).unwrap()
+    else {
+        panic!("conservative definition")
+    };
+    assert!(
+        solve
+            .prompt_text
+            .contains(&hex(definition.definition_id().as_bytes()))
+    );
     assert!(solve.prompt_text.contains(&q.formula.to_nao().unwrap()));
     assert!(!solve.prompt_text.contains(&" ".repeat(40 * 1024)));
     assert_eq!(

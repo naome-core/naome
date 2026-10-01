@@ -6,7 +6,7 @@ use naome_checker::{
     ArtifactState, ArtifactStateError, CheckError, DefinitionCheckError,
     check_definition_with_state, check_normal_form_with_state,
 };
-use naome_proof::ArtifactPayload;
+use naome_proof::{ArtifactId, ArtifactPayload};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -17,7 +17,10 @@ const MAX_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredArtifact {
+    // The indexed address is domain-separated from the ProofId/DefinitionId
+    // consumed by .nao citations and definition imports.
     pub id: Id,
+    pub reference_id: Id,
     pub source: String,
     pub bytes: Vec<u8>,
     pub dependencies: Vec<Id>,
@@ -33,13 +36,13 @@ pub(super) enum Reference {
 
 fn missing(error: &CompileError) -> Option<Reference> {
     match error {
-        CompileError::DefinitionNotSelected { definition_id, .. } => {
-            Some(Reference::Artifact(*definition_id.as_bytes()))
-        }
+        CompileError::DefinitionNotSelected { definition_id, .. } => Some(Reference::Artifact(
+            *ArtifactId::from_definition_id(*definition_id).as_bytes(),
+        )),
         CompileError::Check { source, .. } => match source.as_ref() {
-            CheckError::UnknownProofReference { proof_id, .. } => {
-                Some(Reference::Artifact(*proof_id.as_bytes()))
-            }
+            CheckError::UnknownProofReference { proof_id, .. } => Some(Reference::Artifact(
+                *ArtifactId::from_proof_id(*proof_id).as_bytes(),
+            )),
             _ => None,
         },
         CompileError::DefinitionCheck { source, .. } => match source.as_ref() {
@@ -112,25 +115,29 @@ where
         }
         let payload =
             ArtifactPayload::from_canonical_bytes(&artifact.bytes).map_err(|e| e.to_string())?;
-        let identity = match payload {
+        let (identity, reference_id) = match payload {
             ArtifactPayload::Proof(proof) => {
                 let normal = proof
                     .into_unchecked_normal_form()
                     .with_matching_canonical_bytes(artifact.bytes[1..].into())
                     .ok_or("context canonical mismatch")?;
-                *check_normal_form_with_state(normal, &self.published)
-                    .map_err(|e| e.to_string())?
-                    .proof_id()
-                    .as_bytes()
+                let checked = check_normal_form_with_state(normal, &self.published)
+                    .map_err(|e| e.to_string())?;
+                (
+                    *ArtifactId::from_proof_id(checked.proof_id()).as_bytes(),
+                    *checked.proof_id().as_bytes(),
+                )
             }
             ArtifactPayload::Definition(definition) => {
-                *check_definition_with_state(definition, &self.published)
-                    .map_err(|e| e.to_string())?
-                    .definition_id()
-                    .as_bytes()
+                let checked = check_definition_with_state(definition, &self.published)
+                    .map_err(|e| e.to_string())?;
+                (
+                    *ArtifactId::from_definition_id(checked.definition_id()).as_bytes(),
+                    *checked.definition_id().as_bytes(),
+                )
             }
         };
-        if identity != artifact.id {
+        if identity != artifact.id || reference_id != artifact.reference_id {
             return Err("stored selected artifact identity mismatch".into());
         }
         register(&artifact.bytes, &mut self.published)?;
@@ -174,6 +181,10 @@ where
                 }
             };
             let id = *compiled.artifact_id().as_bytes();
+            let reference_id = match &compiled {
+                CompiledArtifact::Proof(proof) => *proof.proof_id().as_bytes(),
+                CompiledArtifact::Definition(definition) => *definition.definition_id().as_bytes(),
+            };
             let bytes = compiled.canonical_artifact_bytes();
             canonical_bytes = canonical_bytes
                 .checked_add(bytes.len())
@@ -242,6 +253,7 @@ where
             register(&bytes, &mut scratch)?;
             artifacts.push(StoredArtifact {
                 id,
+                reference_id,
                 source: (*source).into(),
                 bytes,
                 dependencies,

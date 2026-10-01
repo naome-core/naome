@@ -9,12 +9,22 @@ use super::{
 use crate::{
     formal::check_answer,
     journal::{read_bounded, write_new},
-    state::{Id, Question, hash, hex},
+    state::{Id, Question, hash},
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::Path;
+
+/// One question and its optional admitted/finalized block in a bounded page.
+pub type QuestionRow = (Id, Question, Option<PendingBlock>, Option<Finalization>);
+
+type ActionEffects = (
+    WorkingState,
+    Vec<Change>,
+    Option<Finalization>,
+    Vec<StoredArtifact>,
+);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -202,11 +212,7 @@ impl Node {
             .get(index_key("credit", &participant))?
             .unwrap_or(0))
     }
-    pub fn questions(
-        &self,
-        cursor: u64,
-        limit: usize,
-    ) -> Result<Vec<(Id, Question, Option<PendingBlock>, Option<Finalization>)>, String> {
+    pub fn questions(&self, cursor: u64, limit: usize) -> Result<Vec<QuestionRow>, String> {
         if limit == 0 || limit > PAGE_SIZE || cursor > self.state.questions {
             return Err("invalid bounded question page".into());
         }
@@ -307,18 +313,7 @@ impl Node {
         )?;
         Ok(receipt)
     }
-    fn derive_action(
-        &self,
-        signed: &SignedAction,
-    ) -> Result<
-        (
-            WorkingState,
-            Vec<Change>,
-            Option<Finalization>,
-            Vec<StoredArtifact>,
-        ),
-        String,
-    > {
+    fn derive_action(&self, signed: &SignedAction) -> Result<ActionEffects, String> {
         signed.verify(&self.profile)?;
         if signed.nonce != self.next_nonce()? {
             return Err("stale, conflicting or gapped action nonce".into());
@@ -337,7 +332,7 @@ impl Node {
                 let sources: Vec<_> = question.definitions.iter().map(String::as_str).collect();
                 let (base, prepared) =
                     context::prepare(&sources, |reference| self.artifact(reference))?;
-                crate::formal::check_definitions(&question.definitions, &base)?;
+                let _validated = crate::formal::check_definitions(&question.definitions, &base)?;
                 artifacts = prepared;
                 let entry = QuestionEntry {
                     published: self.store.checkpoint.count,

@@ -242,8 +242,11 @@ mod tests {
             key[bit / 8] = 1 << (7 - bit % 8);
             keys.push(key);
         }
-        for (i, key) in keys.iter().enumerate() {
-            root = index.put(root, *key, &i).unwrap();
+        // Insert deepest bits first, retaining the exact 256-bit path while
+        // avoiding quadratic copies of durable prefixes during fixture setup.
+        root = index.put(root, keys[0], &0usize).unwrap();
+        for bit in (0..256).rev() {
+            root = index.put(root, keys[bit + 1], &(bit + 1)).unwrap();
         }
         let old = root;
         root = index.put(root, keys[0], &1000usize).unwrap();
@@ -252,6 +255,10 @@ mod tests {
         for (i, key) in keys.iter().enumerate().skip(1) {
             assert_eq!(index.get::<usize>(root, *key).unwrap(), Some(i));
         }
+        let added = [0xff; 32];
+        assert_eq!(index.get::<usize>(old, added).unwrap(), None);
+        root = index.put(root, added, &257usize).unwrap();
+        assert_eq!(index.get::<usize>(root, added).unwrap(), Some(257));
         fs::write(index.path(root), b"{}").unwrap();
         assert!(index.get::<usize>(root, keys[0]).is_err());
         fs::remove_dir_all(directory).unwrap();

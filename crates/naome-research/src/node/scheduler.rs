@@ -446,7 +446,7 @@ fn artifact_projection(artifact: &StoredArtifact) -> Result<Value, String> {
         .map_err(|e| e.to_string())?
     {
         naome_proof::ArtifactPayload::Proof(_) => Ok(
-            json!({"kind":"proof","proof_id":hex(&artifact.id),"source_preview":text_projection(&artifact.source,512)}),
+            json!({"kind":"proof","proof_id":hex(&artifact.reference_id),"source_preview":text_projection(&artifact.source,512)}),
         ),
         naome_proof::ArtifactPayload::Definition(definition) => {
             let body = definition
@@ -464,7 +464,7 @@ fn artifact_projection(artifact: &StoredArtifact) -> Result<Value, String> {
                 }
             };
             Ok(
-                json!({"kind":"definition","definition_id":hex(&artifact.id),"graph":kind,"canonical_body_preview":text_projection(&body,192)}),
+                json!({"kind":"definition","definition_id":hex(&artifact.reference_id),"graph":kind,"canonical_body_preview":text_projection(&body,192)}),
             )
         }
     }
