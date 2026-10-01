@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     formal::{AnswerFile, Outcome},
-    provider::ProviderConfig,
+    provider::{ProviderConfig, ProviderError, ProviderReply},
     run::Interests,
     state::{Id, PoolConfig, Question, hash},
 };
@@ -18,6 +18,17 @@ use std::path::PathBuf;
 pub(super) const CHECKER_REVISION: &str = "1f7e38ffd7edfcda2dd87ecc5500f070766dfa4b";
 pub(super) const TIMEZONE_RULES: &str = "chrono-tz-0.10.4";
 pub(super) const PAGE_SIZE: usize = 16;
+
+// Two independently charged native streams (startup and one request), at most
+// six JSON-escape bytes per decoded byte, and at most two persisted views of a
+// stream field (raw + parsed reply or reply + known usage). Computation and
+// startup provenance use the same charged streams. Added/default usage fields
+// for 4096 responses, the <=96 KiB signed candidate, <=32 KiB checkpoint and
+// small record/provenance envelope fit the separate fixed 2 MiB allowance.
+const RESPONSE_WIRE_EXPANSION: usize = 2 * 6 * 2;
+const RESPONSE_FIXED_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const NODE_MAX_OUTPUT_BYTES: usize =
+    (super::store::MAX_RECORD_BYTES as usize - RESPONSE_FIXED_BYTES) / RESPONSE_WIRE_EXPANSION;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +47,11 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         self.budgets.validate()?;
         self.provider.validate().map_err(|e| e.to_string())?;
+        if self.provider.max_output_bytes > NODE_MAX_OUTPUT_BYTES {
+            return Err(format!(
+                "v2 response storage requires max_output_bytes <= {NODE_MAX_OUTPUT_BYTES}"
+            ));
+        }
         self.interests.validate()?;
         let pool = &self.pool;
         if self.version != 2
@@ -369,6 +385,48 @@ pub struct ProviderOutcome {
     pub known_usage: Value,
     pub provenance: Value,
     pub retained_raw_response: Option<String>,
+}
+impl ProviderOutcome {
+    /// The production constructor retains successful final text exactly once.
+    /// Failure text still survives parsing/accounting errors; source and byte
+    /// length are explicit even when a duplicate observation is removed.
+    pub(crate) fn from_provider_result(
+        result: Result<ProviderReply, ProviderError>,
+        known_usage: Value,
+        provenance: Value,
+        observed_response: Option<String>,
+    ) -> Self {
+        match result {
+            Ok(reply) => {
+                let observation = observed_response.as_deref().map(|text| {
+                    serde_json::json!({
+                        "bytes":text.len(),
+                        "matches_reply":text == reply.raw_response,
+                        "digest":crate::state::hex(&crate::state::hash(b"naome:research:observed-reply:v2\0", &text)),
+                        "digest_domain":"naome:research:observed-reply:v2"
+                    })
+                });
+                let conflict = observed_response
+                    .as_deref()
+                    .is_some_and(|text| text != reply.raw_response);
+                Self {
+                    reply: Some(reply),
+                    error: conflict
+                        .then(|| "Observed raw reply conflicts with returned response".into()),
+                    known_usage,
+                    provenance: serde_json::json!({"provider":provenance,"raw_reply":{"location":"reply.raw_response","observation":observation}}),
+                    retained_raw_response: None,
+                }
+            }
+            Err(error) => Self {
+                reply: None,
+                error: Some(error.to_string()),
+                known_usage,
+                provenance: serde_json::json!({"provider":provenance,"raw_reply":{"location":if observed_response.is_some() {"retained_raw_response"} else {"absent"},"bytes":observed_response.as_ref().map(String::len)}}),
+                retained_raw_response: observed_response,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -1381,6 +1381,113 @@ fn frozen_v1_journal_replays_byte_for_byte_alongside_a_distinct_v2_store() {
 }
 
 #[test]
+fn v2_output_storage_limit_is_enforced_before_initialization_or_contact() {
+    let mut f = Fixture::new();
+    let maximum = super::model::NODE_MAX_OUTPUT_BYTES;
+    f.config.provider.max_output_bytes = maximum;
+    assert!(f.config.validate().is_ok());
+    for excessive in [maximum + 1, crate::provider::MAX_OUTPUT_BYTES] {
+        f.config.provider.max_output_bytes = excessive;
+        assert!(
+            f.config
+                .validate()
+                .unwrap_err()
+                .contains("response storage")
+        );
+        assert!(Node::initialize(f.config.clone(), 1_790_841_600).is_err());
+        assert!(!f.config.directory.exists());
+        assert!(!f.config.provider.codex_home.exists());
+    }
+}
+
+#[test]
+fn production_outcome_constructor_retains_maximum_escaped_answers_and_known_usage_once() {
+    let maximum = super::model::NODE_MAX_OUTPUT_BYTES;
+    for unit in ["a", "\"\\\n\0", "é🙂"] {
+        let mut f = Fixture::new();
+        f.config.provider.max_output_bytes = maximum;
+        let mut node = f.init();
+        let (q, _) = theorem(52);
+        let id = publish(&mut node, q);
+        admit(&mut node, id);
+        // Compute the largest final event within the actual serialized stdio
+        // ceiling, with room for the usage/completion/RPC frames in that stream.
+        let mut lo = 0;
+        let mut hi = maximum;
+        while lo + 1 < hi {
+            let n = (lo + hi) / 2;
+            let value = json!({"question_id":hex(&id),"outcome":"proof","source":unit.repeat(n),"dependencies":[]});
+            let event = json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"answer","type":"agentMessage","phase":"final_answer","text":value.to_string()}}});
+            if serde_json::to_vec(&event).unwrap().len() + 8192 <= maximum {
+                lo = n;
+            } else {
+                hi = n;
+            }
+        }
+        let value = json!({"question_id":hex(&id),"outcome":"proof","source":unit.repeat(lo),"dependencies":[]});
+        let raw = value.to_string();
+        let reply = ProviderReply {
+            value,
+            raw_response: raw.clone(),
+            usage: usage(8, 7),
+            computation: vec![],
+        };
+        let outcome = ProviderOutcome::from_provider_result(
+            Ok(reply),
+            usage(8, 7),
+            json!({"transport":"stdio","source":"offline-production-constructor"}),
+            Some(raw.clone()),
+        );
+        assert!(outcome.retained_raw_response.is_none());
+        assert_eq!(
+            outcome.provenance["raw_reply"]["location"],
+            "reply.raw_response"
+        );
+        assert_eq!(
+            outcome.provenance["raw_reply"]["observation"]["matches_reply"],
+            true
+        );
+        let reservation = node
+            .reserve(
+                Phase::Solve,
+                Some(id),
+                node.state.clock,
+                "large production outcome".into(),
+                json!({}),
+            )
+            .unwrap();
+        node.record_response(&reservation, outcome).unwrap();
+        let ordinal = node.state.received.unwrap();
+        let record = node.store.record(ordinal).unwrap();
+        assert!(
+            serde_json::to_vec(&record).unwrap().len() as u64 <= super::store::MAX_RECORD_BYTES
+        );
+        let Operation::Response { outcome, .. } = node.operation(ordinal).unwrap() else {
+            panic!("response")
+        };
+        assert_eq!(outcome.reply.unwrap().raw_response, raw);
+        drop(node);
+        let mut node = Node::open(f.config.clone()).unwrap();
+        assert!(node.recover_provider().unwrap());
+        assert_eq!(node.state.research.used, 15);
+        assert!(node.state.usage_unknown.is_none());
+        assert_eq!(node.state.finalized, 0);
+        assert_eq!(node.credit(node.profile.coordinator).unwrap(), 0);
+        let selected = node.checkpoint().clone();
+        assert!(node.recover_provider().unwrap());
+        assert_eq!(node.checkpoint(), &selected);
+        drop(node);
+        let replay = Node::replay(
+            f.config.clone(),
+            &f.root.join("large-outcome-replay"),
+            Some((selected.head, selected.count)),
+        )
+        .unwrap();
+        assert_eq!(replay["records_verified"], selected.count);
+    }
+}
+
+#[test]
 fn run_with_large_model_action_returns_stopped_after_settling_known_usage() {
     let mut f = Fixture::new();
     f.config.provider.max_output_bytes = 256 * 1024;

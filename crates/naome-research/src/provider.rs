@@ -2336,7 +2336,8 @@ fn main() {
                 emit(&frame);
                 if mode == "pure_duplicate" { emit(&frame); }
             }
-            if mode == "malformed" || mode == "accounted_malformed" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","text":"not json"}}}"#); }
+            if mode == "accounted_payload" { emit(&std::fs::read_to_string(home.join("payload-frame.json")).unwrap()); }
+            else if mode == "malformed" || mode == "accounted_malformed" { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"type":"agentMessage","text":"not json"}}}"#); }
             else { emit(r#"{"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"answer","type":"agentMessage","phase":"final_answer","text":"{\"vote\":true}"}}}"#); }
             if mode.starts_with("accounted") {
                 let raw=r#"{"method":"rawResponse/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","responseId":"response-1","usage":{"inputTokens":10,"outputTokens":4,"totalTokens":14}}}"#;
@@ -2543,6 +2544,147 @@ fn main() {
             14
         );
         assert_eq!(server.observed_response().as_deref(), Some("not json"));
+        let outcome = crate::node::ProviderOutcome::from_provider_result(
+            Err(ProviderError::contract(
+                "Final response is not a single JSON value",
+            )),
+            server.observed_usage(),
+            server.info(),
+            server.observed_response(),
+        );
+        assert_eq!(outcome.retained_raw_response.as_deref(), Some("not json"));
+        assert_eq!(
+            outcome.provenance["raw_reply"]["location"],
+            "retained_raw_response"
+        );
+        assert_eq!(
+            crate::node::budget::Usage::from_complete_provider(&outcome.known_usage)
+                .unwrap()
+                .total,
+            14
+        );
+    }
+
+    #[test]
+    fn production_node_run_persists_large_offline_stdio_reply_and_restarts_without_unknown_usage() {
+        use crate::{
+            formal::FormulaInput,
+            journal::write_new,
+            node::{
+                Action, Config, Control, Node,
+                budget::{Allowance, Budgets, Period},
+            },
+            run::Interests,
+            state::{PoolConfig, Question, hex},
+        };
+        let mut fixture = Fixture::new("accounted_payload");
+        fixture.config.max_output_bytes = 256 * 1024;
+        let root = fixture.home.join("node-fixture");
+        fs::create_dir(&root).unwrap();
+        let identity = root.join("key.json");
+        write_new(&identity, &[57u8; 32]).unwrap();
+        let config = Config {
+            version: 2,
+            directory: root.join("node"),
+            identity_file: identity,
+            run_label: "offline-large-production-record".into(),
+            interests: Interests {
+                topics: vec!["Formal logic".into()],
+                context: "Offline stdio fixture".into(),
+            },
+            provider: fixture.config.clone(),
+            budgets: Budgets {
+                timezone: "Europe/Berlin".into(),
+                research: Allowance {
+                    amount: 1,
+                    period: Period::Day,
+                },
+                discoveries: Allowance {
+                    amount: 0,
+                    period: Period::Hour,
+                },
+                evaluations: Allowance {
+                    amount: 0,
+                    period: Period::Hour,
+                },
+            },
+            credit: 3,
+            pool: PoolConfig::default(),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let mut node = Node::initialize(config.clone(), now).unwrap();
+        let question = Question {
+            title: "Large escaped production output".into(),
+            context: String::new(),
+            formula: FormulaInput::Forall {
+                variable: 0,
+                body: Box::new(FormulaInput::Equal { left: 0, right: 0 }),
+            },
+            definitions: vec![],
+        };
+        let id = question.id().unwrap();
+        let action = node.sign(Action::Publish { question }).unwrap();
+        node.submit(action).unwrap();
+        let action = node
+            .sign(Action::Evaluate {
+                question: id,
+                yes: true,
+            })
+            .unwrap();
+        node.submit(action).unwrap();
+        node.tick(now).unwrap();
+        let value = json!({"question_id":hex(&id),"outcome":"proof","source":"a".repeat(200*1024),"dependencies":[]});
+        let raw = value.to_string();
+        let event = json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"answer","type":"agentMessage","phase":"final_answer","text":raw}}});
+        let wire = serde_json::to_vec(&event).unwrap();
+        assert!(wire.len() + 8192 < config.provider.max_output_bytes);
+        fs::write(fixture.home.join("payload-frame.json"), wire).unwrap();
+        let control = Control::default();
+        let stop = control.clone();
+        let inspect_config = config.clone();
+        let watcher = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(snapshot) = Node::inspect(inspect_config.clone()) {
+                    let state = &snapshot.checkpoint().state;
+                    if state["research"]["used"] == 14 && state["received"].is_null() {
+                        stop.stop();
+                        return true;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    stop.stop();
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        // This is the production Node::run/AppServer/result-construction path
+        // with an owned fake stdio child, not an authentic provider turn.
+        let result = node.run(&control);
+        assert!(watcher.join().unwrap());
+        assert_eq!(result.unwrap()["lifecycle"], "stopped");
+        let selected = node.checkpoint().clone();
+        assert_eq!(selected.state["research"]["used"], 14);
+        assert_eq!(selected.state["attempts"], 1);
+        assert!(selected.state["usage_unknown"].is_null());
+        drop(node);
+        let mut node = Node::open(config.clone()).unwrap();
+        assert!(node.recover_provider().unwrap());
+        assert_eq!(node.checkpoint(), &selected);
+        assert_eq!(node.status("fixture").unwrap()["local_credit"], 0);
+        drop(node);
+        let report = Node::replay(
+            config,
+            &root.join("replayed"),
+            Some((selected.head, selected.count)),
+        )
+        .unwrap();
+        assert_eq!(report["records_verified"], selected.count);
+        assert_eq!(report["provider_turns"], 0);
     }
 
     #[test]

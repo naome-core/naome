@@ -429,13 +429,12 @@ impl Node {
                     server.set_cancel(control.stopped.clone());
                     let result = server
                         .request_accounted(&reservation.prompt_text, reservation.schema.clone());
-                    super::ProviderOutcome {
-                        reply: result.as_ref().ok().cloned(),
-                        error: result.err().map(|error| error.to_string()),
-                        known_usage: server.observed_usage(),
-                        provenance: server.info(),
-                        retained_raw_response: server.observed_response(),
-                    }
+                    super::ProviderOutcome::from_provider_result(
+                        result,
+                        server.observed_usage(),
+                        server.info(),
+                        server.observed_response(),
+                    )
                 }
             },
         )
