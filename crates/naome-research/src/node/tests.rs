@@ -263,6 +263,19 @@ fn copied_proof_and_early_citation_survive_more_than_64_results() {
     assert_eq!(node.state.questions, 70);
     assert_eq!(node.state.finalized, 70);
     let (_, proof) = early.unwrap();
+    let mut all = std::collections::BTreeSet::new();
+    for cursor in (0..70).step_by(16) {
+        for (id, _, pending, finalized) in node.questions(cursor, 16).unwrap() {
+            assert!(all.insert(id));
+            assert!(pending.is_some());
+            assert!(finalized.is_some());
+        }
+    }
+    assert_eq!(all.len(), 70);
+    assert!(node.questions(70, 16).unwrap().is_empty());
+    assert!(node.questions(71, 16).is_err());
+    drop(node);
+    let mut node = Node::open(f.config.clone()).unwrap();
     assert!(
         node.artifact_source(crate::run::parse_id(&proof).unwrap())
             .unwrap()
@@ -665,6 +678,13 @@ fn segmented_history_crosses_4096_records_and_32_mib_with_streamed_replay() {
     }
     assert!(bytes > 32 * 1024 * 1024);
     drop(node);
+    let mut node = Node::open(f.config.clone()).unwrap();
+    assert_eq!(node.checkpoint(), &selected);
+    let (q, _) = theorem(45);
+    let id = publish(&mut node, q);
+    assert!(node.question(id).unwrap().is_some());
+    let selected = node.checkpoint().clone();
+    drop(node);
     let report = Node::replay(
         f.config.clone(),
         &f.root.join("streamed-replay"),
@@ -818,4 +838,664 @@ fn the_same_known_proof_can_finalize_separate_exact_proof_and_refutation_blocks(
     assert_ne!(first.block, second.block);
     assert_ne!(first.award, second.award);
     assert_eq!(node.credit(node.profile.coordinator).unwrap(), 6);
+}
+
+#[test]
+fn oversized_model_action_keeps_usage_and_rejection_through_restart_and_retry() {
+    for restart in [false, true] {
+        let mut f = Fixture::new();
+        f.config.provider.max_output_bytes = 256 * 1024;
+        let mut node = f.init();
+        let (q, _) = theorem(40);
+        let id = publish(&mut node, q);
+        admit(&mut node, id);
+        let value = json!({"question_id":hex(&id),"outcome":"proof","source":"a".repeat(100*1024),"dependencies":[]});
+        let outcome = response(value.clone(), usage(8, 7));
+        assert!(serde_json::to_vec(&value).unwrap().len() < f.config.provider.max_output_bytes);
+        let reservation = node
+            .reserve(
+                Phase::Solve,
+                Some(id),
+                node.state.clock,
+                "offline large action".into(),
+                json!({}),
+            )
+            .unwrap();
+        let nonce = node.next_nonce().unwrap();
+        node.record_response(&reservation, outcome).unwrap();
+        let response_index = node.state.received.unwrap();
+        let Operation::Response {
+            action,
+            semantic_error,
+            outcome,
+            ..
+        } = node.operation(response_index).unwrap()
+        else {
+            panic!("stored response")
+        };
+        assert!(action.is_none());
+        assert!(semantic_error.unwrap().contains("per-action size"));
+        assert_eq!(outcome.reply.unwrap().raw_response, value.to_string());
+        if restart {
+            drop(node);
+            node = Node::open(f.config.clone()).unwrap();
+        }
+        assert!(node.recover_provider().unwrap());
+        assert!(node.state.usage_unknown.is_none());
+        assert_eq!(node.state.research.used, 15);
+        assert_eq!(node.state.finalized, 0);
+        assert_eq!(node.credit(node.profile.coordinator).unwrap(), 0);
+        assert_eq!(node.next_nonce().unwrap(), nonce);
+        assert_eq!(node.state.backoff_until[2], node.state.clock + 30);
+        assert!(node.state.leases.iter().all(|lease| lease.question != id));
+        assert_eq!(
+            node.window_ledger(Phase::Solve, reservation.window.start)
+                .unwrap()
+                .unwrap()
+                .spent,
+            15
+        );
+        let after = node.checkpoint().clone();
+        assert!(node.recover_provider().unwrap());
+        assert_eq!(node.checkpoint(), &after);
+        assert!(
+            node.reserve(
+                Phase::Discover,
+                None,
+                node.state.clock,
+                "unaffected discovery".into(),
+                json!({})
+            )
+            .is_ok()
+        );
+    }
+}
+
+fn record_path(directory: &std::path::Path, ordinal: u64) -> PathBuf {
+    directory
+        .join("records")
+        .join(format!("{:014x}", ordinal >> 8))
+        .join(format!("{:02x}.json", ordinal & 255))
+}
+
+#[test]
+fn actual_atomic_write_faults_recover_finalization_credit_and_nonce_once() {
+    use super::index::{WriteFailure, fail_next_write};
+    for checkpoint_write in [false, true] {
+        for failure in [
+            WriteFailure::PartialWrite,
+            WriteFailure::FileSync,
+            WriteFailure::DirectorySync,
+        ] {
+            let f = Fixture::new();
+            let mut node = f.init();
+            let (q, source) = theorem(46);
+            let id = publish(&mut node, q);
+            admit(&mut node, id);
+            let signed = answer(&mut node, id, source, Outcome::Proof);
+            let before = node.checkpoint().clone();
+            let target = if checkpoint_write {
+                f.config.directory.join("checkpoint.json")
+            } else {
+                record_path(&f.config.directory, before.count)
+            };
+            fail_next_write(target, failure);
+            assert!(
+                node.submit(signed.clone())
+                    .unwrap_err()
+                    .contains("injected")
+            );
+            assert!(node.store.failed());
+            assert!(node.submit(signed.clone()).unwrap_err().contains("reopen"));
+            drop(node);
+            let mut node = Node::open(f.config.clone()).unwrap();
+            let selected = checkpoint_write || failure == WriteFailure::DirectorySync;
+            assert_eq!(node.state.finalized, u64::from(selected));
+            assert_eq!(
+                node.credit(node.profile.coordinator).unwrap(),
+                if selected { 3 } else { 0 }
+            );
+            let receipt = node.submit(signed.clone()).unwrap();
+            assert_eq!(receipt.record, before.count);
+            let after = node.checkpoint().clone();
+            assert_eq!(after.count, before.count + 1);
+            assert_eq!(node.submit(signed.clone()).unwrap(), receipt);
+            assert_eq!(node.checkpoint(), &after);
+            assert_eq!(node.next_nonce().unwrap(), signed.nonce + 1);
+            assert_eq!(node.credit(node.profile.coordinator).unwrap(), 3);
+            drop(node);
+            let replay = Node::replay(
+                f.config.clone(),
+                &f.root.join("fault-replay"),
+                Some((after.head, after.count)),
+            )
+            .unwrap();
+            assert_eq!(replay["records_verified"], after.count);
+        }
+    }
+}
+
+#[test]
+fn streamed_replay_detects_tamper_truncate_gap_reorder_and_removed_suffix() {
+    for corruption in 0..5 {
+        let f = Fixture::new();
+        let mut node = f.init();
+        let (q, _) = theorem(47);
+        publish(&mut node, q);
+        let prefix = fs::read(f.config.directory.join("checkpoint.json")).unwrap();
+        let (q, _) = theorem(48);
+        publish(&mut node, q);
+        node.observe(node.state.clock + 1).unwrap();
+        let selected = node.checkpoint().clone();
+        drop(node);
+        let zero = record_path(&f.config.directory, 0);
+        let one = record_path(&f.config.directory, 1);
+        match corruption {
+            0 => {
+                let mut value: Value = serde_json::from_slice(&fs::read(&zero).unwrap()).unwrap();
+                value["body"]["operation"]["signed"]["action"]["question"]["title"] =
+                    json!("tampered source");
+                fs::write(&zero, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            1 => {
+                let bytes = fs::read(&zero).unwrap();
+                fs::write(&zero, &bytes[..bytes.len() / 2]).unwrap();
+            }
+            2 => {
+                fs::remove_file(&one).unwrap();
+            }
+            3 => {
+                let a = fs::read(&zero).unwrap();
+                let b = fs::read(&one).unwrap();
+                fs::write(&zero, b).unwrap();
+                fs::write(&one, a).unwrap();
+            }
+            4 => {
+                fs::write(f.config.directory.join("checkpoint.json"), prefix).unwrap();
+                fs::remove_file(&one).unwrap();
+                fs::remove_file(record_path(&f.config.directory, 2)).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            Node::replay(
+                f.config.clone(),
+                &f.root.join("corrupt-replay"),
+                Some((selected.head, selected.count))
+            )
+            .is_err(),
+            "corruption {corruption}"
+        );
+    }
+}
+
+#[test]
+fn bounded_evaluation_cursor_survives_restart_and_visits_every_unreviewed_question() {
+    let mut f = Fixture::new();
+    f.config.budgets.discoveries.amount = 0;
+    f.config.budgets.research.amount = 0;
+    f.config.budgets.evaluations.amount = 100;
+    let mut node = f.init();
+    let mut ids = vec![];
+    for n in 0..41 {
+        let (q, _) = theorem(n);
+        ids.push(publish(&mut node, q));
+    }
+    for id in &ids[..36] {
+        evaluate(&mut node, *id, false);
+    }
+    let now = node.state.clock;
+    assert!(matches!(node.step(now).unwrap(), Step::Progress));
+    assert_eq!(node.state.evaluated_cursor, 16);
+    drop(node);
+    let mut node = Node::open(f.config.clone()).unwrap();
+    assert_eq!(node.state.evaluated_cursor, 16);
+    assert!(matches!(node.step(now).unwrap(), Step::Progress));
+    assert_eq!(node.state.evaluated_cursor, 32);
+    for id in &ids[36..] {
+        let Step::Admitted(reservation) = node.step(now).unwrap() else {
+            panic!("unreviewed evaluation");
+        };
+        assert_eq!(reservation.phase, Phase::Evaluate);
+        assert_eq!(reservation.target, Some(*id));
+        node.record_response(
+            &reservation,
+            response(json!({"question_id":hex(id),"yes":false}), usage(1, 1)),
+        )
+        .unwrap();
+        node.recover_provider().unwrap();
+        drop(node);
+        node = Node::open(f.config.clone()).unwrap();
+    }
+    assert_eq!(node.state.attempts, 5);
+    assert_eq!(node.state.unreviewed, 0);
+    assert!(matches!(
+        node.step(now).unwrap(),
+        Step::Wait {
+            until: None,
+            reason: WaitReason::Dormant
+        }
+    ));
+}
+
+#[test]
+fn transitive_proof_helpers_recheck_after_restart_and_failed_order_is_atomic() {
+    const H: &str = "foundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\nproof:\n p0 = equality_reflexivity(x)\n p1 = generalization(p0, x)\n return p1\n";
+    let h_id = hex(naome_authoring::compile(H).unwrap().proof_id().as_bytes());
+    let helper = format!(
+        "foundation = \"naome:zfc\"\nformulas:\n h = forall(x, equal(x, x))\nstatement = implies(h, h)\nproof:\n p0 = cite(\"{h_id}\")\n p1 = simplification(h, h)\n p2 = modus_ponens(p0, p1)\n return p2\n"
+    );
+    let (_, prepared) = super::context::prepare(&[H, &helper], |_| Ok(None)).unwrap();
+    let b_id = hex(&prepared[1].id);
+    let source = format!(
+        "foundation = \"naome:zfc\"\nformulas:\n h = forall(x, equal(x, x))\n b = implies(h, h)\nstatement = implies(h, b)\nproof:\n p0 = cite(\"{b_id}\")\n p1 = simplification(b, h)\n p2 = modus_ponens(p0, p1)\n return p2\n"
+    );
+    let h = FormulaInput::Forall {
+        variable: 0,
+        body: Box::new(FormulaInput::Equal { left: 0, right: 0 }),
+    };
+    let target = FormulaInput::Implies {
+        left: Box::new(h.clone()),
+        right: Box::new(FormulaInput::Implies {
+            left: Box::new(h.clone()),
+            right: Box::new(h),
+        }),
+    };
+    let f = Fixture::new();
+    let mut node = f.init();
+    let id = publish(
+        &mut node,
+        Question {
+            title: "Transitive helper closure".into(),
+            context: String::new(),
+            formula: target.clone(),
+            definitions: vec![],
+        },
+    );
+    admit(&mut node, id);
+    let mut file = AnswerFile {
+        source,
+        dependencies: vec![H.into(), helper],
+    };
+    let before = node.checkpoint().clone();
+    file.dependencies.swap(0, 1);
+    let bad = node
+        .sign(Action::Answer {
+            question: id,
+            outcome: Outcome::Proof,
+            file: file.clone(),
+        })
+        .unwrap();
+    assert!(node.submit(bad).is_err());
+    assert_eq!(node.checkpoint(), &before);
+    file.dependencies.swap(0, 1);
+    let signed = node
+        .sign(Action::Answer {
+            question: id,
+            outcome: Outcome::Proof,
+            file,
+        })
+        .unwrap();
+    let finalized = node.submit(signed).unwrap().finalization.unwrap();
+    assert_eq!(finalized.artifact_ids.len(), 3);
+    let final_id = finalized.artifact_ids.last().unwrap();
+    drop(node);
+    let mut node = Node::open(f.config.clone()).unwrap();
+    let next_target = FormulaInput::Forall {
+        variable: 9,
+        body: Box::new(target),
+    };
+    let id = publish(
+        &mut node,
+        Question {
+            title: "Restart selected transitive proof".into(),
+            context: String::new(),
+            formula: next_target.clone(),
+            definitions: vec![],
+        },
+    );
+    admit(&mut node, id);
+    let source = format!(
+        "foundation = \"naome:zfc\"\nstatement = {}\nproof:\n p0 = cite(\"{final_id}\")\n p1 = generalization(p0, x9)\n return p1\n",
+        next_target.to_nao().unwrap()
+    );
+    let signed = answer(&mut node, id, source, Outcome::Proof);
+    node.submit(signed).unwrap();
+    assert_eq!(node.state.finalized, 2);
+    assert_eq!(node.credit(node.profile.coordinator).unwrap(), 6);
+    let selected = node.checkpoint().clone();
+    drop(node);
+    assert!(
+        Node::replay(
+            f.config.clone(),
+            &f.root.join("helper-replay"),
+            Some((selected.head, selected.count))
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn function_definition_resolver_loads_exact_obligation_from_signed_disk_after_restart() {
+    use super::{
+        context::{self, Reference, StoredArtifact},
+        store::{Store, change, index_key},
+    };
+    let obligation = include_str!("../../../../examples/identity-function-obligation.nao");
+    let definition = include_str!("../../../../examples/identity-function.nao");
+    let source = include_str!("../../../../examples/identity-function-term-proof.nao");
+    let (_, artifacts) = context::prepare(&[obligation, definition], |_| Ok(None)).unwrap();
+    assert_eq!(artifacts[1].dependencies, vec![artifacts[0].id]);
+    let f = Fixture::new();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
+    let directory = f.root.join("resolver-library");
+    let profile = [19; 32];
+    let mut store = Store::create(&directory, profile, &key, &json!({})).unwrap();
+    for (ordinal, artifact) in artifacts.iter().enumerate() {
+        let mut changes = vec![change("artifact", &artifact.id, &ordinal).unwrap()];
+        if let Some(statement) = artifact.statement {
+            changes.push(change("statement", &statement, &ordinal).unwrap());
+        }
+        store.append(artifact, &json!({}), changes, &key).unwrap();
+    }
+    drop(store);
+    let store = Store::open(&directory, profile, key.verifying_key().to_bytes()).unwrap();
+    let lookup = |reference: Reference, omit: bool| -> Result<Option<StoredArtifact>, String> {
+        let (namespace, id) = match reference {
+            Reference::Artifact(id) => ("artifact", id),
+            Reference::Statement(id) => ("statement", id),
+            Reference::Derivation(_) => return Ok(None),
+        };
+        let Some(ordinal) = store.get::<u64>(index_key(namespace, &id))? else {
+            return Ok(None);
+        };
+        if omit && ordinal == 0 {
+            return Ok(None);
+        }
+        serde_json::from_value(store.record(ordinal)?.body.operation)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    };
+    let (base, final_artifact) =
+        context::prepare(&[source], |reference| lookup(reference, false)).unwrap();
+    let naome_proof::ArtifactPayload::Proof(proof) =
+        naome_proof::ArtifactPayload::from_canonical_bytes(&final_artifact[0].bytes).unwrap()
+    else {
+        panic!("function proof")
+    };
+    let normal = proof
+        .into_unchecked_normal_form()
+        .with_matching_canonical_bytes(final_artifact[0].bytes[1..].into())
+        .unwrap();
+    let checked = naome_checker::check_normal_form_with_state(normal, &base).unwrap();
+    assert!(
+        crate::formal::check_answer(
+            &AnswerFile {
+                source: source.into(),
+                dependencies: vec![]
+            },
+            checked.conclusion(),
+            Outcome::Proof,
+            &base
+        )
+        .is_ok()
+    );
+    assert!(context::prepare(&[source], |reference| lookup(reference, true)).is_err());
+}
+
+#[test]
+fn bad_signature_stays_fatal_and_never_spends_nonce_or_credit() {
+    let f = Fixture::new();
+    let mut node = f.init();
+    let (q, source) = theorem(49);
+    let id = publish(&mut node, q);
+    admit(&mut node, id);
+    let mut signed = answer(&mut node, id, source, Outcome::Proof);
+    signed.signature[0] ^= 1;
+    let before = node.checkpoint().clone();
+    assert!(node.submit(signed).is_err());
+    assert_eq!(node.checkpoint(), &before);
+    assert_eq!(node.state.finalized, 0);
+    assert_eq!(node.credit(node.profile.coordinator).unwrap(), 0);
+}
+
+#[test]
+fn malformed_complete_usage_in_each_phase_survives_restart_and_blocks_all_phases() {
+    for phase in [Phase::Discover, Phase::Evaluate, Phase::Solve] {
+        let f = Fixture::new();
+        let mut node = f.init();
+        let (q, _) = theorem(50);
+        let id = publish(&mut node, q);
+        admit(&mut node, id);
+        let now = node.state.clock;
+        let reservation = node
+            .reserve(
+                phase,
+                if phase == Phase::Discover {
+                    None
+                } else {
+                    Some(id)
+                },
+                now,
+                "offline malformed usage".into(),
+                json!({}),
+            )
+            .unwrap();
+        let mut malformed = usage(3, 2);
+        malformed["responseUsage"][0]["cachedInputTokens"] = json!(4);
+        node.record_response(
+            &reservation,
+            response(json!({"invalid":true}), malformed.clone()),
+        )
+        .unwrap();
+        assert!(!node.recover_provider().unwrap());
+        drop(node);
+        let mut node = Node::open(f.config.clone()).unwrap();
+        assert!(node.state.usage_unknown.is_some());
+        let Operation::Response { outcome, .. } =
+            node.operation(node.state.received.unwrap()).unwrap()
+        else {
+            panic!("retained response")
+        };
+        assert_eq!(outcome.known_usage, malformed);
+        node.observe(now + 86400).unwrap();
+        for next_phase in [Phase::Discover, Phase::Evaluate, Phase::Solve] {
+            assert!(
+                node.reserve(
+                    next_phase,
+                    if next_phase == Phase::Discover {
+                        None
+                    } else {
+                        Some(id)
+                    },
+                    now + 86400,
+                    "globally blocked".into(),
+                    json!({})
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(node.state.attempts, 1);
+        assert_eq!(node.state.finalized, 0);
+    }
+}
+
+#[test]
+fn frozen_v1_journal_replays_byte_for_byte_alongside_a_distinct_v2_store() {
+    use sha2::{Digest, Sha256};
+    let files: [(&str, &[u8]); 3] = [
+        (
+            "genesis.json",
+            include_bytes!("../../tests/fixtures/research-v1/genesis.json"),
+        ),
+        (
+            "event-000000.json",
+            include_bytes!("../../tests/fixtures/research-v1/event-000000.json"),
+        ),
+        (
+            "event-000001.json",
+            include_bytes!("../../tests/fixtures/research-v1/event-000001.json"),
+        ),
+    ];
+    let manifest: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/research-v1/manifest.json"
+    ))
+    .unwrap();
+    let expected = crate::run::parse_id(manifest["head"].as_str().unwrap()).unwrap();
+    let f = Fixture::new();
+    let directory = f.root.join("preserved-v1");
+    fs::create_dir(&directory).unwrap();
+    for (name, bytes) in &files {
+        assert_eq!(
+            hex(&Sha256::digest(bytes)),
+            manifest["sha256"][*name].as_str().unwrap()
+        );
+        fs::write(directory.join(name), bytes).unwrap();
+    }
+    let (_, legacy) = crate::journal::Journal::open_at(&directory, expected, 2).unwrap();
+    assert_eq!(legacy.genesis().genesis.version, 1);
+    assert_eq!(legacy.genesis().genesis.limits.questions, 64);
+    assert_eq!(legacy.questions().len(), 2);
+    let mut wrong = f.config.clone();
+    wrong.directory = directory.clone();
+    assert!(Node::open(wrong).is_err());
+    let mut node = f.init();
+    let (q, source) = theorem(51);
+    let id = publish(&mut node, q);
+    admit(&mut node, id);
+    let signed = answer(&mut node, id, source, Outcome::Proof);
+    node.submit(signed).unwrap();
+    let selected = node.checkpoint().clone();
+    drop(node);
+    Node::replay(
+        f.config.clone(),
+        &f.root.join("v2-next-to-v1"),
+        Some((selected.head, selected.count)),
+    )
+    .unwrap();
+    assert!(crate::journal::Journal::open(&f.config.directory).is_err());
+    assert!(crate::journal::Journal::open_at(&directory, expected, 2).is_ok());
+    for (name, bytes) in files {
+        assert_eq!(fs::read(directory.join(name)).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn run_with_large_model_action_returns_stopped_after_settling_known_usage() {
+    let mut f = Fixture::new();
+    f.config.provider.max_output_bytes = 256 * 1024;
+    f.config.budgets.discoveries.amount = 0;
+    f.config.budgets.evaluations.amount = 0;
+    let mut node = f.init();
+    let (q, _) = theorem(41);
+    let id = publish(&mut node, q);
+    admit(&mut node, id);
+    let now = node.state.clock;
+    let control = Control::default();
+    let mut calls = 0;
+    let status=node.run_with(&control,||Ok(now),|reservation,control|{
+        assert_eq!(reservation.phase,Phase::Solve);calls+=1;control.stop();
+        response(json!({"question_id":hex(&id),"outcome":"proof","source":"a".repeat(100*1024),"dependencies":[]}),usage(3,4))
+    }).unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(status["lifecycle"], "stopped");
+    assert_eq!(node.state.research.used, 7);
+    assert!(node.state.usage_unknown.is_none());
+}
+
+#[test]
+fn bounded_prompts_preserve_definition_identity_and_handle_json_escape_expansion() {
+    let mut f = Fixture::new();
+    f.config.interests = Interests {
+        topics: vec!["\0".repeat(256); 16],
+        context: "\0".repeat(2048),
+    };
+    let mut node = f.init();
+    let (mut q, _) = theorem(42);
+    q.context = "\0".repeat(4096);
+    q.definitions = vec![format!(
+        "foundation = \"naome:zfc\"\ndefinition self_equal = relation(x):\n equal(x, x)\n{}",
+        " ".repeat(40 * 1024)
+    )];
+    let id = publish(&mut node, q.clone());
+    admit(&mut node, id);
+    let Step::Admitted(discovery) = node.step(node.state.clock).unwrap() else {
+        panic!("bounded discovery")
+    };
+    assert!(discovery.prompt_text.len() <= crate::provider::MAX_INPUT_BYTES);
+    let failed = ProviderOutcome {
+        reply: None,
+        error: Some("offline failure".into()),
+        known_usage: usage(1, 1),
+        provenance: json!({}),
+        retained_raw_response: None,
+    };
+    node.record_response(&discovery, failed).unwrap();
+    node.recover_provider().unwrap();
+    let Step::Admitted(solve) = node.step(node.state.clock).unwrap() else {
+        panic!("bounded solve despite large definition")
+    };
+    assert_eq!(solve.phase, Phase::Solve);
+    assert!(solve.prompt_text.len() <= crate::provider::MAX_INPUT_BYTES);
+    assert!(solve.prompt_text.contains("definition_id"));
+    assert!(solve.prompt_text.contains(&q.formula.to_nao().unwrap()));
+    assert!(!solve.prompt_text.contains(&" ".repeat(40 * 1024)));
+    assert_eq!(
+        node.question(id).unwrap().unwrap().definitions,
+        q.definitions
+    );
+}
+
+#[test]
+fn idle_observed_clock_high_water_blocks_same_window_rollback_across_restart() {
+    let mut f = Fixture::new();
+    f.config.budgets.discoveries.amount = 1;
+    let mut node = f.init();
+    let t0 = node.state.clock;
+    let reservation = node
+        .reserve(Phase::Discover, None, t0, "offline".into(), json!({}))
+        .unwrap();
+    node.record_response(
+        &reservation,
+        ProviderOutcome {
+            reply: None,
+            error: Some("offline failure".into()),
+            known_usage: usage(1, 1),
+            provenance: json!({}),
+            retained_raw_response: None,
+        },
+    )
+    .unwrap();
+    node.recover_provider().unwrap();
+    assert!(matches!(
+        node.step(t0 + 300).unwrap(),
+        Step::Wait {
+            reason: WaitReason::BudgetRenewal,
+            ..
+        }
+    ));
+    assert_eq!(node.state.clock, t0 + 300);
+    let (q, _) = theorem(43);
+    let id = publish(&mut node, q);
+    drop(node);
+    let mut node = Node::open(f.config.clone()).unwrap();
+    assert_eq!(node.state.clock, t0 + 300);
+    assert!(
+        matches!(node.step(t0+60).unwrap(),Step::Wait {reason:WaitReason::ClockRollback,until:Some(time)} if time==t0+300)
+    );
+    assert!(
+        node.reserve(
+            Phase::Evaluate,
+            Some(id),
+            t0 + 60,
+            "rollback".into(),
+            json!({})
+        )
+        .is_err()
+    );
+    assert_eq!(node.state.attempts, 1);
+    let Step::Admitted(next) = node.step(t0 + 300).unwrap() else {
+        panic!("catch-up resumes the affordable evaluation")
+    };
+    assert_eq!(next.phase, Phase::Evaluate);
 }

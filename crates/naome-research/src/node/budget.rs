@@ -295,4 +295,46 @@ mod tests {
         assert!(usage.follows(&usage));
         assert!(!Usage { total: 37, ..usage }.follows(&usage));
     }
+    #[test]
+    fn malformed_numbers_subsets_and_overflows_never_become_known_usage() {
+        let valid = serde_json::json!({"total":{"inputTokens":10,"outputTokens":4,"totalTokens":14,"cachedInputTokens":3,"reasoningOutputTokens":2}});
+        for (field, bad) in [
+            ("inputTokens", serde_json::json!(-1)),
+            ("outputTokens", serde_json::json!(1.5)),
+            ("totalTokens", serde_json::json!("14")),
+            ("inputTokens", Value::Null),
+            ("cachedInputTokens", serde_json::json!(11)),
+            ("reasoningOutputTokens", serde_json::json!(5)),
+            ("cachedInputTokens", serde_json::json!(-1)),
+        ] {
+            let mut malformed = valid.clone();
+            malformed["total"][field] = bad;
+            assert!(Usage::from_provider(&malformed).is_err(), "{field}");
+        }
+        assert!(Usage::from_provider(&serde_json::json!({"total":{"inputTokens":u64::MAX,"outputTokens":1,"totalTokens":0}})).is_err());
+    }
+    #[test]
+    fn complete_response_ledger_deduplicates_identical_ids_and_rejects_conflicts() {
+        let first = serde_json::json!({"responseId":"first","inputTokens":5,"outputTokens":2,"totalTokens":7,"cachedInputTokens":3,"reasoningOutputTokens":1});
+        let second = serde_json::json!({"responseId":"second","inputTokens":4,"outputTokens":1,"totalTokens":5,"cachedInputTokens":2,"reasoningOutputTokens":0});
+        let value = serde_json::json!({"complete":true,"total":{"inputTokens":9,"outputTokens":3,"totalTokens":12,"cachedInputTokens":5,"reasoningOutputTokens":1},"responseUsage":[first.clone(),second,first]});
+        let usage = Usage::from_complete_provider(&value).unwrap();
+        assert_eq!(usage.total, 12);
+        assert_eq!(usage.cached, 5);
+        let mut conflicting = value.clone();
+        conflicting["responseUsage"][2]["cachedInputTokens"] = serde_json::json!(2);
+        assert!(Usage::from_complete_provider(&conflicting).is_err());
+        let mut omitted = value.clone();
+        omitted["responseUsage"].as_array_mut().unwrap().remove(1);
+        assert!(Usage::from_complete_provider(&omitted).is_err());
+        let mut missing = value.clone();
+        missing["responseUsage"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("outputTokens");
+        assert!(Usage::from_complete_provider(&missing).is_err());
+        let mut stale = value;
+        stale["complete"] = serde_json::json!(false);
+        assert!(Usage::from_complete_provider(&stale).is_err());
+    }
 }

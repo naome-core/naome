@@ -158,10 +158,230 @@ fn dormant_cli_sigterm_stops_and_restart_preserves_checkpoint_and_single_identit
     assert_eq!(stopped["lifecycle"], "stopped");
     assert_eq!(stopped["attempts_admitted"], 0);
     let reopened = Node::open(f.config.clone()).unwrap();
-    assert_eq!(
-        serde_json::to_value(reopened.checkpoint()).unwrap(),
-        before["checkpoint"]
+    assert!(
+        reopened.checkpoint().state["clock"].as_i64().unwrap()
+            >= before["greatest_observed_clock"].as_i64().unwrap()
     );
+    assert_eq!(reopened.checkpoint().state["attempts"], 0);
     assert_eq!(stopped["profile"], before["profile"]);
+    assert!(!f.config.provider.codex_home.exists());
+}
+
+#[test]
+fn large_definition_scheduler_process_regression() {
+    const CONFIG_ENV: &str = "NAOME_NODE_LARGE_CONTEXT_FIXTURE_CONFIG";
+    const RESULT_ENV: &str = "NAOME_NODE_LARGE_CONTEXT_FIXTURE_RESULT";
+    if let Some(config) = std::env::var_os(CONFIG_ENV) {
+        use naome_research::{
+            node::{Control, ProviderOutcome, budget::Phase},
+            provider::ProviderReply,
+            state::hex,
+        };
+        use serde_json::json;
+        let config = naome_research::node::read_config(std::path::Path::new(&config)).unwrap();
+        let mut node = Node::open(config).unwrap();
+        let control = Control::default();
+        let now = node.checkpoint().state["clock"].as_i64().unwrap();
+        let mut calls = 0;
+        let status=node.run_with(&control,||Ok(now),|reservation,control|{
+            assert_eq!(reservation.phase,Phase::Solve);assert!(reservation.prompt_text.len()<=32*1024);
+            assert!(reservation.prompt_text.contains("definition_id"));assert!(!reservation.prompt_text.contains(&" ".repeat(40*1024)));
+            let value=json!({"question_id":hex(&reservation.target.unwrap()),"outcome":"proof","source":"foundation = \"naome:zfc\"\nstatement = forall(x0, equal(x0, x0))\nproof:\n p0 = equality_reflexivity(x0)\n p1 = generalization(p0, x0)\n return p1\n","dependencies":[]});
+            let usage=json!({"complete":true,"total":{"inputTokens":2,"outputTokens":3,"totalTokens":5},"responseUsage":[{"responseId":"offline-context-response","inputTokens":2,"outputTokens":3,"totalTokens":5}]});
+            calls+=1;control.stop();ProviderOutcome {reply:Some(ProviderReply {raw_response:value.to_string(),value,usage:usage.clone(),computation:vec![]}),error:None,known_usage:usage,provenance:json!({"offline_process":true}),retained_raw_response:None}
+        }).unwrap();
+        assert_eq!(calls, 1);
+        write_new(
+            std::path::Path::new(&std::env::var_os(RESULT_ENV).unwrap()),
+            &status,
+        )
+        .unwrap();
+        return;
+    }
+    use naome_research::{formal::FormulaInput, node::Action, state::Question};
+    let mut f = Fixture::new();
+    f.config.budgets.research.amount = 20;
+    let mut node = Node::initialize(f.config.clone(), 1_790_841_600).unwrap();
+    let definition = format!(
+        "foundation = \"naome:zfc\"\ndefinition self_equal = relation(x):\n equal(x, x)\n{}",
+        " ".repeat(40 * 1024)
+    );
+    let question = Question {
+        title: "Accepted large definition context".into(),
+        context: String::new(),
+        formula: FormulaInput::Forall {
+            variable: 0,
+            body: Box::new(FormulaInput::Equal { left: 0, right: 0 }),
+        },
+        definitions: vec![definition.clone()],
+    };
+    let id = question.id().unwrap();
+    let publish = node.sign(Action::Publish { question }).unwrap();
+    node.submit(publish).unwrap();
+    let assessment = node
+        .sign(Action::Evaluate {
+            question: id,
+            yes: true,
+        })
+        .unwrap();
+    node.submit(assessment).unwrap();
+    node.tick(1_790_841_600).unwrap();
+    assert!(node.pending(id).unwrap().is_some());
+    drop(node);
+    let config = f.root.join("large-context-config.json");
+    let result = f.root.join("large-context-result.json");
+    write_new(&config, &f.config).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "large_definition_scheduler_process_regression",
+            "--nocapture",
+        ])
+        .env(CONFIG_ENV, &config)
+        .env(RESULT_ENV, &result)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("large context process must not enter a retry loop");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: Value = serde_json::from_slice(&fs::read(result).unwrap()).unwrap();
+    assert_eq!(status["finalized_blocks"], 1);
+    assert_eq!(status["accounting_unknown"], Value::Null);
+    let node = Node::open(f.config.clone()).unwrap();
+    assert_eq!(
+        node.question(id).unwrap().unwrap().definitions,
+        vec![definition]
+    );
+    assert!(!f.config.provider.codex_home.exists());
+}
+
+#[test]
+fn exhausted_phase_child_process_sleeps_and_resumes_at_observed_renewal() {
+    const CONFIG_ENV: &str = "NAOME_NODE_RENEWAL_FIXTURE_CONFIG";
+    const CLOCK_ENV: &str = "NAOME_NODE_RENEWAL_FIXTURE_CLOCK";
+    const RESULT_ENV: &str = "NAOME_NODE_RENEWAL_FIXTURE_RESULT";
+    use naome_research::node::{
+        Control, ProviderOutcome,
+        budget::{Phase, window},
+    };
+    use serde_json::json;
+    if let Some(config) = std::env::var_os(CONFIG_ENV) {
+        let config = naome_research::node::read_config(std::path::Path::new(&config)).unwrap();
+        let mut node = Node::open(config).unwrap();
+        let control = Control::default();
+        let clock = PathBuf::from(std::env::var_os(CLOCK_ENV).unwrap());
+        let mut calls = 0;
+        let status=node.run_with(&control,||fs::read_to_string(&clock).map_err(|e|e.to_string())?.parse().map_err(|_|"fixture clock invalid".into()),|reservation,control|{
+            assert_eq!(reservation.phase,Phase::Discover);calls+=1;control.stop();
+            ProviderOutcome {reply:None,error:Some("offline renewal fixture failure".into()),known_usage:json!({"complete":true,"total":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"responseUsage":[{"responseId":"renewed-offline-response","inputTokens":1,"outputTokens":1,"totalTokens":2}]}),provenance:json!({"offline_process":true}),retained_raw_response:None}
+        }).unwrap();
+        assert_eq!(calls, 1);
+        write_new(
+            std::path::Path::new(&std::env::var_os(RESULT_ENV).unwrap()),
+            &status,
+        )
+        .unwrap();
+        return;
+    }
+    let mut f = Fixture::new();
+    f.config.budgets.discoveries.amount = 1;
+    let t0 = 1_790_841_600;
+    let boundary = window(t0, &f.config.budgets.timezone, Period::Hour)
+        .unwrap()
+        .end;
+    let mut node = Node::initialize(f.config.clone(), t0).unwrap();
+    let first = node
+        .reserve(
+            Phase::Discover,
+            None,
+            t0,
+            "offline first attempt".into(),
+            json!({}),
+        )
+        .unwrap();
+    node.record_response(&first,ProviderOutcome {reply:None,error:Some("offline first failure".into()),known_usage:json!({"complete":true,"total":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"responseUsage":[{"responseId":"initial-offline-response","inputTokens":1,"outputTokens":1,"totalTokens":2}]}),provenance:json!({}),retained_raw_response:None}).unwrap();
+    node.recover_provider().unwrap();
+    drop(node);
+    let config = f.root.join("renewal-config.json");
+    let clock = f.root.join("renewal-clock.txt");
+    let result = f.root.join("renewal-result.json");
+    write_new(&config, &f.config).unwrap();
+    fs::write(&clock, (boundary - 1).to_string()).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "exhausted_phase_child_process_sleeps_and_resumes_at_observed_renewal",
+            "--nocapture",
+        ])
+        .env(CONFIG_ENV, &config)
+        .env(CLOCK_ENV, &clock)
+        .env(RESULT_ENV, &result)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        let snapshot = Node::inspect(f.config.clone()).unwrap();
+        if snapshot.checkpoint().state["clock"] == boundary - 1 {
+            break;
+        }
+        if started.elapsed() > Duration::from_secs(5) {
+            let _ = child.kill();
+            panic!("child must observe exhausted same-window wait");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(80));
+    let snapshot = Node::inspect(f.config.clone()).unwrap();
+    assert_eq!(snapshot.checkpoint().state["attempts"], 1);
+    assert!(!result.exists());
+    drop(snapshot);
+    // No Control notification: the real child timer must wake, reread this
+    // injected operator clock, renew the bucket and admit the next attempt.
+    let next_clock = clock.with_extension("next");
+    fs::write(&next_clock, (boundary + 1).to_string()).unwrap();
+    fs::rename(next_clock, &clock).unwrap();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("child renewal/resume watchdog");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: Value = serde_json::from_slice(&fs::read(result).unwrap()).unwrap();
+    assert_eq!(status["attempts_admitted"], 2);
+    assert_eq!(status["budgets"]["discovery_attempts"]["spent"], 1);
+    let node = Node::open(f.config.clone()).unwrap();
+    assert_eq!(
+        node.window_ledger(Phase::Discover, first.window.start)
+            .unwrap()
+            .unwrap()
+            .spent,
+        1
+    );
     assert!(!f.config.provider.codex_home.exists());
 }

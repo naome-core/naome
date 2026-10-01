@@ -14,7 +14,7 @@ use crate::{
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{fs, path::Path};
+use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -268,6 +268,9 @@ impl Node {
         Ok(Some(artifact))
     }
     pub fn submit(&mut self, signed: SignedAction) -> Result<ActionReceipt, String> {
+        if self.store.failed() {
+            return Err("store requires reopen after failed commit".into());
+        }
         signed.verify(&self.profile)?;
         if let Some(index) = self.store.get::<u64>(index_key("action", &signed.id()))? {
             let Operation::Action {
@@ -732,11 +735,7 @@ impl Node {
         reservation: &Reservation,
         outcome: ProviderOutcome,
     ) -> Result<(), String> {
-        let (action, semantic_error) = match convert(reservation, &outcome) {
-            Ok(Some(action)) => (Some(self.sign(action)?), None),
-            Ok(None) => (None, None),
-            Err(error) => (None, Some(bounded_error(error))),
-        };
+        let (action, semantic_error) = self.response_candidate(reservation, &outcome)?;
         let operation = Operation::Response {
             reservation: reservation.id(),
             outcome,
@@ -745,6 +744,26 @@ impl Node {
         };
         let (next, changes) = self.derive(&operation)?;
         self.commit(operation, next, changes)
+    }
+    /// Candidate shape/size rejection does not invalidate known consumption.
+    /// Genuine local envelope failures remain fatal, separate from semantics.
+    fn response_candidate(
+        &self,
+        reservation: &Reservation,
+        outcome: &ProviderOutcome,
+    ) -> Result<(Option<SignedAction>, Option<String>), String> {
+        match convert(reservation, outcome) {
+            Ok(Some(candidate)) => {
+                let signed = self.sign(candidate)?;
+                signed.verify_envelope(&self.profile)?;
+                match signed.check_size() {
+                    Ok(()) => Ok((Some(signed), None)),
+                    Err(reason) => Ok((None, Some(bounded_error(reason)))),
+                }
+            }
+            Ok(None) => Ok((None, None)),
+            Err(reason) => Ok((None, Some(bounded_error(reason)))),
+        }
     }
     /// Recover a saved response/settlement/action without another provider call.
     /// A reservation without a response remains uncertain and blocks all phases.
@@ -906,17 +925,13 @@ impl Node {
                 {
                     return Err("response reservation binding mismatch".into());
                 }
-                let (expected_action, expected_error) = match convert(&expected, outcome) {
-                    Ok(action) => (action, None),
-                    Err(error) => (None, Some(bounded_error(error))),
-                };
-                if expected_error != *semantic_error
-                    || expected_action.as_ref() != action.as_ref().map(|a| &a.action)
-                {
+                let (expected_action, expected_error) =
+                    self.response_candidate(&expected, outcome)?;
+                if expected_error != *semantic_error || expected_action != *action {
                     return Err("response action does not match saved raw reply".into());
                 }
                 if let Some(action) = action {
-                    action.verify(&self.profile)?;
+                    action.verify_envelope(&self.profile)?;
                     if action.nonce != self.next_nonce()? {
                         return Err("response action nonce mismatch".into());
                     }

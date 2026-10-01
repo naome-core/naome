@@ -133,25 +133,20 @@ impl Node {
     /// One bounded operation. A returned reservation has already been synced;
     /// no provider may be started before this method admits it.
     pub fn step(&mut self, now: i64) -> Result<Step, String> {
-        if !self.recover_provider()? {
-            return Ok(Step::Wait {
-                until: None,
-                reason: WaitReason::AccountingUnknown,
-            });
-        }
-        if now < self.state.clock {
+        // Every observed forward instant raises the durable high-water mark,
+        // including an idle wait. A later new local target cannot turn a clock
+        // rollback into affordable admission after a restart.
+        if !self.observe(now)? {
             return Ok(Step::Wait {
                 until: Some(self.state.clock),
                 reason: WaitReason::ClockRollback,
             });
         }
-        // Idle wall-clock rechecks do not append records. Observations are
-        // persisted before admission or a meaningful local transition.
-        if [Phase::Discover, Phase::Evaluate, Phase::Solve]
-            .into_iter()
-            .any(|phase| now >= self.state.bucket(phase).window.end)
-        {
-            self.observe(now)?;
+        if !self.recover_provider()? {
+            return Ok(Step::Wait {
+                until: None,
+                reason: WaitReason::AccountingUnknown,
+            });
         }
         let mut earliest: Option<(i64, WaitReason)> = None;
         let mut wait_for = |time: i64, reason| {
@@ -252,34 +247,63 @@ impl Node {
     ) -> Result<(String, Value), String> {
         if phase == Phase::Discover {
             return Ok((
-                crate::run::discover_prompt(&self.config.interests),
+                format!(
+                    "{FORMAL_INSTRUCTIONS}\nTASK discovery. Bounded interest projection: {}. Propose exactly one closed mathematical question. formula_json is a serialized strict AST: equal(left,right), member(element,set), not(body), implies(left,right), forall(variable,body), with u32 variables, max256 nodes and depth32. Example {{\"op\":\"forall\",\"variable\":0,\"body\":{{\"op\":\"equal\",\"left\":0,\"right\":0}}}}. title and context are semantic explanations; definitions are optional conservative .nao definitions, never proof assumptions. Return the discovery JSON only.",
+                    text_projection(
+                        &format!(
+                            "{}\n{}",
+                            self.config.interests.topics.join("\n"),
+                            self.config.interests.context
+                        ),
+                        4096
+                    )
+                ),
                 crate::run::discovery_schema(),
             ));
         }
         let id = target.ok_or("missing prompt target")?;
         let question = self.question(id)?.ok_or("prompt question absent")?;
-        let interests = serde_json::to_string(&self.config.interests).map_err(|e| e.to_string())?;
+        let interests = text_projection(
+            &format!(
+                "{}\n{}",
+                self.config.interests.topics.join("\n"),
+                self.config.interests.context
+            ),
+            4096,
+        );
+        let title = text_projection(&question.title, 512);
+        let context = text_projection(&question.context, 2048);
         if phase == Phase::Evaluate {
             return Ok((
                 format!(
                     "{FORMAL_INSTRUCTIONS}\nTASK evaluation. Interest projection: {interests}. Exactly one question_id {}. Title: {}. Context: {}. Exact statement: {}. Return that exact question_id and one Boolean yes. YES requests research effort; it does not establish mathematical truth. No list or additional question is permitted.",
                     hex(&id),
-                    question.title,
-                    question.context,
+                    title,
+                    context,
                     question.formula.to_nao()?
                 ),
                 json!({"type":"object","additionalProperties":false,"required":["question_id","yes"],"properties":{"question_id":{"type":"string"},"yes":{"type":"boolean"}}}),
             ));
         }
         let available = self.available_artifacts()?;
+        let entry = self
+            .entry(id)?
+            .ok_or("definition projection question absent")?;
+        let Operation::Action { artifacts, .. } = self.operation(entry.published)? else {
+            return Err("definition projection publication mismatch".into());
+        };
+        let definitions = artifacts
+            .iter()
+            .map(artifact_projection)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((
             format!(
-                "{FORMAL_INSTRUCTIONS}\nTASK solve. Interest projection: {interests}. Exact pending question_id {}. Title: {}. Context: {}. Exact statement: {}. Conservative definitions: {}. Bounded checked artifact projection: {}. Use an available proof_id exactly in cite(\"proof_id\"). Return the exact question_id, outcome proof or refutation, source and ordered necessary dependencies. Omit already selected helpers. Token usage is reported consumption; local credit depends only on exact checked proof possession.",
+                "{FORMAL_INSTRUCTIONS}\nTASK solve. Interest projection: {interests}. Exact pending question_id {}. Title: {}. Context: {}. Exact statement: {}. Conservative definitions: {}. Bounded checked artifact projection: {}. Use an available proof_id exactly in cite(\"proof_id\"). Import a definition_id under definitions: with alias = \"definition_id\". A preview marked complete=false is partial context, never a replacement for selected canonical bytes. Return the exact question_id, outcome proof or refutation, source and ordered necessary dependencies. Omit already selected helpers. Token usage is reported consumption; local credit depends only on exact checked proof possession.",
                 hex(&id),
-                question.title,
-                question.context,
+                title,
+                context,
                 question.formula.to_nao()?,
-                serde_json::to_string(&question.definitions).map_err(|e| e.to_string())?,
+                serde_json::to_string(&definitions).map_err(|e| e.to_string())?,
                 available
             ),
             crate::run::solve_schema(),
@@ -300,15 +324,22 @@ impl Node {
                     if rows.len() == 8 {
                         return Ok(json!(rows));
                     }
-                    if !seen.insert(artifact.id) || bytes + artifact.source.len() > 12 * 1024 {
+                    if !seen.insert(artifact.id) {
                         continue;
                     }
                     // Only selected representatives are advertised.
                     if self.artifact(Reference::Artifact(artifact.id))?.is_none() {
                         continue;
                     }
-                    bytes += artifact.source.len();
-                    rows.push(artifact_projection(&artifact));
+                    let projection = artifact_projection(&artifact)?;
+                    let size = serde_json::to_vec(&projection)
+                        .map_err(|e| e.to_string())?
+                        .len();
+                    if bytes + size > 6 * 1024 {
+                        continue;
+                    }
+                    bytes += size;
+                    rows.push(projection);
                 }
             }
         }
@@ -411,8 +442,52 @@ impl Node {
     }
 }
 
-fn artifact_projection(artifact: &StoredArtifact) -> Value {
-    json!({"artifact_id":hex(&artifact.id),"proof_id":artifact.statement.map(|_|hex(&artifact.id)),"source":artifact.source})
+fn artifact_projection(artifact: &StoredArtifact) -> Result<Value, String> {
+    match naome_proof::ArtifactPayload::from_canonical_bytes(&artifact.bytes)
+        .map_err(|e| e.to_string())?
+    {
+        naome_proof::ArtifactPayload::Proof(_) => Ok(
+            json!({"kind":"proof","proof_id":hex(&artifact.id),"source_preview":text_projection(&artifact.source,512)}),
+        ),
+        naome_proof::ArtifactPayload::Definition(definition) => {
+            let body = definition
+                .body()
+                .clone()
+                .into_primitive()
+                .map_err(|e| e.to_string())?
+                .to_source();
+            let kind = match definition.kind() {
+                naome_proof::DefinitionKind::Relation { arity } => {
+                    json!({"type":"relation","arity":arity})
+                }
+                naome_proof::DefinitionKind::Function { input_arity } => {
+                    json!({"type":"function","input_arity":input_arity})
+                }
+            };
+            Ok(
+                json!({"kind":"definition","definition_id":hex(&artifact.id),"graph":kind,"canonical_body_preview":text_projection(&body,192)}),
+            )
+        }
+    }
+}
+
+/// Charge serialized character bytes, including JSON escapes. Previews are
+/// explicitly marked incomplete; they never replace immutable proof context.
+fn text_projection(value: &str, maximum: usize) -> Value {
+    let mut text = String::new();
+    let mut bytes = 2;
+    for character in value.chars() {
+        let size = serde_json::to_string(&character)
+            .expect("character serializes")
+            .len()
+            - 2;
+        if bytes + size > maximum {
+            break;
+        }
+        text.push(character);
+        bytes += size;
+    }
+    json!({"text":text,"complete":text.len()==value.len()})
 }
 pub(super) fn wall_time() -> Result<i64, String> {
     SystemTime::now()

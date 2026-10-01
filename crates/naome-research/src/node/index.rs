@@ -6,7 +6,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -163,9 +164,67 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
     let parent = path.parent().ok_or("file has no parent")?;
     let temporary = parent.join(format!(".write-{}", hex(&nonce)));
-    crate::journal::write_bytes_new(&temporary, bytes)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    if take_write_failure(path, WriteFailure::PartialWrite) {
+        file.write_all(&bytes[..bytes.len() / 2])
+            .map_err(|e| e.to_string())?;
+        return Err("injected partial temporary write".into());
+    }
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    if take_write_failure(path, WriteFailure::FileSync) {
+        return Err("injected file sync failure before rename".into());
+    }
+    file.sync_all().map_err(|e| e.to_string())?;
+    drop(file);
     fs::rename(&temporary, path).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    if take_write_failure(path, WriteFailure::DirectorySync) {
+        return Err("injected directory sync failure after rename".into());
+    }
     sync_directory(parent)
+}
+
+// Thread-local injection drives the actual atomic write path without altering
+// other tests or claiming physical filesystem/power-loss qualification.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WriteFailure {
+    PartialWrite,
+    FileSync,
+    DirectorySync,
+}
+#[cfg(test)]
+thread_local! {
+    static WRITE_FAILURE: std::cell::RefCell<Option<(PathBuf, WriteFailure)>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn fail_next_write(path: PathBuf, failure: WriteFailure) {
+    WRITE_FAILURE.with(|slot| {
+        assert!(slot.borrow().is_none(), "unconsumed write failure");
+        *slot.borrow_mut() = Some((path, failure));
+    });
+}
+#[cfg(test)]
+fn take_write_failure(path: &Path, failure: WriteFailure) -> bool {
+    WRITE_FAILURE.with(|slot| {
+        let matches = slot
+            .borrow()
+            .as_ref()
+            .is_some_and(|(target, point)| target == path && *point == failure);
+        if matches {
+            slot.borrow_mut().take();
+        }
+        matches
+    })
 }
 
 #[cfg(test)]

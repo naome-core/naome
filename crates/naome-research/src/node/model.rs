@@ -174,14 +174,22 @@ impl SignedAction {
         )
     }
     pub fn verify(&self, profile: &Profile) -> Result<(), String> {
-        if self.profile != profile.id()
-            || !profile.participants.contains(&self.participant)
-            || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
-                > crate::state::MAX_ACTION_BYTES
-        {
-            return Err("wrong action profile/participant or per-action size".into());
+        self.verify_envelope(profile)?;
+        self.check_size()
+    }
+    pub(super) fn verify_envelope(&self, profile: &Profile) -> Result<(), String> {
+        if self.profile != profile.id() || !profile.participants.contains(&self.participant) {
+            return Err("wrong action profile/participant".into());
         }
         verify(self.participant, &self.id(), &self.signature)
+    }
+    pub(super) fn check_size(&self) -> Result<(), String> {
+        if serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
+            > crate::state::MAX_ACTION_BYTES
+        {
+            return Err("candidate exceeds per-action size".into());
+        }
+        Ok(())
     }
 }
 
