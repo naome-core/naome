@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NAOME public inference pilot result row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "corpus_manifest_sha256",
+    "run_id",
+    "configuration",
+    "evidence_class",
+    "role",
+    "case_id",
+    "repeat",
+    "attempt",
+    "status",
+    "response",
+    "usage",
+    "wall_ms",
+    "memory_peak_bytes",
+    "energy_wh",
+    "cost_usd",
+    "error",
+    "raw_response",
+    "raw_response_sha256",
+    "plan_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "corpus_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "configuration": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_class": {
+      "enum": [
+        "synthetic",
+        "live_model"
+      ]
+    },
+    "role": {
+      "enum": [
+        "answer",
+        "discovery",
+        "evaluation"
+      ]
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repeat": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "timeout",
+        "unavailable",
+        "malformed",
+        "error"
+      ]
+    },
+    "response": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reasoning_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "wall_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "memory_peak_bytes": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "energy_wh": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "cost_usd": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "raw_response": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "raw_response_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "plan_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "const": "answer"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "response": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "outcome",
+              "source",
+              "dependencies"
+            ],
+            "properties": {
+              "outcome": {
+                "enum": [
+                  "proof",
+                  "refutation"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "dependencies": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 8
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "enum": [
+              "discovery",
+              "evaluation"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "attempt": {
+            "const": 0
+          }
+        }
+      }
+    }
+  ]
+}

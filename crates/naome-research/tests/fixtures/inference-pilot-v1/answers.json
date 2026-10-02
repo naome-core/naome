@@ -1,0 +1,510 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "id": "A01",
+      "kind": "solvable",
+      "stratum": "short",
+      "title": "Equality reflexivity",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "equal",
+          "left": 0,
+          "right": 0
+        }
+      },
+      "available_helpers": [],
+      "provenance": "adapted from examples/self-equality.nao; public development control"
+    },
+    {
+      "id": "A02",
+      "kind": "solvable",
+      "stratum": "short",
+      "title": "Membership implication identity",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "implies",
+            "left": {
+              "op": "member",
+              "element": 0,
+              "set": 1
+            },
+            "right": {
+              "op": "member",
+              "element": 0,
+              "set": 1
+            }
+          }
+        }
+      },
+      "available_helpers": [],
+      "provenance": "Hilbert identity schema specialized to membership; derived from examples/implication-identity.nao"
+    },
+    {
+      "id": "A03",
+      "kind": "solvable",
+      "stratum": "short",
+      "title": "Membership transport by equality",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "forall",
+            "variable": 2,
+            "body": {
+              "op": "implies",
+              "left": {
+                "op": "equal",
+                "left": 0,
+                "right": 1
+              },
+              "right": {
+                "op": "implies",
+                "left": {
+                  "op": "member",
+                  "element": 0,
+                  "set": 2
+                },
+                "right": {
+                  "op": "member",
+                  "element": 1,
+                  "set": 2
+                }
+              }
+            }
+          }
+        }
+      },
+      "available_helpers": [],
+      "provenance": "adapted from examples/equality-substitution.nao; public development task"
+    },
+    {
+      "id": "A04",
+      "kind": "solvable",
+      "stratum": "short",
+      "title": "Universal implication distribution",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "implies",
+          "left": {
+            "op": "forall",
+            "variable": 1,
+            "body": {
+              "op": "implies",
+              "left": {
+                "op": "member",
+                "element": 1,
+                "set": 0
+              },
+              "right": {
+                "op": "equal",
+                "left": 1,
+                "right": 0
+              }
+            }
+          },
+          "right": {
+            "op": "implies",
+            "left": {
+              "op": "forall",
+              "variable": 1,
+              "body": {
+                "op": "member",
+                "element": 1,
+                "set": 0
+              }
+            },
+            "right": {
+              "op": "forall",
+              "variable": 1,
+              "body": {
+                "op": "equal",
+                "left": 1,
+                "right": 0
+              }
+            }
+          }
+        }
+      },
+      "available_helpers": [],
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A05",
+      "kind": "solvable",
+      "stratum": "reuse",
+      "title": "Close a checked theorem under a fresh binder",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "equal",
+            "left": 1,
+            "right": 1
+          }
+        }
+      },
+      "available_helpers": [
+        "reflexivity"
+      ],
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A06",
+      "kind": "solvable",
+      "stratum": "reuse",
+      "title": "Specialize a membership theorem to the diagonal",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "implies",
+          "left": {
+            "op": "member",
+            "element": 0,
+            "set": 0
+          },
+          "right": {
+            "op": "member",
+            "element": 0,
+            "set": 0
+          }
+        }
+      },
+      "available_helpers": [
+        "membership_identity"
+      ],
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A07",
+      "kind": "solvable",
+      "stratum": "reuse",
+      "title": "Consume an exact two-helper proof closure",
+      "context": "Dependency ordering and closure exercise; not a scientific novelty test.",
+      "formula": {
+        "op": "implies",
+        "left": {
+          "op": "forall",
+          "variable": 0,
+          "body": {
+            "op": "equal",
+            "left": 0,
+            "right": 0
+          }
+        },
+        "right": {
+          "op": "implies",
+          "left": {
+            "op": "forall",
+            "variable": 0,
+            "body": {
+              "op": "equal",
+              "left": 0,
+              "right": 0
+            }
+          },
+          "right": {
+            "op": "forall",
+            "variable": 0,
+            "body": {
+              "op": "equal",
+              "left": 0,
+              "right": 0
+            }
+          }
+        }
+      },
+      "available_helpers": [
+        "reflexivity",
+        "implication_helper"
+      ],
+      "provenance": "adapted from formal.rs helper_chain; public development fixture"
+    },
+    {
+      "id": "A08",
+      "kind": "solvable",
+      "stratum": "reuse",
+      "title": "Specialize equality transport to a reflexive premise",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "implies",
+            "left": {
+              "op": "equal",
+              "left": 0,
+              "right": 1
+            },
+            "right": {
+              "op": "implies",
+              "left": {
+                "op": "equal",
+                "left": 0,
+                "right": 0
+              },
+              "right": {
+                "op": "equal",
+                "left": 1,
+                "right": 0
+              }
+            }
+          }
+        }
+      },
+      "available_helpers": [
+        "equality_transport"
+      ],
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A09",
+      "kind": "solvable",
+      "stratum": "refutation",
+      "title": "Refute the universal denial of an inductive set",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "not",
+          "body": {
+            "op": "not",
+            "body": {
+              "op": "implies",
+              "left": {
+                "op": "not",
+                "body": {
+                  "op": "forall",
+                  "variable": 1,
+                  "body": {
+                    "op": "not",
+                    "body": {
+                      "op": "not",
+                      "body": {
+                        "op": "implies",
+                        "left": {
+                          "op": "forall",
+                          "variable": 2,
+                          "body": {
+                            "op": "not",
+                            "body": {
+                              "op": "member",
+                              "element": 2,
+                              "set": 1
+                            }
+                          }
+                        },
+                        "right": {
+                          "op": "not",
+                          "body": {
+                            "op": "member",
+                            "element": 1,
+                            "set": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "right": {
+                "op": "not",
+                "body": {
+                  "op": "forall",
+                  "variable": 1,
+                  "body": {
+                    "op": "implies",
+                    "left": {
+                      "op": "member",
+                      "element": 1,
+                      "set": 0
+                    },
+                    "right": {
+                      "op": "not",
+                      "body": {
+                        "op": "forall",
+                        "variable": 2,
+                        "body": {
+                          "op": "not",
+                          "body": {
+                            "op": "not",
+                            "body": {
+                              "op": "implies",
+                              "left": {
+                                "op": "forall",
+                                "variable": 3,
+                                "body": {
+                                  "op": "not",
+                                  "body": {
+                                    "op": "implies",
+                                    "left": {
+                                      "op": "implies",
+                                      "left": {
+                                        "op": "member",
+                                        "element": 3,
+                                        "set": 2
+                                      },
+                                      "right": {
+                                        "op": "implies",
+                                        "left": {
+                                          "op": "not",
+                                          "body": {
+                                            "op": "member",
+                                            "element": 3,
+                                            "set": 1
+                                          }
+                                        },
+                                        "right": {
+                                          "op": "equal",
+                                          "left": 3,
+                                          "right": 1
+                                        }
+                                      }
+                                    },
+                                    "right": {
+                                      "op": "not",
+                                      "body": {
+                                        "op": "implies",
+                                        "left": {
+                                          "op": "implies",
+                                          "left": {
+                                            "op": "not",
+                                            "body": {
+                                              "op": "member",
+                                              "element": 3,
+                                              "set": 1
+                                            }
+                                          },
+                                          "right": {
+                                            "op": "equal",
+                                            "left": 3,
+                                            "right": 1
+                                          }
+                                        },
+                                        "right": {
+                                          "op": "member",
+                                          "element": 3,
+                                          "set": 2
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "op": "not",
+                                "body": {
+                                  "op": "member",
+                                  "element": 2,
+                                  "set": 0
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "available_helpers": [],
+      "provenance": "ZfcAxiom::Infinity exact primitive expansion with one outer negation removed; existing formal exact-refutation pattern"
+    },
+    {
+      "id": "C01",
+      "kind": "checker_control",
+      "stratum": "control",
+      "title": "Reject a valid proof for a different question",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "implies",
+            "left": {
+              "op": "member",
+              "element": 0,
+              "set": 1
+            },
+            "right": {
+              "op": "member",
+              "element": 0,
+              "set": 1
+            }
+          }
+        }
+      },
+      "available_helpers": [],
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "C02",
+      "kind": "checker_control",
+      "stratum": "control",
+      "title": "Reject an unavailable citation",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "equal",
+          "left": 0,
+          "right": 0
+        }
+      },
+      "available_helpers": [],
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "C03",
+      "kind": "checker_control",
+      "stratum": "control",
+      "title": "Reject an invented inference rule",
+      "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "equal",
+          "left": 0,
+          "right": 0
+        }
+      },
+      "available_helpers": [],
+      "provenance": "new pilot construction using existing Foundation rules"
+    }
+  ]
+}

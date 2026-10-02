@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "helpers": {
+    "reflexivity": {
+      "proof_id": "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73",
+      "source": "foundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\nproof:\n p0 = equality_reflexivity(x)\n p1 = generalization(p0, x)\n return p1\n",
+      "purpose": "Allowed checked helper; no final target solution is exported."
+    },
+    "membership_identity": {
+      "proof_id": "f1cfaff608c8d21b6b2c6d819def7b469bc870678f0145a00133432d2a3d635b",
+      "source": "foundation = \"naome:zfc\"\nstatement = forall(x, forall(y, implies(member(x, y), member(x, y))))\nproof:\n p0 = simplification(member(x, y), member(x, y))\n p1 = simplification(member(x, y), implies(member(x, y), member(x, y)))\n p2 = frege(member(x, y), implies(member(x, y), member(x, y)), member(x, y))\n p3 = modus_ponens(p1, p2)\n p4 = modus_ponens(p0, p3)\n p5 = generalization(p4, y)\n p6 = generalization(p5, x)\n return p6\n",
+      "purpose": "Allowed checked helper; no final target solution is exported."
+    },
+    "equality_transport": {
+      "proof_id": "5eacad72901765b0473c8d262f5687bd52687cfd1ed925ff12df0e3081a989cf",
+      "source": "foundation = \"naome:zfc\"\nstatement = forall(x, forall(y, forall(z, implies(equal(x, y), implies(equal(x, z), equal(y, z))))))\nproof:\n p0 = equality_substitution(x, y, equal(x, z))\n p1 = generalization(p0, z)\n p2 = generalization(p1, y)\n p3 = generalization(p2, x)\n return p3\n",
+      "purpose": "Allowed checked helper; no final target solution is exported."
+    },
+    "implication_helper": {
+      "proof_id": "4ee688c1c7627e5a22e9033012b5d5e2e9e8329cc4f363a631bc495c3442ab8e",
+      "source": "foundation = \"naome:zfc\"\nstatement = implies(forall(x, equal(x, x)), forall(x, equal(x, x)))\nproof:\n p0 = cite(\"c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73\")\n p1 = simplification(forall(x, equal(x, x)), forall(x, equal(x, x)))\n p2 = modus_ponens(p0, p1)\n return p2\n",
+      "purpose": "Second necessary helper in an ordered two-proof closure."
+    }
+  }
+}

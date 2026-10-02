@@ -1,0 +1,617 @@
+{
+  "schema": 1,
+  "contexts": [
+    {
+      "id": "D01",
+      "interest": {
+        "topics": [
+          "Equality transport"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Study when equal objects preserve membership claims."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A03"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D02",
+      "interest": {
+        "topics": [
+          "Membership implications"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Study tautological membership implications before stronger claims."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A02"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D03",
+      "interest": {
+        "topics": [
+          "Quantifier scope"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Study how binder order and instantiation change a formal target."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A04"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D04",
+      "interest": {
+        "topics": [
+          "Knowledge reuse"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Study proofs that can use an explicitly checked helper closure."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A07"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D05",
+      "interest": {
+        "topics": [
+          "Refutation shape"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Study a claim whose exact single syntactic negation is provable."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A09"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D06",
+      "interest": {
+        "topics": [
+          "Extensional set reasoning"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Study set identity through membership without invented predicates."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A03"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D07",
+      "interest": {
+        "topics": [
+          "Minority interest: logical pedagogy"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Prefer short teachable formal examples even if not novel research."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A01"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D08",
+      "interest": {
+        "topics": [
+          "Minority interest: dependency audit"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Prefer exact dependency/replay exercises over broad mathematical claims."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A05"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D09",
+      "interest": {
+        "topics": [
+          "Avoid easy reflexivity"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Seek a supported membership or implication question beyond the reference reflexivity."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A02"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D10",
+      "interest": {
+        "topics": [
+          "Constrained unfamiliar combination"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Combine quantifier reasoning with membership transport, staying within the primitive syntax."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A08"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": false
+    },
+    {
+      "id": "D11",
+      "interest": {
+        "topics": [
+          "Clinical uncertainty translation gap"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Interest in treatment effectiveness; do not claim clinical propositions are expressible without an approved encoding."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A01"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": true
+    },
+    {
+      "id": "D12",
+      "interest": {
+        "topics": [
+          "Empirical climate translation gap"
+        ],
+        "avoid_topics": [
+          "unsupported arithmetic, empirical truth or universal novelty claims"
+        ],
+        "purpose": "Interest in measured climate trends; explain the encoding gap instead of inventing arithmetic or empirical axioms."
+      },
+      "required_candidates": 2,
+      "allowed_reference_ids": [
+        "A04"
+      ],
+      "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
+      "translation_gap": true
+    }
+  ],
+  "references": [
+    {
+      "id": "A01",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "equal",
+          "left": 0,
+          "right": 0
+        }
+      },
+      "title": "Equality reflexivity",
+      "provenance": "adapted from examples/self-equality.nao; public development control"
+    },
+    {
+      "id": "A02",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "implies",
+            "left": {
+              "op": "member",
+              "element": 0,
+              "set": 1
+            },
+            "right": {
+              "op": "member",
+              "element": 0,
+              "set": 1
+            }
+          }
+        }
+      },
+      "title": "Membership implication identity",
+      "provenance": "Hilbert identity schema specialized to membership; derived from examples/implication-identity.nao"
+    },
+    {
+      "id": "A03",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "forall",
+            "variable": 2,
+            "body": {
+              "op": "implies",
+              "left": {
+                "op": "equal",
+                "left": 0,
+                "right": 1
+              },
+              "right": {
+                "op": "implies",
+                "left": {
+                  "op": "member",
+                  "element": 0,
+                  "set": 2
+                },
+                "right": {
+                  "op": "member",
+                  "element": 1,
+                  "set": 2
+                }
+              }
+            }
+          }
+        }
+      },
+      "title": "Membership transport by equality",
+      "provenance": "adapted from examples/equality-substitution.nao; public development task"
+    },
+    {
+      "id": "A04",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "implies",
+          "left": {
+            "op": "forall",
+            "variable": 1,
+            "body": {
+              "op": "implies",
+              "left": {
+                "op": "member",
+                "element": 1,
+                "set": 0
+              },
+              "right": {
+                "op": "equal",
+                "left": 1,
+                "right": 0
+              }
+            }
+          },
+          "right": {
+            "op": "implies",
+            "left": {
+              "op": "forall",
+              "variable": 1,
+              "body": {
+                "op": "member",
+                "element": 1,
+                "set": 0
+              }
+            },
+            "right": {
+              "op": "forall",
+              "variable": 1,
+              "body": {
+                "op": "equal",
+                "left": 1,
+                "right": 0
+              }
+            }
+          }
+        }
+      },
+      "title": "Universal implication distribution",
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A05",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "equal",
+            "left": 1,
+            "right": 1
+          }
+        }
+      },
+      "title": "Close a checked theorem under a fresh binder",
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A06",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "implies",
+          "left": {
+            "op": "member",
+            "element": 0,
+            "set": 0
+          },
+          "right": {
+            "op": "member",
+            "element": 0,
+            "set": 0
+          }
+        }
+      },
+      "title": "Specialize a membership theorem to the diagonal",
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A07",
+      "formula": {
+        "op": "implies",
+        "left": {
+          "op": "forall",
+          "variable": 0,
+          "body": {
+            "op": "equal",
+            "left": 0,
+            "right": 0
+          }
+        },
+        "right": {
+          "op": "implies",
+          "left": {
+            "op": "forall",
+            "variable": 0,
+            "body": {
+              "op": "equal",
+              "left": 0,
+              "right": 0
+            }
+          },
+          "right": {
+            "op": "forall",
+            "variable": 0,
+            "body": {
+              "op": "equal",
+              "left": 0,
+              "right": 0
+            }
+          }
+        }
+      },
+      "title": "Consume an exact two-helper proof closure",
+      "provenance": "adapted from formal.rs helper_chain; public development fixture"
+    },
+    {
+      "id": "A08",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "forall",
+          "variable": 1,
+          "body": {
+            "op": "implies",
+            "left": {
+              "op": "equal",
+              "left": 0,
+              "right": 1
+            },
+            "right": {
+              "op": "implies",
+              "left": {
+                "op": "equal",
+                "left": 0,
+                "right": 0
+              },
+              "right": {
+                "op": "equal",
+                "left": 1,
+                "right": 0
+              }
+            }
+          }
+        }
+      },
+      "title": "Specialize equality transport to a reflexive premise",
+      "provenance": "new pilot construction using existing Foundation rules"
+    },
+    {
+      "id": "A09",
+      "formula": {
+        "op": "forall",
+        "variable": 0,
+        "body": {
+          "op": "not",
+          "body": {
+            "op": "not",
+            "body": {
+              "op": "implies",
+              "left": {
+                "op": "not",
+                "body": {
+                  "op": "forall",
+                  "variable": 1,
+                  "body": {
+                    "op": "not",
+                    "body": {
+                      "op": "not",
+                      "body": {
+                        "op": "implies",
+                        "left": {
+                          "op": "forall",
+                          "variable": 2,
+                          "body": {
+                            "op": "not",
+                            "body": {
+                              "op": "member",
+                              "element": 2,
+                              "set": 1
+                            }
+                          }
+                        },
+                        "right": {
+                          "op": "not",
+                          "body": {
+                            "op": "member",
+                            "element": 1,
+                            "set": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "right": {
+                "op": "not",
+                "body": {
+                  "op": "forall",
+                  "variable": 1,
+                  "body": {
+                    "op": "implies",
+                    "left": {
+                      "op": "member",
+                      "element": 1,
+                      "set": 0
+                    },
+                    "right": {
+                      "op": "not",
+                      "body": {
+                        "op": "forall",
+                        "variable": 2,
+                        "body": {
+                          "op": "not",
+                          "body": {
+                            "op": "not",
+                            "body": {
+                              "op": "implies",
+                              "left": {
+                                "op": "forall",
+                                "variable": 3,
+                                "body": {
+                                  "op": "not",
+                                  "body": {
+                                    "op": "implies",
+                                    "left": {
+                                      "op": "implies",
+                                      "left": {
+                                        "op": "member",
+                                        "element": 3,
+                                        "set": 2
+                                      },
+                                      "right": {
+                                        "op": "implies",
+                                        "left": {
+                                          "op": "not",
+                                          "body": {
+                                            "op": "member",
+                                            "element": 3,
+                                            "set": 1
+                                          }
+                                        },
+                                        "right": {
+                                          "op": "equal",
+                                          "left": 3,
+                                          "right": 1
+                                        }
+                                      }
+                                    },
+                                    "right": {
+                                      "op": "not",
+                                      "body": {
+                                        "op": "implies",
+                                        "left": {
+                                          "op": "implies",
+                                          "left": {
+                                            "op": "not",
+                                            "body": {
+                                              "op": "member",
+                                              "element": 3,
+                                              "set": 1
+                                            }
+                                          },
+                                          "right": {
+                                            "op": "equal",
+                                            "left": 3,
+                                            "right": 1
+                                          }
+                                        },
+                                        "right": {
+                                          "op": "member",
+                                          "element": 3,
+                                          "set": 2
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "op": "not",
+                                "body": {
+                                  "op": "member",
+                                  "element": 2,
+                                  "set": 0
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "title": "Refute the universal denial of an inductive set",
+      "provenance": "ZfcAxiom::Infinity exact primitive expansion with one outer negation removed; existing formal exact-refutation pattern"
+    }
+  ]
+}
