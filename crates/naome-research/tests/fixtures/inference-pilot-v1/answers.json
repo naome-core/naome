@@ -286,7 +286,7 @@
       "id": "A09",
       "kind": "solvable",
       "stratum": "refutation",
-      "title": "Refute the universal denial of an inductive set",
+      "title": "Universal denial of an inductive set",
       "context": "Foundation-relative offline authoring exercise; no scientific novelty claim.",
       "formula": {
         "op": "forall",

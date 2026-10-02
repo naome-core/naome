@@ -35,12 +35,12 @@
     "controls": "3 deterministic supplied invalid artifacts; separate reject count, never successful answers"
   },
   "discovery_scoring": {
-    "expected_candidates_per_repeat": 24,
     "validity": "existing bounded FormulaInput and definitions=[] only",
     "syntactic_novelty": "not canonically equal to any defined reference or other candidate in this configuration/repeat, tracked separately from semantic duplicate review",
     "scientific_novelty": "unestablished; no open-world claim",
     "usefulness": "provisional separate-reader rubric annotation; until reliable human/admitted labels exist, report raw annotations and disagreement only",
-    "translation_gaps": "D11,D12 require explicit encoding gap; a theorem about sets cannot be credited as clinical or climate discovery"
+    "translation_gaps": "D11,D12 require explicit encoding gap; a theorem about sets cannot be credited as clinical or climate discovery",
+    "candidate_slots_per_repeat": 24
   },
   "evaluation_scoring": {
     "resolved_judgments_per_repeat": 36,
@@ -79,7 +79,8 @@
     "no_inference_now": true,
     "proposed_feasibility": "one pinned local model and one pinned optional hosted model; read-only host capability/contract qualification first",
     "trial_request": "explicit token/output/repair/wall-time/energy/total-cost admission; all missing metrics marked unavailable",
-    "stop": "stop on invalid positive checker control, output/schema corruption, access/contract failure, leakage or resource ceiling; do not expand"
+    "stop": "stop on invalid positive checker control, output/schema corruption, access/contract failure, leakage or resource ceiling; do not expand",
+    "score_qualification": "Reject known per-call input/output or aggregate sum-of-call wall/cost violations, including known lower bounds when measurements are incomplete. max_cumulative_call_seconds is conservative cumulative call time, not parallel elapsed time. Missing values remain unavailable. Bind the oracle binary digest to the frozen plan. Ledger metrics are self-reports; execution-time expiry and authorization need separate run-time receipts and remain unverified by this offline scorer."
   },
   "formal_contract": {
     "foundation": "naome:zfc",
@@ -116,5 +117,21 @@
       "cite(quoted available proof_id)"
     ],
     "authority": "Text, titles, interests and model confidence never establish proof validity. Refutation requires ONE exact syntactic negation. No double_negation or arbitrary axiom rule."
-  }
+  },
+  "role_response_contracts": {
+    "common": "Return one JSON object without Markdown fences. All listed fields are required; no additional fields. FormulaInput must be closed, use integer variable IDs 0..4294967295, and obey formal_contract bounds. Nested forms: {op:equal,left:u32,right:u32}, {op:member,element:u32,set:u32}, {op:not,body:FormulaInput}, {op:implies,left:FormulaInput,right:FormulaInput}, {op:forall,variable:u32,body:FormulaInput}.",
+    "answer": {
+      "outcome": "proof or refutation; choose from the published formula rather than its title",
+      "source": "complete .nao source string",
+      "dependencies": "ordered necessary helper .nao source strings; [] permitted"
+    },
+    "discovery": {
+      "candidates": "0..task.max_candidates objects, each exactly {formula:closed FormulaInput,title:string,context:string,definitions:[],provenance_ids:[reference IDs from this task.references]}. Zero is allowed; candidate slots are a cap, not required output.",
+      "encoding_gap_reason": "null or string; when task.translation_gap=true, a nonempty explanation is required. Unencoded empirical interests cannot receive scientific discovery credit from a set theorem."
+    },
+    "evaluation": {
+      "judgments": "One object for every task.questions ID, with no duplicates or omissions. Each exactly {question_id:published ID,decision:yes|no|abstain,reason:nonempty string}. Abstain is distinct from no; use the relevance rubric, not formal-truth or voting authority."
+    }
+  },
+  "execution_boundary": "This export is an offline task catalog, never a single model prompt. Use exactly one task with only its available_helpers or references and the shared role/formal/rubric contracts. Isolate each task and repeat: no other task helpers, golds, labels or prior responses in model history. The reference_registry is for offline novelty scoring, not answer/evaluation prompts. A repair may include only the same task, its own failed response and checker rejection. No model consumer is implemented here."
 }

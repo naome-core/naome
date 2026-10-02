@@ -31,6 +31,10 @@ def exact_keys(value, keys, label):
     require(isinstance(value, dict) and set(value) == set(keys), label + " fields differ")
 
 
+def is_hex(value, length):
+    return isinstance(value, str) and len(value) == length and all(c in "0123456789abcdef" for c in value)
+
+
 def oracle_call(oracle, command, value):
     with tempfile.TemporaryDirectory(prefix="naome-pilot-oracle-") as directory:
         path = Path(directory) / "request.json"
@@ -104,16 +108,17 @@ def validate(directory, oracle):
 
 def export_tasks(directory):
     data, manifest_hash = load_corpus(directory)
+    references = [{k: r[k] for k in ("id", "title", "formula")} for r in data["discovery"]["references"]]
     tasks = []
     for case in data["answers"]["cases"]:
         if case["kind"] != "solvable":
             continue
         tasks.append({"role": "answer", "case_id": case["id"], "task": {k: case[k] for k in ("title", "context", "formula")}, "available_helpers": [{"proof_id": data["helpers"]["helpers"][key]["proof_id"], "source": data["helpers"]["helpers"][key]["source"]} for key in case["available_helpers"]]})
     for context in data["discovery"]["contexts"]:
-        tasks.append({"role": "discovery", "case_id": context["id"], "task": {k: context[k] for k in ("interest", "required_candidates", "source_scope", "translation_gap")}, "references": [r for r in data["discovery"]["references"] if r["id"] in context["allowed_reference_ids"]]})
+        tasks.append({"role": "discovery", "case_id": context["id"], "task": {k: context[k] for k in ("interest", "max_candidates", "source_scope", "translation_gap")}, "references": [r for r in references if r["id"] in context["allowed_reference_ids"]]})
     for case in data["evaluation"]["cases"]:
         tasks.append({"role": "evaluation", "case_id": case["id"], "task": {k: case[k] for k in ("interest", "questions", "judgment_semantics")}})
-    return {"schema": 1, "corpus_manifest_sha256": manifest_hash, "scope": "public_development_pilot_not_held_out", "formal_contract": data["protocol"]["formal_contract"], "relevance_rubric": data["protocol"]["rubric"], "reference_registry": data["discovery"]["references"], "tasks": tasks}
+    return {"schema": 1, "corpus_manifest_sha256": manifest_hash, "scope": "public_development_pilot_not_held_out", "execution_boundary": data["protocol"]["execution_boundary"], "formal_contract": data["protocol"]["formal_contract"], "role_response_contracts": data["protocol"]["role_response_contracts"], "relevance_rubric": data["protocol"]["rubric"], "reference_registry": references, "tasks": tasks}
 
 
 ROW_KEYS = {"schema", "corpus_manifest_sha256", "plan_sha256", "run_id", "configuration", "evidence_class", "role", "case_id", "repeat", "attempt", "status", "response", "raw_response", "raw_response_sha256", "usage", "wall_ms", "memory_peak_bytes", "energy_wh", "cost_usd", "error"}
@@ -125,7 +130,7 @@ def check_row(row, manifest_hash):
     for name in ("run_id", "configuration", "case_id"):
         require(isinstance(row[name], str) and row[name], "empty result identifier")
     require(row["evidence_class"] in ("synthetic", "live_model"), "evidence class")
-    require(row["plan_sha256"] is None or isinstance(row["plan_sha256"], str) and len(row["plan_sha256"]) == 64 and all(c in "0123456789abcdef" for c in row["plan_sha256"]), "plan digest")
+    require(row["plan_sha256"] is None or is_hex(row["plan_sha256"], 64), "plan digest")
     require(row["role"] in ("answer", "discovery", "evaluation"), "role")
     require(type(row["repeat"]) is int and 0 <= row["repeat"] < 3, "repeat range")
     require(type(row["attempt"]) is int and row["attempt"] in (0, 1), "attempt range")
@@ -164,8 +169,10 @@ def response_valid(row, case):
         require(isinstance(value["dependencies"], list) and all(isinstance(x, str) for x in value["dependencies"]), "answer dependencies")
     elif row["role"] == "discovery":
         exact_keys(value, ("candidates", "encoding_gap_reason"), "discovery response")
-        require(isinstance(value["candidates"], list) and len(value["candidates"]) <= 2, "discovery count")
+        require(isinstance(value["candidates"], list) and len(value["candidates"]) <= case["max_candidates"], "discovery count")
         require(value["encoding_gap_reason"] is None or isinstance(value["encoding_gap_reason"], str), "gap annotation")
+        if case["translation_gap"]:
+            require(isinstance(value["encoding_gap_reason"], str) and value["encoding_gap_reason"].strip(), "explicit encoding gap required")
         for candidate in value["candidates"]:
             exact_keys(candidate, ("formula", "title", "context", "definitions", "provenance_ids"), "discovery candidate")
             require(isinstance(candidate["formula"], dict) and candidate["definitions"] == [], "pilot primitive fragment only")
@@ -191,12 +198,14 @@ def score(directory, oracle, rows, plan_path=None):
     require(1 <= len(configs) <= 3, "configuration count")
     require(len({row["run_id"] for row in rows}) == len({row["evidence_class"] for row in rows}) == 1, "mixed run/evidence class")
     plan_hash = None
+    admission = None
     if rows[0]["evidence_class"] == "live_model":
         require(plan_path is not None, "live results require a predeclared frozen --plan")
         plan = read_json(plan_path)
         plan_hash = digest(Path(plan_path).read_bytes())
         require(plan["schema"] == 1 and plan["frozen_before_outputs"] is True and plan["corpus_manifest_sha256"] == manifest_hash and plan["run_id"] == rows[0]["run_id"], "plan not frozen for this corpus/run")
-        require(isinstance(plan["oracle_source_commit"], str) and len(plan["oracle_source_commit"]) == 40, "oracle source pin absent")
+        require(is_hex(plan["oracle_source_commit"], 40), "oracle source pin absent")
+        require(is_hex(plan["oracle_sha256"], 64) and plan["oracle_sha256"] == digest(Path(oracle).read_bytes()), "oracle binary differs from frozen plan")
         planned = plan["configurations"]
         require(len(planned) == len({c["id"] for c in planned}) and 2 <= len(planned) <= 3, "plan configurations")
         require(sum(c["baseline"] is True for c in planned) == 1, "one predeclared baseline required")
@@ -204,21 +213,29 @@ def score(directory, oracle, rows, plan_path=None):
         require(configs == {c["id"] for c in planned}, "missing/unplanned configuration; record failed configurations")
         for configuration in planned:
             require(all(isinstance(configuration[k], str) and configuration[k] for k in ("model_id", "immutable_model_revision", "weights_or_provider_snapshot_sha256", "runtime_or_api_version", "placement")), "unqualified model/configuration pin")
+            require(is_hex(configuration["weights_or_provider_snapshot_sha256"], 64), "model snapshot digest")
         admission = plan["admission"]
         require(isinstance(admission["reference"], str) and admission["reference"] and isinstance(admission["expires_utc"], str), "admission reference absent")
-        for k in ("max_calls", "max_wall_seconds", "max_input_tokens_per_call", "max_output_tokens_per_call", "max_total_cost_usd"):
+        for k in ("max_calls", "max_cumulative_call_seconds", "max_input_tokens_per_call", "max_output_tokens_per_call", "max_total_cost_usd"):
             require(type(admission[k]) in (int, float) and math.isfinite(admission[k]) and admission[k] > 0, "resource ceiling absent")
         require(len(rows) <= admission["max_calls"] <= 486, "call ceiling")
     indexed = {}
     for row in rows:
         check_row(row, manifest_hash)
         require(row["plan_sha256"] == plan_hash, "result plan digest mismatch")
+        if admission is not None:
+            for key, ceiling in (("input_tokens", "max_input_tokens_per_call"), ("output_tokens", "max_output_tokens_per_call")):
+                require(row["usage"][key] is None or row["usage"][key] <= admission[ceiling], "known per-call resource ceiling exceeded: " + key)
         task = (row["role"], row["case_id"])
         require(task in tasks, "unknown/control result task")
         response_valid(row, cases[task])
         key = (row["configuration"], *task, row["repeat"], row["attempt"])
         require(key not in indexed, "duplicate result key")
         indexed[key] = row
+    if admission is not None:
+        for key, ceiling, scale in (("wall_ms", "max_cumulative_call_seconds", 1000), ("cost_usd", "max_total_cost_usd", 1)):
+            known_total = sum(row[key] for row in rows if row[key] is not None)
+            require(known_total <= admission[ceiling] * scale, "known aggregate resource ceiling exceeded: " + key)
     required = {(config, *task, repeat, 0) for config in configs for task in tasks for repeat in range(3)}
     require(required <= indexed.keys(), "missing primary results; failures must be recorded, not excluded")
     accepted = {}
@@ -283,7 +300,7 @@ def score(directory, oracle, rows, plan_path=None):
             aggregate = max(values) if metric == "memory_peak_bytes" and all(v is not None for v in values) else sum(values) if all(v is not None for v in values) else None
             metrics[metric] = {"known_rows": sum(v is not None for v in values), "rows": len(values), metric_name: aggregate}
         outputs[config] = {"primary_rows": 135, "total_rows": len(selected), "answer_pass_at_1": {"accepted": first, "denominator": 27}, "answer_accepted_after_repair_additional": repaired, "answer_oracle_receipts": [{"case_id": k[2], "repeat": k[3], "attempt": k[4], "receipt": v} for k, v in accepted.items() if k[0] == config], "discovery": {"valid_formula_candidates": discovery_valid, "candidate_slots": 72, "new_distinct_formula_count_by_repeat": {str(i): len(new_ids[i]) for i in range(3)}, "candidates_submitted_for_unencoded_empirical_interests": unsupported_gap_submissions, "scientific_novelty": None, "usefulness": None}, "evaluation": {"agreement_with_provisional_labels": agreement, "resolved_denominator": 108, "resolved_abstentions": abstentions, "contested_denominator": 36, "paired_flips": flips, "observed_question_pairs": observed_pairs, "expected_question_pairs": 72, "by_perturbation_family": family_counts, "unique_base_bundles": 2, "fairness_or_population_robustness": None}, "measurements": metrics, "status_counts": dict(collections.Counter(row["status"] for row in selected))}
-    return {"schema": 1, "corpus_manifest_sha256": manifest_hash, "run_id": rows[0]["run_id"], "evidence_class": rows[0]["evidence_class"], "oracle_sha256": digest(Path(oracle).read_bytes()), "configurations": outputs, "limitations": "Public development pilot; labels are provisional agent judgments. No held-out, scientific-novelty, human-independence or governance qualification."}
+    return {"schema": 1, "corpus_manifest_sha256": manifest_hash, "plan_sha256": plan_hash, "run_id": rows[0]["run_id"], "evidence_class": rows[0]["evidence_class"], "oracle_sha256": digest(Path(oracle).read_bytes()), "resource_qualification": "unallocated_synthetic" if admission is None else "known_limits_checked_complete" if all(row[k] is not None for row in rows for k in ("wall_ms", "cost_usd")) and all(row["usage"][k] is not None for row in rows for k in ("input_tokens", "output_tokens")) else "known_limits_checked_missing_measurements_unavailable", "admission_validity_at_execution": "unverified_no_run_time_receipt", "configurations": outputs, "limitations": "Public development pilot; labels are provisional agent judgments. No held-out, scientific-novelty, human-independence or governance qualification. Plan metadata and self-reported metrics do not prove authorization, model provenance or runtime admission validity."}
 
 
 def main():

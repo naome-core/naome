@@ -97,11 +97,27 @@ class PilotScoringTests(unittest.TestCase):
         self.assertEqual(len(exported["tasks"]), 45)
         self.assertFalse(any(t["case_id"].startswith("C") for t in exported["tasks"]))
         forbidden = ("oracle_receipt", "canonical_proof_hex", "expected_accept", "expected_error_contains", "outcome", "label_source", "pair_id", "condition", "provenance")
-        # References carry provenance, so inspect only answer/evaluation task payloads.
+        self.assertNotIn('"provenance"', json.dumps(exported))
+        self.assertNotIn('Refute the universal denial', json.dumps(exported))
         for task in exported["tasks"]:
             if task["role"] in ("answer", "evaluation"):
                 text = json.dumps(task)
                 for key in forbidden: self.assertNotIn('"' + key + '"', text)
+
+    def test_role_contracts_and_explicit_encoding_gap(self):
+        exported = pilot.export_tasks(pilot.CORPUS)
+        contracts = exported["role_response_contracts"]
+        self.assertEqual(set(contracts), {"common", "answer", "discovery", "evaluation"})
+        rows = self.ledger()
+        row = next(r for r in rows if r["case_id"] == "D11")
+        row["response"]["encoding_gap_reason"] = None
+        row["raw_response"] = json.dumps(row["response"])
+        row["raw_response_sha256"] = pilot.digest(row["raw_response"].encode())
+        with self.assertRaisesRegex(ValueError, "explicit encoding gap"):
+            self.score(rows)
+        task = next(t for t in exported["tasks"] if t["case_id"] == "D11")
+        self.assertEqual(task["task"]["max_candidates"], 2)
+        self.assertNotIn("required_candidates", task["task"])
 
     def test_tampered_corpus_rejected_before_export(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -125,8 +141,8 @@ class PilotScoringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "predeclared frozen"):
             self.score(rows)
         plan = pilot.read_json(pilot.CORPUS / "run-plan.template.json")
-        plan.update(run_id="unit-synthetic", corpus_manifest_sha256=self.hash, oracle_source_commit="a" * 40, frozen_before_outputs=True)
-        plan["admission"] = {"reference": "synthetic-schema-test-only", "expires_utc": "2099-01-01T00:00:00Z", "max_calls": 324, "max_wall_seconds": 3600, "max_input_tokens_per_call": 8000, "max_output_tokens_per_call": 2000, "max_total_cost_usd": 10}
+        plan.update(run_id="unit-synthetic", corpus_manifest_sha256=self.hash, oracle_source_commit="a" * 40, oracle_sha256=pilot.digest(Path(__file__).read_bytes()), frozen_before_outputs=True)
+        plan["admission"] = {"reference": "synthetic-schema-test-only", "expires_utc": "2099-01-01T00:00:00Z", "max_calls": 324, "max_cumulative_call_seconds": 3600, "max_input_tokens_per_call": 8000, "max_output_tokens_per_call": 2000, "max_total_cost_usd": 10}
         for configuration in plan["configurations"]:
             configuration.update(model_id="synthetic", immutable_model_revision="synthetic-v1", weights_or_provider_snapshot_sha256="a" * 64, runtime_or_api_version="synthetic")
         with tempfile.TemporaryDirectory() as directory:
@@ -140,6 +156,22 @@ class PilotScoringTests(unittest.TestCase):
                 for row in other: row["configuration"] = "hosted-candidate"
                 result = pilot.score(pilot.CORPUS, Path(__file__), rows + other, path)
                 self.assertEqual(set(result["configurations"]), {"local-baseline", "hosted-candidate"})
+                self.assertEqual(result["admission_validity_at_execution"], "unverified_no_run_time_receipt")
+                self.assertIn("missing_measurements", result["resource_qualification"])
+                for field, value in (("wall_ms", 3_600_001), ("cost_usd", 11)):
+                    changed = copy.deepcopy(rows + other); changed[0][field] = value
+                    with self.assertRaisesRegex(ValueError, "aggregate resource ceiling"):
+                        pilot.score(pilot.CORPUS, Path(__file__), changed, path)
+                changed = copy.deepcopy(rows + other); changed[0]["usage"]["input_tokens"] = 8001
+                with self.assertRaisesRegex(ValueError, "per-call resource ceiling"):
+                    pilot.score(pilot.CORPUS, Path(__file__), changed, path)
+                for field, value, error in (("weights_or_provider_snapshot_sha256", "z" * 64, "model snapshot digest"), ("oracle_sha256", "0" * 64, "oracle binary differs")):
+                    invalid_plan = copy.deepcopy(plan)
+                    if field == "oracle_sha256": invalid_plan[field] = value
+                    else: invalid_plan["configurations"][0][field] = value
+                    path.write_text(json.dumps(invalid_plan))
+                    with self.assertRaisesRegex(ValueError, error):
+                        pilot.score(pilot.CORPUS, Path(__file__), rows + other, path)
 
 
 if __name__ == "__main__":

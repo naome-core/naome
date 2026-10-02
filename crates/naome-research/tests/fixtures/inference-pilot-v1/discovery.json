@@ -12,12 +12,12 @@
         ],
         "purpose": "Study when equal objects preserve membership claims."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A03"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D02",
@@ -30,12 +30,12 @@
         ],
         "purpose": "Study tautological membership implications before stronger claims."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A02"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D03",
@@ -48,12 +48,12 @@
         ],
         "purpose": "Study how binder order and instantiation change a formal target."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A04"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D04",
@@ -66,12 +66,12 @@
         ],
         "purpose": "Study proofs that can use an explicitly checked helper closure."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A07"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D05",
@@ -84,12 +84,12 @@
         ],
         "purpose": "Study a claim whose exact single syntactic negation is provable."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A09"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D06",
@@ -102,12 +102,12 @@
         ],
         "purpose": "Study set identity through membership without invented predicates."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A03"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D07",
@@ -120,12 +120,12 @@
         ],
         "purpose": "Prefer short teachable formal examples even if not novel research."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A01"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D08",
@@ -138,12 +138,12 @@
         ],
         "purpose": "Prefer exact dependency/replay exercises over broad mathematical claims."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A05"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D09",
@@ -156,12 +156,12 @@
         ],
         "purpose": "Seek a supported membership or implication question beyond the reference reflexivity."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A02"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D10",
@@ -174,12 +174,12 @@
         ],
         "purpose": "Combine quantifier reasoning with membership transport, staying within the primitive syntax."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A08"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": false
+      "translation_gap": false,
+      "max_candidates": 2
     },
     {
       "id": "D11",
@@ -192,12 +192,12 @@
         ],
         "purpose": "Interest in treatment effectiveness; do not claim clinical propositions are expressible without an approved encoding."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A01"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": true
+      "translation_gap": true,
+      "max_candidates": 2
     },
     {
       "id": "D12",
@@ -210,12 +210,12 @@
         ],
         "purpose": "Interest in measured climate trends; explain the encoding gap instead of inventing arithmetic or empirical axioms."
       },
-      "required_candidates": 2,
       "allowed_reference_ids": [
         "A04"
       ],
       "source_scope": "Only corpus references and declared reasoning; external tools/search disabled.",
-      "translation_gap": true
+      "translation_gap": true,
+      "max_candidates": 2
     }
   ],
   "references": [
@@ -610,7 +610,7 @@
           }
         }
       },
-      "title": "Refute the universal denial of an inductive set",
+      "title": "Universal denial of an inductive set",
       "provenance": "ZfcAxiom::Infinity exact primitive expansion with one outer negation removed; existing formal exact-refutation pattern"
     }
   ]
