@@ -1,5 +1,5 @@
 use super::{
-    auth::{Attempt, model_catalog},
+    auth::{Attempt, model_catalog, model_diagnostics},
     stream::Stream,
 };
 use crate::node::budget::Usage;
@@ -210,6 +210,103 @@ fn siwc_catalog_is_account_authoritative_and_uses_server_visibility() {
     );
     assert!(model_catalog(&json!({"data":[{"id":"gpt-6-luna"}]})).is_err());
     assert!(model_catalog(&json!({"models":[visible.clone(),visible]})).is_err());
+}
+
+#[test]
+fn catalog_diagnostic_distinguishes_membership_without_changing_the_picker() {
+    for (visibility, presence) in [
+        ("list", "present_visible"),
+        ("hidden", "present_hidden"),
+        ("deprecated", "present_not_listed"),
+    ] {
+        let body = json!({"private_auth_field":"DO_NOT_EXPORT_AUTH",
+            "models":[{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","visibility":visibility,
+                "supports_verbosity":false,"supported_in_api":true,
+                "arbitrary_private_metadata":"DO_NOT_EXPORT_MODEL"}]});
+        let report = model_diagnostics(&body, "gpt-6-luna").unwrap();
+        assert_eq!(report["presence"], presence);
+        assert_eq!(report["row_count"], 1);
+        assert_eq!(report["listed_count"], usize::from(visibility == "list"));
+        assert_eq!(
+            report["models"][0]["capabilities"],
+            json!({"supports_verbosity":false,"supported_in_api":true})
+        );
+        assert!(!report.to_string().contains("DO_NOT_EXPORT"));
+        assert_eq!(
+            model_catalog(&body).unwrap().len(),
+            usize::from(visibility == "list")
+        );
+        assert_eq!(
+            model_diagnostics(&body, "absent-model").unwrap()["presence"],
+            "absent"
+        );
+    }
+    let hidden_without_name = json!({"models":[{"slug":"gpt-6-luna","visibility":"hidden"}]});
+    let report = model_diagnostics(&hidden_without_name, "gpt-6-luna").unwrap();
+    assert_eq!(report["presence"], "present_hidden");
+    assert!(report["models"][0]["display_name"].is_null());
+}
+
+#[test]
+fn catalog_diagnostic_rejects_malformed_and_oversized_public_fields_safely() {
+    let row = json!({"slug":"gpt-6-luna","display_name":"GPT-6 Luna","visibility":"list"});
+    for (key, value) in [
+        ("slug", json!("")),
+        ("slug", json!("s".repeat(129))),
+        ("display_name", json!("n".repeat(257))),
+        ("display_name", json!(false)),
+        ("visibility", json!(null)),
+        ("visibility", json!("v".repeat(65))),
+        ("visibility", json!("list\n")),
+        ("supports_verbosity", json!("DO_NOT_EXPORT")),
+    ] {
+        let mut invalid = row.clone();
+        invalid[key] = value;
+        let error = model_diagnostics(&json!({"models":[invalid]}), "gpt-6-luna").unwrap_err();
+        assert!(!error.contains("DO_NOT_EXPORT"));
+    }
+    for body in [
+        json!({"data":[{"id":"gpt-6-luna"}]}),
+        json!({"models":null}),
+        json!({"models":[row.clone(),row.clone()]}),
+        json!({"models":vec![row;513]}),
+    ] {
+        assert!(model_diagnostics(&body, "gpt-6-luna").is_err());
+    }
+    for requested in ["".to_owned(), "s".repeat(129), "model\r\n".to_owned()] {
+        assert!(model_diagnostics(&json!({"models":[]}), &requested).is_err());
+    }
+}
+
+#[test]
+fn catalog_cache_diagnostic_exports_only_recognized_flags_and_numeric_values() {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("age", "42".parse().unwrap());
+    headers.insert(
+        "cache-control",
+        "private, max-age=60, no-store, extension=DO_NOT_EXPORT"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("set-cookie", "DO_NOT_EXPORT_COOKIE".parse().unwrap());
+    headers.insert("etag", "DO_NOT_EXPORT_ETAG".parse().unwrap());
+    let report = super::http::catalog_cache_metadata(&headers);
+    assert_eq!(report["age_seconds"], 42);
+    assert_eq!(
+        report["recognized_cache_control"],
+        json!({"private":true,"max-age":60,"no-store":true})
+    );
+    assert!(!report.to_string().contains("DO_NOT_EXPORT"));
+    headers.insert("age", "-1".parse().unwrap());
+    headers.insert(
+        "cache-control",
+        "max-age=DO_NOT_EXPORT, no-cache=DO_NOT_EXPORT"
+            .parse()
+            .unwrap(),
+    );
+    let report = super::http::catalog_cache_metadata(&headers);
+    assert!(report["age_seconds"].is_null());
+    assert_eq!(report["recognized_cache_control"], json!({}));
 }
 
 mod http;

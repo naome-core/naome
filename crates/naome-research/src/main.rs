@@ -35,6 +35,10 @@ fn execute() -> Result<serde_json::Value, String> {
             let account=account_config(&args[1],args.get(2))?;
             with_signals(|control|chatgpt::models(&account,control.cancellation()))
         }
+        Some("chatgpt-model-diagnostics") if args.len()==3 || args.len()==4 => {
+            let account=account_config(&args[1],args.get(3))?;
+            with_signals(|control|chatgpt::diagnose_model(&account,&args[2],control.cancellation()))
+        }
         Some("chatgpt-sign-out") if args.len()==2 || args.len()==3 => {
             let account=account_config(&args[1],args.get(2))?;
             with_signals(|control|chatgpt::sign_out(&account,control.cancellation()))
@@ -98,7 +102,7 @@ fn execute() -> Result<serde_json::Value, String> {
             } else {Journal::open(Path::new(&args[1]))?};
             Ok(json!({"events":state.events().len(),"result_blocks":state.results(),"head":hex(&state.head()),"active":state.active().iter().map(|id|hex(id)).collect::<Vec<_>>(),"target":state.target(),"logical_tick":state.tick(),"independent_checkpoint_verified":args.len()==4,"prefix_only":args.len()==2}))
         }
-        _ => Err("usage: naome-research chatgpt-sign-in [CREDENTIAL_DIRECTORY [ACCOUNT_ID]] | chatgpt-enable-plan [CREDENTIAL_DIRECTORY [ACCOUNT_ID]] | chatgpt-accounts [CREDENTIAL_DIRECTORY] | chatgpt-models ACCOUNT_ID [CREDENTIAL_DIRECTORY] | chatgpt-sign-out ACCOUNT_ID [CREDENTIAL_DIRECTORY] | prepare-node DIRECTORY ACCOUNT_ID MODEL [CREDENTIAL_DIRECTORY] | prepare-native-node DIRECTORY NATIVE_CODEX CODEX_HOME MODEL | node-preflight CONFIG | prepare-node-sample CONFIG NEW_GRANT | node-sample CONFIG GRANT | init-node CONFIG | node-run CONFIG | node-status CONFIG | node-submit CONFIG SIGNED_ACTION | node-questions CONFIG CURSOR | node-artifact CONFIG ARTIFACT_ID | node-replay CONFIG NEW_DIRECTORY [EXPECTED_HEAD EXPECTED_COUNT] | demo DIRECTORY | prepare DIRECTORY CODEX_HOME MODEL [--shared-plan-sample] | run CONFIG | provider-info CONFIG | replay HISTORY_DIRECTORY [EXPECTED_HEAD EXPECTED_COUNT]".into()),
+        _ => Err("usage: naome-research chatgpt-sign-in [CREDENTIAL_DIRECTORY [ACCOUNT_ID]] | chatgpt-enable-plan [CREDENTIAL_DIRECTORY [ACCOUNT_ID]] | chatgpt-accounts [CREDENTIAL_DIRECTORY] | chatgpt-models ACCOUNT_ID [CREDENTIAL_DIRECTORY] | chatgpt-model-diagnostics ACCOUNT_ID MODEL [CREDENTIAL_DIRECTORY] | chatgpt-sign-out ACCOUNT_ID [CREDENTIAL_DIRECTORY] | prepare-node DIRECTORY ACCOUNT_ID MODEL [CREDENTIAL_DIRECTORY] | prepare-native-node DIRECTORY NATIVE_CODEX CODEX_HOME MODEL | node-preflight CONFIG | prepare-node-sample CONFIG NEW_GRANT | node-sample CONFIG GRANT | init-node CONFIG | node-run CONFIG | node-status CONFIG | node-submit CONFIG SIGNED_ACTION | node-questions CONFIG CURSOR | node-artifact CONFIG ARTIFACT_ID | node-replay CONFIG NEW_DIRECTORY [EXPECTED_HEAD EXPECTED_COUNT] | demo DIRECTORY | prepare DIRECTORY CODEX_HOME MODEL [--shared-plan-sample] | run CONFIG | provider-info CONFIG | replay HISTORY_DIRECTORY [EXPECTED_HEAD EXPECTED_COUNT]".into()),
     }
 }
 

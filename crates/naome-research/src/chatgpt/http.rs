@@ -202,6 +202,44 @@ pub(super) fn request_id(response: &Response) -> Value {
         .filter(|s| s.len() <= 256 && s.bytes().all(|b| b.is_ascii_graphic()))
         .map_or(Value::Null, |s| Value::String(s.into()))
 }
+pub(super) fn catalog_cache_metadata(headers: &reqwest::header::HeaderMap) -> Value {
+    let age = headers
+        .get("age")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 20)
+        .and_then(|value| value.parse::<u64>().ok());
+    let control = headers
+        .get("cache-control")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 1024);
+    let mut known = serde_json::Map::new();
+    if let Some(value) = control {
+        for directive in value.split(',').map(str::trim) {
+            if [
+                "no-cache",
+                "no-store",
+                "public",
+                "private",
+                "must-revalidate",
+            ]
+            .iter()
+            .any(|allowed| directive.eq_ignore_ascii_case(allowed))
+            {
+                known.insert(directive.to_ascii_lowercase(), json!(true));
+            } else if let Some((key, value)) = directive.split_once('=')
+                && ["max-age", "s-maxage"]
+                    .iter()
+                    .any(|allowed| key.eq_ignore_ascii_case(allowed))
+                && let Ok(seconds) = value.parse::<u64>()
+            {
+                known.insert(key.to_ascii_lowercase(), json!(seconds));
+            }
+        }
+    }
+    // Never return raw headers: unknown extensions can echo private strings.
+    json!({"age_seconds":age,"cache_control_present":headers.contains_key("cache-control"),
+        "recognized_cache_control":known,"raw_headers_retained":false})
+}
 pub(super) fn diagnostic(status: u16, body: &Value, request_id: Value) -> Value {
     let code = match body["error"]["code"].as_str() {
         Some(

@@ -3,7 +3,7 @@
 use super::{
     ISSUER, REQUIRED_SCOPES, RESOURCE, ResponsesConfig, USAGE_SETTINGS,
     credentials::{AccountInfo, AccountRecord, Store, Tokens, valid_client},
-    http::{Http, MAX_MANAGEMENT_BYTES, network_error, read_json},
+    http::{Http, MAX_MANAGEMENT_BYTES, catalog_cache_metadata, network_error, read_json},
 };
 use crate::provider::{ProviderError, ProviderErrorKind};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -256,12 +256,112 @@ impl Session {
             .map_err(|e| e.to_string())?;
         model_catalog(&body)
     }
+    pub(super) fn model_diagnostics(&self, requested: &str) -> Result<Value, String> {
+        catalog_text(requested, 128)?;
+        let token = self.token()?;
+        let (body, cache) = self
+            .http
+            .run(async {
+                let response = self
+                    .http
+                    .client
+                    .get(format!("{}/models", self.http.endpoints.api))
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .map_err(network_error)?;
+                let cache = catalog_cache_metadata(response.headers());
+                let (status, body, _) = read_json(response, MAX_MANAGEMENT_BYTES).await?;
+                if status != 200 {
+                    return Err(ProviderError::new(
+                        ProviderErrorKind::Auth,
+                        &format!(
+                            "Selected ChatGPT account model diagnostic unavailable (HTTP {status})"
+                        ),
+                    ));
+                }
+                Ok((body, cache))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut report = model_diagnostics(&body, requested)?;
+        report["http_status"] = json!(200);
+        report["cache"] = cache;
+        Ok(report)
+    }
     pub fn require_model(&self, model: &str) -> Result<Model, String> {
         self.models()?.into_iter().find(|m| m.slug == model).ok_or(
             "Selected model is unavailable to this ChatGPT account; choose from chatgpt-models"
                 .into(),
         )
     }
+}
+fn catalog_text(text: &str, maximum: usize) -> Result<&str, String> {
+    if text.is_empty() || text.len() > maximum || text.chars().any(char::is_control) {
+        return Err("Invalid or oversized public model metadata".into());
+    }
+    Ok(text)
+}
+pub(super) fn model_diagnostics(body: &Value, requested: &str) -> Result<Value, String> {
+    catalog_text(requested, 128)?;
+    let models = body["models"]
+        .as_array()
+        .filter(|rows| rows.len() <= 512)
+        .ok_or("Invalid or oversized SIWC model catalog")?;
+    let mut rows = Vec::with_capacity(models.len());
+    let mut ids = std::collections::BTreeSet::new();
+    let mut presence = "absent";
+    let mut listed = 0;
+    for model in models {
+        let slug = catalog_text(model["slug"].as_str().ok_or("Missing model slug")?, 128)?;
+        let visibility = catalog_text(
+            model["visibility"]
+                .as_str()
+                .ok_or("Missing model visibility")?,
+            64,
+        )?;
+        if !ids.insert(slug) {
+            return Err("Duplicate SIWC model slug".into());
+        }
+        let name = match model.get("display_name") {
+            None if visibility != "list" => Value::Null,
+            Some(Value::String(name)) => json!(catalog_text(name, 256)?),
+            _ => return Err("Invalid public model display name".into()),
+        };
+        let mut capabilities = serde_json::Map::new();
+        for key in [
+            "supports_reasoning_summaries",
+            "supports_verbosity",
+            "supports_parallel_tool_calls",
+            "supported_in_api",
+        ] {
+            if let Some(value) = model.get(key) {
+                capabilities.insert(
+                    key.into(),
+                    json!(
+                        value
+                            .as_bool()
+                            .ok_or("Invalid public model capability flag")?
+                    ),
+                );
+            }
+        }
+        listed += usize::from(visibility == "list");
+        if slug == requested {
+            presence = match visibility {
+                "list" => "present_visible",
+                "hidden" => "present_hidden",
+                _ => "present_not_listed",
+            };
+        }
+        rows.push(
+            json!({"slug":slug,"display_name":name,"visibility":visibility,
+            "capabilities":capabilities}),
+        );
+    }
+    Ok(json!({"version":1,"endpoint":format!("{RESOURCE}/models"),
+        "requested_model":requested,"presence":presence,"models":rows,
+        "row_count":models.len(),"listed_count":listed,"model_requests":0,
+        "catalog_get_attempts":1,"limit":"Catalog metadata does not prove inference entitlement; the advertised-model gate is unchanged"}))
 }
 pub(super) fn model_catalog(body: &Value) -> Result<Vec<Model>, String> {
     let models = body["models"]
@@ -308,6 +408,16 @@ pub fn models(config: &ResponsesConfig, cancel: Arc<AtomicBool>) -> Result<Value
     Ok(
         json!({"account":session.record.info,"models":session.models()?,"using_chatgpt_plan":true,"manage_usage":USAGE_SETTINGS,"model_requests":0}),
     )
+}
+/// One bounded management request through the selected registration. No model
+/// request, inference entitlement, or alternate serving route is introduced.
+pub fn diagnose_model(
+    config: &ResponsesConfig,
+    model: &str,
+    cancel: Arc<AtomicBool>,
+) -> Result<Value, String> {
+    catalog_text(model, 128)?;
+    Session::open(config, cancel, 30)?.model_diagnostics(model)
 }
 pub fn preflight(
     config: &ResponsesConfig,

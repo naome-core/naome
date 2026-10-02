@@ -9,7 +9,7 @@ mod credentials;
 mod http;
 mod stream;
 
-pub use auth::{accounts, models, preflight, sign_in, sign_out};
+pub use auth::{accounts, diagnose_model, models, preflight, sign_in, sign_out};
 pub use credentials::{AccountInfo, default_directory};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

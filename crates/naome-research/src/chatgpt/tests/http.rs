@@ -98,6 +98,8 @@ struct State {
     challenge: Option<String>,
     token_error: Option<(u16, Value)>,
     model_hidden: bool,
+    model_catalog: Option<(u16, Vec<u8>)>,
+    model_catalog_delay: bool,
     response: Option<(u16, Vec<u8>)>,
     response_delay: bool,
     revoke_status: Option<u16>,
@@ -248,7 +250,7 @@ fn serve_connection(
                                     let (status,value)=s.token_error.clone().unwrap_or_else(||{let mut value=tokens("client_fixture",s.nonce.as_deref(),"fixture-subject");if fields["grant_type"]=="refresh_token" {value["access_token"]=json!("fake-access-rotated");value["refresh_token"]=json!("fake-refresh-rotated");}(200,value)});
                                     (status,"application/json",serde_json::to_vec(&value).unwrap(),false)
                                 },
-                                "/v1/models"=>(200,"application/json",serde_json::to_vec(&json!({"models":[{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","visibility":if s.model_hidden{"hidden"}else{"list"}}]})).unwrap(),false),
+                                "/v1/models"=>{let (status,body)=s.model_catalog.clone().unwrap_or_else(||(200,serde_json::to_vec(&json!({"models":[{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","visibility":if s.model_hidden{"hidden"}else{"list"}}]})).unwrap()));(status,"application/json",body,s.model_catalog_delay)},
                                 "/v1/responses"=>{
                                     let (status,value)=s.response.clone().unwrap_or_else(||(200,frame(&terminal("completed",usage(),"{}"))));
                                     (status,if status==200{"text/event-stream"}else{"application/json"},value,s.response_delay)
@@ -750,6 +752,92 @@ fn hidden_account_model_preflight_makes_no_post_and_keeps_credentials() {
     );
     assert_eq!(server.calls("/v1/responses"), 0);
     assert!(session.record.tokens.is_some());
+}
+
+#[test]
+fn model_diagnostic_is_one_selected_catalog_get_with_no_inference_or_gate_override() {
+    for visibility in ["list", "hidden"] {
+        let directory = Directory::new();
+        directory.save(&tokens("client_fixture", None, "fixture-subject"));
+        let server = Server::new();
+        server.state.lock().unwrap().model_hidden = visibility == "hidden";
+        let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+        let report = session.model_diagnostics("gpt-6-luna").unwrap();
+        assert_eq!(
+            report["presence"],
+            if visibility == "list" {
+                "present_visible"
+            } else {
+                "present_hidden"
+            }
+        );
+        assert_eq!(report["http_status"], 200);
+        assert_eq!(report["model_requests"], 0);
+        assert_eq!(report["catalog_get_attempts"], 1);
+        assert_eq!(server.calls("/v1/models"), 1);
+        assert_eq!(server.calls("/v1/responses"), 0);
+        assert!(session.record.tokens.is_some());
+        let state = server.state.lock().unwrap();
+        assert!(
+            state
+                .calls
+                .iter()
+                .filter(|(_, path, _, _)| path == "/v1/models")
+                .all(
+                    |(method, _, _, bearer)| method == "GET" && bearer == "Bearer fake-access-only"
+                )
+        );
+        drop(state);
+        assert!(!report.to_string().contains("fake-access-only"));
+        assert!(!report.to_string().contains("fixture-subject"));
+        assert_eq!(
+            session.require_model("gpt-6-luna").is_ok(),
+            visibility == "list"
+        );
+        assert_eq!(server.calls("/v1/responses"), 0);
+    }
+}
+
+#[test]
+fn model_diagnostic_body_and_status_failures_never_post_or_expose_raw_data() {
+    for response in [
+        (200, b"invalid DO_NOT_EXPORT".to_vec()),
+        (200, vec![b'x'; crate::chatgpt::http::MAX_MANAGEMENT_BYTES+1]),
+        (403, br#"{"private":"DO_NOT_EXPORT"}"#.to_vec()),
+        (200, serde_json::to_vec(&json!({"models":[{"slug":"other-model","display_name":"Other","visibility":"list"}]})).unwrap()),
+    ] {
+        let directory = Directory::new();
+        directory.save(&tokens("client_fixture", None, "fixture-subject"));
+        let server = Server::new();
+        server.state.lock().unwrap().model_catalog = Some(response);
+        let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+        let result = session.model_diagnostics("gpt-6-luna");
+        if let Ok(report) = &result {assert_eq!(report["presence"], "absent");}
+        else {assert!(!result.unwrap_err().contains("DO_NOT_EXPORT"));}
+        assert_eq!(server.calls("/v1/models"), 1);
+        assert_eq!(server.calls("/v1/responses"), 0);
+    }
+}
+
+#[test]
+fn model_diagnostic_respects_deadline_cancellation_and_precontact_validation() {
+    let directory = Directory::new();
+    directory.save(&tokens("client_fixture", None, "fixture-subject"));
+    let server = Server::new();
+    let session = Session::with_http(&directory.config(), server.http(1)).unwrap();
+    assert!(session.model_diagnostics("bad\nmodel").is_err());
+    assert_eq!(server.calls("/v1/models"), 0);
+    session.http.cancel.store(true, Ordering::Release);
+    assert!(session.model_diagnostics("gpt-6-luna").is_err());
+    assert_eq!(server.calls("/v1/models"), 0);
+    drop(session);
+    let session = Session::with_http(&directory.config(), server.http(1)).unwrap();
+    server.state.lock().unwrap().model_catalog_delay = true;
+    let before = std::time::Instant::now();
+    assert!(session.model_diagnostics("gpt-6-luna").is_err());
+    assert!(before.elapsed() < Duration::from_secs(3));
+    assert_eq!(server.calls("/v1/models"), 1);
+    assert_eq!(server.calls("/v1/responses"), 0);
 }
 #[test]
 fn eof_without_terminal_and_network_deadline_leave_usage_incomplete() {
