@@ -4,11 +4,13 @@
 //! replay. Inference has no tools, internal resampling, automatic POST retry,
 //! native process, API-key fallback or alternate serving endpoint.
 
+mod access;
 mod auth;
 mod credentials;
 mod http;
 mod stream;
 
+pub use access::diagnose_model_access;
 pub use auth::{accounts, diagnose_model, models, preflight, sign_in, sign_out};
 pub use credentials::{AccountInfo, default_directory};
 use serde::{Deserialize, Serialize};

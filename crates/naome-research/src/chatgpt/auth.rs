@@ -1037,35 +1037,50 @@ mod socket_tests {
 
     #[test]
     fn local_callback_reader_waits_for_delayed_fragments_on_a_nonblocking_accepted_socket() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (ready, wait) = std::sync::mpsc::channel();
-        let writer = std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            wait.recv().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            let request = format!(
-                "GET /auth/callback?state=fixture&code=fixture&client_id=fixture HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
-            );
-            for chunk in request.as_bytes().chunks(40) {
-                stream.write_all(chunk).unwrap();
-                std::thread::sleep(Duration::from_millis(20));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut late_producers = Vec::new();
+        for _ in 0..3 {
+            if Instant::now() >= deadline {
+                break;
             }
-        });
-        let (mut stream, _) = listener.accept().unwrap();
-        stream.set_nonblocking(true).unwrap();
-        ready.send(()).unwrap();
-        let result = local_request(
-            &mut stream,
-            port,
-            &AtomicBool::new(false),
-            Instant::now() + Duration::from_secs(3),
-        );
-        writer.join().unwrap();
-        assert_eq!(
-            result.unwrap(),
-            "/auth/callback?state=fixture&code=fixture&client_id=fixture"
-        );
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (ready, wait) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                stream.set_nodelay(true).unwrap();
+                let started: Instant = wait.recv().unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+                let request = format!(
+                    "GET /auth/callback?state=fixture&code=fixture&client_id=fixture HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+                );
+                let mut written = Duration::ZERO;
+                for chunk in request.as_bytes().chunks(40) {
+                    stream.write_all(chunk).unwrap();
+                    written = started.elapsed();
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                written
+            });
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(true).unwrap();
+            ready.send(Instant::now()).unwrap();
+            let result = local_request(&mut stream, port, &AtomicBool::new(false), deadline);
+            let written = writer.join().unwrap();
+            // Sleep is only a lower bound. A producer descheduled past the idle
+            // read limit does not supply the intended successful-fragment fixture.
+            // Never replace a parser failure when every fragment was written in time.
+            if written >= Duration::from_millis(200) {
+                late_producers.push((written, result));
+                continue;
+            }
+            assert_eq!(
+                result.unwrap(),
+                "/auth/callback?state=fixture&code=fixture&client_id=fixture"
+            );
+            return;
+        }
+        panic!("No timely fragmented callback fixture within its bound: {late_producers:?}");
     }
 
     #[test]

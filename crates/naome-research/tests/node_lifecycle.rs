@@ -135,6 +135,28 @@ fn model_diagnostic_cli_rejects_invalid_slug_before_opening_credentials() {
 }
 
 #[test]
+fn model_access_diagnostic_cli_rejects_invalid_slug_before_opening_credentials() {
+    let f = Fixture::new();
+    let credentials = f.root.join("access-credentials-must-not-be-created");
+    let output = Command::new(env!("CARGO_BIN_EXE_naome-research"))
+        .args([
+            "chatgpt-model-access-diagnostics",
+            &"a".repeat(64),
+            "invalid\nmodel",
+        ])
+        .arg(&credentials)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Invalid access-diagnostic model slug")
+    );
+    assert!(!credentials.exists());
+    assert!(!f.config.directory.exists());
+}
+
+#[test]
 fn cli_run_requires_existing_initialized_store_and_snapshot_is_read_only() {
     let f = Fixture::new();
     let output = f.command("node-run").output().unwrap();

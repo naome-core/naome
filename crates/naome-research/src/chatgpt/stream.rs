@@ -336,6 +336,17 @@ impl Stream {
         value
     }
     pub fn finish(&mut self) -> Result<ProviderReply, ProviderError> {
+        self.finish_terminal()?;
+        let value = serde_json::from_str(&self.text)
+            .map_err(|_| ProviderError::contract("Completed model text is not strict JSON"))?;
+        Ok(ProviderReply {
+            value,
+            raw_response: self.text.clone(),
+            usage: self.usage(),
+            computation: vec![],
+        })
+    }
+    pub(super) fn finish_terminal(&mut self) -> Result<(), ProviderError> {
         if !self.pending.iter().all(u8::is_ascii_whitespace) {
             return self.reject("Direct stream ended inside an SSE event");
         }
@@ -354,14 +365,7 @@ impl Stream {
                 "Direct inference did not complete with valid explicit usage",
             ));
         }
-        let value = serde_json::from_str(&self.text)
-            .map_err(|_| ProviderError::contract("Completed model text is not strict JSON"))?;
-        Ok(ProviderReply {
-            value,
-            raw_response: self.text.clone(),
-            usage: self.usage(),
-            computation: vec![],
-        })
+        Ok(())
     }
     pub fn transport_failed(&mut self) {
         self.invalid = true;

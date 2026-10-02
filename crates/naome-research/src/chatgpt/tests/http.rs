@@ -1,7 +1,7 @@
 use super::{frame, terminal, usage};
 use crate::{
     chatgpt::{
-        self, ISSUER, ResponsesConfig,
+        self, ISSUER, ResponsesConfig, access,
         auth::{self, Session},
         credentials::{AccountRecord, Store},
         http::{Endpoints, Http},
@@ -838,6 +838,190 @@ fn model_diagnostic_respects_deadline_cancellation_and_precontact_validation() {
     assert!(before.elapsed() < Duration::from_secs(3));
     assert_eq!(server.calls("/v1/models"), 1);
     assert_eq!(server.calls("/v1/responses"), 0);
+}
+
+#[test]
+fn access_diagnostic_posts_fixed_body_once_without_changing_the_research_gate() {
+    for text in ["OK", "different answer"] {
+        let directory = Directory::new();
+        directory.save(&tokens("client_fixture", None, "fixture-subject"));
+        let server = Server::new();
+        let mut response = terminal("completed", usage(), text);
+        response["response"]["model"] = json!("gpt-6.1-sol");
+        server.state.lock().unwrap().response = Some((200, frame(&response)));
+        let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+        let report = access::diagnose_with_session(&session, "gpt-6.1-sol").unwrap();
+        assert_eq!(report["access_qualified"], true);
+        assert_eq!(report["completed"], true);
+        assert_eq!(report["returned_model"], "gpt-6.1-sol");
+        assert_eq!(report["returned_model_matches"], true);
+        assert_eq!(report["output_matches_ok"], text == "OK");
+        assert_eq!(report["output_bytes"], text.len());
+        assert_eq!(report["usage"]["complete"], true);
+        assert_eq!(report["usage"]["total"]["totalTokens"], 27);
+        assert_eq!(report["response_post_attempts"], 1);
+        assert_eq!(server.calls("/v1/responses"), 1);
+        assert_eq!(server.calls("/v1/models"), 0);
+        let state = server.state.lock().unwrap();
+        let (method, _, body, bearer) = state
+            .calls
+            .iter()
+            .find(|(_, p, _, _)| p == "/v1/responses")
+            .unwrap();
+        assert_eq!(method, "POST");
+        assert_eq!(bearer, "Bearer fake-access-only");
+        assert_eq!(
+            serde_json::from_str::<Value>(body).unwrap(),
+            json!({
+                "model":"gpt-6.1-sol","input":[{"role":"user","content":"Reply with exactly OK."}],"store":false,"stream":true
+            })
+        );
+        drop(state);
+        assert!(!report.to_string().contains("fake-access-only"));
+        assert!(!report.to_string().contains("fixture-subject"));
+        assert!(!report.to_string().contains("different answer"));
+        assert!(session.require_model("gpt-6.1-sol").is_err());
+        assert_eq!(server.calls("/v1/responses"), 1);
+    }
+}
+
+#[test]
+fn access_diagnostic_requires_the_requested_terminal_model_without_losing_known_usage() {
+    for returned in [
+        Value::Null,
+        json!(17),
+        json!("gpt-6-astra"),
+        json!("sk-DO_NOT_EXPORT"),
+    ] {
+        let directory = Directory::new();
+        directory.save(&tokens("client_fixture", None, "fixture-subject"));
+        let server = Server::new();
+        let mut response = terminal("completed", usage(), "OK");
+        response["response"]["model"] = returned.clone();
+        server.state.lock().unwrap().response = Some((200, frame(&response)));
+        let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+        let report = access::diagnose_with_session(&session, "gpt-6.1-sol").unwrap();
+        assert_eq!(report["completed"], true);
+        assert_eq!(report["access_qualified"], false);
+        assert_eq!(report["returned_model_matches"], false);
+        assert!(report["returned_model"].is_null());
+        assert_eq!(report["usage"]["complete"], true);
+        assert_eq!(report["usage"]["total"]["totalTokens"], 27);
+        assert_eq!(report["consumption"], "reported_terminal_usage");
+        assert!(!report.to_string().contains("DO_NOT_EXPORT"));
+        assert_eq!(server.calls("/v1/responses"), 1);
+        assert_eq!(server.calls("/v1/models"), 0);
+    }
+}
+
+#[test]
+fn access_diagnostic_http_failures_do_not_retry_or_export_error_messages() {
+    for (status, code) in [
+        (404, "model_not_found"),
+        (401, "chatpass_v2_scope_not_authorized"),
+        (403, "subscription_sharing_user_not_eligible"),
+        (429, "subscription_sharing_usage_limit_exceeded"),
+        (500, "DO_NOT_EXPORT"),
+    ] {
+        let directory = Directory::new();
+        directory.save(&tokens("client_fixture", None, "fixture-subject"));
+        let server = Server::new();
+        server.state.lock().unwrap().response = Some((status, serde_json::to_vec(&json!({
+            "error":{"code":code,"param":"model","message":"DO_NOT_EXPORT","account":"DO_NOT_EXPORT"}
+        })).unwrap()));
+        let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+        let report = access::diagnose_with_session(&session, "gpt-6.1-sol").unwrap();
+        assert_eq!(report["http_status"], status);
+        assert_eq!(report["access_qualified"], false);
+        assert_eq!(
+            report["http_error"]["error_code"],
+            if code == "DO_NOT_EXPORT" {
+                "unrecognized_error_code"
+            } else {
+                code
+            }
+        );
+        assert_eq!(report["http_error"]["error_param"], "model");
+        assert_eq!(report["consumption"], "unknown");
+        assert!(report["request_id"].is_null());
+        assert!(!report.to_string().contains("DO_NOT_EXPORT"));
+        assert_eq!(server.calls("/v1/responses"), 1);
+        assert_eq!(server.calls("/v1/models"), 0);
+    }
+}
+
+#[test]
+fn access_diagnostic_requires_coherent_terminal_usage_and_bounded_output() {
+    let mut missing = terminal("completed", usage(), "OK");
+    missing["response"]["usage"] = Value::Null;
+    let mut invalid = terminal("completed", usage(), "OK");
+    invalid["response"]["usage"]["total_tokens"] = json!(1);
+    let mut foreign = terminal("completed", usage(), "OK");
+    foreign["response"]["id"] = json!("foreign-response");
+    let mut conflict = frame(&terminal("completed", usage(), "OK"));
+    conflict.extend(frame(&foreign));
+    for response in [
+        frame(&missing),
+        frame(&invalid),
+        conflict,
+        b"data: [DONE]\n\n".to_vec(),
+        vec![b'x'; 16 * 1024 + 1],
+    ] {
+        let directory = Directory::new();
+        directory.save(&tokens("client_fixture", None, "fixture-subject"));
+        let server = Server::new();
+        server.state.lock().unwrap().response = Some((200, response));
+        let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+        let report = access::diagnose_with_session(&session, "gpt-6.1-sol").unwrap();
+        assert_eq!(report["access_qualified"], false);
+        assert_eq!(report["usage"]["complete"], false);
+        assert_eq!(report["consumption"], "unknown");
+        assert_eq!(server.calls("/v1/responses"), 1);
+    }
+    let directory = Directory::new();
+    directory.save(&tokens("client_fixture", None, "fixture-subject"));
+    let server = Server::new();
+    server.state.lock().unwrap().response = Some((200, frame(&terminal("failed", usage(), "OK"))));
+    let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+    let report = access::diagnose_with_session(&session, "gpt-6.1-sol").unwrap();
+    assert_eq!(report["access_qualified"], false);
+    assert_eq!(report["usage"]["complete"], true);
+    assert_eq!(report["usage"]["total"]["totalTokens"], 27);
+}
+
+#[test]
+fn access_diagnostic_precontact_permission_cancel_and_shared_deadline_are_bounded() {
+    let directory = Directory::new();
+    let mut identity = tokens("client_fixture", None, "fixture-subject");
+    identity["scope"] = json!("openid profile email");
+    directory.save(&identity);
+    let server = Server::new();
+    assert!(Session::with_http(&directory.config(), server.http(5)).is_err());
+    assert_eq!(server.calls("/v1/responses"), 0);
+    directory.save(&tokens("client_fixture", None, "fixture-subject"));
+    let session = Session::with_http(&directory.config(), server.http(1)).unwrap();
+    assert!(access::diagnose_with_session(&session, "bad\nmodel").is_err());
+    session.http.cancel.store(true, Ordering::Release);
+    let report = access::diagnose_with_session(&session, "gpt-6.1-sol").unwrap();
+    assert_eq!(report["response_post_attempts"], 0);
+    assert_eq!(report["consumption"], "not_contacted");
+    assert_eq!(server.calls("/v1/responses"), 0);
+    drop(session);
+    let mut store = Store::open(&directory.config().credential_directory, false).unwrap();
+    let mut record = store.record(&directory.config().account_id).unwrap();
+    record.tokens.as_mut().unwrap().expires_at = auth::now().unwrap() + 1;
+    store.save(&record).unwrap();
+    drop(store);
+    server.state.lock().unwrap().response_delay = true;
+    let before = Instant::now();
+    let session = Session::with_http(&directory.config(), server.http(1)).unwrap();
+    let report = access::diagnose_with_session(&session, "gpt-6.1-sol").unwrap();
+    assert!(before.elapsed() < Duration::from_secs(3));
+    assert_eq!(report["access_qualified"], false);
+    assert_eq!(report["consumption"], "unknown");
+    assert_eq!(server.calls("/token"), 1);
+    assert_eq!(server.calls("/v1/responses"), 1);
+    assert_eq!(server.calls("/v1/models"), 0);
 }
 #[test]
 fn eof_without_terminal_and_network_deadline_leave_usage_incomplete() {
