@@ -1037,6 +1037,16 @@ mod socket_tests {
 
     #[test]
     fn local_callback_reader_waits_for_delayed_fragments_on_a_nonblocking_accepted_socket() {
+        fragmented_callback_fixture(Duration::from_millis(20));
+    }
+
+    #[test]
+    fn fragmented_callback_total_duration_can_exceed_the_per_read_idle_limit() {
+        // Four chunks take at least 320ms before the last write; each gap is 90ms.
+        fragmented_callback_fixture(Duration::from_millis(90));
+    }
+
+    fn fragmented_callback_fixture(gap: Duration) {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut late_producers = Vec::new();
         for _ in 0..3 {
@@ -1049,38 +1059,50 @@ mod socket_tests {
             let writer = std::thread::spawn(move || {
                 let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
                 stream.set_nodelay(true).unwrap();
-                let started: Instant = wait.recv().unwrap();
+                let mut previous: Instant = wait.recv().unwrap();
                 std::thread::sleep(Duration::from_millis(50));
                 let request = format!(
                     "GET /auth/callback?state=fixture&code=fixture&client_id=fixture HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
                 );
-                let mut written = Duration::ZERO;
+                let mut maximum_gap = Duration::ZERO;
                 for chunk in request.as_bytes().chunks(40) {
                     stream.write_all(chunk).unwrap();
-                    written = started.elapsed();
-                    std::thread::sleep(Duration::from_millis(20));
+                    let written = Instant::now();
+                    maximum_gap = maximum_gap.max(written.duration_since(previous));
+                    previous = written;
+                    std::thread::sleep(gap);
                 }
-                written
+                maximum_gap
             });
             let (mut stream, _) = listener.accept().unwrap();
             stream.set_nonblocking(true).unwrap();
             ready.send(Instant::now()).unwrap();
+            let read_started = Instant::now();
             let result = local_request(&mut stream, port, &AtomicBool::new(false), deadline);
-            let written = writer.join().unwrap();
-            // Sleep is only a lower bound. A producer descheduled past the idle
-            // read limit does not supply the intended successful-fragment fixture.
-            // Never replace a parser failure when every fragment was written in time.
-            if written >= Duration::from_millis(200) {
-                late_producers.push((written, result));
-                continue;
+            let read_elapsed = read_started.elapsed();
+            let maximum_gap = writer.join().unwrap();
+            if let Ok(route) = result {
+                assert_eq!(
+                    route,
+                    "/auth/callback?state=fixture&code=fixture&client_id=fixture"
+                );
+                return;
             }
-            assert_eq!(
-                result.unwrap(),
-                "/auth/callback?state=fixture&code=fixture&client_id=fixture"
-            );
-            return;
+            // The production timeout is per idle read, not total transfer time.
+            // An immediate read error is never excused by a later producer delay.
+            // A measured late write gap is fixture evidence, not proof of read idle;
+            // the separate idle-peer test independently catches missing normalization.
+            if result.as_ref().err().map(String::as_str) != Some("Incomplete local callback")
+                || read_elapsed < Duration::from_millis(200)
+                || maximum_gap < Duration::from_millis(200)
+            {
+                panic!(
+                    "Timely fragmented callback failed: {result:?}; maximum gap {maximum_gap:?}"
+                );
+            }
+            late_producers.push((maximum_gap, read_elapsed, result));
         }
-        panic!("No timely fragmented callback fixture within its bound: {late_producers:?}");
+        panic!("No successful fragmented callback within its bound: {late_producers:?}");
     }
 
     #[test]

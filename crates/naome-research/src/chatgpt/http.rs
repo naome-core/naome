@@ -46,14 +46,14 @@ pub(super) fn response_media(headers: &reqwest::header::HeaderMap) -> ResponseMe
         multiple,
     };
     if !multiple
-        && let Some(value) = first.and_then(|v| v.to_str().ok())
+        && let Some(value) = first.map(|v| v.as_bytes())
         && let Some(essence) = media_essence(value)
     {
-        media.class = if essence.eq_ignore_ascii_case("text/event-stream") {
+        media.class = if essence.eq_ignore_ascii_case(b"text/event-stream") {
             "event_stream"
-        } else if essence.eq_ignore_ascii_case("application/json") {
+        } else if essence.eq_ignore_ascii_case(b"application/json") {
             "json"
-        } else if essence.eq_ignore_ascii_case("text/html") {
+        } else if essence.eq_ignore_ascii_case(b"text/html") {
             "html"
         } else {
             "other"
@@ -65,24 +65,41 @@ pub(super) fn response_media(headers: &reqwest::header::HeaderMap) -> ResponseMe
 fn media_token(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
-fn media_essence(value: &str) -> Option<&str> {
+fn media_essence(value: &[u8]) -> Option<&[u8]> {
     // RFC 9110 sections 5.6.6 and 8.3.1: OWS around parameter separators,
     // case-insensitive type/subtype, token or quoted-string parameter values.
-    let value = value.trim_matches([' ', '\t']);
-    let (essence, tail) = value.split_once(';').map_or((value, ""), |(a, b)| (a, b));
-    let essence = essence.trim_end_matches([' ', '\t']);
-    let (kind, subtype) = essence.split_once('/')?;
+    let start = value
+        .iter()
+        .take_while(|b| matches!(b, b' ' | b'\t'))
+        .count();
+    let value = &value[start..];
+    let end = value
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t'))
+        .map_or(0, |i| i + 1);
+    let value = &value[..end];
+    let (essence, tail) = value
+        .iter()
+        .position(|b| *b == b';')
+        .map_or((value, &b""[..]), |i| (&value[..i], &value[i + 1..]));
+    let end = essence
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t'))
+        .map_or(0, |i| i + 1);
+    let essence = &essence[..end];
+    let slash = essence.iter().position(|b| *b == b'/')?;
+    let (kind, subtype) = (&essence[..slash], &essence[slash + 1..]);
     if kind.is_empty()
         || subtype.is_empty()
-        || !kind.bytes().all(media_token)
-        || !subtype.bytes().all(media_token)
+        || !kind.iter().copied().all(media_token)
+        || !subtype.iter().copied().all(media_token)
     {
         return None;
     }
-    if !value.contains(';') {
+    if !value.contains(&b';') {
         return Some(essence);
     }
-    let mut tail = tail.as_bytes();
+    let mut tail = tail;
     loop {
         while tail.first().is_some_and(|b| matches!(b, b' ' | b'\t')) {
             tail = &tail[1..];
@@ -108,12 +125,12 @@ fn media_essence(value: &str) -> Option<&str> {
                     b'"' => break,
                     b'\\' => {
                         let escaped = *tail.first()?;
-                        if !(escaped == b'\t' || (32..=126).contains(&escaped)) {
+                        if !(escaped == b'\t' || (32..=126).contains(&escaped) || escaped >= 128) {
                             return None;
                         }
                         tail = &tail[1..];
                     }
-                    b'\t' | b' ' | b'!' | b'#'..=b'[' | b']'..=b'~' => {}
+                    b'\t' | b' ' | b'!' | b'#'..=b'[' | b']'..=b'~' | 128..=255 => {}
                     _ => return None,
                 }
             }
@@ -462,11 +479,23 @@ mod media_tests {
         );
         assert_eq!(response_media(&headers).class, "invalid");
         for value in [
+            b"text/event-stream; x=\"\xff\"".as_slice(),
+            b"text/event-stream; x=\"\\\xff\"".as_slice(),
+        ] {
+            headers.insert("content-type", HeaderValue::from_bytes(value).unwrap());
+            let media = response_media(&headers);
+            assert_eq!(media.class, "event_stream");
+            assert_eq!(
+                media.diagnostic(),
+                json!({"class":"event_stream","present":true,"parameters_present":true,"multiple_values":false})
+            );
+        }
+        for value in [
             "text/event-stream\n",
             "text/event-stream; x=\"a\r\"",
             "text/event-stream; x=\"a\\",
         ] {
-            assert!(media_essence(value).is_none());
+            assert!(media_essence(value.as_bytes()).is_none());
         }
     }
 }
