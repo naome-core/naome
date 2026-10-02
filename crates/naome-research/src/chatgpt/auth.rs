@@ -1037,16 +1037,16 @@ mod socket_tests {
 
     #[test]
     fn local_callback_reader_waits_for_delayed_fragments_on_a_nonblocking_accepted_socket() {
-        fragmented_callback_fixture(Duration::from_millis(20));
+        fragmented_callback_fixture(Duration::from_millis(20), 40);
     }
 
     #[test]
     fn fragmented_callback_total_duration_can_exceed_the_per_read_idle_limit() {
-        // Four chunks take at least 320ms before the last write; each gap is 90ms.
-        fragmented_callback_fixture(Duration::from_millis(90));
+        // Ten chunks take at least 230ms before the last write, with 20ms idle gaps.
+        fragmented_callback_fixture(Duration::from_millis(20), 10);
     }
 
-    fn fragmented_callback_fixture(gap: Duration) {
+    fn fragmented_callback_fixture(gap: Duration, chunk_size: usize) {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut late_producers = Vec::new();
         for _ in 0..3 {
@@ -1065,7 +1065,7 @@ mod socket_tests {
                     "GET /auth/callback?state=fixture&code=fixture&client_id=fixture HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
                 );
                 let mut maximum_gap = Duration::ZERO;
-                for chunk in request.as_bytes().chunks(40) {
+                for chunk in request.as_bytes().chunks(chunk_size) {
                     stream.write_all(chunk).unwrap();
                     let written = Instant::now();
                     maximum_gap = maximum_gap.max(written.duration_since(previous));
