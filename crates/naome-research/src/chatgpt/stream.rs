@@ -2,7 +2,7 @@
 
 use super::{
     auth::Session,
-    http::{diagnostic, network_error, read_json, request_id},
+    http::{diagnostic, network_error, read_json, request_id, response_media},
 };
 use crate::{
     node::{ProviderOutcome, budget::Usage},
@@ -551,12 +551,7 @@ pub(super) fn request_with_session(
             stream.receipt["http_error"] = diagnostic(status, &value, id);
             return Err(error_for(&value["error"]["code"]));
         }
-        if response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .is_none_or(|s| s.split(';').next() != Some("text/event-stream"))
-        {
+        if !response_media(response.headers()).is_event_stream() {
             return Err(ProviderError::contract(
                 "Direct response is not an SSE stream",
             ));

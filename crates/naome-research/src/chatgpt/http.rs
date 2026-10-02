@@ -14,6 +14,129 @@ use std::{
 
 pub(super) const MAX_MANAGEMENT_BYTES: usize = 1024 * 1024;
 
+/// Public media facts only; arbitrary header text never leaves this projection.
+pub(super) struct ResponseMedia {
+    class: &'static str,
+    present: bool,
+    parameters: bool,
+    multiple: bool,
+}
+impl ResponseMedia {
+    pub fn is_event_stream(&self) -> bool {
+        self.class == "event_stream"
+    }
+    pub fn diagnostic(&self) -> Value {
+        json!({"class":self.class,"present":self.present,
+            "parameters_present":self.parameters,"multiple_values":self.multiple})
+    }
+}
+
+pub(super) fn response_media(headers: &reqwest::header::HeaderMap) -> ResponseMedia {
+    let mut values = headers.get_all("content-type").iter();
+    let first = values.next();
+    let multiple = values.next().is_some();
+    let mut media = ResponseMedia {
+        class: if first.is_some() {
+            "invalid"
+        } else {
+            "missing"
+        },
+        present: first.is_some(),
+        parameters: first.is_some_and(|v| v.as_bytes().contains(&b';')),
+        multiple,
+    };
+    if !multiple
+        && let Some(value) = first.and_then(|v| v.to_str().ok())
+        && let Some(essence) = media_essence(value)
+    {
+        media.class = if essence.eq_ignore_ascii_case("text/event-stream") {
+            "event_stream"
+        } else if essence.eq_ignore_ascii_case("application/json") {
+            "json"
+        } else if essence.eq_ignore_ascii_case("text/html") {
+            "html"
+        } else {
+            "other"
+        };
+    }
+    media
+}
+
+fn media_token(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+fn media_essence(value: &str) -> Option<&str> {
+    // RFC 9110 sections 5.6.6 and 8.3.1: OWS around parameter separators,
+    // case-insensitive type/subtype, token or quoted-string parameter values.
+    let value = value.trim_matches([' ', '\t']);
+    let (essence, tail) = value.split_once(';').map_or((value, ""), |(a, b)| (a, b));
+    let essence = essence.trim_end_matches([' ', '\t']);
+    let (kind, subtype) = essence.split_once('/')?;
+    if kind.is_empty()
+        || subtype.is_empty()
+        || !kind.bytes().all(media_token)
+        || !subtype.bytes().all(media_token)
+    {
+        return None;
+    }
+    if !value.contains(';') {
+        return Some(essence);
+    }
+    let mut tail = tail.as_bytes();
+    loop {
+        while tail.first().is_some_and(|b| matches!(b, b' ' | b'\t')) {
+            tail = &tail[1..];
+        }
+        if tail.is_empty() {
+            return Some(essence);
+        }
+        if tail.first() == Some(&b';') {
+            tail = &tail[1..];
+            continue;
+        }
+        let name = tail.iter().take_while(|b| media_token(**b)).count();
+        if name == 0 || tail.get(name) != Some(&b'=') {
+            return None;
+        }
+        tail = &tail[name + 1..];
+        if tail.first() == Some(&b'"') {
+            tail = &tail[1..];
+            loop {
+                let byte = *tail.first()?;
+                tail = &tail[1..];
+                match byte {
+                    b'"' => break,
+                    b'\\' => {
+                        let escaped = *tail.first()?;
+                        if !(escaped == b'\t' || (32..=126).contains(&escaped)) {
+                            return None;
+                        }
+                        tail = &tail[1..];
+                    }
+                    b'\t' | b' ' | b'!' | b'#'..=b'[' | b']'..=b'~' => {}
+                    _ => return None,
+                }
+            }
+        } else {
+            let length = tail.iter().take_while(|b| media_token(**b)).count();
+            if length == 0 {
+                return None;
+            }
+            tail = &tail[length..];
+        }
+        while tail.first().is_some_and(|b| matches!(b, b' ' | b'\t')) {
+            tail = &tail[1..];
+        }
+        if tail.is_empty() {
+            return Some(essence);
+        }
+        if tail.first() != Some(&b';') {
+            return None;
+        }
+        tail = &tail[1..];
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Endpoints {
     pub discovery: String,
@@ -283,4 +406,67 @@ pub(super) fn diagnostic(status: u16, body: &Value, request_id: Value) -> Value 
     .collect::<Vec<_>>();
     let field_count = body.as_object().map_or(0, |object| object.len());
     json!({"http_status":status,"error_code":code,"error_param":parameter,"body_fields":shape,"body_field_count":field_count,"request_id":request_id})
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn response_media_validates_single_mime_values_without_exporting_header_text() {
+        for (values, class) in [
+            (vec!["text/event-stream"], "event_stream"),
+            (vec!["Text/Event-Stream"], "event_stream"),
+            (
+                vec![" \ttext/event-stream \t; charset=\"utf-8\" \t"],
+                "event_stream",
+            ),
+            (vec!["text/event-stream;; ; charset=utf-8;"], "event_stream"),
+            (
+                vec!["text/event-stream; private=\"secret-marker,;\\\"\""],
+                "event_stream",
+            ),
+            (vec!["application/json"], "json"),
+            (vec!["Text/HTML; charset=utf-8"], "html"),
+            (vec!["application/secret-marker"], "other"),
+            (vec![], "missing"),
+            (vec![""], "invalid"),
+            (vec!["text /event-stream"], "invalid"),
+            (vec!["text/event-stream; charset =utf-8"], "invalid"),
+            (vec!["text/event-stream; charset="], "invalid"),
+            (vec!["text/event-stream; charset=\"unterminated"], "invalid"),
+            (vec!["text/event-stream, application/json"], "invalid"),
+            (vec!["text/event-stream", "text/event-stream"], "invalid"),
+            (vec!["text/event-stream", "application/json"], "invalid"),
+        ] {
+            let mut headers = HeaderMap::new();
+            for value in &values {
+                headers.append("content-type", HeaderValue::from_str(value).unwrap());
+            }
+            let media = response_media(&headers);
+            assert_eq!(media.class, class, "{values:?}");
+            assert_eq!(media.is_event_stream(), class == "event_stream");
+            assert_eq!(media.present, !values.is_empty());
+            assert_eq!(media.multiple, values.len() > 1);
+            assert_eq!(
+                media.parameters,
+                values.first().is_some_and(|v| v.contains(';'))
+            );
+            assert!(!media.diagnostic().to_string().contains("secret-marker"));
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-type",
+            HeaderValue::from_bytes(b"text/event-stream; x=\xff").unwrap(),
+        );
+        assert_eq!(response_media(&headers).class, "invalid");
+        for value in [
+            "text/event-stream\n",
+            "text/event-stream; x=\"a\r\"",
+            "text/event-stream; x=\"a\\",
+        ] {
+            assert!(media_essence(value).is_none());
+        }
+    }
 }

@@ -102,6 +102,7 @@ struct State {
     model_catalog_delay: bool,
     response: Option<(u16, Vec<u8>)>,
     response_delay: bool,
+    response_media_headers: Option<Vec<String>>,
     revoke_status: Option<u16>,
 }
 struct Server {
@@ -267,8 +268,22 @@ fn serve_connection(
             thread::sleep(Duration::from_millis(25));
         }
     }
+    let media_headers = if path == "/v1/responses" {
+        st.lock().unwrap().response_media_headers.clone()
+    } else {
+        None
+    }
+    .map_or_else(
+        || format!("Content-Type: {kind}\r\n"),
+        |values| {
+            values
+                .iter()
+                .map(|v| format!("Content-Type: {v}\r\n"))
+                .collect::<String>()
+        },
+    );
     let header = format!(
-        "HTTP/1.1 {status} Fixture\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nOpenAI-Request-ID: fixture-request\r\n\r\n",
+        "HTTP/1.1 {status} Fixture\r\n{media_headers}Content-Length: {}\r\nConnection: close\r\nOpenAI-Request-ID: fixture-request\r\n\r\n",
         value.len()
     );
     let _ = socket.write_all(header.as_bytes());
@@ -882,6 +897,64 @@ fn access_diagnostic_posts_fixed_body_once_without_changing_the_research_gate() 
         assert!(!report.to_string().contains("different answer"));
         assert!(session.require_model("gpt-6.1-sol").is_err());
         assert_eq!(server.calls("/v1/responses"), 1);
+    }
+}
+
+#[test]
+fn direct_consumers_share_mime_validation_and_diagnostics_stay_private() {
+    for (headers, class) in [
+        (vec!["Text/Event-Stream"], "event_stream"),
+        (
+            vec!["text/event-stream \t; charset=\"utf-8\""],
+            "event_stream",
+        ),
+        (
+            vec!["text/event-stream; private=\"secret-marker\""],
+            "event_stream",
+        ),
+        (vec!["application/json"], "json"),
+        (vec!["text/html"], "html"),
+        (vec![], "missing"),
+        (vec!["application/secret-marker"], "other"),
+        (vec!["text/event-stream,application/json"], "invalid"),
+        (vec!["text/event-stream; charset =utf-8"], "invalid"),
+        (vec!["text/event-stream", "application/json"], "invalid"),
+    ] {
+        let directory = Directory::new();
+        directory.save(&tokens("client_fixture", None, "fixture-subject"));
+        let server = Server::new();
+        let mut response = terminal("completed", usage(), "{}");
+        response["response"]["model"] = json!("gpt-6-luna");
+        {
+            let mut state = server.state.lock().unwrap();
+            state.response = Some((200, frame(&response)));
+            state.response_media_headers = Some(headers.iter().map(|s| (*s).into()).collect());
+        }
+        let session = Session::with_http(&directory.config(), server.http(5)).unwrap();
+        let report = access::diagnose_with_session(&session, "gpt-6-luna").unwrap();
+        let accepted = class == "event_stream";
+        assert_eq!(report["response_media"]["class"], class);
+        assert_eq!(report["access_qualified"], accepted);
+        assert_eq!(report["usage"]["complete"], accepted);
+        assert_eq!(report["response_post_attempts"], 1);
+        assert_eq!(server.calls("/v1/models"), 0);
+        assert!(!report.to_string().contains("secret-marker"));
+        if !accepted {
+            assert_eq!(report["consumption"], "unknown");
+            assert_eq!(report["output_bytes"], 0);
+        }
+        let provider = config_provider(directory.config());
+        let mut stream = Stream::new(provider.max_output_bytes);
+        let result = stream::request_with_session(
+            &provider,
+            "fixture",
+            json!({"type":"object"}),
+            &session,
+            &mut stream,
+        );
+        assert_eq!(result.is_ok(), accepted, "{headers:?}: {result:?}");
+        assert_eq!(server.calls("/v1/responses"), 2);
+        assert_eq!(server.calls("/v1/models"), 1);
     }
 }
 

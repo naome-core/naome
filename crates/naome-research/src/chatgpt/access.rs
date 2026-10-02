@@ -5,7 +5,7 @@
 use super::{
     RESOURCE, ResponsesConfig,
     auth::Session,
-    http::{diagnostic, network_error, read_json, request_id},
+    http::{diagnostic, network_error, read_json, request_id, response_media},
     stream::Stream,
 };
 use crate::provider::{ProviderError, ProviderErrorKind};
@@ -50,7 +50,7 @@ fn initial_report(model: &str) -> Value {
     json!({"version":1,"purpose":"nonresearch_model_access_diagnostic",
         "endpoint":format!("{RESOURCE}/responses"),"requested_model":model,
         "response_post_attempts":0,"catalog_get_attempts":0,"automatic_post_retries":0,
-        "http_status":null,"request_id":null,"http_error":null,"failure":null,
+        "http_status":null,"response_media":null,"request_id":null,"http_error":null,"failure":null,
         "access_qualified":false,"completed":false,"terminal_status":null,
         "returned_model":null,"returned_model_matches":false,
         "usage":{"complete":false,"total":null},"consumption":"not_contacted",
@@ -100,6 +100,8 @@ pub(super) fn diagnose_with_session(session: &Session, model: &str) -> Result<Va
             let id = safe_request_id(request_id(&response));
             report["http_status"] = json!(status);
             report["request_id"] = id.clone();
+            let media = response_media(response.headers());
+            report["response_media"] = media.diagnostic();
             if status != 200 {
                 let (_, body, _) = read_json(response, MAX_ACCESS_BYTES).await?;
                 let mut error = diagnostic(status, &body, id);
@@ -109,9 +111,7 @@ pub(super) fn diagnose_with_session(session: &Session, model: &str) -> Result<Va
                 report["http_error"] = error;
                 return Err(ProviderError::contract("Responses access diagnostic returned an HTTP error"));
             }
-            if response.headers().get("content-type").and_then(|v| v.to_str().ok())
-                .is_none_or(|s| s.split(';').next() != Some("text/event-stream"))
-            {
+            if !media.is_event_stream() {
                 return Err(ProviderError::contract("Access diagnostic did not return SSE"));
             }
             let mut response = response;
