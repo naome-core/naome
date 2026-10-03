@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "source": "Preserved deterministic signed v1 offline fixture generated on 2026-09-30; exact archived bytes, no provider execution.",
+  "keys": "Published fixed test seeds only; unsuitable for real participants.",
+  "records": 2,
+  "head": "79ea1a85604d21867ad672407eb139a8d0a2173f0c4cb21139706ba37bffb813",
+  "sha256": {
+    "genesis.json": "27f49d9e7f424162aaa213663c6527d9d2c1df24d7feb6c2b3e075df671412b2",
+    "event-000000.json": "1a0b8a1f684c5c5a76bea6f38806166b1885ff7c732ecc43cf9506fde63dfc77",
+    "event-000001.json": "14f911ad14945a97476399ef561b8eb151ca904290844eaeb3535090e0136e05"
+  }
+}

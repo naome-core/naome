@@ -43,7 +43,7 @@ pub struct Interests {
     pub context: String,
 }
 impl Interests {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.topics.is_empty()
             || self.topics.len() > 16
             || self.topics.iter().any(|t| t.is_empty() || t.len() > 256)
@@ -701,7 +701,7 @@ pub fn parse_id(value: &str) -> Result<Id, String> {
 fn schema(properties: Value, required: &[&str]) -> Value {
     json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
 }
-fn discovery_schema() -> Value {
+pub(crate) fn discovery_schema() -> Value {
     schema(
         json!({"title":{"type":"string"},"context":{"type":"string"},"formula_json":{"type":"string"},"definitions":{"type":"array","items":{"type":"string"}}}),
         &["title", "context", "formula_json", "definitions"],
@@ -713,16 +713,16 @@ fn vote_schema() -> Value {
         &["votes"],
     )
 }
-fn solve_schema() -> Value {
+pub(crate) fn solve_schema() -> Value {
     schema(
         json!({"question_id":{"type":"string"},"outcome":{"type":"string","enum":["proof","refutation"]},"source":{"type":"string"},"dependencies":{"type":"array","items":{"type":"string"}}}),
         &["question_id", "outcome", "source", "dependencies"],
     )
 }
 
-const FORMAL_INSTRUCTIONS: &str = "You are a participant-local mathematical research assistant. You have no tools or environment access. Return only the requested strict JSON. Text is semantic context and never proof authority. Never invent axioms, assertion rules or use model judgment as proof validity. Work in Foundation naome:zfc, primitive equality/membership, not_, implies and forall. A final .nao file must use the existing checker rules. Example valid source: foundation = \"naome:zfc\"\nstatement = forall(x0, equal(x0, x0))\nproof:\n p0 = equality_reflexivity(x0)\n p1 = generalization(p0, x0)\n return p1\n. Supported proof rules: equality_reflexivity(variable), generalization(premise,variable), modus_ponens(premise,implication), simplification(A,B) yielding implies(A,implies(B,A)), frege(A,B,C) yielding implies(implies(A,implies(B,C)),implies(implies(A,B),implies(A,C))), classical_contraposition(A,B) yielding implies(implies(not_(B),not_(A)),implies(A,B)), universal_distribution(variable,A,B), vacuous_universal(A), universal_instantiation(variable,replacement,body), equality_substitution(from,to,body), zfc_axiom(quoted selector: extensionality|pairing|union|power_set|infinity|foundation|choice), cite(\"proof_id\"). cite requires an available checked source dependency; do not guess IDs. No double_negation or arbitrary axiom rule exists. A proof conclusion equals the exact question, a refutation conclusion equals its ONE syntactic negation (no automatic double-negation normalization). Definitions are conservative aliases, never arbitrary assumptions. Unsolvable or invalid output may be rejected; do not fabricate validity.";
+pub(crate) const FORMAL_INSTRUCTIONS: &str = "You are a participant-local mathematical research assistant. You have no tools or environment access. Return only the requested strict JSON. Text is semantic context and never proof authority. Never invent axioms, assertion rules or use model judgment as proof validity. Work in Foundation naome:zfc, primitive equality/membership, not_, implies and forall. A final .nao file must use the existing checker rules. Example valid source: foundation = \"naome:zfc\"\nstatement = forall(x0, equal(x0, x0))\nproof:\n p0 = equality_reflexivity(x0)\n p1 = generalization(p0, x0)\n return p1\n. Supported proof rules: equality_reflexivity(variable), generalization(premise,variable), modus_ponens(premise,implication), simplification(A,B) yielding implies(A,implies(B,A)), frege(A,B,C) yielding implies(implies(A,implies(B,C)),implies(implies(A,B),implies(A,C))), classical_contraposition(A,B) yielding implies(implies(not_(B),not_(A)),implies(A,B)), universal_distribution(variable,A,B), vacuous_universal(A), universal_instantiation(variable,replacement,body), equality_substitution(from,to,body), zfc_axiom(quoted selector: extensionality|pairing|union|power_set|infinity|foundation|choice), cite(\"proof_id\"). cite requires an available checked source dependency; do not guess IDs. No double_negation or arbitrary axiom rule exists. A proof conclusion equals the exact question, a refutation conclusion equals its ONE syntactic negation (no automatic double-negation normalization). Definitions are conservative aliases, never arbitrary assumptions. Unsolvable or invalid output may be rejected; do not fabricate validity.";
 
-fn discover_prompt(interests: &Interests) -> String {
+pub(crate) fn discover_prompt(interests: &Interests) -> String {
     format!(
         "{FORMAL_INSTRUCTIONS}\nTASK discovery. Interest projection: {}. Propose one closed mathematical question in the available primitive language. Keep it small enough for this bounded checker exercise. formula_json is a serialized strict AST with op equal(left,right), member(element,set), not(body), implies(left,right), forall(variable,body); variables are u32 numbers, nodes max256/depth32. Example {{\"op\":\"forall\",\"variable\":0,\"body\":{{\"op\":\"equal\",\"left\":0,\"right\":0}}}}. title and context explain the question; definitions may be empty. Conservative .nao definitions only. Do not submit a proof in the discovery reply.",
         serde_json::to_string(interests).unwrap()
@@ -850,6 +850,7 @@ pub fn prepare(
             signing_key_file,
             interests_file,
             provider: ProviderConfig {
+                responses: None,
                 codex_binary: codex_binary.clone(),
                 codex_home: home,
                 model: model.into(),

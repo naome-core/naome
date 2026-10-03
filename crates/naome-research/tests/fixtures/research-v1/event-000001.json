@@ -1,0 +1,402 @@
+{
+  "body": {
+    "index": 1,
+    "previous": [
+      190,
+      223,
+      133,
+      21,
+      81,
+      110,
+      210,
+      162,
+      198,
+      176,
+      20,
+      227,
+      186,
+      146,
+      84,
+      70,
+      35,
+      66,
+      72,
+      122,
+      241,
+      88,
+      68,
+      45,
+      103,
+      243,
+      98,
+      21,
+      1,
+      111,
+      155,
+      44
+    ],
+    "action": {
+      "body": {
+        "genesis": [
+          155,
+          222,
+          184,
+          10,
+          32,
+          242,
+          176,
+          222,
+          177,
+          235,
+          234,
+          206,
+          232,
+          65,
+          148,
+          168,
+          214,
+          251,
+          124,
+          47,
+          246,
+          53,
+          106,
+          107,
+          168,
+          207,
+          85,
+          202,
+          223,
+          8,
+          177,
+          74
+        ],
+        "participant": [
+          119,
+          44,
+          138,
+          68,
+          43,
+          125,
+          176,
+          110,
+          22,
+          108,
+          251,
+          193,
+          204,
+          188,
+          188,
+          222,
+          111,
+          62,
+          186,
+          118,
+          164,
+          233,
+          142,
+          243,
+          255,
+          197,
+          25,
+          80,
+          34,
+          55,
+          214,
+          239
+        ],
+        "nonce": 1,
+        "action": {
+          "kind": "publish",
+          "question": {
+            "title": "No inductive set exists",
+            "context": "A deliberately false fixed question, formally refuted by the selected Foundation Infinity axiom.",
+            "formula": {
+              "op": "forall",
+              "variable": 0,
+              "body": {
+                "op": "not",
+                "body": {
+                  "op": "not",
+                  "body": {
+                    "op": "implies",
+                    "left": {
+                      "op": "not",
+                      "body": {
+                        "op": "forall",
+                        "variable": 1,
+                        "body": {
+                          "op": "not",
+                          "body": {
+                            "op": "not",
+                            "body": {
+                              "op": "implies",
+                              "left": {
+                                "op": "forall",
+                                "variable": 4,
+                                "body": {
+                                  "op": "not",
+                                  "body": {
+                                    "op": "member",
+                                    "element": 4,
+                                    "set": 1
+                                  }
+                                }
+                              },
+                              "right": {
+                                "op": "not",
+                                "body": {
+                                  "op": "member",
+                                  "element": 1,
+                                  "set": 0
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "right": {
+                      "op": "not",
+                      "body": {
+                        "op": "forall",
+                        "variable": 2,
+                        "body": {
+                          "op": "implies",
+                          "left": {
+                            "op": "member",
+                            "element": 2,
+                            "set": 0
+                          },
+                          "right": {
+                            "op": "not",
+                            "body": {
+                              "op": "forall",
+                              "variable": 3,
+                              "body": {
+                                "op": "not",
+                                "body": {
+                                  "op": "not",
+                                  "body": {
+                                    "op": "implies",
+                                    "left": {
+                                      "op": "forall",
+                                      "variable": 4,
+                                      "body": {
+                                        "op": "not",
+                                        "body": {
+                                          "op": "implies",
+                                          "left": {
+                                            "op": "implies",
+                                            "left": {
+                                              "op": "member",
+                                              "element": 4,
+                                              "set": 3
+                                            },
+                                            "right": {
+                                              "op": "implies",
+                                              "left": {
+                                                "op": "not",
+                                                "body": {
+                                                  "op": "member",
+                                                  "element": 4,
+                                                  "set": 2
+                                                }
+                                              },
+                                              "right": {
+                                                "op": "equal",
+                                                "left": 4,
+                                                "right": 2
+                                              }
+                                            }
+                                          },
+                                          "right": {
+                                            "op": "not",
+                                            "body": {
+                                              "op": "implies",
+                                              "left": {
+                                                "op": "implies",
+                                                "left": {
+                                                  "op": "not",
+                                                  "body": {
+                                                    "op": "member",
+                                                    "element": 4,
+                                                    "set": 2
+                                                  }
+                                                },
+                                                "right": {
+                                                  "op": "equal",
+                                                  "left": 4,
+                                                  "right": 2
+                                                }
+                                              },
+                                              "right": {
+                                                "op": "member",
+                                                "element": 4,
+                                                "set": 3
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "right": {
+                                      "op": "not",
+                                      "body": {
+                                        "op": "member",
+                                        "element": 3,
+                                        "set": 0
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "definitions": []
+          }
+        }
+      },
+      "signature": [
+        130,
+        176,
+        227,
+        221,
+        130,
+        35,
+        84,
+        253,
+        25,
+        129,
+        172,
+        92,
+        115,
+        12,
+        120,
+        151,
+        239,
+        214,
+        83,
+        236,
+        15,
+        106,
+        45,
+        116,
+        107,
+        73,
+        186,
+        30,
+        73,
+        229,
+        234,
+        10,
+        193,
+        163,
+        54,
+        77,
+        182,
+        146,
+        98,
+        219,
+        183,
+        149,
+        34,
+        151,
+        41,
+        145,
+        31,
+        248,
+        56,
+        179,
+        176,
+        151,
+        117,
+        78,
+        218,
+        220,
+        66,
+        79,
+        185,
+        243,
+        184,
+        17,
+        239,
+        13
+      ]
+    },
+    "result": null
+  },
+  "signature": [
+    239,
+    87,
+    134,
+    178,
+    132,
+    131,
+    109,
+    207,
+    255,
+    159,
+    138,
+    178,
+    42,
+    172,
+    74,
+    69,
+    136,
+    212,
+    113,
+    27,
+    99,
+    151,
+    116,
+    197,
+    125,
+    251,
+    80,
+    222,
+    30,
+    79,
+    23,
+    83,
+    120,
+    165,
+    156,
+    13,
+    41,
+    127,
+    158,
+    156,
+    190,
+    117,
+    220,
+    9,
+    157,
+    184,
+    204,
+    8,
+    113,
+    212,
+    168,
+    210,
+    169,
+    234,
+    104,
+    138,
+    41,
+    202,
+    39,
+    5,
+    115,
+    147,
+    79,
+    10
+  ]
+}

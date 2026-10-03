@@ -17,9 +17,21 @@ sha2.workspace = true
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 getrandom = "0.4.3"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+chrono-tz = { version = "=0.10.4", default-features = false }
+tokio = { version = "1", features = ["macros", "rt", "signal", "time"] }
+base64 = "0.22"
+jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto", "use_pem"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "form", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+url = "2.5"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+chacha20poly1305 = "0.10"
 
 [lints]
 workspace = true

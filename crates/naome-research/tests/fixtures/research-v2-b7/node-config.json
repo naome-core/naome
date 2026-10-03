@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "directory": "/private/tmp/naome-siwc-b7-compat/fixture-source/node",
+  "identity_file": "/private/tmp/naome-siwc-b7-compat/fixture-source/node-key.json",
+  "run_label": "b7-native-compatibility-public-fixture",
+  "interests": {
+    "topics": [
+      "Formal mathematical foundations"
+    ],
+    "context": "Investigate exact closed questions and reusable checked proofs."
+  },
+  "provider": {
+    "codex_binary": "/usr/bin/false",
+    "codex_home": "/private/tmp/naome-siwc-b7-compat/empty-offline-home",
+    "model": "gpt-6-luna",
+    "timeout_seconds": 90,
+    "max_output_bytes": 262144
+  },
+  "budgets": {
+    "timezone": "Europe/Berlin",
+    "research": {
+      "amount": 0,
+      "period": "day"
+    },
+    "discoveries": {
+      "amount": 1,
+      "period": "hour"
+    },
+    "evaluations": {
+      "amount": 0,
+      "period": "hour"
+    }
+  },
+  "credit": 1,
+  "pool": {
+    "minimum": 2,
+    "initial": 2,
+    "maximum": 4,
+    "drought_ticks": 3,
+    "quick_result_ticks": 3,
+    "cooldown_ticks": 3
+  }
+}
