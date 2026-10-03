@@ -15,6 +15,7 @@ members = [
     "crates/naome-cli",
     "crates/naome-runtime",
     "crates/naome-storage",
+    "crates/naome-submission",
     "crates/naome-validator",
     "crates/naome-verifier",
 ]

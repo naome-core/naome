@@ -1,0 +1,2 @@
+foundation = "naome:zfc"
+statement = forall(x, equal(x, x))

@@ -1932,6 +1932,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-submission"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "naome-checker",
+ "naome-foundation",
+ "naome-ledger",
+ "naome-proof",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "naome-validator"
 version = "0.1.0"
 dependencies = [
