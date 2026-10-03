@@ -64,13 +64,13 @@ fn select(import: &mut ResearchImport, candidate: Candidate, certificate: &Proof
         .verify(candidate, &certificate.to_canonical_bytes())
         .unwrap();
     assert_eq!(
-        apply(import, Input::Verified(verified.receipt())),
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, verified)
+            .unwrap(),
         Applied::Selected
     );
-    import
-        .verifier
-        .admit_selected(&import.core, verified)
-        .unwrap();
+    import.next_event.0 += 1;
 }
 
 #[test]
@@ -252,8 +252,131 @@ fn inline_reference_partition_is_rejected_and_repeated_direct_references_pay_onc
 }
 
 #[test]
+fn cached_packaging_variant_cannot_change_selection_or_effects_after_admission() {
+    let (source, first_question, keys) = support::research();
+    let mut import = ResearchImport::new(&source, config()).unwrap();
+    let first = request(first_question, &keys[0], &support::detour(), 1);
+    select(&mut import, first, &support::detour());
+
+    let mut inline = support::detour().steps().to_vec();
+    inline.push(ProofStep::Generalization {
+        premise: 4,
+        variable: FreeVariable::new(100),
+    });
+    let inline = ProofCertificate::new(inline).unwrap();
+    let long_checked = normalize_and_check(inline.clone()).unwrap();
+    let question = source
+        .questions()
+        .iter()
+        .find(|(_, question)| question.formula().unwrap() == *long_checked.conclusion())
+        .map(|(id, _)| QuestionId(*id))
+        .unwrap();
+    let long = request(question, &keys[0], &inline, 2);
+    let referenced = support::citing(first.proof, 1);
+    let mut context = ArtifactState::new();
+    context
+        .register_proof(normalize_and_check(support::detour()).unwrap())
+        .unwrap();
+    let short_checked = normalize_and_check_with_state(referenced.clone(), &context).unwrap();
+    assert_eq!(long_checked.derivation_id(), short_checked.derivation_id());
+    assert_ne!(long_checked.proof_id(), short_checked.proof_id());
+    let short = Candidate {
+        submission: SubmissionId(3),
+        proof: short_checked.proof_id(),
+        solver: ParticipantId::for_key(keys[1].verifying_key().as_bytes()),
+        ..long
+    };
+    apply(&mut import, Input::Submit(long));
+    apply(&mut import, Input::Submit(short));
+    // Both packages pass against the same context before either is admitted.
+    let long_verified = import
+        .verifier
+        .verify(long, &inline.to_canonical_bytes())
+        .unwrap();
+    let short_verified = import
+        .verifier
+        .verify(short, &referenced.to_canonical_bytes())
+        .unwrap();
+    assert_eq!(
+        long_verified.receipt().verdict,
+        Verdict::Valid {
+            verified_steps: 6.try_into().unwrap()
+        }
+    );
+    assert_eq!(
+        short_verified.receipt().verdict,
+        Verdict::Valid {
+            verified_steps: 2.try_into().unwrap()
+        }
+    );
+    assert_eq!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, long_verified)
+            .unwrap(),
+        Applied::Selected
+    );
+    import.next_event.0 += 1;
+    let selected = import.core.current(question);
+    let pending: Vec<_> = import.core.pending_effects().copied().collect();
+    assert!(matches!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, short_verified),
+        Err(AdapterError::Registration(_))
+    ));
+    assert_eq!(import.core.current(question), selected);
+    assert_eq!(
+        import.core.pending_effects().copied().collect::<Vec<_>>(),
+        pending
+    );
+    assert_eq!(selected.unwrap().candidate, long);
+}
+
+#[test]
+fn non_improving_receipt_does_not_publish_or_seed_an_unselected_proof() {
+    let (mut import, question, keys) = imported();
+    let first = request(question, &keys[0], &support::direct(), 1);
+    select(&mut import, first, &support::direct());
+    let worse = request(question, &keys[1], &support::detour(), 2);
+    apply(&mut import, Input::Submit(worse));
+    let verified = import
+        .verifier
+        .verify(worse, &support::detour().to_canonical_bytes())
+        .unwrap();
+    assert_eq!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, verified)
+            .unwrap(),
+        Applied::NotImproved
+    );
+    assert_eq!(import.core.current(question).unwrap().candidate, first);
+    assert_eq!(
+        import
+            .core
+            .pending_effects()
+            .filter(|effect| matches!(effect.kind, EffectKind::Publish { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        import
+            .verifier
+            .verify(worse, &support::detour().to_canonical_bytes())
+            .is_ok()
+    );
+    assert!(matches!(
+        import
+            .verifier
+            .verify_citation(&support::citing(worse.proof, 1).to_canonical_bytes()),
+        Err(AdapterError::Checking(_))
+    ));
+}
+
+#[test]
 fn bad_bytes_unknown_references_wrong_target_and_mismatched_ids_cannot_pass() {
-    let (import, question, keys) = imported();
+    let (mut import, question, keys) = imported();
     let direct = support::direct();
     let candidate = request(question, &keys[0], &direct, 1);
     let padded = ProofCertificate::new(vec![
@@ -326,10 +449,19 @@ fn bad_bytes_unknown_references_wrong_target_and_mismatched_ids_cannot_pass() {
         .verifier
         .verify(candidate, &direct.to_canonical_bytes())
         .unwrap();
-    let mut verifier = import.verifier;
     assert_eq!(
-        verifier.admit_selected(&import.core, verified),
-        Err(AdapterError::NotSelected)
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, verified),
+        Err(AdapterError::Input(InputError::UnknownSubmission))
+    );
+    assert!(import.core.current(question).is_none());
+    assert_eq!(import.core.pending_effects().count(), 0);
+    assert!(
+        import
+            .verifier
+            .verify(candidate, &direct.to_canonical_bytes())
+            .is_ok()
     );
 }
 

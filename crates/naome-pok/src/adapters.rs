@@ -10,8 +10,8 @@ use naome_proof::{ProofCertificate, ProofStep};
 use naome_research::state::ResearchState;
 
 use crate::{
-    Candidate, Citation, CitationId, Config, Event, EventId, Input, Orchestrator, ParticipantId,
-    ProofId, QuestionId, ResultId, Verdict, VerificationReceipt,
+    Applied, Candidate, Citation, CitationId, Config, Event, EventId, Input, InputError,
+    Orchestrator, ParticipantId, ProofId, QuestionId, ResultId, Verdict, VerificationReceipt,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub enum AdapterError {
     TargetMismatch,
     IdentityMismatch,
     Registration(String),
-    NotSelected,
+    Input(InputError),
 }
 
 /// A fixed confirmed local research snapshot, not a finalized blockchain view.
@@ -99,6 +99,8 @@ pub struct VerifiedSubmission {
 }
 
 impl VerifiedSubmission {
+    /// Inspect the receipt. Real adapter admissions must use `apply_verified` to
+    /// keep artifact registration and selection coupled.
     pub fn receipt(&self) -> VerificationReceipt {
         self.receipt
     }
@@ -180,35 +182,36 @@ impl ProofAdapter {
         })
     }
 
-    /// Register only after this exact receipt selected the current local proof.
+    /// Revalidate and stage artifact registration before changing the selection.
+    /// On registration or input failure, neither context nor core is changed.
     /// This acceptance supports mock publication; it establishes no block inclusion.
-    pub fn admit_selected(
+    pub fn apply_verified(
         &mut self,
-        core: &Orchestrator,
+        core: &mut Orchestrator,
+        event: EventId,
         verified: VerifiedSubmission,
-    ) -> Result<(), AdapterError> {
+    ) -> Result<Applied, AdapterError> {
         let receipt = verified.receipt;
-        let current = core
-            .current(receipt.request.question)
-            .ok_or(AdapterError::NotSelected)?;
-        if current.candidate != receipt.request
-            || receipt.verdict
-                != (Verdict::Valid {
-                    verified_steps: current.verified_steps,
-                })
-        {
-            return Err(AdapterError::NotSelected);
-        }
-        // Revalidate against current context: another admission may have occurred
-        // since verification. Registering fails atomically on a duplicate derivation.
-        self.artifacts
+        // Another admission may have changed the context since verification.
+        // Stage all fallible registration work before the core can enqueue effects.
+        let mut staged = self.artifacts.clone();
+        staged
             .register_proof(verified.checked)
             .map_err(|error| AdapterError::Registration(error.to_string()))?;
-        self.proof_questions.insert(
-            receipt.request.proof,
-            (receipt.request.question, receipt.request.result),
-        );
-        Ok(())
+        let applied = core
+            .apply(Event {
+                id: event,
+                input: Input::Verified(receipt),
+            })
+            .map_err(AdapterError::Input)?;
+        if applied == Applied::Selected {
+            self.artifacts = staged;
+            self.proof_questions.insert(
+                receipt.request.proof,
+                (receipt.request.question, receipt.request.result),
+            );
+        }
+        Ok(applied)
     }
 
     pub fn verify_citation(&self, bytes: &[u8]) -> Result<VerifiedCitation, AdapterError> {

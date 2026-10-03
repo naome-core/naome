@@ -56,12 +56,16 @@ fn apply(import: &mut ResearchImport, mocks: &mut Mocks, input: Input) -> Applie
         })
         .unwrap();
     import.next_event.0 += 1;
+    deliver_pending(import, mocks);
+    outcome
+}
+
+fn deliver_pending(import: &mut ResearchImport, mocks: &mut Mocks) {
     let effects: Vec<_> = import.core.pending_effects().copied().collect();
     for effect in effects {
         mocks.deliver(effect).unwrap();
         import.core.acknowledge(effect.id);
     }
-    outcome
 }
 
 fn solve(
@@ -87,13 +91,14 @@ fn solve(
         .verify(request, checked.normal_form().canonical_bytes())
         .unwrap();
     assert_eq!(
-        apply(import, mocks, Input::Verified(verified.receipt())),
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, verified)
+            .unwrap(),
         Applied::Selected
     );
-    import
-        .verifier
-        .admit_selected(&import.core, verified)
-        .unwrap();
+    import.next_event.0 += 1;
+    deliver_pending(import, mocks);
     request
 }
 
