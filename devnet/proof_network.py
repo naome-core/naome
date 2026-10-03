@@ -47,6 +47,18 @@ def source(depth):
     return "\n".join(lines) + "\n"
 
 
+def inventory_source(depth, used):
+    formula = f"equal(x{used},x{used})"
+    for index in reversed(range(depth)):
+        formula = f"forall(x{index},{formula})"
+    lines = ['foundation = "naome:zfc"', f"statement = {formula}", "proof:",
+             f"    p0 = equality_reflexivity(x{used})"]
+    for step, index in enumerate(reversed(range(depth))):
+        lines.append(f"    p{step + 1} = generalization(p{step},x{index})")
+    lines.append(f"    return p{depth}")
+    return "\n".join(lines) + "\n"
+
+
 class Node:
     def __init__(self, driver, index, directory, identity, port):
         self.driver, self.index, self.directory = driver, index, directory
@@ -208,10 +220,10 @@ class Driver:
             time.sleep(0.1)
         raise AssertionError("topology did not match configured partition")
 
-    def convergence(self, name, indices, expected, started):
+    def convergence(self, name, indices, expected, started, timeout=25, interval=0.1):
         expected = set(expected)
         root = content_root(self.summary["contract"]["compatibility"], expected)
-        deadline = min(self.deadline, started + 25)
+        deadline = min(self.deadline, started + timeout)
         times, final = {}, {}
         while time.monotonic() < deadline:
             for index in indices:
@@ -229,8 +241,9 @@ class Driver:
                 self.summary["scenarios"][name] = result
                 print(f"{name}: all {len(indices)} nodes converged in {result['all_node_seconds']:.3f}s", flush=True)
                 return
-            time.sleep(0.1)
-        raise AssertionError(f"{name}: all-node convergence timeout; statuses={final}")
+            time.sleep(interval)
+        counts = {str(index): len(self.nodes[index].command("status")["ids"]) for index in indices}
+        raise AssertionError(f"{name}: all-node convergence timeout; accepted_counts={counts}")
 
     def retain_proof(self, label, object):
         assert proof_id(object["statement_id"], object["proof"]) == object["proof_id"]
@@ -247,6 +260,52 @@ class Driver:
         object = result["object"]
         self.retain_proof(label, object)
         return object
+
+    def large_inventory(self):
+        """Fetch ten real inventory pages from an initially disconnected supplier."""
+        reservations = []
+        try:
+            self.summary["node_count"] = 2
+            for index in range(2):
+                directory = self.output / f"node-{index}"
+                identity = self.init_identity(directory)
+                reservation = socket.socket()
+                reservation.bind(("127.0.0.1", 0))
+                reservations.append(reservation)
+                self.nodes.append(Node(self, index, directory, identity, reservation.getsockname()[1]))
+            reservations[0].close()
+            self.nodes[0].start()
+            self.nodes[0].command("links", peers=[])
+            ids = []
+            for depth in range(1, 35):
+                for used in range(depth):
+                    self.check_deadline()
+                    result = self.nodes[0].command("produce", source=inventory_source(depth, used))
+                    assert result["result"]["status"] == "accepted"
+                    ids.append(result["object"]["proof_id"])
+            assert len(ids) == len(set(ids)) == 595
+            reservations[1].close()
+            self.nodes[1].start()
+            self.nodes[1].command("links", peers=[])
+            assert self.nodes[1].command("status")["ids"] == []
+            started = time.monotonic()
+            self.topology([[0, 1]])
+            self.convergence("ten_page_inventory_complete_content_catchup", range(2), ids,
+                             started, timeout=210, interval=0.5)
+            pages = [event for event in self.nodes[1].events if event.get("event") == "inventory_page"]
+            assert any(event["page"] >= 9 for event in pages)
+            assert all(len(list((node.directory / "objects").glob("*.json"))) == 595 for node in self.nodes)
+            self.summary["scenarios"]["inventory_tail_discovery"] = {
+                "result": "pass", "object_count": 595, "page_size": 64,
+                "pages": pages, "tail_proof_id": max(ids),
+                "receiver_tail_present": max(ids) in self.nodes[1].command("status")["ids"],
+            }
+            self.summary["accepted_ids"] = sorted(ids)
+            self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], ids)
+            self.summary["result"] = "pass"
+        finally:
+            for reservation in reservations:
+                reservation.close()
 
     def run(self):
         reservations = []
@@ -400,10 +459,14 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--profile", default="test")
+    parser.add_argument("--large-inventory", action="store_true")
     args = parser.parse_args()
     driver = Driver(args.binary, args.output, args.timeout, args.profile)
     try:
-        driver.run()
+        if args.large_inventory:
+            driver.large_inventory()
+        else:
+            driver.run()
     except Exception as error:
         driver.summary["result"] = "fail"
         driver.summary["error"] = str(error)

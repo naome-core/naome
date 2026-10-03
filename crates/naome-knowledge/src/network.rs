@@ -29,6 +29,7 @@ pub const MAX_FLIGHTS: usize = 16;
 pub const MAX_FLIGHTS_PER_PEER: usize = 2;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
+const AUTOMATIC_REQUEST_INTERVAL: Duration = Duration::from_millis(200);
 const COMMAND_BYTES: usize = 2 * crate::MAX_PROOF_BYTES + 2048;
 
 #[derive(Deserialize)]
@@ -79,6 +80,11 @@ struct Bucket {
     tokens: usize,
     reset: Instant,
 }
+#[derive(Clone, Copy, Default)]
+struct InventoryProgress {
+    after: Option<[u8; 32]>,
+    pages: usize,
+}
 struct Node {
     graph: Graph,
     swarm: Swarm<Behaviour>,
@@ -88,6 +94,8 @@ struct Node {
     wanted: BTreeMap<ProofId, Wanted>,
     flights: HashMap<request_response::OutboundRequestId, Flight>,
     next_inventory: BTreeMap<PeerId, Instant>,
+    inventory_progress: BTreeMap<PeerId, InventoryProgress>,
+    next_automatic_request: BTreeMap<PeerId, Instant>,
     buckets: BTreeMap<PeerId, Bucket>,
     test_controls: bool,
     producer_sources: VecDeque<String>,
@@ -205,6 +213,8 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
         wanted: BTreeMap::new(),
         flights: HashMap::new(),
         next_inventory: BTreeMap::new(),
+        inventory_progress: BTreeMap::new(),
+        next_automatic_request: BTreeMap::new(),
         buckets: BTreeMap::new(),
         test_controls,
         producer_sources: config.producer_sources.into(),
@@ -321,13 +331,12 @@ impl Node {
             })
             .count()
     }
-    fn want(&mut self, id: ProofId) {
-        if self.graph.contains(id)
-            || self.graph.waiting(id)
-            || self.wanted.contains_key(&id)
-            || self.wanted.len() >= MAX_FETCHES
-        {
-            return;
+    fn want(&mut self, id: ProofId) -> bool {
+        if self.graph.contains(id) || self.graph.waiting(id) || self.wanted.contains_key(&id) {
+            return true;
+        }
+        if self.wanted.len() >= MAX_FETCHES {
+            return false;
         }
         self.wanted.insert(
             id,
@@ -337,6 +346,18 @@ impl Node {
                 attempts: 0,
             },
         );
+        true
+    }
+
+    fn automatic_request_ready(&self, peer: PeerId, now: Instant) -> bool {
+        self.next_automatic_request
+            .get(&peer)
+            .is_none_or(|next| *next <= now)
+    }
+
+    fn charge_automatic_request(&mut self, peer: PeerId, now: Instant) {
+        self.next_automatic_request
+            .insert(peer, now + AUTOMATIC_REQUEST_INTERVAL);
     }
 
     fn ingest(&mut self, object: Envelope, source: &str) -> Result<Value, String> {
@@ -543,6 +564,8 @@ impl Node {
                 }
             } else if self.flights.len() < MAX_FLIGHTS
                 && self.flight_count(peer) < MAX_FLIGHTS_PER_PEER
+                && self.automatic_request_ready(peer, now)
+                && MAX_FETCHES - self.wanted.len() >= INVENTORY_PAGE
                 && self
                     .next_inventory
                     .get(&peer)
@@ -552,7 +575,13 @@ impl Node {
                     .values()
                     .any(|flight| matches!(flight,Flight::Inventory { peer:p,.. } if *p==peer))
             {
-                self.inventory(peer, None, 0);
+                let progress = self
+                    .inventory_progress
+                    .get(&peer)
+                    .copied()
+                    .unwrap_or_default();
+                self.inventory(peer, progress.after, progress.pages);
+                self.charge_automatic_request(peer, now);
             }
         }
         let peers: Vec<_> = self
@@ -586,7 +615,10 @@ impl Node {
                 .cycle()
                 .skip(attempts % peers.len())
                 .take(peers.len())
-                .find(|peer| self.flight_count(**peer) < MAX_FLIGHTS_PER_PEER)
+                .find(|peer| {
+                    self.flight_count(**peer) < MAX_FLIGHTS_PER_PEER
+                        && self.automatic_request_ready(**peer, now)
+                })
                 .copied();
             let Some(peer) = peer else {
                 break;
@@ -600,6 +632,7 @@ impl Node {
                 .exchange
                 .send_request(&peer, Frame::new(Body::Get { id: *id.as_bytes() }));
             self.flights.insert(request, Flight::Get { id, peer });
+            self.charge_automatic_request(peer, now);
         }
     }
 
@@ -771,16 +804,32 @@ impl Node {
                     emit(json!({"event":"rejected","error":"invalid inventory"}));
                     return;
                 }
+                // Keep the cursor until every ID is retained or already known.
+                // Queue pressure, throttling, failure and disconnect must not
+                // restart a scan at its prefix or silently discard its tail.
+                let mut retained = true;
                 for id in &ids {
-                    self.want(ProofId::from_bytes(*id));
+                    retained &= self.want(ProofId::from_bytes(*id));
                 }
-                if ids.len() == INVENTORY_PAGE
-                    && pages + 1 < crate::MAX_OBJECTS / INVENTORY_PAGE
-                    && self.flights.len() < MAX_FLIGHTS
-                    && self.flight_count(peer) < MAX_FLIGHTS_PER_PEER
-                {
-                    self.inventory(peer, ids.last().copied(), pages + 1);
+                if retained {
+                    if ids.len() == INVENTORY_PAGE
+                        && pages + 1 < crate::MAX_OBJECTS / INVENTORY_PAGE
+                    {
+                        self.inventory_progress.insert(
+                            peer,
+                            InventoryProgress {
+                                after: ids.last().copied(),
+                                pages: pages + 1,
+                            },
+                        );
+                    } else {
+                        self.inventory_progress.remove(&peer);
+                    }
                 }
+                emit(json!({"event":"inventory_page", "peer":peer.to_string(),
+                    "after":after.map(|id|hex(&id)), "page":pages,
+                    "count":ids.len(), "retained":retained,
+                    "last":ids.last().map(|id|hex(id))}));
             }
             (Flight::Get { id: expected, .. }, Body::Object { object }) => {
                 if object.proof_id != hex(expected.as_bytes()) {

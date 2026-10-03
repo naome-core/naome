@@ -2,6 +2,15 @@ use std::{path::PathBuf, process::Command};
 
 #[test]
 fn four_process_proof_graph_partition_dependencies_and_restart() {
+    run_driver(false);
+}
+
+#[test]
+fn ten_page_inventory_fetches_every_checked_object() {
+    run_driver(true);
+}
+
+fn run_driver(large_inventory: bool) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root.join(".local/proof-network").join(format!(
         "test-{}-{}",
@@ -12,7 +21,8 @@ fn four_process_proof_graph_partition_dependencies_and_restart() {
             .as_nanos()
     ));
     let python = if cfg!(windows) { "python" } else { "python3" };
-    let output = Command::new(python)
+    let mut command = Command::new(python);
+    command
         .arg(root.join("devnet/proof_network.py"))
         .args([
             "--binary",
@@ -22,14 +32,18 @@ fn four_process_proof_graph_partition_dependencies_and_restart() {
         .arg(&directory)
         .args([
             "--timeout",
-            "120",
+            if large_inventory { "240" } else { "120" },
             "--profile",
             if cfg!(debug_assertions) {
                 "test"
             } else {
                 "release"
             },
-        ])
+        ]);
+    if large_inventory {
+        command.arg("--large-inventory");
+    }
+    let output = command
         .output()
         .expect("run finite Python standard-library process driver");
     assert!(
