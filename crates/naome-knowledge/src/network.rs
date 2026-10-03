@@ -555,11 +555,17 @@ impl Node {
                     .get(&peer)
                     .is_none_or(|next| *next <= now)
                 {
-                    let _ = self.swarm.dial(
+                    // Reusing the listener port can reuse the exact TCP tuple
+                    // after a partition while the OS still retains its state.
+                    if let Err(error) = self.swarm.dial(
                         libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
                             .addresses(vec![self.configured[&peer].clone()])
+                            .allocate_new_port()
                             .build(),
-                    );
+                    ) {
+                        emit(json!({"event":"dial_failed", "peer":peer.to_string(),
+                            "stage":"request", "error":error.to_string(), "detail":format!("{error:?}")}));
+                    }
                     self.next_inventory.insert(peer, now + RECONCILE_INTERVAL);
                 }
             } else if self.flights.len() < MAX_FLIGHTS
@@ -671,12 +677,28 @@ impl Node {
                 emit(json!({"event":"ready","address":address.to_string()}))
             }
             SwarmEvent::ListenerError { error, .. } => return Err(format!("listener: {error}")),
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            SwarmEvent::ConnectionEstablished {
+                peer_id,
+                num_established,
+                endpoint,
+                ..
+            } => {
                 self.next_inventory.remove(&peer_id);
-                emit(json!({"event":"connected","peer":peer_id.to_string()}));
+                emit(
+                    json!({"event":"connected","peer":peer_id.to_string(),"connections":num_established.get(),"endpoint":format!("{endpoint:?}")}),
+                );
             }
-            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => emit(
-                json!({"event":"disconnected","peer":peer_id.to_string(),"cause":format!("{cause:?}")}),
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                cause,
+                num_established,
+                ..
+            } => emit(
+                json!({"event":"disconnected","peer":peer_id.to_string(),"connections":num_established,"cause":format!("{cause:?}")}),
+            ),
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
+                json!({"event":"dial_failed","peer":peer_id.map(|peer|peer.to_string()),
+                    "stage":"transport", "error":error.to_string(), "detail":format!("{error:?}")}),
             ),
             SwarmEvent::Behaviour(BehaviourEvent::Gossip(gossipsub::Event::Message {
                 propagation_source,

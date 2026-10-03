@@ -11,6 +11,13 @@ fn ten_page_inventory_fetches_every_checked_object() {
 }
 
 fn run_driver(large_inventory: bool) {
+    // Each measured trial owns its process/IO workload. Running both drivers
+    // concurrently adds two nodes to the four-node fixture and contaminates
+    // its bounded connection/recovery deadlines on shared CI runners.
+    static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _active = ACTIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root.join(".local/proof-network").join(format!(
         "test-{}-{}",

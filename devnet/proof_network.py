@@ -218,7 +218,14 @@ class Driver:
             if all(set(statuses[index]["connected"]) == peers for index, peers in expected.items()):
                 return
             time.sleep(0.1)
-        raise AssertionError("topology did not match configured partition")
+        diagnostics = {
+            str(index): {"connected": statuses[index]["connected"],
+                         "expected": sorted(peers),
+                         "events": [event for event in self.nodes[index].events
+                                    if event.get("event") in ["connected", "disconnected", "dial_failed", "request_failed", "inbound_failed"]][-10:]}
+            for index, peers in expected.items()
+        }
+        raise AssertionError(f"topology did not match configured partition: {json.dumps(diagnostics)}")
 
     def convergence(self, name, indices, expected, started, timeout=25, interval=0.1):
         expected = set(expected)
