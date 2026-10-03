@@ -356,7 +356,9 @@ impl ResearchState {
     pub fn results(&self) -> &[ResultBlock] {
         &self.results
     }
-    pub(crate) fn artifacts(&self) -> &ArtifactState {
+    /// Checked artifacts from this confirmed local history. This read-only context
+    /// does not establish ledger inclusion or public-network finality.
+    pub fn artifacts(&self) -> &ArtifactState {
         &self.artifacts
     }
     pub fn questions(&self) -> &BTreeMap<Id, Question> {

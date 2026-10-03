@@ -1853,6 +1853,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-pok"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "naome-checker",
+ "naome-foundation",
+ "naome-ledger",
+ "naome-proof",
+ "naome-research",
+]
+
+[[package]]
 name = "naome-pouw"
 version = "0.1.0"
 dependencies = [
