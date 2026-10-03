@@ -4,6 +4,30 @@ use std::time::Duration;
 
 use naome_pok::*;
 
+fn digest(id: u64) -> [u8; 32] {
+    let mut bytes = [0; 32];
+    bytes[24..].copy_from_slice(&id.to_be_bytes());
+    bytes
+}
+fn question_id(id: u64) -> QuestionId {
+    QuestionId(digest(id))
+}
+fn result_id(id: u64) -> ResultId {
+    ResultId::from_bytes(digest(id))
+}
+fn proof_id(id: u64) -> ProofId {
+    ProofId::from_bytes(digest(id))
+}
+fn participant_id(id: u64) -> ParticipantId {
+    ParticipantId::from_bytes(digest(id))
+}
+fn citation_id(id: u64) -> CitationId {
+    CitationId {
+        citing_proof: proof_id(id),
+        question: question_id(1),
+    }
+}
+
 fn core() -> Orchestrator {
     Orchestrator::new(Config {
         top_k: 2.try_into().unwrap(),
@@ -21,10 +45,10 @@ fn apply(core: &mut Orchestrator, id: u64, input: Input) -> Result<Applied, Inpu
 fn candidate(id: u64, solver: u64) -> Candidate {
     Candidate {
         submission: SubmissionId(id),
-        question: QuestionId(1),
-        result: ResultId(10),
-        proof: ProofId(id),
-        solver: ParticipantId(solver),
+        question: question_id(1),
+        result: result_id(10),
+        proof: proof_id(id),
+        solver: participant_id(solver),
     }
 }
 
@@ -39,13 +63,13 @@ fn valid(request: Candidate, steps: u64) -> Input {
 
 fn prepared() -> Orchestrator {
     let mut core = core();
-    apply(&mut core, 1, Input::RegisterQuestion(QuestionId(1))).unwrap();
+    apply(&mut core, 1, Input::RegisterQuestion(question_id(1))).unwrap();
     apply(
         &mut core,
         2,
         Input::Approval {
-            question: QuestionId(1),
-            participant: ParticipantId(1),
+            question: question_id(1),
+            participant: participant_id(1),
             approved: true,
         },
     )
@@ -57,32 +81,32 @@ fn prepared() -> Orchestrator {
 fn distinct_approvals_ties_withdrawal_and_pool_admission() {
     let mut core = core();
     for q in [3, 2, 1] {
-        apply(&mut core, q, Input::RegisterQuestion(QuestionId(q))).unwrap();
+        apply(&mut core, q, Input::RegisterQuestion(question_id(q))).unwrap();
         apply(
             &mut core,
             q + 10,
             Input::Approval {
-                question: QuestionId(q),
-                participant: ParticipantId(1),
+                question: question_id(q),
+                participant: participant_id(1),
                 approved: true,
             },
         )
         .unwrap();
     }
-    assert_eq!(core.top_questions(), [QuestionId(1), QuestionId(2)]);
+    assert_eq!(core.top_questions(), [question_id(1), question_id(2)]);
     apply(
         &mut core,
         20,
         Input::Approval {
-            question: QuestionId(3),
-            participant: ParticipantId(1),
+            question: question_id(3),
+            participant: participant_id(1),
             approved: true,
         },
     )
     .unwrap();
-    assert_eq!(core.top_questions(), [QuestionId(1), QuestionId(2)]);
+    assert_eq!(core.top_questions(), [question_id(1), question_id(2)]);
     let outside = Candidate {
-        question: QuestionId(3),
+        question: question_id(3),
         ..candidate(30, 1)
     };
     assert_eq!(
@@ -93,13 +117,13 @@ fn distinct_approvals_ties_withdrawal_and_pool_admission() {
         &mut core,
         21,
         Input::Approval {
-            question: QuestionId(3),
-            participant: ParticipantId(2),
+            question: question_id(3),
+            participant: participant_id(2),
             approved: true,
         },
     )
     .unwrap();
-    assert_eq!(core.top_questions(), [QuestionId(3), QuestionId(1)]);
+    assert_eq!(core.top_questions(), [question_id(3), question_id(1)]);
     assert_eq!(
         apply(&mut core, 30, Input::Submit(outside)),
         Ok(Applied::Accepted)
@@ -108,8 +132,8 @@ fn distinct_approvals_ties_withdrawal_and_pool_admission() {
         &mut core,
         22,
         Input::Approval {
-            question: QuestionId(3),
-            participant: ParticipantId(2),
+            question: question_id(3),
+            participant: participant_id(2),
             approved: false,
         },
     )
@@ -139,7 +163,7 @@ fn first_receipt_wins_then_only_strict_improvements_for_the_same_result() {
         assert_eq!(apply(&mut core, id + 100, valid(c, steps)), Ok(expected));
     }
     let wrong_result = Candidate {
-        result: ResultId(999),
+        result: result_id(999),
         ..candidate(22, 3)
     };
     assert_eq!(
@@ -178,19 +202,19 @@ fn invalid_and_mismatched_receipts_cannot_change_ownership() {
     apply(&mut core, 3, Input::Submit(a)).unwrap();
     for changed in [
         Candidate {
-            question: QuestionId(2),
+            question: question_id(2),
             ..a
         },
         Candidate {
-            result: ResultId(11),
+            result: result_id(11),
             ..a
         },
         Candidate {
-            proof: ProofId(11),
+            proof: proof_id(11),
             ..a
         },
         Candidate {
-            solver: ParticipantId(2),
+            solver: participant_id(2),
             ..a
         },
     ] {
@@ -225,7 +249,7 @@ fn concurrent_other_result_is_rejected_and_prior_citation_intents_stay_with_thei
     let mut core = prepared();
     let a = candidate(10, 1);
     let other = Candidate {
-        result: ResultId(99),
+        result: result_id(99),
         ..candidate(11, 2)
     };
     apply(&mut core, 3, Input::Submit(a)).unwrap();
@@ -236,7 +260,7 @@ fn concurrent_other_result_is_rejected_and_prior_citation_intents_stay_with_thei
         Ok(Applied::DifferentResult)
     );
     let citation = Citation {
-        citation: CitationId(1),
+        citation: citation_id(1),
         question: a.question,
         result: a.result,
     };
@@ -266,7 +290,7 @@ fn concurrent_other_result_is_rejected_and_prior_citation_intents_stay_with_thei
         &mut core,
         11,
         Input::Cite(Citation {
-            citation: CitationId(2),
+            citation: citation_id(2),
             ..citation
         }),
     )
@@ -276,7 +300,7 @@ fn concurrent_other_result_is_rejected_and_prior_citation_intents_stay_with_thei
             &mut core,
             12,
             Input::Cite(Citation {
-                citation: CitationId(3),
+                citation: citation_id(3),
                 result: other.result,
                 ..citation
             })
@@ -318,7 +342,7 @@ fn exact_and_logical_retries_do_not_duplicate_effects_or_reuse_identity() {
             &mut core,
             5,
             Input::Submit(Candidate {
-                proof: ProofId(99),
+                proof: proof_id(99),
                 ..a
             })
         ),
@@ -335,7 +359,7 @@ fn exact_and_logical_retries_do_not_duplicate_effects_or_reuse_identity() {
     assert_eq!(apply(&mut core, 6, valid(a, 4)), Ok(Applied::Duplicate));
     assert_eq!(core.pending_effects().count(), 0);
     let citation = Citation {
-        citation: CitationId(1),
+        citation: citation_id(1),
         question: a.question,
         result: a.result,
     };
@@ -345,7 +369,7 @@ fn exact_and_logical_retries_do_not_duplicate_effects_or_reuse_identity() {
             &mut core,
             9,
             Input::Cite(Citation {
-                result: ResultId(99),
+                result: result_id(99),
                 ..citation
             })
         ),

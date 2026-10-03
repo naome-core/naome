@@ -5,6 +5,11 @@
 //! intents, not blocks, finality or account mutations. Retry identities last only for
 //! this instance; external adapters must deduplicate effects in their own scope.
 
+pub mod adapters;
+
+pub use naome_ledger::AccountId as ParticipantId;
+pub use naome_proof::{ProofId, StatementId as ResultId};
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::mpsc::{Receiver, RecvError};
@@ -16,15 +21,18 @@ macro_rules! ids {
         pub struct $name(pub u64);
     )+};
 }
-ids!(
-    EventId,
-    QuestionId,
-    ResultId,
-    ProofId,
-    ParticipantId,
-    SubmissionId,
-    CitationId
-);
+ids!(EventId, SubmissionId);
+
+/// Full native research-question digest, distinct from a ledger operation ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QuestionId(pub [u8; 32]);
+
+/// One citation award per checked citing proof and referenced question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CitationId {
+    pub citing_proof: ProofId,
+    pub question: QuestionId,
+}
 
 /// Fixed experimental settings. Amounts are whole NAO, with no adopted token codec.
 #[derive(Clone, Copy, Debug)]
@@ -349,6 +357,9 @@ impl Orchestrator {
     }
 
     fn cite(&mut self, event: EventId, citation: Citation) -> Result<Applied, InputError> {
+        if citation.citation.question != citation.question {
+            return Err(InputError::IdentityConflict);
+        }
         if let Some(existing) = self.citations.get(&citation.citation) {
             return if *existing == citation {
                 Ok(Applied::Duplicate)

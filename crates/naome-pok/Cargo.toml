@@ -7,5 +7,15 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
+naome-ledger = { path = "../naome-ledger" }
+naome-proof = { path = "../naome-proof" }
+naome-research = { path = "../naome-research" }
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+
 [lints]
 workspace = true
