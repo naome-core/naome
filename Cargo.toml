@@ -6,6 +6,7 @@ members = [
     "crates/naome-consensus",
     "crates/naome-foundation",
     "crates/naome-ledger",
+    "crates/naome-knowledge",
     "crates/naome-network",
     "crates/naome-node",
     "crates/naome-pouw",
