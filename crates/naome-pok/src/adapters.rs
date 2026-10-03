@@ -147,21 +147,11 @@ impl ProofAdapter {
             .map_err(|error| AdapterError::Checking(error.to_string()))
     }
 
-    fn check_new(&self, bytes: &[u8]) -> Result<CheckedProof, AdapterError> {
-        let checked = self.check(bytes)?;
-        // Mathematical validity alone permits aliases. Normal registration makes
-        // derivation identity transparent to inline/reference packaging shortcuts.
-        self.artifacts
-            .validate_proof_registration(&checked)
-            .map_err(|error| AdapterError::Registration(error.to_string()))?;
-        Ok(checked)
-    }
-
-    pub fn verify(
+    fn validate_binding(
         &self,
         request: Candidate,
-        bytes: &[u8],
-    ) -> Result<VerifiedSubmission, AdapterError> {
+        checked: &CheckedProof,
+    ) -> Result<(), AdapterError> {
         let target = self
             .targets
             .get(&request.question)
@@ -169,7 +159,6 @@ impl ProofAdapter {
         if !self.participants.contains(&request.solver) {
             return Err(AdapterError::UnknownParticipant);
         }
-        let checked = self.check_new(bytes)?;
         if checked.conclusion() != target
             && checked.conclusion() != &Formula::negate(target.clone())
         {
@@ -177,6 +166,27 @@ impl ProofAdapter {
         }
         if checked.proof_id() != request.proof || checked.statement_id() != request.result {
             return Err(AdapterError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
+    /// Check a new submission or the exact proof previously selected here for the
+    /// same question and result. Reused proofs can only complete non-improving receipts.
+    pub fn verify(
+        &self,
+        request: Candidate,
+        bytes: &[u8],
+    ) -> Result<VerifiedSubmission, AdapterError> {
+        let checked = self.check(bytes)?;
+        self.validate_binding(request, &checked)?;
+        // Mathematical validity alone permits aliases. Normal registration rejects
+        // packaging shortcuts; only this adapter's exact prior selection can retry.
+        match self.artifacts.validate_proof_registration(&checked) {
+            Ok(()) => {}
+            Err(ArtifactStateError::DuplicateProof { .. })
+                if self.proof_questions.get(&request.proof)
+                    == Some(&(request.question, request.result)) => {}
+            Err(error) => return Err(AdapterError::Registration(error.to_string())),
         }
         Ok(VerifiedSubmission {
             receipt: VerificationReceipt {
@@ -189,7 +199,8 @@ impl ProofAdapter {
         })
     }
 
-    /// Revalidate and stage artifact registration before changing the selection.
+    /// Revalidate local question and participant bindings, then stage registration
+    /// before changing the selection. Exact selected-proof retries cannot select again.
     /// On registration or input failure, neither context nor core is changed.
     /// This acceptance supports mock publication; it establishes no block inclusion.
     pub fn apply_verified(
@@ -199,12 +210,26 @@ impl ProofAdapter {
         verified: VerifiedSubmission,
     ) -> Result<Applied, AdapterError> {
         let receipt = verified.receipt;
+        // Checked values may have been prepared in a different local import.
+        self.validate_binding(receipt.request, &verified.checked)?;
         // Another admission may have changed the context since verification.
         // Stage all fallible registration work before the core can enqueue effects.
+        let retry = self.proof_questions.get(&receipt.request.proof)
+            == Some(&(receipt.request.question, receipt.request.result))
+            && core
+                .current(receipt.request.question)
+                .is_some_and(|current| {
+                    current.candidate.result == receipt.request.result
+                        && current.verified_steps <= step_count(&verified.checked)
+                });
         let mut staged = self.artifacts.clone();
-        staged
-            .register_proof(verified.checked)
-            .map_err(|error| AdapterError::Registration(error.to_string()))?;
+        match staged.register_proof(verified.checked) {
+            Ok(_) => {}
+            // An exact admitted proof cannot select again or transfer its beneficiary,
+            // but the core must record its receipt and clear the verification intent.
+            Err(ArtifactStateError::DuplicateProof { .. }) if retry => {}
+            Err(error) => return Err(AdapterError::Registration(error.to_string())),
+        }
         let applied = core
             .apply(Event {
                 id: event,
@@ -229,6 +254,11 @@ impl ProofAdapter {
             Ok(()) | Err(ArtifactStateError::DuplicateProof { .. }) => {}
             Err(error) => return Err(AdapterError::Registration(error.to_string())),
         }
+        let citations = self.citation_inputs(&checked);
+        Ok(VerifiedCitation { checked, citations })
+    }
+
+    fn citation_inputs(&self, checked: &CheckedProof) -> Vec<Citation> {
         let mut cited = BTreeMap::new();
         for step in checked.normal_form().certificate().steps() {
             if let ProofStep::ProofReference { proof_id } = step
@@ -237,7 +267,7 @@ impl ProofAdapter {
                 cited.insert(*question, *result);
             }
         }
-        let citations = cited
+        cited
             .into_iter()
             .map(|(question, result)| Citation {
                 citation: CitationId {
@@ -247,23 +277,25 @@ impl ProofAdapter {
                 question,
                 result,
             })
-            .collect();
-        Ok(VerifiedCitation { checked, citations })
+            .collect()
     }
 
     /// Admit a checked citing proof, or reuse its exact existing admission, and
     /// return citation inputs. Select a solving proof with `apply_verified` first.
     /// Repeated citation inputs carry the same IDs and are deduplicated by the core;
-    /// actual publication and input order remain controlled by the caller.
+    /// inputs use this adapter's selected history, which can differ from a foreign
+    /// preview. Actual publication and input order remain controlled by the caller.
     pub fn admit_citation(
         &mut self,
         verified: VerifiedCitation,
     ) -> Result<Vec<Citation>, AdapterError> {
+        // Rebind a prepared value to this import's locally selected proof history.
+        let citations = self.citation_inputs(&verified.checked);
         match self.artifacts.register_proof(verified.checked) {
             Ok(_) | Err(ArtifactStateError::DuplicateProof { .. }) => {}
             Err(error) => return Err(AdapterError::Registration(error.to_string())),
         }
-        Ok(verified.citations)
+        Ok(citations)
     }
 }
 

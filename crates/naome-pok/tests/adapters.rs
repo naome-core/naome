@@ -152,6 +152,201 @@ fn real_metric_and_strict_improvement_transfer_future_citations_from_old_proof()
 }
 
 #[test]
+fn exact_verified_proof_retries_complete_without_another_publication_or_reward() {
+    let (mut import, question, keys) = imported();
+    let certificate = support::detour();
+    let bytes = certificate.to_canonical_bytes();
+    let first = request(question, &keys[0], &certificate, 1);
+    let second = request(question, &keys[1], &certificate, 2);
+    apply(&mut import, Input::Submit(first));
+    apply(&mut import, Input::Submit(second));
+    let first_verified = import.verifier.verify(first, &bytes).unwrap();
+    let second_verified = import.verifier.verify(second, &bytes).unwrap();
+    let first_event = import.next_event;
+    assert_eq!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, first_event, first_verified)
+            .unwrap(),
+        Applied::Selected
+    );
+    import.next_event.0 += 1;
+    assert_eq!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, second_verified)
+            .unwrap(),
+        Applied::NotImproved
+    );
+    import.next_event.0 += 1;
+    assert_eq!(import.core.current(question).unwrap().candidate, first);
+    let pending: Vec<_> = import.core.pending_effects().copied().collect();
+    assert_eq!(pending.len(), 2);
+    assert!(matches!(pending[0].kind, EffectKind::Publish { .. }));
+    assert!(matches!(pending[1].kind, EffectKind::Reward(reward)
+        if reward.beneficiary == first.solver && reward.amount_nao == 1));
+
+    // Both event-level and logical receipt retries still run mathematical checking.
+    for event in [first_event, import.next_event] {
+        let retry = import.verifier.verify(first, &bytes).unwrap();
+        assert_eq!(
+            import
+                .verifier
+                .apply_verified(&mut import.core, event, retry)
+                .unwrap(),
+            Applied::Duplicate
+        );
+    }
+    import.next_event.0 += 1;
+    assert_eq!(
+        import.core.pending_effects().copied().collect::<Vec<_>>(),
+        pending
+    );
+    let later = Candidate {
+        submission: SubmissionId(3),
+        ..second
+    };
+    apply(&mut import, Input::Submit(later));
+    let verified = import.verifier.verify(later, &bytes).unwrap();
+    assert_eq!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, verified)
+            .unwrap(),
+        Applied::NotImproved
+    );
+    import.next_event.0 += 1;
+    assert_eq!(
+        import.core.pending_effects().copied().collect::<Vec<_>>(),
+        pending
+    );
+
+    // The historical selected proof also cannot reclaim a beneficiary after improvement.
+    let improved = request(question, &keys[1], &support::direct(), 4);
+    select(&mut import, improved, &support::direct());
+    let after_improvement: Vec<_> = import.core.pending_effects().copied().collect();
+    let historical = Candidate {
+        submission: SubmissionId(5),
+        ..first
+    };
+    apply(&mut import, Input::Submit(historical));
+    let verified = import.verifier.verify(historical, &bytes).unwrap();
+    assert_eq!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, verified)
+            .unwrap(),
+        Applied::NotImproved
+    );
+    assert_eq!(import.core.current(question).unwrap().candidate, improved);
+    assert_eq!(
+        import.core.pending_effects().copied().collect::<Vec<_>>(),
+        after_improvement
+    );
+}
+
+#[test]
+fn citation_only_admission_cannot_be_reused_as_a_selected_solution() {
+    let (mut import, question, keys) = imported();
+    let certificate = support::direct();
+    let bytes = certificate.to_canonical_bytes();
+    let candidate = request(question, &keys[0], &certificate, 1);
+    apply(&mut import, Input::Submit(candidate));
+    let cached = import.verifier.verify(candidate, &bytes).unwrap();
+    let citing = import.verifier.verify_citation(&bytes).unwrap();
+    assert!(import.verifier.admit_citation(citing).unwrap().is_empty());
+    let pending: Vec<_> = import.core.pending_effects().copied().collect();
+    assert!(matches!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, cached),
+        Err(AdapterError::Registration(_))
+    ));
+    assert!(import.core.current(question).is_none());
+    assert!(matches!(
+        import.verifier.verify(candidate, &bytes),
+        Err(AdapterError::Registration(_))
+    ));
+    assert_eq!(
+        import.core.pending_effects().copied().collect::<Vec<_>>(),
+        pending
+    );
+
+    // An exact proof admitted only as a citation cannot claim a shorter-proof reward either.
+    let selected = request(question, &keys[1], &support::detour(), 2);
+    select(&mut import, selected, &support::detour());
+    assert!(matches!(
+        import.verifier.verify(candidate, &bytes),
+        Err(AdapterError::Registration(_))
+    ));
+    assert_eq!(import.core.current(question).unwrap().candidate, selected);
+}
+
+#[test]
+fn prepared_checked_values_use_the_receiving_imports_bindings() {
+    let (source, question, keys) = support::research();
+    let mut origin = ResearchImport::new(&source, config()).unwrap();
+    let bytes = support::direct().to_canonical_bytes();
+    let candidate = request(question, &keys[0], &support::direct(), 1);
+    let foreign = origin.verifier.verify(candidate, &bytes).unwrap();
+    let empty = ResearchState::new(source.genesis().clone()).unwrap();
+    let mut receiving = ResearchImport::new(&empty, config()).unwrap();
+    apply(&mut receiving, Input::RegisterQuestion(question));
+    apply(
+        &mut receiving,
+        Input::Approval {
+            question,
+            participant: candidate.solver,
+            approved: true,
+        },
+    );
+    apply(&mut receiving, Input::Submit(candidate));
+    let pending: Vec<_> = receiving.core.pending_effects().copied().collect();
+    assert_eq!(
+        receiving
+            .verifier
+            .apply_verified(&mut receiving.core, receiving.next_event, foreign,),
+        Err(AdapterError::UnknownQuestion)
+    );
+    assert!(receiving.core.current(question).is_none());
+    assert_eq!(
+        receiving
+            .core
+            .pending_effects()
+            .copied()
+            .collect::<Vec<_>>(),
+        pending
+    );
+
+    select(&mut origin, candidate, &support::direct());
+    let citing_bytes = support::citing(candidate.proof, 1).to_canonical_bytes();
+    let foreign_citation = origin.verifier.verify_citation(&citing_bytes).unwrap();
+    assert_eq!(foreign_citation.citations().len(), 1);
+    let mut receiving = ResearchImport::new(&source, config()).unwrap();
+    let artifact_only = receiving.verifier.verify_citation(&bytes).unwrap();
+    receiving.verifier.admit_citation(artifact_only).unwrap();
+    let local = request(question, &keys[1], &support::detour(), 2);
+    select(&mut receiving, local, &support::detour());
+    // A foreign question binding cannot make this import reward an unselected reference.
+    assert!(
+        receiving
+            .verifier
+            .admit_citation(foreign_citation)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        receiving
+            .verifier
+            .verify_citation(&citing_bytes)
+            .unwrap()
+            .citations()
+            .is_empty()
+    );
+    assert_eq!(receiving.core.current(question).unwrap().candidate, local);
+}
+
+#[test]
 fn selected_solution_preserves_its_citations_and_exact_retries_pay_once() {
     let (source, first_question, keys) = support::research();
     let mut import = ResearchImport::new(&source, config()).unwrap();
