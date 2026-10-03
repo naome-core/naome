@@ -3,7 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
-use naome_checker::{ArtifactState, CheckedProof, normalize_and_check_with_state};
+use naome_checker::{
+    ArtifactState, ArtifactStateError, CheckedProof, normalize_and_check_with_state,
+};
 use naome_foundation::Formula;
 use naome_ledger::{RecordId, state::LedgerState};
 use naome_proof::{ProofCertificate, ProofStep};
@@ -106,7 +108,8 @@ impl VerifiedSubmission {
     }
 }
 
-/// A genuinely new checked citing derivation and its distinct direct references.
+/// A checked citing derivation and its distinct direct references. Its exact proof
+/// may already be selected; different packages of an admitted derivation fail.
 /// Caller authentication and ordered citation admission remain external duties.
 #[derive(Debug)]
 pub struct VerifiedCitation {
@@ -137,11 +140,15 @@ pub struct ProofAdapter {
 }
 
 impl ProofAdapter {
-    fn check_new(&self, bytes: &[u8]) -> Result<CheckedProof, AdapterError> {
+    fn check(&self, bytes: &[u8]) -> Result<CheckedProof, AdapterError> {
         let certificate = ProofCertificate::from_canonical_bytes(bytes)
             .map_err(|error| AdapterError::Certificate(error.to_string()))?;
-        let checked = normalize_and_check_with_state(certificate, &self.artifacts)
-            .map_err(|error| AdapterError::Checking(error.to_string()))?;
+        normalize_and_check_with_state(certificate, &self.artifacts)
+            .map_err(|error| AdapterError::Checking(error.to_string()))
+    }
+
+    fn check_new(&self, bytes: &[u8]) -> Result<CheckedProof, AdapterError> {
+        let checked = self.check(bytes)?;
         // Mathematical validity alone permits aliases. Normal registration makes
         // derivation identity transparent to inline/reference packaging shortcuts.
         self.artifacts
@@ -214,8 +221,14 @@ impl ProofAdapter {
         Ok(applied)
     }
 
+    /// Extract direct citations from a new proof or the exact proof already
+    /// admitted by `apply_verified`. Mathematical checking still runs on retries.
     pub fn verify_citation(&self, bytes: &[u8]) -> Result<VerifiedCitation, AdapterError> {
-        let checked = self.check_new(bytes)?;
+        let checked = self.check(bytes)?;
+        match self.artifacts.validate_proof_registration(&checked) {
+            Ok(()) | Err(ArtifactStateError::DuplicateProof { .. }) => {}
+            Err(error) => return Err(AdapterError::Registration(error.to_string())),
+        }
         let mut cited = BTreeMap::new();
         for step in checked.normal_form().certificate().steps() {
             if let ProofStep::ProofReference { proof_id } = step
@@ -238,15 +251,18 @@ impl ProofAdapter {
         Ok(VerifiedCitation { checked, citations })
     }
 
-    /// Admit a checked citing proof once and return its citation inputs. Actual
-    /// publication and the input order are still controlled by the caller.
+    /// Admit a checked citing proof, or reuse its exact existing admission, and
+    /// return citation inputs. Select a solving proof with `apply_verified` first.
+    /// Repeated citation inputs carry the same IDs and are deduplicated by the core;
+    /// actual publication and input order remain controlled by the caller.
     pub fn admit_citation(
         &mut self,
         verified: VerifiedCitation,
     ) -> Result<Vec<Citation>, AdapterError> {
-        self.artifacts
-            .register_proof(verified.checked)
-            .map_err(|error| AdapterError::Registration(error.to_string()))?;
+        match self.artifacts.register_proof(verified.checked) {
+            Ok(_) | Err(ArtifactStateError::DuplicateProof { .. }) => {}
+            Err(error) => return Err(AdapterError::Registration(error.to_string())),
+        }
         Ok(verified.citations)
     }
 }

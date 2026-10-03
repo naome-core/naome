@@ -152,6 +152,106 @@ fn real_metric_and_strict_improvement_transfer_future_citations_from_old_proof()
 }
 
 #[test]
+fn selected_solution_preserves_its_citations_and_exact_retries_pay_once() {
+    let (source, first_question, keys) = support::research();
+    let mut import = ResearchImport::new(&source, config()).unwrap();
+    let first = request(first_question, &keys[0], &support::direct(), 1);
+    select(&mut import, first, &support::direct());
+
+    let certificate = support::citing(first.proof, 1);
+    let mut context = ArtifactState::new();
+    context
+        .register_proof(normalize_and_check(support::direct()).unwrap())
+        .unwrap();
+    let checked = normalize_and_check_with_state(certificate.clone(), &context).unwrap();
+    let question = source
+        .questions()
+        .iter()
+        .find(|(_, question)| question.formula().unwrap() == *checked.conclusion())
+        .map(|(id, _)| QuestionId(*id))
+        .unwrap();
+    let candidate = Candidate {
+        submission: SubmissionId(2),
+        question,
+        result: checked.statement_id(),
+        proof: checked.proof_id(),
+        solver: ParticipantId::for_key(keys[1].verifying_key().as_bytes()),
+    };
+    apply(&mut import, Input::Submit(candidate));
+    let verified = import
+        .verifier
+        .verify(candidate, &certificate.to_canonical_bytes())
+        .unwrap();
+    let cached_citation = import
+        .verifier
+        .verify_citation(&certificate.to_canonical_bytes())
+        .unwrap();
+
+    // A different package of this derivation must never receive duplicate admission.
+    let mut inline = support::direct().steps().to_vec();
+    inline.push(ProofStep::Generalization {
+        premise: 1,
+        variable: FreeVariable::new(100),
+    });
+    let inline = ProofCertificate::new(inline).unwrap();
+    let alias = import
+        .verifier
+        .verify_citation(&inline.to_canonical_bytes())
+        .unwrap();
+
+    assert_eq!(
+        import
+            .verifier
+            .apply_verified(&mut import.core, import.next_event, verified)
+            .unwrap(),
+        Applied::Selected
+    );
+    import.next_event.0 += 1;
+    assert_eq!(import.core.current(question).unwrap().candidate, candidate);
+
+    // Citation extraction still works when the solving proof was already selected.
+    let selected_citation = import
+        .verifier
+        .verify_citation(&certificate.to_canonical_bytes())
+        .unwrap();
+    assert_eq!(selected_citation.citations().len(), 1);
+    assert_eq!(selected_citation.citations(), cached_citation.citations());
+    let citations = import.verifier.admit_citation(cached_citation).unwrap();
+    assert_eq!(
+        apply(&mut import, Input::Cite(citations[0])),
+        Applied::Accepted
+    );
+    let retried = import.verifier.admit_citation(selected_citation).unwrap();
+    assert_eq!(
+        apply(&mut import, Input::Cite(retried[0])),
+        Applied::Duplicate
+    );
+
+    assert!(matches!(
+        import.verifier.admit_citation(alias),
+        Err(AdapterError::Registration(_))
+    ));
+    assert!(matches!(
+        import
+            .verifier
+            .verify_citation(&inline.to_canonical_bytes()),
+        Err(AdapterError::Registration(_))
+    ));
+    let rewards: Vec<_> = import
+        .core
+        .pending_effects()
+        .filter_map(|effect| match effect.kind {
+            EffectKind::Reward(reward) => Some(reward),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rewards.len(), 3); // two first solutions and one citation
+    assert_eq!(rewards[2].beneficiary, first.solver);
+    assert_eq!(rewards[2].amount_nao, 2);
+    assert_eq!(import.core.current(question).unwrap().candidate, candidate);
+}
+
+#[test]
 fn mathematical_reference_validity_does_not_admit_a_packaging_improvement() {
     let (mut import, question, keys) = imported();
     let first = request(question, &keys[0], &support::detour(), 1);
