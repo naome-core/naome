@@ -1853,6 +1853,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-pok"
+version = "0.1.0"
+
+[[package]]
 name = "naome-pouw"
 version = "0.1.0"
 dependencies = [
