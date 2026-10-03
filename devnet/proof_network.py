@@ -213,13 +213,15 @@ class Driver:
         expected = {index: {self.nodes[other].identity for other in group if other != index}
                     for group in groups for index in group}
         deadline = min(self.deadline, time.monotonic() + 15)
+        statuses = {}
         while time.monotonic() < deadline:
             statuses = {index: self.nodes[index].command("status") for index in expected}
             if all(set(statuses[index]["connected"]) == peers for index, peers in expected.items()):
                 return
             time.sleep(0.1)
+        self.check_deadline()
         diagnostics = {
-            str(index): {"connected": statuses[index]["connected"],
+            str(index): {"connected": statuses.get(index, {}).get("connected"),
                          "expected": sorted(peers),
                          "events": [event for event in self.nodes[index].events
                                     if event.get("event") in ["connected", "disconnected", "dial_failed", "request_failed", "inbound_failed"]][-10:]}
