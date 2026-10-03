@@ -1,0 +1,21 @@
+[package]
+name = "naome-submission"
+version.workspace = true
+edition.workspace = true
+description = "Bounded inference-free research submission prototype."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
+naome-ledger = { path = "../naome-ledger" }
+naome-proof = { path = "../naome-proof" }
+ed25519-dalek.workspace = true
+sha2.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
