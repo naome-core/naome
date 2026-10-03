@@ -1,0 +1,16 @@
+{
+  "corpus_version": "inference-pilot-v1",
+  "files": {
+    "answer_gold.json": "1fae270d733fc5f2022061e045e6b8f70bbeccfa9a0bef95420307c5425c0262",
+    "answers.json": "77dd779e251bb064c0de5afb01640f24c09ae3f82686508acdf28ac11c1cc596",
+    "discovery.json": "d7a1701864d7173fd31c5708deb58abb86c31ee074215a5b17aad8c8e2cda386",
+    "evaluation.json": "e71894316f64960857c40a2c501f6fa3dfee7435a9cd05d5b3fd947e49770906",
+    "evaluation_labels.json": "80440bcabc2d5689293f144029635d77e66277964eb4472c7c3964421fbb4162",
+    "helpers.json": "48bb71ae6413ea8bec0fa9138ef1d242065a627cb7c4de4fbe8ba0754079e62c",
+    "protocol.json": "a25c48ce4d9a9f596cc6ab546b8d6588a1268558fb6b08ea52a0bb4a4b5f7545",
+    "result.schema.json": "e27dc6f7929cba45d96dbdff244fb8fe65989ef8e9783d2a27827bd0b96bb031",
+    "run-plan.template.json": "468d0d350f9befefbc989d58e2a61f321bf9d0c21baa5be018656c6ae216a522"
+  },
+  "schema": 1,
+  "source_baseline": "3907ff9fe7d1f0b0b9ffe875c81b740522dcc890"
+}

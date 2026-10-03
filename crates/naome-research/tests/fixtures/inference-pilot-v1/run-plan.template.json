@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "run_id": null,
+  "corpus_manifest_sha256": null,
+  "oracle_source_commit": null,
+  "frozen_before_outputs": false,
+  "admission": {
+    "reference": null,
+    "expires_utc": null,
+    "max_calls": null,
+    "max_cumulative_call_seconds": null,
+    "max_input_tokens_per_call": null,
+    "max_output_tokens_per_call": null,
+    "max_total_cost_usd": null
+  },
+  "configurations": [
+    {
+      "id": "local-baseline",
+      "baseline": true,
+      "placement": "local",
+      "model_id": null,
+      "immutable_model_revision": null,
+      "weights_or_provider_snapshot_sha256": null,
+      "runtime_or_api_version": null
+    },
+    {
+      "id": "hosted-candidate",
+      "baseline": false,
+      "placement": "hosted_optional",
+      "model_id": null,
+      "immutable_model_revision": null,
+      "weights_or_provider_snapshot_sha256": null,
+      "runtime_or_api_version": null
+    }
+  ],
+  "metric_receipts": "Preserve all failures, local memory/Wh measurement, provider usage/accounting or explicit nulls; plan metadata is not proof of authorization or actual inference.",
+  "oracle_sha256": null
+}

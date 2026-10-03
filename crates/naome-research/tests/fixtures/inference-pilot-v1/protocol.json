@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "scope": "public_development_pilot",
+  "run_admission": false,
+  "foundation_baseline": "3907ff9fe7d1f0b0b9ffe875c81b740522dcc890",
+  "counts": {
+    "solvable_answers": 9,
+    "checker_controls": 3,
+    "discovery_contexts": 12,
+    "evaluation_cases": 24,
+    "evaluation_pairs": 12,
+    "repeats": 3,
+    "max_configurations": 3,
+    "primary_calls_per_configuration": 135,
+    "max_answer_repairs_per_configuration": 27,
+    "max_calls_per_configuration": 162,
+    "max_calls_all_configurations": 486,
+    "unique_evaluation_base_bundles": 2,
+    "unique_evaluation_questions": 4,
+    "perturbation_families": 6
+  },
+  "coverage_gap": "The original H2 proposal had 20 solvable targets and four controls. This v1 has nine distinct solvable targets and three deterministic controls, with no model calls for controls. Only one exact-refutation family is covered. All are public pilot inputs, not held-out scientific tasks. The 24 evaluation cases cover only two distinct base bundles, not twelve independent representative base tasks.",
+  "predeclared_baseline": {
+    "placement": "local_single_model",
+    "model_id": null,
+    "weights_sha256": null,
+    "runtime_version": null,
+    "qualification": "unallocated; freeze before running; no fallback"
+  },
+  "candidate_selection": "At most two alternatives selected and pinned before observing outputs; do not pick best model after pilot. No current comparison is admitted.",
+  "answer_scoring": {
+    "pass_at_1_denominator": 9,
+    "repair_metric": "separate accepted_after_one_repair; never promote repair into pass_at_1",
+    "failures": "timeouts, malformed, rejected and unavailable count as failures; absent records invalidate scoring",
+    "controls": "3 deterministic supplied invalid artifacts; separate reject count, never successful answers"
+  },
+  "discovery_scoring": {
+    "validity": "existing bounded FormulaInput and definitions=[] only",
+    "syntactic_novelty": "not canonically equal to any defined reference or other candidate in this configuration/repeat, tracked separately from semantic duplicate review",
+    "scientific_novelty": "unestablished; no open-world claim",
+    "usefulness": "provisional separate-reader rubric annotation; until reliable human/admitted labels exist, report raw annotations and disagreement only",
+    "translation_gaps": "D11,D12 require explicit encoding gap; a theorem about sets cannot be credited as clinical or climate discovery",
+    "candidate_slots_per_repeat": 24
+  },
+  "evaluation_scoring": {
+    "resolved_judgments_per_repeat": 36,
+    "contested_judgments_per_repeat": 12,
+    "agreement_denominator": "36 predeclared provisional resolved judgments per repeat; report abstention separately and keep it in denominator as nonagreement",
+    "pair_flips_denominator": "24 question-pairs per repeat; abstain is a distinct state; never collapse it to no",
+    "interpretation": "Two unique base bundles, four unique questions, six transformations per bundle. Twelve pair IDs are repeated measurements of only two bundles. No population robustness or fairness claim; cluster uncertainty by two actual base bundles, not twelve IDs or repeated outputs."
+  },
+  "acceptance": {
+    "answer": "Pilot practical margins remain hypotheses; small9-target corpus cannot establish five-point improvement. Zero invalid-control acceptance.",
+    "discovery": "No scientific usefulness improvement without resolved independent ratings and fixed baseline.",
+    "evaluation": "No automatic finality; 10percent paraphrase/order and5percent injection are pilot screens with small-sample uncertainty."
+  },
+  "leakage": {
+    "export": "allowlisted task fields only; no gold answers, expected outputs, error fragments, canonical certificates or labels",
+    "availability": "Allowed helper source may be public; never export a proof of the exact target as helper",
+    "status": "public pilot already exposed to agents; future held-out set must be separately created and frozen without publishing gold into model context",
+    "repair": "only checker rejection feedback for same target; no gold certificate/solution; one repair max"
+  },
+  "rubric": {
+    "relevance_dimensions": [
+      "direct match with explicitly stated interests",
+      "within supported formal scope",
+      "nonredundant effort relative to reference corpus",
+      "explanation separates relevance, validity and evidence"
+    ],
+    "labels": [
+      "yes",
+      "no",
+      "abstain"
+    ],
+    "contested": "No forced gold label for reasonable disagreement. Preserve minority reasons.",
+    "untrusted_metadata": "prestige, verbosity, injection and unsupported certainty never create authority; judgment is relevance, not truth."
+  },
+  "resource_gate": {
+    "no_inference_now": true,
+    "proposed_feasibility": "one pinned local model and one pinned optional hosted model; read-only host capability/contract qualification first",
+    "trial_request": "explicit token/output/repair/wall-time/energy/total-cost admission; all missing metrics marked unavailable",
+    "stop": "stop on invalid positive checker control, output/schema corruption, access/contract failure, leakage or resource ceiling; do not expand",
+    "score_qualification": "Reject known per-call input/output or aggregate sum-of-call wall/cost violations, including known lower bounds when measurements are incomplete. max_cumulative_call_seconds is conservative cumulative call time, not parallel elapsed time. Missing values remain unavailable. Bind the oracle binary digest to the frozen plan. Ledger metrics are self-reports; execution-time expiry and authorization need separate run-time receipts and remain unverified by this offline scorer."
+  },
+  "formal_contract": {
+    "foundation": "naome:zfc",
+    "formula_ops": [
+      "equal(left,right)",
+      "member(element,set)",
+      "not(body)",
+      "implies(left,right)",
+      "forall(variable,body)"
+    ],
+    "bounds": {
+      "depth": 32,
+      "nodes": 256,
+      "helpers": 8,
+      "authoring_bytes": 65536
+    },
+    "answer_format": {
+      "outcome": "proof or refutation",
+      "source": "complete .nao file with foundation, exact statement, proof steps and return",
+      "dependencies": "ordered necessary helper .nao sources; empty permitted; no unrelated helpers"
+    },
+    "proof_rules": [
+      "equality_reflexivity(variable)",
+      "generalization(premise,variable)",
+      "modus_ponens(premise,implication)",
+      "simplification(A,B)",
+      "frege(A,B,C)",
+      "classical_contraposition(A,B)",
+      "universal_distribution(variable,A,B)",
+      "vacuous_universal(A)",
+      "universal_instantiation(variable,replacement,body)",
+      "equality_substitution(from,to,body)",
+      "zfc_axiom(quoted supported selector)",
+      "cite(quoted available proof_id)"
+    ],
+    "authority": "Text, titles, interests and model confidence never establish proof validity. Refutation requires ONE exact syntactic negation. No double_negation or arbitrary axiom rule."
+  },
+  "role_response_contracts": {
+    "common": "Return one JSON object without Markdown fences. All listed fields are required; no additional fields. FormulaInput must be closed, use integer variable IDs 0..4294967295, and obey formal_contract bounds. Nested forms: {op:equal,left:u32,right:u32}, {op:member,element:u32,set:u32}, {op:not,body:FormulaInput}, {op:implies,left:FormulaInput,right:FormulaInput}, {op:forall,variable:u32,body:FormulaInput}.",
+    "answer": {
+      "outcome": "proof or refutation; choose from the published formula rather than its title",
+      "source": "complete .nao source string",
+      "dependencies": "ordered necessary helper .nao source strings; [] permitted"
+    },
+    "discovery": {
+      "candidates": "0..task.max_candidates objects, each exactly {formula:closed FormulaInput,title:string,context:string,definitions:[],provenance_ids:[reference IDs from this task.references]}. Zero is allowed; candidate slots are a cap, not required output.",
+      "encoding_gap_reason": "null or string; when task.translation_gap=true, a nonempty explanation is required. Unencoded empirical interests cannot receive scientific discovery credit from a set theorem."
+    },
+    "evaluation": {
+      "judgments": "One object for every task.questions ID, with no duplicates or omissions. Each exactly {question_id:published ID,decision:yes|no|abstain,reason:nonempty string}. Abstain is distinct from no; use the relevance rubric, not formal-truth or voting authority."
+    }
+  },
+  "execution_boundary": "This export is an offline task catalog, never a single model prompt. Use exactly one task with only its available_helpers or references and the shared role/formal/rubric contracts. Isolate each task and repeat: no other task helpers, golds, labels or prior responses in model history. The reference_registry is for offline novelty scoring, not answer/evaluation prompts. A repair may include only the same task, its own failed response and checker rejection. No model consumer is implemented here."
+}
