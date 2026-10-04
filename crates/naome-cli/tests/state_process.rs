@@ -26,11 +26,11 @@ mod admission;
 #[path = "cases/successor.rs"]
 mod successor;
 
-fn process_guard() -> std::sync::MutexGuard<'static, ()> {
-    static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    ACTIVE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+#[path = "support/process_resources.rs"]
+mod process_resources;
+
+fn process_guard() -> process_resources::Slot<'static> {
+    process_resources::admit()
 }
 
 const BIN: &str = env!("CARGO_BIN_EXE_naome");
@@ -81,12 +81,21 @@ struct Lab {
     nodes: Vec<Option<Child>>,
     base: u16,
     successor_configs: Option<Vec<String>>,
+    started: Instant,
+    observations: std::sync::Mutex<Vec<Value>>,
+    status_queries: std::sync::atomic::AtomicUsize,
+    // Released after Drop reaps every owned child, including panic cleanup.
+    _ports: process_resources::PortLease,
 }
 impl Lab {
     fn new() -> Self {
-        Self::new_with_records(128)
+        Self::with_timing(128, "fast-process-test")
     }
     fn new_with_records(run_records: u64) -> Self {
+        Self::with_timing(run_records, "process-test")
+    }
+    fn with_timing(run_records: u64, timing: &str) -> Self {
+        let started = Instant::now();
         let mut random = [0; 4];
         getrandom::fill(&mut random).unwrap();
         let root = PathBuf::from(format!(
@@ -94,22 +103,14 @@ impl Lab {
             std::process::id(),
             u32::from_ne_bytes(random)
         ));
-        let base = (0..1000)
-            .find_map(|offset| {
-                let base = 20000 + ((u32::from_ne_bytes(random) + offset) % 40000) as u16;
-                (0..12)
-                    .map(|i| std::net::TcpListener::bind(("127.0.0.1", base + i)))
-                    .collect::<std::io::Result<Vec<_>>>()
-                    .ok()
-                    .map(|_| base)
-            })
-            .unwrap();
+        let ports = process_resources::PortLease::acquire(u32::from_ne_bytes(random));
+        let base = ports.base;
         let order_path = root.with_extension("retirement.json");
         fs::write(&order_path, b"[2,0,3,1]").unwrap();
         let configured = command(&[
             "setup".into(),
             path(&root),
-            "process-test".into(),
+            timing.into(),
             run_records.to_string(),
             base.to_string(),
             path(&order_path),
@@ -126,6 +127,10 @@ impl Lab {
             nodes: (0..5).map(|_| None).collect(),
             base,
             successor_configs: None,
+            started,
+            observations: std::sync::Mutex::new(Vec::new()),
+            status_queries: std::sync::atomic::AtomicUsize::new(0),
+            _ports: ports,
         }
     }
     fn config(&self, index: usize) -> String {
@@ -154,11 +159,37 @@ impl Lab {
         );
     }
     fn status(&self, index: usize) -> Option<Value> {
+        self.status_queries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let output = raw(&["status".into(), self.config(index)]);
         output
             .status
             .success()
             .then(|| serde_json::from_slice(&output.stdout).unwrap())
+    }
+    fn observe(
+        &self,
+        kind: &str,
+        label: &str,
+        operation: Option<&str>,
+        status: &Value,
+        elapsed: Duration,
+    ) {
+        let margin = status["active"]["deadline"]
+            .as_u64()
+            .zip(status["time"].as_u64())
+            .map(|(deadline, time)| i128::from(deadline) - i128::from(time));
+        let wall_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        self.observations.lock().unwrap().push(serde_json::json!({
+            "kind": kind, "label": label, "elapsed_seconds": elapsed.as_secs_f64(),
+            "operation": operation, "observed_wall_clock_unix_seconds": wall_time,
+            "height": status["height"], "active": status["active"],
+            "certified_time": status["time"], "certified_margin_seconds": margin,
+            "wall_clock_margin_seconds": status["active"]["deadline"].as_u64().map(|deadline| deadline as f64 - wall_time),
+        }));
     }
     #[track_caller]
     fn wait(&self, index: usize, predicate: impl Fn(&Value) -> bool) -> Value {
@@ -300,6 +331,7 @@ impl Lab {
                 if status["active"]["submission"] == submission
                     && status["active"]["phase"] == phase
                 {
+                    self.observe("phase_observed", phase, None, &status, start.elapsed());
                     return index;
                 }
             }
@@ -347,9 +379,11 @@ impl Lab {
         let id = operation["operation"]
             .as_str()
             .expect("signed operation ID");
+        let started = Instant::now();
         self.wait(node, |status| {
             let receipt = command(&["receipt".into(), self.config(node), id.into()]);
             if receipt["status"] == "finalized" {
+                self.observe(kind, label, Some(id), status, started.elapsed());
                 return true;
             }
             let context = format!(
@@ -538,6 +572,15 @@ impl Drop for Lab {
             let _ = child.kill();
             let _ = child.wait();
         }
+        eprintln!(
+            "process_lab_metrics={}",
+            serde_json::json!({
+                "case": std::thread::current().name(), "elapsed_seconds": self.started.elapsed().as_secs_f64(),
+                "panicking": std::thread::panicking(),
+                "status_queries": self.status_queries.load(std::sync::atomic::Ordering::Relaxed),
+                "observations": self.observations.get_mut().unwrap(),
+            })
+        );
         if std::thread::panicking() {
             eprintln!(
                 "retained private process diagnostics: {}",

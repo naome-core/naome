@@ -36,7 +36,7 @@ def rehearse(args):
     pilot.write(retirement_plan, [2, 0, 3, 1])
     prepared = root / 'prepared'
     pilot.prepare(SimpleNamespace(bin_dir=args.bin_dir, endpoints=plan, handoff_endpoints=handoff_plan, retirement_order=retirement_plan, directory=prepared,
-                                  timing='short-test', records=128, limits='compact'))
+                                  timing='fast-process-test', records=128, limits='compact'))
     bundles, children, logs = [], {}, []
     checks = {}
     started = time.monotonic()
@@ -173,7 +173,7 @@ def rehearse(args):
         pilot.require(rejected.returncode != 0 and not anchor.exists(), 'missing authority was recreated')
         saved.rename(anchor)
         checks['missing_anchor_rejected_without_reinitialization'] = True
-        result = {'version': 1, 'outcome': 'passed', 'scope': 'one-host, four-process relocated-bundle rehearsal; compact short-test profile; manual agenda votes',
+        result = {'version': 1, 'outcome': 'passed', 'scope': 'one-host, four-process relocated-bundle rehearsal; compact fast-process-test profile; manual agenda votes',
                   'multi_machine': False, 'real_agent': False, 'lab_or_research_windows': False,
                   'checks': checks, 'height': settled['height'], 'paid_completions': settled['paid_completions'],
                   'source': pilot.source(), 'binary_sha256': {n: pilot.digest(p) for n, p in native.items()},

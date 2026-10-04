@@ -26,7 +26,7 @@ jobs:
   tests:
     name: Full workspace
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,7 +78,7 @@ jobs:
           echo "NAOME_MDNS_CI_PYTHON=$NAOME_CI_PYTHON" >> "$GITHUB_ENV"
 
       - name: Run all tests
-        run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-fail-fast
+        run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-fail-fast -- --nocapture
 
       - name: Retain public discovery and multicast evidence
         if: ${{ always() }}

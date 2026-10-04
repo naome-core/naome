@@ -121,7 +121,7 @@ fn parameters(args: &[String]) -> Result<(Profile, Vec<String>, Vec<usize>)> {
         || ((6..=8).contains(&args.len()) && matches!(args[5].as_str(), "compact" | "standard")))
     {
         return Err(
-            "usage: setup DIRECTORY lab|research|short-test|process-test|ci-test RUN_RECORDS BASE_PORT RETIREMENT_ORDER_JSON [standard|compact [ENDPOINTS_JSON [HANDOFF_ENDPOINTS_JSON]]]".into(),
+            "usage: setup DIRECTORY lab|research|short-test|process-test|fast-process-test|ci-test RUN_RECORDS BASE_PORT RETIREMENT_ORDER_JSON [standard|compact [ENDPOINTS_JSON [HANDOFF_ENDPOINTS_JSON]]]".into(),
         );
     }
     // The plan names generated node indices, not the canonical validator list.
@@ -147,8 +147,14 @@ fn parameters(args: &[String]) -> Result<(Profile, Vec<String>, Vec<usize>)> {
         "research" => TimingKind::Research,
         "short-test" => TimingKind::ShortTest,
         "process-test" => TimingKind::ProcessTest,
+        "fast-process-test" => TimingKind::FastProcessTest,
         "ci-test" => TimingKind::CiTest,
-        _ => return Err("choose lab, research, short-test, process-test, or ci-test".into()),
+        _ => {
+            return Err(
+                "choose lab, research, short-test, process-test, fast-process-test, or ci-test"
+                    .into(),
+            );
+        }
     };
     let mut limits = Limits {
         run_records: args[2].parse()?,

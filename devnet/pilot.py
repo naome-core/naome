@@ -294,7 +294,7 @@ def main():
     p.add_argument('--handoff-endpoints', type=Path)
     p.add_argument('--retirement-order', type=Path, required=True)
     p.add_argument('--directory', type=Path, required=True)
-    p.add_argument('--timing', choices=('lab', 'research', 'short-test'), default='lab')
+    p.add_argument('--timing', choices=('lab', 'research', 'short-test', 'fast-process-test'), default='lab')
     p.add_argument('--limits', choices=('standard', 'compact'), default='standard')
     p.add_argument('--records', type=int, default=128)
     for name in ('check', 'start', 'snapshot'):

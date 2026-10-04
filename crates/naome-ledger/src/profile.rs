@@ -73,6 +73,8 @@ pub enum TimingKind {
     ProcessTest,
     /// Dedicated, shorter CI qualification windows; never lab acceptance evidence.
     CiTest,
+    /// Fresh process-test genesis with short real-time ballot and proof windows.
+    FastProcessTest,
 }
 
 /// All durations are integer seconds of certified time.
@@ -234,6 +236,9 @@ impl Profile {
     pub fn ci_test() -> Self {
         Self::preset(TimingKind::CiTest)
     }
+    pub fn fast_process_test() -> Self {
+        Self::preset(TimingKind::FastProcessTest)
+    }
 
     fn preset(kind: TimingKind) -> Self {
         let (voting_seconds, commitment_seconds, reveal_seconds, queue_seconds) = match kind {
@@ -246,6 +251,9 @@ impl Profile {
             // This qualification submits no approval ballots. Keep a complete
             // nonzero certified window while minimizing its CI-only floor.
             TimingKind::CiTest => (1, 8, 8, 120),
+            // A distinct profile preserves every historical preset and identity.
+            // Process tests still finalize real ballots, commits and reveals.
+            TimingKind::FastProcessTest => (8, 8, 8, 120),
         };
         Self {
             kind,
@@ -289,6 +297,7 @@ impl Profile {
             TimingKind::ShortTest => "state-v7-short-test",
             TimingKind::ProcessTest => "state-v7-process-test",
             TimingKind::CiTest => "state-v7-ci-test",
+            TimingKind::FastProcessTest => "state-v7-fast-process-test",
         }
     }
     /// Minimum finite run for an opening electorate, including the terminal
@@ -460,6 +469,7 @@ impl Profile {
             TimingKind::ShortTest => 2,
             TimingKind::ProcessTest => 4,
             TimingKind::CiTest => 3,
+            TimingKind::FastProcessTest => 5,
         });
         for value in [
             self.timing.voting_seconds,
@@ -486,6 +496,7 @@ impl Profile {
             2 => TimingKind::ShortTest,
             3 => TimingKind::CiTest,
             4 => TimingKind::ProcessTest,
+            5 => TimingKind::FastProcessTest,
             _ => return Err(LedgerError::Invalid("timing kind")),
         };
         let timing = Timing {
