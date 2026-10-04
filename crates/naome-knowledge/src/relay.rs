@@ -20,7 +20,7 @@ use std::{
 
 pub const MAX_CIRCUITS: usize = 16;
 pub const MAX_RESERVATIONS: usize = 16;
-pub const MAX_CIRCUITS_PER_PEER: usize = 4;
+pub const MAX_SOURCE_CIRCUITS: usize = 4;
 pub const MAX_CIRCUIT_BYTES: u64 = 8 * 1024 * 1024;
 pub const CIRCUIT_DURATION: Duration = Duration::from_secs(120);
 
@@ -118,7 +118,10 @@ pub async fn run(path: &Path) -> Result<(), String> {
             reservation_duration: CIRCUIT_DURATION,
             reservation_rate_limiters: vec![rate_limiter()],
             max_circuits: MAX_CIRCUITS,
-            max_circuits_per_peer: MAX_CIRCUITS_PER_PEER,
+            // The pinned library rejects when the source's existing circuit
+            // count is strictly greater than this threshold, before insertion.
+            // Destination-only circuits retain the global circuit bound.
+            max_circuits_per_peer: MAX_SOURCE_CIRCUITS - 1,
             max_circuit_duration: CIRCUIT_DURATION,
             max_circuit_bytes: MAX_CIRCUIT_BYTES,
             circuit_src_rate_limiters: vec![rate_limiter()],
@@ -232,4 +235,29 @@ pub async fn run(path: &Path) -> Result<(), String> {
     }
     network::emit(json!({"event":"stopped", "role":"relay"}));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limits_reject_bursts_and_unknown_identities_until_bounded_window_expires() {
+        let mut limiter = rate_limiter();
+        let address = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+        let peer = || identity::Keypair::generate_ed25519().public().to_peer_id();
+        let first = peer();
+        let now = Instant::now();
+        for _ in 0..4 {
+            assert!(limiter.try_next(first, &address, now));
+        }
+        assert!(!limiter.try_next(first, &address, now));
+        for _ in 1..discovery::MAX_CONTACTS {
+            assert!(limiter.try_next(peer(), &address, now));
+        }
+        let extra = peer();
+        assert!(!limiter.try_next(extra, &address, now + Duration::from_secs(1)));
+        assert!(limiter.try_next(extra, &address, now + Duration::from_secs(2)));
+        assert!(limiter.try_next(first, &address, now + Duration::from_secs(2)));
+    }
 }

@@ -73,7 +73,7 @@ pub fn routing_contract() -> Value {
         "query_limit_scope":"Count all current queries before starting application work; libp2p may add one automatic bootstrap query",
         "relay_service":{
             "reservations":crate::relay::MAX_RESERVATIONS,"reservations_per_peer":1,
-            "circuits":crate::relay::MAX_CIRCUITS,"circuits_per_peer":crate::relay::MAX_CIRCUITS_PER_PEER,
+            "circuits":crate::relay::MAX_CIRCUITS,"source_circuits":crate::relay::MAX_SOURCE_CIRCUITS,
             "circuit_bytes":crate::relay::MAX_CIRCUIT_BYTES,
             "duration_seconds":crate::relay::CIRCUIT_DURATION.as_secs()
         }
