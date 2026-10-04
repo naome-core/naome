@@ -118,10 +118,9 @@ pub async fn run(path: &Path) -> Result<(), String> {
             reservation_duration: CIRCUIT_DURATION,
             reservation_rate_limiters: vec![rate_limiter()],
             max_circuits: MAX_CIRCUITS,
-            // The pinned library rejects when the source's existing circuit
-            // count is strictly greater than this threshold, before insertion.
+            // The local dependency patch uses inclusive pre-insertion limits.
             // Destination-only circuits retain the global circuit bound.
-            max_circuits_per_peer: MAX_SOURCE_CIRCUITS - 1,
+            max_circuits_per_peer: MAX_SOURCE_CIRCUITS,
             max_circuit_duration: CIRCUIT_DURATION,
             max_circuit_bytes: MAX_CIRCUIT_BYTES,
             circuit_src_rate_limiters: vec![rate_limiter()],

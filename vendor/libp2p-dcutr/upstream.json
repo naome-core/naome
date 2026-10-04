@@ -1,0 +1,30 @@
+{
+  "git": {
+    "sha1": "4682e735cbdfd8f2b59f5478591a4e8ae552fa68"
+  },
+  "path_in_vcs": "protocols/dcutr",
+  "package": "libp2p-dcutr",
+  "version": "0.14.1",
+  "registry": "https://crates.io/api/v1/crates/libp2p-dcutr/0.14.1/download",
+  "files": {
+    "Cargo.toml": "65c492698348325c7ad8f9924990c247a71f1637be29e58a467e48f2f1f9d5a4",
+    "src/behaviour.rs": "a31fec5d0852a2e49328ceef55b6698a89887a0870888634e0469db660be8554",
+    "src/generated/holepunch/mod.rs": "b46ffabbff515cdcc5bce0fc3c54f01b3aa0525199d4f79228b0e7c13d53c5ab",
+    "src/generated/holepunch/pb.rs": "93e5d3ec55533425cae4f0360628a1f1d3429d0d05f38ddfd07ae7440c649953",
+    "src/generated/message.proto": "000d940585ca625509134d8d6bfc3bd4a66c1fae25b1ab6d8c28ead0c826ccdc",
+    "src/generated/mod.rs": "616bec0fefa0a31506ce2abaa2f1ae32cdf2601820e038636d56914521fcc953",
+    "src/handler/relayed.rs": "f96cbbd3274bf4917b49d6db917460fb5398158d299a2b11978dde43caec79dd",
+    "src/handler.rs": "ec9fc0d89222265d08bb51c254265f94320f876872121fde59c0f6ff3d134701",
+    "src/lib.rs": "473c9eaa3ce08b13ae4d6384d813ce32be9fa2dbc719fd26f0050a97ee3296f7",
+    "src/protocol/inbound.rs": "078796937679e69d7d1949cd18155baee87dd89501e6382af06d801ec07b7853",
+    "src/protocol/outbound.rs": "e17ef7774456d1345ab5c9cb2382aee7a0c00ff3b83a916139f696d606325c68",
+    "src/protocol.rs": "2a3c52943c0920d50935bc255568702fadcf5962a7a0946d1cccbcb64e7e4ee7",
+    "tests/lib.rs": "6df2f60824610168bb0e75db639af8708d6d981337684cf410143dd98d49d3d5",
+    "Cargo.toml.orig": "d504f5285a2f18a5fff106b3ad3fd0b030e637e9c83198687f3e7c40f5ee7a86"
+  },
+  "workspace_manifest": "https://raw.githubusercontent.com/libp2p/rust-libp2p/4682e735cbdfd8f2b59f5478591a4e8ae552fa68/Cargo.toml",
+  "test_helper_resolution": {
+    "libp2p-swarm-test": "0.6.0",
+    "quickcheck": "1.0.3 (matching reexported APIs from upstream quickcheck-ext; relay only)"
+  }
+}
