@@ -59,6 +59,8 @@ pub struct Config {
     pub reservation_rate_limiters: Vec<Box<dyn rate_limiter::RateLimiter>>,
 
     pub max_circuits: usize,
+    /// Maximum pending or accepted circuits originated by one source peer.
+    /// Destination-only circuits consume only the global circuit capacity.
     pub max_circuits_per_peer: usize,
     pub max_circuit_duration: Duration,
     pub max_circuit_bytes: u64,
@@ -288,7 +290,7 @@ impl Behaviour {
     fn circuit_limit_reached(&self, source: PeerId) -> bool {
         // Admission checks the requester; destination-only traffic is bounded
         // by the global limit. Pending circuits count toward both limits.
-        self.circuits.num_circuits_of_peer(source) >= self.config.max_circuits_per_peer
+        self.circuits.num_circuits_sourced_by_peer(source) >= self.config.max_circuits_per_peer
             || self.circuits.len() >= self.config.max_circuits
     }
 
@@ -783,10 +785,10 @@ impl CircuitsTracker {
         removed
     }
 
-    fn num_circuits_of_peer(&self, peer: PeerId) -> usize {
+    fn num_circuits_sourced_by_peer(&self, peer: PeerId) -> usize {
         self.circuits
-            .iter()
-            .filter(|(_, c)| c.src_peer_id == peer || c.dst_peer_id == peer)
+            .values()
+            .filter(|c| c.src_peer_id == peer)
             .count()
     }
 }
