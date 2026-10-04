@@ -18,11 +18,12 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use libp2p_core::{
     multiaddr::{Multiaddr, Protocol},
     transport::{upgrade::Version, MemoryTransport, Transport},
+    ConnectedPoint,
 };
 use libp2p_dcutr as dcutr;
 use libp2p_identify as identify;
@@ -30,7 +31,7 @@ use libp2p_identity as identity;
 use libp2p_identity::PeerId;
 use libp2p_plaintext as plaintext;
 use libp2p_relay as relay;
-use libp2p_swarm::{Config, NetworkBehaviour, Swarm, SwarmEvent};
+use libp2p_swarm::{Config, ConnectionId, NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p_swarm_test::SwarmExt as _;
 use tracing_subscriber::EnvFilter;
 
@@ -47,7 +48,7 @@ async fn connect() {
     // Have all swarms listen on a local TCP address.
     let (_, relay_tcp_addr) = relay.listen().with_tcp_addr_external().await;
     let (_, dst_tcp_addr) = dst.listen().await;
-    src.listen().await;
+    let (_, src_tcp_addr) = src.listen().await;
 
     assert!(src.external_addresses().next().is_none());
     assert!(dst.external_addresses().next().is_none());
@@ -72,32 +73,239 @@ async fn connect() {
     .await;
     tokio::spawn(dst.loop_on_next());
 
-    src.dial_and_wait(dst_relayed_addr.clone()).await;
-
     let dst_addr = dst_tcp_addr.with(Protocol::P2p(dst_peer_id));
+    src.dial(dst_relayed_addr.clone()).unwrap();
+    let mut observed = UpgradeEvents::default();
+    let mut recent = std::collections::VecDeque::new();
+    let completed = {
+        let result = futures::future::select(
+            futures_timer::Delay::new(Duration::from_secs(10)),
+            Box::pin(async {
+                loop {
+                    let event = src.next_swarm_event().await;
+                    eprintln!("dcutr_connect_event={event:?}");
+                    if recent.len() == 32 {
+                        recent.pop_front();
+                    }
+                    recent.push_back(format!("{event:?}"));
+                    if let SwarmEvent::Behaviour(ClientEvent::Dcutr(dcutr::Event {
+                        remote_peer_id,
+                        result: Err(error),
+                    })) = &event
+                    {
+                        if *remote_peer_id == dst_peer_id {
+                            panic!("native DCUtR upgrade failed: {error}; recent={recent:?}");
+                        }
+                    }
+                    observed.record(
+                        &event,
+                        dst_peer_id,
+                        &dst_relayed_addr,
+                        &dst_addr,
+                        &src_tcp_addr,
+                    );
+                    if let Some(connection) = observed.complete() {
+                        return connection;
+                    }
+                }
+            }),
+        )
+        .await;
+        match result {
+            futures::future::Either::Right(_) => true,
+            futures::future::Either::Left(((), pending)) => {
+                drop(pending);
+                false
+            }
+        }
+    };
+    assert!(
+        completed,
+        "DCUtR circuit/direct/success contract incomplete after 10s: {observed:?}; recent={recent:?}"
+    );
+}
 
-    let established_conn_id = src
-        .wait(move |e| match e {
+#[derive(Debug, Default)]
+struct UpgradeEvents {
+    circuit: bool,
+    direct: HashSet<ConnectionId>,
+    reported: Option<ConnectionId>,
+}
+
+impl UpgradeEvents {
+    fn record(
+        &mut self,
+        event: &SwarmEvent<ClientEvent>,
+        expected_peer: PeerId,
+        circuit_addr: &Multiaddr,
+        dst_addr: &Multiaddr,
+        src_addr: &Multiaddr,
+    ) {
+        match event {
             SwarmEvent::ConnectionEstablished {
-                endpoint,
+                peer_id,
                 connection_id,
+                endpoint,
                 ..
-            } => (*endpoint.get_remote_address() == dst_addr).then_some(connection_id),
-            _ => None,
-        })
-        .await;
-
-    let reported_conn_id = src
-        .wait(move |e| match e {
+            } if *peer_id == expected_peer => {
+                if endpoint.is_relayed() {
+                    self.circuit |= endpoint.get_remote_address() == circuit_addr;
+                } else {
+                    let valid_endpoint = match endpoint {
+                        ConnectedPoint::Dialer { address, .. } => address == dst_addr,
+                        // Simultaneous-open can complete in the inbound direction.
+                        // Bind it to this source listener and the expected peer;
+                        // the native success must identify this same connection.
+                        ConnectedPoint::Listener {
+                            local_addr,
+                            send_back_addr,
+                        } => {
+                            local_addr == src_addr
+                                && send_back_addr
+                                    .iter()
+                                    .any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
+                                && send_back_addr
+                                    .iter()
+                                    .any(|p| matches!(p, Protocol::Tcp(port) if port != 0))
+                        }
+                    };
+                    if valid_endpoint {
+                        self.direct.insert(*connection_id);
+                    }
+                }
+            }
             SwarmEvent::Behaviour(ClientEvent::Dcutr(dcutr::Event {
+                remote_peer_id,
                 result: Ok(connection_id),
-                ..
-            })) => Some(connection_id),
-            _ => None,
-        })
-        .await;
+            })) if *remote_peer_id == expected_peer => self.reported = Some(*connection_id),
+            _ => {}
+        }
+    }
 
-    assert_eq!(established_conn_id, reported_conn_id);
+    fn complete(&self) -> Option<ConnectionId> {
+        self.reported
+            .filter(|connection| self.circuit && self.direct.contains(connection))
+    }
+}
+
+#[test]
+fn collector_preserves_peer_endpoint_and_native_success_id_in_both_directions() {
+    use libp2p_core::{transport::PortUse, Endpoint};
+    let peer = PeerId::random();
+    let other = PeerId::random();
+    let circuit: Multiaddr = format!("/ip4/127.0.0.1/tcp/41000/p2p/{other}/p2p-circuit/p2p/{peer}")
+        .parse()
+        .unwrap();
+    let destination: Multiaddr = format!("/ip4/127.0.0.1/tcp/41001/p2p/{peer}")
+        .parse()
+        .unwrap();
+    let source: Multiaddr = "/ip4/127.0.0.1/tcp/41002".parse().unwrap();
+    let direct_id = ConnectionId::new_unchecked(2);
+    let outbound = ConnectedPoint::Dialer {
+        address: destination.clone(),
+        role_override: Endpoint::Dialer,
+        port_use: PortUse::Reuse,
+    };
+    let inbound = ConnectedPoint::Listener {
+        local_addr: source.clone(),
+        send_back_addr: "/ip4/127.0.0.1/tcp/41003".parse().unwrap(),
+    };
+    // The upstream outbound-only predicate drops this valid inbound direction.
+    assert_ne!(inbound.get_remote_address(), &destination);
+    let established = |peer_id, connection_id, endpoint| SwarmEvent::ConnectionEstablished {
+        peer_id,
+        connection_id,
+        endpoint,
+        num_established: std::num::NonZeroU32::new(1).unwrap(),
+        concurrent_dial_errors: None,
+        established_in: Duration::ZERO,
+    };
+    let success = |remote_peer_id, connection_id| {
+        SwarmEvent::Behaviour(ClientEvent::Dcutr(dcutr::Event {
+            remote_peer_id,
+            result: Ok(connection_id),
+        }))
+    };
+    let circuit_event = established(
+        peer,
+        ConnectionId::new_unchecked(1),
+        ConnectedPoint::Dialer {
+            address: circuit.clone(),
+            role_override: Endpoint::Dialer,
+            port_use: PortUse::Reuse,
+        },
+    );
+    let record = |events: &mut UpgradeEvents, event: &SwarmEvent<ClientEvent>| {
+        events.record(event, peer, &circuit, &destination, &source);
+    };
+    for endpoint in [outbound.clone(), inbound.clone()] {
+        for success_first in [false, true] {
+            let mut events = UpgradeEvents::default();
+            record(&mut events, &circuit_event);
+            let direct = established(peer, direct_id, endpoint.clone());
+            let reported = success(peer, direct_id);
+            for event in if success_first {
+                [reported, direct]
+            } else {
+                [direct, reported]
+            } {
+                record(&mut events, &event);
+            }
+            assert_eq!(events.complete(), Some(direct_id));
+        }
+    }
+    for (direct_peer, endpoint, reported_peer, reported_id, include_circuit) in [
+        (other, outbound.clone(), peer, direct_id, true),
+        (peer, outbound.clone(), other, direct_id, true),
+        (
+            peer,
+            outbound.clone(),
+            peer,
+            ConnectionId::new_unchecked(3),
+            true,
+        ),
+        (peer, outbound, peer, direct_id, false),
+        (
+            peer,
+            ConnectedPoint::Dialer {
+                address: circuit.clone(),
+                role_override: Endpoint::Dialer,
+                port_use: PortUse::Reuse,
+            },
+            peer,
+            direct_id,
+            true,
+        ),
+        (
+            peer,
+            ConnectedPoint::Dialer {
+                address: source.clone(),
+                role_override: Endpoint::Dialer,
+                port_use: PortUse::Reuse,
+            },
+            peer,
+            direct_id,
+            true,
+        ),
+        (
+            peer,
+            ConnectedPoint::Listener {
+                local_addr: "/ip4/127.0.0.1/tcp/41004".parse().unwrap(),
+                send_back_addr: "/ip4/127.0.0.1/tcp/41003".parse().unwrap(),
+            },
+            peer,
+            direct_id,
+            true,
+        ),
+    ] {
+        let mut events = UpgradeEvents::default();
+        if include_circuit {
+            record(&mut events, &circuit_event);
+        }
+        record(&mut events, &established(direct_peer, direct_id, endpoint));
+        record(&mut events, &success(reported_peer, reported_id));
+        assert!(events.complete().is_none());
+    }
 }
 
 fn build_relay() -> Swarm<Relay> {

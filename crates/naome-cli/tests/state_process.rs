@@ -76,6 +76,37 @@ fn command(args: &[String]) -> Value {
 fn path(path: impl AsRef<Path>) -> String {
     path.as_ref().to_str().unwrap().to_owned()
 }
+fn wall_clock_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+}
+fn open_phase(status: &Value, submission: &str, phase: &str, wall_time: f64) -> bool {
+    status["consensus_position"].is_object()
+        && status["active"]["submission"] == submission
+        && status["active"]["phase"] == phase
+        && status["active"]["deadline"]
+            .as_u64()
+            .is_some_and(|deadline| deadline as f64 > wall_time)
+}
+
+#[test]
+fn phase_ingress_rejects_expired_wall_time_despite_certified_reserve() {
+    let mut status = serde_json::json!({
+        "consensus_position": {"height": 29, "phase": "Proposal", "round": 0},
+        "time": 1791144581_u64,
+        "active": {"submission": "question", "phase": "Reveal", "deadline": 1791144589_u64}
+    });
+    assert!(open_phase(&status, "question", "Reveal", 1791144588.0));
+    assert!(!open_phase(&status, "question", "Reveal", 1791144589.714));
+    assert!(!open_phase(&status, "question", "Reveal", 1791144589.0));
+    assert!(!open_phase(&status, "other", "Reveal", 1791144588.0));
+    assert!(!open_phase(&status, "question", "Commit", 1791144588.0));
+    status["consensus_position"] = Value::Null;
+    assert!(!open_phase(&status, "question", "Reveal", 1791144588.0));
+}
+
 struct Lab {
     root: PathBuf,
     nodes: Vec<Option<Child>>,
@@ -179,10 +210,7 @@ impl Lab {
             .as_u64()
             .zip(status["time"].as_u64())
             .map(|(deadline, time)| i128::from(deadline) - i128::from(time));
-        let wall_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
+        let wall_time = wall_clock_seconds();
         self.observations.lock().unwrap().push(serde_json::json!({
             "kind": kind, "label": label, "elapsed_seconds": elapsed.as_secs_f64(),
             "operation": operation, "observed_wall_clock_unix_seconds": wall_time,
@@ -311,7 +339,7 @@ impl Lab {
             false
         });
     }
-    fn wait_active_phase(&self, submission: &str, phase: &str) -> usize {
+    fn wait_active_phase(&self, submission: &str, phase: &str) -> (usize, Value) {
         let start = Instant::now();
         loop {
             let mut question_ingress = None;
@@ -328,11 +356,9 @@ impl Lab {
                 if status["consensus_position"].is_null() {
                     continue;
                 }
-                if status["active"]["submission"] == submission
-                    && status["active"]["phase"] == phase
-                {
+                if open_phase(&status, submission, phase, wall_clock_seconds()) {
                     self.observe("phase_observed", phase, None, &status, start.elapsed());
-                    return index;
+                    return (index, status);
                 }
             }
             // One question lookup is enough to detect a terminal state. Polling
@@ -367,6 +393,28 @@ impl Lab {
             }
             thread::sleep(Duration::from_millis(250));
         }
+    }
+    fn timed_phase_command(&self, args: &[String], context: &Value, label: &str) -> Value {
+        let command_started_wall = wall_clock_seconds();
+        let deadline = context["active"]["deadline"].as_u64().unwrap() as f64;
+        assert!(
+            deadline > command_started_wall,
+            "{label}: selected phase expired before action authoring; context={context}"
+        );
+        let started = Instant::now();
+        let operation = command(args);
+        // This is the selected ingress context, not the CLI's later snapshot or
+        // ledger inclusion time. The matching finalized receipt is separate.
+        self.observations.lock().unwrap().push(serde_json::json!({
+            "kind": "phase_command", "label": label,
+            "operation": operation["operation"], "active": context["active"],
+            "height": context["height"], "consensus_position": context["consensus_position"],
+            "command_started_wall_clock_unix_seconds": command_started_wall,
+            "command_completed_wall_clock_unix_seconds": wall_clock_seconds(),
+            "command_elapsed_seconds": started.elapsed().as_secs_f64(),
+            "selected_context_wall_reserve_seconds": deadline - command_started_wall,
+        }));
+        operation
     }
     fn wait_receipt(
         &self,
@@ -410,10 +458,11 @@ impl Lab {
         // All owners can sign against the same finalized Voting view. Waiting
         // for that view once avoids four competing status/question pollers in
         // the short voting window after an authority handoff.
-        let ingress = self.wait_active_phase(submission, "Voting");
+        let (ingress, context) = self.wait_active_phase(submission, "Voting");
         let votes = thread::scope(|scope| {
             let mut handles = Vec::new();
             for &index in owners {
+                let context = &context;
                 handles.push(scope.spawn(move || {
                     let args = [
                         "vote".into(),
@@ -422,7 +471,8 @@ impl Lab {
                         "YES".into(),
                         self.file(&format!("{label}-vote-{index}")),
                     ];
-                    let vote = command(&args);
+                    let vote =
+                        self.timed_phase_command(&args, context, &format!("{label}-vote-{index}"));
                     (ingress, vote)
                 }));
             }
@@ -444,24 +494,32 @@ impl Lab {
         }
     }
     fn solve(&self, _node: usize, author: usize, package: &str, label: &str, submission: &str) {
-        let commit_ingress = self.wait_active_phase(submission, "Commit");
-        let commit = command(&[
-            "commit".into(),
-            self.config(commit_ingress),
-            self.key(author),
-            package.into(),
-            self.file(&format!("{label}.secret")),
-            self.file(&format!("{label}.commit")),
-        ]);
+        let (commit_ingress, commit_context) = self.wait_active_phase(submission, "Commit");
+        let commit = self.timed_phase_command(
+            &[
+                "commit".into(),
+                self.config(commit_ingress),
+                self.key(author),
+                package.into(),
+                self.file(&format!("{label}.secret")),
+                self.file(&format!("{label}.commit")),
+            ],
+            &commit_context,
+            &format!("{label}-commit"),
+        );
         self.wait_receipt(commit_ingress, submission, &commit, "commit", label);
-        let reveal_ingress = self.wait_active_phase(submission, "Reveal");
-        let reveal = command(&[
-            "reveal".into(),
-            self.config(reveal_ingress),
-            self.key(author),
-            self.file(&format!("{label}.secret")),
-            self.file(&format!("{label}.reveal")),
-        ]);
+        let (reveal_ingress, reveal_context) = self.wait_active_phase(submission, "Reveal");
+        let reveal = self.timed_phase_command(
+            &[
+                "reveal".into(),
+                self.config(reveal_ingress),
+                self.key(author),
+                self.file(&format!("{label}.secret")),
+                self.file(&format!("{label}.reveal")),
+            ],
+            &reveal_context,
+            &format!("{label}-reveal"),
+        );
         self.wait_receipt(reveal_ingress, submission, &reveal, "reveal", label);
     }
     #[track_caller]
