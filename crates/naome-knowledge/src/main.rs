@@ -43,6 +43,7 @@ async fn execute() -> Result<(), String> {
                     "proof_bytes":MAX_PROOF_BYTES,"dependencies":MAX_DEPENDENCIES,"depth":MAX_DEPTH,"objects":MAX_OBJECTS,
                     "accepted_bytes":MAX_ACCEPTED_BYTES,"pending":MAX_PENDING,"dependency_timeout_seconds":PENDING_TTL.as_secs(),
                     "checked_context_bytes":MAX_CONTEXT_BYTES,
+                    "config_bytes":network::MAX_CONFIG_BYTES,
                     "peers":network::MAX_PEERS,"fetches":network::MAX_FETCHES,"inflight_requests":network::MAX_FLIGHTS,
                     "inflight_requests_per_peer":network::MAX_FLIGHTS_PER_PEER,
                     "request_timeout_seconds":network::REQUEST_TIMEOUT.as_secs(),"reconcile_seconds":network::RECONCILE_INTERVAL.as_secs()}}));

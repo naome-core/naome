@@ -88,7 +88,11 @@ class Node:
         self.driver.summary["commands"].append({"command": command, "pid": self.process.pid})
         self.driver.summary["processes"].append({"node": self.index, "generation": self.generation,
                                                "pid": self.process.pid, "peer_id": self.identity,
-                                               "directory": str(self.directory), "endpoint": config["listen"]})
+                                               "directory": str(self.directory), "endpoint": config["listen"],
+                                               "config_bytes": path.stat().st_size,
+                                               "config_sha256": digest(path),
+                                               "producer_source_count": len(config["producer_sources"]),
+                                               "producer_source_bytes": sum(len(s.encode()) for s in config["producer_sources"])})
         for name, stream in [("stdout", self.process.stdout), ("stderr", self.process.stderr)]:
             log = self.driver.output / f"node-{self.index}-{self.generation}.{name}.jsonl"
             thread = threading.Thread(target=self.read, args=(name, stream, log), daemon=True)
@@ -329,7 +333,9 @@ class Driver:
             initial = []
             for index, node in enumerate(self.nodes):
                 reservations[index].close()
-                node.start([source(index + 1)])
+                producer_source = source(index + 1)
+                producer_source += "\n" * (65536 - len(producer_source.encode()))
+                node.start([producer_source])
                 node.command("links", peers=[])
             assert len({node.identity for node in self.nodes}) == 4
             assert len({node.process.pid for node in self.nodes}) == 4

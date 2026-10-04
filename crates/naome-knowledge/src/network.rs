@@ -24,6 +24,9 @@ use std::{
 use tokio::sync::mpsc;
 
 pub const MAX_PEERS: usize = 16;
+// JSON may encode one source byte as six bytes (for example, a control byte).
+// Leave additional bounded space for peer metadata and formatting.
+pub const MAX_CONFIG_BYTES: usize = 8 * crate::MAX_PROOF_BYTES;
 pub const MAX_FETCHES: usize = 128;
 pub const MAX_FLIGHTS: usize = 16;
 pub const MAX_FLIGHTS_PER_PEER: usize = 2;
@@ -878,8 +881,9 @@ impl Node {
 }
 
 pub fn read_config(path: &Path) -> Result<Config, String> {
-    let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(path, 16_384)?)
-        .map_err(|error| error.to_string())?;
+    let mut config: Config =
+        serde_json::from_slice(&crate::store::read_bounded(path, MAX_CONFIG_BYTES)?)
+            .map_err(|error| error.to_string())?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()
@@ -888,3 +892,6 @@ pub fn read_config(path: &Path) -> Result<Config, String> {
     }
     Ok(config)
 }
+
+#[cfg(test)]
+mod tests;
