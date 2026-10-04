@@ -1,16 +1,16 @@
-//! Bounded configured-peer transport. Gossip is a hint; inventory/content catch-up
+//! Bounded proof transport with static or discovered peers. Gossip is a hint; inventory/content catch-up
 //! uses the independently checked durable graph rather than the gossip cache.
 
 use crate::{
-    Envelope, Graph, hex,
+    Envelope, Graph, discovery, hex,
     object::id_bytes,
     wire::{Body, Codec, Frame, INVENTORY_PAGE, PROTOCOL},
 };
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, allow_block_list, connection_limits,
     futures::StreamExt,
-    gossipsub, identity, noise, request_response,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    gossipsub, identity, noise, relay, request_response,
+    swarm::{ConnectionId, NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
     tcp, yamux,
 };
 use naome_proof::ProofId;
@@ -40,21 +40,52 @@ pub const MAX_COMMAND_BYTES: usize = 8 * crate::MAX_PROOF_BYTES;
 pub struct Config {
     pub directory: PathBuf,
     pub listen: String,
+    #[serde(default)]
     pub peers: Vec<Peer>,
+    #[serde(default)]
+    pub discovery: Option<discovery::Config>,
     /// A finite independently operated source queue, attempted once per second.
     #[serde(default)]
     pub producer_sources: Vec<String>,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Peer {
-    pub id: String,
-    pub address: String,
+pub use crate::discovery::{Config as DiscoveryConfig, Peer};
+
+/// Operator-visible routing settings and local resource limits. These do not
+/// change the mathematical compatibility fingerprint or proof admission.
+pub fn routing_contract() -> Value {
+    json!({
+        "identify_protocol":discovery::protocol_version(false),
+        "dht_protocol":format!("/naome/knowledge/kad/{}/1", hex(&crate::compatibility())),
+        "participation_key":hex(discovery::provider_key().as_ref()),
+        "defaults":DiscoveryConfig::default(),
+        "limits":{
+            "contacts":discovery::MAX_CONTACTS,"addresses_per_contact":discovery::MAX_ADDRESSES,
+            "address_bytes":discovery::MAX_ADDRESS_BYTES,"bootstrap":discovery::MAX_BOOTSTRAP,
+            "relays":discovery::MAX_RELAYS,"contact_ttl_seconds":discovery::CONTACT_TTL.as_secs(),
+            "identify_timeout_seconds":discovery::IDENTIFY_TIMEOUT.as_secs(),
+            "mdns_ttl_seconds":discovery::MDNS_TTL.as_secs(),
+            "discovery_interval_seconds":discovery::DISCOVERY_INTERVAL.as_secs(),
+            "provider_records":discovery::MAX_CONTACTS,"provider_ttl_seconds":discovery::PROVIDER_TTL.as_secs(),
+            "application_queries":discovery::MAX_APPLICATION_QUERIES,
+            "query_timeout_seconds":discovery::QUERY_TIMEOUT.as_secs(),
+            "established_connections":32,"connections_per_peer":2,"connections_per_peer_with_upgrade":3
+        },
+        "query_limit_scope":"Count all current queries before starting application work; libp2p may add one automatic bootstrap query",
+        "relay_service":{
+            "reservations":crate::relay::MAX_RESERVATIONS,"reservations_per_peer":1,
+            "circuits":crate::relay::MAX_CIRCUITS,"circuits_per_peer":crate::relay::MAX_CIRCUITS_PER_PEER,
+            "circuit_bytes":crate::relay::MAX_CIRCUIT_BYTES,
+            "duration_seconds":crate::relay::CIRCUIT_DURATION.as_secs()
+        }
+    })
 }
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    allowed: allow_block_list::Behaviour<allow_block_list::AllowedPeers>,
+    gate: discovery::Gate,
+    allowed: Toggle<allow_block_list::Behaviour<allow_block_list::AllowedPeers>>,
+    discovery: discovery::Behaviour,
+    relay: relay::client::Behaviour,
     limits: connection_limits::Behaviour,
     gossip: gossipsub::Behaviour,
     exchange: request_response::Behaviour<Codec>,
@@ -93,6 +124,10 @@ struct Node {
     swarm: Swarm<Behaviour>,
     topic: gossipsub::IdentTopic,
     configured: BTreeMap<PeerId, Multiaddr>,
+    discovery: discovery::State,
+    connections: BTreeMap<ConnectionId, (PeerId, bool)>,
+    relay_listeners: BTreeMap<PeerId, (libp2p::core::transport::ListenerId, Instant)>,
+    next_relay_attempt: BTreeMap<PeerId, Instant>,
     enabled: BTreeSet<PeerId>,
     wanted: BTreeMap<ProofId, Wanted>,
     flights: HashMap<request_response::OutboundRequestId, Flight>,
@@ -126,7 +161,48 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
     )?)
     .map_err(|error| error.to_string())?;
     let own_id = key.public().to_peer_id();
+    let automatic = config
+        .discovery
+        .as_ref()
+        .is_some_and(|settings| settings.mdns || settings.dht || !settings.relays.is_empty())
+        || config.discovery.is_none() && config.peers.is_empty();
+    let settings = config.discovery.unwrap_or_else(|| discovery::Config {
+        mdns: config.peers.is_empty(),
+        ..Default::default()
+    });
+    if settings.bootstrap.len() > discovery::MAX_BOOTSTRAP
+        || settings.relays.len() > discovery::MAX_RELAYS
+        || settings.external_addresses.len() > discovery::MAX_ADDRESSES
+    {
+        return Err("discovery configuration capacity".into());
+    }
+    if settings.relay_only && (settings.relays.is_empty() || settings.mdns) {
+        return Err("relay-only mode requires configured relays and disables mDNS".into());
+    }
+    let mut book = discovery::Book::new(own_id, automatic, &settings);
     let mut configured = BTreeMap::new();
+    for peer in &settings.relays {
+        let id: PeerId = peer
+            .id
+            .parse()
+            .map_err(|error| format!("relay ID: {error}"))?;
+        let address: Multiaddr = peer
+            .address
+            .parse()
+            .map_err(|error| format!("relay address: {error}"))?;
+        book.pin(id, &address, true)?;
+    }
+    for peer in &settings.bootstrap {
+        let id: PeerId = peer
+            .id
+            .parse()
+            .map_err(|error| format!("bootstrap ID: {error}"))?;
+        let address: Multiaddr = peer
+            .address
+            .parse()
+            .map_err(|error| format!("bootstrap address: {error}"))?;
+        book.pin(id, &address, false)?;
+    }
     for peer in config.peers {
         let id: PeerId = peer
             .id
@@ -136,9 +212,9 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
             .address
             .parse()
             .map_err(|error| format!("peer address: {error}"))?;
-        require_tcp_address(&address)?;
-        if id == own_id || configured.insert(id, address).is_some() {
-            return Err("duplicate or self peer".into());
+        book.pin(id, &address, false)?;
+        if configured.insert(id, address).is_some() {
+            return Err("duplicate peer".into());
         }
     }
     let listen: Multiaddr = config
@@ -147,15 +223,26 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
         .map_err(|error| format!("listen address: {error}"))?;
     require_tcp_address(&listen)?;
     let mut allowed = allow_block_list::Behaviour::default();
-    for id in configured.keys() {
+    for id in book.contacts.keys() {
         allowed.allow_peer(*id);
+    }
+    let book = discovery::SharedBook::new(book);
+    let mut discovery_behaviour = discovery::Behaviour::new(&key, &settings, false, automatic)?;
+    if let Some(kad) = discovery_behaviour.kad.as_mut() {
+        kad.store_mut().set_relays(book.lock().relays.clone());
     }
     let limits = connection_limits::Behaviour::new(
         connection_limits::ConnectionLimits::default()
             .with_max_pending_incoming(Some(16))
             .with_max_pending_outgoing(Some(16))
             .with_max_established(Some(32))
-            .with_max_established_per_peer(Some(2)),
+            .with_max_established_per_peer(Some(
+                if settings.hole_punch && !settings.relays.is_empty() {
+                    3
+                } else {
+                    2
+                },
+            )),
     );
     let gossip_config = gossipsub::ConfigBuilder::default()
         .max_transmit_size(1024)
@@ -178,40 +265,56 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
             .with_request_timeout(REQUEST_TIMEOUT)
             .with_max_concurrent_streams(4),
     );
-    let behaviour = Behaviour {
-        allowed,
-        limits,
-        gossip,
-        exchange,
-    };
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
             tcp::Config::default().nodelay(true),
             noise::Config::new,
-            || {
-                let mut config = yamux::Config::default();
-                config.set_max_num_streams(8);
-                config
-            },
+            yamux_config,
         )
         .map_err(|error| error.to_string())?
-        .with_behaviour(|_| behaviour)
+        .with_dns()
+        .map_err(|error| error.to_string())?
+        .with_relay_client(noise::Config::new, yamux_config)
+        .map_err(|error| error.to_string())?
+        .with_behaviour(|_, relay| Behaviour {
+            gate: discovery::Gate(book.clone()),
+            allowed: (!automatic).then_some(allowed).into(),
+            discovery: discovery_behaviour,
+            relay,
+            limits,
+            gossip,
+            exchange,
+        })
         .map_err(|error| error.to_string())?
         .with_swarm_config(|config| {
             config
                 .with_idle_connection_timeout(Duration::from_secs(60))
-                .with_max_negotiating_inbound_streams(8)
+                .with_max_negotiating_inbound_streams(16)
         })
         .with_connection_timeout(REQUEST_TIMEOUT)
         .build();
     swarm.listen_on(listen).map_err(|error| error.to_string())?;
-    let enabled = configured.keys().copied().collect();
+    for address in &settings.external_addresses {
+        let address: Multiaddr = address
+            .parse()
+            .map_err(|error| format!("external address: {error}"))?;
+        let address = discovery::routing_address(&address, own_id, &book.lock().relays)?;
+        if settings.relay_only && !discovery::is_relayed(&address) {
+            return Err("relay-only mode must not advertise direct endpoints".into());
+        }
+        swarm.add_external_address(address);
+    }
+    let enabled = BTreeSet::new();
     let mut node = Node {
         graph,
         swarm,
         topic,
         configured,
+        discovery: discovery::State::new(book, settings, false),
+        connections: BTreeMap::new(),
+        relay_listeners: BTreeMap::new(),
+        next_relay_attempt: BTreeMap::new(),
         enabled,
         wanted: BTreeMap::new(),
         flights: HashMap::new(),
@@ -260,7 +363,7 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn require_tcp_address(address: &Multiaddr) -> Result<(), String> {
+pub(crate) fn require_tcp_address(address: &Multiaddr) -> Result<(), String> {
     use libp2p::multiaddr::Protocol;
     let mut protocols = address.iter();
     if !matches!(protocols.next(), Some(Protocol::Ip4(_) | Protocol::Ip6(_)))
@@ -270,6 +373,51 @@ fn require_tcp_address(address: &Multiaddr) -> Result<(), String> {
         return Err("expected /ip4 or /ip6 address with one TCP endpoint".into());
     }
     Ok(())
+}
+
+pub(crate) fn yamux_config() -> yamux::Config {
+    let mut config = yamux::Config::default();
+    config.set_max_num_streams(16);
+    config
+}
+
+// The pinned request-response implementation automatically retains discovery
+// hints. Its removal API is necessary to reconcile that cache with our caps.
+#[allow(deprecated)]
+fn remove_exchange_address(
+    exchange: &mut request_response::Behaviour<Codec>,
+    peer: &PeerId,
+    address: &Multiaddr,
+) {
+    exchange.remove_address(peer, address);
+}
+#[allow(deprecated)]
+fn add_exchange_address(
+    exchange: &mut request_response::Behaviour<Codec>,
+    peer: &PeerId,
+    address: Multiaddr,
+) {
+    exchange.add_address(peer, address);
+}
+
+fn body_kind(body: &Body) -> &'static str {
+    match body {
+        Body::Inventory { .. } => "inventory",
+        Body::InventoryResult { .. } => "inventory_result",
+        Body::Get { .. } => "get",
+        Body::Object { .. } => "object",
+        Body::Offer { .. } => "offer",
+        Body::Receipt { .. } => "receipt",
+        Body::Missing => "missing",
+        Body::Error { .. } => "error",
+    }
+}
+fn body_id(body: &Body) -> Option<String> {
+    match body {
+        Body::Get { id } => Some(hex(id)),
+        Body::Object { object } | Body::Offer { object } => Some(object.proof_id.clone()),
+        _ => None,
+    }
 }
 
 fn read_commands(sender: mpsc::Sender<Result<Value, String>>) {
@@ -306,11 +454,11 @@ fn read_commands(sender: mpsc::Sender<Result<Value, String>>) {
     }
 }
 
-fn emit(value: Value) {
+pub(crate) fn emit(value: Value) {
     println!("{value}");
 }
 
-async fn shutdown_signal() -> Result<(), String> {
+pub(crate) async fn shutdown_signal() -> Result<(), String> {
     #[cfg(unix)]
     {
         let mut terminate =
@@ -407,7 +555,11 @@ impl Node {
                 json!({"ids":self.graph.ids().iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "root":hex(&self.graph.content_root()), "pending":self.graph.pending_ids().iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "connected":self.swarm.connected_peers().map(ToString::to_string).collect::<Vec<_>>(),
-                    "compatibility":hex(&crate::compatibility())}),
+                    "compatibility":hex(&crate::compatibility()),
+                    "contacts":self.contact_status(),
+                    "provider_records":self.swarm.behaviour_mut().discovery.kad.as_mut().map(|kad|kad.store_mut().len()).unwrap_or(0),
+                    "proof_peers":self.enabled.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    "connections":self.connections.iter().map(|(id,(peer,relayed))|json!({"id":id.to_string(),"peer":peer.to_string(),"relayed":relayed})).collect::<Vec<_>>() }),
             ),
             "produce" => {
                 let source = value
@@ -428,6 +580,9 @@ impl Node {
                 json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
             ),
             "links" => {
+                if self.discovery.book.lock().automatic {
+                    return Err("links requires static discovery mode".into());
+                }
                 let peers: Vec<String> =
                     serde_json::from_value(value.get("peers").cloned().ok_or("peers missing")?)
                         .map_err(|error| error.to_string())?;
@@ -440,9 +595,19 @@ impl Node {
                 }
                 for peer in self.configured.keys() {
                     if desired.contains(peer) {
-                        self.swarm.behaviour_mut().allowed.allow_peer(*peer);
+                        if let Some(allowed) = self.swarm.behaviour_mut().allowed.as_mut() {
+                            allowed.allow_peer(*peer);
+                        }
+                        if let Some(contact) = self.discovery.book.lock().contacts.get_mut(peer) {
+                            contact.enabled = true;
+                        }
                     } else {
-                        self.swarm.behaviour_mut().allowed.disallow_peer(*peer);
+                        if let Some(allowed) = self.swarm.behaviour_mut().allowed.as_mut() {
+                            allowed.disallow_peer(*peer);
+                        }
+                        if let Some(contact) = self.discovery.book.lock().contacts.get_mut(peer) {
+                            contact.enabled = false;
+                        }
                         let _ = self.swarm.disconnect_peer_id(*peer);
                     }
                 }
@@ -532,6 +697,7 @@ impl Node {
 
     fn tick(&mut self) {
         let now = Instant::now();
+        self.discovery_tick(now);
         if now >= self.next_production
             && let Some(source) = self.producer_sources.pop_front()
         {
@@ -556,26 +722,8 @@ impl Node {
         }
         let enabled: Vec<_> = self.enabled.iter().copied().collect();
         for peer in enabled {
-            if !self.swarm.is_connected(&peer) {
-                if self
-                    .next_inventory
-                    .get(&peer)
-                    .is_none_or(|next| *next <= now)
-                {
-                    // Reusing the listener port can reuse the exact TCP tuple
-                    // after a partition while the OS still retains its state.
-                    if let Err(error) = self.swarm.dial(
-                        libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
-                            .addresses(vec![self.configured[&peer].clone()])
-                            .allocate_new_port()
-                            .build(),
-                    ) {
-                        emit(json!({"event":"dial_failed", "peer":peer.to_string(),
-                            "stage":"request", "error":error.to_string(), "detail":format!("{error:?}")}));
-                    }
-                    self.next_inventory.insert(peer, now + RECONCILE_INTERVAL);
-                }
-            } else if self.flights.len() < MAX_FLIGHTS
+            if self.swarm.is_connected(&peer)
+                && self.flights.len() < MAX_FLIGHTS
                 && self.flight_count(peer) < MAX_FLIGHTS_PER_PEER
                 && self.automatic_request_ready(peer, now)
                 && MAX_FETCHES - self.wanted.len() >= INVENTORY_PAGE
@@ -680,29 +828,149 @@ impl Node {
 
     fn event(&mut self, event: SwarmEvent<BehaviourEvent>) -> Result<(), String> {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => {
-                emit(json!({"event":"ready","address":address.to_string()}))
+            SwarmEvent::NewListenAddr { address, .. } => emit(
+                json!({"event":"ready","address":address.to_string(), "relayed":discovery::is_relayed(&address)}),
+            ),
+            SwarmEvent::ListenerError { listener_id, error } => {
+                if let Some(peer) = self
+                    .relay_listeners
+                    .iter()
+                    .find_map(|(peer, (id, _))| (*id == listener_id).then_some(*peer))
+                {
+                    self.relay_listeners.remove(&peer);
+                    self.next_relay_attempt
+                        .insert(peer, Instant::now() + RECONCILE_INTERVAL);
+                    self.swarm.remove_listener(listener_id);
+                    emit(
+                        json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":error.to_string()}),
+                    );
+                } else {
+                    return Err(format!("listener: {error}"));
+                }
             }
-            SwarmEvent::ListenerError { error, .. } => return Err(format!("listener: {error}")),
+            SwarmEvent::ListenerClosed { listener_id, .. } => {
+                if let Some(peer) = self
+                    .relay_listeners
+                    .iter()
+                    .find_map(|(peer, (id, _))| (*id == listener_id).then_some(*peer))
+                {
+                    self.relay_listeners.remove(&peer);
+                    self.next_relay_attempt
+                        .insert(peer, Instant::now() + RECONCILE_INTERVAL);
+                }
+            }
             SwarmEvent::ConnectionEstablished {
                 peer_id,
+                connection_id,
                 num_established,
                 endpoint,
                 ..
             } => {
+                let relayed = endpoint.is_relayed();
+                self.connections.insert(connection_id, (peer_id, relayed));
+                if let Ok(contact) = self.discovery.book.lock().admit(peer_id, Instant::now()) {
+                    contact.connected = true;
+                    contact.connected_at.get_or_insert(Instant::now());
+                }
                 self.next_inventory.remove(&peer_id);
                 emit(
-                    json!({"event":"connected","peer":peer_id.to_string(),"connections":num_established.get(),"endpoint":format!("{endpoint:?}")}),
+                    json!({"event":"connected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
+                    "connections":num_established.get(), "relayed":relayed, "endpoint":format!("{endpoint:?}")}),
+                );
+                if relayed && self.discovery.config.hole_punch {
+                    emit(
+                        json!({"event":"hole_punch_attempt", "peer":peer_id.to_string(), "relayed_connection_id":connection_id.to_string()}),
+                    );
+                }
+            }
+            SwarmEvent::IncomingConnectionError {
+                connection_id,
+                local_addr,
+                send_back_addr,
+                error,
+                ..
+            } => {
+                emit(
+                    json!({"event":"incoming_connection_failed", "connection_id":connection_id.to_string(),
+                    "local":local_addr.to_string(), "remote":send_back_addr.to_string(),
+                    "error":error.to_string(), "detail":format!("{error:?}")}),
                 );
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
+                connection_id,
                 cause,
                 num_established,
                 ..
-            } => emit(
-                json!({"event":"disconnected","peer":peer_id.to_string(),"connections":num_established,"cause":format!("{cause:?}")}),
-            ),
+            } => {
+                self.connections.remove(&connection_id);
+                if num_established == 0 {
+                    self.enabled.remove(&peer_id);
+                    if let Some(contact) = self.discovery.book.lock().contacts.get_mut(&peer_id) {
+                        contact.connected = false;
+                        contact.compatible = false;
+                        contact.connected_at = None;
+                        contact.seen = Instant::now();
+                    }
+                }
+                emit(
+                    json!({"event":"disconnected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
+                    "connections":num_established, "cause":format!("{cause:?}")}),
+                );
+            }
+            SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
+                let book = self.discovery.book.lock();
+                // The library may retain the same hint with a /p2p suffix.
+                // Keep only the exact normalized addresses owned by the book;
+                // otherwise retirement could leave a second cache entry behind.
+                let retained = book
+                    .contacts
+                    .get(&peer_id)
+                    .is_some_and(|contact| contact.addresses.contains(&address));
+                if !retained {
+                    remove_exchange_address(
+                        &mut self.swarm.behaviour_mut().exchange,
+                        &peer_id,
+                        &address,
+                    );
+                }
+            }
+            SwarmEvent::NewExternalAddrCandidate { address } => {
+                // Identify observations are DCUtR candidates, not evidence of
+                // public reachability and not automatically confirmed addresses.
+                emit(json!({"event":"external_candidate", "address":address.to_string()}));
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Discovery(event)) => {
+                let upgrade = match &event {
+                    discovery::BehaviourEvent::Dcutr(event) => event
+                        .result
+                        .as_ref()
+                        .ok()
+                        .map(|connection| (event.remote_peer_id, *connection)),
+                    _ => None,
+                };
+                let actions = self
+                    .discovery
+                    .event(event, &mut self.swarm.behaviour_mut().discovery);
+                for action in actions {
+                    self.discovery_action(action);
+                }
+                if let Some((peer, direct)) = upgrade {
+                    let circuits: Vec<_> = self
+                        .connections
+                        .iter()
+                        .filter_map(|(id, (owner, relayed))| {
+                            (*owner == peer && *relayed && *id != direct).then_some(*id)
+                        })
+                        .collect();
+                    for circuit in circuits {
+                        self.swarm.close_connection(circuit);
+                    }
+                }
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
+                emit(json!({"event":"relay_client", "detail":format!("{event:?}")}));
+            }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => emit(
                 json!({"event":"dial_failed","peer":peer_id.map(|peer|peer.to_string()),
                     "stage":"transport", "error":error.to_string(), "detail":format!("{error:?}")}),
@@ -727,11 +995,16 @@ impl Node {
             SwarmEvent::Behaviour(BehaviourEvent::Exchange(request_response::Event::Message {
                 peer,
                 message,
-                ..
+                connection_id,
             })) => match message {
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
+                    emit(
+                        json!({"event":"exchange_request", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
+                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&request.message.body),
+                        "object_id":body_id(&request.message.body)}),
+                    );
                     let body = if !self.enabled.contains(&peer) {
                         Body::Error {
                             reason: "peer disabled".into(),
@@ -757,6 +1030,11 @@ impl Node {
                     request_id,
                     response,
                 } => {
+                    emit(
+                        json!({"event":"exchange_response", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
+                        "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&response.message.body),
+                        "object_id":body_id(&response.message.body)}),
+                    );
                     if let Some(flight) = self.flights.remove(&request_id)
                         && self.enabled.contains(&peer)
                         && response.message.compatibility == crate::compatibility()
@@ -896,6 +1174,8 @@ pub fn read_config(path: &Path) -> Result<Config, String> {
     }
     Ok(config)
 }
+
+mod discovery_runtime;
 
 #[cfg(test)]
 mod tests;

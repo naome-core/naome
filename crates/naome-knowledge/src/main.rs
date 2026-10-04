@@ -32,14 +32,17 @@ async fn execute() -> Result<(), String> {
             let mut file = options.open(directory.join("identity.key")).map_err(|error|error.to_string())?;
             file.write_all(&key.to_protobuf_encoding().map_err(|error|error.to_string())?)
                 .and_then(|_|file.sync_all()).map_err(|error|error.to_string())?;
-            println!("{}",json!({"peer_id":key.public().to_peer_id().to_string()}));
+            println!("{}",json!({"peer_id":key.public().to_peer_id().to_string(),
+                "config":{"directory":fs::canonicalize(directory).map_err(|error|error.to_string())?, "listen":"/ip4/0.0.0.0/tcp/0", "peers":[],
+                "discovery":{"mdns":true,"dht":false,"bootstrap":[],"relays":[],"hole_punch":true,"relay_only":false,"external_addresses":[]},"producer_sources":[]}}));
             Ok(())
         },
+        ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,
         ["run", config] => network::run(network::read_config(Path::new(config))?,false).await,
         ["run", config, "--test-controls"] => network::run(network::read_config(Path::new(config))?,true).await,
         ["contract"] => {
             println!("{}",json!({"foundation":naome_foundation::FOUNDATION_ID, "codec":CODEC_ID, "checker":CHECKER_ID,
-                "policy":GRAPH_POLICY_ID,"compatibility":hex(&compatibility()),"limits":{
+                "policy":GRAPH_POLICY_ID,"compatibility":hex(&compatibility()),"routing":network::routing_contract(),"limits":{
                     "proof_bytes":MAX_PROOF_BYTES,"dependencies":MAX_DEPENDENCIES,"depth":MAX_DEPTH,"objects":MAX_OBJECTS,
                     "accepted_bytes":MAX_ACCEPTED_BYTES,"pending":MAX_PENDING,"dependency_timeout_seconds":PENDING_TTL.as_secs(),
                     "checked_context_bytes":MAX_CONTEXT_BYTES,
@@ -50,6 +53,6 @@ async fn execute() -> Result<(), String> {
                     "request_timeout_seconds":network::REQUEST_TIMEOUT.as_secs(),"reconcile_seconds":network::RECONCILE_INTERVAL.as_secs()}}));
             Ok(())
         },
-        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | contract\nrun consumes bounded newline-delimited JSON commands: status, produce, ingest, object, links, announce, offer, stop".into()),
+        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status, produce, ingest, object, links, announce, offer, stop".into()),
     }
 }

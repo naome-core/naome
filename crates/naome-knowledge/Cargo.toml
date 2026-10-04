@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 async-trait = "0.1.91"
-libp2p = { version = "0.56.0", default-features = false, features = ["ed25519", "gossipsub", "macros", "noise", "request-response", "tcp", "tokio", "yamux"] }
+libp2p = { version = "0.56.0", default-features = false, features = ["dcutr", "dns", "ed25519", "gossipsub", "identify", "kad", "macros", "mdns", "noise", "relay", "request-response", "tcp", "tokio", "yamux"] }
 naome-authoring = { path = "../naome-authoring" }
 naome-checker = { path = "../naome-checker" }
 naome-foundation = { path = "../naome-foundation" }

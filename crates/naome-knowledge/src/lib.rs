@@ -4,9 +4,11 @@
 //! Availability and eventual union convergence require compatible honest peers
 //! to reconnect and retain the data within the explicit local resource limits.
 
+mod discovery;
 mod graph;
 pub mod network;
 mod object;
+pub mod relay;
 mod store;
 mod wire;
 

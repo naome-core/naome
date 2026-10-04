@@ -69,7 +69,7 @@ class Node:
         self.serial, self.generation = 0, 0
         self.threads = []
 
-    def start(self, producer_sources=(), command_input=True, test_controls=True):
+    def start(self, producer_sources=(), command_input=True, test_controls=True, network_config=None):
         assert self.process is None or self.process.poll() is not None
         self.generation += 1
         event_offset = len(self.events)
@@ -79,7 +79,10 @@ class Node:
             "peers": [{"id": other.identity, "address": f"/ip4/127.0.0.1/tcp/{other.port}"}
                       for other in self.driver.nodes if other is not self],
             "producer_sources": list(producer_sources),
+            "discovery": {"mdns": False, "dht": False},
         }
+        if network_config is not None:
+            config.update(network_config)
         path = self.driver.output / f"node-{self.index}-{self.generation}.config.json"
         path.write_text(json.dumps(config, indent=2) + "\n")
         command = [str(self.driver.binary), "run", str(path)]
@@ -91,6 +94,7 @@ class Node:
         self.driver.summary["processes"].append({"node": self.index, "generation": self.generation,
                                                "pid": self.process.pid, "peer_id": self.identity,
                                                "directory": str(self.directory), "endpoint": config["listen"],
+                                               "network_config": {key: config[key] for key in ["listen", "peers", "discovery"]},
                                                "config_bytes": path.stat().st_size,
                                                "config_sha256": digest(path),
                                                "command_input": "pipe" if command_input else "closed",

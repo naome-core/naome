@@ -17,6 +17,70 @@ fn closed_stdin_keeps_autonomous_production_and_listener_alive() {
     run_driver(false, true);
 }
 
+#[test]
+fn mdns_discovers_unlisted_lan_nodes_and_retires_stale_contacts() {
+    run_discovery("mdns");
+}
+
+#[test]
+fn bootstrap_dht_discovers_participants_and_recovers_late_and_restarted_nodes() {
+    run_discovery("dht");
+}
+
+#[test]
+fn relay_circuit_transfers_checked_proofs_without_direct_shortcuts() {
+    run_discovery("relay");
+}
+
+#[test]
+fn dcutr_reports_a_real_local_circuit_upgrade_outcome() {
+    run_discovery("upgrade");
+}
+
+fn run_discovery(mode: &str) {
+    let _active = ACTIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = root.join(".local/proof-network").join(format!(
+        "{mode}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg(root.join("devnet/proof_network_discovery.py"))
+        .args([
+            "--binary",
+            env!("CARGO_BIN_EXE_naome-knowledge"),
+            "--output",
+        ])
+        .arg(&directory)
+        .args([
+            "--mode",
+            mode,
+            "--timeout",
+            "180",
+            "--profile",
+            if cfg!(debug_assertions) {
+                "test"
+            } else {
+                "release"
+            },
+        ])
+        .output()
+        .expect("run finite discovery process driver");
+    assert!(
+        output.status.success(),
+        "{mode} process evidence at {}\n{}\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn run_driver(large_inventory: bool, closed_input: bool) {
     // Each measured trial owns its process/IO workload. Running both drivers
     // concurrently adds two nodes to the four-node fixture and contaminates
