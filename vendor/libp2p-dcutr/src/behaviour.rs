@@ -33,7 +33,7 @@ use libp2p_core::{
 };
 use libp2p_identity::PeerId;
 use libp2p_swarm::{
-    behaviour::{ConnectionClosed, DialFailure, FromSwarm},
+    behaviour::{ConnectionClosed, ConnectionEstablished, DialFailure, FromSwarm},
     dial_opts::{self, DialOpts},
     dummy, ConnectionDenied, ConnectionHandler, ConnectionId, NetworkBehaviour,
     NewExternalAddrCandidate, NotifyHandler, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
@@ -191,6 +191,29 @@ impl Behaviour {
             }
         }
     }
+
+    fn on_connection_established(&mut self, event: ConnectionEstablished) {
+        if event.endpoint.is_relayed() {
+            return;
+        }
+        // Handler construction is provisional: a later sibling behaviour can
+        // still deny it. Only the Swarm's aggregate admission event establishes
+        // a direct connection and permits reporting a successful upgrade.
+        self.direct_connections
+            .entry(event.peer_id)
+            .or_default()
+            .insert(event.connection_id);
+        if let Some(relay) = self
+            .direct_to_relayed_connections
+            .remove(&event.connection_id)
+        {
+            self.forget_upgrade(relay);
+            self.queued_events.push_back(ToSwarm::GenerateEvent(Event {
+                remote_peer_id: event.peer_id,
+                result: Ok(event.connection_id),
+            }));
+        }
+    }
 }
 
 impl NetworkBehaviour for Behaviour {
@@ -199,8 +222,8 @@ impl NetworkBehaviour for Behaviour {
 
     fn handle_established_inbound_connection(
         &mut self,
-        connection_id: ConnectionId,
-        peer: PeerId,
+        _connection_id: ConnectionId,
+        _peer: PeerId,
         local_addr: &Multiaddr,
         remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
@@ -216,25 +239,13 @@ impl NetworkBehaviour for Behaviour {
             // TODO: We could make two `handler::relayed::Handler` here, one inbound one outbound.
             return Ok(Either::Left(handler));
         }
-        self.direct_connections
-            .entry(peer)
-            .or_default()
-            .insert(connection_id);
-
-        assert!(
-            !self
-                .direct_to_relayed_connections
-                .contains_key(&connection_id),
-            "state mismatch"
-        );
-
         Ok(Either::Right(dummy::ConnectionHandler))
     }
 
     fn handle_established_outbound_connection(
         &mut self,
-        connection_id: ConnectionId,
-        peer: PeerId,
+        _connection_id: ConnectionId,
+        _peer: PeerId,
         addr: &Multiaddr,
         role_override: Endpoint,
         port_use: PortUse,
@@ -251,22 +262,6 @@ impl NetworkBehaviour for Behaviour {
                  // outbound.
         }
 
-        self.direct_connections
-            .entry(peer)
-            .or_default()
-            .insert(connection_id);
-
-        // Whether this is a connection requested by this behaviour.
-        if let Some(relayed_connection_id) =
-            self.direct_to_relayed_connections.remove(&connection_id)
-        {
-            self.forget_upgrade(relayed_connection_id);
-
-            self.queued_events.extend([ToSwarm::GenerateEvent(Event {
-                remote_peer_id: peer,
-                result: Ok(connection_id),
-            })]);
-        }
         Ok(Either::Right(dummy::ConnectionHandler))
     }
 
@@ -357,10 +352,21 @@ impl NetworkBehaviour for Behaviour {
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
+            FromSwarm::ConnectionEstablished(established) => {
+                self.on_connection_established(established)
+            }
             FromSwarm::ConnectionClosed(connection_closed) => {
                 self.on_connection_closed(connection_closed)
             }
             FromSwarm::DialFailure(dial_failure) => self.on_dial_failure(dial_failure),
+            FromSwarm::ListenFailure(failure) => {
+                if let Some(relay) = self
+                    .direct_to_relayed_connections
+                    .remove(&failure.connection_id)
+                {
+                    self.forget_upgrade(relay);
+                }
+            }
             FromSwarm::NewExternalAddrCandidate(NewExternalAddrCandidate { addr }) => {
                 self.address_candidates.add(addr.clone());
             }

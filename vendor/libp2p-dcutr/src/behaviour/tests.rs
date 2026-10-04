@@ -1,5 +1,53 @@
 use super::*;
-use libp2p_swarm::DialError;
+use libp2p_swarm::{behaviour::ConnectionEstablished, DialError};
+
+fn admit_direct(behaviour: &mut Behaviour, peer: PeerId, connection: ConnectionId, inbound: bool) {
+    let address: Multiaddr = "/ip4/127.0.0.1/tcp/12345".parse().unwrap();
+    let endpoint = if inbound {
+        ConnectedPoint::Listener {
+            local_addr: address.clone(),
+            send_back_addr: address,
+        }
+    } else {
+        ConnectedPoint::Dialer {
+            address,
+            role_override: Endpoint::Dialer,
+            port_use: PortUse::New,
+        }
+    };
+    behaviour.on_swarm_event(FromSwarm::ConnectionEstablished(ConnectionEstablished {
+        peer_id: peer,
+        connection_id: connection,
+        endpoint: &endpoint,
+        failed_addresses: &[],
+        other_established: 0,
+    }));
+}
+
+fn establish_direct(
+    behaviour: &mut Behaviour,
+    peer: PeerId,
+    connection: ConnectionId,
+    inbound: bool,
+) {
+    let address: Multiaddr = "/ip4/127.0.0.1/tcp/12345".parse().unwrap();
+    if inbound {
+        behaviour
+            .handle_established_inbound_connection(connection, peer, &address, &address)
+            .unwrap();
+    } else {
+        behaviour
+            .handle_established_outbound_connection(
+                connection,
+                peer,
+                &address,
+                Endpoint::Dialer,
+                PortUse::New,
+            )
+            .unwrap();
+    }
+    admit_direct(behaviour, peer, connection, inbound);
+}
 
 fn negotiate(
     behaviour: &mut Behaviour,
@@ -151,6 +199,12 @@ fn successful_upgrades_and_late_callbacks_do_not_retain_history_or_panic() {
                 PortUse::New,
             )
             .unwrap();
+        assert!(behaviour.direct_connections.is_empty());
+        assert!(behaviour.queued_events.is_empty());
+        if !late {
+            assert_eq!(behaviour.direct_to_relayed_connections.len(), 1);
+        }
+        admit_direct(&mut behaviour, peer, direct, false);
         assert!(behaviour.direct_to_relayed_connections.is_empty());
         assert!(behaviour.outgoing_direct_connection_attempts.is_empty());
         if !late {
@@ -189,4 +243,106 @@ fn terminal_protocol_errors_clear_retry_state() {
         ));
         close(&mut behaviour, peer, circuit, true);
     }
+}
+
+#[test]
+fn outbound_sibling_admission_rejection_preserves_retries_without_success_or_history() {
+    let peer = PeerId::random();
+    let mut behaviour = Behaviour::new(PeerId::random());
+    let accepted = ConnectionId::new_unchecked(1_000_000);
+    establish_direct(&mut behaviour, peer, accepted, false);
+    for cycle in 0..512 {
+        let circuit = ConnectionId::new_unchecked(2_000_000 + cycle);
+        for attempt in 1..=MAX_NUMBER_OF_UPGRADE_ATTEMPTS {
+            let direct = negotiate(&mut behaviour, peer, circuit, true);
+            behaviour
+                .handle_established_outbound_connection(
+                    direct,
+                    peer,
+                    &"/ip4/127.0.0.1/tcp/12345".parse().unwrap(),
+                    Endpoint::Listener,
+                    PortUse::New,
+                )
+                .unwrap();
+            // The Swarm constructs our handler before a later sibling denies
+            // the connection. No aggregate ConnectionEstablished follows.
+            let premature_success = behaviour
+                .queued_events
+                .iter()
+                .any(|event| matches!(event, ToSwarm::GenerateEvent(Event { result: Ok(_), .. })));
+            behaviour.on_swarm_event(FromSwarm::DialFailure(DialFailure {
+                peer_id: Some(peer),
+                connection_id: direct,
+                error: &DialError::Denied {
+                    cause: ConnectionDenied::new(std::io::Error::other("sibling connection limit")),
+                },
+            }));
+            assert!(
+                !premature_success,
+                "success was reported before aggregate admission"
+            );
+            assert_eq!(
+                behaviour.direct_connections[&peer],
+                HashSet::from([accepted])
+            );
+            assert!(behaviour.direct_to_relayed_connections.is_empty());
+            let event = behaviour
+                .queued_events
+                .pop_front()
+                .expect("retry or terminal error");
+            if attempt < MAX_NUMBER_OF_UPGRADE_ATTEMPTS {
+                assert!(
+                    matches!(event, ToSwarm::NotifyHandler { handler: NotifyHandler::One(id), .. }
+                    if id == circuit)
+                );
+                assert_eq!(behaviour.outgoing_direct_connection_attempts.len(), 1);
+            } else {
+                assert!(matches!(
+                    event,
+                    ToSwarm::GenerateEvent(Event { result: Err(_), .. })
+                ));
+                assert!(behaviour.outgoing_direct_connection_attempts.is_empty());
+            }
+            assert!(behaviour.queued_events.is_empty());
+        }
+        close(&mut behaviour, peer, circuit, true);
+    }
+    close(&mut behaviour, peer, accepted, false);
+    assert!(behaviour.direct_connections.is_empty());
+}
+
+#[test]
+fn inbound_sibling_admission_rejection_does_not_retain_connections_or_emit_success() {
+    let peer = PeerId::random();
+    let mut behaviour = Behaviour::new(PeerId::random());
+    let accepted = ConnectionId::new_unchecked(3_000_000);
+    establish_direct(&mut behaviour, peer, accepted, true);
+    let local: Multiaddr = "/ip4/127.0.0.1/tcp/12345".parse().unwrap();
+    let remote: Multiaddr = "/ip4/127.0.0.1/tcp/23456".parse().unwrap();
+    for cycle in 0..512 {
+        let rejected = ConnectionId::new_unchecked(4_000_000 + cycle);
+        behaviour
+            .handle_established_inbound_connection(rejected, peer, &local, &remote)
+            .unwrap();
+        behaviour.on_swarm_event(FromSwarm::ListenFailure(
+            libp2p_swarm::behaviour::ListenFailure {
+                connection_id: rejected,
+                peer_id: Some(peer),
+                local_addr: &local,
+                send_back_addr: &remote,
+                error: &libp2p_swarm::ListenError::Denied {
+                    cause: ConnectionDenied::new(std::io::Error::other("sibling connection limit")),
+                },
+            },
+        ));
+        assert_eq!(
+            behaviour.direct_connections[&peer],
+            HashSet::from([accepted])
+        );
+        assert!(behaviour.direct_to_relayed_connections.is_empty());
+        assert!(behaviour.outgoing_direct_connection_attempts.is_empty());
+        assert!(behaviour.queued_events.is_empty());
+    }
+    close(&mut behaviour, peer, accepted, false);
+    assert!(behaviour.direct_connections.is_empty());
 }
