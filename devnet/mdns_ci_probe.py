@@ -5,13 +5,86 @@ import hashlib
 import json
 import os
 import platform
+import select
 import signal
 import socket
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from pathlib import Path
+
+
+def clean_group(process, record):
+    """Reap the owned leader and stop any remaining members of its group."""
+    record["owned_group_empty"] = False
+    for stop in [signal.SIGTERM, signal.SIGKILL]:
+        try:
+            os.killpg(process.pid, stop)
+        except ProcessLookupError:
+            record["owned_group_empty"] = True
+            break
+        except PermissionError as error:
+            record["transient_group_signal_errno"] = error.errno
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            process.poll()
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                record["owned_group_empty"] = True
+                break
+            except PermissionError as error:
+                # Orphan teardown can temporarily retain an unsignalable
+                # group. Only ESRCH confirms it is empty; keep polling.
+                record["transient_group_probe_errno"] = error.errno
+            time.sleep(0.05)
+        if record["owned_group_empty"]:
+            break
+    if not record["owned_group_empty"]:
+        record["cleanup_errors"].append("owned mDNS process group did not exit")
+
+
+def watch_driver(arguments, lifeline, receipt):
+    """Own the driver independently of the invoking supervisor's lifetime."""
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    record = {"schema": 1, "effective_uid": os.geteuid(), "python": sys.executable,
+              "command": [sys.executable, *arguments], "timeout_seconds": 220,
+              "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "watchdog_pid": os.getpid(), "cleanup_errors": [], "exit_code": 1}
+    process = None
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(record["command"], start_new_session=True)
+        record["owned_process_group"] = process.pid
+        receipt.write_text(json.dumps(record, indent=2) + "\n")
+        while True:
+            if select.select([lifeline], [], [], 0.1)[0] and not os.read(lifeline, 1):
+                record["stop_reason"] = "supervisor_lifeline_closed"
+                break
+            if process.poll() is not None:
+                record["exit_code"] = process.returncode
+                record["stop_reason"] = "driver_exited"
+                break
+            if time.monotonic() - started >= 220:
+                record["stop_reason"] = "independent_wall_timeout"
+                break
+    except OSError as error:
+        record["error"] = str(error)
+    finally:
+        if process is not None:
+            clean_group(process, record)
+        os.close(lifeline)
+        record["driver_exited"] = process is not None and process.poll() is not None
+        if record["cleanup_errors"]:
+            record["exit_code"] = 1
+        receipt.write_text(json.dumps(record, indent=2) + "\n")
+        print(json.dumps(record), flush=True)
+    return record["exit_code"]
 
 
 def run_driver(arguments):
@@ -30,55 +103,44 @@ def run_driver(arguments):
     parser.add_argument("--timeout", choices=["180"], required=True)
     parser.add_argument("--profile", choices=["test", "release"], required=True)
     args = parser.parse_args(arguments[1:])
-    record = {"schema": 1, "effective_uid": os.geteuid(), "python": sys.executable,
-              "command": [sys.executable, *arguments], "timeout_seconds": 220,
-              "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
-              "cleanup_errors": []}
-    process = None
+    receipt = args.output.parent / f"mdns-ci-runner-{args.profile}-{os.getpid()}.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    read_end, write_end = os.pipe()
+    watchdog = os.fork()
+    if watchdog == 0:
+        os.close(write_end)
+        try:
+            result = watch_driver(arguments, read_end, receipt)
+        except BaseException:
+            traceback.print_exc()
+            result = 1
+        os._exit(0 if result == 0 else 1)
+    os.close(read_end)
 
     def interrupted(_signal, _frame):
         raise InterruptedError("CI supervisor termination requested")
 
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
+    completed = False
     try:
-        process = subprocess.Popen(record["command"], start_new_session=True)
-        record["owned_process_group"] = process.pid
-        record["exit_code"] = process.wait(timeout=220)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        record["error"] = str(error)
-        record["exit_code"] = 1
+        deadline = time.monotonic() + 235
+        while time.monotonic() < deadline:
+            child, status = os.waitpid(watchdog, os.WNOHANG)
+            if child:
+                completed = True
+                return os.waitstatus_to_exitcode(status)
+            time.sleep(0.05)
+        raise TimeoutError("independent mDNS watchdog exceeded its bounded lifetime")
     finally:
-        if process is not None:
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            record["owned_group_empty"] = False
-            for stop in [signal.SIGTERM, signal.SIGKILL]:
-                try:
-                    os.killpg(process.pid, stop)
-                except ProcessLookupError:
-                    record["owned_group_empty"] = True
+        os.close(write_end)
+        if not completed:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                child, _status = os.waitpid(watchdog, os.WNOHANG)
+                if child:
                     break
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline:
-                    process.poll()
-                    try:
-                        os.killpg(process.pid, 0)
-                    except ProcessLookupError:
-                        record["owned_group_empty"] = True
-                        break
-                    time.sleep(0.05)
-                if record["owned_group_empty"]:
-                    break
-            if not record["owned_group_empty"]:
-                record["cleanup_errors"].append("owned mDNS process group did not exit")
-        record["driver_exited"] = process is not None and process.poll() is not None
-        receipt = args.output.parent / f"mdns-ci-runner-{args.profile}-{os.getpid()}.json"
-        receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps(record, indent=2) + "\n")
-        print(json.dumps(record))
-    return record["exit_code"] if not record["cleanup_errors"] else 1
+                time.sleep(0.05)
 
 
 def main():

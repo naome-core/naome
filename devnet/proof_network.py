@@ -203,14 +203,14 @@ class Driver:
         self.deadline = time.monotonic() + timeout
         self.nodes = []
         output.mkdir(parents=True, exist_ok=False)
-        contract = json.loads(subprocess.check_output([str(self.binary), "contract"], text=True))
+        contract = json.loads(self.helper_output([str(self.binary), "contract"]))
         repo = Path(__file__).resolve().parents[1]
         self.summary = {
             "schema": 1, "result": "running", "node_count": 4, "physical_host_count": 1,
             "producer": "finite deterministic formal source queues and checked-context authoring; no LLM inference",
             "contract": contract, "scenarios": {}, "commands": [], "processes": [], "proofs": {},
-            "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
-            "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip()),
+            "revision": self.helper_output(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
+            "dirty": bool(self.helper_output(["git", "status", "--porcelain"], cwd=repo).strip()),
             "profile": profile, "binary": str(self.binary), "binary_sha256": digest(self.binary),
             "driver_sha256": digest(__file__), "environment": platform.uname()._asdict(),
             "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -221,10 +221,16 @@ class Driver:
         if time.monotonic() >= self.deadline:
             raise AssertionError("whole demonstration deadline exceeded")
 
+    def helper_output(self, command, **arguments):
+        self.check_deadline()
+        return subprocess.check_output(command, text=True,
+                                       timeout=max(0.001, self.deadline - time.monotonic()),
+                                       **arguments)
+
     def init_identity(self, directory):
         command = [str(self.binary), "init", str(directory)]
         self.summary["commands"].append({"command": command})
-        return json.loads(subprocess.check_output(command, text=True))["peer_id"]
+        return json.loads(self.helper_output(command))["peer_id"]
 
     def topology(self, groups):
         for group in groups:
