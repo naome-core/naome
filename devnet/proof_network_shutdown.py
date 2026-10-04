@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -14,6 +15,35 @@ import zipfile
 
 from proof_network import Driver, Node, digest, source
 from proof_network_discovery import Relay, port
+
+
+def cleanup_owned(node, record, writer=None):
+    """Terminate owned processes before touching a possibly blocked input pipe."""
+    process = node.process
+    actions = record["signal_requests"]
+    if process.poll() is None:
+        process.terminate()
+        actions.append("SIGTERM")
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            actions.append("SIGKILL")
+            process.wait(timeout=3)
+    record["exit_code"] = process.returncode
+    if writer is not None:
+        writer.join(timeout=2)
+        assert not writer.is_alive(), "command writer did not exit after process cleanup"
+    for reader in node.threads:
+        reader.join(timeout=2)
+        assert not reader.is_alive(), "owned log reader did not exit after process cleanup"
+    node.threads = []
+    for stream in [process.stdin, process.stdout, process.stderr]:
+        if stream is not None:
+            try:
+                stream.close()
+            except BrokenPipeError:
+                pass
 
 
 def trial(driver, role, stop_signal, index):
@@ -80,7 +110,14 @@ def trial(driver, role, stop_signal, index):
         result["exit_code"] = subject.process.returncode
         result["shutdown_seconds"] = time.monotonic() - result["signal_sent_monotonic"]
         assert subject.process.returncode == 0, result
-        stopped = subject.wait_event(lambda event: event.get("event") == "stopped")
+        # Exit closes the pipes, but an owned reader can still be recording the
+        # final line. Drain it before inspecting the terminal event snapshot.
+        for reader in subject.threads:
+            reader.join(timeout=2)
+            assert not reader.is_alive(), "terminal log reader did not exit"
+        stopped_events = [event for event in subject.events if event.get("event") == "stopped"]
+        assert len(stopped_events) == 1, "one stopped event required after process exit"
+        stopped = stopped_events[0]
         assert stopped["observed_monotonic"] >= result["signal_sent_monotonic"]
         result["stopped_event_observed"] = True
         result["result"] = "pass"
@@ -88,19 +125,26 @@ def trial(driver, role, stop_signal, index):
         finished.set()
         for connection in connected:
             connection.close()
-        if writer is not None:
-            writer.join(timeout=2)
-        result["required_extra_subject_signal"] = subject.process is not None and subject.process.poll() is None
+        result["subject_live_at_cleanup"] = subject.process is not None and subject.process.poll() is None
         cleanup_errors = []
+        cleanup_actions = []
         for process in [subject, companion]:
             if process is not None and process.process is not None:
                 try:
-                    process.stop()
+                    record = {"role": "subject" if process is subject else "companion",
+                              "signal_requests": [], "exit_code": None}
+                    cleanup_actions.append(record)
+                    cleanup_owned(process, record, writer if process is subject else None)
+                    if process is companion:
+                        assert process.process.returncode == 0, "companion shutdown failed"
                 except Exception as error:
                     cleanup_errors.append(str(error))
-        if writer is not None:
-            writer.join(timeout=2)
-            assert not writer.is_alive(), "command writer did not exit"
+        result["cleanup_actions"] = cleanup_actions
+        result["extra_subject_signal_requests"] = [action for record in cleanup_actions
+                                                    if record["role"] == "subject"
+                                                    for action in record["signal_requests"]]
+        result["required_extra_subject_signal"] = bool(result["extra_subject_signal_requests"])
+        result["total_subject_signal_requests"] = result["signals_sent"] + len(result["extra_subject_signal_requests"])
         result["process_exit_codes"] = [process.process.returncode for process in [subject, companion]
                                          if process is not None and process.process is not None]
         result["cleanup_errors"] = cleanup_errors
