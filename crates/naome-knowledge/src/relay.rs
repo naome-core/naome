@@ -167,6 +167,9 @@ pub async fn run(path: &Path) -> Result<(), String> {
     network::emit(
         json!({"event":"relay_starting", "peer_id":own.to_string(), "compatibility":crate::hex(&crate::compatibility())}),
     );
+    // Dropping a pending listener does not restore Tokio's process signal handler.
+    let shutdown = network::shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             event = swarm.select_next_some() => match event {
@@ -229,7 +232,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                 }).collect();
                 for peer in unidentified { let _ = swarm.disconnect_peer_id(peer); }
             },
-            signal = network::shutdown_signal() => { signal?; break; }
+            signal = &mut shutdown => { signal?; break; }
         }
     }
     network::emit(json!({"event":"stopped", "role":"relay"}));

@@ -337,6 +337,9 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
+    // Keep signal receivers alive while another branch processes synchronous work.
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             event = node.swarm.select_next_some() => node.event(event)?,
@@ -351,7 +354,7 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
                 }
             },
             _ = tick.tick() => node.tick(),
-            signal = shutdown_signal() => { signal?; break; }
+            signal = &mut shutdown => { signal?; break; }
         }
         if let Some(error) = node.graph.storage_error() {
             return Err(format!(
