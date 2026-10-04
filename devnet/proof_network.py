@@ -69,7 +69,7 @@ class Node:
         self.serial, self.generation = 0, 0
         self.threads = []
 
-    def start(self, producer_sources=()):
+    def start(self, producer_sources=(), command_input=True, test_controls=True):
         assert self.process is None or self.process.poll() is not None
         self.generation += 1
         event_offset = len(self.events)
@@ -82,8 +82,10 @@ class Node:
         }
         path = self.driver.output / f"node-{self.index}-{self.generation}.config.json"
         path.write_text(json.dumps(config, indent=2) + "\n")
-        command = [str(self.driver.binary), "run", str(path), "--test-controls"]
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        command = [str(self.driver.binary), "run", str(path)]
+        if test_controls:
+            command.append("--test-controls")
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE if command_input else subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, bufsize=1)
         self.driver.summary["commands"].append({"command": command, "pid": self.process.pid})
         self.driver.summary["processes"].append({"node": self.index, "generation": self.generation,
@@ -91,6 +93,7 @@ class Node:
                                                "directory": str(self.directory), "endpoint": config["listen"],
                                                "config_bytes": path.stat().st_size,
                                                "config_sha256": digest(path),
+                                               "command_input": "pipe" if command_input else "closed",
                                                "producer_source_count": len(config["producer_sources"]),
                                                "producer_source_bytes": sum(len(s.encode()) for s in config["producer_sources"])})
         for name, stream in [("stdout", self.process.stdout), ("stderr", self.process.stderr)]:
@@ -146,7 +149,7 @@ class Node:
         return response["result"]
 
     def wait_event(self, predicate, timeout=10, since=0):
-        deadline = time.monotonic() + timeout
+        deadline = min(self.driver.deadline, time.monotonic() + timeout)
         with self.condition:
             while True:
                 matches = [event for event in self.events[since:] if predicate(event)]
@@ -156,15 +159,23 @@ class Node:
                     raise AssertionError(f"node {self.index} exited before expected event")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self.driver.check_deadline()
                     raise AssertionError(f"node {self.index} event timeout")
                 self.condition.wait(min(remaining, 0.5))
 
     def stop(self):
         if self.process is None:
             return
+        expected_exit = 0
         if self.process.poll() is None:
             try:
-                self.command("stop", timeout=3)
+                if self.process.stdin is None:
+                    # Unix handles SIGTERM gracefully. Windows uses controlled
+                    # TerminateProcess; this case does not claim graceful exit.
+                    self.process.terminate()
+                    expected_exit = 0 if os.name == "posix" else 1
+                else:
+                    self.command("stop", timeout=3)
                 self.process.wait(timeout=5)
             except (AssertionError, BrokenPipeError, subprocess.TimeoutExpired):
                 self.process.terminate()
@@ -176,9 +187,10 @@ class Node:
         for thread in self.threads:
             thread.join(timeout=2)
         self.threads = []
-        assert self.process.returncode == 0, f"node {self.index} unclean stop: {self.process.returncode}"
+        assert self.process.returncode == expected_exit, f"node {self.index} unexpected stop: {self.process.returncode}"
         for stream in [self.process.stdin, self.process.stdout, self.process.stderr]:
-            stream.close()
+            if stream is not None:
+                stream.close()
 
 
 class Driver:
@@ -348,6 +360,16 @@ class Driver:
                 initial.append(self.retain_proof(f"independent-{index}", object))
             assert len(set(initial)) == 4
             assert initial[0] == "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
+            escaped_source = source(1)
+            escaped_source += "#" + "\u0001" * (65536 - len(escaped_source.encode()) - 2) + "\n"
+            escaped_result = self.nodes[0].command("produce", source=escaped_source)
+            assert escaped_result["result"]["status"] == "duplicate"
+            assert escaped_result["object"]["proof_id"] == initial[0]
+            self.summary["scenarios"]["full_source_with_worst_case_command_escaping"] = {
+                "result": "pass", "source_bytes": len(escaped_source.encode()),
+                "json_source_bytes": len(json.dumps(escaped_source).encode()),
+                "proof_id": initial[0], "status": "duplicate",
+            }
             started = time.monotonic()
             self.topology([[0, 1, 2, 3]])
             self.convergence("independent_producers", range(4), initial, started)

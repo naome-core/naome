@@ -33,7 +33,7 @@ pub const MAX_FLIGHTS_PER_PEER: usize = 2;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
 const AUTOMATIC_REQUEST_INTERVAL: Duration = Duration::from_millis(200);
-const COMMAND_BYTES: usize = 2 * crate::MAX_PROOF_BYTES + 2048;
+pub const MAX_COMMAND_BYTES: usize = 8 * crate::MAX_PROOF_BYTES;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -230,17 +230,21 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
     std::thread::spawn(move || read_commands(sender));
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut command_input_open = true;
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
     loop {
         tokio::select! {
             event = node.swarm.select_next_some() => node.event(event)?,
-            command = commands.recv() => {
+            command = commands.recv(), if command_input_open => {
                 match command {
                     Some(Ok(value)) => if !node.command(value) { break; },
                     Some(Err(error)) => emit(json!({"event":"command_error", "error":error})),
-                    None => break,
+                    None => {
+                        command_input_open = false;
+                        emit(json!({"event":"command_input_closed"}));
+                    },
                 }
             },
             _ = tick.tick() => node.tick(),
@@ -275,11 +279,11 @@ fn read_commands(sender: mpsc::Sender<Result<Value, String>>) {
     loop {
         let mut bytes = Vec::new();
         let read = (&mut input)
-            .take(COMMAND_BYTES as u64 + 1)
+            .take(MAX_COMMAND_BYTES as u64 + 1)
             .read_until(b'\n', &mut bytes);
         match read {
             Ok(0) => break,
-            Ok(_) if bytes.len() > COMMAND_BYTES || bytes.last() != Some(&b'\n') => {
+            Ok(_) if bytes.len() > MAX_COMMAND_BYTES || bytes.last() != Some(&b'\n') => {
                 let _ =
                     sender.blocking_send(Err("command byte limit or missing final newline".into()));
                 break;
