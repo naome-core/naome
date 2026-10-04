@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import traceback
+import zipfile
 
 from proof_network import Driver, Node, digest, source
 
@@ -56,7 +57,13 @@ class DiscoveryDriver(Driver):
         self.relay = None
         self.summary.update({"fixture": mode, "discovery_driver_sha256": digest(__file__),
             "participant_roster_injected": False, "physical_nat_routers": 0,
-            "physical_nat_traversal_qualified": False})
+            "physical_nat_traversal_qualified": False,
+            "execution_context": {"effective_uid": os.geteuid() if hasattr(os, "geteuid") else None,
+                "hosted_ci": os.environ.get("GITHUB_ACTIONS") == "true",
+                "mdns_ci_root_requested": os.environ.get("NAOME_MDNS_CI_ROOT") == "1",
+                "python": sys.executable, "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+                "image_os": os.environ.get("ImageOS"),
+                "image_version": os.environ.get("ImageVersion")}})
 
     def init_node(self, index):
         directory = self.output / f"node-{index}"
@@ -264,6 +271,14 @@ class DiscoveryDriver(Driver):
         self.summary["artifacts"] = {str(path):digest(path) for path in sorted(self.output.rglob("*"))
             if path.is_file() and path.name not in ["summary.json", "identity.key", "knowledge.lock"]}
         (self.output / "summary.json").write_text(json.dumps(self.summary, indent=2) + "\n")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            archive = self.output.parent / f"{self.mode}-ci-{self.summary['profile']}-{os.getpid()}.zip"
+            with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+                paths = [self.output / "summary.json"] + [Path(name) for name in self.summary["artifacts"]]
+                for path in sorted(paths):
+                    assert path.is_relative_to(self.output)
+                    assert path.name not in ["identity.key", "knowledge.lock"]
+                    bundle.write(path, str(path.relative_to(self.output)))
 
 
 def main():

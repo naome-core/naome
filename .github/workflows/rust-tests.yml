@@ -62,8 +62,34 @@ jobs:
       - name: Build all test targets and process binaries
         run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-run
 
+      - name: Probe hosted macOS multicast contexts
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          NAOME_CI_PYTHON=$(python3 -c 'import sys; print(sys.executable)')
+          NAOME_CI_MDNS_ROOT=0
+          if "$NAOME_CI_PYTHON" devnet/mdns_ci_probe.py --output ".local/proof-network/mdns-ci-probe-$NAOME_TEST_PROFILE-ordinary.json"; then
+            echo "Ordinary runner multicast probe passed"
+          else
+            echo "Ordinary runner multicast probe failed; retained native diagnostics"
+            NAOME_CI_MDNS_ROOT=1
+          fi
+          sudo -n -- /usr/bin/env GITHUB_ACTIONS=true "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" "ImageOS=${ImageOS:-unknown}" "ImageVersion=${ImageVersion:-unknown}" "$NAOME_CI_PYTHON" devnet/mdns_ci_probe.py --require-root --output ".local/proof-network/mdns-ci-probe-$NAOME_TEST_PROFILE-root.json"
+          echo "NAOME_MDNS_CI_ROOT=$NAOME_CI_MDNS_ROOT" >> "$GITHUB_ENV"
+          echo "NAOME_MDNS_CI_PYTHON=$NAOME_CI_PYTHON" >> "$GITHUB_ENV"
+
       - name: Run all tests
         run: cargo test --workspace --profile "$NAOME_TEST_PROFILE" --all-targets --all-features --locked --no-fail-fast
+
+      - name: Retain public discovery and multicast evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: discovery-${{ inputs.runner }}-${{ inputs.profile }}
+          path: |
+            .local/proof-network/*-ci-*.zip
+            .local/proof-network/mdns-ci-*.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Verify tracked sources are unchanged
         run: git diff --exit-code HEAD

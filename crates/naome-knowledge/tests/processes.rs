@@ -41,7 +41,10 @@ fn run_discovery(mode: &str) {
     let _active = ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve the checked-out repository");
     let directory = root.join(".local/proof-network").join(format!(
         "{mode}-{}-{}",
         std::process::id(),
@@ -50,7 +53,46 @@ fn run_discovery(mode: &str) {
             .unwrap()
             .as_nanos()
     ));
-    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+    let mut command = if mode == "mdns" && std::env::var("NAOME_MDNS_CI_ROOT").as_deref() == Ok("1")
+    {
+        if !cfg!(target_os = "macos") {
+            panic!("privileged mDNS fixture is limited to hosted macOS CI");
+        }
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let python = std::env::var("NAOME_MDNS_CI_PYTHON")
+            .expect("hosted macOS mDNS requires the preflight's resolved Python");
+        assert!(PathBuf::from(&python).is_absolute());
+        let mut command = Command::new("sudo");
+        command
+            .args([
+                "-n",
+                "--",
+                "/usr/bin/env",
+                "GITHUB_ACTIONS=true",
+                "NAOME_MDNS_CI_ROOT=1",
+                "GIT_CONFIG_COUNT=1",
+                "GIT_CONFIG_KEY_0=safe.directory",
+            ])
+            .arg(format!("GIT_CONFIG_VALUE_0={}", root.display()));
+        for key in [
+            "GITHUB_RUN_ID",
+            "GITHUB_RUN_ATTEMPT",
+            "ImageOS",
+            "ImageVersion",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                command.arg(format!("{key}={value}"));
+            }
+        }
+        command
+            .arg(python)
+            .arg(root.join("devnet/mdns_ci_probe.py"))
+            .arg("--run-driver");
+        command
+    } else {
+        Command::new(if cfg!(windows) { "python" } else { "python3" })
+    };
+    let output = command
         .arg(root.join("devnet/proof_network_discovery.py"))
         .args([
             "--binary",
