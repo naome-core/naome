@@ -87,8 +87,11 @@ because this PR merged; continue only as far as the active user request says.
 ## Rust validation and CI
 
 Use the Rust version pinned in `rust-toolchain.toml`. CI runs the complete
-workspace in both `test` and `release` profiles on Linux x86_64, macOS ARM64,
-and Windows x86_64. Each profile builds all targets before executing tests:
+workspace in both `test` and `release` profiles on Linux x86_64 and macOS ARM64.
+These are the current supported targets. Windows is not a current distribution
+target; Windows CI and platform-specific test maintenance are not required.
+Shared portable code and upstream vendor platform code may remain where used
+by the supported targets. Each profile builds all targets before executing tests:
 
 ```sh
 cargo test --workspace --profile test --all-targets --all-features --locked --no-run
@@ -107,8 +110,8 @@ same profile, features, and targets for compilation and execution. Prefer the
 same `cargo test --no-run` barrier before the filtered test command; plain
 `cargo build` uses the different `dev` profile.
 
-The three platform checks each require their complete two-profile matrix;
-`Rust CI` requires all three platform checks and `Rust quality`. Cache hits
-still run every Cargo build and test command. Cache writes occur only after
+Both platform checks require their complete two-profile matrix;
+`Rust CI` requires both platform checks, `Rust quality`, and Devnet qualification.
+Cache hits still run every Cargo build and test command. Cache writes occur only after
 successful pushes to `main`, with keys covering the runner, profile, toolchain,
 manifests, lockfile, and build/workflow configuration.
