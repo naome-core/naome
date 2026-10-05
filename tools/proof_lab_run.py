@@ -38,6 +38,24 @@ def output_size(directory):
     return sum(p.stat().st_size for p in directory.rglob("*") if p.is_file())
 
 
+def native_peak_rss(raw):
+    """Parse GNU time's KiB label and BSD time's byte label on either host."""
+    gnu = re.findall(r"^\s*maximum resident set size \(kbytes\):\s*(\d+)\s*$",
+                     raw, re.IGNORECASE | re.MULTILINE)
+    bsd = re.findall(r"^\s*(\d+)\s+maximum resident set size\s*$",
+                     raw, re.IGNORECASE | re.MULTILINE)
+    return max([0] + [int(value) * 1024 for value in gnu] + [int(value) for value in bsd])
+
+
+def verify_binary_identity(binary, toolchain, source_tree):
+    identity = json.loads(subprocess.check_output([str(binary), "--identity"], text=True))
+    if identity.get("schema") != 1 or identity.get("compiler") != toolchain:
+        raise RuntimeError(f"binary was built by a different compiler or identity schema: {identity}")
+    if identity.get("source_tree") != source_tree or identity.get("source_clean") is not True:
+        raise RuntimeError(f"binary does not match the current clean source tree: {identity}")
+    return identity
+
+
 def terminate(process):
     if process.poll() is None:
         os.killpg(process.pid, signal.SIGTERM)
@@ -109,10 +127,7 @@ def run_stage(command, directory, stage, remaining_seconds,
         failure = failure or f"supervisor received {signal.Signals(stop[0]).name}"
     # /usr/bin/time records the native high-water RSS between polling samples.
     raw = resources.read_text() if resources.exists() else ""
-    for line in raw.splitlines():
-        if "maximum resident set size" in line:
-            native = int(line.strip().split()[0]) if sys.platform == "darwin" else int(line.rsplit(":", 1)[1]) * 1024
-            peak = max(peak, native)
+    peak = max(peak, native_peak_rss(raw))
     if peak > memory_limit:
         failure = failure or "native peak RSS exceeded ceiling"
     size = output_size(directory)
@@ -137,8 +152,8 @@ def main():
     binary = args.binary.resolve()
     config = args.config.resolve()
     directory = args.directory.resolve()
-    directory.mkdir(parents=True, exist_ok=False)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    source_tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True).strip()
     status = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, text=True)
     if status.strip():
         raise RuntimeError("freeze experiments only on clean committed source")
@@ -147,14 +162,17 @@ def main():
     cargo = subprocess.check_output(["cargo", "--version"], cwd=repo, text=True).strip()
     if not toolchain.startswith(f"rustc {pinned} ") or not cargo.startswith(f"cargo {pinned} "):
         raise RuntimeError(f"PATH does not use the pinned {pinned} toolchain: {toolchain}; {cargo}")
-    binary_compiler = subprocess.check_output([str(binary), "--identity"], text=True).strip()
-    if binary_compiler != toolchain:
-        raise RuntimeError(f"binary was built by a different compiler: {binary_compiler}")
+    identity = verify_binary_identity(binary, toolchain, source_tree)
+    # The Rust command validates the same complete envelope before any output
+    # directory, experiment lock, stage log or training artifact is created.
+    subprocess.run([str(binary), "--validate-config", str(config)], check=True)
+    directory.mkdir(parents=True, exist_ok=False)
     receipt = {"schema": 1, "source_revision": revision,
+               "source_tree": source_tree, "binary_source_tree": identity["source_tree"],
                "binary_sha256": sha256(binary), "config_sha256": sha256(config),
                "platform": platform.platform(), "machine": platform.machine(),
                "cpu": subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip() if sys.platform == "darwin" else platform.processor(),
-               "toolchain": toolchain, "cargo": cargo, "binary_compiler": binary_compiler,
+               "toolchain": toolchain, "cargo": cargo, "binary_compiler": identity["compiler"],
                "profile": "release", "training_implementation": "owned Rust CPU f64",
                "ceilings": {"active_execution_seconds": EXECUTION_SECONDS,
                             "rss_bytes": RSS_BYTES, "artifact_bytes": ARTIFACT_BYTES},

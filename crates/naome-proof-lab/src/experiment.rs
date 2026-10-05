@@ -29,6 +29,12 @@ impl Config {
             || self.seeds.is_empty()
             || self.seeds.len() > 5
             || self.seeds.contains(&0)
+            || self
+                .seeds
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.seeds.len()
             || !self.learning_rate.is_finite()
             || !(0.0..=0.1).contains(&self.learning_rate)
             || self.learning_rate == 0.0
@@ -39,6 +45,12 @@ impl Config {
             || !(1..=5).contains(&self.repeats)
             || !(8..=2048).contains(&self.max_scale_families)
             || self.scale_rows.is_empty()
+            || self
+                .scale_rows
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.scale_rows.len()
             || self
                 .scale_rows
                 .iter()

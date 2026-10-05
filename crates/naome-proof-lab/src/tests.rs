@@ -230,3 +230,14 @@ fn frozen_configuration_bounds_volume_and_execution() {
     c.epochs = 101;
     assert!(c.validate().is_err());
 }
+#[test]
+fn duplicate_seeds_and_scale_rows_are_rejected_before_experiment_work() {
+    let mut c: experiment::Config =
+        serde_json::from_str(include_str!("../fixtures/experiment.json")).unwrap();
+    c.seeds.push(c.seeds[0]);
+    assert!(c.validate().is_err());
+    c.seeds.pop();
+    c.validate().unwrap();
+    c.scale_rows.push(c.scale_rows[0]);
+    assert!(c.validate().is_err());
+}

@@ -28,7 +28,19 @@ fn write<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.as_slice() == ["--identity"] {
-        println!("{}", env!("NAOME_LAB_COMPILER"));
+        println!(
+            "{}",
+            serde_json::json!({"schema":1,
+            "compiler":env!("NAOME_LAB_COMPILER"),
+            "source_tree":env!("NAOME_LAB_SOURCE_TREE"),
+            "source_clean":env!("NAOME_LAB_SOURCE_CLEAN") == "true"})
+        );
+        return Ok(());
+    }
+    if args.len() == 2 && args[0] == "--validate-config" {
+        let config: Config = read(Path::new(&args[1]))?;
+        config.validate()?;
+        println!("configuration accepted without experiment work");
         return Ok(());
     }
     if args.len() != 3 {
