@@ -29,7 +29,17 @@ fn source_identity(directory: &Path) -> (String, bool) {
         return ("unavailable".into(), false);
     };
     let root = Path::new(root.trim());
-    if let Some(files) = git(root, &["ls-files", "-z"]) {
+    // Removing a watched untracked file must refresh a dirty build identity.
+    if let Some(files) = git(
+        root,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    ) {
         for file in files.split('\0').filter(|file| !file.is_empty()) {
             println!("cargo:rerun-if-changed={}", root.join(file).display());
         }

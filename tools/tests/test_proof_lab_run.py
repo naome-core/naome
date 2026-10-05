@@ -16,6 +16,84 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
+class ProofLabBuildIdentityTests(unittest.TestCase):
+    def test_cached_build_refreshes_after_untracked_removal_and_tracked_restore(self):
+        root = Path(__file__).resolve().parents[2]
+        pin = runner.re.search(r'^channel\s*=\s*"([^"]+)"',
+                               (root / "rust-toolchain.toml").read_text(),
+                               runner.re.MULTILINE).group(1)
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            repo = directory / "fixture"
+            repo.mkdir()
+            (repo / "src").mkdir()
+            (repo / ".gitignore").write_text("/target/\n")
+            (repo / "Cargo.toml").write_text(
+                '[package]\nname="build-identity-control"\nversion="0.0.0"\nedition="2024"\n\n[workspace]\n')
+            (repo / "Cargo.lock").write_text(
+                'version = 4\n\n[[package]]\nname = "build-identity-control"\nversion = "0.0.0"\n')
+            (repo / "build.rs").write_bytes(
+                (root / "crates/naome-proof-lab/build.rs").read_bytes())
+            source = repo / "src/main.rs"
+            source.write_text('fn main() { println!("{} {}", '
+                              'env!("NAOME_LAB_SOURCE_TREE"), env!("NAOME_LAB_SOURCE_CLEAN")); }\n')
+            original = source.read_bytes()
+            # Non-racy fixture timestamps keep Git's status observation from
+            # refreshing the index and independently invalidating Cargo.
+            previous_minute = time.time() - 60
+            for path in repo.rglob("*"):
+                if path.is_file():
+                    os.utime(path, (previous_minute, previous_minute))
+
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=repo, text=True,
+                                               stderr=subprocess.STDOUT, timeout=10)
+
+            git("init", "--quiet")
+            git("config", "core.excludesFile", "/dev/null")
+            git("add", ".")
+            git("-c", "user.name=Build identity control", "-c", "user.email=control@example.invalid",
+                "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null",
+                "commit", "--quiet", "-m", "Freeze cached build control")
+            # Match a populated repository's existing packed and loose refs;
+            # missing metadata otherwise adds a broad directory watch.
+            git("pack-refs", "--all", "--no-prune")
+            tree = git("rev-parse", "HEAD^{tree}").strip()
+            cargo = ["rustup", "run", pin, "cargo", "build", "-vv", "--offline", "--locked",
+                     "--manifest-path", str(repo / "Cargo.toml"),
+                     "--target-dir", str(repo / "target")]
+
+            def build(stage):
+                result = runner.run_stage(cargo, directory, stage, 30)
+                self.assertEqual(result["exit_code"], 0,
+                                 (directory / (stage + ".log")).read_text())
+                self.assertIsNone(result["failure"])
+                self.assertTrue(result["owned_group_empty"])
+                identity = subprocess.check_output(
+                    [str(repo / "target/debug/build-identity-control")], text=True, timeout=5).split()
+                (directory / (stage + "-identity.json")).write_text(json.dumps(identity) + "\n")
+                return identity
+
+            transient = repo / "outside-crate/transient.rs"
+            transient.parent.mkdir()
+            transient.write_text("untracked control\n")
+            self.assertEqual(build("untracked-build"), [tree, "false"])
+            # Settle a newly initialized Git index before observing Cargo's
+            # cached state; its first refresh can otherwise cause a rebuild.
+            self.assertEqual(build("dirty-cache-warmup"), [tree, "false"])
+            self.assertEqual(build("dirty-cache-confirm"), [tree, "false"])
+            self.assertIn("Fresh build-identity-control",
+                          (directory / "dirty-cache-confirm.log").read_text())
+            transient.unlink()
+            self.assertEqual(git("--no-optional-locks", "status", "--porcelain",
+                                 "--untracked-files=all"), "")
+            self.assertEqual(build("cached-untracked-removal"), [tree, "true"])
+            source.write_bytes(original + b"// Tracked source mutation control.\n")
+            self.assertEqual(build("tracked-edit"), [tree, "false"])
+            source.write_bytes(original)
+            self.assertEqual(build("cached-tracked-restore"), [tree, "true"])
+
+
 class ProofLabLifetimeTests(unittest.TestCase):
     def test_capitalized_gnu_and_bsd_native_rss_units(self):
         gnu = "\tMaximum resident set size (kbytes): 12345\n"
