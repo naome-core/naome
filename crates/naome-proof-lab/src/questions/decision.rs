@@ -198,11 +198,11 @@ pub fn assess(
         return receipt.fail(3, "EXACT_DUPLICATE", clock);
     }
     receipt.pass(3);
-    if context
-        .knowledge
-        .iter()
-        .any(|f| f == &target || f == &Formula::negate(target.clone()))
-    {
+    if context.knowledge.iter().any(|f| {
+        f == &target
+            || f == &Formula::negate(target.clone())
+            || target == Formula::negate(f.clone())
+    }) {
         return receipt.fail(4, "ALREADY_SETTLED", clock);
     }
     receipt.pass(4);

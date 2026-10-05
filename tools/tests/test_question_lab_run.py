@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -117,6 +118,50 @@ class QuestionDecisionProcessTests(unittest.TestCase):
         result = runner.run_decision(self.directory/"absent", self.config, self.directory/"absent-output")
         self.assertEqual(result["decision"], "DECLINE")
         self.assertEqual(result["receipt_retention_error"], "FileNotFoundError")
+
+    def test_parent_fifo_read_is_inside_the_whole_decision_deadline(self):
+        self.request.unlink()
+        os.mkfifo(self.request)
+        started = time.monotonic()
+        result = runner.run_decision(self.directory/"absent", self.config, self.directory, 300)
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'DECISION_DEADLINE')
+        self.assertLess(time.monotonic() - started, .8)
+        self.assertTrue(result['process_supervision']['owned_group_empty'])
+        self.assertEqual(json.loads((self.directory/'question-final-decision.json').read_text())['decision'], 'DECLINE')
+
+    def test_blocking_final_retention_cannot_publish_late_approve(self):
+        def blocked_save(*_args):
+            time.sleep(5)
+        started = time.monotonic()
+        with mock.patch.object(runner, 'save', side_effect=blocked_save):
+            result = runner.run_decision(self.child(self.receipt_code()), self.config, self.directory, 400)
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'DECISION_DEADLINE')
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse((self.directory/'question-final-decision.json').exists())
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+
+    def test_blocked_stdout_echo_does_not_wait_or_change_retained_decision(self):
+        reader, writer = os.pipe()
+        try:
+            os.set_blocking(writer, False)
+            while True:
+                try:
+                    os.write(writer, b'x' * 4096)
+                except BlockingIOError:
+                    break
+            fake = mock.Mock()
+            fake.fileno.return_value = writer
+            started = time.monotonic()
+            with mock.patch.object(runner.sys, 'stdout', fake):
+                result = runner.run_decision(self.child(self.receipt_code()), self.config, self.directory, 1500, emit=True)
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertEqual(result['decision'], 'APPROVE')
+            self.assertEqual(json.loads((self.directory/'question-final-decision.json').read_text())['decision'], 'APPROVE')
+        finally:
+            os.close(reader)
+            os.close(writer)
 
     def test_native_cpu_parser_keeps_bsd_and_gnu_units(self):
         self.assertEqual(runner.cpu_seconds('1.2 real 0.5 user 0.2 sys'), .7)

@@ -12,6 +12,13 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, time::Instant};
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeedEvidence {
+    pub model: Model,
+    pub threshold: f64,
+    pub heldout: serde_json::Value,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Release {
@@ -23,6 +30,8 @@ pub struct Release {
     pub threshold: f64,
     pub corpus_sha256: String,
     pub label_review_sha256: String,
+    pub label_review_receipt: String,
+    pub seed_evidence: Vec<SeedEvidence>,
     pub source_tree: String,
     pub qualified: bool,
     pub qualification_reason: String,
@@ -38,7 +47,7 @@ impl Release {
             || self.model_sha256
                 != digest(&serde_json::to_vec(&self.model).map_err(|e| e.to_string())?)
             || self.model.corpus_digest != self.corpus_sha256
-            || self.label_review_sha256.len() != 64
+            || self.label_review_sha256 != digest(self.label_review_receipt.as_bytes())
             || self.source_tree.len() != 40
             || !self.threshold.is_finite()
             || !(0.90..=1.0).contains(&self.threshold)
@@ -47,14 +56,95 @@ impl Release {
         {
             return Err("invalid question release binding".into());
         }
-        if self.qualified
-            && (self.heldout["meets_predeclared_targets"] != true
-                || self.heldout["added_utility_demonstrated"] != true)
-        {
-            return Err("qualification claim contradicts held-out evidence".into());
+        if self.qualified {
+            let review: serde_json::Value =
+                serde_json::from_str(&self.label_review_receipt).map_err(|e| e.to_string())?;
+            let corpus = super::dataset::generate()?;
+            if review["accepted"] != true
+                || review["corpus_sha256"] != corpus.digest()
+                || review["fixtures_sha256"] != corpus.fixtures_sha256
+                || review["reviewer"].as_str().is_none_or(str::is_empty)
+                || self.corpus_sha256 != corpus.digest()
+                || !qualified_metrics(&self.heldout)
+                || self.seed_evidence.len() != 3
+            {
+                return Err(
+                    "qualification metrics or independently reviewed corpus binding invalid".into(),
+                );
+            }
+            let inputs = corpus.replay()?;
+            let config: Config =
+                serde_json::from_str(include_str!("../../fixtures/question-experiment.json"))
+                    .map_err(|e| e.to_string())?;
+            config.validate()?;
+            for (evidence, seed) in self.seed_evidence.iter().zip(&config.seeds) {
+                evidence.model.validate_policy(POLICY)?;
+                if evidence.model.seed != *seed
+                    || evidence.model.corpus_digest != self.corpus_sha256
+                    || !qualified_metrics(&evidence.heldout)
+                    || evidence.threshold.to_bits()
+                        != calibration(&corpus, &inputs, &evidence.model, &config).to_bits()
+                    || evidence.heldout
+                        != evaluate(
+                            &corpus,
+                            &inputs,
+                            &evidence.model,
+                            "test",
+                            evidence.threshold,
+                        )
+                {
+                    return Err("three-seed qualification evidence does not reproduce".into());
+                }
+            }
+            let own = self
+                .seed_evidence
+                .iter()
+                .find(|e| e.model.seed == self.model.seed)
+                .ok_or("release model is outside qualified seeds")?;
+            if digest(&serde_json::to_vec(&own.model).map_err(|e| e.to_string())?)
+                != self.model_sha256
+                || own.threshold.to_bits() != self.threshold.to_bits()
+                || own.heldout != self.heldout
+            {
+                return Err("release model differs from three-seed qualification evidence".into());
+            }
         }
         Ok(())
     }
+}
+fn qualified_metrics(report: &serde_json::Value) -> bool {
+    let Some(rows) = report["rows"].as_u64() else {
+        return false;
+    };
+    let Some(positives) = report["positive_rows"].as_u64() else {
+        return false;
+    };
+    let Some(negatives) = report["negative_rows"].as_u64() else {
+        return false;
+    };
+    let Some(false_approve) = report["false_approve"].as_u64() else {
+        return false;
+    };
+    let Some(false_decline) = report["false_decline"].as_u64() else {
+        return false;
+    };
+    let Some(families) = report["independent_families"].as_u64() else {
+        return false;
+    };
+    let Some(covered) = report["families_with_an_approved_positive"].as_u64() else {
+        return false;
+    };
+    let Some(control_errors) = report["exact_profile_control_errors"].as_u64() else {
+        return false;
+    };
+    rows == 32
+        && positives == 8
+        && negatives == 24
+        && families == 4
+        && false_approve == 0
+        && false_decline <= 2
+        && covered == families
+        && false_approve + false_decline < control_errors
 }
 pub fn raw_approve(score: &[f64; 4], threshold: f64) -> bool {
     score.iter().all(|n| n.is_finite())
@@ -163,9 +253,10 @@ pub fn run(
         .filter(|(_, r)| r.split == "train")
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
-    let label_digest = digest(
-        &std::fs::read(output.join("question-label-review.json")).map_err(|e| e.to_string())?,
-    );
+    let label_digest = digest(&super::bytes(
+        &output.join("question-label-review.json"),
+        1024 * 1024,
+    )?);
     for &seed in &config.seeds {
         let trained = output.join(format!("question-model-{seed}.json"));
         if command == "questions-train" {
@@ -232,7 +323,7 @@ pub fn run(
             }
         }
     }
-    if command == "questions-evaluate" {
+    if command == "questions-evaluate" || command == "questions-replay" {
         let qualities = config
             .seeds
             .iter()
@@ -243,6 +334,19 @@ pub fn run(
         let qualified = qualities.iter().all(|q| {
             q["meets_predeclared_targets"] == true && q["added_utility_demonstrated"] == true
         });
+        let seed_evidence = config
+            .seeds
+            .iter()
+            .zip(&qualities)
+            .map(|(&seed, heldout)| {
+                let model: Model = read(&output.join(format!("question-model-{seed}.json")))?;
+                Ok(SeedEvidence {
+                    threshold: calibration(corpus, inputs, &model, config),
+                    model,
+                    heldout: heldout.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         for (&seed, heldout) in config.seeds.iter().zip(qualities) {
             let model: Model = read(&output.join(format!("question-model-{seed}.json")))?;
             let threshold = calibration(corpus, inputs, &model, config);
@@ -263,6 +367,12 @@ pub fn run(
                 threshold,
                 corpus_sha256: corpus.digest(),
                 label_review_sha256: label_digest.clone(),
+                seed_evidence: seed_evidence.clone(),
+                label_review_receipt: String::from_utf8(super::bytes(
+                    &output.join("question-label-review.json"),
+                    1024 * 1024,
+                )?)
+                .map_err(|e| e.to_string())?,
                 source_tree: env!("NAOME_LAB_SOURCE_TREE").into(),
                 qualified,
                 qualification_reason: if qualified {
@@ -275,10 +385,18 @@ pub fn run(
                 max_question_nodes,
             };
             release.validate()?;
-            write(
-                &output.join(format!("question-release-{seed}.json")),
-                &release,
-            )?;
+            let path = output.join(format!("question-release-{seed}.json"));
+            if command == "questions-evaluate" {
+                write(&path, &release)?;
+            } else {
+                let saved: Release = read(&path)?;
+                saved.validate()?;
+                if serde_json::to_vec(&saved).map_err(|e| e.to_string())?
+                    != serde_json::to_vec(&release).map_err(|e| e.to_string())?
+                {
+                    return Err("question release replay mismatch".into());
+                }
+            }
         }
     }
     Ok(())

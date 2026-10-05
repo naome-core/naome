@@ -27,7 +27,9 @@ fn test_release(corpus: &dataset::Corpus) -> Release {
         model,
         threshold: 0.9,
         corpus_sha256: corpus.digest(),
-        label_review_sha256: "0".repeat(64),
+        label_review_sha256: digest(b"{}"),
+        label_review_receipt: "{}".into(),
+        seed_evidence: Vec::new(),
         source_tree: env!("NAOME_LAB_SOURCE_TREE").into(),
         qualified: false,
         qualification_reason: "UNQUALIFIED_TEST_ARTIFACT".into(),
@@ -79,6 +81,7 @@ fn question_weights_cannot_enter_the_previous_proof_model_policy() {
     assert!(corrupt.validate().is_err());
     corrupt = test_release(&corpus);
     corrupt.qualified = true;
+    corrupt.heldout = serde_json::json!({"meets_predeclared_targets":true,"added_utility_demonstrated":true,"false_approve":24,"false_decline":8,"exact_profile_control_errors":0});
     assert!(corrupt.validate().is_err());
 }
 #[test]
@@ -170,7 +173,9 @@ fn deterministic_question_failures_are_not_overridden_by_a_neural_artifact() {
         &config,
         Instant::now(),
     );
-    assert_eq!(r.reason, "SEMANTIC_REFORMULATION");
+    assert_eq!(r.reason, "ALREADY_SETTLED");
+    assert_eq!(r.checks[3].status, "FAIL");
+    assert_eq!(r.checks[4].status, "NOT_RUN");
     for row in [&corpus.rows[4], &corpus.rows[5]] {
         let r = assess(
             &submission(row),
@@ -190,4 +195,36 @@ fn low_confidence_ties_and_nonfinite_outputs_never_approve() {
     assert!(!raw_approve(&[f64::NAN, 0.0, 0.0, 0.0], 0.9));
     assert!(!raw_approve(&[0.89, 0.05, 0.03, 0.03], 0.9));
     assert!(raw_approve(&[0.91, 0.03, 0.03, 0.03], 0.9));
+}
+
+#[test]
+fn qualification_flags_cannot_override_equal_control_metrics_and_bound_review() {
+    let corpus = dataset::generate().unwrap();
+    let mut release = test_release(&corpus);
+    // This is a unit fixture, not an independent review or a numerical trial.
+    release.label_review_receipt = serde_json::json!({
+        "accepted":true,"reviewer":"TEST_FIXTURE_ONLY",
+        "corpus_sha256":corpus.digest(),"fixtures_sha256":corpus.fixtures_sha256
+    })
+    .to_string();
+    release.label_review_sha256 = digest(release.label_review_receipt.as_bytes());
+    release.qualified = true;
+    release.heldout = serde_json::json!({"rows":32,"positive_rows":8,"negative_rows":24,
+        "independent_families":4,"families_with_an_approved_positive":4,
+        "false_approve":0,"false_decline":0,"exact_profile_control_errors":0,
+        "meets_predeclared_targets":true,"added_utility_demonstrated":true});
+    release.seed_evidence = vec![
+        super::experiment::SeedEvidence {
+            model: release.model.clone(),
+            threshold: release.threshold,
+            heldout: release.heldout.clone()
+        };
+        3
+    ];
+    assert!(
+        release
+            .validate()
+            .unwrap_err()
+            .contains("qualification metrics")
+    );
 }

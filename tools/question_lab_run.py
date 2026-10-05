@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -138,6 +139,14 @@ def decision_members(group):
             for pid, pgid, rss in [line.split()] if int(pgid) == group]
 
 
+def decision_group_empty(group):
+    try:
+        os.killpg(group, 0)
+        return False
+    except ProcessLookupError:
+        return True
+
+
 def decision_output_size(directory, deadline):
     total = 0
     entries = 0
@@ -158,8 +167,11 @@ def release_owned_lock(pid, group_empty):
         return
     lock = Path(os.environ.get("TMPDIR") or tempfile.gettempdir()) / "naome-proof-lab.lock"
     try:
-        with lock.open("rb") as stream:
+        descriptor = os.open(lock, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
             identity = os.fstat(stream.fileno())
+            if not stat.S_ISREG(identity.st_mode):
+                return
             owned = stream.read(32) == f"{pid}\n".encode()
         current = lock.stat()
         if owned and (identity.st_dev, identity.st_ino) == (current.st_dev, current.st_ino):
@@ -168,7 +180,7 @@ def release_owned_lock(pid, group_empty):
         pass
 
 
-def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS):
+def _run_decision(binary, config, directory, decision_millis, state, emit):
     """Kill one owned process on expiry; no human wait or automatic retry."""
     start = time.monotonic()
     deadline = start + min(decision_millis, DECISION_MILLIS) / 1000
@@ -199,12 +211,19 @@ def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS):
             failure = "RESOURCE_LIMIT"
         else:
             raw_digest = hashlib.sha256(raw).hexdigest()
+            state["raw_digest"] = raw_digest
         if (directory / "question-decision.json").exists():
             failure = failure or "ASSESSMENT_UNAVAILABLE"
         if not failure:
             with (directory / "question-decision-process.log").open("xb") as stream:
-                process = subprocess.Popen([str(binary), "questions-decide", str(config), str(directory)],
-                                           stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+                # Preserve child ownership if the wall signal arrives during launch.
+                mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+                try:
+                    process = subprocess.Popen([str(binary), "questions-decide", str(config), str(directory)],
+                                               stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+                    state["process"] = process
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
                 while process.poll() is None:
                     # Reserve process enumeration, killing, reaping and receipt output.
                     if time.monotonic() >= deadline - min(0.25, decision_millis / 2000):
@@ -226,13 +245,12 @@ def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS):
             try:
                 if process.poll() is None:
                     kill_owned()
-                process.wait(timeout=0.05)
-                members = decision_members(process.pid)
-                if members:
+                process.wait(timeout=0.10)
+                group_empty = decision_group_empty(process.pid)
+                if not group_empty:
                     kill_owned()
                     failure = failure or "ASSESSMENT_UNAVAILABLE"
-                    members = decision_members(process.pid)
-                group_empty = not members
+                    group_empty = decision_group_empty(process.pid)
                 release_owned_lock(process.pid, group_empty)
             except (OSError, ValueError, subprocess.SubprocessError):
                 failure = failure or "ASSESSMENT_UNAVAILABLE"
@@ -282,13 +300,112 @@ def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS):
                                      "owned_group_empty": group_empty,
                                      "automatic_retry": False}
     try:
-        save(directory / "question-final-decision.json", result)
+        pending = directory / "question-final-decision.pending"
+        save(pending, result)
+        if time.monotonic() >= deadline:
+            raise DecisionDeadline()
+        # Publish complete bytes only after all bounded work and the last veto.
+        os.link(pending, directory / "question-final-decision.json")
     except OSError as error:
         supervision = result["process_supervision"]
         result = decline("ASSESSMENT_UNAVAILABLE", raw_digest, milliseconds)
         result["process_supervision"] = supervision
         result["receipt_retention_error"] = type(error).__name__
     return result
+
+
+class DecisionDeadline(Exception):
+    pass
+
+
+def emit_decision(result):
+    """A terminal CLI receipt never waits for a blocked stdout consumer."""
+    descriptor = sys.stdout.fileno()
+    blocking = os.get_blocking(descriptor)
+    try:
+        os.set_blocking(descriptor, False)
+        payload = (json.dumps(result) + "\n").encode()
+        if len(payload) > 2 * 1024**2:
+            raise ValueError("terminal receipt ceiling")
+        os.write(descriptor, payload)
+    finally:
+        os.set_blocking(descriptor, blocking)
+
+
+def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS, emit=False):
+    """Cover parent I/O, validation, child lifetime and final publication together."""
+    started = time.monotonic()
+    deadline = started + min(decision_millis, DECISION_MILLIS) / 1000
+    state = {}
+    alarm_handler = signal.getsignal(signal.SIGALRM)
+    outer_handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    if any(previous_timer):
+        result = decline("ASSESSMENT_UNAVAILABLE", None, 0)
+        if emit:
+            emit_decision(result)
+        return result
+
+    def expire(_signum, _frame):
+        raise DecisionDeadline()
+
+    signal.signal(signal.SIGALRM, expire)
+    reserve = min(0.25, decision_millis / 2000)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, max(.001, deadline - time.monotonic() - reserve))
+        result = _run_decision(binary, config, directory, decision_millis, state, emit)
+        if emit:
+            try:
+                emit_decision(result)
+            except (OSError, ValueError):
+                pass
+        if time.monotonic() >= deadline:
+            raise DecisionDeadline()
+        return result
+    except DecisionDeadline:
+        # The first alarm reserves bounded cleanup and terminal DECLINE retention.
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        process = state.get("process")
+        empty = process is None
+        if process is not None:
+            try:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=min(.10, max(.001, deadline - time.monotonic() - .025)))
+                empty = decision_group_empty(process.pid)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                empty = False
+        result = decline("DECISION_DEADLINE", state.get("raw_digest"),
+                         int((time.monotonic() - started) * 1000))
+        result["process_supervision"] = {"deadline_millis": min(decision_millis, DECISION_MILLIS),
+                                         "elapsed_millis": result["elapsed_millis"],
+                                         "exit_code": process.returncode if process else None,
+                                         "owned_group_empty": empty, "automatic_retry": False}
+        try:
+            remaining = deadline - time.monotonic() - .01
+            if remaining <= 0:
+                raise DecisionDeadline()
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            if process is not None:
+                release_owned_lock(process.pid, empty)
+            save(directory / "question-final-decision.json", result)
+        except (OSError, DecisionDeadline) as error:
+            result["receipt_retention_error"] = type(error).__name__
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        if emit:
+            try:
+                emit_decision(result)
+            except (OSError, ValueError):
+                pass
+        return result
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, alarm_handler)
+        for signum, handler in outer_handlers.items():
+            signal.signal(signum, handler)
 
 
 def main():
@@ -304,8 +421,7 @@ def main():
             parser.error("experiment requires --label-review")
         return numerical(args.binary.resolve(), args.config.resolve(), args.label_review.resolve(),
                          args.directory.resolve(), Path(__file__).resolve().parents[1])
-    result = run_decision(args.binary.resolve(), args.config.resolve(), args.directory.resolve())
-    print(json.dumps(result), flush=True)
+    run_decision(args.binary, args.config, args.directory, emit=True)
     return 0
 
 
