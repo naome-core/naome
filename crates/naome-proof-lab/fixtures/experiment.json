@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "families": 64,
+  "epochs": 16,
+  "seeds": [17, 29, 43],
+  "learning_rate": 0.003,
+  "rejection_threshold": 0.9,
+  "target_false_rejection": 0.0,
+  "scale_rows": [256, 1024, 4096, 16384, 65536],
+  "queries": 8,
+  "repeats": 3,
+  "max_scale_families": 1024
+}

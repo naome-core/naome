@@ -2210,6 +2210,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "naome-proof-lab"
+version = "0.1.0"
+dependencies = [
+ "naome-authoring",
+ "naome-checker",
+ "naome-foundation",
+ "naome-proof",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "naome-protocol"
 version = "0.1.0"
 dependencies = [

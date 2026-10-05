@@ -1,0 +1,7 @@
+foundation = "naome:zfc"
+statement = forall(x, forall(y, implies(equal(x, y), implies(member(x, y), equal(x, y)))))
+proof:
+p0 = simplification(equal(x, y), member(x, y))
+p1 = generalization(p0, y)
+p2 = generalization(p1, x)
+return p2

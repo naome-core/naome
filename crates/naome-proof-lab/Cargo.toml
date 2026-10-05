@@ -1,0 +1,20 @@
+[package]
+name = "naome-proof-lab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Bounded offline custom neural proof relation experiments."
+
+[dependencies]
+naome-authoring = { path = "../naome-authoring" }
+naome-checker = { path = "../naome-checker" }
+naome-foundation = { path = "../naome-foundation" }
+naome-proof = { path = "../naome-proof" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2.workspace = true
+
+[lints]
+workspace = true
