@@ -413,6 +413,39 @@ class ProofLabPreflightTests(unittest.TestCase):
             self.assertFalse(directory.exists())
             stages.assert_not_called()
 
+    def test_sigterm_during_preflight_temporary_cleanup_vetoes_stage_launch(self):
+        with tempfile.TemporaryDirectory() as name:
+            binary = Path(name) / "binary"
+            config = Path(name) / "config.json"
+            directory = Path(name) / "attempt"
+            binary.write_bytes(b"verified binary")
+            config.write_bytes(b"verified config")
+            cleanup = tempfile.TemporaryDirectory.cleanup
+            temporary = []
+            previous = signal.getsignal(signal.SIGTERM)
+
+            def stop_during_cleanup(instance):
+                temporary.append(Path(instance.name))
+                os.kill(os.getpid(), signal.SIGTERM)
+                cleanup(instance)
+
+            argv = ["runner", "--binary", str(binary), "--config", str(config),
+                    "--directory", str(directory)]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(runner.subprocess, "check_output",
+                                    side_effect=self.command_outputs({})),
+                  mock.patch.object(runner.subprocess, "run"),
+                  mock.patch.object(tempfile.TemporaryDirectory, "cleanup",
+                                    new=stop_during_cleanup),
+                  mock.patch.object(runner, "run_stage", side_effect=self.stage_result) as stages):
+                with self.assertRaisesRegex(RuntimeError, "SIGTERM.*input preflight"):
+                    runner.main()
+            self.assertFalse(directory.exists())
+            self.assertEqual(len(temporary), 1)
+            self.assertTrue(all(not path.exists() for path in temporary))
+            self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+            stages.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

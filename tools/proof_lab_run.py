@@ -89,6 +89,8 @@ def snapshot_inputs(binary, config):
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+        # TemporaryDirectory cleanup can receive a late stop after the yield.
+        check_stop()
 
 
 def terminate(process):
