@@ -59,7 +59,8 @@ class ProofLabBuildIdentityTests(unittest.TestCase):
             # missing metadata otherwise adds a broad directory watch.
             git("pack-refs", "--all", "--no-prune")
             tree = git("rev-parse", "HEAD^{tree}").strip()
-            cargo = ["rustup", "run", pin, "cargo", "build", "-vv", "--offline", "--locked",
+            cargo = ["rustup", "run", pin, "cargo", "build", "-vv", "--color", "never",
+                     "--offline", "--locked",
                      "--manifest-path", str(repo / "Cargo.toml"),
                      "--target-dir", str(repo / "target")]
 
