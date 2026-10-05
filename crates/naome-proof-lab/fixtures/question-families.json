@@ -1,0 +1,182 @@
+{
+  "schema": 1,
+  "policy": "question-catalog-experiment-v1",
+  "families": [
+    {
+      "name": "membership_composition",
+      "split": "train",
+      "target": "forall(x,forall(y,forall(z,implies(and_(member(x,y),member(y,z)),member(x,z)))))",
+      "outside": [
+        "forall(x,forall(y,implies(and_(member(x,y),member(y,x)),equal(x,y))))",
+        "not_(forall(x,forall(y,implies(and_(member(x,y),member(y,x)),equal(x,y)))))"
+      ],
+      "objective": "Determine whether arbitrary membership chains compose without a transitive-set hypothesis.",
+      "registry": "forall(x,forall(y,implies(and_(member(x,y),member(y,x)),equal(x,y))))"
+    },
+    {
+      "name": "subset_comparability",
+      "split": "train",
+      "target": "forall(a,forall(b,or_(forall(k,implies(member(k,a),member(k,b))),forall(k,implies(member(k,b),member(k,a))))))",
+      "outside": [
+        "forall(a,forall(b,implies(and_(forall(k,implies(member(k,a),member(k,b))),forall(k,implies(member(k,b),member(k,a)))),equal(a,b))))",
+        "not_(forall(a,forall(b,implies(and_(forall(k,implies(member(k,a),member(k,b))),forall(k,implies(member(k,b),member(k,a)))),equal(a,b)))))"
+      ],
+      "objective": "Determine whether inclusion compares all sets, rather than only a chosen chain.",
+      "registry": "forall(a,forall(b,implies(and_(forall(k,implies(member(k,a),member(k,b))),forall(k,implies(member(k,b),member(k,a)))),equal(a,b))))"
+    },
+    {
+      "name": "disjointness_propagation",
+      "split": "train",
+      "target": "forall(a,forall(b,forall(c,implies(and_(not_(exists(k,and_(member(k,a),member(k,b)))),not_(exists(k,and_(member(k,b),member(k,c))))),not_(exists(k,and_(member(k,a),member(k,c))))))))",
+      "outside": [
+        "forall(a,forall(b,iff(not_(exists(k,and_(member(k,a),member(k,b)))),not_(exists(k,and_(member(k,b),member(k,a)))))))",
+        "not_(forall(a,forall(b,iff(not_(exists(k,and_(member(k,a),member(k,b)))),not_(exists(k,and_(member(k,b),member(k,a))))))))"
+      ],
+      "objective": "Determine which pairwise-disjointness premises suffice for the remaining pair.",
+      "registry": "forall(a,forall(b,iff(not_(exists(k,and_(member(k,a),member(k,b)))),not_(exists(k,and_(member(k,b),member(k,a)))))))"
+    },
+    {
+      "name": "union_transitivity",
+      "split": "train",
+      "target": "forall(a,forall(b,implies(and_(forall(i,forall(j,implies(and_(member(i,j),member(j,a)),member(i,a)))),forall(i,iff(member(i,b),exists(j,and_(member(i,j),member(j,a)))))),forall(i,forall(j,implies(and_(member(i,j),member(j,b)),member(i,b)))))))",
+      "outside": [
+        "forall(a,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),exists(j,and_(member(i,j),member(j,a))))),forall(i,iff(member(i,v),exists(j,and_(member(i,j),member(j,a)))))),equal(u,v)))))",
+        "not_(forall(a,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),exists(j,and_(member(i,j),member(j,a))))),forall(i,iff(member(i,v),exists(j,and_(member(i,j),member(j,a)))))),equal(u,v))))))"
+      ],
+      "objective": "Determine whether union preserves transitivity with the explicit constructor premise.",
+      "registry": "forall(a,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),exists(j,and_(member(i,j),member(j,a))))),forall(i,iff(member(i,v),exists(j,and_(member(i,j),member(j,a)))))),equal(u,v)))))"
+    },
+    {
+      "name": "intersection_transitivity",
+      "split": "train",
+      "target": "forall(a,forall(b,forall(c,implies(and_(and_(forall(i,forall(j,implies(and_(member(i,j),member(j,a)),member(i,a)))),forall(i,forall(j,implies(and_(member(i,j),member(j,b)),member(i,b))))),forall(i,iff(member(i,c),and_(member(i,a),member(i,b))))),forall(i,forall(j,implies(and_(member(i,j),member(j,c)),member(i,c))))))))",
+      "outside": [
+        "forall(a,forall(b,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),and_(member(i,a),member(i,b)))),forall(i,iff(member(i,v),and_(member(i,a),member(i,b))))),equal(u,v))))))",
+        "not_(forall(a,forall(b,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),and_(member(i,a),member(i,b)))),forall(i,iff(member(i,v),and_(member(i,a),member(i,b))))),equal(u,v)))))))"
+      ],
+      "objective": "Determine whether intersection preserves transitivity of both operands.",
+      "registry": "forall(a,forall(b,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),and_(member(i,a),member(i,b)))),forall(i,iff(member(i,v),and_(member(i,a),member(i,b))))),equal(u,v))))))"
+    },
+    {
+      "name": "powerset_transitivity",
+      "split": "train",
+      "target": "forall(a,forall(b,implies(and_(forall(i,forall(j,implies(and_(member(i,j),member(j,a)),member(i,a)))),forall(i,iff(member(i,b),forall(k,implies(member(k,i),member(k,a)))))),forall(i,forall(j,implies(and_(member(i,j),member(j,b)),member(i,b)))))))",
+      "outside": [
+        "forall(a,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),forall(k,implies(member(k,i),member(k,a))))),forall(i,iff(member(i,v),forall(k,implies(member(k,i),member(k,a)))))),equal(u,v)))))",
+        "not_(forall(a,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),forall(k,implies(member(k,i),member(k,a))))),forall(i,iff(member(i,v),forall(k,implies(member(k,i),member(k,a)))))),equal(u,v))))))"
+      ],
+      "objective": "Determine whether taking the power set preserves transitivity.",
+      "registry": "forall(a,forall(u,forall(v,implies(and_(forall(i,iff(member(i,u),forall(k,implies(member(k,i),member(k,a))))),forall(i,iff(member(i,v),forall(k,implies(member(k,i),member(k,a)))))),equal(u,v)))))"
+    },
+    {
+      "name": "singleton_transitivity",
+      "split": "train",
+      "target": "forall(a,forall(b,implies(and_(forall(i,forall(j,implies(and_(member(i,j),member(j,a)),member(i,a)))),forall(k,iff(member(k,b),equal(k,a)))),forall(i,forall(j,implies(and_(member(i,j),member(j,b)),member(i,b)))))))",
+      "outside": [
+        "forall(a,forall(b,forall(u,forall(v,implies(and_(forall(k,iff(member(k,u),equal(k,a))),forall(k,iff(member(k,v),equal(k,b)))),implies(equal(u,v),equal(a,b)))))))",
+        "not_(forall(a,forall(b,forall(u,forall(v,implies(and_(forall(k,iff(member(k,u),equal(k,a))),forall(k,iff(member(k,v),equal(k,b)))),implies(equal(u,v),equal(a,b))))))))"
+      ],
+      "objective": "Determine whether a singleton of a transitive set is transitive.",
+      "registry": "forall(a,forall(b,forall(u,forall(v,implies(and_(forall(k,iff(member(k,u),equal(k,a))),forall(k,iff(member(k,v),equal(k,b)))),implies(equal(u,v),equal(a,b)))))))"
+    },
+    {
+      "name": "pair_transitivity",
+      "split": "train",
+      "target": "forall(a,forall(b,forall(c,implies(and_(and_(forall(i,forall(j,implies(and_(member(i,j),member(j,a)),member(i,a)))),forall(i,forall(j,implies(and_(member(i,j),member(j,b)),member(i,b))))),forall(k,iff(member(k,c),or_(equal(k,a),equal(k,b))))),forall(i,forall(j,implies(and_(member(i,j),member(j,c)),member(i,c))))))))",
+      "outside": [
+        "forall(a,forall(b,forall(u,forall(v,implies(and_(forall(k,iff(member(k,u),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b))))),equal(u,v))))))",
+        "not_(forall(a,forall(b,forall(u,forall(v,implies(and_(forall(k,iff(member(k,u),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b))))),equal(u,v)))))))"
+      ],
+      "objective": "Determine whether pairing transitive operands preserves transitivity.",
+      "registry": "forall(a,forall(b,forall(u,forall(v,implies(and_(forall(k,iff(member(k,u),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b))))),equal(u,v))))))"
+    },
+    {
+      "name": "ordered_pair_injectivity",
+      "split": "development",
+      "target": "forall(a,forall(b,forall(c,forall(d,forall(p,implies(and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,c))),and_(forall(k,iff(member(k,v),or_(equal(k,c),equal(k,d)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v))))))))),and_(equal(a,c),equal(b,d))))))))",
+      "outside": [
+        "forall(a,forall(b,exists(p,exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))))))",
+        "not_(forall(a,forall(b,exists(p,exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v))))))))))))"
+      ],
+      "objective": "Determine both component equalities forced by equality of Kuratowski pair encodings.",
+      "registry": "forall(a,forall(b,exists(p,exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))))))"
+    },
+    {
+      "name": "product_coordinate_collapse",
+      "split": "development",
+      "target": "forall(a,forall(b,forall(c,forall(d,forall(p,implies(and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,c))),and_(forall(k,iff(member(k,v),or_(equal(k,c),equal(k,d)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v))))))))),equal(a,d)))))))",
+      "outside": [
+        "forall(a,forall(b,forall(p,implies(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),exists(q,exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,b))),and_(forall(k,iff(member(k,v),or_(equal(k,b),equal(k,a)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v)))))))))))))",
+        "not_(forall(a,forall(b,forall(p,implies(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),exists(q,exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,b))),and_(forall(k,iff(member(k,v),or_(equal(k,b),equal(k,a)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v))))))))))))))"
+      ],
+      "objective": "Determine whether equal ordered-pair encodings also force cross-coordinate equality.",
+      "registry": "forall(a,forall(b,forall(p,implies(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),exists(q,exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,b))),and_(forall(k,iff(member(k,v),or_(equal(k,b),equal(k,a)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v)))))))))))))"
+    },
+    {
+      "name": "relation_functionality",
+      "split": "development",
+      "target": "forall(r,forall(a,forall(b,forall(c,forall(p,forall(q,implies(and_(and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r)),and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,c)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v)))))))),member(q,r))),equal(b,c))))))))",
+      "outside": [
+        "forall(r,forall(a,exists(b,exists(p,and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r))))))",
+        "not_(forall(r,forall(a,exists(b,exists(p,and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r)))))))"
+      ],
+      "objective": "Determine whether an arbitrary encoded relation is single valued without a functionality premise.",
+      "registry": "forall(r,forall(a,exists(b,exists(p,and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r))))))"
+    },
+    {
+      "name": "relation_inverse_uniqueness",
+      "split": "development",
+      "target": "forall(r,forall(a,forall(b,forall(c,forall(p,forall(q,implies(and_(and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,c)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r)),and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,b))),and_(forall(k,iff(member(k,v),or_(equal(k,b),equal(k,c)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v)))))))),member(q,r))),equal(a,b))))))))",
+      "outside": [
+        "forall(r,forall(a,forall(b,forall(p,implies(and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r)),exists(q,and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,b))),and_(forall(k,iff(member(k,v),or_(equal(k,b),equal(k,a)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v)))))))),member(q,r))))))))",
+        "not_(forall(r,forall(a,forall(b,forall(p,implies(and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r)),exists(q,and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,b))),and_(forall(k,iff(member(k,v),or_(equal(k,b),equal(k,a)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v)))))))),member(q,r)))))))))"
+      ],
+      "objective": "Determine whether arbitrary encoded relation inverses are single valued without injectivity.",
+      "registry": "forall(r,forall(a,forall(b,forall(p,implies(and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,a))),and_(forall(k,iff(member(k,v),or_(equal(k,a),equal(k,b)))),forall(k,iff(member(k,p),or_(equal(k,u),equal(k,v)))))))),member(p,r)),exists(q,and_(exists(u,exists(v,and_(forall(k,iff(member(k,u),equal(k,b))),and_(forall(k,iff(member(k,v),or_(equal(k,b),equal(k,a)))),forall(k,iff(member(k,q),or_(equal(k,u),equal(k,v)))))))),member(q,r))))))))"
+    },
+    {
+      "name": "union_subset_reflection",
+      "split": "test",
+      "target": "forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),exists(j,and_(member(i,j),member(j,a))))),forall(i,iff(member(i,v),exists(j,and_(member(i,j),member(j,b)))))),forall(k,implies(member(k,u),member(k,v)))),forall(k,implies(member(k,a),member(k,b))))))))",
+      "outside": [
+        "forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),exists(j,and_(member(i,j),member(j,a))))),forall(i,iff(member(i,v),exists(j,and_(member(i,j),member(j,b)))))),not_(exists(k,and_(member(k,a),member(k,b))))),not_(exists(k,and_(member(k,u),member(k,v)))))))))",
+        "not_(forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),exists(j,and_(member(i,j),member(j,a))))),forall(i,iff(member(i,v),exists(j,and_(member(i,j),member(j,b)))))),not_(exists(k,and_(member(k,a),member(k,b))))),not_(exists(k,and_(member(k,u),member(k,v))))))))))"
+      ],
+      "objective": "Determine whether inclusion of unions reflects inclusion of their source families.",
+      "registry": "forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),exists(j,and_(member(i,j),member(j,a))))),forall(i,iff(member(i,v),exists(j,and_(member(i,j),member(j,b)))))),not_(exists(k,and_(member(k,a),member(k,b))))),not_(exists(k,and_(member(k,u),member(k,v)))))))))"
+    },
+    {
+      "name": "powerset_subset_reflection",
+      "split": "test",
+      "target": "forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),forall(k,implies(member(k,i),member(k,a))))),forall(i,iff(member(i,v),forall(k,implies(member(k,i),member(k,b)))))),forall(k,implies(member(k,u),member(k,v)))),forall(k,implies(member(k,a),member(k,b))))))))",
+      "outside": [
+        "forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),forall(k,implies(member(k,i),member(k,a))))),forall(i,iff(member(i,v),forall(k,implies(member(k,i),member(k,b)))))),not_(exists(k,and_(member(k,a),member(k,b))))),not_(exists(k,and_(member(k,u),member(k,v)))))))))",
+        "not_(forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),forall(k,implies(member(k,i),member(k,a))))),forall(i,iff(member(i,v),forall(k,implies(member(k,i),member(k,b)))))),not_(exists(k,and_(member(k,a),member(k,b))))),not_(exists(k,and_(member(k,u),member(k,v))))))))))"
+      ],
+      "objective": "Determine whether inclusion of power sets reflects inclusion of the original sets.",
+      "registry": "forall(a,forall(b,forall(u,forall(v,implies(and_(and_(forall(i,iff(member(i,u),forall(k,implies(member(k,i),member(k,a))))),forall(i,iff(member(i,v),forall(k,implies(member(k,i),member(k,b)))))),not_(exists(k,and_(member(k,a),member(k,b))))),not_(exists(k,and_(member(k,u),member(k,v)))))))))"
+    },
+    {
+      "name": "common_member_selection",
+      "split": "test",
+      "target": "forall(a,implies(forall(x,implies(member(x,a),exists(y,member(y,x)))),exists(y,forall(x,implies(member(x,a),member(y,x))))))",
+      "outside": [
+        "forall(a,forall(b,exists(c,forall(i,iff(member(i,c),and_(member(i,a),member(i,b)))))))",
+        "not_(forall(a,forall(b,exists(c,forall(i,iff(member(i,c),and_(member(i,a),member(i,b))))))))"
+      ],
+      "objective": "Determine whether individual nonempty members imply a shared member for the entire family.",
+      "registry": "forall(a,forall(b,exists(c,forall(i,iff(member(i,c),and_(member(i,a),member(i,b)))))))"
+    },
+    {
+      "name": "intersection_nonemptiness",
+      "split": "test",
+      "target": "forall(a,forall(b,implies(and_(exists(x,member(x,a)),exists(y,member(y,b))),exists(z,and_(member(z,a),member(z,b))))))",
+      "outside": [
+        "forall(a,forall(b,exists(c,forall(x,iff(member(x,c),or_(member(x,a),member(x,b)))))))",
+        "not_(forall(a,forall(b,exists(c,forall(x,iff(member(x,c),or_(member(x,a),member(x,b))))))))"
+      ],
+      "objective": "Determine whether individual nonemptiness suffices for nonempty intersection.",
+      "registry": "forall(a,forall(b,exists(c,forall(x,iff(member(x,c),or_(member(x,a),member(x,b)))))))"
+    }
+  ]
+}

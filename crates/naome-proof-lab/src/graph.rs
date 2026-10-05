@@ -1,4 +1,4 @@
-//! Graphs are extracted only from checker-coupled values and checked dependencies.
+//! Graphs use checked proof dependencies or validated closed question/context formulas.
 use naome_checker::{ArtifactState, CheckedProof, normalize_and_check_with_state};
 use naome_foundation::Formula;
 use naome_proof::{ProofCertificate, ProofId, ProofStep};
@@ -13,10 +13,47 @@ pub struct Graph {
     /// Ordered argument, second argument, and binder/conclusion channels.
     pub edges: Vec<Vec<(usize, usize)>>,
     pub root: usize,
-    /// Reachable expanded primitive inference nodes, never citation text length.
+    /// Proofs count expanded primitive inference nodes; questions count AST graph nodes.
     pub cost: usize,
 }
 impl Graph {
+    pub(crate) fn question(formula: &Formula) -> Result<Self, String> {
+        if !formula.is_closed() {
+            return Err("question graph requires a closed validated target".into());
+        }
+        let mut graph = Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            root: 0,
+            cost: 0,
+        };
+        graph.root = graph.formula(formula, &mut BTreeMap::new())?;
+        graph.cost = graph.nodes.len();
+        Ok(graph)
+    }
+    /// Full bounded receiver context; no labels, reason codes or family metadata.
+    pub(crate) fn question_context(parts: &[(Formula, usize)]) -> Result<Self, String> {
+        if parts.is_empty() || parts.len() > 512 {
+            return Err("question context is missing or exceeds its full-scan ceiling".into());
+        }
+        let mut graph = Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            root: 0,
+            cost: 0,
+        };
+        let root = graph.node(20)?;
+        for (formula, role) in parts {
+            if *role > 2 || !formula.is_closed() {
+                return Err("invalid receiver context graph".into());
+            }
+            let child = graph.formula(formula, &mut BTreeMap::new())?;
+            graph.edges[root].push((child, *role));
+        }
+        graph.cost = graph.nodes.len();
+        Ok(graph)
+    }
+
     fn node(&mut self, kind: usize) -> Result<usize, String> {
         if self.nodes.len() >= MAX_NODES {
             return Err("offline graph node ceiling reached".into());

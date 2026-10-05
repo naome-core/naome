@@ -1,0 +1,129 @@
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import question_lab_run as runner
+
+
+class QuestionDecisionProcessTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="naome-question-process-control-")
+        self.directory = Path(self.temp.name)
+        self.lock_directory = self.directory / "temporary"
+        self.lock_directory.mkdir()
+        self.env = mock.patch.dict(os.environ, {"TMPDIR": str(self.lock_directory)})
+        self.env.start()
+        self.request = self.directory / "question-request.json"
+        self.request.write_text('{"source":"fixture"}')
+        self.config = self.directory / "config.json"
+        self.config.write_text('{}')
+
+    def tearDown(self):
+        self.env.stop()
+        self.temp.cleanup()
+
+    def child(self, body):
+        path = self.directory / "fixture-child"
+        path.write_text(f"#!{sys.executable}\n" +
+                        "import hashlib,json,os,sys,time\nfrom pathlib import Path\n" +
+                        "directory=Path(sys.argv[-1])\n" + body)
+        path.chmod(0o700)
+        return path
+
+    def receipt_code(self):
+        # This is an output-format control, never a qualified model artifact.
+        return ("receipt=" + repr({"schema": 1, "decision": "APPROVE", "reason": "FORMAT_FIXTURE_ONLY",
+                "policy": runner.POLICY, "feature_schema": runner.FEATURES,
+                "input_digest_kind": "raw-submission-json-v1",
+                "checks": [{"id": f"GF{i:02}", "status": "PASS"} for i in range(1, 11)]}) + "\n" +
+                "receipt['input_sha256']=hashlib.sha256((directory/'question-request.json').read_bytes()).hexdigest()\n" +
+                "(directory/'question-decision.json').write_text(json.dumps(receipt))\n")
+
+    def decide(self, body, milliseconds=1500):
+        result = runner.run_decision(self.child(body), self.config, self.directory, milliseconds)
+        retained = json.loads((self.directory / "question-final-decision.json").read_text())
+        self.assertEqual(result, retained)
+        self.assertTrue(result['process_supervision']['owned_group_empty'])
+        self.assertFalse(result['process_supervision']['automatic_retry'])
+        self.assertEqual(result['raw_input_sha256'], hashlib.sha256(self.request.read_bytes()).hexdigest())
+        return result
+
+    def test_completed_all_pass_format_receipt_survives_supervision(self):
+        self.assertEqual(self.decide(self.receipt_code())['decision'], 'APPROVE')
+
+    def test_deadline_kills_owned_child_and_removes_only_its_pid_lock(self):
+        body = ("(directory/'pid').write_text(str(os.getpid()))\n" +
+                "(Path(os.environ['TMPDIR'])/'naome-proof-lab.lock').write_text(f'{os.getpid()}\\n')\n" +
+                self.receipt_code() + "time.sleep(30)\n")
+        start = time.monotonic()
+        result = self.decide(body, 600)
+        self.assertEqual(result['reason'], 'DECISION_DEADLINE')
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual(json.loads((self.directory/'question-decision.json').read_text())['decision'], 'APPROVE')
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int((self.directory/'pid').read_text()), 0)
+        self.assertFalse((self.lock_directory/'naome-proof-lab.lock').exists())
+
+    def test_foreign_lock_is_preserved(self):
+        lock = self.lock_directory/'naome-proof-lab.lock'
+        lock.write_text('123456789\n')
+        self.decide(self.receipt_code())
+        self.assertEqual(lock.read_text(), '123456789\n')
+
+    def test_partial_receipt_and_failed_launch_decline(self):
+        result = self.decide("(directory/'question-decision.json').write_text('{')\n")
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'ASSESSMENT_UNAVAILABLE')
+
+    def test_failed_launch_is_a_terminal_decline(self):
+        result = runner.run_decision(self.directory/'absent', self.config, self.directory)
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'ASSESSMENT_UNAVAILABLE')
+        self.assertTrue(result['process_supervision']['owned_group_empty'])
+
+    def test_process_enumeration_failure_declines_and_reaps_child(self):
+        with mock.patch.object(runner, 'decision_members', side_effect=[subprocess.TimeoutExpired('ps', .05), []]):
+            result = self.decide("time.sleep(30)\n")
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'ASSESSMENT_UNAVAILABLE')
+
+    def test_finished_output_over_resource_ceiling_declines(self):
+        body = self.receipt_code() + "with (directory/'excess').open('wb') as stream: stream.truncate(65*1024**2)\n"
+        result = self.decide(body)
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'RESOURCE_LIMIT')
+
+    def test_wrong_input_and_failed_checkpoint_cannot_approve(self):
+        body = self.receipt_code() + "receipt['input_sha256']='0'*64\nreceipt['checks'][6]['status']='FAIL'\n(directory/'question-decision.json').write_text(json.dumps(receipt))\n"
+        result = self.decide(body)
+        self.assertEqual(result['decision'], 'DECLINE')
+
+    def test_stale_receipt_does_not_launch_a_child(self):
+        (self.directory/'question-decision.json').write_text('{}')
+        result = self.decide("(directory/'launched').write_text('yes')\n")
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertFalse((self.directory/'launched').exists())
+
+    def test_unavailable_output_directory_still_returns_terminal_decline(self):
+        result = runner.run_decision(self.directory/"absent", self.config, self.directory/"absent-output")
+        self.assertEqual(result["decision"], "DECLINE")
+        self.assertEqual(result["receipt_retention_error"], "FileNotFoundError")
+
+    def test_native_cpu_parser_keeps_bsd_and_gnu_units(self):
+        self.assertEqual(runner.cpu_seconds('1.2 real 0.5 user 0.2 sys'), .7)
+        self.assertEqual(runner.cpu_seconds('User time (seconds): 0.5\nSystem time (seconds): 0.2'), .7)
+        with self.assertRaises(RuntimeError):
+            runner.cpu_seconds('CPU unavailable')
+
+
+if __name__ == '__main__':
+    unittest.main()

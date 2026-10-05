@@ -136,3 +136,37 @@ impl CompiledDefinition {
         }
     }
 }
+
+/// A parsed closed Foundation question, without a proof or admission claim.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub struct ValidatedQuestion {
+    formula: naome_foundation::Formula,
+    canonical_bytes: Box<[u8]>,
+    definitions: Vec<DefinitionId>,
+}
+impl ValidatedQuestion {
+    pub(super) fn new(
+        formula: naome_foundation::Formula,
+        bytes: Vec<u8>,
+        definitions: Vec<DefinitionId>,
+    ) -> Self {
+        Self {
+            formula,
+            canonical_bytes: bytes.into_boxed_slice(),
+            definitions,
+        }
+    }
+    /// Returns the validated closed target; it need not have a known answer.
+    pub fn formula(&self) -> &naome_foundation::Formula {
+        &self.formula
+    }
+    /// Returns complete expanded canonical target bytes.
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+    /// Returns all explicitly declared, checked definition identities.
+    pub fn definition_ids(&self) -> &[DefinitionId] {
+        &self.definitions
+    }
+}

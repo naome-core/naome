@@ -6,11 +6,11 @@ impl<'source> Parser<'source> {
     pub(super) fn definition_aliases(
         &mut self,
         artifact_state: &ArtifactState,
+        target: &str,
     ) -> Result<(), CompileError> {
         self.keyword("definitions")?;
         self.punctuation(':')?;
-        if self.peek_word("formulas") || self.peek_word("statement") || self.peek_word("definition")
-        {
+        if self.peek_word("formulas") || self.peek_word(target) || self.peek_word("definition") {
             return Err(CompileError::Syntax {
                 offset: self.next_offset(),
                 expected: "at least one selected definition alias",
@@ -19,7 +19,7 @@ impl<'source> Parser<'source> {
         loop {
             let offset = self.next_offset();
             let name = self.name()?;
-            if is_reserved_definition_alias_name(name) {
+            if is_reserved_definition_alias_name(name) || name == target {
                 return Err(CompileError::Syntax {
                     offset,
                     expected: "a non-reserved definition alias",
@@ -46,9 +46,7 @@ impl<'source> Parser<'source> {
                     kind,
                 },
             );
-            if self.peek_word("formulas")
-                || self.peek_word("statement")
-                || self.peek_word("definition")
+            if self.peek_word("formulas") || self.peek_word(target) || self.peek_word("definition")
             {
                 return Ok(());
             }

@@ -103,6 +103,9 @@ impl Model {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_policy("checked-relations-v1")
+    }
+    pub(crate) fn validate_policy(&self, policy: &str) -> Result<(), String> {
         let shapes = [
             (FEATURES, WIDTH),
             (WIDTH * 4, WIDTH),
@@ -110,10 +113,7 @@ impl Model {
             (PAIR, WIDTH),
             (WIDTH, CLASSES),
         ];
-        if self.schema != 1
-            || self.policy != "checked-relations-v1"
-            || self.layers.len() != shapes.len()
-        {
+        if self.schema != 1 || self.policy != policy || self.layers.len() != shapes.len() {
             return Err("unsupported model schema/policy".into());
         }
         for (l, (i, o)) in self.layers.iter().zip(shapes) {

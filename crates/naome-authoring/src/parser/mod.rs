@@ -76,40 +76,7 @@ impl<'source> Parser<'source> {
         mut self,
         artifact_state: &ArtifactState,
     ) -> Result<CompiledArtifact, CompileError> {
-        self.keyword("foundation")?;
-        self.punctuation('=')?;
-        let foundation_offset = self.next_offset();
-        let foundation = self.string("a quoted Foundation identifier")?;
-        if foundation != FOUNDATION_ID {
-            return Err(CompileError::FoundationMismatch {
-                offset: foundation_offset,
-            });
-        }
-        if self.peek_word("definitions") {
-            self.definition_aliases(artifact_state)?;
-        }
-        if self.peek_word("formulas") {
-            self.keyword("formulas")?;
-            self.punctuation(':')?;
-            if self.peek_word("statement") || self.peek_word("definition") {
-                return Err(CompileError::Syntax {
-                    offset: self.next_offset(),
-                    expected: "at least one formula binding",
-                });
-            }
-            loop {
-                self.formula_binding()?;
-                if self.peek_word("statement") {
-                    break;
-                }
-                if self.peek_word("definition") {
-                    return Err(CompileError::Syntax {
-                        offset: self.next_offset(),
-                        expected: "a proof statement after formula bindings",
-                    });
-                }
-            }
-        }
+        self.preamble(artifact_state, "statement")?;
         if self.peek_word("definition") {
             return self.compile_definition(artifact_state);
         }
@@ -209,6 +176,81 @@ impl<'source> Parser<'source> {
         Ok(CompiledArtifact::Proof(CompiledProof::from_checked(
             checked,
         )))
+    }
+
+    fn preamble(
+        &mut self,
+        artifact_state: &ArtifactState,
+        target: &'static str,
+    ) -> Result<(), CompileError> {
+        self.keyword("foundation")?;
+        self.punctuation('=')?;
+        let foundation_offset = self.next_offset();
+        let foundation = self.string("a quoted Foundation identifier")?;
+        if foundation != FOUNDATION_ID {
+            return Err(CompileError::FoundationMismatch {
+                offset: foundation_offset,
+            });
+        }
+        if self.peek_word("definitions") {
+            self.definition_aliases(artifact_state, target)?;
+        }
+        if self.peek_word("formulas") {
+            self.keyword("formulas")?;
+            self.punctuation(':')?;
+            if self.peek_word(target) || self.peek_word("definition") {
+                return Err(CompileError::Syntax {
+                    offset: self.next_offset(),
+                    expected: "at least one formula binding",
+                });
+            }
+            loop {
+                self.formula_binding()?;
+                if self.peek_word(target) {
+                    break;
+                }
+                if self.peek_word("definition") {
+                    return Err(CompileError::Syntax {
+                        offset: self.next_offset(),
+                        expected: "a proof statement after formula bindings",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn question(
+        mut self,
+        artifact_state: &ArtifactState,
+    ) -> Result<ValidatedQuestion, CompileError> {
+        self.preamble(artifact_state, "question")?;
+        self.keyword("question")?;
+        self.punctuation('=')?;
+        let offset = self.next_offset();
+        let compact = self.formula(1, FormulaContext::Statement)?;
+        let formula = compact
+            .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
+            .map(|(formula, _)| formula)
+            .map_err(|source| CompileError::DefinitionExpansion { offset, source })?;
+        self.end()?;
+        if !formula.is_closed() {
+            return Err(CompileError::Syntax {
+                offset,
+                expected: "a closed question formula",
+            });
+        }
+        let canonical = formula
+            .encode_canonical()
+            .map_err(|source| CompileError::Statement { offset, source })?;
+        let definitions = self
+            .definition_aliases
+            .values()
+            .map(|alias| alias.definition_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(ValidatedQuestion::new(formula, canonical, definitions))
     }
 
     fn formula_binding(&mut self) -> Result<(), CompileError> {

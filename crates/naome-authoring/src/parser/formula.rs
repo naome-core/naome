@@ -80,9 +80,9 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
         negated: bool,
     ) -> Result<ParsedFormula, CompileError> {
-        let left = self.term()?;
+        let left = self.term(depth)?;
         self.punctuation(',')?;
-        let right = self.term()?;
+        let right = self.term(depth)?;
         self.relationalized_formula(
             [left, right],
             |variables| {
@@ -106,9 +106,9 @@ impl<'source> Parser<'source> {
         depth: u32,
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
-        let element = self.term()?;
+        let element = self.term(depth)?;
         self.punctuation(',')?;
-        let set = self.term()?;
+        let set = self.term(depth)?;
         self.relationalized_formula(
             [element, set],
             |variables| DefinedFormula::member(variables[0], variables[1]),
@@ -138,7 +138,7 @@ impl<'source> Parser<'source> {
                 expected: "a relation definition alias in formula position",
             });
         };
-        let arguments = self.term_arguments()?;
+        let arguments = self.term_arguments(depth)?;
         self.ensure_definition_arity(offset, name, arity, arguments.len())?;
         self.relationalized_formula(
             arguments,
@@ -152,8 +152,14 @@ impl<'source> Parser<'source> {
         )
     }
 
-    fn term(&mut self) -> Result<ParsedTerm, CompileError> {
+    fn term(&mut self, depth: u32) -> Result<ParsedTerm, CompileError> {
         let offset = self.next_offset();
+        if depth > FORMULA_MAX_DEPTH {
+            return Err(CompileError::FormulaDepthLimitExceeded {
+                offset,
+                maximum: FORMULA_MAX_DEPTH,
+            });
+        }
         let name = self.name()?;
         let offset_after_name = self.offset;
         self.skip_trivia();
@@ -177,7 +183,7 @@ impl<'source> Parser<'source> {
                 });
             }
         };
-        let arguments = self.term_arguments()?;
+        let arguments = self.term_arguments(depth + 1)?;
         self.ensure_definition_arity(offset, name, expected, arguments.len())?;
         self.call_end()?;
 
@@ -203,14 +209,14 @@ impl<'source> Parser<'source> {
         })
     }
 
-    fn term_arguments(&mut self) -> Result<Vec<ParsedTerm>, CompileError> {
+    fn term_arguments(&mut self, depth: u32) -> Result<Vec<ParsedTerm>, CompileError> {
         let mut arguments = Vec::new();
         self.skip_trivia();
         if self.byte() == Some(b')') {
             return Ok(arguments);
         }
         loop {
-            arguments.push(self.term()?);
+            arguments.push(self.term(depth)?);
             self.skip_trivia();
             if self.byte() == Some(b')') {
                 return Ok(arguments);

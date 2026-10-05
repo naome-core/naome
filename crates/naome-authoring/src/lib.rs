@@ -70,6 +70,24 @@ pub fn compile_artifact_against_proof_context(
     compile_with_artifact_state(source, context)
 }
 
+/// Validates an unanswered `.nao` question in a checked offline context.
+///
+/// Syntax is `foundation = "naome:zfc"`, optional checked definition aliases
+/// and formula bindings, then `question = <closed formula>`. No proof is
+/// required or established. The result grants no admission or truth claim.
+pub fn validate_question_against_proof_context(
+    source: &str,
+    context: &ArtifactState,
+) -> Result<ValidatedQuestion, CompileError> {
+    if source.len() > AUTHORING_SOURCE_MAX_BYTES {
+        return Err(CompileError::SourceTooLong {
+            actual: source.len(),
+            maximum: AUTHORING_SOURCE_MAX_BYTES,
+        });
+    }
+    Parser::new(source).question(context)
+}
+
 fn compile_with_artifact_state(
     source: &str,
     artifact_state: &ArtifactState,
@@ -92,7 +110,7 @@ mod selected_history;
 pub use diagnostics::{
     CompileDiagnostic, CompileError, DiagnosticCode, SourcePosition, SourceSpan,
 };
-pub use output::{CompiledArtifact, CompiledDefinition, CompiledProof};
+pub use output::{CompiledArtifact, CompiledDefinition, CompiledProof, ValidatedQuestion};
 use parser::Parser;
 pub use selected_history::{
     SelectedHistoryCompileError, compile_against_selected_history,

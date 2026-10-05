@@ -1,0 +1,1 @@
+{"schema":1,"seeds":[17,29,43],"epochs":12,"learning_rate":0.01,"threshold_floor":0.90,"active_cpu_seconds":900,"max_rss_bytes":536870912,"max_output_bytes":67108864,"decision_millis":5000}

@@ -4,6 +4,7 @@ mod experiment;
 mod graph;
 mod index;
 mod model;
+mod questions;
 #[cfg(test)]
 mod tests;
 use crate::{dataset::Corpus, experiment::Config, model::Model};
@@ -25,8 +26,28 @@ fn write<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     f.write_all(&bytes).map_err(|e| e.to_string())
 }
+struct ExperimentLock(std::path::PathBuf);
+impl Drop for ExperimentLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+fn experiment_lock() -> Result<ExperimentLock, String> {
+    let path = std::env::temp_dir().join("naome-proof-lab.lock");
+    let mut lock = fs::OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|e| format!("experiment lock unavailable ({e}); verify no owned process before removing a stale lock"))?;
+    let guard = ExperimentLock(path);
+    writeln!(lock, "{}", std::process::id()).map_err(|e| e.to_string())?;
+    Ok(guard)
+}
 fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args
+        .first()
+        .is_some_and(|command| command.starts_with("questions-"))
+    {
+        return questions::run(&args);
+    }
     if args.as_slice() == ["--identity"] {
         println!(
             "{}",
@@ -35,6 +56,11 @@ fn run() -> Result<(), String> {
             "source_tree":env!("NAOME_LAB_SOURCE_TREE"),
             "source_clean":env!("NAOME_LAB_SOURCE_CLEAN") == "true"})
         );
+        return Ok(());
+    }
+    if args.len() == 2 && args[0] == "--validate-question-config" {
+        questions::validate_config(Path::new(&args[1]))?;
+        println!("question configuration accepted without experiment work");
         return Ok(());
     }
     if args.len() == 2 && args[0] == "--validate-config" {
@@ -50,17 +76,7 @@ fn run() -> Result<(), String> {
     config.validate()?;
     let output = Path::new(&args[2]);
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
-    // Cross-command single-process admission on this host, released by RAII.
-    let lock_path = std::env::temp_dir().join("naome-proof-lab.lock");
-    let mut lock=fs::OpenOptions::new().write(true).create_new(true).open(&lock_path).map_err(|e|format!("experiment lock unavailable ({e}); verify no owned process before removing a stale lock"))?;
-    writeln!(lock, "{}", std::process::id()).map_err(|e| e.to_string())?;
-    struct Lock(std::path::PathBuf);
-    impl Drop for Lock {
-        fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
-        }
-    }
-    let _lock = Lock(lock_path);
+    let _lock = experiment_lock()?;
     let config_digest = dataset::digest(&fs::read(&args[1]).map_err(|e| e.to_string())?);
     match args[0].as_str() {
         "generate" => {
