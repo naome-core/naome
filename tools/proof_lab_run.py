@@ -104,6 +104,9 @@ def run_stage(command, directory, stage, remaining_seconds,
             finally:
                 for signum, handler in previous.items():
                     signal.signal(signum, handler)
+    # A stop received after the child exits still interrupts the workflow.
+    if stop[0] is not None:
+        failure = failure or f"supervisor received {signal.Signals(stop[0]).name}"
     # /usr/bin/time records the native high-water RSS between polling samples.
     raw = resources.read_text() if resources.exists() else ""
     for line in raw.splitlines():
@@ -165,7 +168,8 @@ def main():
         receipt["active_execution_seconds"] = elapsed
         (directory / "execution.json").write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps(result), flush=True)
-        if result["failure"] or result["exit_code"] or not result["owned_group_empty"]:
+        if (result["failure"] or result["termination_signal"]
+                or result["exit_code"] or not result["owned_group_empty"]):
             return 1
     manifest = {p.name: {"bytes": p.stat().st_size, "sha256": sha256(p)}
                 for p in directory.iterdir() if p.is_file()}
