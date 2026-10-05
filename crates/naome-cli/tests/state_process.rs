@@ -26,11 +26,11 @@ mod admission;
 #[path = "cases/successor.rs"]
 mod successor;
 
-fn process_guard() -> std::sync::MutexGuard<'static, ()> {
-    static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    ACTIVE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+#[path = "support/process_resources.rs"]
+mod process_resources;
+
+fn process_guard() -> process_resources::Slot<'static> {
+    process_resources::admit()
 }
 
 const BIN: &str = env!("CARGO_BIN_EXE_naome");
@@ -76,17 +76,57 @@ fn command(args: &[String]) -> Value {
 fn path(path: impl AsRef<Path>) -> String {
     path.as_ref().to_str().unwrap().to_owned()
 }
+fn wall_clock_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+}
+fn open_phase(status: &Value, submission: &str, phase: &str, wall_time: f64) -> bool {
+    status["consensus_position"].is_object()
+        && status["active"]["submission"] == submission
+        && status["active"]["phase"] == phase
+        && status["active"]["deadline"]
+            .as_u64()
+            .is_some_and(|deadline| deadline as f64 > wall_time)
+}
+
+#[test]
+fn phase_ingress_rejects_expired_wall_time_despite_certified_reserve() {
+    let mut status = serde_json::json!({
+        "consensus_position": {"height": 29, "phase": "Proposal", "round": 0},
+        "time": 1791144581_u64,
+        "active": {"submission": "question", "phase": "Reveal", "deadline": 1791144589_u64}
+    });
+    assert!(open_phase(&status, "question", "Reveal", 1791144588.0));
+    assert!(!open_phase(&status, "question", "Reveal", 1791144589.714));
+    assert!(!open_phase(&status, "question", "Reveal", 1791144589.0));
+    assert!(!open_phase(&status, "other", "Reveal", 1791144588.0));
+    assert!(!open_phase(&status, "question", "Commit", 1791144588.0));
+    status["consensus_position"] = Value::Null;
+    assert!(!open_phase(&status, "question", "Reveal", 1791144588.0));
+}
+
 struct Lab {
     root: PathBuf,
     nodes: Vec<Option<Child>>,
     base: u16,
     successor_configs: Option<Vec<String>>,
+    started: Instant,
+    observations: std::sync::Mutex<Vec<Value>>,
+    status_queries: std::sync::atomic::AtomicUsize,
+    // Released after Drop reaps every owned child, including panic cleanup.
+    _ports: process_resources::PortLease,
 }
 impl Lab {
     fn new() -> Self {
-        Self::new_with_records(128)
+        Self::with_timing(128, "fast-process-test")
     }
     fn new_with_records(run_records: u64) -> Self {
+        Self::with_timing(run_records, "process-test")
+    }
+    fn with_timing(run_records: u64, timing: &str) -> Self {
+        let started = Instant::now();
         let mut random = [0; 4];
         getrandom::fill(&mut random).unwrap();
         let root = PathBuf::from(format!(
@@ -94,22 +134,14 @@ impl Lab {
             std::process::id(),
             u32::from_ne_bytes(random)
         ));
-        let base = (0..1000)
-            .find_map(|offset| {
-                let base = 20000 + ((u32::from_ne_bytes(random) + offset) % 40000) as u16;
-                (0..12)
-                    .map(|i| std::net::TcpListener::bind(("127.0.0.1", base + i)))
-                    .collect::<std::io::Result<Vec<_>>>()
-                    .ok()
-                    .map(|_| base)
-            })
-            .unwrap();
+        let ports = process_resources::PortLease::acquire(u32::from_ne_bytes(random));
+        let base = ports.base;
         let order_path = root.with_extension("retirement.json");
         fs::write(&order_path, b"[2,0,3,1]").unwrap();
         let configured = command(&[
             "setup".into(),
             path(&root),
-            "process-test".into(),
+            timing.into(),
             run_records.to_string(),
             base.to_string(),
             path(&order_path),
@@ -126,6 +158,10 @@ impl Lab {
             nodes: (0..5).map(|_| None).collect(),
             base,
             successor_configs: None,
+            started,
+            observations: std::sync::Mutex::new(Vec::new()),
+            status_queries: std::sync::atomic::AtomicUsize::new(0),
+            _ports: ports,
         }
     }
     fn config(&self, index: usize) -> String {
@@ -154,11 +190,34 @@ impl Lab {
         );
     }
     fn status(&self, index: usize) -> Option<Value> {
+        self.status_queries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let output = raw(&["status".into(), self.config(index)]);
         output
             .status
             .success()
             .then(|| serde_json::from_slice(&output.stdout).unwrap())
+    }
+    fn observe(
+        &self,
+        kind: &str,
+        label: &str,
+        operation: Option<&str>,
+        status: &Value,
+        elapsed: Duration,
+    ) {
+        let margin = status["active"]["deadline"]
+            .as_u64()
+            .zip(status["time"].as_u64())
+            .map(|(deadline, time)| i128::from(deadline) - i128::from(time));
+        let wall_time = wall_clock_seconds();
+        self.observations.lock().unwrap().push(serde_json::json!({
+            "kind": kind, "label": label, "elapsed_seconds": elapsed.as_secs_f64(),
+            "operation": operation, "observed_wall_clock_unix_seconds": wall_time,
+            "height": status["height"], "active": status["active"],
+            "certified_time": status["time"], "certified_margin_seconds": margin,
+            "wall_clock_margin_seconds": status["active"]["deadline"].as_u64().map(|deadline| deadline as f64 - wall_time),
+        }));
     }
     #[track_caller]
     fn wait(&self, index: usize, predicate: impl Fn(&Value) -> bool) -> Value {
@@ -280,7 +339,7 @@ impl Lab {
             false
         });
     }
-    fn wait_active_phase(&self, submission: &str, phase: &str) -> usize {
+    fn wait_active_phase(&self, submission: &str, phase: &str) -> (usize, Value) {
         let start = Instant::now();
         loop {
             let mut question_ingress = None;
@@ -297,10 +356,9 @@ impl Lab {
                 if status["consensus_position"].is_null() {
                     continue;
                 }
-                if status["active"]["submission"] == submission
-                    && status["active"]["phase"] == phase
-                {
-                    return index;
+                if open_phase(&status, submission, phase, wall_clock_seconds()) {
+                    self.observe("phase_observed", phase, None, &status, start.elapsed());
+                    return (index, status);
                 }
             }
             // One question lookup is enough to detect a terminal state. Polling
@@ -336,6 +394,28 @@ impl Lab {
             thread::sleep(Duration::from_millis(250));
         }
     }
+    fn timed_phase_command(&self, args: &[String], context: &Value, label: &str) -> Value {
+        let command_started_wall = wall_clock_seconds();
+        let deadline = context["active"]["deadline"].as_u64().unwrap() as f64;
+        assert!(
+            deadline > command_started_wall,
+            "{label}: selected phase expired before action authoring; context={context}"
+        );
+        let started = Instant::now();
+        let operation = command(args);
+        // This is the selected ingress context, not the CLI's later snapshot or
+        // ledger inclusion time. The matching finalized receipt is separate.
+        self.observations.lock().unwrap().push(serde_json::json!({
+            "kind": "phase_command", "label": label,
+            "operation": operation["operation"], "active": context["active"],
+            "height": context["height"], "consensus_position": context["consensus_position"],
+            "command_started_wall_clock_unix_seconds": command_started_wall,
+            "command_completed_wall_clock_unix_seconds": wall_clock_seconds(),
+            "command_elapsed_seconds": started.elapsed().as_secs_f64(),
+            "selected_context_wall_reserve_seconds": deadline - command_started_wall,
+        }));
+        operation
+    }
     fn wait_receipt(
         &self,
         node: usize,
@@ -347,9 +427,11 @@ impl Lab {
         let id = operation["operation"]
             .as_str()
             .expect("signed operation ID");
+        let started = Instant::now();
         self.wait(node, |status| {
             let receipt = command(&["receipt".into(), self.config(node), id.into()]);
             if receipt["status"] == "finalized" {
+                self.observe(kind, label, Some(id), status, started.elapsed());
                 return true;
             }
             let context = format!(
@@ -376,10 +458,11 @@ impl Lab {
         // All owners can sign against the same finalized Voting view. Waiting
         // for that view once avoids four competing status/question pollers in
         // the short voting window after an authority handoff.
-        let ingress = self.wait_active_phase(submission, "Voting");
+        let (ingress, context) = self.wait_active_phase(submission, "Voting");
         let votes = thread::scope(|scope| {
             let mut handles = Vec::new();
             for &index in owners {
+                let context = &context;
                 handles.push(scope.spawn(move || {
                     let args = [
                         "vote".into(),
@@ -388,7 +471,8 @@ impl Lab {
                         "YES".into(),
                         self.file(&format!("{label}-vote-{index}")),
                     ];
-                    let vote = command(&args);
+                    let vote =
+                        self.timed_phase_command(&args, context, &format!("{label}-vote-{index}"));
                     (ingress, vote)
                 }));
             }
@@ -410,24 +494,32 @@ impl Lab {
         }
     }
     fn solve(&self, _node: usize, author: usize, package: &str, label: &str, submission: &str) {
-        let commit_ingress = self.wait_active_phase(submission, "Commit");
-        let commit = command(&[
-            "commit".into(),
-            self.config(commit_ingress),
-            self.key(author),
-            package.into(),
-            self.file(&format!("{label}.secret")),
-            self.file(&format!("{label}.commit")),
-        ]);
+        let (commit_ingress, commit_context) = self.wait_active_phase(submission, "Commit");
+        let commit = self.timed_phase_command(
+            &[
+                "commit".into(),
+                self.config(commit_ingress),
+                self.key(author),
+                package.into(),
+                self.file(&format!("{label}.secret")),
+                self.file(&format!("{label}.commit")),
+            ],
+            &commit_context,
+            &format!("{label}-commit"),
+        );
         self.wait_receipt(commit_ingress, submission, &commit, "commit", label);
-        let reveal_ingress = self.wait_active_phase(submission, "Reveal");
-        let reveal = command(&[
-            "reveal".into(),
-            self.config(reveal_ingress),
-            self.key(author),
-            self.file(&format!("{label}.secret")),
-            self.file(&format!("{label}.reveal")),
-        ]);
+        let (reveal_ingress, reveal_context) = self.wait_active_phase(submission, "Reveal");
+        let reveal = self.timed_phase_command(
+            &[
+                "reveal".into(),
+                self.config(reveal_ingress),
+                self.key(author),
+                self.file(&format!("{label}.secret")),
+                self.file(&format!("{label}.reveal")),
+            ],
+            &reveal_context,
+            &format!("{label}-reveal"),
+        );
         self.wait_receipt(reveal_ingress, submission, &reveal, "reveal", label);
     }
     #[track_caller]
@@ -538,6 +630,15 @@ impl Drop for Lab {
             let _ = child.kill();
             let _ = child.wait();
         }
+        eprintln!(
+            "process_lab_metrics={}",
+            serde_json::json!({
+                "case": std::thread::current().name(), "elapsed_seconds": self.started.elapsed().as_secs_f64(),
+                "panicking": std::thread::panicking(),
+                "status_queries": self.status_queries.load(std::sync::atomic::Ordering::Relaxed),
+                "observations": self.observations.get_mut().unwrap(),
+            })
+        );
         if std::thread::panicking() {
             eprintln!(
                 "retained private process diagnostics: {}",

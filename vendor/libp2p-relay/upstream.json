@@ -1,0 +1,37 @@
+{
+  "git": {
+    "sha1": "4682e735cbdfd8f2b59f5478591a4e8ae552fa68"
+  },
+  "path_in_vcs": "protocols/relay",
+  "package": "libp2p-relay",
+  "version": "0.21.1",
+  "registry": "https://crates.io/api/v1/crates/libp2p-relay/0.21.1/download",
+  "files": {
+    "Cargo.toml": "4f28564f4d7b0fcd980419c5948b65aee3a21c16838847665a8cc7fbaca58389",
+    "src/behaviour/handler.rs": "d0df2c302cb07b4240f3b74e58dc22f74dfa4dba4d2f7732c705aa215c26c594",
+    "src/behaviour/rate_limiter.rs": "eb5244a84daff61e33bdab7f7e6fba62e9482b59497ba97289fdb7549447cca0",
+    "src/behaviour.rs": "8536b216537c859c80a1d61cecb4a09b95188bc58f7baf2581818a7206a0a8c1",
+    "src/copy_future.rs": "81788c5e34ac0d5088fca2ecd3b1f7d97ea3b975c3ee6cf2679d51ea018cd4c9",
+    "src/generated/message.proto": "aef8ae29c0ecc9334850b5e2fd078c3077d118fedf92d901d1d60378bd8045c3",
+    "src/generated/message_v2/mod.rs": "b46ffabbff515cdcc5bce0fc3c54f01b3aa0525199d4f79228b0e7c13d53c5ab",
+    "src/generated/message_v2/pb.rs": "992fb116b2818fc3fe76cf54e0474771e23a7604b4c9fd2c57d2598a5e4a51ae",
+    "src/generated/mod.rs": "bc17649d5325748378fb81f8afd424202f15f30fb3aa34312e498e7f2b7f5469",
+    "src/lib.rs": "859d2ffac1fa61b00215760c14ec344d833e10d21ed4c8c2a51d8a558f9b91d4",
+    "src/multiaddr_ext.rs": "b4a90e1c99d28fbb4a964f8b005632ecd69705ca20fda5a04e66ae415cc73b52",
+    "src/priv_client/handler.rs": "c4dd153945ca4de5d3a7a9d7690fa50aedcb9a70acdf7da91c7a0981ca058fc1",
+    "src/priv_client/transport.rs": "94bb07ea212662ba281bf2454f9cf32f889e06fbed59925a00f4679769c014f6",
+    "src/priv_client.rs": "fbdd0346fcec40acf5912aa089a5c011bdda1e3af6b96c4bdbadc3e24e7908c8",
+    "src/protocol/inbound_hop.rs": "115a1e7b7659ef71a1967981b68414510a92bca6925d3b45e5da2f6fc5236cc3",
+    "src/protocol/inbound_stop.rs": "bcee9178344b723053ae344afec8c9412890ea2447227ac24b2ea6b6570c44ac",
+    "src/protocol/outbound_hop.rs": "27514fd1ecea9b5702b4dc14f23c1fd7326d94e7a6e5b60531c03d4534c52406",
+    "src/protocol/outbound_stop.rs": "069d444490aef5de4d3033336ec3e72a4586e9bdbd4154607ae50bab19875a6d",
+    "src/protocol.rs": "e151910546f1a46d8d2ce09132155d2b21384070262aca667b8e7c2a8741a1fa",
+    "tests/lib.rs": "e4237c8c46ab0b76941731dea3cd6a539adb7ed7152f58c5a5f19978abb5e7ef",
+    "Cargo.toml.orig": "6a05f086f23c158d3f8e159af34b9e0aedeef79097fe04aa321b386791d64111"
+  },
+  "workspace_manifest": "https://raw.githubusercontent.com/libp2p/rust-libp2p/4682e735cbdfd8f2b59f5478591a4e8ae552fa68/Cargo.toml",
+  "test_helper_resolution": {
+    "libp2p-swarm-test": "0.6.0",
+    "quickcheck": "1.0.3 (matching reexported APIs from upstream quickcheck-ext; relay only)"
+  }
+}

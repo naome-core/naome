@@ -118,7 +118,9 @@ fn archive_has_earned_owner_quorum_vote(
 
 #[test]
 fn new_researcher_registers_proves_receives_reward_and_survives_replay_and_restart() {
-    let _guard = process_guard();
+    // Five-process earned-owner handoff must not share its timed phases with
+    // another Lab. This uses the same pool and outlives Lab child teardown.
+    let _guard = process_resources::admit_exclusive();
     let mut lab = Lab::new();
     let account = command(&["account".into(), "create".into(), lab.key(6)]);
     let author = account["account"].as_str().unwrap().to_owned();

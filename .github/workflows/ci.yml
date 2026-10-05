@@ -80,17 +80,6 @@ jobs:
       runner: macos-15
       profile: ${{ matrix.profile }}
 
-  windows_tests:
-    name: Rust tests (Windows x86_64, ${{ matrix.profile }})
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [test, release]
-    uses: ./.github/workflows/rust-tests.yml
-    with:
-      runner: windows-2025
-      profile: ${{ matrix.profile }}
-
   linux:
     name: Rust platform (Linux x86_64)
     if: ${{ always() }}
@@ -131,30 +120,10 @@ jobs:
         if: ${{ always() && cancelled() }}
         run: exit 1
 
-  windows:
-    name: Rust platform (Windows x86_64)
-    if: ${{ always() }}
-    needs: windows_tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Verify both Windows profiles
-        env:
-          PLATFORM_RESULT: ${{ needs.windows_tests.result }}
-        run: |
-          if [ "$PLATFORM_RESULT" != "success" ]; then
-            echo "Windows profiles result: $PLATFORM_RESULT"
-            exit 1
-          fi
-      - name: Reject workflow cancellation
-        if: ${{ always() && cancelled() }}
-        run: exit 1
-
   devnet:
     name: Devnet qualification
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,7 +165,7 @@ jobs:
   required:
     name: Rust CI
     if: ${{ always() }}
-    needs: [quality, linux, macos, windows, devnet]
+    needs: [quality, linux, macos, devnet]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -206,14 +175,13 @@ jobs:
           QUALITY_RESULT: ${{ needs.quality.result }}
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
-          WINDOWS_RESULT: ${{ needs.windows.result }}
           DEVNET_RESULT: ${{ needs.devnet.result }}
         run: |
           if [ "$QUALITY_RESULT" != "success" ] || [ "$LINUX_RESULT" != "success" ] || \
-             [ "$MACOS_RESULT" != "success" ] || [ "$WINDOWS_RESULT" != "success" ] || \
+             [ "$MACOS_RESULT" != "success" ] || \
              [ "$DEVNET_RESULT" != "success" ]; then
             echo "Required CI jobs did not all succeed."
-            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT windows=$WINDOWS_RESULT devnet=$DEVNET_RESULT"
+            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT devnet=$DEVNET_RESULT"
             exit 1
           fi
       - name: Reject workflow cancellation

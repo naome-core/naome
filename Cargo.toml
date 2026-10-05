@@ -1,11 +1,14 @@
 [workspace]
 members = [
+    "vendor/libp2p-dcutr",
+    "vendor/libp2p-relay",
     "crates/naome-authoring",
     "crates/naome-chain",
     "crates/naome-checker",
     "crates/naome-consensus",
     "crates/naome-foundation",
     "crates/naome-ledger",
+    "crates/naome-knowledge",
     "crates/naome-network",
     "crates/naome-node",
     "crates/naome-pouw",
@@ -56,3 +59,7 @@ overflow-checks = true
 opt-level = 2
 debug-assertions = true
 overflow-checks = true
+
+[patch.crates-io]
+libp2p-dcutr = { path = "vendor/libp2p-dcutr" }
+libp2p-relay = { path = "vendor/libp2p-relay" }

@@ -89,6 +89,11 @@ fn custom_endpoints_do_not_require_reduced_work_or_signing_limits() {
     assert_eq!(ci.kind(), TimingKind::CiTest);
     assert_eq!(ci.timing().voting_seconds, 1);
     assert_ne!(ci.id(), standard.id());
+    args[1] = "fast-process-test".into();
+    let fast = parameters(&args).unwrap().0;
+    assert_eq!(fast.kind(), TimingKind::FastProcessTest);
+    assert_eq!(fast.timing().voting_seconds, 8);
+    assert_ne!(fast.id(), ci.id());
     args.push("unknown".into());
     assert!(parameters(&args).is_err());
 }

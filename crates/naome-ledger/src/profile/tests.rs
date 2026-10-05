@@ -237,6 +237,45 @@ fn profile_presets_and_storage_reservation() {
 }
 
 #[test]
+fn historical_profile_bytes_survive_the_additive_fast_process_profile() {
+    // Captured from the complete presets at 33b1340, before adding tag 5.
+    let fixtures: [(Profile, &[u8]); 5] = [
+        (Profile::lab(), include_bytes!("fixtures/lab-v7.bin")),
+        (
+            Profile::research(),
+            include_bytes!("fixtures/research-v7.bin"),
+        ),
+        (
+            Profile::short_test(),
+            include_bytes!("fixtures/short-test-v7.bin"),
+        ),
+        (
+            Profile::ci_test(),
+            include_bytes!("fixtures/ci-test-v7.bin"),
+        ),
+        (
+            Profile::process_test(),
+            include_bytes!("fixtures/process-test-v7.bin"),
+        ),
+    ];
+    let fast = Profile::fast_process_test();
+    for (profile, bytes) in fixtures {
+        assert_eq!(profile.encode(), bytes);
+        assert_eq!(Profile::decode(bytes).unwrap(), profile);
+        assert_ne!(fast.id(), profile.id());
+    }
+    assert_eq!(fast.name(), "state-v7-fast-process-test");
+    assert_eq!(fast.encode()[8], 5);
+    assert_eq!(Profile::decode(&fast.encode()).unwrap(), fast);
+    let mut relabeled = fast.encode();
+    // A new short window cannot be imported as historical ProcessTest.
+    relabeled[8] = 4;
+    assert!(Profile::decode(&relabeled).is_err());
+    relabeled[8] = 6;
+    assert!(Profile::decode(&relabeled).is_err());
+}
+
+#[test]
 fn rewards_are_exact_and_immutable_on_wire() {
     let p = Profile::lab();
     let r = p.rewards();
