@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Run finite Rust-only learning trials and retain source/resource receipts."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 EXECUTION_SECONDS = 7200
@@ -54,6 +57,38 @@ def verify_binary_identity(binary, toolchain, source_tree):
     if identity.get("source_tree") != source_tree or identity.get("source_clean") is not True:
         raise RuntimeError(f"binary does not match the current clean source tree: {identity}")
     return identity
+
+
+@contextmanager
+def snapshot_inputs(binary, config):
+    """Capture private input bytes before checking or executing them."""
+    stop = [None]
+    previous = {s: signal.getsignal(s) for s in [signal.SIGTERM, signal.SIGINT]}
+
+    def request_stop(signum, _frame):
+        stop[0] = signum
+
+    def check_stop():
+        if stop[0] is not None:
+            raise RuntimeError(f"supervisor received {signal.Signals(stop[0]).name} during input preflight")
+
+    for signum in previous:
+        signal.signal(signum, request_stop)
+    try:
+        with tempfile.TemporaryDirectory(prefix="naome-proof-lab-inputs-") as name:
+            directory = Path(name)
+            frozen_binary = directory / "input-binary"
+            frozen_config = directory / "input-config.json"
+            shutil.copyfile(binary, frozen_binary)
+            shutil.copyfile(config, frozen_config)
+            frozen_binary.chmod(0o555)
+            frozen_config.chmod(0o444)
+            check_stop()
+            yield frozen_binary, frozen_config, check_stop
+            check_stop()
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def terminate(process):
@@ -162,14 +197,39 @@ def main():
     cargo = subprocess.check_output(["cargo", "--version"], cwd=repo, text=True).strip()
     if not toolchain.startswith(f"rustc {pinned} ") or not cargo.startswith(f"cargo {pinned} "):
         raise RuntimeError(f"PATH does not use the pinned {pinned} toolchain: {toolchain}; {cargo}")
-    identity = verify_binary_identity(binary, toolchain, source_tree)
-    # The Rust command validates the same complete envelope before any output
-    # directory, experiment lock, stage log or training artifact is created.
-    subprocess.run([str(binary), "--validate-config", str(config)], check=True)
-    directory.mkdir(parents=True, exist_ok=False)
+    source_binary = str(binary)
+    source_config = str(config)
+    retained_binary = directory / "input-binary"
+    retained_config = directory / "input-config.json"
+    created = False
+    try:
+        with snapshot_inputs(binary, config) as (frozen_binary, frozen_config, check_stop):
+            identity = verify_binary_identity(frozen_binary, toolchain, source_tree)
+            check_stop()
+            # Validate the captured bytes before the attempt directory or lock.
+            subprocess.run([str(frozen_binary), "--validate-config", str(frozen_config)], check=True)
+            check_stop()
+            binary_digest = sha256(frozen_binary)
+            config_digest = sha256(frozen_config)
+            directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+            created = True
+            shutil.move(str(frozen_binary), retained_binary)
+            shutil.move(str(frozen_config), retained_config)
+            check_stop()
+    except BaseException:
+        if created:
+            retained_binary.unlink(missing_ok=True)
+            retained_config.unlink(missing_ok=True)
+            directory.rmdir()
+        raise
+    binary, config = retained_binary, retained_config
+    # Successful input snapshots are retained and counted as attempt artifacts.
     receipt = {"schema": 1, "source_revision": revision,
                "source_tree": source_tree, "binary_source_tree": identity["source_tree"],
-               "binary_sha256": sha256(binary), "config_sha256": sha256(config),
+               "binary_sha256": binary_digest, "config_sha256": config_digest,
+               "input_snapshots": {"binary": binary.name, "config": config.name,
+                                   "source_binary_path": source_binary,
+                                   "source_config_path": source_config},
                "platform": platform.platform(), "machine": platform.machine(),
                "cpu": subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip() if sys.platform == "darwin" else platform.processor(),
                "toolchain": toolchain, "cargo": cargo, "binary_compiler": identity["compiler"],
@@ -179,6 +239,8 @@ def main():
                "runs": []}
     elapsed = 0.0
     for stage in ["generate", "train", "evaluate", "replay", "benchmark"]:
+        if sha256(binary) != binary_digest or sha256(config) != config_digest:
+            raise RuntimeError("retained input snapshot changed before stage launch")
         result = run_stage([str(binary), stage, str(config), str(directory)],
                            directory, stage, EXECUTION_SECONDS - elapsed)
         elapsed += result["seconds"]

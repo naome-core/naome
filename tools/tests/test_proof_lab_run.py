@@ -151,6 +151,14 @@ result=runner.run_stage([sys.executable,'-c','import time;time.sleep(20)'],Path(
 
 
 class ProofLabPreflightTests(unittest.TestCase):
+    def setUp(self):
+        for attribute, value in [("platform", "control platform"),
+                                 ("machine", "control machine"),
+                                 ("processor", "control processor")]:
+            patch = mock.patch.object(runner.platform, attribute, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def command_outputs(self, identity):
         repo = Path(spec.origin).resolve().parents[1]
         pin = runner.re.search(r'^channel\s*=\s*"([^"]+)"',
@@ -166,6 +174,8 @@ class ProofLabPreflightTests(unittest.TestCase):
                 return f"rustc {pin} (control)\n"
             if command == ["cargo", "--version"]:
                 return f"cargo {pin} (control)\n"
+            if command == ["sysctl", "-n", "machdep.cpu.brand_string"]:
+                return "control CPU\n"
             if command[-1] == "--identity":
                 return json.dumps({"schema": 1, "compiler": f"rustc {pin} (control)",
                                    "source_tree": "a" * 40, "source_clean": True, **identity})
@@ -176,12 +186,14 @@ class ProofLabPreflightTests(unittest.TestCase):
         for identity in [{"source_tree": "c" * 40}, {"source_clean": False}]:
             with self.subTest(identity=identity), tempfile.TemporaryDirectory() as name:
                 directory = Path(name) / "new-attempt"
+                (Path(name) / "binary").write_bytes(b"binary control")
+                (Path(name) / "config.json").write_bytes(b"config control")
                 args = ["runner", "--binary", str(Path(name) / "binary"),
                         "--config", str(Path(name) / "config.json"),
                         "--directory", str(directory)]
                 with (mock.patch.object(sys, "argv", args),
                       mock.patch.object(runner.subprocess, "check_output",
-                                        side_effect=self.command_outputs(identity)),
+                                        side_effect=self.command_outputs(identity)) as checks,
                       mock.patch.object(runner.subprocess, "run") as validation,
                       mock.patch.object(runner, "run_stage") as stage):
                     with self.assertRaisesRegex(RuntimeError, "current clean source tree"):
@@ -189,12 +201,17 @@ class ProofLabPreflightTests(unittest.TestCase):
                 self.assertFalse(directory.exists())
                 validation.assert_not_called()
                 stage.assert_not_called()
+                checked = next(call.args[0][0] for call in checks.call_args_list
+                               if call.args[0][-1] == "--identity")
+                self.assertFalse(Path(checked).parent.exists())
 
     def test_rust_config_rejection_precedes_any_output_or_stage(self):
         with tempfile.TemporaryDirectory() as name:
             directory = Path(name) / "invalid-attempt"
             binary = Path(name) / "binary"
             config = Path(name) / "config.json"
+            binary.write_bytes(b"binary control")
+            config.write_bytes(b"config control")
             args = ["runner", "--binary", str(binary), "--config", str(config),
                     "--directory", str(directory)]
             command = [str(binary.resolve()), "--validate-config", str(config.resolve())]
@@ -206,9 +223,195 @@ class ProofLabPreflightTests(unittest.TestCase):
                   mock.patch.object(runner, "run_stage") as stage):
                 with self.assertRaises(subprocess.CalledProcessError):
                     runner.main()
-            validation.assert_called_once_with(command, check=True)
+            validation.assert_called_once()
+            checked = validation.call_args.args[0]
+            self.assertEqual(checked[1], "--validate-config")
+            self.assertNotEqual(Path(checked[0]), binary.resolve())
+            self.assertNotEqual(Path(checked[2]), config.resolve())
+            self.assertFalse(Path(checked[0]).parent.exists())
             self.assertFalse(directory.exists())
             stage.assert_not_called()
+
+    def stage_result(self, command, directory, stage, *_args):
+        return {"stage": stage, "command": command, "seconds": 0,
+                "failure": None, "termination_signal": None, "exit_code": 0,
+                "owned_group_empty": True, "artifact_bytes": runner.output_size(directory)}
+
+    def test_replaced_source_paths_do_not_change_verified_stage_snapshots(self):
+        with tempfile.TemporaryDirectory() as name:
+            binary = Path(name) / "binary"
+            config = Path(name) / "config.json"
+            directory = Path(name) / "attempt"
+            binary.write_bytes(b"verified binary")
+            config.write_bytes(b"verified config")
+            temporary = []
+
+            def validate(command, **_kwargs):
+                temporary.append(Path(command[0]).parent)
+                self.assertEqual(Path(command[0]).read_bytes(), b"verified binary")
+                self.assertEqual(Path(command[2]).read_bytes(), b"verified config")
+
+            def stage(command, *args):
+                binary.write_bytes(b"replaced binary")
+                config.write_bytes(b"replaced config")
+                self.assertEqual(Path(command[0]).read_bytes(), b"verified binary")
+                self.assertEqual(Path(command[2]).read_bytes(), b"verified config")
+                self.assertEqual(Path(command[0]).stat().st_mode & 0o777, 0o555)
+                self.assertEqual(Path(command[2]).stat().st_mode & 0o777, 0o444)
+                self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+                return self.stage_result(command, *args)
+
+            argv = ["runner", "--binary", str(binary), "--config", str(config),
+                    "--directory", str(directory)]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(runner.subprocess, "check_output", side_effect=self.command_outputs({})),
+                  mock.patch.object(runner.subprocess, "run", side_effect=validate),
+                  mock.patch.object(runner, "run_stage", side_effect=stage) as stages):
+                self.assertEqual(runner.main(), 0)
+            self.assertEqual(stages.call_count, 5)
+            self.assertTrue(temporary)
+            self.assertTrue(all(not path.exists() for path in temporary))
+            receipt = json.loads((directory / "execution.json").read_text())
+            self.assertEqual(receipt["binary_sha256"], runner.sha256(directory / "input-binary"))
+            self.assertEqual(receipt["config_sha256"], runner.sha256(directory / "input-config.json"))
+            self.assertEqual(receipt["input_snapshots"]["source_binary_path"], str(binary.resolve()))
+            manifest = json.loads((directory / "manifest.json").read_text())
+            self.assertIn("input-binary", manifest)
+            self.assertIn("input-config.json", manifest)
+
+    def test_changed_retained_snapshot_vetoes_the_next_stage(self):
+        with tempfile.TemporaryDirectory() as name:
+            binary = Path(name) / "binary"
+            config = Path(name) / "config.json"
+            directory = Path(name) / "attempt"
+            binary.write_bytes(b"verified binary")
+            config.write_bytes(b"verified config")
+
+            def stage(command, *args):
+                retained_config = Path(command[2])
+                retained_config.chmod(0o644)
+                retained_config.write_bytes(b"changed retained config")
+                return self.stage_result(command, *args)
+
+            argv = ["runner", "--binary", str(binary), "--config", str(config),
+                    "--directory", str(directory)]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(runner.subprocess, "check_output", side_effect=self.command_outputs({})),
+                  mock.patch.object(runner.subprocess, "run"),
+                  mock.patch.object(runner, "run_stage", side_effect=stage) as stages):
+                with self.assertRaisesRegex(RuntimeError, "snapshot changed before stage launch"):
+                    runner.main()
+            self.assertEqual(stages.call_count, 1)
+            self.assertFalse((directory / "manifest.json").exists())
+            self.assertEqual(len(json.loads((directory / "execution.json").read_text())["runs"]), 1)
+
+    def test_snapshot_copy_failure_cleans_private_preflight_storage(self):
+        with tempfile.TemporaryDirectory() as name:
+            binary = Path(name) / "binary"
+            config = Path(name) / "config.json"
+            binary.write_bytes(b"verified binary")
+            config.write_bytes(b"verified config")
+            copy = runner.shutil.copyfile
+            temporary = []
+
+            def fail_config_copy(source, destination):
+                temporary.append(destination.parent)
+                if source == config:
+                    raise OSError("injected config copy failure")
+                return copy(source, destination)
+
+            with mock.patch.object(runner.shutil, "copyfile", side_effect=fail_config_copy):
+                with self.assertRaisesRegex(OSError, "injected config copy failure"):
+                    with runner.snapshot_inputs(binary, config):
+                        self.fail("copy failure must stop before yielding inputs")
+            self.assertTrue(temporary)
+            self.assertTrue(all(not path.exists() for path in temporary))
+
+    def test_stage_exception_retains_checked_inputs_after_preflight_cleanup(self):
+        with tempfile.TemporaryDirectory() as name:
+            binary = Path(name) / "binary"
+            config = Path(name) / "config.json"
+            directory = Path(name) / "attempt"
+            binary.write_bytes(b"verified binary")
+            config.write_bytes(b"verified config")
+            temporary = []
+
+            def validate(command, **_kwargs):
+                temporary.append(Path(command[0]).parent)
+
+            argv = ["runner", "--binary", str(binary), "--config", str(config),
+                    "--directory", str(directory)]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(runner.subprocess, "check_output", side_effect=self.command_outputs({})),
+                  mock.patch.object(runner.subprocess, "run", side_effect=validate),
+                  mock.patch.object(runner, "run_stage", side_effect=OSError("injected stage failure"))):
+                with self.assertRaisesRegex(OSError, "injected stage failure"):
+                    runner.main()
+            self.assertEqual((directory / "input-binary").read_bytes(), b"verified binary")
+            self.assertEqual((directory / "input-config.json").read_bytes(), b"verified config")
+            self.assertTrue(all(not path.exists() for path in temporary))
+
+    def test_one_sigterm_during_preflight_cleans_inputs_and_restores_handlers(self):
+        with tempfile.TemporaryDirectory() as name:
+            binary = Path(name) / "binary"
+            config = Path(name) / "config.json"
+            directory = Path(name) / "attempt"
+            binary.write_bytes(b"verified binary")
+            config.write_bytes(b"verified config")
+            previous = {signum: signal.getsignal(signum)
+                        for signum in [signal.SIGTERM, signal.SIGINT]}
+            temporary = []
+
+            def validate(command, **_kwargs):
+                temporary.append(Path(command[0]).parent)
+                os.kill(os.getpid(), signal.SIGTERM)
+
+            argv = ["runner", "--binary", str(binary), "--config", str(config),
+                    "--directory", str(directory)]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(runner.subprocess, "check_output",
+                                    side_effect=self.command_outputs({})),
+                  mock.patch.object(runner.subprocess, "run", side_effect=validate),
+                  mock.patch.object(runner, "run_stage") as stages):
+                with self.assertRaisesRegex(RuntimeError, "SIGTERM.*input preflight"):
+                    runner.main()
+            self.assertFalse(directory.exists())
+            self.assertTrue(temporary)
+            self.assertTrue(all(not path.exists() for path in temporary))
+            stages.assert_not_called()
+            for signum, handler in previous.items():
+                self.assertEqual(signal.getsignal(signum), handler)
+
+    def test_failed_second_input_transfer_cleans_partial_attempt_and_preflight(self):
+        with tempfile.TemporaryDirectory() as name:
+            binary = Path(name) / "binary"
+            config = Path(name) / "config.json"
+            directory = Path(name) / "attempt"
+            binary.write_bytes(b"verified binary")
+            config.write_bytes(b"verified config")
+            move = runner.shutil.move
+            temporary = []
+
+            def transfer(source, destination):
+                temporary.append(Path(source).parent)
+                if Path(destination).name == "input-config.json":
+                    raise OSError("injected second transfer failure")
+                return move(source, destination)
+
+            argv = ["runner", "--binary", str(binary), "--config", str(config),
+                    "--directory", str(directory)]
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(runner.subprocess, "check_output",
+                                    side_effect=self.command_outputs({})),
+                  mock.patch.object(runner.subprocess, "run"),
+                  mock.patch.object(runner.shutil, "move", side_effect=transfer),
+                  mock.patch.object(runner, "run_stage") as stages):
+                with self.assertRaisesRegex(OSError, "injected second transfer failure"):
+                    runner.main()
+            self.assertEqual(len(temporary), 2)
+            self.assertTrue(all(not path.exists() for path in temporary))
+            self.assertFalse(directory.exists())
+            stages.assert_not_called()
 
 
 if __name__ == "__main__":
