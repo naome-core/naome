@@ -299,18 +299,6 @@ def _run_decision(binary, config, directory, decision_millis, state, emit):
                                      "peak_sampled_rss_bytes": peak,
                                      "owned_group_empty": group_empty,
                                      "automatic_retry": False}
-    try:
-        pending = directory / "question-final-decision.pending"
-        save(pending, result)
-        if time.monotonic() >= deadline:
-            raise DecisionDeadline()
-        # Publish complete bytes only after all bounded work and the last veto.
-        os.link(pending, directory / "question-final-decision.json")
-    except OSError as error:
-        supervision = result["process_supervision"]
-        result = decline("ASSESSMENT_UNAVAILABLE", raw_digest, milliseconds)
-        result["process_supervision"] = supervision
-        result["receipt_retention_error"] = type(error).__name__
     return result
 
 
@@ -318,13 +306,48 @@ class DecisionDeadline(Exception):
     pass
 
 
-def emit_decision(result):
+def committed_decision(directory, state):
+    """Recognize the complete owned inode even if an alarm follows link success."""
+    publication = state.get("publication")
+    if publication is None:
+        return None
+    try:
+        current = (directory / "question-final-decision.json").stat()
+        if (current.st_dev, current.st_ino) == publication["identity"]:
+            return publication["result"]
+    except OSError:
+        pass
+    return None
+
+
+def publish_decision(directory, result, state, deadline, pending_name):
+    """Only a complete private receipt can become the terminal decision."""
+    pending = directory / pending_name
+    save(pending, result)
+    payload = (json.dumps(result) + "\n").encode()
+    if len(payload) > 2 * 1024**2:
+        raise ValueError("terminal receipt ceiling")
+    identity = pending.stat()
+    state["publication"] = {"result": result,
+                            "identity": (identity.st_dev, identity.st_ino),
+                            "echo_payload": payload}
+    if time.monotonic() >= deadline:
+        raise DecisionDeadline()
+    # The alarm remains active through the atomic link. Its handler recognizes
+    # that same complete inode if delivery occurs immediately after success.
+    os.link(pending, directory / "question-final-decision.json")
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    return result
+
+
+def emit_decision(result, payload=None):
     """A terminal CLI receipt never waits for a blocked stdout consumer."""
     descriptor = sys.stdout.fileno()
     blocking = os.get_blocking(descriptor)
     try:
         os.set_blocking(descriptor, False)
-        payload = (json.dumps(result) + "\n").encode()
+        if payload is None:
+            payload = (json.dumps(result) + "\n").encode()
         if len(payload) > 2 * 1024**2:
             raise ValueError("terminal receipt ceiling")
         os.write(descriptor, payload)
@@ -347,22 +370,36 @@ def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS, emi
         return result
 
     def expire(_signum, _frame):
+        if committed_decision(directory, state) is not None:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            return
         raise DecisionDeadline()
+
+    def finish(result):
+        if emit:
+            publication = state.get("publication")
+            payload = (publication["echo_payload"] if publication is not None
+                       and publication["result"] is result else None)
+            try:
+                emit_decision(result, payload)
+            except (OSError, ValueError, DecisionDeadline):
+                pass
+        return result
 
     signal.signal(signal.SIGALRM, expire)
     reserve = min(0.25, decision_millis / 2000)
     try:
         signal.setitimer(signal.ITIMER_REAL, max(.001, deadline - time.monotonic() - reserve))
         result = _run_decision(binary, config, directory, decision_millis, state, emit)
-        if emit:
-            try:
-                emit_decision(result)
-            except (OSError, ValueError):
-                pass
-        if time.monotonic() >= deadline:
-            raise DecisionDeadline()
-        return result
-    except DecisionDeadline:
+        result = publish_decision(directory, result, state, deadline,
+                                  "question-final-decision.pending")
+        return finish(result)
+    except (DecisionDeadline, OSError, ValueError) as cause:
+        # No later timeout or optional echo may change a committed decision.
+        published = committed_decision(directory, state)
+        if published is not None:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            return finish(published)
         # The first alarm reserves bounded cleanup and terminal DECLINE retention.
         signal.setitimer(signal.ITIMER_REAL, 0)
         process = state.get("process")
@@ -377,7 +414,8 @@ def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS, emi
                 empty = decision_group_empty(process.pid)
             except (OSError, ValueError, subprocess.SubprocessError):
                 empty = False
-        result = decline("DECISION_DEADLINE", state.get("raw_digest"),
+        result = decline("DECISION_DEADLINE" if isinstance(cause, DecisionDeadline)
+                         else "ASSESSMENT_UNAVAILABLE", state.get("raw_digest"),
                          int((time.monotonic() - started) * 1000))
         result["process_supervision"] = {"deadline_millis": min(decision_millis, DECISION_MILLIS),
                                          "elapsed_millis": result["elapsed_millis"],
@@ -390,17 +428,17 @@ def run_decision(binary, config, directory, decision_millis=DECISION_MILLIS, emi
             signal.setitimer(signal.ITIMER_REAL, remaining)
             if process is not None:
                 release_owned_lock(process.pid, empty)
-            save(directory / "question-final-decision.json", result)
-        except (OSError, DecisionDeadline) as error:
-            result["receipt_retention_error"] = type(error).__name__
+            result = publish_decision(directory, result, state, deadline,
+                                      "question-final-decline.pending")
+        except (OSError, ValueError, DecisionDeadline) as error:
+            published = committed_decision(directory, state)
+            if published is not None:
+                result = published
+            else:
+                result["receipt_retention_error"] = type(error).__name__
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
-        if emit:
-            try:
-                emit_decision(result)
-            except (OSError, ValueError):
-                pass
-        return result
+        return finish(result)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, alarm_handler)

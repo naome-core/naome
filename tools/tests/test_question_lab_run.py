@@ -163,6 +163,73 @@ class QuestionDecisionProcessTests(unittest.TestCase):
             os.close(reader)
             os.close(writer)
 
+    def test_alarm_immediately_after_successful_link_keeps_one_terminal_result(self):
+        native_link = os.link
+
+        def alarm_after_link(source, target):
+            native_link(source, target)
+            signal.raise_signal(signal.SIGALRM)
+
+        with mock.patch.object(runner.os, 'link', side_effect=alarm_after_link):
+            result = self.decide(self.receipt_code())
+        self.assertEqual(result['decision'], 'APPROVE')
+        self.assertNotIn('receipt_retention_error', result)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+
+    def test_blocked_link_before_publication_declines_without_late_approve(self):
+        native_link = os.link
+        calls = []
+
+        def block_first_link(source, target):
+            calls.append(source)
+            if len(calls) == 1:
+                time.sleep(5)
+            native_link(source, target)
+
+        started = time.monotonic()
+        with mock.patch.object(runner.os, 'link', side_effect=block_first_link):
+            result = self.decide(self.receipt_code(), 400)
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'DECISION_DEADLINE')
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(len(calls), 2)
+
+    def test_interrupted_fallback_never_creates_partial_authoritative_json(self):
+        self.request.unlink()
+        os.mkfifo(self.request)
+
+        def partial_pending_save(path, _value):
+            with path.open('x') as stream:
+                stream.write('{')
+                stream.flush()
+                time.sleep(5)
+
+        started = time.monotonic()
+        with mock.patch.object(runner, 'save', side_effect=partial_pending_save):
+            result = runner.run_decision(self.directory/'absent', self.config, self.directory, 300)
+        self.assertEqual(result['decision'], 'DECLINE')
+        self.assertEqual(result['reason'], 'DECISION_DEADLINE')
+        self.assertLess(time.monotonic() - started, .8)
+        self.assertFalse((self.directory/'question-final-decision.json').exists())
+        self.assertEqual((self.directory/'question-final-decline.pending').read_bytes(), b'{')
+        self.assertEqual(result['receipt_retention_error'], 'DecisionDeadline')
+
+    def test_alarm_during_optional_echo_cannot_rewrite_committed_result(self):
+        echoed = []
+
+        def echo_with_alarm(_result, payload):
+            signal.raise_signal(signal.SIGALRM)
+            echoed.append(json.loads(payload))
+
+        with mock.patch.object(runner, 'emit_decision', side_effect=echo_with_alarm):
+            result = runner.run_decision(self.child(self.receipt_code()), self.config,
+                                         self.directory, 1500, emit=True)
+        retained = json.loads((self.directory/'question-final-decision.json').read_text())
+        self.assertEqual(result['decision'], 'APPROVE')
+        self.assertEqual(result, retained)
+        self.assertEqual(echoed, [retained])
+        self.assertTrue(result['process_supervision']['owned_group_empty'])
+
     def test_native_cpu_parser_keeps_bsd_and_gnu_units(self):
         self.assertEqual(runner.cpu_seconds('1.2 real 0.5 user 0.2 sys'), .7)
         self.assertEqual(runner.cpu_seconds('User time (seconds): 0.5\nSystem time (seconds): 0.2'), .7)
