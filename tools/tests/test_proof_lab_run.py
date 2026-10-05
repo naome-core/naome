@@ -1,8 +1,13 @@
 import importlib.util
+import json
+import os
 from pathlib import Path
 import sys
+import signal
+import subprocess
 import tempfile
 import unittest
+import time
 
 spec = importlib.util.spec_from_file_location(
     "proof_lab_run", Path(__file__).resolve().parents[1] / "proof_lab_run.py")
@@ -11,6 +16,39 @@ spec.loader.exec_module(runner)
 
 
 class ProofLabLifetimeTests(unittest.TestCase):
+    def test_one_supervisor_sigterm_reaps_only_its_owned_experiment_group(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory=Path(name)
+            code="""
+import importlib.util,json,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('runner',sys.argv[1]);runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
+result=runner.run_stage([sys.executable,'-c','import time;time.sleep(20)'],Path(sys.argv[2]),'supervisor',60)
+(Path(sys.argv[2])/'result.json').write_text(json.dumps(result))
+"""
+            supervisor=subprocess.Popen([sys.executable,"-c",code,str(spec.origin),name],start_new_session=True)
+            group=None
+            try:
+                deadline=time.monotonic()+5
+                started=directory/'supervisor-started.json'
+                while not started.exists() and time.monotonic()<deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists())
+                group=json.loads(started.read_text())["group"]
+                os.kill(supervisor.pid,signal.SIGTERM)
+                self.assertEqual(supervisor.wait(timeout=5),0)
+                result=json.loads((directory/'result.json').read_text())
+                self.assertEqual(result['failure'],'supervisor received SIGTERM')
+                self.assertEqual(result['termination_signal'],signal.SIGTERM)
+                self.assertEqual(result['pid'],group)
+                self.assertTrue(result['owned_group_empty'])
+                self.assertEqual(runner.group_members(group),[])
+            finally:
+                if supervisor.poll() is None:
+                    os.killpg(supervisor.pid,signal.SIGKILL);supervisor.wait(timeout=5)
+                if group is not None and runner.group_members(group):
+                    os.killpg(group,signal.SIGKILL)
+
     def test_success_retains_native_resources_and_reaps_group(self):
         with tempfile.TemporaryDirectory() as name:
             result = runner.run_stage([sys.executable, "-c", "print('control')"],

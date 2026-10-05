@@ -67,12 +67,26 @@ def run_stage(command, directory, stage, remaining_seconds,
     failure = None
     process = None
     with log.open("xb") as stream:
-        process = subprocess.Popen(
-            timed + ["-o", str(resources)] + command,
-            stdout=stream, stderr=subprocess.STDOUT, start_new_session=True,
-        )
+        stop = [None]
+        previous = {s: signal.getsignal(s) for s in [signal.SIGTERM, signal.SIGINT]}
+
+        def request_stop(signum, _frame):
+            # Do not raise asynchronously across Popen or cleanup boundaries.
+            stop[0] = signum
+
+        for signum in previous:
+            signal.signal(signum, request_stop)
         try:
+            process = subprocess.Popen(
+                timed + ["-o", str(resources)] + command,
+                stdout=stream, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            (directory / f"{stage}-started.json").write_text(json.dumps(
+                {"pid": process.pid, "group": process.pid, "command": command}) + "\n")
             while process.poll() is None:
+                if stop[0] is not None:
+                    failure = f"supervisor received {signal.Signals(stop[0]).name}"
+                    break
                 peak = max(peak, sum(rss for _, rss in group_members(process.pid)))
                 if time.monotonic() - started > remaining_seconds:
                     failure = "shared active execution ceiling"
@@ -84,7 +98,12 @@ def run_stage(command, directory, stage, remaining_seconds,
                     break
                 time.sleep(0.2)
         finally:
-            terminate(process)
+            try:
+                if process is not None:
+                    terminate(process)
+            finally:
+                for signum, handler in previous.items():
+                    signal.signal(signum, handler)
     # /usr/bin/time records the native high-water RSS between polling samples.
     raw = resources.read_text() if resources.exists() else ""
     for line in raw.splitlines():
@@ -100,6 +119,7 @@ def run_stage(command, directory, stage, remaining_seconds,
             "exit_code": process.returncode, "seconds": time.monotonic() - started,
             "peak_rss_bytes": peak, "artifact_bytes": size,
             "failure": failure, "log_sha256": sha256(log),
+            "termination_signal": stop[0],
             "resource_log_sha256": sha256(resources) if resources.exists() else None,
             "owned_group_empty": not group_members(process.pid)}
 
