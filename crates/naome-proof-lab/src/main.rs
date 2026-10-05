@@ -27,6 +27,10 @@ fn write<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 }
 fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.as_slice() == ["--identity"] {
+        println!("{}", env!("NAOME_LAB_COMPILER"));
+        return Ok(());
+    }
     if args.len() != 3 {
         return Err("Usage: naome-proof-lab <generate|train|evaluate|benchmark|replay> <configuration.json> <new-run-directory>; evaluate/benchmark/replay use existing run artifacts".into());
     }

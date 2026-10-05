@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import signal
 import subprocess
 import sys
@@ -118,11 +119,19 @@ def main():
     status = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, text=True)
     if status.strip():
         raise RuntimeError("freeze experiments only on clean committed source")
+    pinned = re.search(r'^channel\s*=\s*"([^"]+)"', (repo / "rust-toolchain.toml").read_text(), re.MULTILINE).group(1)
+    toolchain = subprocess.check_output(["rustc", "--version"], cwd=repo, text=True).strip()
+    cargo = subprocess.check_output(["cargo", "--version"], cwd=repo, text=True).strip()
+    if not toolchain.startswith(f"rustc {pinned} ") or not cargo.startswith(f"cargo {pinned} "):
+        raise RuntimeError(f"PATH does not use the pinned {pinned} toolchain: {toolchain}; {cargo}")
+    binary_compiler = subprocess.check_output([str(binary), "--identity"], text=True).strip()
+    if binary_compiler != toolchain:
+        raise RuntimeError(f"binary was built by a different compiler: {binary_compiler}")
     receipt = {"schema": 1, "source_revision": revision,
                "binary_sha256": sha256(binary), "config_sha256": sha256(config),
                "platform": platform.platform(), "machine": platform.machine(),
                "cpu": subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip() if sys.platform == "darwin" else platform.processor(),
-               "toolchain": subprocess.check_output(["rustc", "--version"], cwd=repo, text=True).strip(),
+               "toolchain": toolchain, "cargo": cargo, "binary_compiler": binary_compiler,
                "profile": "release", "training_implementation": "owned Rust CPU f64",
                "ceilings": {"active_execution_seconds": EXECUTION_SECONDS,
                             "rss_bytes": RSS_BYTES, "artifact_bytes": ARTIFACT_BYTES},
