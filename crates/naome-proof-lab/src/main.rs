@@ -93,20 +93,9 @@ fn run() -> Result<(), String> {
             verify_freeze(output, &config_digest, &c)?;
             for seed in &config.seeds {
                 let m: Model = read(&output.join(format!("model-{seed}.json")))?;
-                m.validate()?;
-                if m.corpus_digest != c.digest() {
-                    return Err("model/corpus mismatch".into());
-                }
                 let q: serde_json::Value = read(&output.join(format!("training-{seed}.json")))?;
-                if q["trained_model_sha256"] != dataset::digest(&serde_json::to_vec(&m).unwrap()) {
-                    return Err("model digest mismatch".into());
-                }
-                let actual = experiment::evaluate(
-                    &c,
-                    &m,
-                    2,
-                    q["threshold"].as_f64().ok_or("missing threshold")?,
-                );
+                let threshold = experiment::verify_training_report(&c, &config, &m, *seed, &q)?;
+                let actual = experiment::evaluate(&c, &m, 2, threshold);
                 if args[0] == "evaluate" {
                     write(&output.join(format!("quality-{seed}.json")), &actual)?;
                 } else {
@@ -121,12 +110,12 @@ fn run() -> Result<(), String> {
         }
         "benchmark" => {
             let original: Corpus = read(&output.join("corpus.json"))?;
+            original.replay()?;
             verify_freeze(output, &config_digest, &original)?;
             let m: Model = read(&output.join(format!("model-{}.json", config.seeds[0])))?;
-            m.validate()?;
-            if m.corpus_digest != original.digest() {
-                return Err("model/corpus mismatch".into());
-            }
+            let report: serde_json::Value =
+                read(&output.join(format!("training-{}.json", config.seeds[0])))?;
+            experiment::verify_training_report(&original, &config, &m, config.seeds[0], &report)?;
             for rows in &config.scale_rows {
                 let families = (*rows / 8).min(config.max_scale_families);
                 let c = dataset::generate(families)?;

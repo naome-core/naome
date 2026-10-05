@@ -93,20 +93,50 @@ pub fn train(corpus: &Corpus, config: &Config, seed: u64) -> (Model, serde_json:
         losses.push(loss / train.len() as f64);
     }
     let elapsed = clock.elapsed().as_secs_f64();
-    let dev = corpus
-        .pairs
-        .iter()
-        .filter(|p| split(corpus.records[p.a].family) == 1)
-        .collect::<Vec<_>>();
-    // Chosen exclusively on development useful alternatives; target 0 observed errors.
-    // The predeclared floor remains in effect. Strict > avoids accepting a tied maximum.
-    let threshold = dev
-        .iter()
-        .filter(|p| p.label == 1)
-        .map(|p| model.score(&corpus.records[p.a].graph, &corpus.records[p.b].graph)[0])
-        .fold(config.rejection_threshold, f64::max);
+    let threshold = calibrated_threshold(corpus, config, &model);
     let report = serde_json::json!({"seed":seed,"parameters":model.parameters(),"initial_model_sha256":initial,"trained_model_sha256":digest(&serde_json::to_vec(&model).unwrap()),"corpus_sha256":model.corpus_digest,"train_pairs":train.len(),"loss_by_epoch":losses,"train_seconds":elapsed,"threshold":threshold,"target_development_false_rejection":0.0,"development":evaluate(corpus,&model,1,threshold)});
     (model, report)
+}
+
+fn calibrated_threshold(corpus: &Corpus, config: &Config, model: &Model) -> f64 {
+    // Chosen exclusively on development useful alternatives; target 0 observed errors.
+    // The predeclared floor remains in effect. Strict > avoids accepting a tied maximum.
+    corpus
+        .pairs
+        .iter()
+        .filter(|p| split(corpus.records[p.a].family) == 1 && p.label == 1)
+        .map(|p| model.score(&corpus.records[p.a].graph, &corpus.records[p.b].graph)[0])
+        .fold(config.rejection_threshold, f64::max)
+}
+
+/// Bind consumed model and calibration fields to the frozen development inputs.
+pub fn verify_training_report(
+    corpus: &Corpus,
+    config: &Config,
+    model: &Model,
+    seed: u64,
+    report: &serde_json::Value,
+) -> Result<f64, String> {
+    model.validate()?;
+    if model.seed != seed || report["seed"].as_u64() != Some(seed) {
+        return Err("model/training seed mismatch".into());
+    }
+    if model.corpus_digest != corpus.digest() || report["corpus_sha256"] != model.corpus_digest {
+        return Err("model/training corpus mismatch".into());
+    }
+    if report["trained_model_sha256"] != digest(&serde_json::to_vec(model).unwrap()) {
+        return Err("model digest mismatch".into());
+    }
+    let threshold = calibrated_threshold(corpus, config, model);
+    let saved = report["threshold"].as_f64().ok_or("missing threshold")?;
+    if !saved.is_finite() || !(0.0..=1.0).contains(&saved) || saved.to_bits() != threshold.to_bits()
+    {
+        return Err("development calibration threshold mismatch".into());
+    }
+    if report["development"] != evaluate(corpus, model, 1, threshold) {
+        return Err("development report mismatch".into());
+    }
+    Ok(threshold)
 }
 fn baseline(c: &Corpus, p: &Pair, structural: bool) -> usize {
     let a = &c.records[p.a];

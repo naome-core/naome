@@ -241,3 +241,77 @@ fn duplicate_seeds_and_scale_rows_are_rejected_before_experiment_work() {
     c.scale_rows.push(c.scale_rows[0]);
     assert!(c.validate().is_err());
 }
+
+fn trained_tiny_corpus() -> (
+    dataset::Corpus,
+    experiment::Config,
+    Model,
+    serde_json::Value,
+) {
+    let c = dataset::generate(8).unwrap();
+    let mut config: experiment::Config =
+        serde_json::from_str(include_str!("../fixtures/experiment.json")).unwrap();
+    config.families = 8;
+    config.epochs = 1;
+    let (model, report) = experiment::train(&c, &config, 17);
+    (c, config, model, report)
+}
+
+#[test]
+fn consumed_calibration_rejects_changed_threshold_and_development_results() {
+    let (corpus, config, model, report) = trained_tiny_corpus();
+    let threshold =
+        experiment::verify_training_report(&corpus, &config, &model, 17, &report).unwrap();
+    assert_eq!(report["threshold"].as_f64(), Some(threshold));
+    for changed in [-0.1, 0.25, 1.1] {
+        let mut corrupt = report.clone();
+        corrupt["threshold"] = serde_json::json!(changed);
+        assert!(
+            experiment::verify_training_report(&corpus, &config, &model, 17, &corrupt)
+                .unwrap_err()
+                .contains("calibration threshold mismatch")
+        );
+    }
+    let mut corrupt = report;
+    corrupt["development"]["useful_false_rejections"] = serde_json::json!(1);
+    assert!(
+        experiment::verify_training_report(&corpus, &config, &model, 17, &corrupt)
+            .unwrap_err()
+            .contains("development report mismatch")
+    );
+}
+
+#[test]
+fn consumed_model_requires_training_seed_corpus_and_weight_digest() {
+    let (corpus, config, model, report) = trained_tiny_corpus();
+    experiment::verify_training_report(&corpus, &config, &model, 17, &report).unwrap();
+    let mut changed = model.clone();
+    changed.layers[0].weights[0] += 0.01;
+    changed.validate().unwrap();
+    assert!(
+        experiment::verify_training_report(&corpus, &config, &changed, 17, &report)
+            .unwrap_err()
+            .contains("model digest mismatch")
+    );
+    changed = model.clone();
+    changed.seed = 29;
+    assert!(
+        experiment::verify_training_report(&corpus, &config, &changed, 17, &report)
+            .unwrap_err()
+            .contains("seed mismatch")
+    );
+    let mut corrupt = report.clone();
+    corrupt["corpus_sha256"] = serde_json::json!("changed");
+    assert!(
+        experiment::verify_training_report(&corpus, &config, &model, 17, &corrupt)
+            .unwrap_err()
+            .contains("corpus mismatch")
+    );
+    corrupt = report;
+    corrupt["seed"] = serde_json::json!(29);
+    assert!(
+        experiment::verify_training_report(&corpus, &config, &model, 17, &corrupt)
+            .unwrap_err()
+            .contains("seed mismatch")
+    );
+}
