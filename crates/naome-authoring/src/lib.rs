@@ -1,4 +1,4 @@
-//! Prerelease `.nao` lowering for one checked proof or conservative definition.
+//! Bounded `.nao` compilation of checked proofs, definitions, and formal questions.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -27,9 +27,9 @@ const FORMULA_BINDING_MAX_NODES: usize = FORMULA_MAX_NODES;
 
 /// Compiles one complete, dependency-free `.nao` proof source.
 ///
-/// Reachable dependencies fail because this entry point uses an empty selected-
-/// artifact state. Use [`compile_against_selected_history`] when references to
-/// already selected artifacts are expected.
+/// Reachable dependencies fail because this entry point uses an empty checked
+/// artifact context. Use [`compile_against_proof_context`] for explicitly
+/// checker-validated dependencies.
 pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
     match compile_artifact(source)? {
         CompiledArtifact::Proof(proof) => Ok(proof),
@@ -37,7 +37,7 @@ pub fn compile(source: &str) -> Result<CompiledProof, CompileError> {
     }
 }
 
-/// Compiles one complete `.nao` proof or definition against empty selected state.
+/// Compiles one complete `.nao` proof or definition against an empty context.
 ///
 /// The empty state can compile dependency-free relation definitions and proofs,
 /// but it cannot authorize citations, definition aliases, or function obligations.
@@ -48,7 +48,7 @@ pub fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> 
 /// Compiles a proof against an explicitly supplied, checker-validated context.
 /// This supports offline state packages and downloaded helper certificates.
 /// Compilation establishes mathematical validity only; it does not establish
-/// that these references belong to a selected state library or earn rewards.
+/// publication, scientific usefulness, or reward eligibility.
 pub fn compile_against_proof_context(
     source: &str,
     context: &ArtifactState,
@@ -61,8 +61,7 @@ pub fn compile_against_proof_context(
 
 /// Compiles a proof or conservative definition against a checked offline context.
 /// The context grants mathematical dependency resolution only. It grants no
-/// finalized publication, rewards, or permission to publish definitions in the
-/// trusted MVP, whose operation rules remain proof-only.
+/// publication, scientific usefulness, or reward eligibility.
 pub fn compile_artifact_against_proof_context(
     source: &str,
     context: &ArtifactState,
@@ -87,14 +86,14 @@ fn compile_with_artifact_state(
 mod diagnostics;
 mod output;
 mod parser;
-mod selected_history;
+mod question;
 
 pub use diagnostics::{
     CompileDiagnostic, CompileError, DiagnosticCode, SourcePosition, SourceSpan,
 };
 pub use output::{CompiledArtifact, CompiledDefinition, CompiledProof};
 use parser::Parser;
-pub use selected_history::{
-    SelectedHistoryCompileError, compile_against_selected_history,
-    compile_artifact_against_selected_history,
+pub use question::{
+    CompiledQuestion, QUESTION_SOURCE_MAX_BYTES, QUESTION_TARGET_MAX_DEPTH,
+    QUESTION_TARGET_MAX_NODES, QuestionError, QuestionOutcome,
 };

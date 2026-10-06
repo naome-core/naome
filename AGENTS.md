@@ -86,6 +86,10 @@ because this PR merged; continue only as far as the active user request says.
 
 ## Rust validation and CI
 
+The maintained core is mathematical proof, definition and question checking and
+authoring, plus the economy-free `naome-knowledge` gossip node. The former
+blockchain runtime and deployment harnesses are retired.
+
 Use the Rust version pinned in `rust-toolchain.toml`. CI runs the complete
 workspace in both `test` and `release` profiles on Linux x86_64 and macOS ARM64.
 These are the current supported targets. Windows is not a current distribution
@@ -99,19 +103,19 @@ cargo test --workspace --profile test --all-targets --all-features --locked --no
 ```
 
 Use `--profile release` in both commands for release validation. The `test`
-profile optimizes `naome-node`, Ed25519/Curve25519, and both SHA-2 versions at
+profile optimizes Ed25519/Curve25519 and both SHA-2 versions at
 level 2 while retaining debug assertions and overflow checks. Other workspace
 packages retain their default test optimization level; `dev` and `release`
 settings are unchanged. For CI timing comparisons, set `CARGO_INCREMENTAL=0`
 and record compilation and execution separately.
 
-Focused validator/verifier process tests must select both packages and use the
-same profile, features, and targets for compilation and execution. Prefer the
-same `cargo test --no-run` barrier before the filtered test command; plain
-`cargo build` uses the different `dev` profile.
+Focused gossip process tests must select `naome-knowledge` and use the same
+profile, features and targets for compilation and execution. Use the matching
+`cargo test --no-run` barrier before a filtered test command; plain `cargo build`
+uses the different `dev` profile.
 
 Both platform checks require their complete two-profile matrix;
-`Rust CI` requires both platform checks, `Rust quality`, and Devnet qualification.
+`Rust CI` requires both platform checks and `Rust quality`.
 Cache hits still run every Cargo build and test command. Cache writes occur only after
 successful pushes to `main`, with keys covering the runner, profile, toolchain,
 manifests, lockfile, and build/workflow configuration.

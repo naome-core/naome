@@ -134,7 +134,7 @@ dependencies = [
  "futures-lite",
  "parking",
  "polling",
- "rustix 1.1.4",
+ "rustix",
  "slab",
  "windows-sys 0.61.2",
 ]
@@ -168,17 +168,6 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
-
-[[package]]
-name = "atomicwrites"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef1bb8d1b645fe38d51dfc331d720fb5fc2c94b440c76cc79c80ff265ca33e3"
-dependencies = [
- "rustix 0.38.44",
- "tempfile",
- "windows-sys 0.52.0",
-]
 
 [[package]]
 name = "attohttpc"
@@ -621,7 +610,6 @@ dependencies = [
  "ed25519",
  "serde",
  "sha2 0.10.9",
- "signature",
  "subtle",
  "zeroize",
 ]
@@ -702,12 +690,6 @@ dependencies = [
  "portable-atomic",
  "siphasher",
 ]
-
-[[package]]
-name = "fastrand"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fiat-crypto"
@@ -1914,12 +1896,6 @@ dependencies = [
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.4.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
-
-[[package]]
-name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
@@ -2070,24 +2046,8 @@ dependencies = [
 name = "naome-authoring"
 version = "0.1.0"
 dependencies = [
- "ed25519-dalek",
- "naome-chain",
- "naome-checker",
- "naome-consensus",
- "naome-foundation",
- "naome-ledger",
- "naome-proof",
- "naome-storage",
-]
-
-[[package]]
-name = "naome-chain"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
  "naome-checker",
  "naome-foundation",
- "naome-ledger",
  "naome-proof",
  "sha2 0.11.0",
 ]
@@ -2098,42 +2058,6 @@ version = "0.1.0"
 dependencies = [
  "naome-foundation",
  "naome-proof",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "naome-cli"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.3.4",
- "naome-authoring",
- "naome-chain",
- "naome-checker",
- "naome-consensus",
- "naome-ledger",
- "naome-network",
- "naome-proof",
- "naome-runtime",
- "naome-storage",
- "nix",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tokio",
- "zeroize",
-]
-
-[[package]]
-name = "naome-consensus"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "naome-chain",
- "naome-foundation",
- "naome-ledger",
- "num-bigint",
  "sha2 0.11.0",
 ]
 
@@ -2158,137 +2082,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "naome-ledger"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "naome-checker",
- "naome-foundation",
- "naome-proof",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "naome-network"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "ed25519-dalek",
- "libp2p",
- "naome-ledger",
- "naome-proof",
- "naome-protocol",
- "sha2 0.11.0",
- "tokio",
-]
-
-[[package]]
-name = "naome-node"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "naome-chain",
- "naome-consensus",
- "naome-foundation",
- "naome-ledger",
- "naome-storage",
-]
-
-[[package]]
-name = "naome-pouw"
-version = "0.1.0"
-dependencies = [
- "sha2 0.11.0",
-]
-
-[[package]]
 name = "naome-proof"
 version = "0.1.0"
 dependencies = [
  "naome-foundation",
  "sha2 0.11.0",
-]
-
-[[package]]
-name = "naome-protocol"
-version = "0.1.0"
-dependencies = [
- "naome-proof",
-]
-
-[[package]]
-name = "naome-research"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.4.3",
- "naome-authoring",
- "naome-checker",
- "naome-foundation",
- "naome-proof",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "naome-runtime"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.3.4",
- "naome-chain",
- "naome-checker",
- "naome-consensus",
- "naome-foundation",
- "naome-ledger",
- "naome-network",
- "naome-node",
- "naome-proof",
- "naome-protocol",
- "naome-storage",
- "sha2 0.11.0",
- "tokio",
- "zeroize",
-]
-
-[[package]]
-name = "naome-storage"
-version = "0.1.0"
-dependencies = [
- "atomicwrites",
- "ed25519-dalek",
- "getrandom 0.3.4",
- "libc",
- "naome-chain",
- "naome-checker",
- "naome-consensus",
- "naome-foundation",
- "naome-ledger",
- "naome-proof",
- "rustix 1.1.4",
- "sha2 0.11.0",
- "winsafe",
- "zeroize",
-]
-
-[[package]]
-name = "naome-validator"
-version = "0.1.0"
-dependencies = [
- "naome-cli",
-]
-
-[[package]]
-name = "naome-verifier"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "naome-cli",
- "naome-consensus",
- "naome-ledger",
- "serde_json",
 ]
 
 [[package]]
@@ -2533,7 +2331,7 @@ dependencies = [
  "concurrent-queue",
  "hermit-abi",
  "pin-project-lite",
- "rustix 1.1.4",
+ "rustix",
  "windows-sys 0.61.2",
 ]
 
@@ -2957,19 +2755,6 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "0.38.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
-dependencies = [
- "bitflags",
- "errno",
- "libc",
- "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
@@ -2977,7 +2762,7 @@ dependencies = [
  "bitflags",
  "errno",
  "libc",
- "linux-raw-sys 0.12.1",
+ "linux-raw-sys",
  "windows-sys 0.61.2",
 ]
 
@@ -3141,7 +2926,6 @@ version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
- "digest 0.10.7",
  "rand_core 0.6.4",
 ]
 
@@ -3287,19 +3071,6 @@ name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
-
-[[package]]
-name = "tempfile"
-version = "3.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
-dependencies = [
- "fastrand",
- "getrandom 0.3.4",
- "once_cell",
- "rustix 1.1.4",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "thiserror"
@@ -3900,12 +3671,6 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
-
-[[package]]
-name = "winsafe"
-version = "0.0.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d3922ac07e168376bc6799e7896fc737ddb9538be7533ca44bc3463091db1ad"
 
 [[package]]
 name = "wit-bindgen"
