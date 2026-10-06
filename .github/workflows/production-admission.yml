@@ -1,0 +1,104 @@
+name: Production admission
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact reviewed commit to audit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-admission-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admission:
+    name: Production source admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      NAOME_FACTORY_POLICY_JSON: ${{ vars.NAOME_FACTORY_POLICY_JSON }}
+      NAOME_FACTORY_APPROVALS_GZIP_B64: ${{ vars.NAOME_FACTORY_APPROVALS_GZIP_B64 }}
+      NAOME_FACTORY_APPROVALS_URL: ${{ vars.NAOME_FACTORY_APPROVALS_URL }}
+      NAOME_FACTORY_APPROVALS_SHA256: ${{ vars.NAOME_FACTORY_APPROVALS_SHA256 }}
+      NAOME_FACTORY_APPROVALS_BYTES: ${{ vars.NAOME_FACTORY_APPROVALS_BYTES }}
+      NAOME_FACTORY_EVALUATOR_GZIP_B64: ${{ vars.NAOME_FACTORY_EVALUATOR_GZIP_B64 }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD: ${{ github.event.pull_request.head.sha || inputs.commit }}
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+
+    steps:
+      # This workflow runs from the protected base. It never executes PR code,
+      # build scripts, hooks, actions, or tests under pull_request_target.
+      - name: Materialize owner-installed trusted evaluator
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, io, json, os
+          from pathlib import Path
+          bound = 16 * 1024 * 1024
+          policy_raw = os.environ['NAOME_FACTORY_POLICY_JSON'].encode()
+          if not policy_raw or not os.environ['NAOME_FACTORY_EVALUATOR_GZIP_B64']:
+              raise SystemExit('Owner-installed production trust is missing')
+          policy = json.loads(policy_raw)
+          packed = base64.b64decode(os.environ['NAOME_FACTORY_EVALUATOR_GZIP_B64'], validate=True)
+          with gzip.GzipFile(fileobj=io.BytesIO(packed)) as source:
+              evaluator = source.read(bound + 1)
+          if len(evaluator) > bound or hashlib.sha256(evaluator).hexdigest() != policy['production']['evaluator_sha256']:
+              raise SystemExit('Trusted evaluator digest mismatch')
+          trust = Path(os.environ['RUNNER_TEMP']) / 'factory-trust'
+          trust.mkdir(mode=0o700)
+          (trust / 'production_gate.py').write_bytes(evaluator)
+          PY
+          python3 "$RUNNER_TEMP/factory-trust/production_gate.py" ci-materialize --directory "$RUNNER_TEMP/factory-trust"
+
+      - name: Fetch exact candidate without candidate credentials or execution
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+          os.environ.update({'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_NO_REPLACE_OBJECTS': '1', 'GIT_OPTIONAL_LOCKS': '0'})
+          head, base, number = (os.environ[n] for n in ('PR_HEAD', 'PR_BASE', 'PR_NUMBER'))
+          if not re.fullmatch('[0-9a-f]{40}', head):
+              raise SystemExit('Immutable candidate commit required')
+          if base and not re.fullmatch('[0-9a-f]{40}', base):
+              raise SystemExit('Immutable base commit required')
+          if number and not number.isdecimal():
+              raise SystemExit('Invalid pull request identity')
+          repo = Path(os.environ['RUNNER_TEMP']) / 'factory-candidate'
+          subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+          url = 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '.git'
+          ref = 'refs/pull/' + number + '/head' if number else head
+          subprocess.run(['git', '-C', str(repo), 'fetch', '--no-tags', url, ref], check=True)
+          fetched = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'FETCH_HEAD']).decode().strip()
+          if fetched != head:
+              raise SystemExit('Pull request changed during admission; rerun required')
+          subprocess.run(['git', '-C', str(repo), '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', head], check=True)
+          if base:
+              subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', base, head], check=True)
+          PY
+
+      - name: Verify complete exact source and independent production approval
+        run: |
+          python3 "$RUNNER_TEMP/factory-trust/production_gate.py" check \
+            --repo "$RUNNER_TEMP/factory-candidate" \
+            --policy "$RUNNER_TEMP/factory-trust/policy.json" \
+            --bundle "$RUNNER_TEMP/factory-trust/bundle.json" \
+            --mode audit --tree "$PR_HEAD" > "$RUNNER_TEMP/production-admission.json" 2>&1
+
+      - name: Retain admission result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-source-admission
+          path: ${{ runner.temp }}/production-admission.json
+          if-no-files-found: warn
+          retention-days: 14

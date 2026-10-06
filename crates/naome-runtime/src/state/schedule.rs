@@ -219,6 +219,32 @@ impl StateRuntime {
                             .err()
                     };
                     if let Some(error) = individual_error {
+                        let body = naome_ledger::operations::OperationBody::decode(
+                            operation.payload(),
+                            state.genesis(),
+                        )?;
+                        // A newer, unselected certificate cannot dispose a ballot
+                        // that still belongs to the selected parent's open phase.
+                        let ballot =
+                            matches!(body, naome_ledger::operations::OperationBody::Vote { .. });
+                        let preview_expired = state
+                            .active()
+                            .and_then(|a| a.deadline)
+                            .is_some_and(|deadline| certificate.time() >= deadline);
+                        let preview_phase_closed = matches!(
+                            &error,
+                            naome_ledger::LedgerError::Invalid(
+                                "phase already closed" | "operation outside open parent phase"
+                            )
+                        );
+                        if ballot
+                            && preview_phase_closed
+                            && preview_expired
+                            && self.validate_queue_phase(&body, operation.author()).is_ok()
+                            && Self::has_current_nonce(state, operation)
+                        {
+                            continue;
+                        }
                         rejected.push((operation.id(), error.to_string()));
                     }
                 }

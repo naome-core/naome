@@ -15,8 +15,23 @@ Maintain NAOME documentation, whitepapers, research, decisions, evidence and wor
 tracking in the [NAOME Space](https://chatgpt.com/space/page_6abd15f8b06c8191849e7d5b25f0550e).
 Use `$naome-space`, read its [Agent operating guide](https://chatgpt.com/space/page_b7369d115b688191a1f45fda42b1c8fb)
 and the relevant domain Pages, and update affected records within the authorized
-scope. Keep code, executable experiments, fixtures, licenses and this bootstrap
-in Git; build, test and runtime operation must not require cloud access.
+scope. Keep only reviewed, qualified deployable source, its required fixtures,
+licenses and this minimal bootstrap in shared Git. Exploratory source, prototypes,
+failed models and unqualified candidates belong in independent temporary Git
+repositories with their own object databases and no writable NAOME push remote.
+Build, test and runtime operation must not require cloud access.
+
+Apply the [Factory operating policy](https://chatgpt.com/space/page_129c0c25bad881919a34c715e2eeea00)
+through `$naome-project-operations` and `$implementation-task-worker`. Qualify the
+exact selected integrated export against its real supported consumer, deployment,
+failure and recovery contract in the temporary repository before the first shared
+source write. Obtain independent exact-source approval and complete local and
+supported-platform qualification; copy only the accepted final patch, never its
+experimental history. Use the trusted external admission/promoter and installed
+pre-commit/pre-push hooks. Local hooks are bypassable; protected-base CI and all
+existing exact-head PR gates remain required. Candidates cannot approve their own
+policy, evaluator or evidence. Preserve direct ownership, user pauses and one
+shared admitted plan allowance for parallel children.
 Follow the guide's **Choose the format for the reader** rule: use editable
 documents, sheets, presentations or visuals when they make the task clearer,
 with one authoritative source and explicit provenance for derived artifacts.

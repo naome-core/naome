@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--tag", default="naome-devnet:local")
     args = parser.parse_args()
     if sys.platform != "linux":
-        parser.error("native packaging requires Linux; use devnet/Dockerfile for a source build")
+        parser.error("native packaging requires tested Linux ELF binaries and a Linux Docker host")
     here = Path(__file__).resolve().parent
     source = here.parent
     provenance = {
