@@ -6,7 +6,6 @@ use naome_checker::{
     normalize_and_check_with_state,
 };
 use naome_foundation::{Formula, FreeVariable};
-use naome_ledger::ArtifactDag;
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
 const HELPER_H: &str = include_str!("../../../examples/state-workflow/helper-h.nao");
@@ -31,25 +30,36 @@ fn check_exact_bytes(bytes: &[u8], state: &ArtifactState) -> CheckedProof {
     strict
 }
 
-fn selected_source(source: &str) -> (ArtifactDag, CompiledProof) {
-    let mut dag = ArtifactDag::new();
+fn selected_source(source: &str) -> (ArtifactState, CompiledProof) {
+    let mut state = ArtifactState::new();
     let helper = compile(source).unwrap();
     let certificate =
         ProofCertificate::from_canonical_bytes(helper.canonical_proof_bytes()).unwrap();
-    dag.apply_canonical_artifact_bytes_with_expected_id(
-        ArtifactPayload::Proof(certificate).to_canonical_bytes(),
+    let bytes = ArtifactPayload::Proof(certificate).to_canonical_bytes();
+    let ArtifactPayload::Proof(certificate) =
+        ArtifactPayload::from_canonical_bytes(&bytes).unwrap()
+    else {
+        panic!("expected a proof payload");
+    };
+    let normal_form = certificate
+        .into_unchecked_normal_form()
+        .with_matching_canonical_bytes(Box::from(&bytes[1..]))
+        .unwrap();
+    let checked = check_normal_form_with_state(normal_form, &state).unwrap();
+    assert_eq!(
+        ArtifactId::from_proof_id(checked.proof_id()),
         ArtifactId::from_proof_id(helper.proof_id()),
-    )
-    .unwrap();
-    (dag, helper)
+    );
+    let _ = state.register_proof(checked).unwrap();
+    (state, helper)
 }
 
 #[test]
 fn state_mvp_roots_use_real_helper_and_have_distinct_exact_targets() {
     let (journal, helper) = selected_source(HELPER_H);
-    let a = compile_against_proof_context(SOLUTION_A, journal.artifact_state()).unwrap();
-    let b = compile_against_proof_context(SOLUTION_B, journal.artifact_state()).unwrap();
-    let state = journal.artifact_state();
+    let a = compile_against_proof_context(SOLUTION_A, &journal).unwrap();
+    let b = compile_against_proof_context(SOLUTION_B, &journal).unwrap();
+    let state = &journal;
     let checked_h = check_exact_bytes(helper.canonical_proof_bytes(), &ArtifactState::new());
     let checked_a = check_exact_bytes(a.canonical_proof_bytes(), state);
     let checked_b = check_exact_bytes(b.canonical_proof_bytes(), state);
@@ -78,13 +88,16 @@ fn state_mvp_roots_use_real_helper_and_have_distinct_exact_targets() {
     }
     assert!(checked_h.direct_artifact_dependencies().is_empty());
     assert!(helper.canonical_proof_bytes().len() + a.canonical_proof_bytes().len() <= 256 * 1024);
-    assert_eq!(journal.len(), 1); // Authoring never publishes its roots.
+    // Authoring resolves the helper without registering either authored root.
+    assert!(journal.contains_proof(helper.proof_id()));
+    assert!(!journal.contains_proof(a.proof_id()));
+    assert!(!journal.contains_proof(b.proof_id()));
 }
 
 #[test]
 fn state_mvp_b_rechecks_from_exported_helper_bytes_without_original_store() {
     let (journal, helper) = selected_source(HELPER_H);
-    let b = compile_against_proof_context(SOLUTION_B, journal.artifact_state()).unwrap();
+    let b = compile_against_proof_context(SOLUTION_B, &journal).unwrap();
     let helper_bytes = helper.canonical_proof_bytes().to_vec();
     let b_bytes = b.canonical_proof_bytes().to_vec();
     drop(journal);
@@ -126,12 +139,10 @@ fn state_mvp_original_duplicate_and_replaced_b_are_both_actually_valid() {
     let checked_duplicate =
         check_exact_bytes(duplicate.canonical_proof_bytes(), &ArtifactState::new());
     assert_eq!(checked_h.conclusion(), checked_duplicate.conclusion());
-    let original = compile_against_proof_context(original_source, staged.artifact_state()).unwrap();
-    let replaced = compile_against_proof_context(SOLUTION_B, old.artifact_state()).unwrap();
-    let checked_original =
-        check_exact_bytes(original.canonical_proof_bytes(), staged.artifact_state());
-    let checked_replaced =
-        check_exact_bytes(replaced.canonical_proof_bytes(), old.artifact_state());
+    let original = compile_against_proof_context(original_source, &staged).unwrap();
+    let replaced = compile_against_proof_context(SOLUTION_B, &old).unwrap();
+    let checked_original = check_exact_bytes(original.canonical_proof_bytes(), &staged);
+    let checked_replaced = check_exact_bytes(replaced.canonical_proof_bytes(), &old);
     assert_eq!(checked_original.conclusion(), checked_replaced.conclusion());
     assert_eq!(original.statement_id(), replaced.statement_id());
     assert_ne!(original.proof_id(), replaced.proof_id());
@@ -159,8 +170,7 @@ fn state_mvp_original_duplicate_and_replaced_b_are_both_actually_valid() {
         })
         .collect();
     let rewritten =
-        normalize_and_check_with_state(ProofCertificate::new(steps).unwrap(), old.artifact_state())
-            .unwrap();
+        normalize_and_check_with_state(ProofCertificate::new(steps).unwrap(), &old).unwrap();
     assert_eq!(
         rewritten.normal_form().canonical_bytes(),
         replaced.canonical_proof_bytes()

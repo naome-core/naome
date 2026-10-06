@@ -3,21 +3,10 @@ members = [
     "vendor/libp2p-dcutr",
     "vendor/libp2p-relay",
     "crates/naome-authoring",
-    "crates/naome-chain",
     "crates/naome-checker",
-    "crates/naome-consensus",
     "crates/naome-foundation",
-    "crates/naome-ledger",
     "crates/naome-knowledge",
-    "crates/naome-network",
-    "crates/naome-node",
     "crates/naome-proof",
-    "crates/naome-protocol",
-    "crates/naome-cli",
-    "crates/naome-runtime",
-    "crates/naome-storage",
-    "crates/naome-validator",
-    "crates/naome-verifier",
 ]
 resolver = "3"
 
@@ -29,20 +18,13 @@ repository = "https://github.com/naome-core/naome"
 publish = false
 
 [workspace.dependencies]
-ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"] }
-num-bigint = { version = "0.4.8", default-features = false, features = ["std"] }
 sha2 = { version = "0.11.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
-# Optimize model exploration and repeated signature/hash checks in test builds.
+# Optimize repeated signature and hash checks in gossip test builds.
 # Keep debug assertions and overflow checks enabled in these packages.
-[profile.test.package.naome-node]
-opt-level = 2
-debug-assertions = true
-overflow-checks = true
-
 [profile.test.package.curve25519-dalek]
 opt-level = 2
 debug-assertions = true

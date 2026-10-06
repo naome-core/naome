@@ -15,23 +15,8 @@ Maintain NAOME documentation, whitepapers, research, decisions, evidence and wor
 tracking in the [NAOME Space](https://chatgpt.com/space/page_6abd15f8b06c8191849e7d5b25f0550e).
 Use `$naome-space`, read its [Agent operating guide](https://chatgpt.com/space/page_b7369d115b688191a1f45fda42b1c8fb)
 and the relevant domain Pages, and update affected records within the authorized
-scope. Keep only reviewed, qualified deployable source, its required fixtures,
-licenses and this minimal bootstrap in shared Git. Exploratory source, prototypes,
-failed models and unqualified candidates belong in independent temporary Git
-repositories with their own object databases and no writable NAOME push remote.
-Build, test and runtime operation must not require cloud access.
-
-Apply the [Factory operating policy](https://chatgpt.com/space/page_129c0c25bad881919a34c715e2eeea00)
-through `$naome-project-operations` and `$implementation-task-worker`. Qualify the
-exact selected integrated export against its real supported consumer, deployment,
-failure and recovery contract in the temporary repository before the first shared
-source write. Obtain independent exact-source approval and complete local and
-supported-platform qualification; copy only the accepted final patch, never its
-experimental history. Use the trusted external admission/promoter and installed
-pre-commit/pre-push hooks. Local hooks are bypassable; protected-base CI and all
-existing exact-head PR gates remain required. Candidates cannot approve their own
-policy, evaluator or evidence. Preserve direct ownership, user pauses and one
-shared admitted plan allowance for parallel children.
+scope. Keep code, executable experiments, fixtures, licenses and this bootstrap
+in Git; build, test and runtime operation must not require cloud access.
 Follow the guide's **Choose the format for the reader** rule: use editable
 documents, sheets, presentations or visuals when they make the task clearer,
 with one authoritative source and explicit provenance for derived artifacts.
@@ -101,6 +86,10 @@ because this PR merged; continue only as far as the active user request says.
 
 ## Rust validation and CI
 
+The maintained core is mathematical proof, definition and question checking and
+authoring, plus the economy-free `naome-knowledge` gossip node. The former
+blockchain runtime and deployment harnesses are retired.
+
 Use the Rust version pinned in `rust-toolchain.toml`. CI runs the complete
 workspace in both `test` and `release` profiles on Linux x86_64 and macOS ARM64.
 These are the current supported targets. Windows is not a current distribution
@@ -114,19 +103,19 @@ cargo test --workspace --profile test --all-targets --all-features --locked --no
 ```
 
 Use `--profile release` in both commands for release validation. The `test`
-profile optimizes `naome-node`, Ed25519/Curve25519, and both SHA-2 versions at
+profile optimizes Ed25519/Curve25519 and both SHA-2 versions at
 level 2 while retaining debug assertions and overflow checks. Other workspace
 packages retain their default test optimization level; `dev` and `release`
 settings are unchanged. For CI timing comparisons, set `CARGO_INCREMENTAL=0`
 and record compilation and execution separately.
 
-Focused validator/verifier process tests must select both packages and use the
-same profile, features, and targets for compilation and execution. Prefer the
-same `cargo test --no-run` barrier before the filtered test command; plain
-`cargo build` uses the different `dev` profile.
+Focused gossip process tests must select `naome-knowledge` and use the same
+profile, features and targets for compilation and execution. Use the matching
+`cargo test --no-run` barrier before a filtered test command; plain `cargo build`
+uses the different `dev` profile.
 
 Both platform checks require their complete two-profile matrix;
-`Rust CI` requires both platform checks, `Rust quality`, and Devnet qualification.
+`Rust CI` requires both platform checks and `Rust quality`.
 Cache hits still run every Cargo build and test command. Cache writes occur only after
 successful pushes to `main`, with keys covering the runner, profile, toolchain,
 manifests, lockfile, and build/workflow configuration.

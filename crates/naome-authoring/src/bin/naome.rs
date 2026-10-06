@@ -9,11 +9,12 @@ use std::process::ExitCode;
 
 use naome_authoring::{
     AUTHORING_SOURCE_MAX_BYTES, CompileDiagnostic, CompileError, CompiledArtifact,
-    CompiledDefinition, CompiledProof, DiagnosticCode, compile_artifact,
+    CompiledDefinition, CompiledProof, CompiledQuestion, DiagnosticCode, QUESTION_SOURCE_MAX_BYTES,
+    QuestionError, compile_artifact,
 };
 use naome_proof::ArtifactId;
 
-const USAGE: &str = "usage: naome proof <proof.nao>";
+const USAGE: &str = "usage: naome proof <proof.nao> | question <question.nao>";
 
 fn main() -> ExitCode {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
@@ -29,15 +30,34 @@ fn main() -> ExitCode {
 }
 
 fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> {
-    let [proof, path] = arguments else {
+    let [command, path] = arguments else {
         return Err(CliError::Usage);
     };
-    if proof != OsStr::new("proof") {
+    if command != OsStr::new("proof") && command != OsStr::new("question") {
         return Err(CliError::Usage);
     }
 
     let path = PathBuf::from(path);
-    let source = read_source(&path)?;
+    let maximum = if command == OsStr::new("question") {
+        QUESTION_SOURCE_MAX_BYTES
+    } else {
+        AUTHORING_SOURCE_MAX_BYTES
+    };
+    let source = read_source(&path, maximum)?;
+    if command == OsStr::new("question") {
+        let question = CompiledQuestion::compile(&source).map_err(|source| CliError::Question {
+            path: path.clone(),
+            source,
+        })?;
+        let canonical = question
+            .to_canonical_bytes()
+            .map_err(|source| CliError::Question {
+                path: path.clone(),
+                source,
+            })?;
+        return write_compiled_question(output, &question, &canonical)
+            .map_err(|source| CliError::Output { source });
+    }
     let artifact = compile_artifact(&source).map_err(|error| CliError::Compile {
         path: path.clone(),
         diagnostic: error.diagnostic(&source),
@@ -46,13 +66,12 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
     write_compiled(output, &artifact).map_err(|source| CliError::Output { source })
 }
 
-fn read_source(path: &Path) -> Result<String, CliError> {
+fn read_source(path: &Path, maximum: usize) -> Result<String, CliError> {
     let file = File::open(path).map_err(|source| CliError::Read {
         path: path.to_owned(),
         source,
     })?;
-    let maximum_read =
-        u64::try_from(AUTHORING_SOURCE_MAX_BYTES).expect("the authoring source limit fits u64") + 1;
+    let maximum_read = u64::try_from(maximum).expect("the source limit fits u64") + 1;
     let mut bytes = Vec::new();
     file.take(maximum_read)
         .read_to_end(&mut bytes)
@@ -60,10 +79,10 @@ fn read_source(path: &Path) -> Result<String, CliError> {
             path: path.to_owned(),
             source,
         })?;
-    if bytes.len() > AUTHORING_SOURCE_MAX_BYTES {
+    if bytes.len() > maximum {
         return Err(CliError::SourceTooLong {
             path: path.to_owned(),
-            maximum: AUTHORING_SOURCE_MAX_BYTES,
+            maximum,
         });
     }
     String::from_utf8(bytes).map_err(|error| CliError::Read {
@@ -77,6 +96,18 @@ fn write_compiled(output: &mut impl Write, artifact: &CompiledArtifact) -> io::R
         CompiledArtifact::Proof(proof) => write_compiled_proof(output, proof),
         CompiledArtifact::Definition(definition) => write_compiled_definition(output, definition),
     }
+}
+
+fn write_compiled_question(
+    output: &mut impl Write,
+    question: &CompiledQuestion,
+    canonical: &[u8],
+) -> io::Result<()> {
+    write_hex_line(output, "source_hash", question.source_hash())?;
+    write_hex_line(output, "resolution_id", question.resolution_id())?;
+    writeln!(output, "negation_parity {}", question.negation_parity())?;
+    write_hex_line(output, "canonical_core", question.canonical_core())?;
+    write_hex_line(output, "canonical_question", canonical)
 }
 
 fn write_compiled_proof(output: &mut impl Write, proof: &CompiledProof) -> io::Result<()> {
@@ -132,6 +163,10 @@ enum CliError {
         diagnostic: CompileDiagnostic,
         source: Box<CompileError>,
     },
+    Question {
+        path: PathBuf,
+        source: QuestionError,
+    },
     Output {
         source: io::Error,
     },
@@ -144,6 +179,7 @@ impl CliError {
             Self::Read { .. }
             | Self::SourceTooLong { .. }
             | Self::Compile { .. }
+            | Self::Question { .. }
             | Self::Output { .. } => 1,
         }
     }
@@ -183,6 +219,9 @@ impl fmt::Display for CliError {
                     ),
                 }
             }
+            Self::Question { path, source } => {
+                write!(formatter, "{}: {source}", display_path(path))
+            }
             Self::Output { source } => write!(formatter, "failed to write output: {source}"),
         }
     }
@@ -193,6 +232,7 @@ impl Error for CliError {
         match self {
             Self::Read { source, .. } | Self::Output { source } => Some(source),
             Self::Compile { source, .. } => Some(source.as_ref()),
+            Self::Question { source, .. } => Some(source),
             Self::Usage | Self::SourceTooLong { .. } => None,
         }
     }
@@ -263,7 +303,7 @@ mod tests {
         let mut bytes = vec![b' '; AUTHORING_SOURCE_MAX_BYTES];
         bytes.extend_from_slice(&[0xff, 0xff]);
         std::fs::write(&path, bytes).unwrap();
-        let error = read_source(&path).unwrap_err();
+        let error = read_source(&path, AUTHORING_SOURCE_MAX_BYTES).unwrap_err();
         std::fs::remove_file(path).unwrap();
 
         assert!(matches!(

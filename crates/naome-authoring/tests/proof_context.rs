@@ -12,8 +12,10 @@ use naome_authoring::{
     CompileError, CompiledArtifact, CompiledProof, compile, compile_against_proof_context,
     compile_artifact, compile_artifact_against_proof_context,
 };
-use naome_checker::CheckError;
-use naome_ledger::{ArtifactAdmissionError, ArtifactDag};
+use naome_checker::{
+    ArtifactState, CheckError, CheckedProof, check_definition_with_state,
+    check_normal_form_with_state,
+};
 use naome_proof::{
     ArtifactId, ArtifactPayload, DefinitionId, DerivationId, ProofCertificate, ProofId, ProofStep,
     StatementId,
@@ -123,24 +125,96 @@ proof:
 
 #[derive(Default)]
 struct CheckedContext {
-    dag: ArtifactDag,
+    state: ArtifactState,
     payloads: Vec<(ArtifactId, Vec<u8>)>,
 }
 impl CheckedContext {
-    fn admit(&mut self, id: ArtifactId, bytes: Vec<u8>) -> Result<(), ArtifactAdmissionError> {
-        self.dag
-            .apply_canonical_artifact_bytes_with_expected_id(bytes.clone(), id)?;
+    fn admit(&mut self, id: ArtifactId, bytes: Vec<u8>) -> Result<(), String> {
+        let payload =
+            ArtifactPayload::from_canonical_bytes(&bytes).map_err(|error| error.to_string())?;
+        match payload {
+            ArtifactPayload::Proof(certificate) => {
+                let checked = check_proof_payload(certificate, &bytes, &self.state)?;
+                if ArtifactId::from_proof_id(checked.proof_id()) != id {
+                    return Err("proof artifact identity mismatch".into());
+                }
+                let _ = self
+                    .state
+                    .register_proof(checked)
+                    .map_err(|error| error.to_string())?;
+            }
+            ArtifactPayload::Definition(certificate) => {
+                let checked = check_definition_with_state(certificate, &self.state)
+                    .map_err(|error| error.to_string())?;
+                if ArtifactId::from_definition_id(checked.definition_id()) != id {
+                    return Err("definition artifact identity mismatch".into());
+                }
+                self.state
+                    .register_definition(checked)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         self.payloads.push((id, bytes));
         Ok(())
     }
+
     fn recheck(&self) -> Self {
         let mut fresh = Self::default();
         for (id, bytes) in &self.payloads {
             fresh.admit(*id, bytes.clone()).unwrap();
         }
-        assert_eq!(fresh.dag.artifact_set_root(), self.dag.artifact_set_root());
+        assert_eq!(fresh.payloads, self.payloads);
+        self.assert_checked_membership();
+        fresh.assert_checked_membership();
         fresh
     }
+
+    fn checked_proof(&self, id: ArtifactId) -> CheckedProof {
+        let (_, bytes) = self
+            .payloads
+            .iter()
+            .find(|(stored, _)| *stored == id)
+            .unwrap();
+        let ArtifactPayload::Proof(certificate) =
+            ArtifactPayload::from_canonical_bytes(bytes).unwrap()
+        else {
+            panic!("expected a proof payload");
+        };
+        let checked = check_proof_payload(certificate, bytes, &self.state).unwrap();
+        assert_eq!(ArtifactId::from_proof_id(checked.proof_id()), id);
+        assert!(self.state.contains_proof(checked.proof_id()));
+        checked
+    }
+
+    fn assert_checked_membership(&self) {
+        for (id, bytes) in &self.payloads {
+            match ArtifactPayload::from_canonical_bytes(bytes).unwrap() {
+                ArtifactPayload::Proof(_) => {
+                    let _ = self.checked_proof(*id);
+                }
+                ArtifactPayload::Definition(certificate) => {
+                    assert_eq!(
+                        ArtifactId::from_definition_id(certificate.definition_id()),
+                        *id
+                    );
+                    assert!(self.state.contains_definition(certificate.definition_id()));
+                }
+            }
+        }
+    }
+}
+
+fn check_proof_payload(
+    certificate: ProofCertificate,
+    bytes: &[u8],
+    state: &ArtifactState,
+) -> Result<CheckedProof, String> {
+    // Check the exact submitted normal form; never normalize it into acceptance.
+    let normal_form = certificate
+        .into_unchecked_normal_form()
+        .with_matching_canonical_bytes(Box::from(&bytes[1..]))
+        .ok_or_else(|| "noncanonical proof payload".to_owned())?;
+    check_normal_form_with_state(normal_form, state).map_err(|error| error.to_string())
 }
 
 fn reference_source(proof_id: ProofId) -> String {
@@ -161,8 +235,7 @@ fn proof_artifact_bytes(proof: &CompiledProof) -> Vec<u8> {
 }
 
 fn admit_source(context: &mut CheckedContext, source: &str) -> CompiledArtifact {
-    let compiled =
-        compile_artifact_against_proof_context(source, context.dag.artifact_state()).unwrap();
+    let compiled = compile_artifact_against_proof_context(source, &context.state).unwrap();
     admit_compiled(context, &compiled);
     compiled
 }
@@ -218,12 +291,10 @@ fn long_agent_style_proof_uses_only_checked_exact_dependencies_without_mutation(
     }
 
     let context_image = context.payloads.clone();
-    let root = context.dag.artifact_set_root();
-    let len = context.dag.len();
+    let len = context.payloads.len();
 
     let compiled =
-        compile_against_proof_context(LONG_SELECTED_DEPENDENCY_PROOF, context.dag.artifact_state())
-            .unwrap();
+        compile_against_proof_context(LONG_SELECTED_DEPENDENCY_PROOF, &context.state).unwrap();
     assert_eq!(
         compiled.statement_id(),
         StatementId::from_bytes(hex32(
@@ -253,8 +324,8 @@ fn long_agent_style_proof_uses_only_checked_exact_dependencies_without_mutation(
             .count(),
         5
     );
-    assert_eq!(context.dag.artifact_set_root(), root);
-    assert_eq!(context.dag.len(), len);
+    context.assert_checked_membership();
+    assert_eq!(context.payloads.len(), len);
     assert_eq!(context.payloads.clone(), context_image);
 }
 
@@ -301,8 +372,7 @@ definition self_equal = relation(x):
     self_equal(x)
 "#;
     let source =
-        compile_artifact_against_proof_context(colliding_name, context.dag.artifact_state())
-            .unwrap_err();
+        compile_artifact_against_proof_context(colliding_name, &context.state).unwrap_err();
     assert!(matches!(
         &source,
         CompileError::DuplicateDefinitionAlias { name, .. } if name == "self_equal"
@@ -344,8 +414,7 @@ definition presentation_only = relation(a, b):
     forall(candidate, iff(membership(candidate, a), membership(candidate, b)))
 "#;
     let presentation_variant =
-        compile_artifact_against_proof_context(presentation_variant, context.dag.artifact_state())
-            .unwrap();
+        compile_artifact_against_proof_context(presentation_variant, &context.state).unwrap();
     assert_eq!(presentation_variant, third);
 
     for source in [
@@ -353,7 +422,7 @@ definition presentation_only = relation(a, b):
         "foundation = \"naome:zfc\" definitions: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" definition current = relation(x): future(x)",
     ] {
         assert!(matches!(
-            compile_artifact_against_proof_context(source, context.dag.artifact_state()),
+            compile_artifact_against_proof_context(source, &context.state),
             Err(CompileError::UnknownDefinitionAlias { .. }
                 | CompileError::DefinitionNotSelected { .. })
         ));
@@ -372,12 +441,11 @@ definition presentation_only = relation(a, b):
     );
 
     let selected_image = context.payloads.clone();
-    let selected_root = context.dag.artifact_set_root();
-    let selected_len = context.dag.len();
+    let selected_len = context.payloads.len();
 
     let long = compile_artifact_against_proof_context(
         include_str!("../../../examples/definitions-long-proof.nao"),
-        context.dag.artifact_state(),
+        &context.state,
     )
     .unwrap();
     let long = compiled_proof(&long);
@@ -412,7 +480,7 @@ definition presentation_only = relation(a, b):
 
     let term = compile_artifact_against_proof_context(
         include_str!("../../../examples/identity-function-term-proof.nao"),
-        context.dag.artifact_state(),
+        &context.state,
     )
     .unwrap();
     let term = compiled_proof(&term);
@@ -445,8 +513,8 @@ definition presentation_only = relation(a, b):
         2
     );
 
-    assert_eq!(context.dag.artifact_set_root(), selected_root);
-    assert_eq!(context.dag.len(), selected_len);
+    context.assert_checked_membership();
+    assert_eq!(context.payloads.len(), selected_len);
     assert_eq!(context.payloads.clone(), selected_image);
 
     let dependency_free =
@@ -464,18 +532,14 @@ definition presentation_only = relation(a, b):
     context
         .admit(final_artifact_id, proof_artifact_bytes(long))
         .unwrap();
-    assert_eq!(context.dag.len(), selected_len + 1);
-    assert_ne!(context.dag.artifact_set_root(), selected_root);
+    assert_eq!(context.payloads.len(), selected_len + 1);
+    assert_ne!(context.payloads, selected_image);
+    context.assert_checked_membership();
     let rebuilt = context.recheck();
-    assert_eq!(rebuilt.dag.len(), selected_len + 1);
-    let final_record = rebuilt
-        .dag
-        .artifact(final_artifact_id)
-        .unwrap()
-        .as_proof()
-        .unwrap();
+    assert_eq!(rebuilt.payloads.len(), selected_len + 1);
+    let final_record = rebuilt.checked_proof(final_artifact_id);
     assert_eq!(final_record.proof_id(), final_proof_id);
-    let state = rebuilt.dag.artifact_state();
+    let state = &rebuilt.state;
     for definition_id in [first_id, second_id, third_id, identity_id] {
         assert!(state.contains_definition(definition_id));
     }
@@ -535,23 +599,12 @@ fn empty_set_existence_remains_a_standalone_checked_proof() {
     let selected = admit_source(&mut context, SOURCE);
     assert_eq!(compiled_proof(&selected), standalone);
     let artifact_id = selected.artifact_id();
-    assert_eq!(context.dag.len(), 1);
+    assert_eq!(context.payloads.len(), 1);
     let rebuilt = context.recheck();
-    assert_eq!(rebuilt.dag.len(), 1);
-    assert!(
-        rebuilt
-            .dag
-            .artifact_state()
-            .contains_proof(standalone.proof_id())
-    );
+    assert_eq!(rebuilt.payloads.len(), 1);
+    assert!(rebuilt.state.contains_proof(standalone.proof_id()));
     assert_eq!(
-        rebuilt
-            .dag
-            .artifact(artifact_id)
-            .unwrap()
-            .as_proof()
-            .unwrap()
-            .proof_id(),
+        rebuilt.checked_proof(artifact_id).proof_id(),
         standalone.proof_id()
     );
 }
@@ -577,8 +630,7 @@ proof:
     p1 = generalization(p0, x)
     return p1
 "#;
-    let proof =
-        compile_artifact_against_proof_context(proof_source, context.dag.artifact_state()).unwrap();
+    let proof = compile_artifact_against_proof_context(proof_source, &context.state).unwrap();
     let proof_output = compiled_proof(&proof);
     assert_eq!(proof_output.canonical_proof_bytes().len(), 106);
     assert_eq!(
@@ -623,8 +675,7 @@ proof:
 "#,
         hex_string(proof_id.as_bytes())
     );
-    let cited = compile_artifact_against_proof_context(&cited_source, context.dag.artifact_state())
-        .unwrap();
+    let cited = compile_artifact_against_proof_context(&cited_source, &context.state).unwrap();
     let cited_output = compiled_proof(&cited);
     assert_eq!(cited_output.canonical_proof_bytes().len(), 196);
     assert_eq!(cited_output.statement_id(), proof_output.statement_id());
@@ -660,24 +711,21 @@ proof:
     ));
     admit_compiled(&mut context, &cited);
     let rebuilt = context.recheck();
-    let state = rebuilt.dag.artifact_state();
+    let state = &rebuilt.state;
     assert!(state.contains_definition(definition_id));
     assert!(state.contains_proof(proof_id));
     assert!(state.contains_proof(cited_id));
-    let cited_record = rebuilt
-        .dag
-        .artifact(cited_artifact_id)
-        .unwrap()
-        .as_proof()
-        .unwrap();
-    assert_eq!(cited_record.direct_proof_dependencies(), &[proof_id]);
+    let cited_record = rebuilt.checked_proof(cited_artifact_id);
+    let mut expected_dependencies = [
+        ArtifactId::from_proof_id(proof_id),
+        ArtifactId::from_definition_id(definition_id),
+    ];
+    expected_dependencies.sort_unstable();
     assert_eq!(
-        cited_record.direct_definition_dependencies(),
-        &[definition_id]
+        cited_record.direct_artifact_dependencies().as_ref(),
+        expected_dependencies
     );
-    let replayed =
-        compile_artifact_against_proof_context(&cited_source, rebuilt.dag.artifact_state())
-            .unwrap();
+    let replayed = compile_artifact_against_proof_context(&cited_source, &rebuilt.state).unwrap();
     assert_eq!(replayed, cited);
 }
 
@@ -696,10 +744,21 @@ fn exact_context_registration_is_required_and_compilation_is_read_only() {
         )
         .unwrap();
     assert_unknown_reference(
-        compile_against_proof_context(&source, context.dag.artifact_state()),
+        compile_against_proof_context(&source, &context.state),
         dependency.proof_id(),
     );
-    assert!(context.dag.is_empty());
+    assert!(context.payloads.is_empty());
+    // An incorrect envelope address must fail before checked-state registration.
+    assert!(
+        context
+            .admit(
+                ArtifactId::from_bytes([0xff; 32]),
+                proof_artifact_bytes(&dependency),
+            )
+            .is_err()
+    );
+    assert!(context.payloads.is_empty());
+    assert!(!context.state.contains_proof(dependency.proof_id()));
     context
         .admit(
             ArtifactId::from_proof_id(dependency.proof_id()),
@@ -707,8 +766,7 @@ fn exact_context_registration_is_required_and_compilation_is_read_only() {
         )
         .unwrap();
     let before = context.payloads.clone();
-    let root = context.dag.artifact_set_root();
-    let compiled = compile_against_proof_context(&source, context.dag.artifact_state()).unwrap();
+    let compiled = compile_against_proof_context(&source, &context.state).unwrap();
     assert_eq!(compiled.statement_id(), monolithic.statement_id());
     assert_eq!(compiled.derivation_id(), monolithic.derivation_id());
     assert_ne!(compiled.derivation_id(), dependency.derivation_id());
@@ -723,22 +781,17 @@ fn exact_context_registration_is_required_and_compilation_is_read_only() {
     // Neither matching statement nor matching derivation substitutes for an ID.
     for wrong in [monolithic.proof_id(), ProofId::from_bytes([0xff; 32])] {
         assert_unknown_reference(
-            compile_against_proof_context(&reference_source(wrong), context.dag.artifact_state()),
+            compile_against_proof_context(&reference_source(wrong), &context.state),
             wrong,
         );
     }
     assert_eq!(context.payloads, before);
-    assert_eq!(context.dag.artifact_set_root(), root);
-    assert_eq!(context.dag.len(), 1);
-    assert!(
-        !context
-            .dag
-            .artifact_state()
-            .contains_proof(compiled.proof_id())
-    );
+    context.assert_checked_membership();
+    assert_eq!(context.payloads.len(), 1);
+    assert!(!context.state.contains_proof(compiled.proof_id()));
     let rebuilt = context.recheck();
     assert_eq!(
-        compile_against_proof_context(&source, rebuilt.dag.artifact_state()).unwrap(),
+        compile_against_proof_context(&source, &rebuilt.state).unwrap(),
         compiled
     );
 }
@@ -753,15 +806,23 @@ fn only_exact_checked_definition_registration_enables_aliases() {
     admit_compiled(&mut other, &definition);
     let mut context = CheckedContext::default();
     assert!(
-        matches!(compile_artifact_against_proof_context(source, context.dag.artifact_state()),
+        matches!(compile_artifact_against_proof_context(source, &context.state),
         Err(CompileError::DefinitionNotSelected { definition_id, .. }) if definition_id == id)
     );
-    assert!(context.dag.is_empty());
+    assert!(context.payloads.is_empty());
+    assert!(
+        context
+            .admit(
+                ArtifactId::from_bytes([0xff; 32]),
+                definition.canonical_artifact_bytes(),
+            )
+            .is_err()
+    );
+    assert!(context.payloads.is_empty());
+    assert!(!context.state.contains_definition(id));
     admit_compiled(&mut context, &definition);
     let before = context.payloads.clone();
-    let root = context.dag.artifact_set_root();
-    let compiled =
-        compile_artifact_against_proof_context(source, context.dag.artifact_state()).unwrap();
+    let compiled = compile_artifact_against_proof_context(source, &context.state).unwrap();
     assert_eq!(compiled, definition);
     assert_eq!(compiled_definition_id(&compiled), id);
     assert!(
@@ -770,6 +831,6 @@ fn only_exact_checked_definition_registration_enables_aliases() {
             .is_err()
     );
     assert_eq!(context.payloads, before);
-    assert_eq!(context.dag.artifact_set_root(), root);
-    assert_eq!(context.dag.len(), 1);
+    context.assert_checked_membership();
+    assert_eq!(context.payloads.len(), 1);
 }

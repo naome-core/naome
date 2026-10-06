@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, compile};
+use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, QUESTION_SOURCE_MAX_BYTES, compile};
 use naome_proof::{ArtifactId, ProofId};
 
 #[path = "support/golden.rs"]
@@ -387,8 +387,79 @@ fn legacy_compile_command_is_rejected_without_a_compatibility_alias() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "naome: usage: naome proof <proof.nao>\n"
+        "naome: usage: naome proof <proof.nao> | question <question.nao>\n"
     );
+}
+
+#[test]
+fn question_command_emits_original_source_codec_and_oriented_targets() {
+    for (formula, source_hash, parity, canonical) in [
+        (
+            "forall(x,equal(x,x))",
+            "25aa1c064bf74e6eca2ddd89f7bc869e8bfffdc6e697e06b5cb0e666fe2f06db",
+            false,
+            "010000003a666f756e646174696f6e203d20226e616f6d653a7a6663220a73746174656d656e74203d20666f72616c6c28782c657175616c28782c7829290a",
+        ),
+        (
+            "not_(forall(x,equal(x,x)))",
+            "6d402eaac58572d35d9c66901af032cee01da061a9caa81bd003b87a6cb1943c",
+            true,
+            "0100000040666f756e646174696f6e203d20226e616f6d653a7a6663220a73746174656d656e74203d206e6f745f28666f72616c6c28782c657175616c28782c782929290a",
+        ),
+    ] {
+        let text = format!("foundation = \"naome:zfc\"\nstatement = {formula}\n");
+        let source = TemporarySource::new(&text);
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .arg("question")
+            .arg(&source.path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let expected = format!(
+            "source_hash {}\nresolution_id 8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf\nnegation_parity {}\ncanonical_core 040001000000000100000000\ncanonical_question {}\n",
+            source_hash, parity, canonical,
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
+
+#[test]
+fn question_command_rejects_free_variables_proofs_and_source_fields() {
+    for text in [
+        "foundation = \"naome:zfc\" statement = equal(x,x)",
+        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: return p",
+        "foundation = \"naome:zfc\" assumptions = [] statement = forall(x,equal(x,x))",
+        "foundation = \"other\" statement = forall(x,equal(x,x))",
+    ] {
+        let source = TemporarySource::new(text);
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .arg("question")
+            .arg(&source.path)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(!output.stderr.is_empty(), "{output:?}");
+    }
+}
+
+#[test]
+fn question_reader_bounds_bytes_before_utf8_decoding() {
+    let source = TemporarySource::new("");
+    let mut bytes = vec![b' '; QUESTION_SOURCE_MAX_BYTES];
+    bytes.push(0xff);
+    fs::write(&source.path, bytes).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+        .arg("question")
+        .arg(&source.path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8(output.stderr).unwrap().contains(&format!(
+        "source exceeds the {QUESTION_SOURCE_MAX_BYTES}-byte limit"
+    )));
 }
 
 struct TemporarySource {

@@ -1,20 +1,10 @@
 use super::*;
-use crate::profile::{Limits, TimingKind};
 
 fn source(formula: &str) -> String {
     format!("foundation = \"naome:zfc\"\nstatement = {formula}\n")
 }
 fn compile(formula: &str) -> CompiledQuestion {
-    CompiledQuestion::compile(&source(formula), &Profile::lab()).unwrap()
-}
-fn context() -> QuestionContext {
-    QuestionContext {
-        genesis: GenesisId::from_bytes([1; 32]),
-        profile: Profile::lab().id(),
-        checker: checker_profile_id("naome-checker-v1"),
-        library_root: [2; 32],
-        author: AccountId::from_bytes([3; 32]),
-    }
+    CompiledQuestion::compile(&source(formula)).unwrap()
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -25,7 +15,7 @@ fn canonical_closed_formula_and_resolution_golden() {
     let question = compile("forall(x, equal(x,x))");
     assert_eq!(hex(question.canonical_core()), "040001000000000100000000");
     assert_eq!(
-        hex(question.resolution_id().as_bytes()),
+        hex(question.resolution_id()),
         "8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf"
     );
     let x = FreeVariable::new(987);
@@ -52,10 +42,6 @@ fn alpha_and_leading_negations_share_family_but_keep_orientation() {
     assert_eq!(odd.proved_target(), plain.refuted_target());
     assert_eq!(odd.refuted_target(), plain.proved_target());
     assert_ne!(alpha.source_hash(), plain.source_hash());
-    assert_ne!(
-        alpha.question_id(context(), "purpose").unwrap(),
-        plain.question_id(context(), "purpose").unwrap()
-    );
 }
 
 #[test]
@@ -69,38 +55,35 @@ fn source_codec_golden_and_strict_recompilation() {
     );
     assert_eq!(&bytes[5..], question.source().as_bytes());
     assert_eq!(
-        CompiledQuestion::from_canonical_bytes(&bytes, &Profile::lab()).unwrap(),
+        CompiledQuestion::from_canonical_bytes(&bytes).unwrap(),
         question
     );
     let mut trailing = bytes.clone();
     trailing.push(0);
     assert_eq!(
-        CompiledQuestion::from_canonical_bytes(&trailing, &Profile::lab()),
-        Err(LedgerError::TrailingBytes)
+        CompiledQuestion::from_canonical_bytes(&trailing),
+        Err(QuestionError::TrailingBytes)
     );
     let mut unknown = bytes.clone();
     unknown[0] = 2;
-    assert!(CompiledQuestion::from_canonical_bytes(&unknown, &Profile::lab()).is_err());
+    assert!(CompiledQuestion::from_canonical_bytes(&unknown).is_err());
     for end in 0..bytes.len() {
-        assert!(CompiledQuestion::from_canonical_bytes(&bytes[..end], &Profile::lab()).is_err());
+        assert!(CompiledQuestion::from_canonical_bytes(&bytes[..end]).is_err());
     }
 }
 
 #[test]
-fn actual_acceptance_fixture_questions_compile() {
+fn existing_closed_question_sources_compile() {
     let a = CompiledQuestion::compile(
-        include_str!("../../../../examples/state-workflow/question-a.nao"),
-        &Profile::lab(),
+        "# Proof obligation A: universally quantified self-equality.\nfoundation = \"naome:zfc\"\nstatement = forall(y, forall(x, equal(x, x)))\n",
     )
     .unwrap();
     let b = CompiledQuestion::compile(
-        include_str!("../../../../examples/state-workflow/question-b.nao"),
-        &Profile::lab(),
+        "# Proof obligation B: negative orientation; solution-b.nao refutes this.\nfoundation = \"naome:zfc\"\nstatement = not_(implies(forall(x, equal(x, x)), forall(x, equal(x, x))))\n",
     )
     .unwrap();
     let c = CompiledQuestion::compile(
-        include_str!("../../../../examples/state-workflow/question-c.nao"),
-        &Profile::lab(),
+        "# Proof obligation C is exactly helper H, already known after A settles.\nfoundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\n",
     )
     .unwrap();
     assert!(!a.negation_parity());
@@ -144,7 +127,7 @@ fn derived_notation_matches_foundation_constructors() {
 #[test]
 fn trivia_trailing_comma_and_explicit_resolve_policy() {
     let input = "# research\nfoundation = \"naome:zfc\"\n statement = forall(x, equal(x,x,),) # target\nsuccess = \"resolve\"\n";
-    let question = CompiledQuestion::compile(input, &Profile::lab()).unwrap();
+    let question = CompiledQuestion::compile(input).unwrap();
     assert_eq!(
         question.resolution_id(),
         compile("forall(y,equal(y,y))").resolution_id()
@@ -172,7 +155,7 @@ fn rejects_free_variables_assumptions_imports_and_bad_syntax() {
         source("forall(x,equal(x,x)) proof: return p"),
     ] {
         assert!(
-            CompiledQuestion::compile(&input, &Profile::lab()).is_err(),
+            CompiledQuestion::compile(&input).is_err(),
             "accepted {input}"
         );
     }
@@ -184,17 +167,17 @@ fn target_depth_counts_added_negative_target_and_ignores_removed_prefix() {
     for _ in 0..30 {
         body = format!("forall(x,{body})");
     }
-    assert!(CompiledQuestion::compile(&source(&body), &Profile::lab()).is_ok());
+    assert!(CompiledQuestion::compile(&source(&body)).is_ok());
     let too_deep = format!("forall(x,{body})");
     assert_eq!(
-        CompiledQuestion::compile(&source(&too_deep), &Profile::lab()),
-        Err(LedgerError::Limit("question target depth"))
+        CompiledQuestion::compile(&source(&too_deep)),
+        Err(QuestionError::Limit("question target depth"))
     );
     // Leading input negations do not increase either canonical target depth.
     for _ in 0..40 {
         body = format!("not_({body})");
     }
-    assert!(CompiledQuestion::compile(&source(&body), &Profile::lab()).is_ok());
+    assert!(CompiledQuestion::compile(&source(&body)).is_ok());
 }
 
 #[test]
@@ -204,8 +187,8 @@ fn bounded_expansion_rejects_exponential_iff_and_deep_source() {
         formula = format!("iff(equal(x,x),{formula})");
     }
     assert!(matches!(
-        CompiledQuestion::compile(&source(&format!("forall(x,{formula})")), &Profile::lab()),
-        Err(LedgerError::Limit(_))
+        CompiledQuestion::compile(&source(&format!("forall(x,{formula})"))),
+        Err(QuestionError::Limit(_))
     ));
     let deep = format!(
         "{}forall(x,equal(x,x)){}",
@@ -213,98 +196,13 @@ fn bounded_expansion_rejects_exponential_iff_and_deep_source() {
         ")".repeat(300)
     );
     assert!(matches!(
-        CompiledQuestion::compile(&source(&deep), &Profile::lab()),
-        Err(LedgerError::Limit(_))
+        CompiledQuestion::compile(&source(&deep)),
+        Err(QuestionError::Limit(_))
     ));
     assert_eq!(
-        CompiledQuestion::compile(&" ".repeat(QUESTION_SOURCE_MAX_BYTES + 1), &Profile::lab()),
-        Err(LedgerError::Limit("question source bytes"))
+        CompiledQuestion::compile(&" ".repeat(QUESTION_SOURCE_MAX_BYTES + 1)),
+        Err(QuestionError::Limit("question source bytes"))
     );
-}
-
-#[test]
-fn profile_smaller_bounds_are_enforced_for_both_targets() {
-    let nodes = Profile::with_limits(
-        TimingKind::Lab,
-        Limits {
-            target_nodes: 2,
-            target_depth: 2,
-            ..Limits::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        CompiledQuestion::compile(&source("forall(x,equal(x,x))"), &nodes),
-        Err(LedgerError::Limit("question target nodes"))
-    );
-    let depth = Profile::with_limits(
-        TimingKind::Lab,
-        Limits {
-            target_depth: 2,
-            ..Limits::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        CompiledQuestion::compile(&source("forall(x,equal(x,x))"), &depth),
-        Err(LedgerError::Limit("question target depth"))
-    );
-    let bytes = Profile::with_limits(
-        TimingKind::Lab,
-        Limits {
-            question_source_bytes: 8,
-            ..Limits::default()
-        },
-    )
-    .unwrap();
-    assert!(CompiledQuestion::compile(&source("forall(x,equal(x,x))"), &bytes).is_err());
-}
-
-#[test]
-fn every_opening_context_component_affects_question_id() {
-    let question = compile("forall(x,equal(x,x))");
-    let original = context();
-    let id = question.question_id(original, "purpose").unwrap();
-    let mut changed = original;
-    changed.genesis = GenesisId::from_bytes([4; 32]);
-    assert_ne!(id, question.question_id(changed, "purpose").unwrap());
-    changed = original;
-    changed.profile = ProfileId::from_bytes([4; 32]);
-    assert_eq!(
-        question.question_id(changed, "purpose"),
-        Err(LedgerError::Invalid(
-            "question compilation profile mismatch"
-        ))
-    );
-    changed = original;
-    changed.checker = checker_profile_id("other-checker");
-    assert_ne!(id, question.question_id(changed, "purpose").unwrap());
-    changed = original;
-    changed.library_root = [4; 32];
-    assert_ne!(id, question.question_id(changed, "purpose").unwrap());
-    changed = original;
-    changed.author = AccountId::from_bytes([4; 32]);
-    assert_ne!(id, question.question_id(changed, "purpose").unwrap());
-    assert_ne!(
-        id,
-        question.question_id(original, "different purpose").unwrap()
-    );
-}
-
-#[test]
-fn solution_round_uses_finalized_approval_and_nonzero_attempt() {
-    let c = context();
-    let q = compile("forall(x,equal(x,x))")
-        .question_id(c, "purpose")
-        .unwrap();
-    let approval = RecordId::from_bytes([7; 32]);
-    let id = solution_round_id(c.genesis, q, 1, approval).unwrap();
-    assert_ne!(id, solution_round_id(c.genesis, q, 2, approval).unwrap());
-    assert_ne!(
-        id,
-        solution_round_id(c.genesis, q, 1, RecordId::from_bytes([8; 32])).unwrap()
-    );
-    assert!(solution_round_id(c.genesis, q, 0, approval).is_err());
 }
 
 #[test]
@@ -319,22 +217,75 @@ fn nominal_node_boundary_applies_to_the_larger_target() {
     // 511 leaves + 510 implications + 2 quantifiers = 1023 core nodes;
     // the negative target has exactly 1024.
     let exact = source(&format!("forall(y,forall(x,{}))", tree(511)));
-    assert!(CompiledQuestion::compile(&exact, &Profile::lab()).is_ok());
+    assert!(CompiledQuestion::compile(&exact).is_ok());
     // 512 leaves + 511 implications + 1 quantifier = 1024 core nodes;
     // the negative target exceeds the ceiling by one.
     let excessive = source(&format!("forall(x,{})", tree(512)));
     assert_eq!(
-        CompiledQuestion::compile(&excessive, &Profile::lab()),
-        Err(LedgerError::Limit("question target nodes"))
+        CompiledQuestion::compile(&excessive),
+        Err(QuestionError::Limit("question target nodes"))
     );
 }
 
 #[test]
 fn source_decoder_rejects_bad_utf8_and_oversized_declared_length() {
-    assert!(
-        CompiledQuestion::from_canonical_bytes(&[1, 0, 0, 0, 1, 255], &Profile::lab()).is_err()
+    assert!(CompiledQuestion::from_canonical_bytes(&[1, 0, 0, 0, 1, 255]).is_err());
+    assert!(CompiledQuestion::from_canonical_bytes(&[1, 255, 255, 255, 255]).is_err());
+}
+
+#[test]
+fn well_formedness_does_not_assert_mathematical_truth() {
+    let question = compile("forall(x,not_equal(x,x))");
+    let x = FreeVariable::new(0);
+    assert_eq!(
+        question.formula(),
+        &Formula::for_all(x, Formula::negate(Formula::equal(x, x)))
     );
-    assert!(
-        CompiledQuestion::from_canonical_bytes(&[1, 255, 255, 255, 255], &Profile::lab()).is_err()
+}
+
+#[test]
+fn checked_proof_matches_exact_targets_with_original_negation_orientation() {
+    use naome_checker::{CheckedProof, normalize_and_check};
+    use naome_proof::ProofCertificate;
+
+    fn checked(source: &str) -> CheckedProof {
+        let compiled = crate::compile(source).unwrap();
+        let certificate =
+            ProofCertificate::from_canonical_bytes(compiled.canonical_proof_bytes()).unwrap();
+        let checked = normalize_and_check(certificate).unwrap();
+        assert_eq!(
+            checked.normal_form().canonical_bytes(),
+            compiled.canonical_proof_bytes()
+        );
+        checked
+    }
+
+    let proof = checked(include_str!("../../../../examples/self-equality.nao"));
+    let question = compile("forall(x,equal(x,x))");
+    let alpha = compile("forall(y,equal(y,y))");
+    let negative = compile("not_(forall(x,equal(x,x)))");
+    let twice_negative = compile("not_(not_(forall(x,equal(x,x))))");
+    assert_eq!(
+        question.classify_checked_proof(&proof),
+        Ok(QuestionOutcome::Proved)
     );
+    assert_eq!(
+        alpha.classify_checked_proof(&proof),
+        Ok(QuestionOutcome::Proved)
+    );
+    assert_eq!(
+        negative.classify_checked_proof(&proof),
+        Ok(QuestionOutcome::Refuted)
+    );
+    assert_eq!(
+        twice_negative.classify_checked_proof(&proof),
+        Ok(QuestionOutcome::Proved)
+    );
+
+    let unrelated = checked(include_str!(
+        "../../../../examples/implication-identity.nao"
+    ));
+    assert!(question.classify_checked_proof(&unrelated).is_err());
+    let unrelated_question = compile("forall(x,member(x,x))");
+    assert!(unrelated_question.classify_checked_proof(&proof).is_err());
 }
