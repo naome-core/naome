@@ -122,6 +122,9 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
     );
     assert_eq!(proved.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(refuted.outcome, AdmissionOutcome::NotInserted);
+    assert!(proved.assessment.novelty().is_none());
+    assert!(refuted.assessment.novelty().is_none());
+    assert!(double_negative.assessment.novelty().is_none());
     assert_eq!(double_negative.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(context(&handle).await.registered_questions, 0);
     admin
@@ -152,6 +155,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
         "rejected admission cannot modify registry or graph"
     );
     assert_eq!(alias.outcome, AdmissionOutcome::NotInserted);
+    assert!(alias.assessment.novelty().is_none());
     let mut limited = PrefilterPolicy::default();
     limited.limits.operations = 1;
     admin.set_policy(limited).await.unwrap();
@@ -168,6 +172,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
     );
     assert_eq!(exhausted.assessment.interest, InterestAssessment::NotRun);
     assert_eq!(exhausted.outcome, AdmissionOutcome::NotInserted);
+    assert!(exhausted.assessment.novelty().is_none());
     assert_eq!(context(&handle).await, frozen);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     stop(admin, task).await;
@@ -208,6 +213,7 @@ async fn running_node_prefilter_reaches_separate_interest_without_storing_questi
             "interest is not a proof-validity or prefilter oracle"
         );
         assert_eq!(result.interest, expected);
+        assert!(result.novelty().is_some());
         assert_eq!(context(&handle).await, before);
     }
     assert_eq!(calls.load(Ordering::SeqCst), 3);
@@ -289,6 +295,15 @@ async fn running_node_checked_proof_ingest_invalidates_pending_interest() {
         Some(RejectionReason::StaleContext)
     );
     assert_eq!(stale.assessment.interest, InterestAssessment::Stale);
+    assert!(stale.assessment.novelty().is_none());
+    assert!(
+        prior_pass.novelty().is_some(),
+        "the old result remains historical"
+    );
+    assert_ne!(
+        prior_pass.novelty().unwrap().snapshot_id(),
+        changed_context.snapshot
+    );
     let fresh = handle.admit_question(question(SOLVED)).await.unwrap();
     assert_eq!(
         fresh.assessment.prefilter.reason,
@@ -358,6 +373,7 @@ async fn running_node_registry_and_policy_updates_invalidate_pending_interest() 
             Some(RejectionReason::StaleContext)
         );
         assert_eq!(result.assessment.interest, InterestAssessment::Stale);
+        assert!(result.assessment.novelty().is_none());
         assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
         assert_eq!(context(&handle).await, changed);
     }
@@ -419,6 +435,7 @@ async fn running_node_bounds_pending_interest_and_drops_it_on_cancel_and_stop() 
     );
     assert_eq!(crowded.assessment.interest, InterestAssessment::NotRun);
     assert_eq!(crowded.outcome, AdmissionOutcome::NotInserted);
+    assert!(crowded.assessment.novelty().is_none());
     first.abort();
     let _ = first.await;
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -676,12 +693,17 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
     assert_eq!(after.registered_questions, 1);
     assert_eq!(after.checked_proofs, 0);
     let receipt = admitted[0];
-    assert_eq!(receipt.record, *input.source_hash());
-    assert_eq!(receipt.input, readonly.prefilter.input);
-    assert_eq!(receipt.policy, before.policy);
-    assert_eq!(receipt.snapshot_before, before.snapshot);
-    assert_eq!(receipt.snapshot_after, after.snapshot);
-    assert_ne!(receipt.registry_before, receipt.registry_after);
+    assert_eq!(receipt.record(), *input.source_hash());
+    assert_eq!(receipt.input(), readonly.prefilter.input);
+    assert_eq!(receipt.policy(), before.policy);
+    assert_eq!(receipt.snapshot_before(), before.snapshot);
+    assert_eq!(receipt.novelty(), readonly.novelty().unwrap());
+    assert_eq!(receipt.novelty().input_id(), receipt.input());
+    assert_eq!(receipt.novelty().policy_id(), receipt.policy());
+    assert_eq!(receipt.novelty().snapshot_id(), receipt.snapshot_before());
+    assert_ne!(receipt.novelty().snapshot_id(), receipt.snapshot_after());
+    assert_eq!(receipt.snapshot_after(), after.snapshot);
+    assert_ne!(receipt.registry_before(), receipt.registry_after());
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
@@ -698,6 +720,7 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
         Some(RejectionReason::ExactDuplicate)
     );
     assert_eq!(alias.outcome, AdmissionOutcome::NotInserted);
+    assert!(alias.assessment.novelty().is_none());
     assert_eq!(context(&handle).await, after);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     stop(admin, task).await;
@@ -715,6 +738,7 @@ async fn running_node_admission_without_interest_reports_pass_without_insertion(
     let before = context(&handle).await;
     let result = handle.admit_question(question(QUESTION)).await.unwrap();
     assert!(result.assessment.prefilter.passed());
+    assert!(result.assessment.novelty().is_some());
     assert_eq!(result.assessment.interest, InterestAssessment::NotRun);
     assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(context(&handle).await, before);
@@ -764,6 +788,7 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
             "interest cannot change the formal Pass claim"
         );
         assert_eq!(result.assessment.interest, expected);
+        assert!(result.assessment.novelty().is_some());
         assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
         assert_eq!(context(&handle).await, before);
     }
@@ -854,6 +879,7 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     );
     assert_eq!(exhausted.assessment.interest, InterestAssessment::NotRun);
     assert_eq!(exhausted.outcome, AdmissionOutcome::NotInserted);
+    assert!(exhausted.assessment.novelty().is_none());
     assert!(exhausted.assessment.prefilter.deduction.is_none());
     assert_eq!(context(&handle).await, limited_context);
     assert_eq!(calls.load(Ordering::SeqCst), 0);

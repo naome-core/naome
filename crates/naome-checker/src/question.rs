@@ -255,6 +255,74 @@ pub enum PrefilterOutcome {
     Reject,
 }
 
+/// Completed first-discovery checks within one exact local world and finite rule set.
+/// This historical result does not authorize admission into a receiving node or
+/// establish relevance, usefulness or novelty outside the bound snapshot.
+///
+/// Only the checker can construct or change these bindings.
+///
+/// ```compile_fail
+/// use naome_checker::question::{NodeLocalNovelty, PrefilterDecision};
+/// fn forge(decision: &PrefilterDecision) -> NodeLocalNovelty {
+///     NodeLocalNovelty {
+///         question: decision.question.unwrap(), input: decision.input,
+///         snapshot: decision.snapshot, policy: decision.policy, rule_set: 2,
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use naome_checker::question::NodeLocalNovelty;
+/// fn rebind(result: &mut NodeLocalNovelty) {
+///     result.snapshot = [0; 32];
+/// }
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeLocalNovelty {
+    question: StatementId,
+    input: Identity,
+    snapshot: Identity,
+    policy: Identity,
+    rule_set: u64,
+}
+
+impl NodeLocalNovelty {
+    pub const fn question_id(&self) -> StatementId {
+        self.question
+    }
+
+    pub const fn input_id(&self) -> Identity {
+        self.input
+    }
+
+    pub const fn snapshot_id(&self) -> Identity {
+        self.snapshot
+    }
+
+    pub const fn policy_id(&self) -> Identity {
+        self.policy
+    }
+
+    pub const fn rule_set(&self) -> u64 {
+        self.rule_set
+    }
+
+    /// Reuse requires the identical normalized input, complete local snapshot
+    /// and policy. A mismatch requires fresh receiving-node assessment.
+    pub fn matches_inputs(
+        &self,
+        question: &AssessmentQuestion<'_>,
+        snapshot: &KnowledgeSnapshot<'_>,
+        policy: &PrefilterPolicy,
+    ) -> bool {
+        self.question == question.question
+            && self.input == question.input
+            && self.snapshot == snapshot.identity
+            && self.policy == policy.identity()
+            && self.rule_set == policy.rule_set
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrefilterDecision {
     pub outcome: PrefilterOutcome,
@@ -269,6 +337,7 @@ pub struct PrefilterDecision {
     pub related_record: Option<Identity>,
     /// Temporary checker-certified evidence, never registered as a new proof.
     pub deduction: Option<DeductionWitness>,
+    novelty: Option<NodeLocalNovelty>,
 }
 
 /// A checked temporary derivation with every original cited proof identity.
@@ -297,6 +366,25 @@ impl PrefilterDecision {
         self.outcome == PrefilterOutcome::Pass
     }
 
+    /// Returns only an issued result consistent with the public decision fields.
+    /// Editing a display field cannot create or rebind checker evidence. A valid
+    /// self-record reassessment may pass without establishing first discovery.
+    pub fn novelty(&self) -> Option<&NodeLocalNovelty> {
+        let novelty = self.novelty.as_ref()?;
+        (self.passed()
+            && self.reason.is_none()
+            && self.rule == "Q00_SUPPORTED_PREFILTER"
+            && self.question == Some(novelty.question)
+            && self.input == novelty.input
+            && self.snapshot == novelty.snapshot
+            && self.policy == novelty.policy
+            && self.witness.is_none()
+            && self.supporting_witness.is_none()
+            && self.related_record.is_none()
+            && self.deduction.is_none())
+        .then_some(novelty)
+    }
+
     /// Tests an intrinsically bound cache entry against current receiver inputs.
     pub fn matches_inputs(
         &self,
@@ -314,6 +402,7 @@ impl PrefilterDecision {
         self.outcome = PrefilterOutcome::Reject;
         self.reason = Some(reason);
         self.rule = rule;
+        self.novelty = None;
         self
     }
 
@@ -392,6 +481,7 @@ pub fn assess_question(
         supporting_witness: None,
         related_record: None,
         deduction: None,
+        novelty: None,
     };
     if !policy.valid() {
         return decision.reject(RejectionReason::UnsupportedPolicy, "Q09_POLICY");
@@ -403,8 +493,18 @@ pub fn assess_question(
         certificate_bytes: policy.limits.certificate_bytes,
     };
     let result = evaluate(question, snapshot, policy, &mut work, &mut decision);
-    if let Err((reason, rule)) = result {
-        decision = decision.reject(reason, rule);
+    match result {
+        Err((reason, rule)) => decision = decision.reject(reason, rule),
+        Ok(()) if question.registered_record.is_none() => {
+            decision.novelty = Some(NodeLocalNovelty {
+                question: question.question,
+                input: question.input,
+                snapshot: snapshot.identity,
+                policy: policy.identity(),
+                rule_set: policy.rule_set,
+            });
+        }
+        Ok(()) => {}
     }
     decision
 }

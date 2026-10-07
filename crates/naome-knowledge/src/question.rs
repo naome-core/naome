@@ -9,8 +9,8 @@ use std::{future::Future, pin::Pin, time::Duration};
 
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::{
-    AssessmentQuestion, Identity, KnowledgeSnapshot, PrefilterDecision, PrefilterPolicy,
-    QuestionRegistry, RegisteredQuestion, RejectionReason, assess_question,
+    AssessmentQuestion, Identity, KnowledgeSnapshot, NodeLocalNovelty, PrefilterDecision,
+    PrefilterPolicy, QuestionRegistry, RegisteredQuestion, RejectionReason, assess_question,
 };
 use naome_foundation::FOUNDATION_ID;
 use tokio::sync::{mpsc, oneshot};
@@ -34,23 +34,63 @@ mod tests;
 
 #[derive(Clone, Debug)]
 pub struct QuestionAssessment {
-    /// Only the supported finite formal checks, never an interest/novelty claim.
+    /// Supported finite formal checks, separate from interest selection.
     pub prefilter: PrefilterDecision,
     pub interest: InterestAssessment,
     pub submitted_negation_parity: bool,
 }
 
+impl QuestionAssessment {
+    /// First discovery within the bound complete local world and finite rules.
+    /// Interest failure or nonselection does not change this formal result.
+    pub fn novelty(&self) -> Option<&NodeLocalNovelty> {
+        self.prefilter.novelty()
+    }
+}
+
 /// Observed local registry effect, emitted only after a successful insertion.
 /// No API accepts this receipt or an earlier Pass as insertion authority.
+///
+/// ```compile_fail
+/// fn rebind(receipt: &mut naome_knowledge::question::AdmissionReceipt) {
+///     receipt.record = [0; 32];
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmissionReceipt {
-    pub record: Identity,
-    pub input: Identity,
-    pub policy: Identity,
-    pub snapshot_before: Identity,
-    pub snapshot_after: Identity,
-    pub registry_before: Identity,
-    pub registry_after: Identity,
+    record: Identity,
+    snapshot_after: Identity,
+    registry_before: Identity,
+    registry_after: Identity,
+    novelty: NodeLocalNovelty,
+}
+
+impl AdmissionReceipt {
+    pub const fn record(&self) -> Identity {
+        self.record
+    }
+    pub const fn input(&self) -> Identity {
+        self.novelty.input_id()
+    }
+    pub const fn policy(&self) -> Identity {
+        self.novelty.policy_id()
+    }
+    pub const fn snapshot_before(&self) -> Identity {
+        self.novelty.snapshot_id()
+    }
+    pub const fn snapshot_after(&self) -> Identity {
+        self.snapshot_after
+    }
+    pub const fn registry_before(&self) -> Identity {
+        self.registry_before
+    }
+    pub const fn registry_after(&self) -> Identity {
+        self.registry_after
+    }
+    /// Fresh checker result for the world immediately before this insertion.
+    pub const fn novelty(&self) -> &NodeLocalNovelty {
+        &self.novelty
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -429,6 +469,7 @@ where
         if pending.reply.admission()
             && prefilter.passed()
             && interest == InterestAssessment::Assessed(true)
+            && let Some(novelty) = prefilter.novelty().cloned()
         {
             let previous = self.registry.clone();
             let registry_before = previous.identity();
@@ -439,12 +480,10 @@ where
                 Ok(()) => {
                     outcome = AdmissionOutcome::Admitted(Box::new(AdmissionReceipt {
                         record,
-                        input: prefilter.input,
-                        policy: prefilter.policy,
-                        snapshot_before: prefilter.snapshot,
                         snapshot_after: self.snapshot(graph).identity(),
                         registry_before,
                         registry_after: self.registry.identity(),
+                        novelty,
                     }));
                     previous_registry = Some(previous);
                     self.cached = None;
