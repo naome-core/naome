@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt;
 
@@ -7,9 +8,9 @@ use naome_proof::{
     DerivationId, ProofId, ProofStep, StatementId,
 };
 
-use crate::{CheckedDefinition, CheckedProof};
+use crate::{CheckedDefinition, CheckedProof, question::index::KnowledgeIndex};
 
-mod persistent_map;
+pub(crate) mod persistent_map;
 
 use persistent_map::{Key256, PersistentMap};
 
@@ -25,7 +26,19 @@ macro_rules! impl_key256 {
     };
 }
 
-impl_key256!(ProofId, DerivationId, StatementId, DefinitionId);
+impl_key256!(
+    ProofId,
+    DerivationId,
+    StatementId,
+    DefinitionId,
+    naome_proof::ArtifactId
+);
+
+impl Key256 for [u8; 32] {
+    fn as_key_bytes(&self) -> &[u8; 32] {
+        self
+    }
+}
 
 /// The already checked proofs and definitions selected by one chain state.
 ///
@@ -47,6 +60,7 @@ pub struct ArtifactState {
     derivations: PersistentMap<DerivationId, StatementId>,
     statements: PersistentMap<StatementId, StoredStatement>,
     definitions: PersistentMap<DefinitionId, StoredDefinition>,
+    pub(crate) question_index: KnowledgeIndex,
 }
 
 impl ArtifactState {
@@ -57,7 +71,19 @@ impl ArtifactState {
             derivations: PersistentMap::new(),
             statements: PersistentMap::new(),
             definitions: PersistentMap::new(),
+            question_index: KnowledgeIndex::new(),
         }
+    }
+
+    /// Identifies the complete registered checked artifact set in constant time.
+    /// The cached Patricia roots bind all proof/definition content identities,
+    /// independently of arrival order. No selected-history authority is implied.
+    pub fn snapshot_id(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"naome:checked-artifact-snapshot:v1\0");
+        hash.update(self.proofs.fingerprint());
+        hash.update(self.definitions.fingerprint());
+        hash.finalize().into()
     }
 
     /// Returns whether the selected set contains this exact concrete proof.
@@ -78,6 +104,37 @@ impl ArtifactState {
     /// Returns whether the selected set contains this exact definition.
     pub fn contains_definition(&self, definition_id: DefinitionId) -> bool {
         self.definitions.contains_key(&definition_id)
+    }
+
+    /// Borrows every registered concrete proof's checker-owned conclusion.
+    ///
+    /// Iteration is ascending by ProofId and performs no proof checking or
+    /// mutation. Consumers must bound and exhaust their declared comparison
+    /// scope; an unfinished iteration cannot establish absence of knowledge.
+    pub fn proof_conclusions(
+        &self,
+    ) -> impl Iterator<Item = (ProofId, StatementId, &Formula, usize)> {
+        self.proofs.entries().map(|(proof_id, derivation_id)| {
+            let statement_id = *self
+                .derivations
+                .get(derivation_id)
+                .expect("registered derivation");
+            let statement = self
+                .statements
+                .get(&statement_id)
+                .expect("registered statement");
+            (
+                *proof_id,
+                statement_id,
+                &statement.conclusion,
+                statement.canonical_length,
+            )
+        })
+    }
+
+    /// Borrows the identities of all registered conservative definitions.
+    pub fn definition_ids(&self) -> impl Iterator<Item = DefinitionId> + '_ {
+        self.definitions.entries().map(|(id, _)| *id)
     }
 
     /// Returns the graph kind from the exact selected certificate.
@@ -104,6 +161,8 @@ impl ArtifactState {
             canonical_conclusion_length,
         } = proof;
 
+        self.question_index
+            .register_proof(proof_id, statement_id, &conclusion);
         self.statements.insert(
             statement_id,
             StoredStatement {
@@ -151,6 +210,11 @@ impl ArtifactState {
     ) -> Result<Box<[u8]>, ArtifactStateError> {
         match self.validate_proof_registration(&proof) {
             Err(ArtifactStateError::DuplicateDerivation { .. }) => {
+                self.question_index.register_proof(
+                    proof.proof_id,
+                    proof.statement_id,
+                    &proof.conclusion,
+                );
                 let inserted = self.proofs.insert(proof.proof_id, proof.derivation_id);
                 debug_assert!(inserted);
                 Ok(proof.normal_form.into_canonical_bytes())
@@ -251,6 +315,7 @@ impl ArtifactState {
             definition_id,
             obligation: _,
         } = definition;
+        self.question_index.register_definition(definition_id);
         let inserted = self
             .definitions
             .insert(definition_id, StoredDefinition { certificate });
@@ -307,6 +372,15 @@ impl ArtifactState {
             canonical_length: statement.canonical_length,
             derivation_id,
         })
+    }
+
+    pub(crate) fn known_statement(
+        &self,
+        statement_id: StatementId,
+    ) -> Option<(ProofId, &Formula, usize)> {
+        let stored = self.statements.get(&statement_id)?;
+        let witness = *self.question_index.witness(statement_id)?;
+        Some((witness, &stored.conclusion, stored.canonical_length))
     }
 
     pub(crate) fn resolve_statement(&self, statement_id: StatementId) -> Option<&Formula> {

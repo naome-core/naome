@@ -38,6 +38,9 @@ pub struct Graph {
 }
 
 impl Graph {
+    pub(crate) fn checked_context(&self) -> &ArtifactState {
+        &self.context
+    }
     /// Locks the directory, checks all persisted bytes and reconstructs dependencies.
     /// Missing, invalid, incompatible or cyclic durable content fails startup.
     pub fn open(directory: &Path) -> Result<Self, String> {
