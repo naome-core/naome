@@ -357,7 +357,7 @@ impl Behaviour {
         let peer = key.public().to_peer_id();
         let identify = identify::Behaviour::new(
             identify::Config::new(protocol_version(relay), key.public())
-                .with_agent_version("naome-knowledge/1".into())
+                .with_agent_version("naome-knowledge/2".into())
                 .with_cache_size(0)
                 .with_interval(Duration::from_secs(10))
                 .with_push_listen_addr_updates(true)

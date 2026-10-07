@@ -1,11 +1,14 @@
 //! Immutable checker-validated proof sets, independent of ledger selection.
 //!
-//! Peers exchange hints and content; only local checking admits an object.
-//! Availability and eventual union convergence require compatible honest peers
-//! to reconnect and retain the data within the explicit local resource limits.
+//! Peers exchange hints and derived questions before full certificates. Each
+//! receiver requires fresh formal approval and positive local interest, then
+//! checks the complete necessary proof closure before atomic publication.
+//! Union convergence requires every relevant question to be selected, compatible
+//! honest peers to reconnect, and data to fit the explicit local resource limits.
 
 mod discovery;
 mod graph;
+mod intake;
 pub mod network;
 mod object;
 pub mod question;

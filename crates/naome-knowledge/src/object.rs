@@ -22,6 +22,48 @@ pub struct Envelope {
     pub proof: String,
 }
 
+/// Bounded, untrusted description of a newly derived resolution obligation.
+/// It contains no certificate bytes and makes no proof-validity claim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Metadata {
+    pub proof_id: String,
+    pub statement_id: String,
+    pub question: String,
+}
+
+impl Metadata {
+    pub(crate) fn compile(
+        &self,
+    ) -> Result<(ProofId, StatementId, naome_authoring::CompiledQuestion), String> {
+        let id = ProofId::from_bytes(id_bytes(&self.proof_id)?);
+        let statement = StatementId::from_bytes(id_bytes(&self.statement_id)?);
+        let question = naome_authoring::CompiledQuestion::compile(&self.question)
+            .map_err(|error| error.to_string())?;
+        let positive = target_id(question.positive_target())?;
+        let negative = target_id(question.negative_target())?;
+        if statement != positive && statement != negative {
+            return Err("description statement does not match a question target".into());
+        }
+        Ok((id, statement, question))
+    }
+}
+
+// Early address binding uses the unchanged checker framing. Only a checked
+// conclusion and classify_checked_proof establish the eventual resolution.
+fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, String> {
+    let bytes = formula
+        .encode_canonical()
+        .map_err(|error| error.to_string())?;
+    let mut hash = Sha256::new();
+    hash.update(b"naome:statement\0");
+    hash.update((FOUNDATION_ID.len() as u32).to_be_bytes());
+    hash.update(FOUNDATION_ID.as_bytes());
+    hash.update((bytes.len() as u32).to_be_bytes());
+    hash.update(bytes);
+    Ok(StatementId::from_bytes(hash.finalize().into()))
+}
+
 pub fn compatibility() -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"naome:knowledge:compatibility:v1\0");

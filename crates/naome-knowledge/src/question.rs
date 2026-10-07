@@ -3,9 +3,15 @@
 //! Assessment is read-only. Admission rechecks the receiver's current graph,
 //! registry and policy after interest, then commits in the same serialized node
 //! operation. Baseline import is a separate owner-held administrative capability.
-//! The registry is in-memory local knowledge, with no question wire or persistence.
+//! The registry is in-memory local knowledge. Peer descriptions carry derived
+//! obligations; neither their source nor an earlier result authorizes a write.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    time::{Duration, Instant},
+};
 
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::{
@@ -244,12 +250,16 @@ impl QuestionAdminHandle {
 enum Reply {
     Assessment(oneshot::Sender<QuestionAssessment>),
     Admission(oneshot::Sender<QuestionAdmission>),
+    Exchange {
+        reply: oneshot::Sender<QuestionAssessment>,
+        deadline: Instant,
+    },
 }
 
 impl Reply {
     fn is_closed(&self) -> bool {
         match self {
-            Self::Assessment(reply) => reply.is_closed(),
+            Self::Assessment(reply) | Self::Exchange { reply, .. } => reply.is_closed(),
             Self::Admission(reply) => reply.is_closed(),
         }
     }
@@ -258,9 +268,15 @@ impl Reply {
         matches!(self, Self::Admission(_))
     }
 
+    fn exchange(&self) -> bool {
+        matches!(self, Self::Exchange { .. })
+    }
+
     fn send(self, assessment: QuestionAssessment, outcome: AdmissionOutcome) -> bool {
         match self {
-            Self::Assessment(reply) => reply.send(assessment).is_ok(),
+            Self::Assessment(reply) | Self::Exchange { reply, .. } => {
+                reply.send(assessment).is_ok()
+            }
             Self::Admission(reply) => reply
                 .send(QuestionAdmission {
                     assessment,
@@ -278,6 +294,15 @@ struct Pending {
     future: Pin<Box<dyn Future<Output = InterestAssessment> + Send>>,
 }
 
+struct AdmittedProvenance {
+    question: CompiledQuestion,
+    receipt: AdmissionReceipt,
+}
+
+pub(crate) struct QuestionDelta {
+    registry: QuestionRegistry,
+}
+
 pub(crate) struct LocalQuestions<F> {
     registry: QuestionRegistry,
     policy: PrefilterPolicy,
@@ -285,6 +310,8 @@ pub(crate) struct LocalQuestions<F> {
     pending: Option<Pending>,
     /// One computed read-only decision, never an admission or interest receipt.
     cached: Option<PrefilterDecision>,
+    /// Only successful local admission with an actually delivered receipt.
+    admitted: BTreeMap<Identity, AdmittedProvenance>,
     #[cfg(test)]
     computations: usize,
 }
@@ -301,6 +328,7 @@ where
             provider,
             pending: None,
             cached: None,
+            admitted: BTreeMap::new(),
             #[cfg(test)]
             computations: 0,
         }
@@ -314,11 +342,25 @@ where
         )
     }
 
+    pub(crate) fn context_key(&self, graph: &Graph) -> (Identity, Identity) {
+        (self.snapshot(graph).identity(), self.policy.identity())
+    }
+
     fn evaluate(
         &mut self,
         graph: &Graph,
         question: &CompiledQuestion,
         reuse: bool,
+    ) -> PrefilterDecision {
+        self.evaluate_record(graph, question, reuse, None)
+    }
+
+    fn evaluate_record(
+        &mut self,
+        graph: &Graph,
+        question: &CompiledQuestion,
+        reuse: bool,
+        record: Option<Identity>,
     ) -> PrefilterDecision {
         let snapshot = self.snapshot(graph);
         let request = AssessmentQuestion::new(
@@ -326,7 +368,7 @@ where
             question.core(),
             question.source().as_bytes(),
             &[],
-            None,
+            record,
         )
         .expect("bounded parser-validated question input");
         if reuse
@@ -355,15 +397,101 @@ where
         self.evaluate(graph, question, true)
     }
 
+    fn exchange_record(&self, question: &CompiledQuestion) -> Option<Identity> {
+        self.admitted
+            .get(question.resolution_id())
+            .filter(|entry| entry.question == *question)
+            .map(|entry| entry.receipt.record())
+    }
+
+    pub(crate) fn available(&self) -> bool {
+        self.pending.is_none()
+    }
+
+    pub(crate) fn begin_exchange(
+        &mut self,
+        graph: &Graph,
+        derived: CompiledQuestion,
+        deadline: Instant,
+    ) -> (CompiledQuestion, oneshot::Receiver<QuestionAssessment>) {
+        // Family equality is only a lookup. The original source, orientation,
+        // record and delivered first-admission evidence remain unchanged.
+        let question = self
+            .admitted
+            .get(derived.resolution_id())
+            .filter(|entry| {
+                entry.question.core() == derived.core()
+                    && entry.question.canonical_core() == derived.canonical_core()
+            })
+            .map(|entry| entry.question.clone())
+            .unwrap_or(derived);
+        let (reply, receiver) = oneshot::channel();
+        self.begin(graph, question.clone(), Reply::Exchange { reply, deadline });
+        (question, receiver)
+    }
+
+    pub(crate) fn exchange_eligible(
+        &self,
+        question: &CompiledQuestion,
+        assessment: &QuestionAssessment,
+    ) -> bool {
+        assessment.prefilter.passed()
+            && assessment.interest == InterestAssessment::Assessed(true)
+            && (assessment.novelty().is_some() || self.exchange_record(question).is_some())
+    }
+
+    pub(crate) fn prepare_exchange(
+        &mut self,
+        graph: &Graph,
+        question: &CompiledQuestion,
+        assessment: &QuestionAssessment,
+    ) -> Result<QuestionDelta, String> {
+        let record = self.exchange_record(question);
+        let fresh = self.evaluate_record(graph, question, false, record);
+        if !fresh.same_context(&assessment.prefilter)
+            || !fresh.passed()
+            || !self.exchange_eligible(question, assessment)
+        {
+            return Err("stale or declined final question assessment".into());
+        }
+        let mut registry = self.registry.clone();
+        if record.is_none() {
+            if fresh.novelty().is_none() {
+                return Err("missing fresh node-local novelty".into());
+            }
+            let entry = RegisteredQuestion::new(*question.source_hash(), question.core())
+                .map_err(|reason| format!("question registration: {reason:?}"))?;
+            registry
+                .insert(entry)
+                .map_err(|reason| format!("question registration: {reason:?}"))?;
+        }
+        Ok(QuestionDelta { registry })
+    }
+
+    pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) {
+        self.registry = delta.registry;
+        self.cached = None;
+    }
+
     fn begin(&mut self, graph: &Graph, question: CompiledQuestion, reply: Reply) {
         if reply.is_closed() {
             return;
         }
-        let mut prefilter = self.assess(graph, &question);
+        let mut prefilter = if reply.exchange() {
+            self.evaluate_record(graph, &question, false, self.exchange_record(&question))
+        } else {
+            self.assess(graph, &question)
+        };
         if prefilter.passed() && self.pending.is_some() {
             prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT");
         }
-        if !prefilter.passed() || self.provider.is_none() {
+        let remaining = match &reply {
+            Reply::Exchange { deadline, .. } => deadline
+                .saturating_duration_since(Instant::now())
+                .min(INTEREST_TIMEOUT),
+            _ => INTEREST_TIMEOUT,
+        };
+        if !prefilter.passed() || self.provider.is_none() || remaining.is_zero() {
             reply.send(
                 QuestionAssessment {
                     prefilter,
@@ -375,7 +503,7 @@ where
             return;
         }
         let bounded = tokio::time::timeout(
-            INTEREST_TIMEOUT,
+            remaining,
             self.provider.as_ref().expect("configured interest")(question.clone()),
         );
         let future = Box::pin(async move {
@@ -457,7 +585,16 @@ where
         }
         // Admission always computes again; a cached or caller-manufactured Pass
         // cannot authorize a write. Nothing below awaits or relinquishes ownership.
-        let mut prefilter = self.evaluate(graph, &pending.question, !pending.reply.admission());
+        let mut prefilter = if pending.reply.exchange() {
+            self.evaluate_record(
+                graph,
+                &pending.question,
+                false,
+                self.exchange_record(&pending.question),
+            )
+        } else {
+            self.evaluate(graph, &pending.question, !pending.reply.admission())
+        };
         let interest = if pending.prefilter.same_context(&prefilter) {
             interest
         } else {
@@ -466,6 +603,7 @@ where
         };
         let mut previous_registry = None;
         let mut outcome = AdmissionOutcome::NotInserted;
+        let mut provenance = None;
         if pending.reply.admission()
             && prefilter.passed()
             && interest == InterestAssessment::Assessed(true)
@@ -478,13 +616,18 @@ where
                 .and_then(|entry| self.registry.insert(entry));
             match inserted {
                 Ok(()) => {
-                    outcome = AdmissionOutcome::Admitted(Box::new(AdmissionReceipt {
+                    let receipt = AdmissionReceipt {
                         record,
                         snapshot_after: self.snapshot(graph).identity(),
                         registry_before,
                         registry_after: self.registry.identity(),
                         novelty,
-                    }));
+                    };
+                    provenance = Some(AdmittedProvenance {
+                        question: pending.question.clone(),
+                        receipt: receipt.clone(),
+                    });
+                    outcome = AdmissionOutcome::Admitted(Box::new(receipt));
                     previous_registry = Some(previous);
                     self.cached = None;
                 }
@@ -505,6 +648,10 @@ where
         // receipt linearizes the effect; later client disappearance cannot undo it.
         if !delivered && let Some(previous) = previous_registry {
             self.registry = previous;
+        }
+        if delivered && let Some(provenance) = provenance {
+            self.admitted
+                .insert(*provenance.question.resolution_id(), provenance);
         }
     }
 
