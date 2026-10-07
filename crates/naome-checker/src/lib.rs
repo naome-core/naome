@@ -11,6 +11,7 @@
 //! conclusion, and content identities coupled together and can project only
 //! that normal form's distinct direct proof and definition dependencies.
 
+pub mod question;
 mod state;
 
 use std::borrow::Cow;

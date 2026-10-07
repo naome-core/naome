@@ -141,6 +141,52 @@ struct Node {
 }
 
 pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
+    let (handle, inbox) = crate::question::channel();
+    drop(handle);
+    let (sender, commands) = mpsc::channel(8);
+    // Preserve the existing CLI input reader only for the CLI-oriented wrapper.
+    std::thread::spawn(move || read_commands(sender));
+    run_inner(
+        config,
+        test_controls,
+        inbox,
+        |_| async { Err("local question input is closed".into()) },
+        commands,
+    )
+    .await
+}
+
+/// Runs the existing Gossip node with a bounded Rust-only local question inbox.
+/// The separately supplied interest future must be nonblocking and own all its
+/// effects without detaching work. It is polled inside this node's lifetime;
+/// shutdown, cancellation or the fixed deadline drops it. No proof-validity
+/// condition, Gossip question message or CLI entry point depends on interest.
+pub async fn run_with_questions<F, Fut>(
+    config: Config,
+    test_controls: bool,
+    inbox: crate::question::QuestionInbox,
+    interest: F,
+) -> Result<(), String>
+where
+    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+{
+    let (sender, commands) = mpsc::channel(8);
+    drop(sender);
+    run_inner(config, test_controls, inbox, interest, commands).await
+}
+
+pub(crate) async fn run_inner<F, Fut>(
+    config: Config,
+    test_controls: bool,
+    mut inbox: crate::question::QuestionInbox,
+    interest: F,
+    mut commands: mpsc::Receiver<Result<Value, String>>,
+) -> Result<(), String>
+where
+    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+{
     if config.peers.len() > MAX_PEERS {
         return Err("peer count limit".into());
     }
@@ -326,14 +372,11 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
         producer_sources: config.producer_sources.into(),
         next_production: Instant::now() + Duration::from_secs(1),
     };
-    let (sender, mut commands) = mpsc::channel(8);
-    // Tokio stdin uses an uncancellable blocking task that can keep runtime
-    // shutdown waiting on an open producer pipe. A detached OS input thread
-    // leaves acceptance/network state on this runtime and cannot hold its exit.
-    std::thread::spawn(move || read_commands(sender));
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut command_input_open = true;
+    let mut question_input_open = true;
+    let mut questions = crate::question::LocalQuestions::new(interest);
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
@@ -354,8 +397,16 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
                 }
             },
             _ = tick.tick() => node.tick(),
+            command = inbox.receive(), if question_input_open => {
+                match command {
+                    Some(command) => if !questions.process(command, &node.graph) { break; },
+                    None => question_input_open = false,
+                }
+            },
+            interest = questions.completed() => questions.finish(&node.graph, interest),
             signal = &mut shutdown => { signal?; break; }
         }
+        questions.cancel_closed();
         if let Some(error) = node.graph.storage_error() {
             return Err(format!(
                 "durable storage failed; restart must reverify: {error}"

@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt;
 
@@ -60,6 +61,17 @@ impl ArtifactState {
         }
     }
 
+    /// Identifies the complete registered checked artifact set in constant time.
+    /// The cached Patricia roots bind all proof/definition content identities,
+    /// independently of arrival order. No selected-history authority is implied.
+    pub fn snapshot_id(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"naome:checked-artifact-snapshot:v1\0");
+        hash.update(self.proofs.fingerprint());
+        hash.update(self.definitions.fingerprint());
+        hash.finalize().into()
+    }
+
     /// Returns whether the selected set contains this exact concrete proof.
     pub fn contains_proof(&self, proof_id: ProofId) -> bool {
         self.proofs.contains_key(&proof_id)
@@ -78,6 +90,37 @@ impl ArtifactState {
     /// Returns whether the selected set contains this exact definition.
     pub fn contains_definition(&self, definition_id: DefinitionId) -> bool {
         self.definitions.contains_key(&definition_id)
+    }
+
+    /// Borrows every registered concrete proof's checker-owned conclusion.
+    ///
+    /// Iteration is ascending by ProofId and performs no proof checking or
+    /// mutation. Consumers must bound and exhaust their declared comparison
+    /// scope; an unfinished iteration cannot establish absence of knowledge.
+    pub fn proof_conclusions(
+        &self,
+    ) -> impl Iterator<Item = (ProofId, StatementId, &Formula, usize)> {
+        self.proofs.entries().map(|(proof_id, derivation_id)| {
+            let statement_id = *self
+                .derivations
+                .get(derivation_id)
+                .expect("registered derivation");
+            let statement = self
+                .statements
+                .get(&statement_id)
+                .expect("registered statement");
+            (
+                *proof_id,
+                statement_id,
+                &statement.conclusion,
+                statement.canonical_length,
+            )
+        })
+    }
+
+    /// Borrows the identities of all registered conservative definitions.
+    pub fn definition_ids(&self) -> impl Iterator<Item = DefinitionId> + '_ {
+        self.definitions.entries().map(|(id, _)| *id)
     }
 
     /// Returns the graph kind from the exact selected certificate.

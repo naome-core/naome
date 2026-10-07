@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 pub(super) trait Key256: Copy + Eq {
@@ -16,6 +17,26 @@ pub(super) struct PersistentMap<K, V> {
 impl<K, V> PersistentMap<K, V> {
     pub(super) const fn new() -> Self {
         Self { root: None }
+    }
+
+    pub(super) fn fingerprint(&self) -> [u8; 32] {
+        self.root.as_deref().map_or([0; 32], Node::fingerprint)
+    }
+
+    pub(super) fn entries(&self) -> impl Iterator<Item = (&K, &V)> {
+        let mut pending: Vec<_> = self.root.as_deref().into_iter().collect();
+        std::iter::from_fn(move || {
+            while let Some(node) = pending.pop() {
+                match node {
+                    Node::Leaf { key, value, .. } => return Some((key, value)),
+                    Node::Branch { left, right, .. } => {
+                        pending.push(right.as_ref());
+                        pending.push(left.as_ref());
+                    }
+                }
+            }
+            None
+        })
     }
 
     #[cfg(test)]
@@ -50,8 +71,11 @@ impl<K: Key256, V> PersistentMap<K, V> {
                 Node::Leaf {
                     key: stored_key,
                     value,
+                    ..
                 } => return (stored_key == key).then_some(value),
-                Node::Branch { bit, left, right } => {
+                Node::Branch {
+                    bit, left, right, ..
+                } => {
                     node = if key_bit(key.as_key_bytes(), *bit) {
                         right.as_ref()
                     } else {
@@ -68,7 +92,7 @@ impl<K: Key256, V> PersistentMap<K, V> {
     /// complete root unchanged.
     pub(super) fn insert(&mut self, key: K, value: V) -> bool {
         let Some(root) = &self.root else {
-            self.root = Some(Arc::new(Node::Leaf { key, value }));
+            self.root = Some(Arc::new(Node::leaf(key, value)));
             return true;
         };
 
@@ -106,12 +130,49 @@ enum Node<K, V> {
     Leaf {
         key: K,
         value: V,
+        fingerprint: [u8; 32],
     },
     Branch {
         bit: u8,
         left: Arc<Self>,
         right: Arc<Self>,
+        fingerprint: [u8; 32],
     },
+}
+
+impl<K, V> Node<K, V> {
+    fn fingerprint(&self) -> [u8; 32] {
+        match self {
+            Self::Leaf { fingerprint, .. } | Self::Branch { fingerprint, .. } => *fingerprint,
+        }
+    }
+
+    fn branch(bit: u8, left: Arc<Self>, right: Arc<Self>) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(b"naome:checked-map:branch:v1\0");
+        hash.update([bit]);
+        hash.update(left.fingerprint());
+        hash.update(right.fingerprint());
+        Self::Branch {
+            bit,
+            left,
+            right,
+            fingerprint: hash.finalize().into(),
+        }
+    }
+}
+
+impl<K: Key256, V> Node<K, V> {
+    fn leaf(key: K, value: V) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(b"naome:checked-map:leaf:v1\0");
+        hash.update(key.as_key_bytes());
+        Self::Leaf {
+            key,
+            value,
+            fingerprint: hash.finalize().into(),
+        }
+    }
 }
 
 fn terminal_key<'a, K: Key256, V>(mut node: &'a Arc<Node<K, V>>, key: &K) -> &'a K {
@@ -126,7 +187,9 @@ fn terminal_node<'a, K: Key256, V>(mut node: &'a Arc<Node<K, V>>, key: &K) -> &'
     loop {
         match node.as_ref() {
             Node::Leaf { .. } => return node,
-            Node::Branch { bit, left, right } => {
+            Node::Branch {
+                bit, left, right, ..
+            } => {
                 node = if key_bit(key.as_key_bytes(), *bit) {
                     right
                 } else {
@@ -143,35 +206,33 @@ fn insert_at<K: Key256, V>(
     key: K,
     value: V,
 ) -> Arc<Node<K, V>> {
-    if let Node::Branch { bit, left, right } = node.as_ref()
+    if let Node::Branch {
+        bit, left, right, ..
+    } = node.as_ref()
         && *bit < differing_bit
     {
         return if key_bit(key.as_key_bytes(), *bit) {
-            Arc::new(Node::Branch {
-                bit: *bit,
-                left: left.clone(),
-                right: insert_at(right, differing_bit, key, value),
-            })
+            Arc::new(Node::branch(
+                *bit,
+                left.clone(),
+                insert_at(right, differing_bit, key, value),
+            ))
         } else {
-            Arc::new(Node::Branch {
-                bit: *bit,
-                left: insert_at(left, differing_bit, key, value),
-                right: right.clone(),
-            })
+            Arc::new(Node::branch(
+                *bit,
+                insert_at(left, differing_bit, key, value),
+                right.clone(),
+            ))
         };
     }
 
-    let leaf = Arc::new(Node::Leaf { key, value });
+    let leaf = Arc::new(Node::leaf(key, value));
     let (left, right) = if key_bit(key.as_key_bytes(), differing_bit) {
         (node.clone(), leaf)
     } else {
         (leaf, node.clone())
     };
-    Arc::new(Node::Branch {
-        bit: differing_bit,
-        left,
-        right,
-    })
+    Arc::new(Node::branch(differing_bit, left, right))
 }
 
 fn first_differing_bit(left: &[u8; 32], right: &[u8; 32]) -> u8 {

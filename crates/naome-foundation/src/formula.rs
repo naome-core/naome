@@ -177,6 +177,25 @@ impl Formula {
         !has_matching_free_variable(&self.0, &|_| true)
     }
 
+    /// Opens the outer universal binder using a fresh free variable.
+    ///
+    /// This is a structural projection, not an inference rule. A consumer must
+    /// establish any consequence through Foundation's universal-instantiation
+    /// rule. Existing inner binders remain bound to their original variables.
+    /// A variable already free in this formula cannot be used for opening.
+    #[must_use]
+    pub fn open_outer_universal(&self, variable: FreeVariable) -> Option<Self> {
+        if self.free_variables().contains(&variable) {
+            return None;
+        }
+        let Node::ForAll(body) = &self.0 else {
+            return None;
+        };
+        let mut body = body.as_ref().clone();
+        open_binder(&mut body, 0, variable);
+        Some(Self(body))
+    }
+
     pub(crate) fn vacuous_for_all(body: Self) -> Self {
         Self(Node::ForAll(Box::new(body.0)))
     }
@@ -195,6 +214,30 @@ impl Formula {
         let mut output = String::new();
         render_node(&self.0, &mut output);
         output
+    }
+}
+
+fn open_binder(node: &mut Node, depth: u32, replacement: FreeVariable) {
+    let open = |variable: &mut Variable| {
+        if let Variable::Bound(index) = *variable {
+            if index == depth {
+                *variable = Variable::Free(replacement);
+            } else if index > depth {
+                *variable = Variable::Bound(index - 1);
+            }
+        }
+    };
+    match node {
+        Node::Equal(left, right) | Node::Member(left, right) => {
+            open(left);
+            open(right);
+        }
+        Node::Not(body) => open_binder(body, depth, replacement),
+        Node::Implies(left, right) => {
+            open_binder(left, depth, replacement);
+            open_binder(right, depth, replacement);
+        }
+        Node::ForAll(body) => open_binder(body, depth + 1, replacement),
     }
 }
 

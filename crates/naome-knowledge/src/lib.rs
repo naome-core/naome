@@ -8,6 +8,7 @@ mod discovery;
 mod graph;
 pub mod network;
 mod object;
+pub mod question;
 pub mod relay;
 mod store;
 mod wire;
