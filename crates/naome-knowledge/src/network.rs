@@ -1,9 +1,10 @@
-//! Bounded proof transport with static or discovered peers. Gossip is a hint; inventory/content catch-up
-//! uses the independently checked durable graph rather than the gossip cache.
+//! Bounded question-first proof transport with static or discovered peers.
+//! Gossip and inventory are hints; receiver approval precedes certificate fetch,
+//! and only a completely checked root closure reaches the durable graph.
 
 use crate::{
     Envelope, Graph, discovery, hex,
-    object::id_bytes,
+    object::{Metadata, id_bytes},
     wire::{Body, Codec, Frame, INVENTORY_PAGE, PROTOCOL},
 };
 use libp2p::{
@@ -54,6 +55,15 @@ pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 /// change the mathematical compatibility fingerprint or proof admission.
 pub fn routing_contract() -> Value {
     json!({
+        "question_exchange":{
+            "protocol":"/naome/knowledge/2", "topic":"naome-knowledge-v2",
+            "interest":"Explicit local positive selection before root fetch and before commit",
+            "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
+            "limits":{"active_roots":1,"queued_metadata":crate::intake::MAX_QUEUED_METADATA,
+                "closure_objects":crate::intake::MAX_CLOSURE_OBJECTS,"closure_bytes":crate::intake::MAX_CLOSURE_BYTES,
+                "closure_steps":crate::intake::MAX_CLOSURE_STEPS,"checker_work_bytes":crate::intake::MAX_CLOSURE_CHECKER_WORK_BYTES,
+                "root_lifetime_seconds":crate::intake::ROOT_TTL.as_secs(),"outgoing_request_burst_per_peer":7,"outgoing_request_refill_seconds":1}
+        },
         "identify_protocol":discovery::protocol_version(false),
         "dht_protocol":format!("/naome/knowledge/kad/{}/1", hex(&crate::compatibility())),
         "participation_key":hex(discovery::provider_key().as_ref()),
@@ -103,6 +113,11 @@ enum Flight {
         pages: usize,
     },
     Get {
+        root: ProofId,
+        id: ProofId,
+        peer: PeerId,
+    },
+    Describe {
         id: ProofId,
         peer: PeerId,
     },
@@ -135,12 +150,43 @@ struct Node {
     inventory_progress: BTreeMap<PeerId, InventoryProgress>,
     next_automatic_request: BTreeMap<PeerId, Instant>,
     buckets: BTreeMap<PeerId, Bucket>,
+    outgoing: BTreeMap<PeerId, Bucket>,
+    intake: crate::intake::Intake,
+    test_objects: BTreeMap<ProofId, (Metadata, Option<Envelope>)>,
     test_controls: bool,
     producer_sources: VecDeque<String>,
     next_production: Instant,
 }
 
 pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
+    run_with_interest(config, test_controls, None).await
+}
+
+/// Explicit local mathematical interest policy for the CLI. Neither selection
+/// nor a peer's metadata makes an obligation valid or novel.
+pub enum InterestSelection {
+    AllSupported,
+    Questions(Vec<naome_authoring::CompiledQuestion>),
+}
+
+impl InterestSelection {
+    fn accepts(&self, question: &naome_authoring::CompiledQuestion) -> bool {
+        match self {
+            Self::AllSupported => true,
+            Self::Questions(questions) => questions.iter().any(|selected| {
+                selected.resolution_id() == question.resolution_id()
+                    && selected.canonical_core() == question.canonical_core()
+                    && selected.core() == question.core()
+            }),
+        }
+    }
+}
+
+pub async fn run_with_interest(
+    config: Config,
+    test_controls: bool,
+    selection: Option<InterestSelection>,
+) -> Result<(), String> {
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
@@ -151,7 +197,8 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
         config,
         test_controls,
         inbox,
-        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
+        selection
+            .map(|selection| move |question| std::future::ready(Ok(selection.accepts(&question)))),
         commands,
     )
     .await
@@ -161,7 +208,8 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
 /// The separately supplied interest future must be nonblocking and own all its
 /// effects without detaching work. It is polled inside this node's lifetime;
 /// shutdown, cancellation or the fixed deadline drops it. No proof-validity
-/// condition, Gossip question message or CLI entry point depends on interest.
+/// condition depends on interest. Peer proof exchange always requires positive
+/// question selection before full certificate retrieval.
 pub async fn run_with_questions<F, Fut>(
     config: Config,
     test_controls: bool,
@@ -321,7 +369,7 @@ where
         gossip_config,
     )
     .map_err(|error| error.to_string())?;
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v1");
+    let topic = gossipsub::IdentTopic::new("naome-knowledge-v2");
     gossip
         .subscribe(&topic)
         .map_err(|error| error.to_string())?;
@@ -389,6 +437,9 @@ where
         inventory_progress: BTreeMap::new(),
         next_automatic_request: BTreeMap::new(),
         buckets: BTreeMap::new(),
+        outgoing: BTreeMap::new(),
+        intake: crate::intake::Intake::default(),
+        test_objects: BTreeMap::new(),
         test_controls,
         producer_sources: config.producer_sources.into(),
         next_production: Instant::now() + Duration::from_secs(1),
@@ -428,6 +479,26 @@ where
             signal = &mut shutdown => { signal?; break; }
         }
         questions.cancel_closed();
+        match node.intake.advance(&mut node.graph, &mut questions) {
+            crate::intake::Progress::Waiting => {}
+            crate::intake::Progress::Skipped(id, error) => {
+                emit(json!({"event":"proof_skipped","id":hex(id.as_bytes()),"error":error}));
+            }
+            crate::intake::Progress::Accepted(ids) => {
+                node.publish_admitted(&ids, "fetch");
+                // Earlier explicit owner ingestion can now resolve. This is
+                // not part of the approved peer closure or its atomic batch.
+                let (admitted, rejected) = node.graph.resolve_pending();
+                node.publish_admitted(&admitted, "local_pending");
+                for (id, error) in rejected {
+                    emit(
+                        json!({"event":"rejected", "id":hex(id.as_bytes()),"source":"local_pending","error":error}),
+                    );
+                }
+            }
+        }
+        questions.cancel_closed();
+        node.requests();
         if let Some(error) = node.graph.storage_error() {
             return Err(format!(
                 "durable storage failed; restart must reverify: {error}"
@@ -480,6 +551,8 @@ fn body_kind(body: &Body) -> &'static str {
         Body::Inventory { .. } => "inventory",
         Body::InventoryResult { .. } => "inventory_result",
         Body::Get { .. } => "get",
+        Body::Describe { .. } => "describe",
+        Body::Description { .. } => "description",
         Body::Object { .. } => "object",
         Body::Offer { .. } => "offer",
         Body::Receipt { .. } => "receipt",
@@ -489,8 +562,18 @@ fn body_kind(body: &Body) -> &'static str {
 }
 fn body_id(body: &Body) -> Option<String> {
     match body {
-        Body::Get { id } => Some(hex(id)),
-        Body::Object { object } | Body::Offer { object } => Some(object.proof_id.clone()),
+        Body::Get { id, .. } | Body::Describe { id } => Some(hex(id)),
+        Body::Object { object, .. } => Some(object.proof_id.clone()),
+        Body::Offer { metadata } | Body::Description { metadata } => {
+            Some(metadata.proof_id.clone())
+        }
+        _ => None,
+    }
+}
+
+fn body_root(body: &Body) -> Option<String> {
+    match body {
+        Body::Get { root, .. } | Body::Object { root, .. } => Some(hex(root)),
         _ => None,
     }
 }
@@ -557,12 +640,13 @@ impl Node {
             .filter(|flight| match flight {
                 Flight::Inventory { peer, .. }
                 | Flight::Get { peer, .. }
+                | Flight::Describe { peer, .. }
                 | Flight::Offer { peer } => *peer == target,
             })
             .count()
     }
     fn want(&mut self, id: ProofId) -> bool {
-        if self.graph.contains(id) || self.graph.waiting(id) || self.wanted.contains_key(&id) {
+        if self.graph.contains(id) || self.intake.contains(id) || self.wanted.contains_key(&id) {
             return true;
         }
         if self.wanted.len() >= MAX_FETCHES {
@@ -593,7 +677,19 @@ impl Node {
     fn ingest(&mut self, object: Envelope, source: &str) -> Result<Value, String> {
         let result = self.graph.ingest(object, Instant::now())?;
         self.wanted.remove(&result.id);
-        for id in &result.admitted {
+        self.publish_admitted(&result.admitted, source);
+        for (id, error) in result.rejected {
+            emit(
+                json!({"event":"rejected", "id":hex(id.as_bytes()), "error":error, "source":"pending"}),
+            );
+        }
+        let value = json!({"status":result.status, "id":hex(result.id.as_bytes())});
+        emit(json!({"event":"ingest", "result":value, "source":source}));
+        Ok(value)
+    }
+
+    fn publish_admitted(&mut self, ids: &[ProofId], source: &str) {
+        for id in ids {
             self.wanted.remove(id);
             let mut announcement = crate::compatibility().to_vec();
             announcement.extend_from_slice(id.as_bytes());
@@ -606,17 +702,6 @@ impl Node {
                 json!({"event":"accepted", "id":hex(id.as_bytes()), "source":source, "root":hex(&self.graph.content_root())}),
             );
         }
-        for (id, error) in result.rejected {
-            emit(
-                json!({"event":"rejected", "id":hex(id.as_bytes()), "error":error, "source":"pending"}),
-            );
-        }
-        for dependency in self.graph.missing() {
-            self.want(dependency);
-        }
-        let value = json!({"status":result.status, "id":hex(result.id.as_bytes())});
-        emit(json!({"event":"ingest", "result":value, "source":source}));
-        Ok(value)
     }
 
     fn command(&mut self, value: Value) -> bool {
@@ -642,8 +727,12 @@ impl Node {
                     .and_then(Value::as_str)
                     .ok_or("source missing")?;
                 let object = self.graph.author(source)?;
+                let id = ProofId::from_bytes(id_bytes(&object.proof_id)?);
                 let result = self.ingest(object.clone(), "producer")?;
-                Ok(json!({"result":result,"object":object}))
+                let metadata = self.graph.describe(id);
+                Ok(json!({"result":result,"object":object,
+                    "metadata":metadata.as_ref().ok().and_then(Option::as_ref),
+                    "metadata_error":metadata.as_ref().err()}))
             }
             "ingest" => {
                 let object =
@@ -653,6 +742,32 @@ impl Node {
             }
             "object" => Ok(
                 json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
+            ),
+            "test_compile" => {
+                if !self.test_controls {
+                    return Err("test controls disabled".into());
+                }
+                Ok(
+                    json!({"object":self.graph.author(value.get("source").and_then(Value::as_str).ok_or("source missing")?)?}),
+                )
+            }
+            "test_descriptor" => {
+                if !self.test_controls {
+                    return Err("test controls disabled".into());
+                }
+                let metadata: Metadata = serde_json::from_value(
+                    value.get("metadata").cloned().ok_or("metadata missing")?,
+                )
+                .map_err(|error| error.to_string())?;
+                let (id, _, _) = metadata.compile()?;
+                if self.test_objects.len() >= 8 && !self.test_objects.contains_key(&id) {
+                    return Err("test object capacity".into());
+                }
+                self.test_objects.insert(id, (metadata, None));
+                Ok(json!({"installed":true}))
+            }
+            "describe" => Ok(
+                json!({"metadata":self.graph.describe(ProofId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?))?}),
             ),
             "links" => {
                 if self.discovery.book.lock().automatic {
@@ -677,6 +792,8 @@ impl Node {
                             contact.enabled = true;
                         }
                     } else {
+                        self.intake.disconnected(*peer);
+                        self.outgoing.remove(peer);
                         if let Some(allowed) = self.swarm.behaviour_mut().allowed.as_mut() {
                             allowed.disallow_peer(*peer);
                         }
@@ -727,24 +844,45 @@ impl Node {
                 if self.flight_count(peer) >= MAX_FLIGHTS_PER_PEER {
                     return Err("peer request capacity".into());
                 }
-                let object = if value["command"] == "test_offer" {
+                let now = Instant::now();
+                if !self.outgoing_ready(peer, now) {
+                    return Err("outgoing peer request rate".into());
+                }
+                let metadata = if value["command"] == "test_offer" {
                     if !self.test_controls {
                         return Err("test controls disabled".into());
                     }
-                    serde_json::from_value(value.get("object").cloned().ok_or("object missing")?)
-                        .map_err(|error| error.to_string())?
+                    let metadata: Metadata = serde_json::from_value(
+                        value.get("metadata").cloned().ok_or("metadata missing")?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if let Some(object) = value.get("object") {
+                        if self.test_objects.len() >= 8 {
+                            return Err("test object capacity".into());
+                        }
+                        let object: Envelope = serde_json::from_value(object.clone())
+                            .map_err(|error| error.to_string())?;
+                        if object.proof.len() > 2 * crate::MAX_PROOF_BYTES {
+                            return Err("test proof byte limit".into());
+                        }
+                        self.test_objects.insert(
+                            ProofId::from_bytes(id_bytes(&metadata.proof_id)?),
+                            (metadata.clone(), Some(object)),
+                        );
+                    }
+                    metadata
                 } else {
+                    let id = ProofId::from_bytes(id_bytes(
+                        value
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or("id missing")?,
+                    )?);
                     self.graph
-                        .get(
-                            value
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .ok_or("id missing")?,
-                        )?
-                        .ok_or("object not accepted")?
-                        .clone()
+                        .describe(id)?
+                        .ok_or("object not supported for question exchange")?
                 };
-                let mut frame = Frame::new(Body::Offer { object });
+                let mut frame = Frame::new(Body::Offer { metadata });
                 if let Some(compat) = value.get("test_compatibility") {
                     if !self.test_controls {
                         return Err("test controls disabled".into());
@@ -758,6 +896,7 @@ impl Node {
                     .exchange
                     .send_request(&peer, frame);
                 self.flights.insert(id, Flight::Offer { peer });
+                self.charge_outgoing(peer, now);
                 Ok(json!({"sent":true}))
             }
             "stop" => Ok(json!({"stopping":true})),
@@ -792,83 +931,115 @@ impl Node {
         self.wanted.retain(|_, wanted| {
             now.duration_since(wanted.since) < crate::PENDING_TTL && wanted.attempts < 16
         });
-        for id in self.graph.missing() {
-            self.want(id);
+    }
+
+    fn outgoing_ready(&self, peer: PeerId, now: Instant) -> bool {
+        self.outgoing.get(&peer).is_none_or(|bucket| {
+            bucket.tokens > 0 || now.duration_since(bucket.reset) >= Duration::from_secs(1)
+        })
+    }
+
+    fn charge_outgoing(&mut self, peer: PeerId, now: Instant) {
+        let bucket = self.outgoing.entry(peer).or_insert(Bucket {
+            tokens: 7,
+            reset: now,
+        });
+        if now.duration_since(bucket.reset) >= Duration::from_secs(1) {
+            bucket.tokens = 7;
+            bucket.reset = now;
+        }
+        bucket.tokens -= 1;
+    }
+
+    fn request_ready(&self, peer: PeerId, now: Instant) -> bool {
+        self.enabled.contains(&peer)
+            && self.swarm.is_connected(&peer)
+            && self.flights.len() < MAX_FLIGHTS
+            && self.flight_count(peer) < MAX_FLIGHTS_PER_PEER
+            && self.outgoing_ready(peer, now)
+    }
+
+    fn requests(&mut self) {
+        let now = Instant::now();
+        // The sole path to Get consumes a private approved root's actual
+        // committed dependency closure. Hints and Graph.pending never issue Get.
+        for (peer, root, id) in self.intake.needed() {
+            if self.request_ready(peer, now) && self.automatic_request_ready(peer, now) && self.intake.authorizes(peer, root, id)
+                && !self.flights.values().any(|flight| matches!(flight, Flight::Get { root:r, id:i, .. } if *r == root && *i == id))
+            {
+                let request = self.swarm.behaviour_mut().exchange.send_request(&peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }));
+                self.flights.insert(request, Flight::Get { root, id, peer });
+                self.charge_automatic_request(peer, now);
+                self.charge_outgoing(peer, now);
+            }
         }
         let enabled: Vec<_> = self.enabled.iter().copied().collect();
-        for peer in enabled {
-            if self.swarm.is_connected(&peer)
-                && self.flights.len() < MAX_FLIGHTS
-                && self.flight_count(peer) < MAX_FLIGHTS_PER_PEER
-                && self.automatic_request_ready(peer, now)
+        for peer in &enabled {
+            if self.request_ready(*peer, now)
                 && MAX_FETCHES - self.wanted.len() >= INVENTORY_PAGE
                 && self
                     .next_inventory
-                    .get(&peer)
+                    .get(peer)
                     .is_none_or(|next| *next <= now)
                 && !self
                     .flights
                     .values()
-                    .any(|flight| matches!(flight,Flight::Inventory { peer:p,.. } if *p==peer))
+                    .any(|flight| matches!(flight,Flight::Inventory { peer:p,.. } if p==peer))
             {
                 let progress = self
                     .inventory_progress
-                    .get(&peer)
+                    .get(peer)
                     .copied()
                     .unwrap_or_default();
-                self.inventory(peer, progress.after, progress.pages);
-                self.charge_automatic_request(peer, now);
+                self.inventory(*peer, progress.after, progress.pages);
+                self.charge_outgoing(*peer, now);
             }
         }
-        let peers: Vec<_> = self
-            .enabled
-            .iter()
-            .copied()
-            .filter(|peer| self.swarm.is_connected(peer))
-            .collect();
-        if peers.is_empty() {
-            return;
-        }
+        let mut remaining = self.intake.description_capacity().saturating_sub(
+            self.flights
+                .values()
+                .filter(|flight| matches!(flight, Flight::Describe { .. }))
+                .count(),
+        );
         let ids: Vec<_> = self
             .wanted
             .iter()
             .filter_map(|(id, wanted)| {
                 (wanted.retry <= now
+                    && !self.intake.contains(*id)
                     && !self
                         .flights
                         .values()
-                        .any(|flight| matches!(flight,Flight::Get { id:p,.. } if p==id)))
+                        .any(|flight| matches!(flight,Flight::Describe { id:p,.. } if p==id)))
                 .then_some(*id)
             })
             .collect();
         for id in ids {
-            if self.flights.len() >= MAX_FLIGHTS {
+            if remaining == 0 {
                 break;
             }
             let attempts = self.wanted[&id].attempts;
-            let peer = peers
+            let Some(peer) = enabled
                 .iter()
                 .cycle()
-                .skip(attempts % peers.len())
-                .take(peers.len())
-                .find(|peer| {
-                    self.flight_count(**peer) < MAX_FLIGHTS_PER_PEER
-                        && self.automatic_request_ready(**peer, now)
-                })
-                .copied();
-            let Some(peer) = peer else {
-                break;
+                .skip(attempts % enabled.len().max(1))
+                .take(enabled.len())
+                .find(|peer| self.request_ready(**peer, now))
+                .copied()
+            else {
+                continue;
             };
-            let wanted = self.wanted.get_mut(&id).expect("queued fetch");
+            let wanted = self.wanted.get_mut(&id).expect("queued description");
             wanted.attempts += 1;
             wanted.retry = now + RECONCILE_INTERVAL;
             let request = self
                 .swarm
                 .behaviour_mut()
                 .exchange
-                .send_request(&peer, Frame::new(Body::Get { id: *id.as_bytes() }));
-            self.flights.insert(request, Flight::Get { id, peer });
-            self.charge_automatic_request(peer, now);
+                .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
+            self.flights.insert(request, Flight::Describe { id, peer });
+            self.charge_outgoing(peer, now);
+            remaining -= 1;
         }
     }
 
@@ -981,6 +1152,7 @@ impl Node {
                 self.connections.remove(&connection_id);
                 if num_established == 0 {
                     self.enabled.remove(&peer_id);
+                    self.intake.disconnected(peer_id);
                     if let Some(contact) = self.discovery.book.lock().contacts.get_mut(&peer_id) {
                         contact.connected = false;
                         contact.compatible = false;
@@ -1056,13 +1228,15 @@ impl Node {
                 ..
             })) => {
                 if self.enabled.contains(&propagation_source)
-                    && self.charge(propagation_source)
                     && message.data.len() == 64
                     && message.data[..32] == crate::compatibility()
                 {
                     let id = ProofId::from_bytes(
                         message.data[32..].try_into().expect("announcement width"),
                     );
+                    if self.graph.contains(id) || !self.charge(propagation_source) {
+                        return Ok(());
+                    }
                     emit(json!({"event":"announcement","id":hex(id.as_bytes())}));
                     self.want(id);
                 }
@@ -1078,7 +1252,7 @@ impl Node {
                     emit(
                         json!({"event":"exchange_request", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
                         "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&request.message.body),
-                        "object_id":body_id(&request.message.body)}),
+                        "object_id":body_id(&request.message.body),"root_id":body_root(&request.message.body)}),
                     );
                     let body = if !self.enabled.contains(&peer) {
                         Body::Error {
@@ -1093,7 +1267,7 @@ impl Node {
                             reason: "peer rate limit".into(),
                         }
                     } else {
-                        self.request(request.message.body)
+                        self.request(peer, request.message.body)
                     };
                     let _ = self
                         .swarm
@@ -1108,13 +1282,19 @@ impl Node {
                     emit(
                         json!({"event":"exchange_response", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
                         "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&response.message.body),
-                        "object_id":body_id(&response.message.body)}),
+                        "object_id":body_id(&response.message.body),"root_id":body_root(&response.message.body)}),
                     );
-                    if let Some(flight) = self.flights.remove(&request_id)
-                        && self.enabled.contains(&peer)
-                        && response.message.compatibility == crate::compatibility()
-                    {
-                        self.response(flight, response.message.body);
+                    if let Some(flight) = self.flights.remove(&request_id) {
+                        if self.enabled.contains(&peer)
+                            && response.message.compatibility == crate::compatibility()
+                        {
+                            self.response(peer, flight, response.message.body);
+                        } else if let Flight::Get { root, .. } = flight {
+                            self.intake.abort(root);
+                            emit(
+                                json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":"payload response peer or compatibility revoked"}),
+                            );
+                        }
                     }
                 }
             },
@@ -1123,7 +1303,12 @@ impl Node {
                     request_id, error, ..
                 },
             )) => {
-                self.flights.remove(&request_id);
+                if let Some(Flight::Get { root, .. }) = self.flights.remove(&request_id) {
+                    self.intake.abort(root);
+                    emit(
+                        json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":"required payload request failed"}),
+                    );
+                }
                 emit(json!({"event":"request_failed","error":error.to_string()}));
             }
             SwarmEvent::Behaviour(BehaviourEvent::Exchange(
@@ -1134,7 +1319,7 @@ impl Node {
         Ok(())
     }
 
-    fn request(&mut self, body: Body) -> Body {
+    fn request(&mut self, peer: PeerId, body: Body) -> Body {
         match body {
             Body::Inventory { after } => {
                 let ids = self
@@ -1147,16 +1332,38 @@ impl Node {
                     .collect();
                 Body::InventoryResult { ids }
             }
-            Body::Get { id } => self
+            Body::Describe { id } => match if self.test_controls {
+                self.test_objects
+                    .get(&ProofId::from_bytes(id))
+                    .map(|(metadata, _)| Ok(Some(metadata.clone())))
+                    .unwrap_or_else(|| self.graph.describe(ProofId::from_bytes(id)))
+            } else {
+                self.graph.describe(ProofId::from_bytes(id))
+            } {
+                Ok(Some(metadata)) => Body::Description { metadata },
+                Ok(None) => Body::Missing,
+                Err(reason) => Body::Error { reason },
+            },
+            Body::Get { root, id } => self
                 .graph
                 .object(ProofId::from_bytes(id))
+                .or_else(|| {
+                    self.test_controls
+                        .then(|| {
+                            self.test_objects
+                                .get(&ProofId::from_bytes(id))
+                                .and_then(|(_, object)| object.as_ref())
+                        })
+                        .flatten()
+                })
                 .map(|object| Body::Object {
+                    root,
                     object: object.clone(),
                 })
                 .unwrap_or(Body::Missing),
-            Body::Offer { object } => match self.ingest(object, "peer_offer") {
-                Ok(result) => Body::Receipt {
-                    status: result["status"].as_str().expect("ingest status").into(),
+            Body::Offer { metadata } => match self.intake.enqueue(peer, metadata, &self.graph) {
+                Ok(status) => Body::Receipt {
+                    status: status.into(),
                 },
                 Err(error) => {
                     let event = if self.graph.storage_error().is_some() {
@@ -1174,7 +1381,17 @@ impl Node {
         }
     }
 
-    fn response(&mut self, flight: Flight, body: Body) {
+    fn response(&mut self, peer: PeerId, flight: Flight, body: Body) {
+        let expected_peer = match &flight {
+            Flight::Inventory { peer, .. }
+            | Flight::Get { peer, .. }
+            | Flight::Describe { peer, .. }
+            | Flight::Offer { peer } => *peer,
+        };
+        if peer != expected_peer {
+            emit(json!({"event":"rejected", "error":"response peer mismatch"}));
+            return;
+        }
         match (flight, body) {
             (Flight::Inventory { peer, after, pages }, Body::InventoryResult { ids }) => {
                 if ids.len() > INVENTORY_PAGE
@@ -1213,25 +1430,66 @@ impl Node {
                     "count":ids.len(), "retained":retained,
                     "last":ids.last().map(|id|hex(id))}));
             }
-            (Flight::Get { id: expected, .. }, Body::Object { object }) => {
-                if object.proof_id != hex(expected.as_bytes()) {
-                    emit(json!({"event":"rejected","error":"retrieval ID mismatch"}));
+            (Flight::Describe { id, .. }, Body::Description { metadata }) => {
+                if metadata.proof_id != hex(id.as_bytes()) {
+                    emit(json!({"event":"rejected","error":"description ID mismatch"}));
                     return;
                 }
-                if let Err(error) = self.ingest(object, "fetch") {
-                    let event = if self.graph.storage_error().is_some() {
-                        "storage_error"
-                    } else {
-                        "rejected"
-                    };
-                    emit(json!({"event":event,"error":error}));
+                match self.intake.enqueue(peer, metadata, &self.graph) {
+                    Ok("duplicate") => {
+                        self.wanted.remove(&id);
+                    }
+                    // Preserve attempts and the original bounded hint epoch
+                    // through queued/declined assessment. Otherwise a wrong
+                    // descriptor can monopolize retries for the same ProofId.
+                    Ok(_) => {}
+                    Err(error) => emit(json!({"event":"rejected","error":error})),
+                }
+            }
+            (
+                Flight::Get {
+                    root: expected_root,
+                    id,
+                    ..
+                },
+                Body::Object { root, object },
+            ) => {
+                let result = if root != *expected_root.as_bytes() {
+                    Err("response root mismatch".into())
+                } else {
+                    self.intake
+                        .payload(peer, expected_root, id, object, &self.graph)
+                };
+                if let Err(error) = result {
+                    self.intake.abort(expected_root);
+                    emit(
+                        json!({"event":"proof_skipped", "id":hex(expected_root.as_bytes()),"error":error}),
+                    );
                 }
             }
             (Flight::Offer { .. }, Body::Receipt { status }) => {
                 emit(json!({"event":"offer_result","status":status}))
             }
+            (Flight::Get { root, .. }, Body::Error { reason }) => {
+                self.intake.abort(root);
+                emit(json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":reason}));
+            }
+            (Flight::Get { root, .. }, Body::Missing) => {
+                self.intake.abort(root);
+                emit(
+                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":"required dependency missing"}),
+                );
+            }
             (_, Body::Error { reason }) => emit(json!({"event":"peer_error","error":reason})),
-            (_, Body::Missing) => {}
+            // Keep the bounded attempt counter so the next retry rotates to
+            // another peer. A missing descriptor is no decline authority.
+            (Flight::Describe { .. }, Body::Missing) => {}
+            (Flight::Get { root, .. }, _) => {
+                self.intake.abort(root);
+                emit(
+                    json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":"unexpected required payload response"}),
+                );
+            }
             _ => emit(json!({"event":"rejected","error":"unexpected response kind"})),
         }
     }

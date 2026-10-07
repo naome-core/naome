@@ -1,4 +1,4 @@
-use crate::{Envelope, store::MAX_ENVELOPE_BYTES};
+use crate::{Envelope, object::Metadata, store::MAX_ENVELOPE_BYTES};
 use async_trait::async_trait;
 use libp2p::{
     StreamProtocol,
@@ -11,7 +11,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const INVENTORY_PAGE: usize = 64;
 pub(crate) const MAX_FRAME: usize = MAX_ENVELOPE_BYTES + 512;
-pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/1");
+pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/2");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,10 +24,12 @@ pub(crate) struct Message {
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum Body {
     Inventory { after: Option<[u8; 32]> },
-    Get { id: [u8; 32] },
-    Offer { object: Envelope },
+    Describe { id: [u8; 32] },
+    Get { root: [u8; 32], id: [u8; 32] },
+    Offer { metadata: Metadata },
     InventoryResult { ids: Vec<[u8; 32]> },
-    Object { object: Envelope },
+    Description { metadata: Metadata },
+    Object { root: [u8; 32], object: Envelope },
     Missing,
     Receipt { status: String },
     Error { reason: String },
@@ -159,6 +161,24 @@ mod tests {
         let mut framed = (bytes.len() as u32).to_be_bytes().to_vec();
         framed.extend(bytes);
         framed
+    }
+
+    #[test]
+    fn v2_rejects_legacy_payload_offers_unknown_metadata_and_unbound_gets() {
+        let envelope = serde_json::json!({"compatibility":"00".repeat(32),"proof_id":"00".repeat(32),"statement_id":"00".repeat(32),"proof":"00"});
+        for body in [
+            serde_json::json!({"kind":"Offer","object":envelope}),
+            serde_json::json!({"kind":"Get","id":vec![0u8;32]}),
+            serde_json::json!({"kind":"Offer","metadata":{"proof_id":"00".repeat(32),"statement_id":"00".repeat(32),"question":"foundation = \"naome:zfc\" statement = forall(x,equal(x,x))","proof":"00"}}),
+        ] {
+            assert!(
+                serde_json::from_value::<Message>(
+                    serde_json::json!({"compatibility":crate::compatibility(),"body":body})
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/2");
     }
 
     #[tokio::test]

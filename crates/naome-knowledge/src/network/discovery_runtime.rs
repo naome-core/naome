@@ -31,9 +31,12 @@ impl Node {
         self.inventory_progress.remove(&peer);
         self.next_automatic_request.remove(&peer);
         self.buckets.remove(&peer);
+        self.outgoing.remove(&peer);
+        self.intake.disconnected(peer);
         self.flights.retain(|_, flight| match flight {
             Flight::Inventory { peer: owner, .. }
             | Flight::Get { peer: owner, .. }
+            | Flight::Describe { peer: owner, .. }
             | Flight::Offer { peer: owner } => *owner != peer,
         });
         let _ = self.swarm.disconnect_peer_id(peer);
@@ -68,6 +71,8 @@ impl Node {
                 self.next_inventory.remove(&peer);
             }
             discovery::Action::Reject(peer) => {
+                self.intake.disconnected(peer);
+                self.outgoing.remove(&peer);
                 self.enabled.remove(&peer);
                 if let Some(contact) = self.discovery.book.lock().contacts.get_mut(&peer) {
                     contact.enabled = false;

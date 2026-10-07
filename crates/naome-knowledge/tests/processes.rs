@@ -37,6 +37,60 @@ fn dcutr_reports_a_real_local_circuit_upgrade_outcome() {
     run_discovery("upgrade");
 }
 
+#[test]
+fn direct_exchange_selects_questions_before_payloads_and_commits_parent_helpers() {
+    run_question_exchange("direct");
+}
+
+#[test]
+fn relay_exchange_selects_questions_before_payloads_and_commits_parent_helpers() {
+    run_question_exchange("relay");
+}
+
+fn run_question_exchange(mode: &str) {
+    let _active = ACTIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = root.join(".local/proof-network").join(format!(
+        "questions-{mode}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new("python3")
+        .arg(root.join("crates/naome-knowledge/tests/support/proof_question_exchange.py"))
+        .args([
+            "--binary",
+            env!("CARGO_BIN_EXE_naome-knowledge"),
+            "--output",
+        ])
+        .arg(&directory)
+        .args([
+            "--mode",
+            mode,
+            "--timeout",
+            "90",
+            "--profile",
+            if cfg!(debug_assertions) {
+                "test"
+            } else {
+                "release"
+            },
+        ])
+        .output()
+        .expect("run bounded real question exchange process driver");
+    assert!(
+        output.status.success(),
+        "question exchange evidence at {}\n{}\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn one_shot_signals_stop_busy_nodes_and_relays() {

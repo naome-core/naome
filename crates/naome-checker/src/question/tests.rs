@@ -46,7 +46,7 @@ fn decision(
     policy: &PrefilterPolicy,
 ) -> PrefilterDecision {
     let registry = indexed(registry);
-    assess_question(
+    let result = assess_question(
         &AssessmentQuestion::new(
             FOUNDATION_ID,
             target,
@@ -57,7 +57,13 @@ fn decision(
         .unwrap(),
         &KnowledgeSnapshot::new([9; 32], state, &registry),
         policy,
-    )
+    );
+    assert_eq!(
+        result.novelty().is_some(),
+        result.passed(),
+        "complete fresh finite checks alone issue novelty"
+    );
+    result
 }
 
 #[test]
@@ -91,6 +97,150 @@ fn snapshot_dependent_exact_answers_are_read_only_and_reproducible() {
 }
 
 #[test]
+fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
+    let state = ArtifactState::new();
+    let registry = QuestionRegistry::new();
+    let policy = PrefilterPolicy::default();
+    let target = equal();
+    let input = AssessmentQuestion::new(FOUNDATION_ID, &target, b"source A", &[], None).unwrap();
+    let snapshot = KnowledgeSnapshot::new([9; 32], &state, &registry);
+    let result = assess_question(&input, &snapshot, &policy);
+    let novelty = result.novelty().unwrap();
+    assert_eq!(result, assess_question(&input, &snapshot, &policy));
+    assert!(novelty.matches_inputs(&input, &snapshot, &policy));
+    assert_eq!(novelty.question_id(), result.question.unwrap());
+    assert_eq!(novelty.input_id(), result.input);
+    assert_eq!(novelty.snapshot_id(), result.snapshot);
+    assert_eq!(novelty.policy_id(), result.policy);
+    assert_eq!(novelty.rule_set(), 2);
+
+    let changed_source =
+        AssessmentQuestion::new(FOUNDATION_ID, &target, b"source B", &[], None).unwrap();
+    assert!(!novelty.matches_inputs(&changed_source, &snapshot, &policy));
+    let other = unresolved();
+    let changed_target =
+        AssessmentQuestion::new(FOUNDATION_ID, &other, b"source A", &[], None).unwrap();
+    assert!(!novelty.matches_inputs(&changed_target, &snapshot, &policy));
+    let missing = [ArtifactId::from_bytes([7; 32])];
+    let changed_dependencies =
+        AssessmentQuestion::new(FOUNDATION_ID, &target, b"source A", &missing, None).unwrap();
+    assert!(!novelty.matches_inputs(&changed_dependencies, &snapshot, &policy));
+    let rejected = assess_question(&changed_dependencies, &snapshot, &policy);
+    assert_eq!(rejected.reason, Some(RejectionReason::MissingDependency));
+    assert!(rejected.novelty().is_none());
+
+    let mut other_world = state.clone();
+    let _ = equality(&mut other_world);
+    let checked_snapshot = KnowledgeSnapshot::new([9; 32], &other_world, &registry);
+    assert!(!novelty.matches_inputs(&input, &checked_snapshot, &policy));
+    let known = assess_question(&input, &checked_snapshot, &policy);
+    assert_eq!(known.reason, Some(RejectionReason::KnownProof));
+    assert!(known.novelty().is_none());
+
+    let mut changed_registry = registry.clone();
+    changed_registry
+        .insert(RegisteredQuestion::new([1; 32], &target).unwrap())
+        .unwrap();
+    let registered_snapshot = KnowledgeSnapshot::new([9; 32], &state, &changed_registry);
+    assert!(!novelty.matches_inputs(&input, &registered_snapshot, &policy));
+    assert!(
+        assess_question(&input, &registered_snapshot, &policy)
+            .novelty()
+            .is_none()
+    );
+    let changed_context = KnowledgeSnapshot::new([8; 32], &state, &registry);
+    assert!(!novelty.matches_inputs(&input, &changed_context, &policy));
+    for changed_policy in [
+        PrefilterPolicy {
+            revision: policy.revision + 1,
+            ..policy
+        },
+        PrefilterPolicy {
+            rule_set: 9,
+            ..policy
+        },
+    ] {
+        assert!(!novelty.matches_inputs(&input, &snapshot, &changed_policy));
+    }
+    assert!(
+        novelty.matches_inputs(&input, &snapshot, &policy),
+        "retained evidence remains about its original world"
+    );
+}
+
+#[test]
+fn public_decision_mutation_cannot_mint_or_rebind_novelty() {
+    let state = ArtifactState::new();
+    let policy = PrefilterPolicy::default();
+    let original = decision(&unresolved(), &state, &[], &policy);
+    let historical = original.novelty().unwrap().clone();
+    let mutations: [fn(&mut PrefilterDecision); 10] = [
+        |d| d.outcome = PrefilterOutcome::Reject,
+        |d| d.reason = Some(RejectionReason::ExactDuplicate),
+        |d| d.rule = "Q09_STALE_CONTEXT",
+        |d| d.question = None,
+        |d| d.input = [0; 32],
+        |d| d.snapshot = [0; 32],
+        |d| d.policy = [0; 32],
+        |d| d.witness = Some(ProofId::from_bytes([0; 32])),
+        |d| d.supporting_witness = Some(ProofId::from_bytes([0; 32])),
+        |d| d.related_record = Some([0; 32]),
+    ];
+    for mutate in mutations {
+        let mut altered = original.clone();
+        mutate(&mut altered);
+        assert!(altered.novelty().is_none());
+    }
+    let mut checked = ArtifactState::new();
+    let p = equal();
+    let _ = register(
+        &mut checked,
+        vec![ProofStep::Simplification {
+            antecedent: p.clone().into(),
+            consequent: unresolved().into(),
+        }],
+    );
+    let _ = equality(&mut checked);
+    let known = decision(&Formula::implies(unresolved(), p), &checked, &[], &policy);
+    let mut altered = original.clone();
+    altered.deduction = known.deduction;
+    assert!(altered.deduction.is_some());
+    assert!(altered.novelty().is_none());
+
+    for reason in [
+        RejectionReason::StaleContext,
+        RejectionReason::ReceivingLimit,
+    ] {
+        let mut forged = original.clone().reject(reason, "Q09_CONTEXT");
+        forged.outcome = PrefilterOutcome::Pass;
+        forged.reason = None;
+        forged.rule = "Q00_SUPPORTED_PREFILTER";
+        assert!(
+            forged.novelty().is_none(),
+            "restoring public fields cannot reissue removed evidence"
+        );
+    }
+    let mut forged = decision(&equal(), &checked, &[], &policy);
+    forged.outcome = original.outcome;
+    forged.reason = original.reason;
+    forged.rule = original.rule;
+    forged.question = original.question;
+    forged.input = original.input;
+    forged.snapshot = original.snapshot;
+    forged.policy = original.policy;
+    forged.witness = None;
+    forged.supporting_witness = None;
+    forged.related_record = None;
+    forged.deduction = None;
+    assert!(forged.passed());
+    assert!(
+        forged.novelty().is_none(),
+        "a manufactured PASS has no checker-issued evidence"
+    );
+    assert_eq!(original.novelty(), Some(&historical));
+}
+
+#[test]
 fn canonical_duplicates_and_self_record_exemption_cannot_hide_other_records() {
     let first = equal();
     let renamed = Formula::for_all(var(42), Formula::equal(var(42), var(42)));
@@ -120,7 +270,12 @@ fn canonical_duplicates_and_self_record_exemption_cannot_hide_other_records() {
     assert_eq!(result.related_record, Some([1; 32]));
     let self_registry = indexed(&registry[1..]);
     let only_self = KnowledgeSnapshot::new([4; 32], &state, &self_registry);
-    assert!(assess_question(&input, &only_self, &policy).passed());
+    let reassessed = assess_question(&input, &only_self, &policy);
+    assert!(reassessed.passed());
+    assert!(
+        reassessed.novelty().is_none(),
+        "an exempt registered self-record is not a first discovery"
+    );
     let unknown_record = AssessmentQuestion::new(
         FOUNDATION_ID,
         &renamed,
@@ -458,6 +613,8 @@ fn checked_dependency_kind_domains_and_duplicate_reason_are_preserved() {
     let accepted = assess_question(&input, &snapshot, &policy);
     let rejected = assess_question(&invalid, &snapshot, &policy);
     assert!(accepted.passed());
+    assert!(accepted.novelty().is_some());
+    assert!(rejected.novelty().is_none());
     assert_eq!(rejected.reason, Some(RejectionReason::MissingDependency));
     assert_ne!(accepted.input, rejected.input);
     let repeated = [valid, valid];

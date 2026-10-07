@@ -35,28 +35,48 @@ def content_root(compatibility, ids):
     ).hexdigest()
 
 
-def source(depth):
-    formula = "equal(x0,x0)"
-    for index in range(depth):
-        formula = f"forall(x{index},{formula})"
-    lines = ['foundation = "naome:zfc"', f"statement = {formula}", "proof:",
-             "    p0 = equality_reflexivity(x0)"]
-    for index in range(depth):
-        lines.append(f"    p{index + 1} = generalization(p{index},x{index})")
-    lines.append(f"    return p{depth}")
-    return "\n".join(lines) + "\n"
+def source(index):
+    # Distinct closed schema instances do not settle one another through the
+    # receiver's supported MP or one/two universal-instantiation rules.
+    a = "forall(x, equal(x,x))"
+    b = "forall(y, member(y,y))"
+    for bit in format(index, "b"):
+        b = f"not_({b})" if bit == "1" else f"forall(z,{b})"
+    statement = f"implies({a},implies({b},{a}))"
+    return f'foundation = "naome:zfc"\nstatement = {statement}\nproof:\n    p0 = simplification({a},{b})\n    return p0\n'
 
 
 def inventory_source(depth, used):
-    formula = f"equal(x{used},x{used})"
-    for index in reversed(range(depth)):
-        formula = f"forall(x{index},{formula})"
-    lines = ['foundation = "naome:zfc"', f"statement = {formula}", "proof:",
-             f"    p0 = equality_reflexivity(x{used})"]
-    for step, index in enumerate(reversed(range(depth))):
-        lines.append(f"    p{step + 1} = generalization(p{step},x{index})")
-    lines.append(f"    return p{depth}")
-    return "\n".join(lines) + "\n"
+    return source(100 + depth * (depth - 1) // 2 + used)
+
+
+def question_source(proof_source):
+    return 'foundation = "naome:zfc" statement = ' + proof_source.split("statement = ")[1].split("\n")[0]
+
+
+def stored_objects(node):
+    objects = []
+    directory = node.directory / "objects"
+    paths = list(directory.glob("*.json"))
+    batches = directory / "batches"
+    if batches.exists():
+        for batch in sorted(batches.iterdir()):
+            manifest_path = batch / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            assert batch.name == digest(manifest_path)
+            assert manifest["version"] == 1 and manifest["root"] in manifest["members"]
+            assert sorted(path.name for path in batch.iterdir()) == sorted(
+                ["manifest.json"] + [f"{id}.json" for id in manifest["members"]])
+            for id, checksum in manifest["members"].items():
+                path = batch / f"{id}.json"
+                assert digest(path) == checksum
+                paths.append(path)
+    for path in paths:
+        object = json.loads(path.read_text())
+        assert path.name == f'{object["proof_id"]}.json'
+        objects.append(object)
+    assert len({object["proof_id"] for object in objects}) == len(objects)
+    return objects
 
 
 class Node:
@@ -69,7 +89,7 @@ class Node:
         self.serial, self.generation = 0, 0
         self.threads = []
 
-    def start(self, producer_sources=(), command_input=True, test_controls=True, network_config=None):
+    def start(self, producer_sources=(), command_input=True, test_controls=True, network_config=None, interest="all"):
         assert self.process is None or self.process.poll() is not None
         self.generation += 1
         event_offset = len(self.events)
@@ -88,6 +108,15 @@ class Node:
         command = [str(self.driver.binary), "run", str(path)]
         if test_controls:
             command.append("--test-controls")
+        selector = {"kind": "absent"}
+        if interest == "all":
+            command.extend(["--question-interest", "all"])
+            selector = {"kind": "all-supported"}
+        elif interest is not None:
+            interest_path = self.driver.output / f"node-{self.index}-{self.generation}.interest.json"
+            interest_path.write_text(json.dumps({"questions": interest}, indent=2) + "\n")
+            command.extend(["--question-interest-file", str(interest_path)])
+            selector = {"kind": "exact-questions", "file_sha256": digest(interest_path), "count": len(interest)}
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE if command_input else subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, bufsize=1)
         self.driver.summary["commands"].append({"command": command, "pid": self.process.pid})
@@ -98,6 +127,7 @@ class Node:
                                                "config_bytes": path.stat().st_size,
                                                "config_sha256": digest(path),
                                                "command_input": "pipe" if command_input else "closed",
+                                               "question_interest": selector,
                                                "producer_source_count": len(config["producer_sources"]),
                                                "producer_source_bytes": sum(len(s.encode()) for s in config["producer_sources"])})
         for name, stream in [("stdout", self.process.stdout), ("stderr", self.process.stderr)]:
@@ -329,7 +359,10 @@ class Driver:
                              started, timeout=210, interval=0.5)
             pages = [event for event in self.nodes[1].events if event.get("event") == "inventory_page"]
             assert any(event["page"] >= 9 for event in pages)
-            assert all(len(list((node.directory / "objects").glob("*.json"))) == 595 for node in self.nodes)
+            assert all(len(stored_objects(node)) == 595 for node in self.nodes)
+            self.nodes[1].stop()
+            self.nodes[1].start()
+            self.convergence("ten_page_complete_batch_restart", range(2), ids, time.monotonic(), timeout=15)
             self.summary["scenarios"]["inventory_tail_discovery"] = {
                 "result": "pass", "object_count": 595, "page_size": 64,
                 "pages": pages, "tail_proof_id": max(ids),
@@ -369,7 +402,6 @@ class Driver:
                 object = node.command("object", id=id)["object"]
                 initial.append(self.retain_proof(f"independent-{index}", object))
             assert len(set(initial)) == 4
-            assert initial[0] == "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
             escaped_source = source(1)
             escaped_source += "#" + "\u0001" * (65536 - len(escaped_source.encode()) - 2) + "\n"
             escaped_result = self.nodes[0].command("produce", source=escaped_source)
@@ -384,21 +416,28 @@ class Driver:
             self.topology([[0, 1, 2, 3]])
             self.convergence("independent_producers", range(4), initial, started)
 
-            # A sender without the parent offers the dependent over the real peer link.
+            # The parent bytes are fetched first, then its actual cited helper.
+            # A missing helper leaves no checked/pending/durable orphan.
             self.topology([[0], [1, 3], [2]])
             parent = self.produce(0, 7, "delayed-parent")
-            child_source = f'foundation = "naome:zfc" statement = ' + source(7).split("statement = ")[1].split("\n")[0]
-            child_source += f' proof: p0 = cite("{parent["proof_id"]}") return p0'
-            child = self.nodes[0].command("produce", source=child_source)["object"]
+            premise = question_source(source(7)).split("statement = ")[1]
+            b = "forall(z,member(z,z))"
+            child_source = f'foundation = "naome:zfc"\nstatement = implies({b},{premise})\nproof: p0 = cite("{parent["proof_id"]}") p1 = simplification({premise},{b}) p2 = modus_ponens(p0,p1) return p2'
+            compiled_child = self.nodes[0].command("produce", source=child_source)
+            child = compiled_child["object"]
+            metadata = compiled_child["metadata"]
             self.retain_proof("dependent", child)
             before = len(self.nodes[3].events)
-            self.nodes[1].command("test_offer", peer=self.nodes[3].identity, object=child)
-            self.nodes[3].wait_event(lambda event: event.get("event") == "ingest" and event["result"]["status"] == "waiting", since=before)
+            self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
+            self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and "required dependency missing" in event.get("error", ""), since=before)
             status = self.nodes[3].command("status")
-            assert child["proof_id"] in status["pending"] and set(status["ids"]) == set(initial)
-            self.summary["scenarios"]["dependent_before_parent"] = {"result": "pass", "waiting_status": status}
+            assert not status["pending"] and set(status["ids"]) == set(initial)
+            assert len(stored_objects(self.nodes[3])) == len(initial)
+            self.summary["scenarios"]["dependent_before_parent"] = {"result": "pass", "isolated_failed_closure": status, "no_orphan": True}
             started = time.monotonic()
-            self.nodes[1].command("test_offer", peer=self.nodes[3].identity, object=parent)
+            parent_metadata = self.nodes[0].command("describe", id=parent["proof_id"])["metadata"]
+            self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=parent_metadata, object=parent)
+            self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
             union = initial + [parent["proof_id"], child["proof_id"]]
             self.convergence("dependency_resolution", [1, 3], union, started)
             self.topology([[0, 1, 2, 3]])
@@ -412,33 +451,47 @@ class Driver:
             assert right["proof_id"] not in self.nodes[0].command("status")["ids"]
             assert left["proof_id"] not in self.nodes[2].command("status")["ids"]
 
-            # Negative controls use real requests, never mutate the receiver's accepted set.
+            # Each malformed payload uses a distinct unresolved question and
+            # real metadata approval/Get, never a full-payload Offer.
             baseline = self.nodes[1].command("status")
-            malformed = copy.deepcopy(left); malformed["proof"] = "ff"
-            mismatch = copy.deepcopy(left); mismatch["proof_id"] = "00" * 32
-            incompatible = copy.deepcopy(left); incompatible["compatibility"] = "00" * 32
-            # Two closed equality theorems are not a valid modus ponens pair.
-            invalid = copy.deepcopy(left)
-            invalid["proof"] = "00000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
-            invalid["statement_id"] = "00" * 32
-            invalid["proof_id"] = proof_id(invalid["statement_id"], invalid["proof"])
-            false_statement = copy.deepcopy(left); false_statement["statement_id"] = "00" * 32
-            false_statement["proof_id"] = proof_id(false_statement["statement_id"], false_statement["proof"])
-            controls = [("malformed", malformed, "malformed certificate"),
-                        ("claimed_id", mismatch, "claimed proof ID mismatch"),
-                        ("compatibility", incompatible, "compatibility mismatch"),
-                        ("mathematical", invalid, "mathematically invalid"),
-                        ("statement", false_statement, "checked identity mismatch")]
-            for label, object, expected_error in controls:
-                offset = len(self.nodes[0].events)
-                self.nodes[0].command("test_offer", peer=self.nodes[1].identity, object=object)
-                event = self.nodes[0].wait_event(lambda event: event.get("event") == "peer_error" and expected_error in event.get("error", ""), since=offset)
+            controls = []
+            for index, label in enumerate(["malformed", "claimed_id", "compatibility", "mathematical", "statement"]):
+                proof_source = source(50 + index)
+                object = self.nodes[0].command("test_compile", source=proof_source)["object"]
+                q = question_source(proof_source)
+                if label == "malformed":
+                    object["proof"] = "00000001ff"
+                    expected_error = "malformed certificate"
+                elif label == "claimed_id":
+                    object["proof_id"] = "00" * 32
+                    expected_error = "claimed proof ID mismatch"
+                elif label == "compatibility":
+                    object["compatibility"] = "00" * 32
+                    expected_error = "compatibility mismatch"
+                elif label == "mathematical":
+                    object["proof"] = "00000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
+                    expected_error = "mathematically invalid"
+                else:
+                    unrelated_source = source(60)
+                    unrelated = self.nodes[0].command("test_compile", source=unrelated_source)["object"]
+                    object["statement_id"] = unrelated["statement_id"]
+                    q = question_source(unrelated_source)
+                    expected_error = "checked identity mismatch"
+                if label != "claimed_id":
+                    object["proof_id"] = proof_id(object["statement_id"], object["proof"])
+                metadata = {"proof_id": object["proof_id"], "statement_id": object["statement_id"], "question": q}
+                offset = len(self.nodes[1].events)
+                self.nodes[0].command("test_offer", peer=self.nodes[1].identity, metadata=metadata, object=object)
+                event = self.nodes[1].wait_event(lambda event: event.get("event") == "proof_skipped" and expected_error in event.get("error", ""), since=offset)
                 status = self.nodes[1].command("status")
                 assert status["ids"] == baseline["ids"] and status["root"] == baseline["root"] and not status["pending"]
-                self.summary["scenarios"][f"reject_{label}"] = {"result": "pass", "error": event["error"], "unchanged_root": status["root"]}
+                assert len(stored_objects(self.nodes[1])) == len(baseline["ids"])
+                self.summary["scenarios"][f"reject_{label}"] = {"result": "pass", "error": event["error"], "unchanged_root": status["root"], "metadata_first": True}
                 time.sleep(0.2)
             offset = len(self.nodes[0].events)
-            self.nodes[0].command("test_offer", peer=self.nodes[1].identity, object=left, test_compatibility="00" * 32)
+            self.nodes[0].command("test_offer", peer=self.nodes[1].identity,
+                                 metadata=self.nodes[0].command("describe", id=left["proof_id"])["metadata"],
+                                 test_compatibility="00" * 32)
             self.nodes[0].wait_event(lambda event: event.get("event") == "peer_error" and event.get("error") == "compatibility mismatch", since=offset)
             self.summary["scenarios"]["reject_transport_compatibility"] = {"result": "pass"}
             for _ in range(3):
@@ -475,7 +528,7 @@ class Driver:
             self.convergence("new_identity_empty_store_catchup", range(4), union, started)
             for node in self.nodes:
                 assert sorted(path.name for path in node.directory.iterdir()) == ["identity.key", "knowledge.lock", "objects"]
-                assert len(list((node.directory / "objects").glob("*.json"))) == len(union)
+                assert len(stored_objects(node)) == len(union)
             self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive lock and checked proof objects only; no ledger, reward, balance or selection state"}
             self.summary["accepted_ids"] = sorted(union)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], union)

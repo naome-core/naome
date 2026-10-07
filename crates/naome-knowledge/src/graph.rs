@@ -1,4 +1,4 @@
-use crate::object::{Candidate, MAX_DEPTH, id_bytes};
+use crate::object::{Candidate, MAX_DEPTH, Metadata, id_bytes};
 use crate::store::Store;
 use crate::{Envelope, compatibility};
 use naome_checker::{ArtifactState, check_normal_form_with_state};
@@ -9,6 +9,9 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+
+mod batch;
+pub(crate) use batch::CheckedBatch;
 
 pub const MAX_OBJECTS: usize = 4096;
 pub const MAX_ACCEPTED_BYTES: usize = 64 * 1024 * 1024;
@@ -40,6 +43,31 @@ pub struct Graph {
 impl Graph {
     pub(crate) fn checked_context(&self) -> &ArtifactState {
         &self.context
+    }
+
+    pub(crate) fn describe(&self, id: ProofId) -> Result<Option<Metadata>, String> {
+        let Some((_, statement, conclusion, _)) = self
+            .context
+            .proof_conclusions()
+            .find(|(proof, ..)| *proof == id)
+        else {
+            return Ok(None);
+        };
+        let derived = naome_authoring::CompiledQuestion::compile(&format!(
+            "foundation = \"naome:zfc\" statement = {}",
+            conclusion.to_source()
+        ))
+        .map_err(|error| error.to_string())?;
+        let metadata = Metadata {
+            proof_id: crate::hex(id.as_bytes()),
+            statement_id: crate::hex(statement.as_bytes()),
+            question: format!(
+                "foundation = \"naome:zfc\" statement = {}",
+                derived.core().to_source()
+            ),
+        };
+        let _ = metadata.compile()?;
+        Ok(Some(metadata))
     }
     /// Locks the directory, checks all persisted bytes and reconstructs dependencies.
     /// Missing, invalid, incompatible or cyclic durable content fails startup.
@@ -121,6 +149,16 @@ impl Graph {
             admitted: vec![id],
             rejected: Vec::new(),
         };
+        let (admitted, rejected) = self.resolve_pending();
+        result.admitted.extend(admitted);
+        result.rejected.extend(rejected);
+        Ok(result)
+    }
+
+    /// Existing deferred local-owner ingestion, separate from peer staging.
+    pub(crate) fn resolve_pending(&mut self) -> (Vec<ProofId>, Vec<(ProofId, String)>) {
+        let mut admitted = Vec::new();
+        let mut rejected = Vec::new();
         // Each candidate is removed once. No asynchronous checker queue or busy polling.
         loop {
             let ready: Vec<_> = self
@@ -137,12 +175,12 @@ impl Graph {
                     .remove(&id)
                     .expect("selected pending candidate");
                 match self.admit(candidate) {
-                    Ok(()) => result.admitted.push(id),
-                    Err(error) => result.rejected.push((id, error)),
+                    Ok(()) => admitted.push(id),
+                    Err(error) => rejected.push((id, error)),
                 }
             }
         }
-        Ok(result)
+        (admitted, rejected)
     }
 
     fn ready(&self, candidate: &Candidate) -> bool {

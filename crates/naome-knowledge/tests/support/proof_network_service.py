@@ -8,7 +8,7 @@ from pathlib import Path
 import socket
 import sys
 
-from proof_network import Driver, Node, content_root, digest, source
+from proof_network import Driver, Node, content_root, digest
 
 
 def main():
@@ -32,14 +32,16 @@ def main():
             port = reservation.getsockname()[1]
         node = Node(driver, 0, directory, identity, port)
         driver.nodes = [node]
-        producer_source = source(1)
+        # Preserve this service fixture's original proof address independently
+        # of the distinct question family used by the inventory scenarios.
+        producer_source = 'foundation = "naome:zfc" statement = forall(x, equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) return p1'
         producer_source += "#" + "\u0001" * (65536 - len(producer_source.encode()) - 2) + "\n"
         node.start([producer_source], command_input=False, test_controls=False)
         node.wait_event(lambda event: event.get("event") == "command_input_closed")
         event = node.wait_event(lambda event: event.get("event") == "producer_result")
         assert event["result"]["status"] == "accepted"
         id = event["result"]["id"]
-        assert id == "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
+        assert id == "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73", "original service proof address"
         assert node.process.poll() is None
         with socket.create_connection(("127.0.0.1", port), timeout=5):
             pass

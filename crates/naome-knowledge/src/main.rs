@@ -38,8 +38,10 @@ async fn execute() -> Result<(), String> {
             Ok(())
         },
         ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,
-        ["run", config] => network::run(network::read_config(Path::new(config))?,false).await,
-        ["run", config, "--test-controls"] => network::run(network::read_config(Path::new(config))?,true).await,
+        ["run", config, options @ ..] => {
+            let (test_controls, selection) = interest_options(options)?;
+            network::run_with_interest(network::read_config(Path::new(config))?,test_controls,selection).await
+        },
         ["contract"] => {
             println!("{}",json!({"foundation":naome_foundation::FOUNDATION_ID, "codec":CODEC_ID, "checker":CHECKER_ID,
                 "policy":GRAPH_POLICY_ID,"compatibility":hex(&compatibility()),"routing":network::routing_contract(),"limits":{
@@ -53,6 +55,74 @@ async fn execute() -> Result<(), String> {
                     "request_timeout_seconds":network::REQUEST_TIMEOUT.as_secs(),"reconcile_seconds":network::RECONCILE_INTERVAL.as_secs()}}));
             Ok(())
         },
-        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status, produce, ingest, object, links, announce, offer, stop".into()),
+        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] [--question-interest all | --question-interest-file <questions.json>] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status, produce, ingest, object, describe, links, announce, offer, stop\npeer proof exchange requires an explicit positive question interest selector".into()),
     }
+}
+
+fn interest_options(
+    mut options: &[&str],
+) -> Result<(bool, Option<network::InterestSelection>), String> {
+    let mut test_controls = false;
+    let mut selection = None;
+    while !options.is_empty() {
+        match options {
+            ["--test-controls", rest @ ..] if !test_controls => {
+                test_controls = true;
+                options = rest;
+            }
+            ["--question-interest", "all", rest @ ..] if selection.is_none() => {
+                selection = Some(network::InterestSelection::AllSupported);
+                options = rest;
+            }
+            ["--question-interest-file", file, rest @ ..] if selection.is_none() => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Selected {
+                    questions: Vec<String>,
+                }
+                let selected: Selected = serde_json::from_slice(&read_interest(Path::new(file))?)
+                    .map_err(|error| error.to_string())?;
+                if selected.questions.len() > 128 {
+                    return Err("question interest count limit".into());
+                }
+                let questions = selected
+                    .questions
+                    .into_iter()
+                    .map(|source| {
+                        naome_authoring::CompiledQuestion::compile(&source)
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                selection = Some(network::InterestSelection::Questions(questions));
+                options = rest;
+            }
+            _ => {
+                return Err(
+                    "invalid or duplicate run option; use one explicit question interest selector"
+                        .into(),
+                );
+            }
+        }
+    }
+    Ok((test_controls, selection))
+}
+
+fn read_interest(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("expected regular question interest file".into());
+    }
+    file.take(65_537)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 65_536 {
+        return Err("question interest file byte limit".into());
+    }
+    Ok(bytes)
 }
