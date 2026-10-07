@@ -67,13 +67,13 @@ jobs:
         run: |
           NAOME_CI_PYTHON=$(python3 -c 'import sys; print(sys.executable)')
           NAOME_CI_MDNS_ROOT=0
-          if "$NAOME_CI_PYTHON" devnet/mdns_ci_probe.py --output ".local/proof-network/mdns-ci-probe-$NAOME_TEST_PROFILE-ordinary.json"; then
+          if "$NAOME_CI_PYTHON" crates/naome-knowledge/tests/support/mdns_ci_probe.py --output ".local/proof-network/mdns-ci-probe-$NAOME_TEST_PROFILE-ordinary.json"; then
             echo "Ordinary runner multicast probe passed"
           else
             echo "Ordinary runner multicast probe failed; retained native diagnostics"
             NAOME_CI_MDNS_ROOT=1
           fi
-          sudo -n -- /usr/bin/env GITHUB_ACTIONS=true "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" "ImageOS=${ImageOS:-unknown}" "ImageVersion=${ImageVersion:-unknown}" "$NAOME_CI_PYTHON" devnet/mdns_ci_probe.py --require-root --output ".local/proof-network/mdns-ci-probe-$NAOME_TEST_PROFILE-root.json"
+          sudo -n -- /usr/bin/env GITHUB_ACTIONS=true "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" "ImageOS=${ImageOS:-unknown}" "ImageVersion=${ImageVersion:-unknown}" "$NAOME_CI_PYTHON" crates/naome-knowledge/tests/support/mdns_ci_probe.py --require-root --output ".local/proof-network/mdns-ci-probe-$NAOME_TEST_PROFILE-root.json"
           echo "NAOME_MDNS_CI_ROOT=$NAOME_CI_MDNS_ROOT" >> "$GITHUB_ENV"
           echo "NAOME_MDNS_CI_PYTHON=$NAOME_CI_PYTHON" >> "$GITHUB_ENV"
 

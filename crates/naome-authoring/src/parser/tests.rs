@@ -36,7 +36,7 @@ const PROOF_ID_EXPECTED: &str = "a 64-digit lowercase hexadecimal ProofId";
 
 const IMPLICATION_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/implication-identity.nao"
+    "/tests/fixtures/implication-identity.nao"
 ));
 const INLINED_IMPLICATION_SOURCE: &str = r#"
 foundation = "naome:zfc"
@@ -59,23 +59,23 @@ proof:
 "#;
 const QUANTIFIER_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/quantifier-instantiation.nao"
+    "/tests/fixtures/quantifier-instantiation.nao"
 ));
 const EQUALITY_SUBSTITUTION_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/equality-substitution.nao"
+    "/tests/fixtures/equality-substitution.nao"
 ));
 const EXTENSIONALITY_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/extensionality.nao"
+    "/tests/fixtures/extensionality.nao"
 ));
 const SEPARATION_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/separation.nao"
+    "/tests/fixtures/separation.nao"
 ));
 const REPLACEMENT_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/replacement.nao"
+    "/tests/fixtures/replacement.nao"
 ));
 
 fn proof_reference_source(proof_id: &str) -> String {

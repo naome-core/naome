@@ -204,7 +204,7 @@ class Driver:
         self.nodes = []
         output.mkdir(parents=True, exist_ok=False)
         contract = json.loads(self.helper_output([str(self.binary), "contract"]))
-        repo = Path(__file__).resolve().parents[1]
+        repo = Path(__file__).resolve().parents[4]
         self.summary = {
             "schema": 1, "result": "running", "node_count": 4, "physical_host_count": 1,
             "producer": "finite deterministic formal source queues and checked-context authoring; no LLM inference",

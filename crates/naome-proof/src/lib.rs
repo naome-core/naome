@@ -589,7 +589,6 @@ impl From<FormulaCodecError> for ProofCertificateError {
 mod tests;
 
 #[cfg(test)]
-#[path = "../../../tests/support/codec_corpus.rs"]
 mod codec_corpus;
 
 #[cfg(test)]

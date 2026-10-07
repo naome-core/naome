@@ -275,11 +275,11 @@ fn long_agent_style_proof_uses_only_checked_exact_dependencies_without_mutation(
     let mut context = CheckedContext::default();
 
     for source in [
-        include_str!("../../../examples/self-equality.nao"),
-        include_str!("../../../examples/quantifier-instantiation.nao"),
-        include_str!("../../../examples/implication-identity.nao"),
-        include_str!("../../../examples/equality-substitution.nao"),
-        include_str!("../../../examples/extensionality.nao"),
+        include_str!("fixtures/self-equality.nao"),
+        include_str!("fixtures/quantifier-instantiation.nao"),
+        include_str!("fixtures/implication-identity.nao"),
+        include_str!("fixtures/equality-substitution.nao"),
+        include_str!("fixtures/extensionality.nao"),
     ] {
         let dependency = compile(source).unwrap();
         context
@@ -335,7 +335,7 @@ fn definitions_and_term_sugar_resolve_only_from_checked_ancestry() {
 
     let identity_obligation = admit_source(
         &mut context,
-        include_str!("../../../examples/identity-function-obligation.nao"),
+        include_str!("fixtures/identity-function-obligation.nao"),
     );
     assert_eq!(
         compiled_proof(&identity_obligation).proof_id(),
@@ -344,18 +344,18 @@ fn definitions_and_term_sugar_resolve_only_from_checked_ancestry() {
         ))
     );
     for source in [
-        include_str!("../../../examples/self-equality.nao"),
-        include_str!("../../../examples/quantifier-instantiation.nao"),
-        include_str!("../../../examples/implication-identity.nao"),
-        include_str!("../../../examples/equality-substitution.nao"),
-        include_str!("../../../examples/extensionality.nao"),
+        include_str!("fixtures/self-equality.nao"),
+        include_str!("fixtures/quantifier-instantiation.nao"),
+        include_str!("fixtures/implication-identity.nao"),
+        include_str!("fixtures/equality-substitution.nao"),
+        include_str!("fixtures/extensionality.nao"),
     ] {
         let _ = admit_source(&mut context, source);
     }
 
     let first = admit_source(
         &mut context,
-        include_str!("../../../examples/reflexive-relation.nao"),
+        include_str!("fixtures/reflexive-relation.nao"),
     );
     let first_id = compiled_definition_id(&first);
     assert_eq!(
@@ -384,7 +384,7 @@ definition self_equal = relation(x):
 
     let second = admit_source(
         &mut context,
-        include_str!("../../../examples/membership-relation.nao"),
+        include_str!("fixtures/membership-relation.nao"),
     );
     let second_id = compiled_definition_id(&second);
     assert_eq!(
@@ -396,7 +396,7 @@ definition self_equal = relation(x):
 
     let third = admit_source(
         &mut context,
-        include_str!("../../../examples/same-members-relation.nao"),
+        include_str!("fixtures/same-members-relation.nao"),
     );
     let third_id = compiled_definition_id(&third);
     assert_eq!(
@@ -428,10 +428,7 @@ definition presentation_only = relation(a, b):
         ));
     }
 
-    let identity = admit_source(
-        &mut context,
-        include_str!("../../../examples/identity-function.nao"),
-    );
+    let identity = admit_source(&mut context, include_str!("fixtures/identity-function.nao"));
     let identity_id = compiled_definition_id(&identity);
     assert_eq!(
         identity_id,
@@ -444,7 +441,7 @@ definition presentation_only = relation(a, b):
     let selected_len = context.payloads.len();
 
     let long = compile_artifact_against_proof_context(
-        include_str!("../../../examples/definitions-long-proof.nao"),
+        include_str!("fixtures/definitions-long-proof.nao"),
         &context.state,
     )
     .unwrap();
@@ -479,7 +476,7 @@ definition presentation_only = relation(a, b):
     );
 
     let term = compile_artifact_against_proof_context(
-        include_str!("../../../examples/identity-function-term-proof.nao"),
+        include_str!("fixtures/identity-function-term-proof.nao"),
         &context.state,
     )
     .unwrap();
@@ -518,12 +515,10 @@ definition presentation_only = relation(a, b):
     assert_eq!(context.payloads.clone(), selected_image);
 
     let dependency_free =
-        compile_artifact(include_str!("../../../examples/reflexive-relation.nao")).unwrap();
+        compile_artifact(include_str!("fixtures/reflexive-relation.nao")).unwrap();
     assert_eq!(compiled_definition_id(&dependency_free), first_id);
     assert!(matches!(
-        compile_artifact(include_str!(
-            "../../../examples/reflexive-relation-alias.nao"
-        )),
+        compile_artifact(include_str!("fixtures/reflexive-relation-alias.nao")),
         Err(CompileError::DefinitionNotSelected { .. })
     ));
 
@@ -570,7 +565,7 @@ definition presentation_only = relation(a, b):
 
 #[test]
 fn empty_set_existence_remains_a_standalone_checked_proof() {
-    const SOURCE: &str = include_str!("../../../examples/empty-set-obligation.nao");
+    const SOURCE: &str = include_str!("fixtures/empty-set-obligation.nao");
 
     let mut context = CheckedContext::default();
 
@@ -614,7 +609,7 @@ fn selected_definition_use_composes_through_a_cited_proof_and_dependent_inferenc
     let mut context = CheckedContext::default();
     let definition = admit_source(
         &mut context,
-        include_str!("../../../examples/reflexive-relation.nao"),
+        include_str!("fixtures/reflexive-relation.nao"),
     );
     let definition_id = compiled_definition_id(&definition);
 
@@ -798,10 +793,9 @@ fn exact_context_registration_is_required_and_compilation_is_read_only() {
 
 #[test]
 fn only_exact_checked_definition_registration_enables_aliases() {
-    let definition =
-        compile_artifact(include_str!("../../../examples/reflexive-relation.nao")).unwrap();
+    let definition = compile_artifact(include_str!("fixtures/reflexive-relation.nao")).unwrap();
     let id = compiled_definition_id(&definition);
-    let source = include_str!("../../../examples/reflexive-relation-alias.nao");
+    let source = include_str!("fixtures/reflexive-relation-alias.nao");
     let mut other = CheckedContext::default();
     admit_compiled(&mut other, &definition);
     let mut context = CheckedContext::default();

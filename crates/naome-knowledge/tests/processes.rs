@@ -53,7 +53,7 @@ fn one_shot_signals_stop_busy_nodes_and_relays() {
             .as_nanos()
     ));
     let output = Command::new("python3")
-        .arg(root.join("devnet/proof_network_shutdown.py"))
+        .arg(root.join("crates/naome-knowledge/tests/support/proof_network_shutdown.py"))
         .args([
             "--binary",
             env!("CARGO_BIN_EXE_naome-knowledge"),
@@ -130,14 +130,14 @@ fn run_discovery(mode: &str) {
         }
         command
             .arg(python)
-            .arg(root.join("devnet/mdns_ci_probe.py"))
+            .arg(root.join("crates/naome-knowledge/tests/support/mdns_ci_probe.py"))
             .arg("--run-driver");
         command
     } else {
         Command::new(if cfg!(windows) { "python" } else { "python3" })
     };
     let output = command
-        .arg(root.join("devnet/proof_network_discovery.py"))
+        .arg(root.join("crates/naome-knowledge/tests/support/proof_network_discovery.py"))
         .args([
             "--binary",
             env!("CARGO_BIN_EXE_naome-knowledge"),
@@ -188,9 +188,9 @@ fn run_driver(large_inventory: bool, closed_input: bool) {
     let mut command = Command::new(python);
     command
         .arg(root.join(if closed_input {
-            "devnet/proof_network_service.py"
+            "crates/naome-knowledge/tests/support/proof_network_service.py"
         } else {
-            "devnet/proof_network.py"
+            "crates/naome-knowledge/tests/support/proof_network.py"
         }))
         .args([
             "--binary",

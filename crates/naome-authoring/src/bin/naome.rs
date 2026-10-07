@@ -287,7 +287,7 @@ mod tests {
         }
 
         let path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self-equality.nao");
         let arguments = [OsString::from("proof"), path.into_os_string()];
         let error = run(&arguments, &mut FailingWriter).unwrap_err();
         assert!(matches!(error, CliError::Output { .. }));
