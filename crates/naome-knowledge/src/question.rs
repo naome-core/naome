@@ -1,16 +1,16 @@
-//! Rust-only local question intake, separate from proof replication and interest.
+//! Local formal prefilter, optional interest selection and atomic question intake.
 //!
-//! Sources are compiled by the existing bounded question parser before intake.
-//! The local registry is explicit, in-memory receiver knowledge. Assessment
-//! neither registers a question nor changes the checked graph. No question
-//! messages, CLI commands or model implementation are introduced here.
+//! Assessment is read-only. Admission rechecks the receiver's current graph,
+//! registry and policy after interest, then commits in the same serialized node
+//! operation. Baseline import is a separate owner-held administrative capability.
+//! The registry is in-memory local knowledge, with no question wire or persistence.
 
 use std::{future::Future, pin::Pin, time::Duration};
 
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::{
-    ApprovalDecision, ApprovalPolicy, AssessmentQuestion, KnowledgeSnapshot, QuestionRegistry,
-    RegisteredQuestion, RejectionReason, assess_question,
+    AssessmentQuestion, Identity, KnowledgeSnapshot, PrefilterDecision, PrefilterPolicy,
+    QuestionRegistry, RegisteredQuestion, RejectionReason, assess_question,
 };
 use naome_foundation::FOUNDATION_ID;
 use tokio::sync::{mpsc, oneshot};
@@ -34,10 +34,37 @@ mod tests;
 
 #[derive(Clone, Debug)]
 pub struct QuestionAssessment {
-    pub approval: ApprovalDecision,
+    /// Only the supported finite formal checks, never an interest/novelty claim.
+    pub prefilter: PrefilterDecision,
     pub interest: InterestAssessment,
-    /// Existing compiler orientation, without adding a negation heuristic.
     pub submitted_negation_parity: bool,
+}
+
+/// Observed local registry effect, emitted only after a successful insertion.
+/// No API accepts this receipt or an earlier Pass as insertion authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmissionReceipt {
+    pub record: Identity,
+    pub input: Identity,
+    pub policy: Identity,
+    pub snapshot_before: Identity,
+    pub snapshot_after: Identity,
+    pub registry_before: Identity,
+    pub registry_after: Identity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdmissionOutcome {
+    Admitted(Box<AdmissionReceipt>),
+    /// Formal rejection, stale context or no positive interest selection.
+    /// Inspect prefilter and interest separately; selection is not correctness.
+    NotInserted,
+}
+
+#[derive(Clone, Debug)]
+pub struct QuestionAdmission {
+    pub assessment: QuestionAssessment,
+    pub outcome: AdmissionOutcome,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,28 +75,44 @@ pub enum IntakeError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalQuestionContext {
-    pub snapshot: [u8; 32],
-    pub policy: [u8; 32],
+    pub snapshot: Identity,
+    pub policy: Identity,
     pub checked_proofs: usize,
     pub registered_questions: usize,
 }
 
 pub(crate) enum Command {
     Assess(CompiledQuestion, oneshot::Sender<QuestionAssessment>),
-    Register(
+    Admit(CompiledQuestion, oneshot::Sender<QuestionAdmission>),
+    ImportBaseline(
         CompiledQuestion,
         oneshot::Sender<Result<(), RejectionReason>>,
     ),
-    Policy(ApprovalPolicy, oneshot::Sender<()>),
+    Policy(PrefilterPolicy, oneshot::Sender<()>),
     Context(oneshot::Sender<LocalQuestionContext>),
     Stop(oneshot::Sender<()>),
 }
 
-/// Bounded local input for an embedding application; no network authority.
+/// Ordinary local intake. It cannot mint the administrative import capability.
+///
+/// ```compile_fail
+/// fn bypass(handle: &naome_knowledge::question::QuestionHandle,
+///           question: naome_authoring::CompiledQuestion) {
+///     let _ = handle.import_baseline(question);
+/// }
+/// ```
 #[derive(Clone)]
 pub struct QuestionHandle {
     sender: mpsc::Sender<Command>,
 }
+
+/// Explicit capability retained by the receiving node's embedding owner.
+/// Baseline import preserves known/preexisting questions and is not admission.
+#[derive(Clone)]
+pub struct QuestionAdminHandle {
+    sender: mpsc::Sender<Command>,
+}
+
 pub struct QuestionInbox {
     receiver: mpsc::Receiver<Command>,
 }
@@ -80,72 +123,128 @@ impl QuestionInbox {
     }
 }
 
-pub fn channel() -> (QuestionHandle, QuestionInbox) {
+/// The creator chooses who receives the administrative capability; cloning an
+/// ordinary handle never grants import or policy mutation.
+pub fn channel() -> (QuestionHandle, QuestionAdminHandle, QuestionInbox) {
     let (sender, receiver) = mpsc::channel(QUESTION_QUEUE);
-    (QuestionHandle { sender }, QuestionInbox { receiver })
+    (
+        QuestionHandle {
+            sender: sender.clone(),
+        },
+        QuestionAdminHandle { sender },
+        QuestionInbox { receiver },
+    )
+}
+
+async fn send<T>(
+    sender: &mpsc::Sender<Command>,
+    command: Command,
+    reply: oneshot::Receiver<T>,
+) -> Result<T, IntakeError> {
+    sender.try_send(command).map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => IntakeError::QueueFull,
+        mpsc::error::TrySendError::Closed(_) => IntakeError::Stopped,
+    })?;
+    reply.await.map_err(|_| IntakeError::Stopped)
 }
 
 impl QuestionHandle {
-    async fn send<T>(
-        &self,
-        command: Command,
-        reply: oneshot::Receiver<T>,
-    ) -> Result<T, IntakeError> {
-        self.sender.try_send(command).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => IntakeError::QueueFull,
-            mpsc::error::TrySendError::Closed(_) => IntakeError::Stopped,
-        })?;
-        reply.await.map_err(|_| IntakeError::Stopped)
-    }
-
     pub async fn assess(
         &self,
         question: CompiledQuestion,
     ) -> Result<QuestionAssessment, IntakeError> {
         let (sender, reply) = oneshot::channel();
-        self.send(Command::Assess(question, sender), reply).await
+        send(&self.sender, Command::Assess(question, sender), reply).await
     }
 
-    /// Registers independently supplied, parser-validated local knowledge.
-    /// This explicit effect is separate from the read-only assessment API.
-    pub async fn register(
+    /// Fresh formal admission after positive optional interest selection.
+    /// A changed graph, registry or policy invalidates the pending selection;
+    /// an earlier assessment/receipt is never an argument or authorization.
+    pub async fn admit_question(
         &self,
         question: CompiledQuestion,
-    ) -> Result<Result<(), RejectionReason>, IntakeError> {
+    ) -> Result<QuestionAdmission, IntakeError> {
         let (sender, reply) = oneshot::channel();
-        self.send(Command::Register(question, sender), reply).await
-    }
-
-    pub async fn set_policy(&self, policy: ApprovalPolicy) -> Result<(), IntakeError> {
-        let (sender, reply) = oneshot::channel();
-        self.send(Command::Policy(policy, sender), reply).await
+        send(&self.sender, Command::Admit(question, sender), reply).await
     }
 
     pub async fn context(&self) -> Result<LocalQuestionContext, IntakeError> {
         let (sender, reply) = oneshot::channel();
-        self.send(Command::Context(sender), reply).await
+        send(&self.sender, Command::Context(sender), reply).await
+    }
+}
+
+impl QuestionAdminHandle {
+    /// Imports parser-validated baseline knowledge, including already answered
+    /// questions. This deliberate owner operation has no formal-admission claim.
+    pub async fn import_baseline(
+        &self,
+        question: CompiledQuestion,
+    ) -> Result<Result<(), RejectionReason>, IntakeError> {
+        let (sender, reply) = oneshot::channel();
+        send(
+            &self.sender,
+            Command::ImportBaseline(question, sender),
+            reply,
+        )
+        .await
+    }
+
+    pub async fn set_policy(&self, policy: PrefilterPolicy) -> Result<(), IntakeError> {
+        let (sender, reply) = oneshot::channel();
+        send(&self.sender, Command::Policy(policy, sender), reply).await
     }
 
     pub async fn stop(&self) -> Result<(), IntakeError> {
         let (sender, reply) = oneshot::channel();
-        self.send(Command::Stop(sender), reply).await
+        send(&self.sender, Command::Stop(sender), reply).await
+    }
+}
+
+enum Reply {
+    Assessment(oneshot::Sender<QuestionAssessment>),
+    Admission(oneshot::Sender<QuestionAdmission>),
+}
+
+impl Reply {
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Assessment(reply) => reply.is_closed(),
+            Self::Admission(reply) => reply.is_closed(),
+        }
+    }
+
+    fn admission(&self) -> bool {
+        matches!(self, Self::Admission(_))
+    }
+
+    fn send(self, assessment: QuestionAssessment, outcome: AdmissionOutcome) -> bool {
+        match self {
+            Self::Assessment(reply) => reply.send(assessment).is_ok(),
+            Self::Admission(reply) => reply
+                .send(QuestionAdmission {
+                    assessment,
+                    outcome,
+                })
+                .is_ok(),
+        }
     }
 }
 
 struct Pending {
     question: CompiledQuestion,
-    approval: ApprovalDecision,
-    reply: oneshot::Sender<QuestionAssessment>,
+    prefilter: PrefilterDecision,
+    reply: Reply,
     future: Pin<Box<dyn Future<Output = InterestAssessment> + Send>>,
 }
 
 pub(crate) struct LocalQuestions<F> {
     registry: QuestionRegistry,
-    policy: ApprovalPolicy,
-    provider: F,
+    policy: PrefilterPolicy,
+    provider: Option<F>,
     pending: Option<Pending>,
-    /// One computed decision, never a stored question or interest result.
-    cached: Option<ApprovalDecision>,
+    /// One computed read-only decision, never an admission or interest receipt.
+    cached: Option<PrefilterDecision>,
     #[cfg(test)]
     computations: usize,
 }
@@ -155,10 +254,10 @@ where
     F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
-    pub(crate) fn new(provider: F) -> Self {
+    pub(crate) fn new(provider: Option<F>) -> Self {
         Self {
             registry: QuestionRegistry::new(),
-            policy: ApprovalPolicy::default(),
+            policy: PrefilterPolicy::default(),
             provider,
             pending: None,
             cached: None,
@@ -175,7 +274,12 @@ where
         )
     }
 
-    fn assess(&mut self, graph: &Graph, question: &CompiledQuestion) -> ApprovalDecision {
+    fn evaluate(
+        &mut self,
+        graph: &Graph,
+        question: &CompiledQuestion,
+        reuse: bool,
+    ) -> PrefilterDecision {
         let snapshot = self.snapshot(graph);
         let request = AssessmentQuestion::new(
             FOUNDATION_ID,
@@ -185,7 +289,8 @@ where
             None,
         )
         .expect("bounded parser-validated question input");
-        if let Some(cached) = &self.cached
+        if reuse
+            && let Some(cached) = &self.cached
             && cached.matches_inputs(&request, &snapshot, &self.policy)
         {
             return cached.clone();
@@ -206,53 +311,76 @@ where
         decision
     }
 
+    fn assess(&mut self, graph: &Graph, question: &CompiledQuestion) -> PrefilterDecision {
+        self.evaluate(graph, question, true)
+    }
+
+    fn begin(&mut self, graph: &Graph, question: CompiledQuestion, reply: Reply) {
+        if reply.is_closed() {
+            return;
+        }
+        let mut prefilter = self.assess(graph, &question);
+        if prefilter.passed() && self.pending.is_some() {
+            prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT");
+        }
+        if !prefilter.passed() || self.provider.is_none() {
+            reply.send(
+                QuestionAssessment {
+                    prefilter,
+                    interest: InterestAssessment::NotRun,
+                    submitted_negation_parity: question.negation_parity(),
+                },
+                AdmissionOutcome::NotInserted,
+            );
+            return;
+        }
+        let bounded = tokio::time::timeout(
+            INTEREST_TIMEOUT,
+            self.provider.as_ref().expect("configured interest")(question.clone()),
+        );
+        let future = Box::pin(async move {
+            match bounded.await {
+                Ok(Ok(yes)) => InterestAssessment::Assessed(yes),
+                Ok(Err(_)) => InterestAssessment::ProviderFailed,
+                Err(_) => InterestAssessment::TimedOut,
+            }
+        });
+        self.pending = Some(Pending {
+            question,
+            prefilter,
+            reply,
+            future,
+        });
+    }
+
     pub(crate) fn process(&mut self, command: Command, graph: &Graph) -> bool {
         match command {
             Command::Assess(question, reply) => {
-                if reply.is_closed() {
-                    return true;
-                }
-                let mut approval = self.assess(graph, &question);
-                if approval.approved() && self.pending.is_some() {
-                    approval =
-                        approval.reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT");
-                }
-                if !approval.approved() {
-                    let _ = reply.send(QuestionAssessment {
-                        approval,
-                        interest: InterestAssessment::NotRun,
-                        submitted_negation_parity: question.negation_parity(),
-                    });
-                } else {
-                    let bounded =
-                        tokio::time::timeout(INTEREST_TIMEOUT, (self.provider)(question.clone()));
-                    let future = Box::pin(async move {
-                        match bounded.await {
-                            Ok(Ok(yes)) => InterestAssessment::Assessed(yes),
-                            Ok(Err(_)) => InterestAssessment::ProviderFailed,
-                            Err(_) => InterestAssessment::TimedOut,
-                        }
-                    });
-                    self.pending = Some(Pending {
-                        question,
-                        approval,
-                        reply,
-                        future,
-                    });
-                }
+                self.begin(graph, question, Reply::Assessment(reply))
             }
-            Command::Register(question, reply) => {
-                let outcome = if self.registry.contains(question.core()) {
-                    Err(RejectionReason::ExactDuplicate)
-                } else {
-                    RegisteredQuestion::new(*question.source_hash(), question.core())
-                        .and_then(|entry| self.registry.insert(entry))
-                };
-                let _ = reply.send(outcome);
+            Command::Admit(question, reply) => self.begin(graph, question, Reply::Admission(reply)),
+            Command::ImportBaseline(question, reply) => {
+                if !reply.is_closed() {
+                    let previous = self.registry.clone();
+                    let outcome = if self.registry.contains(question.core()) {
+                        Err(RejectionReason::ExactDuplicate)
+                    } else {
+                        RegisteredQuestion::new(*question.source_hash(), question.core())
+                            .and_then(|entry| self.registry.insert(entry))
+                    };
+                    if reply.send(outcome).is_err() {
+                        self.registry = previous;
+                    }
+                }
             }
             Command::Policy(policy, reply) => {
-                self.policy = policy;
-                let _ = reply.send(());
+                if !reply.is_closed() {
+                    let previous = self.policy;
+                    self.policy = policy;
+                    if reply.send(()).is_err() {
+                        self.policy = previous;
+                    }
+                }
             }
             Command::Context(reply) => {
                 let _ = reply.send(LocalQuestionContext {
@@ -263,8 +391,11 @@ where
                 });
             }
             Command::Stop(reply) => {
-                let _ = reply.send(());
-                return false;
+                if !reply.is_closed() {
+                    self.pending = None;
+                    let _ = reply.send(());
+                    return false;
+                }
             }
         }
         true
@@ -281,19 +412,61 @@ where
         let Some(pending) = self.pending.take() else {
             return;
         };
-        let mut approval = self.assess(graph, &pending.question);
-        let interest = if pending.approval.same_context(&approval) {
+        if pending.reply.is_closed() {
+            return;
+        }
+        // Admission always computes again; a cached or caller-manufactured Pass
+        // cannot authorize a write. Nothing below awaits or relinquishes ownership.
+        let mut prefilter = self.evaluate(graph, &pending.question, !pending.reply.admission());
+        let interest = if pending.prefilter.same_context(&prefilter) {
             interest
         } else {
-            approval = approval.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
+            prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
             InterestAssessment::Stale
         };
-        let result = QuestionAssessment {
-            approval,
-            interest,
-            submitted_negation_parity: pending.question.negation_parity(),
-        };
-        let _ = pending.reply.send(result);
+        let mut previous_registry = None;
+        let mut outcome = AdmissionOutcome::NotInserted;
+        if pending.reply.admission()
+            && prefilter.passed()
+            && interest == InterestAssessment::Assessed(true)
+        {
+            let previous = self.registry.clone();
+            let registry_before = previous.identity();
+            let record = *pending.question.source_hash();
+            let inserted = RegisteredQuestion::new(record, pending.question.core())
+                .and_then(|entry| self.registry.insert(entry));
+            match inserted {
+                Ok(()) => {
+                    outcome = AdmissionOutcome::Admitted(Box::new(AdmissionReceipt {
+                        record,
+                        input: prefilter.input,
+                        policy: prefilter.policy,
+                        snapshot_before: prefilter.snapshot,
+                        snapshot_after: self.snapshot(graph).identity(),
+                        registry_before,
+                        registry_after: self.registry.identity(),
+                    }));
+                    previous_registry = Some(previous);
+                    self.cached = None;
+                }
+                Err(reason) => {
+                    prefilter = prefilter.reject(reason, "Q02_REGISTRY_INSERTION");
+                }
+            }
+        }
+        let delivered = pending.reply.send(
+            QuestionAssessment {
+                prefilter,
+                interest,
+                submitted_negation_parity: pending.question.negation_parity(),
+            },
+            outcome,
+        );
+        // Failed delivery rolls back within this serialized operation. A delivered
+        // receipt linearizes the effect; later client disappearance cannot undo it.
+        if !delivered && let Some(previous) = previous_registry {
+            self.registry = previous;
+        }
     }
 
     pub(crate) fn cancel_closed(&mut self) {

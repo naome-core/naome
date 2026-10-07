@@ -1,19 +1,22 @@
 //! Finite, receiver-local question prefilter over checker-validated knowledge.
 //!
 //! This API has no storage, publication, interest or consensus effects. Its
-//! APPROVE outcome establishes only that the supported deterministic checks
+//! PASS outcome establishes only that the supported deterministic checks
 //! passed against the supplied complete local snapshot.
 
 use std::collections::BTreeSet;
 
 use naome_foundation::{FOUNDATION_ID, Formula};
-use naome_proof::{ArtifactId, ProofCertificate, ProofId, ProofStep, StatementId};
+use naome_proof::{
+    ArtifactId, CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_STEPS, ProofId, ProofStep, StatementId,
+};
 use sha2::{Digest, Sha256};
 
-use crate::{ArtifactState, CheckError, normalize_and_check_with_state, statement_id};
+use crate::{ArtifactState, CheckError, statement_id};
 
 pub type Identity = [u8; 32];
 
+mod deduction;
 pub(crate) mod index;
 mod registry;
 pub use registry::QuestionRegistry;
@@ -26,6 +29,8 @@ pub struct AssessmentLimits {
     pub dependencies: usize,
     pub operations: usize,
     pub formula_work_bytes: usize,
+    pub certificate_steps: usize,
+    pub certificate_bytes: usize,
 }
 
 impl AssessmentLimits {
@@ -34,40 +39,45 @@ impl AssessmentLimits {
         dependencies: 64,
         operations: 32_768,
         formula_work_bytes: 64 * 1024 * 1024,
+        certificate_steps: CERTIFICATE_MAX_STEPS,
+        certificate_bytes: CERTIFICATE_MAX_BYTES,
     };
 
-    fn values(self) -> [usize; 4] {
+    fn values(self) -> [usize; 6] {
         [
             self.formula_nodes,
             self.dependencies,
             self.operations,
             self.formula_work_bytes,
+            self.certificate_steps,
+            self.certificate_bytes,
         ]
     }
 }
 
-/// Rule set 1 is fixed; a receiving node may version or tighten its limits.
+/// Rule set 2 adds complete finite MP closure, including derived implications.
+/// Q05 still requires both stored checked implications; Q06 remains finite.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ApprovalPolicy {
+pub struct PrefilterPolicy {
     pub revision: u64,
     pub rule_set: u64,
     pub limits: AssessmentLimits,
 }
 
-impl Default for ApprovalPolicy {
+impl Default for PrefilterPolicy {
     fn default() -> Self {
         Self {
-            revision: 2,
-            rule_set: 1,
+            revision: 3,
+            rule_set: 2,
             limits: AssessmentLimits::MAXIMUM,
         }
     }
 }
 
-impl ApprovalPolicy {
+impl PrefilterPolicy {
     pub fn identity(self) -> Identity {
         let mut digest = Sha256::new();
-        digest.update(b"naome:local-question-policy:v2\0");
+        digest.update(b"naome:local-question-policy:v3\0");
         digest.update(self.revision.to_le_bytes());
         digest.update(self.rule_set.to_le_bytes());
         for value in self.limits.values() {
@@ -78,7 +88,7 @@ impl ApprovalPolicy {
 
     fn valid(self) -> bool {
         self.revision != 0
-            && self.rule_set == 1
+            && self.rule_set == 2
             && self
                 .limits
                 .values()
@@ -240,14 +250,14 @@ impl RejectionReason {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApprovalOutcome {
-    Approve,
+pub enum PrefilterOutcome {
+    Pass,
     Reject,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApprovalDecision {
-    pub outcome: ApprovalOutcome,
+pub struct PrefilterDecision {
+    pub outcome: PrefilterOutcome,
     pub reason: Option<RejectionReason>,
     pub rule: &'static str,
     pub question: Option<StatementId>,
@@ -257,11 +267,34 @@ pub struct ApprovalDecision {
     pub witness: Option<ProofId>,
     pub supporting_witness: Option<ProofId>,
     pub related_record: Option<Identity>,
+    /// Temporary checker-certified evidence, never registered as a new proof.
+    pub deduction: Option<DeductionWitness>,
 }
 
-impl ApprovalDecision {
-    pub fn approved(&self) -> bool {
-        self.outcome == ApprovalOutcome::Approve
+/// A checked temporary derivation with every original cited proof identity.
+/// Private fields can only be constructed after the actual checker succeeds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeductionWitness {
+    proof: ProofId,
+    original_proofs: Box<[ProofId]>,
+    certificate: Box<[u8]>,
+}
+
+impl DeductionWitness {
+    pub const fn proof_id(&self) -> ProofId {
+        self.proof
+    }
+    pub fn original_proofs(&self) -> &[ProofId] {
+        &self.original_proofs
+    }
+    pub fn canonical_certificate(&self) -> &[u8] {
+        &self.certificate
+    }
+}
+
+impl PrefilterDecision {
+    pub fn passed(&self) -> bool {
+        self.outcome == PrefilterOutcome::Pass
     }
 
     /// Tests an intrinsically bound cache entry against current receiver inputs.
@@ -269,7 +302,7 @@ impl ApprovalDecision {
         &self,
         question: &AssessmentQuestion<'_>,
         snapshot: &KnowledgeSnapshot<'_>,
-        policy: &ApprovalPolicy,
+        policy: &PrefilterPolicy,
     ) -> bool {
         self.question == Some(question.question)
             && self.input == question.input
@@ -278,7 +311,7 @@ impl ApprovalDecision {
     }
 
     pub fn reject(mut self, reason: RejectionReason, rule: &'static str) -> Self {
-        self.outcome = ApprovalOutcome::Reject;
+        self.outcome = PrefilterOutcome::Reject;
         self.reason = Some(reason);
         self.rule = rule;
         self
@@ -295,6 +328,8 @@ impl ApprovalDecision {
 struct Work {
     operations: usize,
     bytes: usize,
+    certificate_steps: usize,
+    certificate_bytes: usize,
 }
 impl Work {
     fn charge(&mut self, bytes: usize) -> Result<(), RejectionReason> {
@@ -334,17 +369,19 @@ impl Work {
 
 /// Assesses one question without changing the snapshot or registering inferred
 /// proofs. Every mandatory comparison covers the complete declared snapshot.
-/// Rule Q04 permits exactly one checked modus-ponens transfer. Q05 requires
+/// Rule Q04 saturates the finite MP fragment, including derived implication
+/// bridges, from the complete checked context. Each successful derivation DAG
+/// is checker-revalidated with original proof citations. Q05 requires
 /// both checked implications. Q06 permits one or two outer universal
 /// instantiations to one fresh variable, optionally followed by one universal
 /// closure. Each matching inference is rechecked as a bounded certificate.
 pub fn assess_question(
     question: &AssessmentQuestion<'_>,
     snapshot: &KnowledgeSnapshot<'_>,
-    policy: &ApprovalPolicy,
-) -> ApprovalDecision {
-    let mut decision = ApprovalDecision {
-        outcome: ApprovalOutcome::Approve,
+    policy: &PrefilterPolicy,
+) -> PrefilterDecision {
+    let mut decision = PrefilterDecision {
+        outcome: PrefilterOutcome::Pass,
         reason: None,
         rule: "Q00_SUPPORTED_PREFILTER",
         question: Some(question.question),
@@ -354,6 +391,7 @@ pub fn assess_question(
         witness: None,
         supporting_witness: None,
         related_record: None,
+        deduction: None,
     };
     if !policy.valid() {
         return decision.reject(RejectionReason::UnsupportedPolicy, "Q09_POLICY");
@@ -361,6 +399,8 @@ pub fn assess_question(
     let mut work = Work {
         operations: policy.limits.operations,
         bytes: policy.limits.formula_work_bytes,
+        certificate_steps: policy.limits.certificate_steps,
+        certificate_bytes: policy.limits.certificate_bytes,
     };
     let result = evaluate(question, snapshot, policy, &mut work, &mut decision);
     if let Err((reason, rule)) = result {
@@ -372,9 +412,9 @@ pub fn assess_question(
 fn evaluate(
     question: &AssessmentQuestion<'_>,
     snapshot: &KnowledgeSnapshot<'_>,
-    policy: &ApprovalPolicy,
+    policy: &PrefilterPolicy,
     work: &mut Work,
-    decision: &mut ApprovalDecision,
+    decision: &mut PrefilterDecision,
 ) -> Result<(), (RejectionReason, &'static str)> {
     if question.foundation != FOUNDATION_ID {
         return Err((RejectionReason::FoundationMismatch, "Q01_FORMAL_TARGET"));
@@ -443,36 +483,11 @@ fn evaluate(
         }
     }
     for (target_id, target, reason) in targets {
-        work.index()?;
-        for statement in snapshot.artifacts.question_index.incoming(target_id) {
-            let (bridge, implication, length) = known(snapshot.artifacts, statement, work)?;
-            work.formula(length + encoded.len(), 8)?;
-            let (premise, consequence) = implication
-                .implication_parts()
-                .expect("indexed implication");
-            if consequence != *target {
-                continue;
-            }
-            if let Some((premise_id, _)) = lookup(snapshot.artifacts, &premise, work)? {
-                recheck(
-                    vec![
-                        ProofStep::ProofReference {
-                            proof_id: premise_id,
-                        },
-                        ProofStep::ProofReference { proof_id: bridge },
-                        ProofStep::ModusPonens {
-                            premise: 0,
-                            implication: 1,
-                        },
-                    ],
-                    target,
-                    snapshot.artifacts,
-                    work,
-                )?;
-                decision.witness = Some(premise_id);
-                decision.supporting_witness = Some(bridge);
-                return Err((reason, "Q04_CHECKED_TRANSFER"));
-            }
+        if let Some(witness) = deduction::derive(target_id, target, snapshot.artifacts, work)? {
+            decision.witness = witness.original_proofs().first().copied();
+            decision.supporting_witness = witness.original_proofs().get(1).copied();
+            decision.deduction = Some(witness);
+            return Err((reason, "Q04_CHECKED_MP_CLOSURE"));
         }
     }
     for (target_id, target, _) in targets {
@@ -484,7 +499,8 @@ fn evaluate(
             work.formula(length + encoded.len(), 64)?;
             for instance in index::universal_instances(proof, premise) {
                 if instance.formula == *target {
-                    recheck(instance.steps, target, snapshot.artifacts, work)?;
+                    decision.deduction =
+                        Some(recheck(instance.steps, target, snapshot.artifacts, work)?);
                     decision.witness = Some(proof);
                     return Err((
                         RejectionReason::KnownLemmaInstance,
@@ -592,50 +608,8 @@ fn recheck(
     target: &Formula,
     artifacts: &ArtifactState,
     work: &mut Work,
-) -> Result<(), (RejectionReason, &'static str)> {
-    let mut referenced = 0usize;
-    for step in &steps {
-        if let ProofStep::ProofReference { proof_id } = step {
-            let proof = artifacts
-                .resolve_proof(*proof_id)
-                .ok_or((RejectionReason::MissingDependency, "Q02_CHECKED_CONTEXT"))?;
-            referenced = referenced
-                .checked_add(proof.canonical_length)
-                .ok_or((RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
-        }
-    }
-    let certificate = ProofCertificate::new(steps)
-        .map_err(|_| (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))?;
-    let target_bytes = target
-        .encode_canonical()
-        .map_err(|_| (RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?
-        .len();
-    // At most seven synthetic steps: charge explicit formulas, each resolved
-    // citation, intermediate reconstruction, rule inputs and final comparison
-    // conservatively BEFORE invoking the checker, including referenced data.
-    let reserved = certificate
-        .to_canonical_bytes()
-        .len()
-        .checked_add(referenced)
-        .and_then(|value| value.checked_add(target_bytes))
-        .and_then(|value| value.checked_mul(16))
-        .ok_or((RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
-    work.charge(reserved).map_err(|e| (e, "Q08_EXECUTION"))?;
-    let checked = normalize_and_check_with_state(certificate, artifacts).map_err(|error| {
-        let reason = checker_reason(&error);
-        (
-            reason,
-            if reason == RejectionReason::ExecutionLimit {
-                "Q08_EXECUTION"
-            } else {
-                "Q02_CHECKED_CONTEXT"
-            },
-        )
-    })?;
-    if checked.conclusion() != target {
-        return Err((RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"));
-    }
-    Ok(())
+) -> Result<DeductionWitness, (RejectionReason, &'static str)> {
+    deduction::check_steps(steps, target, artifacts, work)
 }
 
 fn checker_reason(error: &CheckError) -> RejectionReason {

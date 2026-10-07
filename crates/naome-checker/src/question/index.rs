@@ -14,8 +14,8 @@ type Buckets = PersistentMap<StatementId, Statements>;
 pub(crate) struct KnowledgeIndex {
     artifacts: PersistentMap<ArtifactId, ()>,
     witnesses: PersistentMap<StatementId, ProofId>,
-    incoming: Buckets,
     outgoing: Buckets,
+    deductions: Buckets,
     instances: Buckets,
 }
 
@@ -24,8 +24,8 @@ impl KnowledgeIndex {
         Self {
             artifacts: PersistentMap::new(),
             witnesses: PersistentMap::new(),
-            incoming: PersistentMap::new(),
             outgoing: PersistentMap::new(),
+            deductions: PersistentMap::new(),
             instances: PersistentMap::new(),
         }
     }
@@ -49,13 +49,23 @@ impl KnowledgeIndex {
             return;
         }
         self.witnesses.insert(statement, proof);
-        if let Some((antecedent, consequent)) = formula.implication_parts() {
+        if let Some((antecedent, mut consequent)) = formula.implication_parts() {
             let antecedent =
                 statement_id(&antecedent.encode_canonical().expect("checked subformula"));
-            let consequent =
-                statement_id(&consequent.encode_canonical().expect("checked subformula"));
             insert(&mut self.outgoing, antecedent, statement);
-            insert(&mut self.incoming, consequent, statement);
+            // Every consequent-spine projection is a potential MP goal, not a
+            // checked fact. Its complete leading antecedents must be derived
+            // from checked seeds, and its full DAG must pass the checker.
+            // Intermediate formulas retain the global checked formula limits;
+            // the smaller question-input limit must never omit a bridge here.
+            loop {
+                let bytes = consequent.encode_canonical().expect("checked subformula");
+                insert(&mut self.deductions, statement_id(&bytes), statement);
+                let Some((_, next)) = consequent.implication_parts() else {
+                    break;
+                };
+                consequent = next;
+            }
         }
         for instance in universal_instances(proof, formula) {
             // Only individually admissible question targets can match this
@@ -78,16 +88,16 @@ impl KnowledgeIndex {
         self.witnesses.get(&statement)
     }
 
-    pub(crate) fn incoming(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {
-        entries(self.incoming.get(&target))
-    }
-
     pub(crate) fn outgoing(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {
         entries(self.outgoing.get(&target))
     }
 
     pub(crate) fn instances(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {
         entries(self.instances.get(&target))
+    }
+
+    pub(crate) fn deductions(&self, target: StatementId) -> impl Iterator<Item = StatementId> + '_ {
+        entries(self.deductions.get(&target))
     }
 }
 

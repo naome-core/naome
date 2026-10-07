@@ -1,7 +1,7 @@
 use super::*;
-use crate::normalize_and_check;
+use crate::{normalize_and_check, normalize_and_check_with_state};
 use naome_foundation::{FreeVariable, ZfcAxiom};
-use naome_proof::DefinitionId;
+use naome_proof::{DefinitionId, ProofCertificate};
 
 fn var(id: u32) -> FreeVariable {
     FreeVariable::new(id)
@@ -43,8 +43,8 @@ fn decision(
     target: &Formula,
     state: &ArtifactState,
     registry: &[RegisteredQuestion<'_>],
-    policy: &ApprovalPolicy,
-) -> ApprovalDecision {
+    policy: &PrefilterPolicy,
+) -> PrefilterDecision {
     let registry = indexed(registry);
     assess_question(
         &AssessmentQuestion::new(
@@ -62,11 +62,11 @@ fn decision(
 
 #[test]
 fn snapshot_dependent_exact_answers_are_read_only_and_reproducible() {
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     let mut state = ArtifactState::new();
     let question = equal();
     let before = decision(&question, &state, &[], &policy);
-    assert!(before.approved());
+    assert!(before.passed());
     let (witness, _) = equality(&mut state);
     let registered: Vec<_> = state.proof_conclusions().map(|(id, _, _, _)| id).collect();
     let after = decision(&question, &state, &[], &policy);
@@ -100,7 +100,7 @@ fn canonical_duplicates_and_self_record_exemption_cannot_hide_other_records() {
         RegisteredQuestion::new([1; 32], &first).unwrap(),
         RegisteredQuestion::new([2; 32], &renamed).unwrap(),
     ];
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     assert_eq!(
         decision(&renamed, &state, &registry, &policy).reason,
         Some(RejectionReason::ExactDuplicate)
@@ -120,7 +120,7 @@ fn canonical_duplicates_and_self_record_exemption_cannot_hide_other_records() {
     assert_eq!(result.related_record, Some([1; 32]));
     let self_registry = indexed(&registry[1..]);
     let only_self = KnowledgeSnapshot::new([4; 32], &state, &self_registry);
-    assert!(assess_question(&input, &only_self, &policy).approved());
+    assert!(assess_question(&input, &only_self, &policy).passed());
     let unknown_record = AssessmentQuestion::new(
         FOUNDATION_ID,
         &renamed,
@@ -140,9 +140,9 @@ fn unanswered_equivalence_requires_both_actual_checked_implications() {
     let a = unresolved();
     let b = Formula::for_all(var(17), a.clone());
     let registry = [RegisteredQuestion::new([1; 32], &b).unwrap()];
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     let mut state = ArtifactState::new();
-    assert!(decision(&a, &state, &registry, &policy).approved());
+    assert!(decision(&a, &state, &registry, &policy).passed());
     let (forward, _) = register(
         &mut state,
         vec![ProofStep::VacuousUniversal {
@@ -150,7 +150,7 @@ fn unanswered_equivalence_requires_both_actual_checked_implications() {
         }],
     );
     assert!(
-        decision(&a, &state, &registry, &policy).approved(),
+        decision(&a, &state, &registry, &policy).passed(),
         "one direction cannot establish equivalence"
     );
     let invalid = ProofCertificate::new(vec![
@@ -163,7 +163,7 @@ fn unanswered_equivalence_requires_both_actual_checked_implications() {
     .unwrap();
     assert!(normalize_and_check_with_state(invalid, &state).is_err());
     assert!(
-        decision(&a, &state, &registry, &policy).approved(),
+        decision(&a, &state, &registry, &policy).passed(),
         "failed evidence cannot enter checked state"
     );
     let _ = register(
@@ -192,15 +192,15 @@ fn checked_implication_transfer_requires_its_proven_premise() {
             consequent: unresolved().into(),
         }],
     );
-    let policy = ApprovalPolicy::default();
-    assert!(decision(&b, &state, &[], &policy).approved());
+    let policy = PrefilterPolicy::default();
+    assert!(decision(&b, &state, &[], &policy).passed());
     let _ = equality(&mut state);
     let result = decision(&b, &state, &[], &policy);
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q04_CHECKED_TRANSFER");
+    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
     assert!(result.witness.is_some() && result.supporting_witness.is_some());
     assert!(
-        decision(&Formula::implies(a, unresolved()), &state, &[], &policy).approved(),
+        decision(&Formula::implies(a, unresolved()), &state, &[], &policy).passed(),
         "reversing implication is not a transfer"
     );
 }
@@ -250,8 +250,8 @@ fn checked_general_result_settles_diagonal_only_through_finite_checker_rules() {
     let mut state = ArtifactState::new();
     let atom = Formula::member(var(10), var(10));
     let diagonal = Formula::for_all(var(10), Formula::implies(atom.clone(), atom));
-    let policy = ApprovalPolicy::default();
-    assert!(decision(&diagonal, &state, &[], &policy).approved());
+    let policy = PrefilterPolicy::default();
+    assert!(decision(&diagonal, &state, &[], &policy).passed());
     let general = general_identity(&mut state);
     assert_ne!(
         general, diagonal,
@@ -270,7 +270,7 @@ fn checked_general_result_settles_diagonal_only_through_finite_checker_rules() {
             ),
         ),
     );
-    assert!(decision(&changed_assumption, &state, &[], &policy).approved());
+    assert!(decision(&changed_assumption, &state, &[], &policy).passed());
     let changed_quantifier = Formula::exists(
         var(0),
         Formula::for_all(
@@ -281,7 +281,7 @@ fn checked_general_result_settles_diagonal_only_through_finite_checker_rules() {
             ),
         ),
     );
-    assert!(decision(&changed_quantifier, &state, &[], &policy).approved());
+    assert!(decision(&changed_quantifier, &state, &[], &policy).passed());
     assert_eq!(
         state.proof_conclusions().count(),
         1,
@@ -293,7 +293,7 @@ fn checked_general_result_settles_diagonal_only_through_finite_checker_rules() {
 fn dependencies_input_context_and_exhausted_work_fail_closed() {
     let mut state = ArtifactState::new();
     let target = unresolved();
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     let missing = [ArtifactId::from_definition_id(DefinitionId::from_bytes(
         [55; 32],
     ))];
@@ -352,18 +352,18 @@ fn dependencies_input_context_and_exhausted_work_fail_closed() {
 fn changing_registry_snapshot_or_policy_invalidates_bound_approval() {
     let state = ArtifactState::new();
     let target = unresolved();
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     let first = decision(&target, &state, &[], &policy);
     let mut new_policy = policy;
     new_policy.revision += 1;
     let second = decision(&target, &state, &[], &new_policy);
-    assert!(first.approved() && second.approved());
+    assert!(first.passed() && second.passed());
     assert!(!first.same_context(&second));
     let registry = [RegisteredQuestion::new([4; 32], &target).unwrap()];
     let third = decision(&target, &state, &registry, &policy);
     assert!(!first.same_context(&third));
     assert_eq!(third.reason, Some(RejectionReason::ExactDuplicate));
-    new_policy.rule_set = 2;
+    new_policy.rule_set = 1;
     assert_eq!(
         decision(&target, &state, &[], &new_policy).reason,
         Some(RejectionReason::UnsupportedPolicy)
@@ -390,9 +390,9 @@ fn intrinsic_bindings_survive_early_policy_and_work_failures() {
     ];
     let first = AssessmentQuestion::new(FOUNDATION_ID, &target, b"source A", &[], None).unwrap();
     let second = AssessmentQuestion::new(FOUNDATION_ID, &target, b"source B", &[], None).unwrap();
-    let mut policy = ApprovalPolicy {
+    let mut policy = PrefilterPolicy {
         rule_set: 99,
-        ..ApprovalPolicy::default()
+        ..PrefilterPolicy::default()
     };
     let a = assess_question(&first, &snapshots[0], &policy);
     let b = assess_question(&second, &snapshots[1], &policy);
@@ -400,7 +400,7 @@ fn intrinsic_bindings_survive_early_policy_and_work_failures() {
     assert_eq!(a.question, b.question);
     assert_ne!(a.input, b.input);
     assert_ne!(a.snapshot, b.snapshot);
-    policy = ApprovalPolicy::default();
+    policy = PrefilterPolicy::default();
     policy.limits.operations = 1;
     let a = assess_question(&first, &snapshots[0], &policy);
     let b = assess_question(&first, &snapshots[1], &policy);
@@ -434,7 +434,7 @@ fn checked_dependency_kind_domains_and_duplicate_reason_are_preserved() {
         "typed artifact domains distinguish identical raw digests"
     );
     let target = unresolved();
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     let empty_registry = QuestionRegistry::new();
     let snapshot = KnowledgeSnapshot::new([1; 32], &state, &empty_registry);
     let valid_refs = [valid];
@@ -457,7 +457,7 @@ fn checked_dependency_kind_domains_and_duplicate_reason_are_preserved() {
     .unwrap();
     let accepted = assess_question(&input, &snapshot, &policy);
     let rejected = assess_question(&invalid, &snapshot, &policy);
-    assert!(accepted.approved());
+    assert!(accepted.passed());
     assert_eq!(rejected.reason, Some(RejectionReason::MissingDependency));
     assert_ne!(accepted.input, rejected.input);
     let repeated = [valid, valid];
@@ -606,8 +606,8 @@ fn indexed_decision(
     target: &Formula,
     state: &ArtifactState,
     registry: &QuestionRegistry,
-    policy: &ApprovalPolicy,
-) -> ApprovalDecision {
+    policy: &PrefilterPolicy,
+) -> PrefilterDecision {
     let input =
         AssessmentQuestion::new(FOUNDATION_ID, target, b"whole graph target", &[], None).unwrap();
     assess_question(
@@ -620,10 +620,10 @@ fn indexed_decision(
 #[test]
 fn complete_large_checked_context_approves_irrelevant_data_and_finds_late_witnesses() {
     let (state, registry) = large_checked_context();
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     let unrelated = unresolved();
     assert!(
-        indexed_decision(&unrelated, &state, &registry, &policy).approved(),
+        indexed_decision(&unrelated, &state, &registry, &policy).passed(),
         "complete indexes exhaust all relevant buckets even beyond every former aggregate cap"
     );
 
@@ -666,7 +666,7 @@ fn complete_large_checked_context_approves_irrelevant_data_and_finds_late_witnes
         &policy,
     );
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(result.rule, "Q04_CHECKED_TRANSFER");
+    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
 
     let mut equivalent = state.clone();
     let related = Formula::for_all(var(17), unrelated.clone());
@@ -681,7 +681,7 @@ fn complete_large_checked_context_approves_irrelevant_data_and_finds_late_witnes
         }],
     );
     assert!(
-        indexed_decision(&unrelated, &equivalent, &changed_registry, &policy).approved(),
+        indexed_decision(&unrelated, &equivalent, &changed_registry, &policy).passed(),
         "one direction remains insufficient"
     );
     let _ = register(
@@ -734,14 +734,14 @@ fn relevant_bucket_exhaustion_rejects_instead_of_approving_a_partial_query() {
         );
     }
     let registry = QuestionRegistry::new();
-    let policy = ApprovalPolicy::default();
-    assert!(indexed_decision(&target, &state, &registry, &policy).approved());
+    let policy = PrefilterPolicy::default();
+    assert!(indexed_decision(&target, &state, &registry, &policy).passed());
     let mut limited = policy;
     limited.limits.operations = 20;
     let result = indexed_decision(&target, &state, &registry, &limited);
     assert_eq!(result.reason, Some(RejectionReason::ExecutionLimit));
     assert_eq!(result.rule, "Q08_EXECUTION");
-    assert!(!result.approved());
+    assert!(!result.passed());
     limited = policy;
     limited.limits.formula_work_bytes = 1024;
     assert_eq!(
@@ -769,7 +769,7 @@ fn indexed_universal_witnesses_include_negative_and_vacuous_one_two_step_instanc
             },
         ],
     );
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     assert_eq!(
         decision(&target, &state, &[], &policy).reason,
         Some(RejectionReason::KnownLemmaInstance)
@@ -798,14 +798,14 @@ fn indexed_universal_witnesses_include_negative_and_vacuous_one_two_step_instanc
     let refuted_intermediate = Formula::negate(intermediate);
     // Negative polarity uses the exact structurally projected conclusion,
     // rather than distributing negation through a binder.
-    assert!(decision(&refuted_intermediate, &twice, &[], &policy).approved());
+    assert!(decision(&refuted_intermediate, &twice, &[], &policy).passed());
 }
 
 #[test]
 fn indexed_aliases_registry_content_and_branches_keep_complete_cache_bindings() {
     let mut state = ArtifactState::new();
     let (original, target) = equality(&mut state);
-    let policy = ApprovalPolicy::default();
+    let policy = PrefilterPolicy::default();
     let before = decision(&target, &state, &[], &policy);
     let alias = normalize_and_check_with_state(
         ProofCertificate::new(vec![ProofStep::ProofReference { proof_id: original }]).unwrap(),
@@ -856,4 +856,416 @@ fn indexed_aliases_registry_content_and_branches_keep_complete_cache_bindings() 
         Err(RejectionReason::InvalidRegistry)
     );
     assert_eq!(registry.identity(), frozen);
+}
+
+fn fact_steps(pattern: &Formula) -> Vec<ProofStep> {
+    vec![
+        ProofStep::EqualityReflexivity { variable: var(0) },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: var(0),
+        },
+        ProofStep::Simplification {
+            antecedent: equal().into(),
+            consequent: pattern.clone().into(),
+        },
+        ProofStep::ModusPonens {
+            premise: 1,
+            implication: 2,
+        },
+    ]
+}
+
+fn bridge_from_fact(
+    state: &mut ArtifactState,
+    antecedent: &Formula,
+    pattern: &Formula,
+) -> (ProofId, Formula) {
+    let consequence = Formula::implies(pattern.clone(), equal());
+    let mut steps = fact_steps(pattern);
+    steps.push(ProofStep::Simplification {
+        antecedent: consequence.into(),
+        consequent: antecedent.clone().into(),
+    });
+    steps.push(ProofStep::ModusPonens {
+        premise: 3,
+        implication: 4,
+    });
+    register(state, steps)
+}
+
+fn lift_two_premises(
+    state: &mut ArtifactState,
+    first: &Formula,
+    second: &Formula,
+    mut result_steps: Vec<ProofStep>,
+) -> (ProofId, Formula) {
+    let result = normalize_and_check(ProofCertificate::new(result_steps.clone()).unwrap())
+        .unwrap()
+        .conclusion()
+        .clone();
+    let root = (result_steps.len() - 1) as u32;
+    let first_bridge = result_steps.len() as u32;
+    result_steps.push(ProofStep::Simplification {
+        antecedent: result.clone().into(),
+        consequent: second.clone().into(),
+    });
+    result_steps.push(ProofStep::ModusPonens {
+        premise: root,
+        implication: first_bridge,
+    });
+    let second_fact = Formula::implies(second.clone(), result);
+    let second_root = (result_steps.len() - 1) as u32;
+    let second_bridge = result_steps.len() as u32;
+    result_steps.push(ProofStep::Simplification {
+        antecedent: second_fact.into(),
+        consequent: first.clone().into(),
+    });
+    result_steps.push(ProofStep::ModusPonens {
+        premise: second_root,
+        implication: second_bridge,
+    });
+    register(state, result_steps)
+}
+
+fn verify_deduction(
+    result: &PrefilterDecision,
+    state: &ArtifactState,
+    target: &Formula,
+) -> ProofCertificate {
+    let witness = result
+        .deduction
+        .as_ref()
+        .expect("actual certified deduction receipt");
+    let certificate =
+        ProofCertificate::from_canonical_bytes(witness.canonical_certificate()).unwrap();
+    let checked = normalize_and_check_with_state(certificate.clone(), state).unwrap();
+    assert_eq!(checked.conclusion(), target);
+    assert_eq!(checked.proof_id(), witness.proof_id());
+    assert_eq!(
+        checked.normal_form().canonical_bytes(),
+        witness.canonical_certificate()
+    );
+    let references: BTreeSet<_> = certificate
+        .steps()
+        .iter()
+        .filter_map(|step| {
+            if let ProofStep::ProofReference { proof_id } = step {
+                Some(*proof_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        references.into_iter().collect::<Vec<_>>(),
+        witness.original_proofs()
+    );
+    assert!(
+        witness
+            .original_proofs()
+            .iter()
+            .all(|id| state.contains_proof(*id))
+    );
+    certificate
+}
+
+#[test]
+fn dynamic_mp_bridge_requires_both_seeds_and_rechecks_all_original_citations() {
+    let mut state = ArtifactState::new();
+    let (first, p) = equality(&mut state);
+    let q = Formula::for_all(var(19), p.clone());
+    let r = Formula::implies(unresolved(), equal());
+    let (bridge, _) = lift_two_premises(&mut state, &p, &q, fact_steps(&unresolved()));
+    let policy = PrefilterPolicy::default();
+    assert!(
+        decision(&r, &state, &[], &policy).passed(),
+        "a projected consequence is not a checked fact or a seed"
+    );
+    let second_proof = normalize_and_check_with_state(
+        ProofCertificate::new(vec![
+            ProofStep::ProofReference { proof_id: first },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: var(19),
+            },
+        ])
+        .unwrap(),
+        &state,
+    )
+    .unwrap();
+    let second = second_proof.proof_id();
+    state.register_proof(second_proof).unwrap();
+    let before = state.snapshot_id();
+    let result = decision(&r, &state, &[], &policy);
+    assert_eq!(result.reason, Some(RejectionReason::KnownProof));
+    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    let certificate = verify_deduction(&result, &state, &r);
+    let expected: BTreeSet<_> = [first, second, bridge].into_iter().collect();
+    assert_eq!(
+        result.deduction.as_ref().unwrap().original_proofs(),
+        expected.into_iter().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        certificate
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, ProofStep::ModusPonens { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        state.snapshot_id(),
+        before,
+        "temporary deductions never register proofs"
+    );
+    let mut limited = policy;
+    limited.limits.certificate_steps = certificate.steps().len() - 1;
+    let failed = decision(&r, &state, &[], &limited);
+    assert_eq!(failed.reason, Some(RejectionReason::ExecutionLimit));
+    assert!(failed.deduction.is_none());
+    limited = policy;
+    limited.limits.certificate_bytes = certificate.to_canonical_bytes().len() - 1;
+    assert_eq!(
+        decision(&r, &state, &[], &limited).reason,
+        Some(RejectionReason::ExecutionLimit)
+    );
+    assert_eq!(state.snapshot_id(), before);
+}
+
+#[test]
+fn dynamic_mp_refutation_preserves_the_negative_target_and_certified_dag() {
+    let mut state = ArtifactState::new();
+    let (_, p) = equality(&mut state);
+    let (_, q) = register(
+        &mut state,
+        vec![
+            ProofStep::EqualityReflexivity { variable: var(0) },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: var(0),
+            },
+            ProofStep::Generalization {
+                premise: 1,
+                variable: var(19),
+            },
+        ],
+    );
+    let (_, higher) = lift_two_premises(
+        &mut state,
+        &p,
+        &q,
+        vec![ProofStep::ZfcAxiom(ZfcAxiom::Infinity)],
+    );
+    let (_, tail) = higher.implication_parts().unwrap();
+    let (_, negative) = tail.implication_parts().unwrap();
+    let bytes = negative.encode_canonical().unwrap();
+    assert_eq!(bytes[0], 0x02);
+    let target = Formula::decode_canonical(&bytes[1..]).unwrap();
+    let result = decision(&target, &state, &[], &PrefilterPolicy::default());
+    assert_eq!(result.reason, Some(RejectionReason::KnownRefutation));
+    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    let certificate = verify_deduction(&result, &state, &negative);
+    assert_eq!(
+        certificate
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, ProofStep::ModusPonens { .. }))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn dynamic_mp_branches_cycles_aliases_and_arrival_order_are_deterministic() {
+    let a = unresolved();
+    let b = Formula::for_all(var(17), a.clone());
+    let mut cycle = ArtifactState::new();
+    let _ = register(
+        &mut cycle,
+        vec![ProofStep::VacuousUniversal {
+            formula: a.clone().into(),
+        }],
+    );
+    let _ = register(
+        &mut cycle,
+        vec![ProofStep::UniversalInstantiation {
+            variable: var(17),
+            replacement: var(18),
+            body: a.clone().into(),
+        }],
+    );
+    assert!(
+        decision(&a, &cycle, &[], &PrefilterPolicy::default()).passed(),
+        "cycles without a seed cannot manufacture a fact"
+    );
+    assert!(decision(&b, &cycle, &[], &PrefilterPolicy::default()).passed());
+
+    let mut repeated = ArtifactState::new();
+    let (seed, p) = equality(&mut repeated);
+    let target = Formula::implies(unresolved(), equal());
+    let (bridge, _) = lift_two_premises(&mut repeated, &p, &p, fact_steps(&unresolved()));
+    let repeated_result = decision(&target, &repeated, &[], &PrefilterPolicy::default());
+    assert_eq!(repeated_result.reason, Some(RejectionReason::KnownProof));
+    let repeated_certificate = verify_deduction(&repeated_result, &repeated, &target);
+    let expected: BTreeSet<_> = [seed, bridge].into_iter().collect();
+    assert_eq!(
+        repeated_result
+            .deduction
+            .as_ref()
+            .unwrap()
+            .original_proofs(),
+        expected.into_iter().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        repeated_certificate
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, ProofStep::ModusPonens { .. }))
+            .count(),
+        2,
+        "one seed satisfies both repeated antecedents with one shared original citation"
+    );
+
+    let p = equal();
+    let q1 = Formula::for_all(var(17), p.clone());
+    let q2 = Formula::for_all(var(18), q1.clone());
+    let target = Formula::implies(unresolved(), equal());
+    let mut states = Vec::new();
+    for reverse in [false, true] {
+        let mut state = ArtifactState::new();
+        let (seed, _) = equality(&mut state);
+        let branches = if reverse { [2, 1] } else { [1, 2] };
+        for count in branches {
+            let consequence = if count == 1 { q1.clone() } else { q2.clone() };
+            let mut steps = vec![
+                ProofStep::EqualityReflexivity { variable: var(0) },
+                ProofStep::Generalization {
+                    premise: 0,
+                    variable: var(0),
+                },
+            ];
+            for index in 0..count {
+                steps.push(ProofStep::Generalization {
+                    premise: index + 1,
+                    variable: var(17 + index),
+                });
+            }
+            let root = (steps.len() - 1) as u32;
+            let bridge = steps.len() as u32;
+            steps.push(ProofStep::Simplification {
+                antecedent: consequence.into(),
+                consequent: p.clone().into(),
+            });
+            steps.push(ProofStep::ModusPonens {
+                premise: root,
+                implication: bridge,
+            });
+            let _ = register(&mut state, steps);
+        }
+        let _ = lift_two_premises(&mut state, &q1, &q2, fact_steps(&unresolved()));
+        let alias = normalize_and_check_with_state(
+            ProofCertificate::new(vec![ProofStep::ProofReference { proof_id: seed }]).unwrap(),
+            &state,
+        )
+        .unwrap();
+        state.register_proof_for_replication(alias).unwrap();
+        states.push(state);
+    }
+    assert_eq!(states[0].snapshot_id(), states[1].snapshot_id());
+    let first = decision(&target, &states[0], &[], &PrefilterPolicy::default());
+    let second = decision(&target, &states[1], &[], &PrefilterPolicy::default());
+    assert_eq!(first, second);
+    assert_eq!(first.reason, Some(RejectionReason::KnownProof));
+    let certificate = verify_deduction(&first, &states[0], &target);
+    assert_eq!(first.deduction.as_ref().unwrap().original_proofs().len(), 4);
+    assert_eq!(
+        certificate
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, ProofStep::ModusPonens { .. }))
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn dynamic_mp_large_intermediate_is_not_filtered_by_question_input_limit() {
+    let mut state = ArtifactState::new();
+    let (_, p) = equality(&mut state);
+    let mut large = unresolved();
+    for _ in 0..9 {
+        large = Formula::implies(large.clone(), large);
+    }
+    let (_, bridge) = register(
+        &mut state,
+        vec![ProofStep::Simplification {
+            antecedent: p.clone().into(),
+            consequent: large.into(),
+        }],
+    );
+    let (_, intermediate) = bridge.implication_parts().unwrap();
+    assert!(
+        AssessmentQuestion::new(FOUNDATION_ID, &intermediate, b"large target", &[], None).is_err()
+    );
+    let target = Formula::for_all(var(19), p.clone());
+    let target_steps = vec![
+        ProofStep::EqualityReflexivity { variable: var(0) },
+        ProofStep::Generalization {
+            premise: 0,
+            variable: var(0),
+        },
+        ProofStep::Generalization {
+            premise: 1,
+            variable: var(19),
+        },
+        ProofStep::Simplification {
+            antecedent: target.clone().into(),
+            consequent: intermediate.into(),
+        },
+        ProofStep::ModusPonens {
+            premise: 2,
+            implication: 3,
+        },
+    ];
+    let _ = register(&mut state, target_steps);
+    let result = decision(&target, &state, &[], &PrefilterPolicy::default());
+    assert_eq!(result.reason, Some(RejectionReason::KnownProof));
+    let _ = verify_deduction(&result, &state, &target);
+}
+
+#[test]
+fn iterative_mp_long_constant_depth_chain_certifies_or_explicitly_exhausts() {
+    let mut state = ArtifactState::new();
+    let seed_pattern = patterned(0);
+    let (_, seed) = register(&mut state, fact_steps(&seed_pattern));
+    let mut previous = seed;
+    for index in 1..=96 {
+        let (_, bridge) = bridge_from_fact(&mut state, &previous, &patterned(index));
+        previous = bridge.implication_parts().unwrap().1;
+    }
+    let before = state.snapshot_id();
+    let policy = PrefilterPolicy::default();
+    let result = decision(&previous, &state, &[], &policy);
+    assert_eq!(result.reason, Some(RejectionReason::KnownProof));
+    let certificate = verify_deduction(&result, &state, &previous);
+    assert_eq!(
+        certificate
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, ProofStep::ModusPonens { .. }))
+            .count(),
+        96
+    );
+    assert_eq!(
+        result.deduction.as_ref().unwrap().original_proofs().len(),
+        97
+    );
+    assert_eq!(state.snapshot_id(), before);
+    let mut limited = policy;
+    limited.limits.operations = 32;
+    let exhausted = decision(&previous, &state, &[], &limited);
+    assert_eq!(exhausted.reason, Some(RejectionReason::ExecutionLimit));
+    assert!(exhausted.deduction.is_none());
+    assert_eq!(state.snapshot_id(), before);
 }

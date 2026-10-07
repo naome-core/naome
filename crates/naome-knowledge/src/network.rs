@@ -141,8 +141,9 @@ struct Node {
 }
 
 pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
-    let (handle, inbox) = crate::question::channel();
+    let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
+    drop(admin);
     let (sender, commands) = mpsc::channel(8);
     // Preserve the existing CLI input reader only for the CLI-oriented wrapper.
     std::thread::spawn(move || read_commands(sender));
@@ -150,7 +151,7 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
         config,
         test_controls,
         inbox,
-        |_| async { Err("local question input is closed".into()) },
+        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
         commands,
     )
     .await
@@ -173,14 +174,34 @@ where
 {
     let (sender, commands) = mpsc::channel(8);
     drop(sender);
-    run_inner(config, test_controls, inbox, interest, commands).await
+    run_inner(config, test_controls, inbox, Some(interest), commands).await
+}
+
+/// Runs local question intake without an interest provider. The formal result
+/// remains available to assessment; admission reports NotInserted/NotRun.
+/// Embeddings must explicitly supply positive selection to admit a question.
+pub async fn run_with_questions_without_interest(
+    config: Config,
+    test_controls: bool,
+    inbox: crate::question::QuestionInbox,
+) -> Result<(), String> {
+    let (sender, commands) = mpsc::channel(8);
+    drop(sender);
+    run_inner(
+        config,
+        test_controls,
+        inbox,
+        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
+        commands,
+    )
+    .await
 }
 
 pub(crate) async fn run_inner<F, Fut>(
     config: Config,
     test_controls: bool,
     mut inbox: crate::question::QuestionInbox,
-    interest: F,
+    interest: Option<F>,
     mut commands: mpsc::Receiver<Result<Value, String>>,
 ) -> Result<(), String>
 where
