@@ -8,9 +8,9 @@ use naome_checker::{
 use naome_foundation::{Formula, FreeVariable};
 use naome_proof::{ArtifactId, ArtifactPayload, ProofCertificate, ProofStep};
 
-const HELPER_H: &str = include_str!("../../../examples/state-workflow/helper-h.nao");
-const SOLUTION_A: &str = include_str!("../../../examples/state-workflow/solution-a.nao");
-const SOLUTION_B: &str = include_str!("../../../examples/state-workflow/solution-b.nao");
+const HELPER_H: &str = include_str!("fixtures/state-workflow/helper-h.nao");
+const SOLUTION_A: &str = include_str!("fixtures/state-workflow/solution-a.nao");
+const SOLUTION_B: &str = include_str!("fixtures/state-workflow/solution-b.nao");
 fn check_exact_bytes(bytes: &[u8], state: &ArtifactState) -> CheckedProof {
     let original = ProofCertificate::from_canonical_bytes(bytes).unwrap();
     assert_eq!(original.to_canonical_bytes(), bytes);
@@ -129,8 +129,8 @@ fn state_mvp_b_rechecks_from_exported_helper_bytes_without_original_store() {
 
 #[test]
 fn state_mvp_original_duplicate_and_replaced_b_are_both_actually_valid() {
-    let duplicate_source = include_str!("../../../examples/state-workflow/helper-h-duplicate.nao");
-    let original_source = include_str!("../../../examples/state-workflow/solution-b-original.nao");
+    let duplicate_source = include_str!("fixtures/state-workflow/helper-h-duplicate.nao");
+    let original_source = include_str!("fixtures/state-workflow/solution-b-original.nao");
     let (old, helper) = selected_source(HELPER_H);
     let (staged, duplicate) = selected_source(duplicate_source);
     assert_eq!(helper.statement_id(), duplicate.statement_id());

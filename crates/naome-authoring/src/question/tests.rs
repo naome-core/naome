@@ -260,7 +260,7 @@ fn checked_proof_matches_exact_targets_with_original_negation_orientation() {
         checked
     }
 
-    let proof = checked(include_str!("../../../../examples/self-equality.nao"));
+    let proof = checked(include_str!("../../tests/fixtures/self-equality.nao"));
     let question = compile("forall(x,equal(x,x))");
     let alpha = compile("forall(y,equal(y,y))");
     let negative = compile("not_(forall(x,equal(x,x)))");
@@ -283,7 +283,7 @@ fn checked_proof_matches_exact_targets_with_original_negation_orientation() {
     );
 
     let unrelated = checked(include_str!(
-        "../../../../examples/implication-identity.nao"
+        "../../tests/fixtures/implication-identity.nao"
     ));
     assert!(question.classify_checked_proof(&unrelated).is_err());
     let unrelated_question = compile("forall(x,member(x,x))");

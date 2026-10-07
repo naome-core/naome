@@ -9,8 +9,5 @@ debug/
 __pycache__/
 .DS_Store
 
-# Managed local model runtime, downloaded weights, and private configuration
+# Local proof-network state, private configuration, and generated test evidence
 .local/
-
-# Raw MVP evidence reports stay local or in CI artifacts.
-docs/mvp/evidence/*.json

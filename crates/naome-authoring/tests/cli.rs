@@ -80,7 +80,7 @@ fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources
         ),
     ] {
         let example = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples")
+            .join("tests/fixtures")
             .join(file);
         let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
             .arg("proof")
@@ -104,7 +104,7 @@ fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources
 #[test]
 fn proof_command_emits_the_exact_typed_definition_output() {
     let example =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/reflexive-relation.nao");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reflexive-relation.nao");
     let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
         .arg("proof")
         .arg(example)
@@ -141,7 +141,7 @@ fn compile_failure_is_nonzero_and_emits_no_partial_identity_output() {
 fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
     let source = TemporarySource::new(
         &fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/implication-identity.nao"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/implication-identity.nao"),
         )
         .unwrap()
         .replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)"),
@@ -197,7 +197,7 @@ fn standalone_command_cannot_authorize_definition_dependencies_from_local_files(
         ),
     ] {
         let example = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples")
+            .join("tests/fixtures")
             .join(file);
         let output = run_proof(&example);
 
@@ -352,7 +352,7 @@ fn diagnostic_escapes_path_controls_instead_of_injecting_lines() {
 #[test]
 fn proof_path_is_opaque_even_when_it_matches_a_command_word() {
     let source = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self-equality.nao"),
     )
     .unwrap();
     let source = TemporarySource::named("compile", &source);
@@ -376,7 +376,7 @@ fn proof_path_is_opaque_even_when_it_matches_a_command_word() {
 
 #[test]
 fn legacy_compile_command_is_rejected_without_a_compatibility_alias() {
-    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/self-equality.nao");
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self-equality.nao");
     let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
         .args(["proof", "compile"])
         .arg(example)

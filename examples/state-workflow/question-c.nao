@@ -1,3 +1,0 @@
-# Proof obligation C is exactly helper H, already known after A settles.
-foundation = "naome:zfc"
-statement = forall(x, equal(x, x))
