@@ -196,6 +196,19 @@ impl Formula {
         Some(Self(body))
     }
 
+    /// Returns the two structural parts of an outer implication.
+    /// This projection establishes no inference or mathematical validity.
+    #[must_use]
+    pub fn implication_parts(&self) -> Option<(Self, Self)> {
+        match &self.0 {
+            Node::Implies(antecedent, consequent) => Some((
+                Self(antecedent.as_ref().clone()),
+                Self(consequent.as_ref().clone()),
+            )),
+            _ => None,
+        }
+    }
+
     pub(crate) fn vacuous_for_all(body: Self) -> Self {
         Self(Node::ForAll(Box::new(body.0)))
     }

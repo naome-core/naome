@@ -4,9 +4,9 @@
 //! APPROVE outcome establishes only that the supported deterministic checks
 //! passed against the supplied complete local snapshot.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use naome_foundation::{FOUNDATION_ID, Formula, FreeVariable, Logic};
+use naome_foundation::{FOUNDATION_ID, Formula};
 use naome_proof::{ArtifactId, ProofCertificate, ProofId, ProofStep, StatementId};
 use sha2::{Digest, Sha256};
 
@@ -14,15 +14,16 @@ use crate::{ArtifactState, CheckError, normalize_and_check_with_state, statement
 
 pub type Identity = [u8; 32];
 
-/// Hard ceilings for the complete comparison scope, never a retrieval top-k.
+pub(crate) mod index;
+mod registry;
+pub use registry::QuestionRegistry;
+
+/// Hard limits for one question and the work performed by one assessment.
+/// These impose no total checked-graph or registry cardinality/byte ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AssessmentLimits {
     pub formula_nodes: usize,
-    pub proofs: usize,
-    pub definitions: usize,
-    pub questions: usize,
     pub dependencies: usize,
-    pub comparison_bytes: usize,
     pub operations: usize,
     pub formula_work_bytes: usize,
 }
@@ -30,23 +31,15 @@ pub struct AssessmentLimits {
 impl AssessmentLimits {
     pub const MAXIMUM: Self = Self {
         formula_nodes: 1024,
-        proofs: 1024,
-        definitions: 1024,
-        questions: 256,
         dependencies: 64,
-        comparison_bytes: 1024 * 1024,
         operations: 32_768,
         formula_work_bytes: 64 * 1024 * 1024,
     };
 
-    fn values(self) -> [usize; 8] {
+    fn values(self) -> [usize; 4] {
         [
             self.formula_nodes,
-            self.proofs,
-            self.definitions,
-            self.questions,
             self.dependencies,
-            self.comparison_bytes,
             self.operations,
             self.formula_work_bytes,
         ]
@@ -64,7 +57,7 @@ pub struct ApprovalPolicy {
 impl Default for ApprovalPolicy {
     fn default() -> Self {
         Self {
-            revision: 1,
+            revision: 2,
             rule_set: 1,
             limits: AssessmentLimits::MAXIMUM,
         }
@@ -74,7 +67,7 @@ impl Default for ApprovalPolicy {
 impl ApprovalPolicy {
     pub fn identity(self) -> Identity {
         let mut digest = Sha256::new();
-        digest.update(b"naome:local-question-policy:v1\0");
+        digest.update(b"naome:local-question-policy:v2\0");
         digest.update(self.revision.to_le_bytes());
         digest.update(self.rule_set.to_le_bytes());
         for value in self.limits.values() {
@@ -123,8 +116,9 @@ impl<'a> AssessmentQuestion<'a> {
             return Err(RejectionReason::DependencyLimit);
         }
         let bytes = formula
-            .encode_canonical()
-            .map_err(|_| RejectionReason::InputLimit)?;
+            .encode_canonical_with_node_limit(AssessmentLimits::MAXIMUM.formula_nodes)
+            .map_err(|_| RejectionReason::InputLimit)?
+            .0;
         let mut hash = Sha256::new();
         hash.update(b"naome:local-question-input:v1\0");
         for field in [foundation.as_bytes(), source, bytes.as_slice()] {
@@ -160,7 +154,7 @@ impl<'a> RegisteredQuestion<'a> {
     pub fn new(record: Identity, formula: &'a Formula) -> Result<Self, RejectionReason> {
         formula
             .encode_canonical_with_node_limit(AssessmentLimits::MAXIMUM.formula_nodes)
-            .map_err(|_| RejectionReason::ComparisonLimit)?;
+            .map_err(|_| RejectionReason::InputLimit)?;
         if !formula.is_closed() {
             return Err(RejectionReason::InvalidRegistry);
         }
@@ -168,52 +162,31 @@ impl<'a> RegisteredQuestion<'a> {
     }
 }
 
-/// The receiver supplies its actual checked context and complete registry.
-/// `context` must bind that owning state even when acquisition exceeds limits;
-/// it cannot be chosen by the question sender. No unchecked proof is accepted.
+/// The receiver supplies its actual checked context and complete owned registry.
+/// The owning context cannot be chosen by the question sender. Construction
+/// borrows complete incremental indexes and fingerprints in constant time.
 pub struct KnowledgeSnapshot<'a> {
     identity: Identity,
     artifacts: &'a ArtifactState,
-    questions: &'a [RegisteredQuestion<'a>],
+    questions: &'a QuestionRegistry,
 }
 
 impl<'a> KnowledgeSnapshot<'a> {
-    /// Construction fingerprints the complete registry before tighter policy
-    /// checks. The artifact fingerprint covers every checker-registered object.
     pub fn new(
         context: Identity,
         artifacts: &'a ArtifactState,
-        questions: &'a [RegisteredQuestion<'a>],
-    ) -> Result<Self, RejectionReason> {
-        if questions.len() > AssessmentLimits::MAXIMUM.questions {
-            return Err(RejectionReason::ComparisonLimit);
-        }
-        let mut entries = BTreeMap::new();
-        for entry in questions {
-            let bytes = entry
-                .formula
-                .encode_canonical_with_node_limit(AssessmentLimits::MAXIMUM.formula_nodes)
-                .map_err(|_| RejectionReason::ComparisonLimit)?
-                .0;
-            if !entry.formula.is_closed() || entries.insert(entry.record, bytes).is_some() {
-                return Err(RejectionReason::InvalidRegistry);
-            }
-        }
+        questions: &'a QuestionRegistry,
+    ) -> Self {
         let mut hash = Sha256::new();
-        hash.update(b"naome:local-question-snapshot:v1\0");
+        hash.update(b"naome:local-question-snapshot:v2\0");
         hash.update(context);
         hash.update(artifacts.snapshot_id());
-        hash.update((entries.len() as u64).to_le_bytes());
-        for (record, bytes) in entries {
-            hash.update(record);
-            hash.update((bytes.len() as u64).to_le_bytes());
-            hash.update(bytes);
-        }
-        Ok(Self {
+        hash.update(questions.identity());
+        Self {
             identity: hash.finalize().into(),
             artifacts,
             questions,
-        })
+        }
     }
 
     pub const fn identity(&self) -> Identity {
@@ -232,7 +205,6 @@ pub enum RejectionReason {
     InvalidEvidence,
     InputLimit,
     DependencyLimit,
-    ComparisonLimit,
     ExecutionLimit,
     ExactDuplicate,
     KnownProof,
@@ -255,7 +227,6 @@ impl RejectionReason {
             Self::InvalidEvidence => "INVALID_EVIDENCE",
             Self::InputLimit => "INPUT_LIMIT",
             Self::DependencyLimit => "DEPENDENCY_LIMIT",
-            Self::ComparisonLimit => "COMPARISON_LIMIT",
             Self::ExecutionLimit => "EXECUTION_LIMIT",
             Self::ExactDuplicate => "EXACT_DUPLICATE",
             Self::KnownProof => "KNOWN_PROOF",
@@ -339,7 +310,27 @@ impl Work {
     }
 }
 
-type Known<'a> = BTreeMap<StatementId, (ProofId, &'a Formula)>;
+// A Patricia query/iterator has at most 256 key-bit branches. Charge its
+// worst-case traversal, rather than treating a cache/index hit as free work.
+const INDEX_WORK_BYTES: usize = 256 * 64;
+
+impl Work {
+    fn index(&mut self) -> Result<(), (RejectionReason, &'static str)> {
+        self.charge(INDEX_WORK_BYTES)
+            .map_err(|e| (e, "Q08_EXECUTION"))
+    }
+
+    fn formula(
+        &mut self,
+        bytes: usize,
+        multiplier: usize,
+    ) -> Result<(), (RejectionReason, &'static str)> {
+        let reserved = bytes
+            .checked_mul(multiplier)
+            .ok_or((RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
+        self.charge(reserved).map_err(|e| (e, "Q08_EXECUTION"))
+    }
+}
 
 /// Assesses one question without changing the snapshot or registering inferred
 /// proofs. Every mandatory comparison covers the complete declared snapshot.
@@ -385,57 +376,6 @@ fn evaluate(
     work: &mut Work,
     decision: &mut ApprovalDecision,
 ) -> Result<(), (RejectionReason, &'static str)> {
-    let mut known = Known::new();
-    let mut available = BTreeSet::new();
-    let mut comparison_bytes = 0usize;
-    for (index, (proof, statement, formula, length)) in
-        snapshot.artifacts.proof_conclusions().enumerate()
-    {
-        if index >= policy.limits.proofs {
-            return Err((RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"));
-        }
-        comparison_bytes = comparison_bytes
-            .checked_add(length)
-            .ok_or((RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"))?;
-        if comparison_bytes > policy.limits.comparison_bytes {
-            return Err((RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"));
-        }
-        work.charge(length).map_err(|e| (e, "Q08_EXECUTION"))?;
-        available.insert(ArtifactId::from_proof_id(proof));
-        known.entry(statement).or_insert((proof, formula));
-    }
-    for (index, definition) in snapshot.artifacts.definition_ids().enumerate() {
-        if index >= policy.limits.definitions {
-            return Err((RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"));
-        }
-        work.charge(32).map_err(|e| (e, "Q08_EXECUTION"))?;
-        available.insert(ArtifactId::from_definition_id(definition));
-    }
-    if snapshot.questions.len() > policy.limits.questions {
-        return Err((RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"));
-    }
-    let mut registry = BTreeMap::new();
-    for entry in snapshot.questions {
-        let bytes = entry
-            .formula
-            .encode_canonical_with_node_limit(policy.limits.formula_nodes)
-            .map_err(|_| (RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"))?
-            .0;
-        work.charge(bytes.len()).map_err(|e| (e, "Q08_EXECUTION"))?;
-        comparison_bytes = comparison_bytes
-            .checked_add(bytes.len())
-            .ok_or((RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"))?;
-        if comparison_bytes > policy.limits.comparison_bytes {
-            return Err((RejectionReason::ComparisonLimit, "Q08_COMPLETE_SCOPE"));
-        }
-        if !entry.formula.is_closed()
-            || registry
-                .insert(entry.record, (entry.formula, bytes))
-                .is_some()
-        {
-            return Err((RejectionReason::InvalidRegistry, "Q02_CHECKED_CONTEXT"));
-        }
-    }
     if question.foundation != FOUNDATION_ID {
         return Err((RejectionReason::FoundationMismatch, "Q01_FORMAL_TARGET"));
     }
@@ -444,9 +384,7 @@ fn evaluate(
         .encode_canonical_with_node_limit(policy.limits.formula_nodes)
         .map_err(|_| (RejectionReason::InputLimit, "Q08_INPUT"))?
         .0;
-    work.charge(encoded.len())
-        .map_err(|e| (e, "Q08_EXECUTION"))?;
-    decision.question = Some(statement_id(&encoded));
+    work.formula(encoded.len(), 2)?;
     if !question.formula.is_closed() {
         return Err((RejectionReason::InvalidTarget, "Q01_FORMAL_TARGET"));
     }
@@ -455,56 +393,71 @@ fn evaluate(
     }
     let mut references = BTreeSet::new();
     for id in question.dependencies {
-        work.charge(32).map_err(|e| (e, "Q08_EXECUTION"))?;
+        work.index()?;
         if !references.insert(*id) {
             return Err((RejectionReason::DuplicateDependency, "Q02_DEPENDENCY_LIST"));
         }
-        if !available.contains(id) {
+        if !snapshot.artifacts.question_index.contains_artifact(id) {
             return Err((RejectionReason::MissingDependency, "Q02_CHECKED_CONTEXT"));
         }
     }
-    if let Some(record) = question.registered_record
-        && !registry
-            .get(&record)
-            .is_some_and(|(formula, _)| *formula == question.formula)
-    {
-        return Err((RejectionReason::InvalidRegistry, "Q02_SELF_RECORD"));
+    if let Some(record) = question.registered_record {
+        work.index()?;
+        work.formula(encoded.len(), 2)?;
+        if snapshot.questions.get(&record) != Some(question.formula) {
+            return Err((RejectionReason::InvalidRegistry, "Q02_SELF_RECORD"));
+        }
     }
-    for (record, (formula, bytes)) in &registry {
-        work.charge(bytes.len() + encoded.len())
-            .map_err(|e| (e, "Q08_EXECUTION"))?;
-        if Some(*record) != question.registered_record && *formula == question.formula {
-            decision.related_record = Some(*record);
+    work.index()?;
+    for record in snapshot.questions.records_for(question.question) {
+        work.index()?;
+        work.formula(encoded.len(), 2)?;
+        if Some(record) != question.registered_record
+            && snapshot.questions.get(&record) == Some(question.formula)
+        {
+            decision.related_record = Some(record);
             return Err((RejectionReason::ExactDuplicate, "Q03_CANONICAL_DUPLICATE"));
         }
     }
+    work.formula(encoded.len(), 2)?;
     let negative = Formula::negate(question.formula.clone());
-    for (target, reason) in [
-        (question.formula, RejectionReason::KnownProof),
-        (&negative, RejectionReason::KnownRefutation),
-    ] {
-        if let Some((proof, _)) = lookup(&known, target, work)? {
+    let negative_bytes = negative
+        .encode_canonical()
+        .map_err(|_| (RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
+    let targets = [
+        (
+            question.question,
+            question.formula,
+            RejectionReason::KnownProof,
+        ),
+        (
+            statement_id(&negative_bytes),
+            &negative,
+            RejectionReason::KnownRefutation,
+        ),
+    ];
+    for (target_id, target, reason) in targets {
+        if let Some((proof, _)) = lookup_id(snapshot.artifacts, target_id, target, work)? {
             decision.witness = Some(proof);
             return Err((reason, "Q04_EXACT_ANSWER"));
         }
     }
-    for (premise_id, premise) in known.values() {
-        let premise_bytes = premise
-            .encode_canonical()
-            .map_err(|_| (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))?
-            .len();
-        work.charge(premise_bytes * 4 + encoded.len() * 4)
-            .map_err(|e| (e, "Q08_EXECUTION"))?;
-        for (target, reason) in [
-            (question.formula, RejectionReason::KnownProof),
-            (&negative, RejectionReason::KnownRefutation),
-        ] {
-            let implication = Formula::implies((*premise).clone(), target.clone());
-            if let Some((bridge, _)) = lookup(&known, &implication, work)? {
+    for (target_id, target, reason) in targets {
+        work.index()?;
+        for statement in snapshot.artifacts.question_index.incoming(target_id) {
+            let (bridge, implication, length) = known(snapshot.artifacts, statement, work)?;
+            work.formula(length + encoded.len(), 8)?;
+            let (premise, consequence) = implication
+                .implication_parts()
+                .expect("indexed implication");
+            if consequence != *target {
+                continue;
+            }
+            if let Some((premise_id, _)) = lookup(snapshot.artifacts, &premise, work)? {
                 recheck(
                     vec![
                         ProofStep::ProofReference {
-                            proof_id: *premise_id,
+                            proof_id: premise_id,
                         },
                         ProofStep::ProofReference { proof_id: bridge },
                         ProofStep::ModusPonens {
@@ -516,63 +469,122 @@ fn evaluate(
                     snapshot.artifacts,
                     work,
                 )?;
-                decision.witness = Some(*premise_id);
+                decision.witness = Some(premise_id);
                 decision.supporting_witness = Some(bridge);
                 return Err((reason, "Q04_CHECKED_TRANSFER"));
             }
         }
-        if specialize(
-            *premise_id,
-            premise,
-            question.formula,
-            &negative,
-            snapshot.artifacts,
-            work,
-        )? {
-            decision.witness = Some(*premise_id);
-            return Err((
-                RejectionReason::KnownLemmaInstance,
-                "Q06_CHECKED_UNIVERSAL_INSTANCE",
-            ));
+    }
+    for (target_id, target, _) in targets {
+        work.index()?;
+        for statement in snapshot.artifacts.question_index.instances(target_id) {
+            let (proof, premise, length) = known(snapshot.artifacts, statement, work)?;
+            // Reserve all four projections and their small certificates before
+            // any clone/open/substitution. Relevant bucket exhaustion rejects.
+            work.formula(length + encoded.len(), 64)?;
+            for instance in index::universal_instances(proof, premise) {
+                if instance.formula == *target {
+                    recheck(instance.steps, target, snapshot.artifacts, work)?;
+                    decision.witness = Some(proof);
+                    return Err((
+                        RejectionReason::KnownLemmaInstance,
+                        "Q06_CHECKED_UNIVERSAL_INSTANCE",
+                    ));
+                }
+            }
         }
     }
-    for (record, (formula, bytes)) in &registry {
-        if Some(*record) == question.registered_record {
+    work.index()?;
+    for statement in snapshot
+        .artifacts
+        .question_index
+        .outgoing(question.question)
+    {
+        let (forward_id, forward, length) = known(snapshot.artifacts, statement, work)?;
+        work.formula(length + encoded.len(), 8)?;
+        let (antecedent, related) = forward.implication_parts().expect("indexed implication");
+        if antecedent != *question.formula {
             continue;
         }
-        work.charge(bytes.len() * 4 + encoded.len() * 4)
-            .map_err(|e| (e, "Q08_EXECUTION"))?;
-        let forward = Formula::implies(question.formula.clone(), (*formula).clone());
-        let backward = Formula::implies((*formula).clone(), question.formula.clone());
-        if let (Some((first, _)), Some((second, _))) = (
-            lookup(&known, &forward, work)?,
-            lookup(&known, &backward, work)?,
-        ) {
-            decision.witness = Some(first);
-            decision.supporting_witness = Some(second);
-            decision.related_record = Some(*record);
-            return Err((
-                RejectionReason::ProvenEquivalent,
-                "Q05_CHECKED_MUTUAL_IMPLICATIONS",
-            ));
+        let bytes = related
+            .encode_canonical()
+            .map_err(|_| (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))?;
+        work.index()?;
+        for record in snapshot.questions.records_for(statement_id(&bytes)) {
+            work.index()?;
+            if Some(record) == question.registered_record
+                || snapshot.questions.get(&record) != Some(&related)
+            {
+                continue;
+            }
+            let backward = Formula::implies(related.clone(), question.formula.clone());
+            if let Some((backward_id, _)) = lookup(snapshot.artifacts, &backward, work)? {
+                recheck(
+                    vec![ProofStep::ProofReference {
+                        proof_id: forward_id,
+                    }],
+                    forward,
+                    snapshot.artifacts,
+                    work,
+                )?;
+                recheck(
+                    vec![ProofStep::ProofReference {
+                        proof_id: backward_id,
+                    }],
+                    &backward,
+                    snapshot.artifacts,
+                    work,
+                )?;
+                decision.witness = Some(forward_id);
+                decision.supporting_witness = Some(backward_id);
+                decision.related_record = Some(record);
+                return Err((
+                    RejectionReason::ProvenEquivalent,
+                    "Q05_CHECKED_MUTUAL_IMPLICATIONS",
+                ));
+            }
         }
     }
     Ok(())
 }
 
+fn known<'a>(
+    artifacts: &'a ArtifactState,
+    statement: StatementId,
+    work: &mut Work,
+) -> Result<(ProofId, &'a Formula, usize), (RejectionReason, &'static str)> {
+    work.index()?;
+    work.index()?;
+    artifacts
+        .known_statement(statement)
+        .ok_or((RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))
+}
+
+fn lookup_id<'a>(
+    artifacts: &'a ArtifactState,
+    statement: StatementId,
+    formula: &Formula,
+    work: &mut Work,
+) -> Result<Option<(ProofId, &'a Formula)>, (RejectionReason, &'static str)> {
+    work.index()?;
+    work.index()?;
+    let Some((proof, registered, length)) = artifacts.known_statement(statement) else {
+        return Ok(None);
+    };
+    work.formula(length, 2)?;
+    Ok((registered == formula).then_some((proof, registered)))
+}
+
 fn lookup<'a>(
-    known: &Known<'a>,
+    artifacts: &'a ArtifactState,
     formula: &Formula,
     work: &mut Work,
 ) -> Result<Option<(ProofId, &'a Formula)>, (RejectionReason, &'static str)> {
     let bytes = formula
         .encode_canonical()
         .map_err(|_| (RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
-    work.charge(bytes.len()).map_err(|e| (e, "Q08_EXECUTION"))?;
-    Ok(known
-        .get(&statement_id(&bytes))
-        .copied()
-        .filter(|(_, registered)| *registered == formula))
+    work.formula(bytes.len(), 2)?;
+    lookup_id(artifacts, statement_id(&bytes), formula, work)
 }
 
 fn recheck(
@@ -633,60 +645,6 @@ fn checker_reason(error: &CheckError) -> RejectionReason {
         }
         _ => RejectionReason::InvalidEvidence,
     }
-}
-
-fn specialize(
-    proof_id: ProofId,
-    premise: &Formula,
-    positive: &Formula,
-    negative: &Formula,
-    artifacts: &ArtifactState,
-    work: &mut Work,
-) -> Result<bool, (RejectionReason, &'static str)> {
-    let replacement = FreeVariable::new(0);
-    let mut current = premise.clone();
-    let mut steps = vec![ProofStep::ProofReference { proof_id }];
-    for level in 0..2 {
-        let fresh = FreeVariable::new(2 + level);
-        let Some(body) = current.open_outer_universal(fresh) else {
-            break;
-        };
-        let length = body
-            .encode_canonical()
-            .map_err(|_| (RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?
-            .len();
-        work.charge(length * 16).map_err(|e| (e, "Q08_EXECUTION"))?;
-        let axiom = Logic::universal_instantiation(fresh, replacement, body.clone());
-        let next = Logic::modus_ponens(&current, &axiom)
-            .map_err(|_| (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))?;
-        let previous = (steps.len() - 1) as u32;
-        let implication = steps.len() as u32;
-        steps.push(ProofStep::UniversalInstantiation {
-            variable: fresh,
-            replacement,
-            body: body.into(),
-        });
-        steps.push(ProofStep::ModusPonens {
-            premise: previous,
-            implication,
-        });
-        current = next;
-        if current == *positive || current == *negative {
-            recheck(steps, &current, artifacts, work)?;
-            return Ok(true);
-        }
-        let closed = Logic::generalization(replacement, current.clone());
-        if closed == *positive || closed == *negative {
-            let mut closed_steps = steps.clone();
-            closed_steps.push(ProofStep::Generalization {
-                variable: replacement,
-                premise: (steps.len() - 1) as u32,
-            });
-            recheck(closed_steps, &closed, artifacts, work)?;
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(test)]

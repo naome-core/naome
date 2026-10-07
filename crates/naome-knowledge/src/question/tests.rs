@@ -373,7 +373,10 @@ fn one_entry_prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() 
         "same full inputs reuse the computed APPROVE"
     );
     let registered = question(QUESTION);
-    local.registry.insert(*registered.source_hash(), registered);
+    local
+        .registry
+        .insert(RegisteredQuestion::new(*registered.source_hash(), registered.core()).unwrap())
+        .unwrap();
     let rejected = local.assess(&graph, &input);
     assert_eq!(rejected.reason, Some(RejectionReason::ExactDuplicate));
     assert_eq!(local.assess(&graph, &input), rejected);
@@ -400,4 +403,132 @@ fn one_entry_prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() 
         local.computations, 5,
         "full source changes invalidate even the same canonical question"
     );
+}
+
+fn registry_pattern(index: u32) -> naome_foundation::Formula {
+    use naome_foundation::{Formula, FreeVariable};
+    let x = FreeVariable::new(0);
+    let mut body = Formula::equal(x, x);
+    for bit in 0..11 {
+        let atom = if index & (1 << bit) == 0 {
+            Formula::equal(x, x)
+        } else {
+            Formula::member(x, x)
+        };
+        body = Formula::implies(atom, body);
+    }
+    for _ in 0..4 {
+        body = Formula::implies(body.clone(), body);
+    }
+    Formula::for_all(x, body)
+}
+
+#[tokio::test]
+async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
+    use naome_foundation::Formula;
+    let directory = Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let target = question(QUESTION);
+    let late = graph.author(PROOF).unwrap();
+    let late_id = late.proof_id.clone();
+    let mut index = 0;
+    while graph.ids().len() < 1025 {
+        assert!(index < 2048, "finite unique checked source family");
+        let formula = registry_pattern(index);
+        index += 1;
+        let conclusion = Formula::implies(
+            formula.clone(),
+            Formula::implies(target.core().clone(), formula.clone()),
+        );
+        let source = format!(
+            "foundation = \"naome:zfc\" statement = {} proof: p0 = simplification({}, {}) return p0",
+            conclusion.to_source(),
+            formula.to_source(),
+            target.core().to_source()
+        );
+        let envelope = graph.author(&source).unwrap();
+        if envelope.proof_id < late_id {
+            graph.ingest(envelope, Instant::now()).unwrap();
+        }
+    }
+    graph.ingest(late, Instant::now()).unwrap();
+    assert_eq!(graph.ids().len(), 1026);
+    let root = graph.content_root();
+    let conclusions = graph
+        .checked_context()
+        .proof_conclusions()
+        .map(|(_, _, _, length)| length)
+        .sum::<usize>();
+    assert!(conclusions > 1024 * 1024);
+    drop(graph);
+    let (handle, inbox) = channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let task = tokio::spawn(network::run_with_questions(
+        directory.config(Vec::new()),
+        false,
+        inbox,
+        move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async { Ok(true) }
+        },
+    ));
+    let initial = tokio::time::timeout(Duration::from_secs(30), handle.context())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        initial.checked_proofs, 1026,
+        "real startup recovered and rechecked the entire durable graph"
+    );
+    let solved = handle.assess(question(SOLVED)).await.unwrap();
+    assert_eq!(solved.approval.reason, Some(RejectionReason::KnownProof));
+    assert_eq!(solved.interest, InterestAssessment::NotRun);
+    for index in 0..257 {
+        let source = format!(
+            "foundation = \"naome:zfc\" statement = {}",
+            registry_pattern(index).to_source()
+        );
+        handle.register(question(&source)).await.unwrap().unwrap();
+    }
+    let full = context(&handle).await;
+    assert_eq!(full.registered_questions, 257);
+    assert_ne!(full.snapshot, initial.snapshot);
+    let last = format!(
+        "foundation = \"naome:zfc\" statement = {}",
+        registry_pattern(256).to_source()
+    );
+    let duplicate = handle.assess(question(&last)).await.unwrap();
+    assert_eq!(
+        duplicate.approval.reason,
+        Some(RejectionReason::ExactDuplicate)
+    );
+    assert_eq!(duplicate.interest, InterestAssessment::NotRun);
+    let mut policy = ApprovalPolicy::default();
+    policy.limits.operations = 1;
+    handle.set_policy(policy).await.unwrap();
+    let exhausted = handle.assess(target.clone()).await.unwrap();
+    assert_eq!(
+        exhausted.approval.reason,
+        Some(RejectionReason::ExecutionLimit)
+    );
+    assert_eq!(exhausted.interest, InterestAssessment::NotRun);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    handle.set_policy(ApprovalPolicy::default()).await.unwrap();
+    let approved = handle.assess(target).await.unwrap();
+    assert!(
+        approved.approval.approved(),
+        "irrelevant data beyond former caps must not reject the full scope"
+    );
+    assert_eq!(approved.interest, InterestAssessment::Assessed(true));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        context(&handle).await,
+        full,
+        "assessments leave full graph and registry unchanged"
+    );
+    stop(handle, task).await;
+    let reopened = Graph::open(&directory.0).unwrap();
+    assert_eq!(reopened.content_root(), root);
+    assert_eq!(reopened.ids().len(), 1026);
 }

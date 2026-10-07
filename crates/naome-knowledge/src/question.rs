@@ -5,11 +5,11 @@
 //! neither registers a question nor changes the checked graph. No question
 //! messages, CLI commands or model implementation are introduced here.
 
-use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
+use std::{future::Future, pin::Pin, time::Duration};
 
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::{
-    ApprovalDecision, ApprovalPolicy, AssessmentLimits, AssessmentQuestion, KnowledgeSnapshot,
+    ApprovalDecision, ApprovalPolicy, AssessmentQuestion, KnowledgeSnapshot, QuestionRegistry,
     RegisteredQuestion, RejectionReason, assess_question,
 };
 use naome_foundation::FOUNDATION_ID;
@@ -140,7 +140,7 @@ struct Pending {
 }
 
 pub(crate) struct LocalQuestions<F> {
-    registry: BTreeMap<[u8; 32], CompiledQuestion>,
+    registry: QuestionRegistry,
     policy: ApprovalPolicy,
     provider: F,
     pending: Option<Pending>,
@@ -157,7 +157,7 @@ where
 {
     pub(crate) fn new(provider: F) -> Self {
         Self {
-            registry: BTreeMap::new(),
+            registry: QuestionRegistry::new(),
             policy: ApprovalPolicy::default(),
             provider,
             pending: None,
@@ -167,36 +167,16 @@ where
         }
     }
 
-    fn snapshot<'a>(
-        graph: &'a Graph,
-        records: &'a [RegisteredQuestion<'a>],
-    ) -> KnowledgeSnapshot<'a> {
-        // Only compiled records enter this hard-capped registry. Construction
-        // is complete before any narrower policy limit or early rejection.
-        KnowledgeSnapshot::new(crate::compatibility(), graph.checked_context(), records)
-            .expect("bounded parser-validated local registry")
-    }
-
-    fn records(&self) -> Vec<RegisteredQuestion<'_>> {
-        self.registry
-            .iter()
-            .map(|(record, question)| {
-                RegisteredQuestion::new(*record, question.core())
-                    .expect("compiled closed canonical core")
-            })
-            .collect()
+    fn snapshot<'a>(&'a self, graph: &'a Graph) -> KnowledgeSnapshot<'a> {
+        KnowledgeSnapshot::new(
+            crate::compatibility(),
+            graph.checked_context(),
+            &self.registry,
+        )
     }
 
     fn assess(&mut self, graph: &Graph, question: &CompiledQuestion) -> ApprovalDecision {
-        let records: Vec<_> = self
-            .registry
-            .iter()
-            .map(|(record, question)| {
-                RegisteredQuestion::new(*record, question.core())
-                    .expect("compiled closed canonical core")
-            })
-            .collect();
-        let snapshot = Self::snapshot(graph, &records);
+        let snapshot = self.snapshot(graph);
         let request = AssessmentQuestion::new(
             FOUNDATION_ID,
             question.core(),
@@ -210,11 +190,11 @@ where
         {
             return cached.clone();
         }
+        let mut decision = assess_question(&request, &snapshot, &self.policy);
         #[cfg(test)]
         {
             self.computations += 1;
         }
-        let mut decision = assess_question(&request, &snapshot, &self.policy);
         if question.negation_parity() {
             decision.reason = match decision.reason {
                 Some(RejectionReason::KnownProof) => Some(RejectionReason::KnownRefutation),
@@ -262,17 +242,11 @@ where
                 }
             }
             Command::Register(question, reply) => {
-                let outcome = if self
-                    .registry
-                    .values()
-                    .any(|existing| existing.resolution_id() == question.resolution_id())
-                {
+                let outcome = if self.registry.contains(question.core()) {
                     Err(RejectionReason::ExactDuplicate)
-                } else if self.registry.len() >= AssessmentLimits::MAXIMUM.questions {
-                    Err(RejectionReason::ComparisonLimit)
                 } else {
-                    self.registry.insert(*question.source_hash(), question);
-                    Ok(())
+                    RegisteredQuestion::new(*question.source_hash(), question.core())
+                        .and_then(|entry| self.registry.insert(entry))
                 };
                 let _ = reply.send(outcome);
             }
@@ -281,9 +255,8 @@ where
                 let _ = reply.send(());
             }
             Command::Context(reply) => {
-                let records = self.records();
                 let _ = reply.send(LocalQuestionContext {
-                    snapshot: Self::snapshot(graph, &records).identity(),
+                    snapshot: self.snapshot(graph).identity(),
                     policy: self.policy.identity(),
                     checked_proofs: graph.ids().len(),
                     registered_questions: self.registry.len(),

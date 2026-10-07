@@ -8,9 +8,9 @@ use naome_proof::{
     DerivationId, ProofId, ProofStep, StatementId,
 };
 
-use crate::{CheckedDefinition, CheckedProof};
+use crate::{CheckedDefinition, CheckedProof, question::index::KnowledgeIndex};
 
-mod persistent_map;
+pub(crate) mod persistent_map;
 
 use persistent_map::{Key256, PersistentMap};
 
@@ -26,7 +26,19 @@ macro_rules! impl_key256 {
     };
 }
 
-impl_key256!(ProofId, DerivationId, StatementId, DefinitionId);
+impl_key256!(
+    ProofId,
+    DerivationId,
+    StatementId,
+    DefinitionId,
+    naome_proof::ArtifactId
+);
+
+impl Key256 for [u8; 32] {
+    fn as_key_bytes(&self) -> &[u8; 32] {
+        self
+    }
+}
 
 /// The already checked proofs and definitions selected by one chain state.
 ///
@@ -48,6 +60,7 @@ pub struct ArtifactState {
     derivations: PersistentMap<DerivationId, StatementId>,
     statements: PersistentMap<StatementId, StoredStatement>,
     definitions: PersistentMap<DefinitionId, StoredDefinition>,
+    pub(crate) question_index: KnowledgeIndex,
 }
 
 impl ArtifactState {
@@ -58,6 +71,7 @@ impl ArtifactState {
             derivations: PersistentMap::new(),
             statements: PersistentMap::new(),
             definitions: PersistentMap::new(),
+            question_index: KnowledgeIndex::new(),
         }
     }
 
@@ -147,6 +161,8 @@ impl ArtifactState {
             canonical_conclusion_length,
         } = proof;
 
+        self.question_index
+            .register_proof(proof_id, statement_id, &conclusion);
         self.statements.insert(
             statement_id,
             StoredStatement {
@@ -194,6 +210,11 @@ impl ArtifactState {
     ) -> Result<Box<[u8]>, ArtifactStateError> {
         match self.validate_proof_registration(&proof) {
             Err(ArtifactStateError::DuplicateDerivation { .. }) => {
+                self.question_index.register_proof(
+                    proof.proof_id,
+                    proof.statement_id,
+                    &proof.conclusion,
+                );
                 let inserted = self.proofs.insert(proof.proof_id, proof.derivation_id);
                 debug_assert!(inserted);
                 Ok(proof.normal_form.into_canonical_bytes())
@@ -294,6 +315,7 @@ impl ArtifactState {
             definition_id,
             obligation: _,
         } = definition;
+        self.question_index.register_definition(definition_id);
         let inserted = self
             .definitions
             .insert(definition_id, StoredDefinition { certificate });
@@ -350,6 +372,15 @@ impl ArtifactState {
             canonical_length: statement.canonical_length,
             derivation_id,
         })
+    }
+
+    pub(crate) fn known_statement(
+        &self,
+        statement_id: StatementId,
+    ) -> Option<(ProofId, &Formula, usize)> {
+        let stored = self.statements.get(&statement_id)?;
+        let witness = *self.question_index.witness(statement_id)?;
+        Some((witness, &stored.conclusion, stored.canonical_length))
     }
 
     pub(crate) fn resolve_statement(&self, statement_id: StatementId) -> Option<&Formula> {
