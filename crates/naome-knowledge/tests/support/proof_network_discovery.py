@@ -265,7 +265,7 @@ class DiscoveryDriver(Driver):
                 errors.append(str(error))
         self.summary["cleanup"] = {"all_processes_exited":all(node.process is None or node.process.poll() is not None for node in processes),
             "errors":errors, "process_exit_codes":[node.process.returncode if node.process is not None else None for node in processes],
-            "relay_shutdown":"SIGTERM" if os.name == "posix" else "TerminateProcess"}
+            "relay_shutdown":"SIGTERM"}
         if errors:
             self.summary["result"] = "fail"
         self.summary["artifacts"] = {str(path):digest(path) for path in sorted(self.output.rglob("*"))

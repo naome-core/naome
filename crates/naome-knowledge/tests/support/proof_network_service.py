@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
 import socket
 import sys
@@ -71,8 +70,8 @@ def main():
         driver.summary["cleanup"] = {
             "all_processes_exited": node is None or node.process is None or node.process.poll() is not None,
             "errors": errors,
-            "method": "SIGTERM" if os.name == "posix" else "TerminateProcess",
-            "graceful_shutdown_observed": os.name == "posix" and node is not None and node.process is not None and node.process.returncode == 0,
+            "method": "SIGTERM",
+            "graceful_shutdown_observed": node is not None and node.process is not None and node.process.returncode == 0,
             "exit_code": node.process.returncode if node is not None and node.process is not None else None,
         }
         if errors:

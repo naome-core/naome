@@ -2,10 +2,8 @@
 """Finite four-process proof-network acceptance driver; no inference provider."""
 
 import argparse
-import copy
 import hashlib
 import json
-import os
 from pathlib import Path
 import platform
 import socket
@@ -200,14 +198,10 @@ class Node:
     def stop(self):
         if self.process is None:
             return
-        expected_exit = 0
         if self.process.poll() is None:
             try:
                 if self.process.stdin is None:
-                    # Unix handles SIGTERM gracefully. Windows uses controlled
-                    # TerminateProcess; this case does not claim graceful exit.
                     self.process.terminate()
-                    expected_exit = 0 if os.name == "posix" else 1
                 else:
                     self.command("stop", timeout=3)
                 self.process.wait(timeout=5)
@@ -221,7 +215,7 @@ class Node:
         for thread in self.threads:
             thread.join(timeout=2)
         self.threads = []
-        assert self.process.returncode == expected_exit, f"node {self.index} unexpected stop: {self.process.returncode}"
+        assert self.process.returncode == 0, f"node {self.index} unexpected stop: {self.process.returncode}"
         for stream in [self.process.stdin, self.process.stdout, self.process.stderr]:
             if stream is not None:
                 stream.close()

@@ -175,7 +175,7 @@ impl Node {
                 .insert(peer, now + RECONCILE_INTERVAL);
             match self.swarm.listen_on(address) {
                 Ok(listener) => {
-                    self.relay_listeners.insert(peer, (listener, now));
+                    self.relay_listeners.insert(peer, listener);
                 }
                 Err(error) => emit(
                     json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":error.to_string()}),

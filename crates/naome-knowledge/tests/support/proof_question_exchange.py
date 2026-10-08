@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Finite receiver-first selection evidence through real direct and relay links."""
 import argparse
-import json
 from pathlib import Path
 import time
 import traceback
 
-from proof_network import Node, digest, question_source, source, stored_objects
+from proof_network import digest, question_source, source, stored_objects
 from proof_network_discovery import DiscoveryDriver, Relay, port
 
 
