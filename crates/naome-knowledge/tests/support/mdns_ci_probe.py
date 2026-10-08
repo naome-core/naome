@@ -88,16 +88,17 @@ def watch_driver(arguments, lifeline, receipt):
 
 
 def run_driver(arguments):
-    """Supervise only the mDNS proof fixture in an owned root process group."""
+    """Supervise the two maintained mDNS fixtures in an owned root process group."""
     if (sys.platform != "darwin" or os.geteuid() != 0
             or os.environ.get("GITHUB_ACTIONS") != "true"
             or os.environ.get("NAOME_MDNS_CI_ROOT") != "1"):
         raise ValueError("mDNS CI supervisor requires its explicit hosted root context")
-    driver = Path(__file__).resolve().with_name("proof_network_discovery.py")
-    if not arguments or Path(arguments[0]).resolve() != driver:
-        raise ValueError("supervisor accepts only the repository's proof discovery driver")
+    drivers = {Path(__file__).resolve().with_name(name) for name in
+               ["proof_network_discovery.py", "autonomous_lifecycle.py"]}
+    if not arguments or Path(arguments[0]).resolve() not in drivers:
+        raise ValueError("supervisor accepts only the repository's maintained mDNS drivers")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--binary", type=Path, required=True, help="maintained naome or developer-tools naome-knowledge-dev executable")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=["mdns"], required=True)
     parser.add_argument("--timeout", choices=["180"], required=True)

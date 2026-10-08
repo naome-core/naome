@@ -1,18 +1,18 @@
 #[path = "support/hex_decode.rs"]
 mod hex_decode;
-use hex_decode::hex32;
+use hex_decode::hex_bytes;
 
 #[path = "support/hex_encode.rs"]
 mod hex_encode;
 use hex_encode::hex_string;
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{fs, path::Path};
 
-use naome_authoring::{AUTHORING_SOURCE_MAX_BYTES, QUESTION_SOURCE_MAX_BYTES, compile};
-use naome_proof::{ArtifactId, ProofId};
+use naome_authoring::{
+    AUTHORING_SOURCE_MAX_BYTES, CompileDiagnostic, CompiledArtifact, CompiledQuestion,
+    DiagnosticCode, QUESTION_SOURCE_MAX_BYTES, QuestionError, compile, compile_artifact,
+};
+use naome_proof::ArtifactId;
 
 #[path = "support/golden.rs"]
 mod golden;
@@ -24,10 +24,38 @@ const SELF_EQUAL_ARTIFACT_ID: &str =
     "c4c4e0c00f0df475ae34fe8cff4d2cbe78ecb20c6c7b91ae9509ca537876f796";
 const SELF_EQUAL_DEFINITION_BYTES: &str = "00000000010000000b0000000000000000000000";
 
-static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
+fn fixture(file: &str) -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(file),
+    )
+    .unwrap()
+}
+
+fn diagnostic(source: &str) -> CompileDiagnostic {
+    compile_artifact(source).unwrap_err().diagnostic(source)
+}
+
+fn assert_diagnostic(
+    source: &str,
+    code: DiagnosticCode,
+    position: Option<(usize, usize)>,
+    message: &str,
+) {
+    let diagnostic = diagnostic(source);
+    assert_eq!(diagnostic.code(), code);
+    assert_eq!(
+        diagnostic
+            .primary_position()
+            .map(|position| (position.line(), position.column())),
+        position
+    );
+    assert_eq!(diagnostic.message(), message);
+}
 
 #[test]
-fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources() {
+fn typed_proofs_preserve_exact_primitive_derived_and_bound_identities() {
     for (file, statement_id, derivation_id, proof_id, proof_bytes) in [
         (
             "self-equality.nao",
@@ -79,320 +107,192 @@ fn proof_command_emits_exact_identities_from_primitive_derived_and_bound_sources
             REPLACEMENT_PROOF_BYTES,
         ),
     ] {
-        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(file);
-        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-            .arg("proof")
-            .arg(example)
-            .output()
-            .unwrap();
-
-        assert!(output.status.success(), "{file}: {output:?}");
-        assert!(output.stderr.is_empty(), "{file}: {output:?}");
-        let artifact_id = proof_artifact_id_hex(proof_id);
+        let proof = compile(&fixture(file)).unwrap();
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            format!(
-                "statement_id {statement_id}\nderivation_id {derivation_id}\nproof_id {proof_id}\nartifact_id {artifact_id}\ncanonical_proof {proof_bytes}\n"
-            ),
+            hex_string(proof.statement_id().as_bytes()),
+            statement_id,
+            "{file}"
+        );
+        assert_eq!(
+            hex_string(proof.derivation_id().as_bytes()),
+            derivation_id,
+            "{file}"
+        );
+        assert_eq!(hex_string(proof.proof_id().as_bytes()), proof_id, "{file}");
+        assert_eq!(
+            proof.canonical_proof_bytes(),
+            hex_bytes(proof_bytes),
+            "{file}"
+        );
+        assert_eq!(
+            compile_artifact(&fixture(file)).unwrap().artifact_id(),
+            ArtifactId::from_proof_id(proof.proof_id()),
             "{file}"
         );
     }
 }
 
 #[test]
-fn proof_command_emits_the_exact_typed_definition_output() {
-    let example =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reflexive-relation.nao");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-        .arg("proof")
-        .arg(example)
-        .output()
-        .unwrap();
-
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
+fn typed_definition_preserves_exact_identity_and_bytes() {
+    let CompiledArtifact::Definition(definition) =
+        compile_artifact(&fixture("reflexive-relation.nao")).unwrap()
+    else {
+        panic!("expected the checked relation definition");
+    };
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "definition_id {SELF_EQUAL_DEFINITION_ID}\nartifact_id {SELF_EQUAL_ARTIFACT_ID}\ncanonical_definition {SELF_EQUAL_DEFINITION_BYTES}\n"
-        )
+        hex_string(definition.definition_id().as_bytes()),
+        SELF_EQUAL_DEFINITION_ID
+    );
+    assert_eq!(
+        hex_string(definition.artifact_id().as_bytes()),
+        SELF_EQUAL_ARTIFACT_ID
+    );
+    assert_eq!(
+        definition.canonical_definition_bytes(),
+        hex_bytes(SELF_EQUAL_DEFINITION_BYTES)
     );
 }
 
 #[test]
-fn compile_failure_is_nonzero_and_emits_no_partial_identity_output() {
-    let source = TemporarySource::new("foundation = \"wrong\"");
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "naome: {}:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
-            source.path.display(),
-        )
+fn typed_compile_rejects_the_wrong_foundation() {
+    assert_diagnostic(
+        "foundation = \"wrong\"",
+        DiagnosticCode::FoundationMismatch,
+        Some((1, 14)),
+        "unsupported Foundation identifier; expected \"naome:zfc\"",
     );
 }
 
 #[test]
-fn invalid_modus_ponens_is_nonzero_and_emits_no_partial_identity_output() {
-    let source = TemporarySource::new(
-        &fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/implication-identity.nao"),
-        )
-        .unwrap()
-        .replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)"),
-    );
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "naome: {}:14:5: error[NAO0010]: step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise\n",
-            source.path.display(),
-        )
+fn typed_checker_rejects_invalid_modus_ponens() {
+    assert_diagnostic(
+        &fixture("implication-identity.nao")
+            .replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)"),
+        DiagnosticCode::Check,
+        Some((14, 5)),
+        "step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise",
     );
 }
 
 #[test]
-fn proof_command_has_no_hidden_citation_state() {
-    let source = TemporarySource::new(&format!(
+fn typed_standalone_compilation_has_no_hidden_citation_state() {
+    let source = format!(
         "foundation = \"naome:zfc\" statement = forall(x, equal(x, x)) proof: p0 = cite(\"{PROOF_ID}\") return p0"
-    ));
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let column = fs::read_to_string(&source.path)
-        .unwrap()
-        .find("p0 =")
-        .unwrap()
-        + 1;
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "naome: {}:1:{column}: error[NAO0010]: step \"p0\" references an unknown proof\n",
-            source.path.display(),
-        )
+    );
+    assert_diagnostic(
+        &source,
+        DiagnosticCode::Check,
+        Some((1, source.find("p0 =").unwrap() + 1)),
+        "step \"p0\" references an unknown proof",
     );
 }
 
 #[test]
-fn standalone_command_cannot_authorize_definition_dependencies_from_local_files() {
-    for (file, position, diagnostic) in [
+fn typed_standalone_compilation_cannot_authorize_definition_dependencies() {
+    for (file, code, position, message) in [
         (
             "identity-function.nao",
-            "3:1",
-            "error[NAO0021]: definition obligation statement 31a017582bf7e6314670d35aeb7d206d060a12bc4df139163297a139161e01a1 is absent from selected state",
+            DiagnosticCode::DefinitionCheck,
+            (3, 1),
+            "definition obligation statement 31a017582bf7e6314670d35aeb7d206d060a12bc4df139163297a139161e01a1 is absent from selected state",
         ),
         (
             "reflexive-relation-alias.nao",
-            "4:5",
-            "error[NAO0018]: definition alias is absent from selected chain state",
+            DiagnosticCode::DefinitionNotSelected,
+            (4, 5),
+            "definition alias is absent from selected chain state",
         ),
     ] {
-        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(file);
-        let output = run_proof(&example);
-
-        assert_eq!(output.status.code(), Some(1), "{file}: {output:?}");
-        assert!(output.stdout.is_empty(), "{file}: {output:?}");
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap(),
-            format!("naome: {}:{position}: {diagnostic}\n", example.display()),
-            "{file}"
-        );
+        assert_diagnostic(&fixture(file), code, Some(position), message);
     }
 }
 
 #[test]
-fn legacy_source_syntax_is_rejected_without_a_compatibility_parser() {
-    let source = TemporarySource::new(
+fn typed_compile_rejects_legacy_source_syntax() {
+    assert_diagnostic(
         "foundation \"naome:zfc\"; theorem old { statement (forall x (equal x x)); proof { step p0 = (equality-reflexivity x); result p0; } }",
-    );
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "naome: {}:1:12: error[NAO0002]: expected `=`\n",
-            source.path.display(),
-        )
+        DiagnosticCode::Syntax,
+        Some((1, 12)),
+        "expected `=`",
     );
 }
 
 #[test]
-fn diagnostics_treat_lf_crlf_and_bare_cr_as_one_line_boundary() {
+fn typed_diagnostics_treat_lf_crlf_and_bare_cr_as_one_line_boundary() {
     for line_break in ["\n", "\r\n", "\r"] {
-        let source = TemporarySource::new(&format!("{line_break}foundation = \"wrong\""));
-        let output = run_proof(&source.path);
-
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap(),
-            format!(
-                "naome: {}:2:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
-                source.path.display(),
-            )
+        assert_diagnostic(
+            &format!("{line_break}foundation = \"wrong\""),
+            DiagnosticCode::FoundationMismatch,
+            Some((2, 14)),
+            "unsupported Foundation identifier; expected \"naome:zfc\"",
         );
     }
 }
 
 #[test]
-fn eof_diagnostic_uses_the_next_line_and_an_empty_source_span() {
-    let source = TemporarySource::new("foundation = \"naome:zfc\"\n");
-    let output = run_proof(&source.path);
+fn typed_eof_diagnostic_has_next_line_and_empty_source_span() {
+    let source = "foundation = \"naome:zfc\"\n";
+    assert_diagnostic(
+        source,
+        DiagnosticCode::Syntax,
+        Some((2, 1)),
+        "expected a name",
+    );
+    assert!(diagnostic(source).primary_span().unwrap().is_empty());
+}
 
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "naome: {}:2:1: error[NAO0002]: expected a name\n",
-            source.path.display(),
-        )
+#[test]
+fn typed_checker_diagnostic_retains_source_step_after_dependency_reordering() {
+    let source = "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  a0 = equality_reflexivity(x)\n  a1 = simplification(equal(x, x), equal(x, x))\n  broken_result = modus_ponens(a1, a0)\n  b0 = equality_reflexivity(y)\n  root = modus_ponens(b0, broken_result)\n  return root";
+    assert_diagnostic(
+        source,
+        DiagnosticCode::Check,
+        Some((6, 3)),
+        "step \"broken_result\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise",
     );
 }
 
 #[test]
-fn checker_diagnostic_retains_the_source_step_after_dependency_reordering() {
-    let source = TemporarySource::new(
-        "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  a0 = equality_reflexivity(x)\n  a1 = simplification(equal(x, x), equal(x, x))\n  broken_result = modus_ponens(a1, a0)\n  b0 = equality_reflexivity(y)\n  root = modus_ponens(b0, broken_result)\n  return root",
+fn typed_source_limit_is_global_and_has_no_invented_position() {
+    let source = " ".repeat(AUTHORING_SOURCE_MAX_BYTES + 1);
+    assert_diagnostic(
+        &source,
+        DiagnosticCode::SourceTooLong,
+        None,
+        &format!(
+            "source has {} bytes; the limit is {AUTHORING_SOURCE_MAX_BYTES}",
+            AUTHORING_SOURCE_MAX_BYTES + 1
+        ),
     );
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "naome: {}:6:3: error[NAO0010]: step \"broken_result\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise\n",
-            source.path.display(),
-        )
-    );
+    assert_eq!(diagnostic(&source).primary_span(), None);
 }
 
 #[test]
-fn source_too_long_is_global_and_has_no_invented_position() {
-    let source = TemporarySource::new(&" ".repeat(AUTHORING_SOURCE_MAX_BYTES + 1));
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        format!(
-            "naome: {}: error[NAO0001]: source exceeds the {AUTHORING_SOURCE_MAX_BYTES}-byte limit\n",
-            source.path.display(),
-        )
-    );
-}
-
-#[test]
-fn long_step_name_is_bounded_in_stderr_but_complete_in_its_source_span() {
+fn typed_long_step_name_is_bounded_in_diagnostic_and_complete_in_source_span() {
     let long_name = "x".repeat(8 * 1024);
-    let source_text = format!(
+    let source = format!(
         "foundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\nproof:\n  p0 = equality_reflexivity(x)\n  p1 = generalization({long_name}, x)\n  return p1"
     );
-    let error = compile(&source_text).unwrap_err();
-    let span = error.diagnostic(&source_text).primary_span().unwrap();
-    assert_eq!(&source_text[span.start()..span.end()], long_name);
-
-    let source = TemporarySource::new(&source_text);
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let prefix = format!(
-        "naome: {}:5:23: error[NAO0005]: unknown or forward step \"",
-        source.path.display(),
-    );
-    assert!(stderr.starts_with(&prefix));
-    assert!(stderr.ends_with(&format!("{}...\"\n", "x".repeat(64))));
-    assert_eq!(stderr.len(), prefix.len() + 64 + "...\"\n".len());
-    assert!(!stderr.contains(&long_name));
-    assert_eq!(stderr.bytes().filter(|byte| *byte == b'\n').count(), 1);
-}
-
-#[cfg(unix)]
-#[test]
-fn diagnostic_escapes_path_controls_instead_of_injecting_lines() {
-    let source = TemporarySource::named(
-        "proof\\literal\ninjected\r\u{2028}\u{2029}.nao",
-        "foundation = \"wrong\"",
-    );
-    let output = run_proof(&source.path);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let diagnostic = diagnostic(&source);
+    let span = diagnostic.primary_span().unwrap();
+    assert_eq!(&source[span.start()..span.end()], long_name);
+    assert_eq!(diagnostic.code(), DiagnosticCode::UnknownStep);
     assert_eq!(
-        stderr,
-        format!(
-            "naome: {}/proof\\literal\\ninjected\\r\\u{{2028}}\\u{{2029}}.nao:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
-            source.directory.display(),
-        )
+        diagnostic
+            .primary_position()
+            .map(|position| (position.line(), position.column())),
+        Some((5, 23))
     );
-    assert_eq!(stderr.bytes().filter(|byte| *byte == b'\n').count(), 1);
-    assert!(!stderr.trim_end_matches('\n').contains('\r'));
-    assert!(!stderr.contains('\u{2028}'));
-    assert!(!stderr.contains('\u{2029}'));
-}
-
-#[test]
-fn proof_path_is_opaque_even_when_it_matches_a_command_word() {
-    let source = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self-equality.nao"),
-    )
-    .unwrap();
-    let source = TemporarySource::named("compile", &source);
-
-    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-        .args(["proof", "compile"])
-        .current_dir(&source.directory)
-        .output()
-        .unwrap();
-
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "statement_id {STATEMENT_ID}\nderivation_id {DERIVATION_ID}\nproof_id {PROOF_ID}\nartifact_id {}\ncanonical_proof {PROOF_BYTES}\n",
-            proof_artifact_id_hex(PROOF_ID),
-        )
+        diagnostic.message(),
+        format!("unknown or forward step \"{}...\"", "x".repeat(64))
     );
+    assert!(!diagnostic.message().contains(&long_name));
+    assert!(!diagnostic.message().contains('\n'));
 }
 
 #[test]
-fn legacy_compile_command_is_rejected_without_a_compatibility_alias() {
-    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self-equality.nao");
-    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-        .args(["proof", "compile"])
-        .arg(example)
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "naome: usage: naome proof <proof.nao> | question <question.nao>\n"
-    );
-}
-
-#[test]
-fn question_command_emits_original_source_codec_and_oriented_targets() {
+fn typed_questions_preserve_source_codec_and_oriented_targets() {
     for (formula, source_hash, parity, canonical) in [
         (
             "forall(x,equal(x,x))",
@@ -407,99 +307,222 @@ fn question_command_emits_original_source_codec_and_oriented_targets() {
             "0100000040666f756e646174696f6e203d20226e616f6d653a7a6663220a73746174656d656e74203d206e6f745f28666f72616c6c28782c657175616c28782c782929290a",
         ),
     ] {
-        let text = format!("foundation = \"naome:zfc\"\nstatement = {formula}\n");
-        let source = TemporarySource::new(&text);
-        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-            .arg("question")
-            .arg(&source.path)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        assert!(output.stderr.is_empty(), "{output:?}");
-        let expected = format!(
-            "source_hash {}\nresolution_id 8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf\nnegation_parity {}\ncanonical_core 040001000000000100000000\ncanonical_question {}\n",
-            source_hash, parity, canonical,
+        let question = CompiledQuestion::compile(&format!(
+            "foundation = \"naome:zfc\"\nstatement = {formula}\n"
+        ))
+        .unwrap();
+        assert_eq!(question.source_hash(), &hex_decode::hex32(source_hash));
+        assert_eq!(
+            hex_string(question.resolution_id()),
+            "8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf"
         );
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        assert_eq!(question.negation_parity(), parity);
+        assert_eq!(
+            question.canonical_core(),
+            hex_bytes("040001000000000100000000")
+        );
+        assert_eq!(question.to_canonical_bytes().unwrap(), hex_bytes(canonical));
     }
 }
 
 #[test]
-fn question_command_rejects_free_variables_proofs_and_source_fields() {
-    for text in [
+fn typed_questions_reject_free_variables_proofs_and_source_fields() {
+    for source in [
         "foundation = \"naome:zfc\" statement = equal(x,x)",
         "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: return p",
         "foundation = \"naome:zfc\" assumptions = [] statement = forall(x,equal(x,x))",
         "foundation = \"other\" statement = forall(x,equal(x,x))",
     ] {
-        let source = TemporarySource::new(text);
-        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-            .arg("question")
-            .arg(&source.path)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(output.stdout.is_empty(), "{output:?}");
-        assert!(!output.stderr.is_empty(), "{output:?}");
+        assert!(CompiledQuestion::compile(source).is_err(), "{source}");
     }
 }
 
 #[test]
-fn question_reader_bounds_bytes_before_utf8_decoding() {
-    let source = TemporarySource::new("");
-    let mut bytes = vec![b' '; QUESTION_SOURCE_MAX_BYTES];
-    bytes.push(0xff);
-    fs::write(&source.path, bytes).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-        .arg("question")
-        .arg(&source.path)
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8(output.stderr).unwrap().contains(&format!(
-        "source exceeds the {QUESTION_SOURCE_MAX_BYTES}-byte limit"
-    )));
+fn typed_question_compiler_bounds_source_bytes() {
+    assert_eq!(
+        CompiledQuestion::compile(&" ".repeat(QUESTION_SOURCE_MAX_BYTES + 1)),
+        Err(QuestionError::Limit("question source bytes"))
+    );
 }
 
-struct TemporarySource {
-    directory: PathBuf,
-    path: PathBuf,
-}
+#[cfg(feature = "developer-tools")]
+mod developer_cli {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-fn run_proof(path: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_naome-author"))
-        .arg("proof")
-        .arg(path)
-        .output()
-        .unwrap()
-}
+    static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
-fn proof_artifact_id_hex(proof_id: &str) -> String {
-    let proof_id = ProofId::from_bytes(hex32(proof_id));
-    hex_string(ArtifactId::from_proof_id(proof_id).as_bytes())
-}
-
-impl TemporarySource {
-    fn new(source: &str) -> Self {
-        Self::named("proof.nao", source)
+    fn run(command: &str, path: &Path) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .arg(command)
+            .arg(path)
+            .output()
+            .unwrap()
     }
 
-    fn named(file_name: &str, source: &str) -> Self {
-        let sequence = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
-            "naome-authoring-cli-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).unwrap();
-        let path = directory.join(file_name);
-        fs::write(&path, source).unwrap();
-        Self { directory, path }
+    #[test]
+    fn developer_writer_emits_checked_proof_definition_and_question_fields() {
+        for (file, expected) in [
+            (
+                "self-equality.nao",
+                format!(
+                    "statement_id {STATEMENT_ID}\nderivation_id {DERIVATION_ID}\nproof_id {PROOF_ID}\nartifact_id {}\ncanonical_proof {PROOF_BYTES}\n",
+                    hex_string(
+                        compile_artifact(&fixture("self-equality.nao"))
+                            .unwrap()
+                            .artifact_id()
+                            .as_bytes()
+                    )
+                ),
+            ),
+            (
+                "reflexive-relation.nao",
+                format!(
+                    "definition_id {SELF_EQUAL_DEFINITION_ID}\nartifact_id {SELF_EQUAL_ARTIFACT_ID}\ncanonical_definition {SELF_EQUAL_DEFINITION_BYTES}\n"
+                ),
+            ),
+        ] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(file);
+            let output = run("proof", &path);
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        }
+        let source =
+            TemporarySource::new("foundation = \"naome:zfc\"\nstatement = forall(x,equal(x,x))\n");
+        let output = run("question", &source.path);
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "source_hash 25aa1c064bf74e6eca2ddd89f7bc869e8bfffdc6e697e06b5cb0e666fe2f06db\nresolution_id 8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf\nnegation_parity false\ncanonical_core 040001000000000100000000\ncanonical_question 010000003a666f756e646174696f6e203d20226e616f6d653a7a6663220a73746174656d656e74203d20666f72616c6c28782c657175616c28782c7829290a\n"
+        );
     }
-}
 
-impl Drop for TemporarySource {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.directory);
+    #[test]
+    fn developer_compile_failure_is_nonzero_without_partial_identity_output() {
+        let source = TemporarySource::new("foundation = \"wrong\"");
+        let output = run("proof", &source.path);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!(
+                "naome-author: {}:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
+                source.path.display()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn developer_diagnostic_escapes_path_controls() {
+        let source = TemporarySource::named(
+            "proof\\literal\ninjected\r\u{2028}\u{2029}.nao",
+            "foundation = \"wrong\"",
+        );
+        let output = run("proof", &source.path);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            stderr,
+            format!(
+                "naome-author: {}/proof\\literal\\ninjected\\r\\u{{2028}}\\u{{2029}}.nao:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
+                source.directory.display()
+            )
+        );
+        assert_eq!(stderr.bytes().filter(|byte| *byte == b'\n').count(), 1);
+        assert!(!stderr.trim_end_matches('\n').contains('\r'));
+        assert!(!stderr.contains('\u{2028}'));
+        assert!(!stderr.contains('\u{2029}'));
+    }
+
+    #[test]
+    fn developer_reader_bounds_question_bytes_before_utf8_decoding() {
+        let source = TemporarySource::new("");
+        let mut bytes = vec![b' '; QUESTION_SOURCE_MAX_BYTES];
+        bytes.push(0xff);
+        fs::write(&source.path, bytes).unwrap();
+        let output = run("question", &source.path);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8(output.stderr).unwrap().contains(&format!(
+            "source exceeds the {QUESTION_SOURCE_MAX_BYTES}-byte limit"
+        )));
+    }
+
+    #[test]
+    fn developer_path_is_opaque_when_it_matches_a_command_word() {
+        let source = TemporarySource::named("compile", &fixture("self-equality.nao"));
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .args(["proof", "compile"])
+            .current_dir(&source.directory)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "statement_id {STATEMENT_ID}\nderivation_id {DERIVATION_ID}\nproof_id {PROOF_ID}\nartifact_id {}\ncanonical_proof {PROOF_BYTES}\n",
+                hex_string(
+                    compile_artifact(&fixture("self-equality.nao"))
+                        .unwrap()
+                        .artifact_id()
+                        .as_bytes()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn developer_legacy_compile_command_has_no_compatibility_alias() {
+        let example =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self-equality.nao");
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .args(["proof", "compile"])
+            .arg(example)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            "naome-author: usage: naome-author proof <proof.nao> | question <question.nao>\n"
+        );
+    }
+
+    struct TemporarySource {
+        directory: PathBuf,
+        path: PathBuf,
+    }
+
+    impl TemporarySource {
+        fn new(source: &str) -> Self {
+            Self::named("proof.nao", source)
+        }
+
+        fn named(file_name: &str, source: &str) -> Self {
+            let sequence = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "naome-authoring-cli-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir(&directory).unwrap();
+            let path = directory.join(file_name);
+            fs::write(&path, source).unwrap();
+            Self { directory, path }
+        }
+    }
+
+    impl Drop for TemporarySource {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
     }
 }

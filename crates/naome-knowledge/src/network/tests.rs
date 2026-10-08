@@ -179,6 +179,7 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
             }
         }),
         input,
+        None,
     ));
     tokio::time::timeout(Duration::from_secs(15), final_started.notified())
         .await

@@ -135,6 +135,7 @@ struct InventoryProgress {
     pages: usize,
 }
 struct Node {
+    ready: bool,
     graph: Graph,
     swarm: Swarm<Behaviour>,
     topic: gossipsub::IdentTopic,
@@ -160,6 +161,29 @@ struct Node {
 
 pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
     run_with_interest(config, test_controls, None).await
+}
+
+/// Autonomous ordinary operation owns its control, schedule and interest future.
+/// It never reads stdin or accepts manual developer operations.
+#[cfg(unix)]
+pub(crate) async fn run_autonomous(
+    config: Config,
+    intervals: crate::autonomous::Intervals,
+) -> Result<(), String> {
+    let (handle, admin, inbox) = crate::question::channel();
+    drop(handle);
+    drop(admin);
+    let (sender, commands) = mpsc::channel(8);
+    drop(sender);
+    run_inner(
+        config,
+        false,
+        inbox,
+        Some(crate::mocks::assess_interest),
+        commands,
+        Some(intervals),
+    )
+    .await
 }
 
 /// Explicit local mathematical interest policy for the CLI. Neither selection
@@ -200,6 +224,7 @@ pub async fn run_with_interest(
         selection
             .map(|selection| move |question| std::future::ready(Ok(selection.accepts(&question)))),
         commands,
+        None,
     )
     .await
 }
@@ -222,7 +247,7 @@ where
 {
     let (sender, commands) = mpsc::channel(8);
     drop(sender);
-    run_inner(config, test_controls, inbox, Some(interest), commands).await
+    run_inner(config, test_controls, inbox, Some(interest), commands, None).await
 }
 
 /// Runs local question intake without an interest provider. The formal result
@@ -241,6 +266,7 @@ pub async fn run_with_questions_without_interest(
         inbox,
         None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
         commands,
+        None,
     )
     .await
 }
@@ -251,6 +277,7 @@ pub(crate) async fn run_inner<F, Fut>(
     mut inbox: crate::question::QuestionInbox,
     interest: Option<F>,
     mut commands: mpsc::Receiver<Result<Value, String>>,
+    autonomy: Option<crate::autonomous::Intervals>,
 ) -> Result<(), String>
 where
     F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
@@ -276,6 +303,17 @@ where
     )?)
     .map_err(|error| error.to_string())?;
     let own_id = key.public().to_peer_id();
+    #[cfg(unix)]
+    let control = if autonomy.is_some() {
+        Some(crate::runtime::Control::bind(&config.directory)?)
+    } else {
+        None
+    };
+    let mut autonomous = autonomy.map(|intervals| {
+        use sha2::Digest;
+        let cursor = sha2::Sha256::digest(own_id.to_bytes())[0] as u64;
+        crate::autonomous::Autonomous::new(intervals, cursor)
+    });
     let automatic = config
         .discovery
         .as_ref()
@@ -422,6 +460,7 @@ where
     }
     let enabled = BTreeSet::new();
     let mut node = Node {
+        ready: false,
         graph,
         swarm,
         topic,
@@ -476,6 +515,14 @@ where
                 }
             },
             interest = questions.completed() => questions.finish(&node.graph, interest),
+            socket = crate::runtime::accept(&control) => {
+                let socket = socket?;
+                match control.as_ref().expect("accepted runtime control").respond(socket,node.graph.ids().len(),node.ready).await {
+                    Ok(true) => break,
+                    Ok(false) => {},
+                    Err(error) => emit(json!({"event":"control_rejected","error":error})),
+                }
+            },
             signal = &mut shutdown => { signal?; break; }
         }
         questions.cancel_closed();
@@ -498,11 +545,18 @@ where
             }
         }
         questions.cancel_closed();
+        if let Some(autonomous) = &mut autonomous {
+            let admitted = autonomous.advance(&mut node.graph, &mut questions);
+            node.publish_admitted(&admitted, "mock_producer");
+        }
         node.requests();
         if let Some(error) = node.graph.storage_error() {
             return Err(format!(
                 "durable storage failed; restart must reverify: {error}"
             ));
+        }
+        if let Some(error) = crate::runtime::log_error() {
+            return Err(format!("runtime log failed: {error}"));
         }
     }
     emit(json!({"event":"stopped", "root":hex(&node.graph.content_root())}));
@@ -613,6 +667,9 @@ fn read_commands(sender: mpsc::Sender<Result<Value, String>>) {
 }
 
 pub(crate) fn emit(value: Value) {
+    if crate::runtime::emit_log(&value) {
+        return;
+    }
     println!("{value}");
 }
 
@@ -1074,9 +1131,12 @@ impl Node {
 
     fn event(&mut self, event: SwarmEvent<BehaviourEvent>) -> Result<(), String> {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => emit(
-                json!({"event":"ready","address":address.to_string(), "relayed":discovery::is_relayed(&address)}),
-            ),
+            SwarmEvent::NewListenAddr { address, .. } => {
+                self.ready = true;
+                emit(
+                    json!({"event":"ready","address":address.to_string(), "relayed":discovery::is_relayed(&address)}),
+                );
+            }
             SwarmEvent::ListenerError { listener_id, error } => {
                 if let Some(peer) = self
                     .relay_listeners
@@ -1103,6 +1163,8 @@ impl Node {
                     self.relay_listeners.remove(&peer);
                     self.next_relay_attempt
                         .insert(peer, Instant::now() + RECONCILE_INTERVAL);
+                } else {
+                    return Err("proof listener closed".into());
                 }
             }
             SwarmEvent::ConnectionEstablished {

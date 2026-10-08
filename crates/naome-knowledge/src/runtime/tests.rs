@@ -1,0 +1,240 @@
+use super::*;
+use crate::{Envelope, object::id_bytes};
+use naome_authoring::CompiledQuestion;
+use naome_proof::ProofId;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+struct Directory(PathBuf);
+impl Directory {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "naome-runtime-api-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).unwrap();
+        Self(fs::canonicalize(path).unwrap())
+    }
+}
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn closure() -> (Envelope, Envelope, CompiledQuestion) {
+    let mut producer = Graph::default();
+    let helper = producer
+        .author(
+            &crate::mocks::create_proof(
+                &CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    producer.ingest(helper.clone(), Instant::now()).unwrap();
+    let a = "forall(x,equal(x,x))";
+    let b = "forall(y,member(y,y))";
+    let root=producer.author(&format!("foundation = \"naome:zfc\" statement = implies({b},{a}) proof: p0 = cite(\"{}\") p1 = simplification({a},{b}) p2 = modus_ponens(p0,p1) return p2",helper.proof_id)).unwrap();
+    let question = CompiledQuestion::compile(&format!(
+        "foundation = \"naome:zfc\" statement = implies({b},{a})"
+    ))
+    .unwrap();
+    (helper, root, question)
+}
+
+#[tokio::test]
+async fn status_counts_only_unique_checked_closure_members_running_stopped_and_recovered() {
+    let directory = Directory::new();
+    let (helper, root, question) = closure();
+    let root_id = ProofId::from_bytes(id_bytes(&root.proof_id).unwrap());
+    let mut graph = Graph::open(&directory.0).unwrap();
+    assert_eq!(
+        graph.ingest(root.clone(), Instant::now()).unwrap().status,
+        "waiting"
+    );
+    assert_eq!(graph.ids().len(), 0);
+    let incomplete = [(root_id, root.clone().prepare().unwrap())].into();
+    assert!(graph.prepare_batch(root_id, incomplete, &question).is_err());
+    drop(graph);
+    assert_eq!(
+        stopped_status(&directory.0).await.unwrap(),
+        Status {
+            running: false,
+            accepted_proofs: 0
+        }
+    );
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let candidates = [
+        (root_id, root.clone().prepare().unwrap()),
+        (helper_id, helper.clone().prepare().unwrap()),
+    ]
+    .into();
+    let batch = graph.prepare_batch(root_id, candidates, &question).unwrap();
+    assert!(
+        graph.ids().is_empty(),
+        "checked staging has no published count"
+    );
+    graph.persist_batch(root_id, &batch).unwrap();
+    assert_eq!(graph.apply_batch(batch).len(), 2);
+    assert_eq!(
+        graph.ingest(root.clone(), Instant::now()).unwrap().status,
+        "duplicate"
+    );
+    assert_eq!(
+        graph.ingest(helper.clone(), Instant::now()).unwrap().status,
+        "duplicate"
+    );
+    let mut invalid = root.clone();
+    invalid.proof = "ff".into();
+    assert!(graph.ingest(invalid, Instant::now()).is_err());
+    assert_eq!(graph.ids().len(), 2);
+    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
+    let (served, response) = tokio::join!(
+        async {
+            let (stream, _) = control.listener.accept().await.unwrap();
+            control
+                .respond(stream, graph.ids().len(), true)
+                .await
+                .unwrap()
+        },
+        request(&directory.0, Operation::Status, None)
+    );
+    assert!(!served);
+    assert_eq!(
+        response.unwrap().unwrap(),
+        Status {
+            running: true,
+            accepted_proofs: 2
+        }
+    );
+    drop(control);
+    drop(graph);
+    assert_eq!(
+        status(&directory.0).await.unwrap(),
+        Status {
+            running: false,
+            accepted_proofs: 2
+        }
+    );
+    let recovered = Graph::open(&directory.0).unwrap();
+    assert_eq!(
+        recovered
+            .ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [helper_id, root_id].into()
+    );
+    drop(recovered);
+    let batch = fs::read_dir(directory.0.join("objects/batches"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::write(batch.join(format!("{}.json", helper.proof_id)), b"{}").unwrap();
+    assert!(
+        status(&directory.0).await.is_err(),
+        "corrupt durable content cannot return a proof count"
+    );
+}
+
+#[test]
+fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events() {
+    let directory = Directory::new();
+    for name in ["node.log", "node.log.previous"] {
+        let mut file = File::create(directory.0.join(name)).unwrap();
+        let line = b"{\"event\":\"historical\"}\n";
+        for _ in 0..3 * MAX_LOG_BYTES as usize / line.len() {
+            file.write_all(line).unwrap();
+        }
+    }
+    let mut log = Log::open(&directory.0).unwrap();
+    for _ in 0..4 {
+        log.write(&serde_json::json!({"event":"bounded","detail":"x".repeat(900*1024)}))
+            .unwrap();
+    }
+    assert!(
+        log.write(&serde_json::json!({"detail":"x".repeat(MAX_LOG_BYTES as usize)}))
+            .is_err()
+    );
+    for name in ["node.log", "node.log.previous"] {
+        let path = directory.0.join(name);
+        assert!(path.metadata().unwrap().len() <= MAX_LOG_BYTES);
+        for line in fs::read_to_string(path).unwrap().lines() {
+            let _: serde_json::Value = serde_json::from_str(line).unwrap();
+        }
+    }
+}
+
+#[test]
+fn diagnostic_symlinks_cannot_modify_a_foreign_file() {
+    let directory = Directory::new();
+    let foreign = Directory::new();
+    let destination = foreign.0.join("unrelated.data");
+    let original = vec![b'x'; MAX_LOG_BYTES as usize + 1024];
+    fs::write(&destination, &original).unwrap();
+    std::os::unix::fs::symlink(&destination, directory.0.join("node.log")).unwrap();
+    assert!(Log::open(&directory.0).is_err());
+    assert_eq!(fs::read(&destination).unwrap(), original);
+    fs::remove_file(directory.0.join("node.log")).unwrap();
+    std::os::unix::fs::symlink(&destination, directory.0.join("node.log.previous")).unwrap();
+    assert!(Log::open(&directory.0).is_err());
+    assert_eq!(fs::read(&destination).unwrap(), original);
+}
+
+#[tokio::test]
+async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_never_rotates() {
+    let directory = Directory::new();
+    let question = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let proof = graph
+        .author(&crate::mocks::create_proof(&question).unwrap())
+        .unwrap();
+    graph.ingest(proof.clone(), Instant::now()).unwrap();
+    drop(graph);
+    initialize(&directory.0).unwrap();
+    let key = fs::read(directory.0.join("identity.key")).unwrap();
+    let receipt = fs::read(directory.0.join("identity.json")).unwrap();
+    fs::remove_file(directory.0.join("identity.key")).unwrap();
+    assert!(
+        initialize(&directory.0)
+            .unwrap_err()
+            .contains("refusing to replace")
+    );
+    assert!(!directory.0.join("identity.key").exists());
+    assert_eq!(
+        fs::read(directory.0.join("identity.json")).unwrap(),
+        receipt
+    );
+    assert_eq!(
+        stopped_status(&directory.0).await.unwrap().accepted_proofs,
+        1
+    );
+    let other = identity::Keypair::generate_ed25519()
+        .to_protobuf_encoding()
+        .unwrap();
+    fs::write(directory.0.join("identity.key"), other).unwrap();
+    assert!(
+        initialize(&directory.0)
+            .unwrap_err()
+            .contains("does not match")
+    );
+    fs::write(directory.0.join("identity.key"), b"invalid").unwrap();
+    assert!(initialize(&directory.0).is_err());
+    fs::write(directory.0.join("identity.key"), &key).unwrap();
+    initialize(&directory.0).unwrap();
+    assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
+    assert_eq!(
+        fs::read(
+            directory
+                .0
+                .join("objects")
+                .join(format!("{}.json", proof.proof_id))
+        )
+        .unwrap(),
+        serde_json::to_vec(&proof).unwrap()
+    );
+}

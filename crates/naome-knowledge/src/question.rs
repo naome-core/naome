@@ -408,6 +408,17 @@ where
         self.pending.is_none()
     }
 
+    /// Reassess only owner-admitted unanswered work before calling a producer.
+    /// Stored answers and current policy always precede mock candidate creation.
+    pub(crate) fn generation_decision(
+        &mut self,
+        graph: &Graph,
+        question: &CompiledQuestion,
+    ) -> PrefilterDecision {
+        let record = self.exchange_record(question);
+        self.evaluate_record(graph, question, false, record)
+    }
+
     pub(crate) fn begin_exchange(
         &mut self,
         graph: &Graph,

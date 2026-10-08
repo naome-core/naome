@@ -283,7 +283,7 @@ class DiscoveryDriver(Driver):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", required=True, type=Path)
+    parser.add_argument("--binary", required=True, type=Path, help="developer-tools naome-knowledge-dev executable")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--mode", required=True, choices=["mdns", "dht", "relay", "upgrade"])

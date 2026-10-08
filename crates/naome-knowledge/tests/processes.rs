@@ -2,140 +2,38 @@ use std::{path::PathBuf, process::Command};
 
 static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(unix)]
 #[test]
-fn four_process_proof_graph_partition_dependencies_and_restart() {
-    run_driver(false, false);
-}
-
-#[test]
-fn ten_page_inventory_fetches_every_checked_object() {
-    run_driver(true, false);
-}
-
-#[test]
-fn closed_stdin_keeps_autonomous_production_and_listener_alive() {
-    run_driver(false, true);
-}
-
-#[test]
-fn mdns_discovers_unlisted_lan_nodes_and_retires_stale_contacts() {
-    run_discovery("mdns");
-}
-
-#[test]
-fn bootstrap_dht_discovers_participants_and_recovers_late_and_restarted_nodes() {
-    run_discovery("dht");
-}
-
-#[test]
-fn relay_circuit_transfers_checked_proofs_without_direct_shortcuts() {
-    run_discovery("relay");
-}
-
-#[test]
-fn dcutr_reports_a_real_local_circuit_upgrade_outcome() {
-    run_discovery("upgrade");
-}
-
-#[test]
-fn direct_exchange_selects_questions_before_payloads_and_commits_parent_helpers() {
-    run_question_exchange("direct");
-}
-
-#[test]
-fn relay_exchange_selects_questions_before_payloads_and_commits_parent_helpers() {
-    run_question_exchange("relay");
-}
-
-fn run_question_exchange(mode: &str) {
-    let _active = ACTIVE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let directory = root.join(".local/proof-network").join(format!(
-        "questions-{mode}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let output = Command::new("python3")
-        .arg(root.join("crates/naome-knowledge/tests/support/proof_question_exchange.py"))
-        .args([
-            "--binary",
-            env!("CARGO_BIN_EXE_naome-knowledge"),
-            "--output",
-        ])
-        .arg(&directory)
-        .args([
-            "--mode",
-            mode,
-            "--timeout",
-            "90",
-            "--profile",
-            if cfg!(debug_assertions) {
-                "test"
-            } else {
-                "release"
-            },
-        ])
-        .output()
-        .expect("run bounded real question exchange process driver");
-    assert!(
-        output.status.success(),
-        "question exchange evidence at {}\n{}\n{}",
-        directory.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn ordinary_lifecycle_generates_exchanges_and_recovers_checked_proofs() {
+    run_autonomous("direct");
 }
 
 #[cfg(unix)]
 #[test]
-fn one_shot_signals_stop_busy_nodes_and_relays() {
-    let _active = ACTIVE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let directory = root.join(".local/proof-network").join(format!(
-        "shutdown-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let output = Command::new("python3")
-        .arg(root.join("crates/naome-knowledge/tests/support/proof_network_shutdown.py"))
-        .args([
-            "--binary",
-            env!("CARGO_BIN_EXE_naome-knowledge"),
-            "--output",
-        ])
-        .arg(&directory)
-        .args([
-            "--timeout",
-            "45",
-            "--profile",
-            if cfg!(debug_assertions) {
-                "test"
-            } else {
-                "release"
-            },
-        ])
-        .output()
-        .expect("run finite POSIX shutdown driver");
-    assert!(
-        output.status.success(),
-        "shutdown evidence at {}\n{}\n{}",
-        directory.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn ordinary_autonomous_nodes_exchange_after_mdns_discovery() {
+    run_autonomous("mdns");
 }
 
-fn run_discovery(mode: &str) {
+#[cfg(unix)]
+#[test]
+fn ordinary_autonomous_nodes_exchange_after_bootstrap_dht_discovery() {
+    run_autonomous("dht");
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+fn ordinary_autonomous_nodes_exchange_over_configured_relay() {
+    run_autonomous("relay");
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+fn ordinary_driver_loss_guardian_stops_owned_daemon_and_relay() {
+    run_autonomous("guardian-probe");
+}
+
+#[cfg(unix)]
+fn run_autonomous(mode: &str) {
     let _active = ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -144,15 +42,56 @@ fn run_discovery(mode: &str) {
         .canonicalize()
         .expect("resolve the checked-out repository");
     let directory = root.join(".local/proof-network").join(format!(
-        "{mode}-{}-{}",
+        "autonomous-{mode}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    let mut command = if mode == "mdns" && std::env::var("NAOME_MDNS_CI_ROOT").as_deref() == Ok("1")
-    {
+    let mut command = python_driver(&root, mode);
+    command
+        .arg(root.join("crates/naome-knowledge/tests/support/autonomous_lifecycle.py"))
+        .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
+        .arg(&directory)
+        .args([
+            "--timeout",
+            match mode {
+                "mdns" => "180",
+                "direct" => "60",
+                "guardian-probe" => "45",
+                _ => "90",
+            },
+            "--profile",
+            if cfg!(debug_assertions) {
+                "test"
+            } else {
+                "release"
+            },
+        ]);
+    if mode == "guardian-probe" {
+        command.arg("--guardian-loss-probe");
+    } else {
+        command.args(["--mode", mode]);
+    }
+    #[cfg(feature = "developer-tools")]
+    if matches!(mode, "relay" | "guardian-probe") {
+        command.args(["--relay-binary", env!("CARGO_BIN_EXE_naome-knowledge-dev")]);
+    }
+    let output = command
+        .output()
+        .expect("run bounded ordinary autonomous lifecycle process driver");
+    assert!(
+        output.status.success(),
+        "autonomous {mode} lifecycle evidence at {}\n{}\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn python_driver(root: &std::path::Path, mode: &str) -> Command {
+    if mode == "mdns" && std::env::var("NAOME_MDNS_CI_ROOT").as_deref() == Ok("1") {
         if !cfg!(target_os = "macos") {
             panic!("privileged mDNS fixture is limited to hosted macOS CI");
         }
@@ -189,96 +128,253 @@ fn run_discovery(mode: &str) {
         command
     } else {
         Command::new(if cfg!(windows) { "python" } else { "python3" })
-    };
-    let output = command
-        .arg(root.join("crates/naome-knowledge/tests/support/proof_network_discovery.py"))
-        .args([
-            "--binary",
-            env!("CARGO_BIN_EXE_naome-knowledge"),
-            "--output",
-        ])
-        .arg(&directory)
-        .args([
-            "--mode",
-            mode,
-            "--timeout",
-            "180",
-            "--profile",
-            if cfg!(debug_assertions) {
-                "test"
-            } else {
-                "release"
-            },
-        ])
-        .output()
-        .expect("run finite discovery process driver");
-    assert!(
-        output.status.success(),
-        "{mode} process evidence at {}\n{}\n{}",
-        directory.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    }
 }
 
-fn run_driver(large_inventory: bool, closed_input: bool) {
-    // Each measured trial owns its process/IO workload. Running both drivers
-    // concurrently adds two nodes to the four-node fixture and contaminates
-    // its bounded connection/recovery deadlines on shared CI runners.
-    let _active = ACTIVE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let directory = root.join(".local/proof-network").join(format!(
-        "{}-{}-{}",
-        if closed_input { "service" } else { "test" },
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let python = if cfg!(windows) { "python" } else { "python3" };
-    let mut command = Command::new(python);
-    command
-        .arg(root.join(if closed_input {
-            "crates/naome-knowledge/tests/support/proof_network_service.py"
-        } else {
-            "crates/naome-knowledge/tests/support/proof_network.py"
-        }))
-        .args([
-            "--binary",
-            env!("CARGO_BIN_EXE_naome-knowledge"),
-            "--output",
-        ])
-        .arg(&directory)
-        .args([
-            "--timeout",
-            if large_inventory {
-                "240"
-            } else if closed_input {
-                "30"
-            } else {
-                "120"
-            },
-            "--profile",
-            if cfg!(debug_assertions) {
-                "test"
-            } else {
-                "release"
-            },
-        ]);
-    if large_inventory {
-        command.arg("--large-inventory");
+#[cfg(feature = "developer-tools")]
+mod developer_transport {
+    use super::*;
+
+    #[test]
+    fn four_process_proof_graph_partition_dependencies_and_restart() {
+        run_driver(false, false);
     }
-    let output = command
-        .output()
-        .expect("run finite Python standard-library process driver");
-    assert!(
-        output.status.success(),
-        "four-process evidence at {}\n{}\n{}",
-        directory.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+
+    #[test]
+    fn ten_page_inventory_fetches_every_checked_object() {
+        run_driver(true, false);
+    }
+
+    #[test]
+    fn closed_stdin_keeps_autonomous_production_and_listener_alive() {
+        run_driver(false, true);
+    }
+
+    #[test]
+    fn mdns_discovers_unlisted_lan_nodes_and_retires_stale_contacts() {
+        run_discovery("mdns");
+    }
+
+    #[test]
+    fn bootstrap_dht_discovers_participants_and_recovers_late_and_restarted_nodes() {
+        run_discovery("dht");
+    }
+
+    #[test]
+    fn relay_circuit_transfers_checked_proofs_without_direct_shortcuts() {
+        run_discovery("relay");
+    }
+
+    #[test]
+    fn dcutr_reports_a_real_local_circuit_upgrade_outcome() {
+        run_discovery("upgrade");
+    }
+
+    #[test]
+    fn direct_exchange_selects_questions_before_payloads_and_commits_parent_helpers() {
+        run_question_exchange("direct");
+    }
+
+    #[test]
+    fn relay_exchange_selects_questions_before_payloads_and_commits_parent_helpers() {
+        run_question_exchange("relay");
+    }
+
+    fn run_question_exchange(mode: &str) {
+        let _active = ACTIVE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = root.join(".local/proof-network").join(format!(
+            "questions-{mode}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = Command::new("python3")
+            .arg(root.join("crates/naome-knowledge/tests/support/proof_question_exchange.py"))
+            .args([
+                "--binary",
+                env!("CARGO_BIN_EXE_naome-knowledge-dev"),
+                "--output",
+            ])
+            .arg(&directory)
+            .args([
+                "--mode",
+                mode,
+                "--timeout",
+                "90",
+                "--profile",
+                if cfg!(debug_assertions) {
+                    "test"
+                } else {
+                    "release"
+                },
+            ])
+            .output()
+            .expect("run bounded real question exchange process driver");
+        assert!(
+            output.status.success(),
+            "question exchange evidence at {}\n{}\n{}",
+            directory.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_shot_signals_stop_busy_nodes_and_relays() {
+        let _active = ACTIVE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = root.join(".local/proof-network").join(format!(
+            "shutdown-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = Command::new("python3")
+            .arg(root.join("crates/naome-knowledge/tests/support/proof_network_shutdown.py"))
+            .args([
+                "--binary",
+                env!("CARGO_BIN_EXE_naome-knowledge-dev"),
+                "--output",
+            ])
+            .arg(&directory)
+            .args([
+                "--timeout",
+                "45",
+                "--profile",
+                if cfg!(debug_assertions) {
+                    "test"
+                } else {
+                    "release"
+                },
+            ])
+            .output()
+            .expect("run finite POSIX shutdown driver");
+        assert!(
+            output.status.success(),
+            "shutdown evidence at {}\n{}\n{}",
+            directory.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn run_discovery(mode: &str) {
+        let _active = ACTIVE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("resolve the checked-out repository");
+        let directory = root.join(".local/proof-network").join(format!(
+            "{mode}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut command = python_driver(&root, mode);
+        let output = command
+            .arg(root.join("crates/naome-knowledge/tests/support/proof_network_discovery.py"))
+            .args([
+                "--binary",
+                env!("CARGO_BIN_EXE_naome-knowledge-dev"),
+                "--output",
+            ])
+            .arg(&directory)
+            .args([
+                "--mode",
+                mode,
+                "--timeout",
+                "180",
+                "--profile",
+                if cfg!(debug_assertions) {
+                    "test"
+                } else {
+                    "release"
+                },
+            ])
+            .output()
+            .expect("run finite discovery process driver");
+        assert!(
+            output.status.success(),
+            "{mode} process evidence at {}\n{}\n{}",
+            directory.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn run_driver(large_inventory: bool, closed_input: bool) {
+        // Each measured trial owns its process/IO workload. Running both drivers
+        // concurrently adds two nodes to the four-node fixture and contaminates
+        // its bounded connection/recovery deadlines on shared CI runners.
+        let _active = ACTIVE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = root.join(".local/proof-network").join(format!(
+            "{}-{}-{}",
+            if closed_input { "service" } else { "test" },
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let mut command = Command::new(python);
+        command
+            .arg(root.join(if closed_input {
+                "crates/naome-knowledge/tests/support/proof_network_service.py"
+            } else {
+                "crates/naome-knowledge/tests/support/proof_network.py"
+            }))
+            .args([
+                "--binary",
+                env!("CARGO_BIN_EXE_naome-knowledge-dev"),
+                "--output",
+            ])
+            .arg(&directory)
+            .args([
+                "--timeout",
+                if large_inventory {
+                    "240"
+                } else if closed_input {
+                    "30"
+                } else {
+                    "120"
+                },
+                "--profile",
+                if cfg!(debug_assertions) {
+                    "test"
+                } else {
+                    "release"
+                },
+            ]);
+        if large_inventory {
+            command.arg("--large-inventory");
+        }
+        let output = command
+            .output()
+            .expect("run finite Python standard-library process driver");
+        assert!(
+            output.status.success(),
+            "four-process evidence at {}\n{}\n{}",
+            directory.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

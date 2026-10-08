@@ -228,6 +228,7 @@ class Node:
 
 
 class Driver:
+    """Real transport qualification through the explicitly enabled developer harness."""
     def __init__(self, binary, output, timeout, profile):
         self.binary, self.output = binary.resolve(), output.resolve()
         self.deadline = time.monotonic() + timeout
@@ -555,7 +556,7 @@ class Driver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--binary", type=Path, required=True, help="developer-tools naome-knowledge-dev executable")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--profile", default="test")

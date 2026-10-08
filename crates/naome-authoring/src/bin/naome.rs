@@ -14,7 +14,7 @@ use naome_authoring::{
 };
 use naome_proof::ArtifactId;
 
-const USAGE: &str = "usage: naome proof <proof.nao> | question <question.nao>";
+const USAGE: &str = "usage: naome-author proof <proof.nao> | question <question.nao>";
 
 fn main() -> ExitCode {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     match run(&arguments, &mut output) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("naome: {error}");
+            eprintln!("naome-author: {error}");
             ExitCode::from(error.exit_code())
         }
     }
