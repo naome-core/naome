@@ -141,6 +141,93 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
     );
 }
 
+#[tokio::test]
+async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_exit() {
+    let directory = Directory::new();
+    let (helper, _, _) = closure();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    graph.ingest(helper, Instant::now()).unwrap();
+    drop(graph);
+    let mut observations = [
+        Err(nix::errno::Errno::EPERM),
+        Ok(()),
+        Err(nix::errno::Errno::ESRCH),
+    ]
+    .into_iter();
+    let mut observed = 0;
+    let status = wait_for_stop(&directory.0, Instant::now() + LIFECYCLE_TIMEOUT, || {
+        observed += 1;
+        observations.next().expect("unexpected further observation")
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        observed, 3,
+        "neither denied nor live observation proves exit"
+    );
+    assert_eq!(
+        status,
+        Status {
+            running: false,
+            accepted_proofs: 1
+        }
+    );
+}
+
+#[tokio::test]
+async fn stop_fails_closed_when_group_exit_remains_denied_at_the_deadline() {
+    let directory = Directory::new();
+    drop(Graph::open(&directory.0).unwrap());
+    let mut observed = 0;
+    let error = wait_for_stop(
+        &directory.0,
+        Instant::now() + Duration::from_secs(1),
+        || {
+            observed += 1;
+            Err(nix::errno::Errno::EPERM)
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        observed > 1,
+        "denied observation must be retried until the deadline"
+    );
+    assert!(
+        error.contains("process group exit is unconfirmed"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn stop_requires_graph_release_and_revalidation_after_confirmed_group_exit() {
+    let directory = Directory::new();
+    let graph = Graph::open(&directory.0).unwrap();
+    let held = wait_for_stop(&directory.0, Instant::now(), || {
+        Err(nix::errno::Errno::ESRCH)
+    })
+    .await
+    .unwrap_err();
+    assert!(held.contains("knowledge directory already owned"), "{held}");
+    drop(graph);
+    let (helper, _, _) = closure();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    graph.ingest(helper.clone(), Instant::now()).unwrap();
+    drop(graph);
+    let member = directory
+        .0
+        .join("objects")
+        .join(format!("{}.json", helper.proof_id));
+    fs::write(member, b"{}").unwrap();
+    let corrupt = wait_for_stop(&directory.0, Instant::now(), || {
+        Err(nix::errno::Errno::ESRCH)
+    })
+    .await
+    .unwrap_err();
+    assert!(corrupt.starts_with("node did not release its directory:"));
+    assert!(status(&directory.0).await.is_err());
+}
+
 #[test]
 fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events() {
     let directory = Directory::new();

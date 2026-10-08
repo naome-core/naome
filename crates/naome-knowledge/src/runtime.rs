@@ -638,19 +638,32 @@ async fn stop(directory: &Path) -> Result<Status, String> {
         i32::try_from(owned.expect("successful control request has endpoint").pid)
             .map_err(|_| "invalid daemon process identity")?,
     );
-    let deadline = Instant::now() + LIFECYCLE_TIMEOUT;
+    // Stop is nonce-authenticated; this callback only queries group liveness.
+    wait_for_stop(directory, Instant::now() + LIFECYCLE_TIMEOUT, || {
+        nix::sys::signal::killpg(pid, None)
+    })
+    .await
+}
+
+async fn wait_for_stop(
+    directory: &Path,
+    deadline: Instant,
+    mut observe_group: impl FnMut() -> nix::Result<()>,
+) -> Result<Status, String> {
     loop {
-        // This is only a liveness query, never a PID-based termination. A nonce
-        // authenticates Stop; process-group reuse can only fail closed on timeout.
-        let exited = match nix::sys::signal::killpg(pid, None) {
+        let exited = match observe_group() {
             Err(nix::errno::Errno::ESRCH) => true,
+            // A denied query is inconclusive; only a later ESRCH proves exit.
+            Err(nix::errno::Errno::EPERM) => false,
             Ok(()) => false,
             Err(error) => return Err(format!("observe daemon process group: {error}")),
         };
         match stopped_status(directory).await {
             Ok(status) if exited => return Ok(status),
             Ok(_) if Instant::now() >= deadline => {
-                return Err("node directory released but daemon process group still exists".into());
+                return Err(
+                    "node directory released but daemon process group exit is unconfirmed".into(),
+                );
             }
             Ok(_) => tokio::time::sleep(Duration::from_millis(50)).await,
             Err(error) if Instant::now() >= deadline => {
