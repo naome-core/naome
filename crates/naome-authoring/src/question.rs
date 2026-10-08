@@ -1,11 +1,7 @@
 //! Bounded compilation of closed research obligations using Foundation notation.
 //!
-//! The source subset is `foundation = "naome:zfc"`, followed by `statement =`
-//! and one formula. An optional `success = "resolve"` follows the formula.
-//! Primitive and derived calls have exactly the authoring compiler's meaning.
-//! The opt-in `nao 1` frontend also accepts bounded formula bindings and ordered
-//! binder lists. Definitions, assumptions, and proof imports remain unavailable.
-//! Compilation proves well-formedness, not truth.
+//! One bounded headerless question language with optional formula bindings.
+//! Targets use the fixed mathematical Foundation and retain exact logical shape.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -15,10 +11,7 @@ use naome_checker::CheckedProof;
 use naome_foundation::{FORMULA_MAX_DEPTH, FOUNDATION_ID, Formula, FreeVariable};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    CompileDiagnostic, DiagnosticCode, SourceSpan,
-    syntax::{self, SourceSyntax},
-};
+use crate::{CompileDiagnostic, DiagnosticCode, SourceSpan, syntax};
 
 /// Maximum UTF-8 bytes in one formal obligation.
 pub const QUESTION_SOURCE_MAX_BYTES: usize = 16 * 1024;
@@ -70,7 +63,7 @@ impl QuestionCompileError {
     pub const fn diagnostic(&self) -> &CompileDiagnostic {
         &self.diagnostic
     }
-    /// Recovers the compatibility error used by [`CompiledQuestion::compile`].
+    /// Returns the underlying error used by [`CompiledQuestion::compile`].
     pub fn into_error(self) -> QuestionError {
         self.error
     }
@@ -148,40 +141,22 @@ impl CompiledQuestion {
         // At most source.len() leading negations can later be removed.
         // Preflight every expansion against this finite aggregate allowance.
         let parse_nodes = QUESTION_TARGET_MAX_NODES + source.len();
-        let (syntax, offset) = SourceSyntax::header(source).map_err(|offset| {
-            let error = QuestionError::Invalid("question unsupported syntax version");
-            QuestionCompileError {
-                diagnostic: CompileDiagnostic::token(
-                    DiagnosticCode::UnsupportedSyntaxVersion,
-                    "expected the supported syntax header `nao 1`".to_owned(),
-                    source,
-                    offset,
-                ),
-                error,
-            }
-        })?;
         let mut parser = Parser {
             source,
-            offset,
-            token_offset: offset,
-            syntax,
+            offset: 0,
+            token_offset: 0,
             variables: BTreeMap::new(),
             bindings: BTreeMap::new(),
             binding_nodes: 0,
             next_variable: 0,
             maximum_nodes: parse_nodes,
         };
-        let mut statement_span = SourceSpan::point(offset);
+        let mut statement_span = SourceSpan::point(0);
         let parsed = (|| -> Result<Parsed, QuestionError> {
-            if syntax == SourceSyntax::Legacy {
-                parser.word("foundation")?;
-                parser.punctuation(b'=')?;
-                parser.literal("\"naome:zfc\"")?;
-            }
-            if syntax == SourceSyntax::V1 && parser.peek_word("formulas") {
+            if parser.peek_word("let") {
                 parser.formula_bindings()?;
             }
-            parser.word("statement")?;
+            parser.word("goal")?;
             parser.punctuation(b'=')?;
             parser.trivia();
             let start = parser.offset;
@@ -355,8 +330,8 @@ impl CompiledQuestion {
     }
 }
 
-// Preserve the original domain and u64-length framing of pure source/core
-// identities. The historical namespace grants no state or opening authority.
+// Domain-separated source/core identities use u64-length framing and grant
+// no state or opening authority.
 fn hash(domain: &[u8], fields: &[&[u8]]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(domain);
@@ -377,7 +352,6 @@ struct Parser<'a> {
     source: &'a str,
     offset: usize,
     token_offset: usize,
-    syntax: SourceSyntax,
     variables: BTreeMap<&'a str, FreeVariable>,
     bindings: BTreeMap<&'a str, Parsed>,
     binding_nodes: usize,
@@ -422,7 +396,7 @@ impl<'a> Parser<'a> {
     }
     fn word(&mut self, expected: &str) -> Result<(), QuestionError> {
         let name = self.name()?;
-        if name != expected && name != self.syntax.keyword(expected) {
+        if name != expected {
             return Err(QuestionError::Invalid("question unexpected field"));
         }
         Ok(())
@@ -432,7 +406,7 @@ impl<'a> Parser<'a> {
         self.token_offset = self.offset;
         if !self.source[self.offset..].starts_with(expected) {
             return Err(QuestionError::Invalid(
-                "question unsupported Foundation or success policy",
+                "question unsupported success policy",
             ));
         }
         self.offset += expected.len();
@@ -464,30 +438,14 @@ impl<'a> Parser<'a> {
     fn peek_word(&mut self, expected: &str) -> bool {
         self.trivia();
         syntax::word_at(self.source, self.offset, expected)
-            || syntax::word_at(self.source, self.offset, self.syntax.keyword(expected))
     }
 
     fn formula_bindings(&mut self) -> Result<(), QuestionError> {
-        self.word("formulas")?;
+        self.word("let")?;
         self.punctuation(b':')?;
         loop {
             let name = self.name()?;
-            if self.syntax.reserves(name)
-                || syntax::is_formula_operator(name)
-                || matches!(
-                    name,
-                    "foundation"
-                        | "definitions"
-                        | "definition"
-                        | "relation"
-                        | "function"
-                        | "formulas"
-                        | "statement"
-                        | "proof"
-                        | "return"
-                        | "success"
-                )
-            {
+            if syntax::is_reserved_binding_name(name) {
                 return Err(QuestionError::Invalid("question reserved formula binding"));
             }
             if self.bindings.contains_key(name) {
@@ -500,7 +458,7 @@ impl<'a> Parser<'a> {
             self.binding_nodes += parsed.nodes;
             self.maximum_nodes = parse_allowance;
             self.bindings.insert(name, parsed);
-            if self.peek_word("statement") {
+            if self.peek_word("goal") {
                 return Ok(());
             }
         }
@@ -561,9 +519,10 @@ impl<'a> Parser<'a> {
     fn formula(&mut self, source_depth: usize) -> Result<Parsed, QuestionError> {
         self.bounded(0, source_depth)?;
         let operator = self.name()?;
+        let operator_offset = self.token_offset;
         let name_end = self.offset;
         self.trivia();
-        if self.syntax == SourceSyntax::V1 && self.byte() != Some(b'(') {
+        if self.byte() != Some(b'(') {
             self.offset = name_end;
             let binding = self
                 .bindings
@@ -576,19 +535,18 @@ impl<'a> Parser<'a> {
                 depth: binding.depth,
             });
         }
-        let operator = self.syntax.formula(operator);
         self.punctuation(b'(')?;
         let parsed = match operator {
-            "equal" | "member" | "not_equal" => {
+            "eq" | "mem" | "ne" => {
                 let left = self.variable()?;
                 self.punctuation(b',')?;
                 let right = self.variable()?;
-                let formula = if operator == "member" {
+                let formula = if operator == "mem" {
                     Formula::member(left, right)
                 } else {
                     Formula::equal(left, right)
                 };
-                if operator == "not_equal" {
+                if operator == "ne" {
                     Parsed {
                         formula: Formula::negate(formula),
                         nodes: 2,
@@ -602,49 +560,32 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            "forall" | "exists" if self.syntax == SourceSyntax::V1 => {
-                self.quantified(operator == "exists", source_depth)?
-            }
-            "not_" | "forall" | "exists" => {
-                let variable = if operator == "not_" {
-                    None
-                } else {
-                    let variable = self.variable()?;
-                    self.punctuation(b',')?;
-                    Some(variable)
-                };
+            "all" | "ex" => self.quantified(operator == "ex", source_depth)?,
+            "not" => {
                 let body = self.formula(source_depth + 1)?;
-                let extra = if operator == "exists" { 3 } else { 1 };
-                let nodes = body.nodes + extra;
-                let depth = body.depth + extra;
+                let nodes = body.nodes + 1;
+                let depth = body.depth + 1;
                 self.bounded(nodes, source_depth - 1 + depth)?;
-                let formula = match variable {
-                    None => Formula::negate(body.formula),
-                    Some(variable) if operator == "forall" => {
-                        Formula::for_all(variable, body.formula)
-                    }
-                    Some(variable) => Formula::exists(variable, body.formula),
-                };
                 Parsed {
-                    formula,
+                    formula: Formula::negate(body.formula),
                     nodes,
                     depth,
                 }
             }
-            "implies" | "and_" | "or_" | "iff" => {
+            "imp" | "and" | "or" | "iff" => {
                 let left = self.formula(source_depth + 1)?;
                 self.punctuation(b',')?;
                 let right = self.formula(source_depth + 1)?;
                 let (nodes, depth) = match operator {
-                    "implies" => (
+                    "imp" => (
                         1 + left.nodes + right.nodes,
                         1 + left.depth.max(right.depth),
                     ),
-                    "and_" => (
+                    "and" => (
                         3 + left.nodes + right.nodes,
                         (2 + left.depth).max(3 + right.depth),
                     ),
-                    "or_" => (
+                    "or" => (
                         2 + left.nodes + right.nodes,
                         (2 + left.depth).max(1 + right.depth),
                     ),
@@ -657,9 +598,9 @@ impl<'a> Parser<'a> {
                 // their children. Exponential source expansion stays bounded.
                 self.bounded(nodes, source_depth - 1 + depth)?;
                 let formula = match operator {
-                    "implies" => Formula::implies(left.formula, right.formula),
-                    "and_" => Formula::conjunction(left.formula, right.formula),
-                    "or_" => Formula::disjunction(left.formula, right.formula),
+                    "imp" => Formula::implies(left.formula, right.formula),
+                    "and" => Formula::conjunction(left.formula, right.formula),
+                    "or" => Formula::disjunction(left.formula, right.formula),
                     _ => Formula::biconditional(left.formula, right.formula),
                 };
                 Parsed {
@@ -669,6 +610,7 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => {
+                self.token_offset = operator_offset;
                 return Err(QuestionError::Invalid(
                     "question unknown formula or unapproved reference",
                 ));

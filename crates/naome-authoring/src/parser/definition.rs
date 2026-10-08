@@ -7,12 +7,12 @@ impl<'source> Parser<'source> {
         &mut self,
         artifact_state: &ArtifactState,
     ) -> Result<(), CompileError> {
-        self.keyword("definitions")?;
+        self.keyword("defs")?;
         self.punctuation(':')?;
-        if (self.syntax == syntax::SourceSyntax::V1 && self.peek_word("refs"))
-            || self.peek_word("formulas")
-            || self.peek_word("statement")
-            || self.peek_word("definition")
+        if self.peek_word("refs")
+            || self.peek_word("let")
+            || self.peek_word("goal")
+            || self.peek_word("def")
         {
             return Err(CompileError::Syntax {
                 offset: self.next_offset(),
@@ -49,10 +49,10 @@ impl<'source> Parser<'source> {
                     kind,
                 },
             );
-            if (self.syntax == syntax::SourceSyntax::V1 && self.peek_word("refs"))
-                || self.peek_word("formulas")
-                || self.peek_word("statement")
-                || self.peek_word("definition")
+            if self.peek_word("refs")
+                || self.peek_word("let")
+                || self.peek_word("goal")
+                || self.peek_word("def")
             {
                 return Ok(());
             }
@@ -64,7 +64,7 @@ impl<'source> Parser<'source> {
         artifact_state: &ArtifactState,
     ) -> Result<CompiledArtifact, CompileError> {
         let definition_offset = self.next_offset();
-        self.keyword("definition")?;
+        self.keyword("def")?;
         let name_offset = self.next_offset();
         let source_name = self.name()?;
         if self.definition_aliases.contains_key(source_name) {

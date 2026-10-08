@@ -1,4 +1,4 @@
-foundation = "naome:zfc"
 
-definition self_equal = relation(value,):
-    equal(value, value)
+
+def self_equal = relation(value,):
+    eq(value, value)

@@ -9,7 +9,7 @@ use naome_checker::{
     normalize_and_check_definition_with_state,
 };
 use naome_foundation::{
-    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, FormulaCodecError, FreeVariable, ZfcAxiom,
+    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FormulaCodecError, FreeVariable, ZfcAxiom,
 };
 use naome_proof::{
     ArtifactId, ArtifactPayload, CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES,

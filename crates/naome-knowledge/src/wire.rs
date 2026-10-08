@@ -169,7 +169,7 @@ mod tests {
         for body in [
             serde_json::json!({"kind":"Offer","object":envelope}),
             serde_json::json!({"kind":"Get","id":vec![0u8;32]}),
-            serde_json::json!({"kind":"Offer","metadata":{"proof_id":"00".repeat(32),"statement_id":"00".repeat(32),"question":"foundation = \"naome:zfc\" statement = forall(x,equal(x,x))","proof":"00"}}),
+            serde_json::json!({"kind":"Offer","metadata":{"proof_id":"00".repeat(32),"statement_id":"00".repeat(32),"question":"goal = all(x,eq(x,x))","proof":"00"}}),
         ] {
             assert!(
                 serde_json::from_value::<Message>(

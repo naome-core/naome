@@ -74,23 +74,17 @@ impl<'source> Parser<'source> {
         } else {
             self.punctuation('(')?;
         }
-        let parsed = match self.syntax.formula(operator) {
-            "equal" => self.parse_equal(formula_offset, depth, context, false),
-            "member" => self.parse_member(formula_offset, depth, context),
-            "not_equal" => self.parse_equal(formula_offset, depth, context, true),
-            "not_" => self.parse_not(operator_offset, depth, context),
-            "implies" => self.parse_implies(operator_offset, depth, context),
-            "forall" if self.syntax == syntax::SourceSyntax::V1 => {
-                self.parse_quantified(operator_offset, depth, context, false)
-            }
-            "forall" => self.parse_for_all(operator_offset, depth, context),
-            "and_" => self.parse_conjunction(operator_offset, depth, context),
-            "or_" => self.parse_disjunction(operator_offset, depth, context),
+        let parsed = match operator {
+            "eq" => self.parse_equal(formula_offset, depth, context, false),
+            "mem" => self.parse_member(formula_offset, depth, context),
+            "ne" => self.parse_equal(formula_offset, depth, context, true),
+            "not" => self.parse_not(operator_offset, depth, context),
+            "imp" => self.parse_implies(operator_offset, depth, context),
+            "all" => self.parse_quantified(operator_offset, depth, context, false),
+            "and" => self.parse_conjunction(operator_offset, depth, context),
+            "or" => self.parse_disjunction(operator_offset, depth, context),
             "iff" => self.parse_biconditional(operator_offset, depth, context),
-            "exists" if self.syntax == syntax::SourceSyntax::V1 => {
-                self.parse_quantified(operator_offset, depth, context, true)
-            }
-            "exists" => self.parse_exists(operator_offset, depth, context),
+            "ex" => self.parse_quantified(operator_offset, depth, context, true),
             _ => self.parse_defined_relation(operator_offset, operator, context, depth),
         }?;
         self.call_end()?;
@@ -409,25 +403,6 @@ impl<'source> Parser<'source> {
         })
     }
 
-    fn parse_for_all(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-    ) -> Result<ParsedFormula, CompileError> {
-        let variable = self.variable()?;
-        self.punctuation(',')?;
-        let body = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes], offset)?;
-        let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
-        self.check_expanded_depth(offset, depth, expanded_depth)?;
-        Ok(ParsedFormula {
-            formula: DefinedFormula::for_all(variable, body.formula),
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
     fn parse_quantified(
         &mut self,
         offset: usize,
@@ -568,25 +543,6 @@ impl<'source> Parser<'source> {
         self.check_derived_expansion(offset, depth, context, expanded_depth, additional_nodes)?;
         Ok(ParsedFormula {
             formula: DefinedFormula::biconditional(left.formula, right.formula),
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
-    fn parse_exists(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-    ) -> Result<ParsedFormula, CompileError> {
-        let variable = self.variable()?;
-        self.punctuation(',')?;
-        let body = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(context, &[3, body.expanded_nodes], offset)?;
-        let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 3)?;
-        self.check_derived_expansion(offset, depth, context, expanded_depth, 2)?;
-        Ok(ParsedFormula {
-            formula: DefinedFormula::exists(variable, body.formula),
             expanded_nodes,
             expanded_depth,
         })

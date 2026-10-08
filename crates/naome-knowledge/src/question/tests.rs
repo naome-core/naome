@@ -11,9 +11,9 @@ use std::{
 };
 use tokio::sync::Notify;
 
-const PROOF: &str = "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) return p1";
-const QUESTION: &str = "foundation = \"naome:zfc\" statement = forall(x,member(x,x))";
-const SOLVED: &str = "foundation = \"naome:zfc\" statement = forall(x,equal(x,x))";
+const PROOF: &str = "goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
+const QUESTION: &str = "goal = all(x,mem(x,x))";
+const SOLVED: &str = "goal = all(x,eq(x,x))";
 
 struct Directory(PathBuf);
 impl Directory {
@@ -100,9 +100,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
     );
     assert_eq!(proved.assessment.interest, InterestAssessment::NotRun);
     let refuted = handle
-        .admit_question(question(
-            "foundation = \"naome:zfc\" statement = not_(forall(a,equal(a,a)))",
-        ))
+        .admit_question(question("goal = not(all(a,eq(a,a)))"))
         .await
         .unwrap();
     assert_eq!(
@@ -111,9 +109,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
     );
     assert!(refuted.assessment.submitted_negation_parity);
     let double_negative = handle
-        .admit_question(question(
-            "foundation = \"naome:zfc\" statement = not_(not_(forall(a,equal(a,a))))",
-        ))
+        .admit_question(question("goal = not(not(all(a,eq(a,a))))"))
         .await
         .unwrap();
     assert_eq!(
@@ -143,7 +139,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
         .unwrap()
         .unwrap();
     let before = context(&handle).await;
-    let alias = handle.admit_question(question("# cosmetic source and binder change\nfoundation = \"naome:zfc\"\nstatement = forall(renamed, member(renamed, renamed)) success = \"resolve\"")).await.unwrap();
+    let alias = handle.admit_question(question("# cosmetic source and binder change\ngoal = all(renamed, mem(renamed, renamed)) success = \"resolve\"")).await.unwrap();
     assert_eq!(
         alias.assessment.prefilter.reason,
         Some(RejectionReason::ExactDuplicate)
@@ -161,9 +157,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
     admin.set_policy(limited).await.unwrap();
     let frozen = context(&handle).await;
     let exhausted = handle
-        .admit_question(question(
-            "foundation = \"naome:zfc\" statement = forall(x,implies(member(x,x),member(x,x)))",
-        ))
+        .admit_question(question("goal = all(x,imp(mem(x,x),mem(x,x)))"))
         .await
         .unwrap();
     assert_eq!(
@@ -498,7 +492,7 @@ fn one_entry_prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() 
         local.computations, 4,
         "checked graph changes invalidate cache"
     );
-    let renamed = question("foundation = \"naome:zfc\" statement = forall(z,member(z,z))");
+    let renamed = question("goal = all(z,mem(z,z))");
     let alias = local.assess(&graph, &renamed);
     assert_eq!(next.question, alias.question);
     assert_ne!(next.input, alias.input);
@@ -544,7 +538,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
             Formula::implies(target.core().clone(), formula.clone()),
         );
         let source = format!(
-            "foundation = \"naome:zfc\" statement = {} proof: p0 = simplification({}, {}) return p0",
+            "goal = {} proof: p0 = simp({}, {}) return p0",
             conclusion.to_source(),
             formula.to_source(),
             target.core().to_source()
@@ -588,10 +582,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
     assert_eq!(solved.prefilter.reason, Some(RejectionReason::KnownProof));
     assert_eq!(solved.interest, InterestAssessment::NotRun);
     for index in 0..257 {
-        let source = format!(
-            "foundation = \"naome:zfc\" statement = {}",
-            registry_pattern(index).to_source()
-        );
+        let source = format!("goal = {}", registry_pattern(index).to_source());
         admin
             .import_baseline(question(&source))
             .await
@@ -601,10 +592,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
     let full = context(&handle).await;
     assert_eq!(full.registered_questions, 257);
     assert_ne!(full.snapshot, initial.snapshot);
-    let last = format!(
-        "foundation = \"naome:zfc\" statement = {}",
-        registry_pattern(256).to_source()
-    );
+    let last = format!("goal = {}", registry_pattern(256).to_source());
     let duplicate = handle.assess(question(&last)).await.unwrap();
     assert_eq!(
         duplicate.prefilter.reason,
@@ -711,9 +699,7 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
         "assessment and winning admission each run separate interest"
     );
     let alias = handle
-        .admit_question(question(
-            "# another source\nfoundation = \"naome:zfc\" statement = forall(a,member(a,a))",
-        ))
+        .admit_question(question("# another source\ngoal = all(a,mem(a,a))"))
         .await
         .unwrap();
     assert_eq!(
@@ -817,7 +803,7 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     let mut ids = vec![seed_id];
     for (antecedent, consequent) in [(&p, &q), (&q, &r)] {
         let source = format!(
-            "foundation = \"naome:zfc\" statement = {} proof: p0 = vacuous_universal({}) return p0",
+            "goal = {} proof: p0 = vacuous({}) return p0",
             Formula::implies(antecedent.clone(), consequent.clone()).to_source(),
             antecedent.to_source()
         );
@@ -841,7 +827,7 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     ));
     let before = context(&handle).await;
     assert_eq!(before.checked_proofs, 3);
-    let source = format!("foundation = \"naome:zfc\" statement = {}", r.to_source());
+    let source = format!("goal = {}", r.to_source());
     let result = handle.admit_question(question(&source)).await.unwrap();
     assert_eq!(
         result.assessment.prefilter.reason,

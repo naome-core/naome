@@ -1,9 +1,9 @@
 # Every source name in this file is presentation-only.
-foundation = "naome:zfc"
 
-statement = forall(x, equal(x, x))
+
+goal = all(x, eq(x, x))
 
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = generalization(p0, x)
+    p0 = refl(x)
+    p1 = gen(p0, x)
     return p1

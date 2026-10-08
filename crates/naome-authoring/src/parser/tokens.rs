@@ -62,7 +62,7 @@ impl<'source> Parser<'source> {
     pub(super) fn keyword(&mut self, expected: &'static str) -> Result<(), CompileError> {
         let offset = self.next_offset();
         let actual = self.name()?;
-        if actual == expected || actual == self.syntax.keyword(expected) {
+        if actual == expected {
             Ok(())
         } else {
             Err(CompileError::Syntax { offset, expected })
@@ -155,7 +155,6 @@ impl<'source> Parser<'source> {
     pub(super) fn peek_word(&mut self, expected: &str) -> bool {
         self.skip_trivia();
         syntax::word_at(self.source, self.offset, expected)
-            || syntax::word_at(self.source, self.offset, self.syntax.keyword(expected))
     }
 
     pub(super) fn call_end(&mut self) -> Result<(), CompileError> {

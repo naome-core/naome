@@ -46,7 +46,6 @@ struct StepBinding {
 pub(super) struct Parser<'source> {
     source: &'source str,
     offset: usize,
-    syntax: syntax::SourceSyntax,
     variables: HashMap<&'source str, FreeVariable>,
     definition_aliases: HashMap<&'source str, DefinitionAlias>,
     formula_bindings: HashMap<&'source str, ParsedFormula>,
@@ -63,7 +62,6 @@ impl<'source> Parser<'source> {
         Self {
             source,
             offset: 0,
-            syntax: syntax::SourceSyntax::Legacy,
             variables: HashMap::new(),
             definition_aliases: HashMap::new(),
             formula_bindings: HashMap::new(),
@@ -80,29 +78,16 @@ impl<'source> Parser<'source> {
         mut self,
         artifact_state: &ArtifactState,
     ) -> Result<CompiledArtifact, CompileError> {
-        (self.syntax, self.offset) = syntax::SourceSyntax::header(self.source)
-            .map_err(|offset| CompileError::UnsupportedSyntaxVersion { offset })?;
-        if self.syntax == syntax::SourceSyntax::Legacy {
-            self.keyword("foundation")?;
-            self.punctuation('=')?;
-            let foundation_offset = self.next_offset();
-            let foundation = self.string("a quoted Foundation identifier")?;
-            if foundation != FOUNDATION_ID {
-                return Err(CompileError::FoundationMismatch {
-                    offset: foundation_offset,
-                });
-            }
-        }
-        if self.peek_word("definitions") {
+        if self.peek_word("defs") {
             self.definition_aliases(artifact_state)?;
         }
-        if self.syntax == syntax::SourceSyntax::V1 && self.peek_word("refs") {
+        if self.peek_word("refs") {
             self.proof_references()?;
         }
-        if self.peek_word("formulas") {
-            self.keyword("formulas")?;
+        if self.peek_word("let") {
+            self.keyword("let")?;
             self.punctuation(':')?;
-            if self.peek_word("statement") || self.peek_word("definition") {
+            if self.peek_word("goal") || self.peek_word("def") {
                 return Err(CompileError::Syntax {
                     offset: self.next_offset(),
                     expected: "at least one formula binding",
@@ -110,10 +95,10 @@ impl<'source> Parser<'source> {
             }
             loop {
                 self.formula_binding()?;
-                if self.peek_word("statement") {
+                if self.peek_word("goal") {
                     break;
                 }
-                if self.peek_word("definition") {
+                if self.peek_word("def") {
                     return Err(CompileError::Syntax {
                         offset: self.next_offset(),
                         expected: "a proof statement after formula bindings",
@@ -121,10 +106,10 @@ impl<'source> Parser<'source> {
                 }
             }
         }
-        if self.peek_word("definition") {
+        if self.peek_word("def") {
             return self.compile_definition(artifact_state);
         }
-        self.keyword("statement")?;
+        self.keyword("goal")?;
         self.punctuation('=')?;
         let statement_offset = self.next_offset();
         let compact_statement = self.formula(1, FormulaContext::Statement)?;
@@ -261,7 +246,7 @@ impl<'source> Parser<'source> {
     }
 
     fn reserved_binding_name(&self, name: &str) -> bool {
-        is_reserved_formula_binding_name(name) || self.syntax.reserves(name)
+        syntax::is_reserved_binding_name(name)
     }
 
     fn definition_variable(&mut self) -> Result<FreeVariable, CompileError> {
@@ -293,37 +278,6 @@ impl<'source> Parser<'source> {
             .expect("the source-byte limit bounds presentation variables");
         variable
     }
-}
-
-fn is_reserved_formula_binding_name(name: &str) -> bool {
-    syntax::is_formula_operator(name)
-        || matches!(
-            name,
-            "foundation"
-                | "definitions"
-                | "definition"
-                | "relation"
-                | "function"
-                | "formulas"
-                | "statement"
-                | "proof"
-                | "return"
-                | "parameters"
-                | "simplification"
-                | "frege"
-                | "classical_contraposition"
-                | "universal_distribution"
-                | "vacuous_universal"
-                | "universal_instantiation"
-                | "modus_ponens"
-                | "equality_reflexivity"
-                | "equality_substitution"
-                | "zfc_axiom"
-                | "separation"
-                | "replacement"
-                | "cite"
-                | "generalization"
-        )
 }
 
 const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {

@@ -1,17 +1,17 @@
 # A complete Hilbert derivation of forall x, (x = x) -> (x = x).
-foundation = "naome:zfc"
 
-formulas:
-    reflexive = equal(x, x)
-    identity = implies(reflexive, reflexive)
 
-statement = forall(x, identity)
+let:
+    reflexive = eq(x, x)
+    identity = imp(reflexive, reflexive)
+
+goal = all(x, identity)
 
 proof:
-    p0 = simplification(reflexive, reflexive)
-    p1 = simplification(reflexive, identity)
+    p0 = simp(reflexive, reflexive)
+    p1 = simp(reflexive, identity)
     p2 = frege(reflexive, identity, reflexive)
-    p3 = modus_ponens(p1, p2)
-    p4 = modus_ponens(p0, p3)
-    p5 = generalization(p4, x)
+    p3 = mp(p1, p2)
+    p4 = mp(p0, p3)
+    p5 = gen(p4, x)
     return p5
