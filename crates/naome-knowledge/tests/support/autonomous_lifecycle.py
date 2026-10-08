@@ -55,7 +55,7 @@ class Trial:
         return min(maximum, remaining)
 
     def call(self, node, verb, success=True, cleanup=False, text=None):
-        command = [str(self.binary), verb]
+        command = [str(self.binary), "--json", verb]
         if text is not None:
             command.append(text)
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
@@ -281,7 +281,7 @@ def guardian_main():
             continue
         node_record = {"directory": directory.name}
         try:
-            result = subprocess.run([str(args.binary), "stop"], stdin=subprocess.DEVNULL,
+            result = subprocess.run([str(args.binary), "--json", "stop"], stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, env={**os.environ, "NAOME_NODE_DIR": str(directory)}, timeout=5)
             assert result.returncode == 0, result.stderr
             status = json.loads(result.stdout)
