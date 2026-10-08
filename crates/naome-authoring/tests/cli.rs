@@ -497,6 +497,114 @@ mod developer_cli {
         );
     }
 
+    #[test]
+    fn json_authoring_checks_exact_outputs_and_original_source_errors() {
+        for (command, source) in [
+            (
+                "proof",
+                "nao 1 goal=all(x,eq(x,x)) proof: a=refl(x) b=gen(a,x) return b",
+            ),
+            ("proof", "nao 1 def R=relation(x):eq(x,x)"),
+            ("question", "nao 1 goal=not(all(x,eq(x,x)))"),
+        ] {
+            let file = TemporarySource::new(source);
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args([command, "--json"])
+                .arg(&file.path)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stderr.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(json["schema_version"], 1);
+            assert_eq!(json["ok"], true);
+            if command == "question" {
+                let question = CompiledQuestion::compile(source).unwrap();
+                assert_eq!(
+                    json["canonical_core"],
+                    hex_string(question.canonical_core())
+                );
+                assert_eq!(
+                    json["proved_target"],
+                    hex_string(&question.proved_target().encode_canonical().unwrap())
+                );
+                assert_eq!(
+                    json["refuted_target"],
+                    hex_string(&question.refuted_target().encode_canonical().unwrap())
+                );
+                assert_eq!(
+                    json["canonical_question"],
+                    hex_string(&question.to_canonical_bytes().unwrap())
+                );
+            } else if json["kind"] == "proof" {
+                assert_eq!(json["canonical_proof"], PROOF_BYTES);
+                assert_eq!(json["proof_id"], PROOF_ID);
+            } else {
+                assert_eq!(json["canonical_definition"], SELF_EQUAL_DEFINITION_BYTES);
+                assert_eq!(json["definition_id"], SELF_EQUAL_DEFINITION_ID);
+            }
+        }
+        for (command, source, code, token) in [
+            (
+                "proof",
+                "# ä\r\nnao 1 goal=all(x,eq(x,x)) proof: a=refl(x) b=gen(missing,x) return b",
+                "NAO0005",
+                "missing",
+            ),
+            (
+                "question",
+                "# ä\r\nnao 1 let: A=eq(x,x) goal=all(x,missing)",
+                "NAO0030",
+                "missing",
+            ),
+            ("proof", "nao 2 goal=all(x,eq(x,x))", "NAO0024", "2"),
+        ] {
+            let file = TemporarySource::new(source);
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args([command, "--json"])
+                .arg(&file.path)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(json["ok"], false);
+            assert_eq!(json["diagnostic"]["code"], code);
+            let start = json["diagnostic"]["span"]["start"].as_u64().unwrap() as usize;
+            let end = json["diagnostic"]["span"]["end"].as_u64().unwrap() as usize;
+            assert_eq!(&source[start..end], token);
+        }
+    }
+
+    #[test]
+    fn json_flag_requires_one_source_and_raw_limit_keeps_its_code() {
+        for args in [
+            vec!["proof", "--json"],
+            vec!["question", "--json"],
+            vec!["proof", "--json", "--json", "file.nao"],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args(args)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(2));
+            assert!(output.stdout.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(json["phase"], "input");
+        }
+        let file = TemporarySource::new(&" ".repeat(QUESTION_SOURCE_MAX_BYTES + 1));
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .args(["question", "--json"])
+            .arg(&file.path)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(json["diagnostic"]["code"], "NAO0001");
+        assert!(json["diagnostic"]["span"].is_null());
+    }
+
     struct TemporarySource {
         directory: PathBuf,
         path: PathBuf,

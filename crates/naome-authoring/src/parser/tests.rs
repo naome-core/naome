@@ -665,6 +665,89 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
 }
 
 #[test]
+fn versioned_rule_spellings_lower_to_the_exact_existing_steps() {
+    for (old, new) in [
+        (
+            "simplification(equal(x,x),member(y,z))",
+            "simp(eq(x,x),mem(y,z))",
+        ),
+        (
+            "frege(equal(x,x),member(y,z),equal(z,y))",
+            "frege(eq(x,x),mem(y,z),eq(z,y))",
+        ),
+        (
+            "classical_contraposition(equal(x,x),member(y,z))",
+            "contra(eq(x,x),mem(y,z))",
+        ),
+        (
+            "universal_distribution(x,equal(x,x),member(y,z))",
+            "dist(x,eq(x,x),mem(y,z))",
+        ),
+        ("vacuous_universal(equal(x,x))", "vacuous(eq(x,x))"),
+        (
+            "universal_instantiation(x,y,member(x,z))",
+            "inst(x,y,mem(x,z))",
+        ),
+        ("modus_ponens(p0,p1)", "mp(p0,p1)"),
+        ("equality_reflexivity(x)", "refl(x)"),
+        (
+            "equality_substitution(x,y,member(x,z))",
+            "subst(x,y,mem(x,z))",
+        ),
+        ("zfc_axiom(\"choice\")", "axiom(\"choice\")"),
+        (
+            "separation(member(e,a),e,s,r,parameters=[a,b])",
+            "sep(mem(e,a),e,s,r,parameters=[a,b])",
+        ),
+        (
+            "replacement(equal(x,y),x,y,w,s,r,parameters=[])",
+            "replace(eq(x,y),x,y,w,s,r,parameters=[])",
+        ),
+        ("generalization(p0,x)", "gen(p0,x)"),
+    ] {
+        let mut parser = Parser::new(new);
+        parser.syntax = syntax::SourceSyntax::V1;
+        for (position, name) in ["p0", "p1"].into_iter().enumerate() {
+            parser.steps.insert(
+                name,
+                StepBinding {
+                    position: position as u32,
+                    span: SourceSpan::point(0),
+                },
+            );
+        }
+        assert_eq!(
+            parser.proof_step().unwrap(),
+            parse_step_with_names(old, &["p0", "p1"]).unwrap()
+        );
+        parser.end().unwrap();
+    }
+    let source = format!("cite(\"{SELF_EQUALITY_PROOF_ID_HEX}\")");
+    let mut parser = Parser::new(&source);
+    parser.syntax = syntax::SourceSyntax::V1;
+    assert_eq!(parser.proof_step().unwrap(), parse_step(&source).unwrap());
+}
+
+#[test]
+fn versioned_formula_parser_keeps_the_maximum_expanded_depth_on_the_default_stack() {
+    let mut source = format!(
+        "{}iff(eq(x,x),eq(y,y)){}",
+        "not(".repeat((FORMULA_MAX_DEPTH - 5) as usize),
+        ")".repeat((FORMULA_MAX_DEPTH - 5) as usize)
+    );
+    let mut parser = Parser::new(&source);
+    parser.syntax = syntax::SourceSyntax::V1;
+    assert!(parser.parsed_formula(1, FormulaContext::Statement).is_ok());
+    source = format!("not({source})");
+    let mut parser = Parser::new(&source);
+    parser.syntax = syntax::SourceSyntax::V1;
+    assert!(matches!(
+        parser.parsed_formula(1, FormulaContext::Statement),
+        Err(CompileError::FormulaDepthLimitExceeded { .. })
+    ));
+}
+
+#[test]
 fn equality_substitution_preserves_roles_and_avoids_capture_under_a_binder() {
     let source = r#"
 foundation = "naome:zfc"

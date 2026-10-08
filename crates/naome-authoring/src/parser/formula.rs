@@ -2,6 +2,24 @@
 
 use super::*;
 
+struct TermBudget {
+    context: FormulaContext,
+    source_depth: u32,
+    atom_depth: u32,
+    functions: u32,
+}
+
+impl TermBudget {
+    fn new(context: FormulaContext, source_depth: u32, atom_depth: u32) -> Self {
+        Self {
+            context,
+            source_depth,
+            atom_depth,
+            functions: 0,
+        }
+    }
+}
+
 impl<'source> Parser<'source> {
     pub(super) fn formula(
         &mut self,
@@ -36,7 +54,7 @@ impl<'source> Parser<'source> {
         let opening_parenthesis_offset = self.offset;
         let has_call = self.byte() == Some(b'(');
         self.offset = offset_after_name;
-        if !has_call && !is_reserved_formula_binding_name(operator) {
+        if !has_call && !self.reserved_binding_name(operator) {
             return self.parsed_formula_binding_reference(
                 operator_offset,
                 operator,
@@ -56,19 +74,25 @@ impl<'source> Parser<'source> {
         } else {
             self.punctuation('(')?;
         }
-        let parsed = match operator {
-            "equal" => self.parse_equal(formula_offset, depth, context, false)?,
-            "member" => self.parse_member(formula_offset, depth, context)?,
-            "not_equal" => self.parse_equal(formula_offset, depth, context, true)?,
-            "not_" => self.parse_not(operator_offset, depth, context)?,
-            "implies" => self.parse_implies(operator_offset, depth, context)?,
-            "forall" => self.parse_for_all(operator_offset, depth, context)?,
-            "and_" => self.parse_conjunction(operator_offset, depth, context)?,
-            "or_" => self.parse_disjunction(operator_offset, depth, context)?,
-            "iff" => self.parse_biconditional(operator_offset, depth, context)?,
-            "exists" => self.parse_exists(operator_offset, depth, context)?,
-            _ => self.parse_defined_relation(operator_offset, operator, context, depth)?,
-        };
+        let parsed = match self.syntax.formula(operator) {
+            "equal" => self.parse_equal(formula_offset, depth, context, false),
+            "member" => self.parse_member(formula_offset, depth, context),
+            "not_equal" => self.parse_equal(formula_offset, depth, context, true),
+            "not_" => self.parse_not(operator_offset, depth, context),
+            "implies" => self.parse_implies(operator_offset, depth, context),
+            "forall" if self.syntax == syntax::SourceSyntax::V1 => {
+                self.parse_quantified(operator_offset, depth, context, false)
+            }
+            "forall" => self.parse_for_all(operator_offset, depth, context),
+            "and_" => self.parse_conjunction(operator_offset, depth, context),
+            "or_" => self.parse_disjunction(operator_offset, depth, context),
+            "iff" => self.parse_biconditional(operator_offset, depth, context),
+            "exists" if self.syntax == syntax::SourceSyntax::V1 => {
+                self.parse_quantified(operator_offset, depth, context, true)
+            }
+            "exists" => self.parse_exists(operator_offset, depth, context),
+            _ => self.parse_defined_relation(operator_offset, operator, context, depth),
+        }?;
         self.call_end()?;
         Ok(parsed)
     }
@@ -80,9 +104,10 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
         negated: bool,
     ) -> Result<ParsedFormula, CompileError> {
-        let left = self.term()?;
+        let mut terms = TermBudget::new(context, depth, if negated { 2 } else { 1 });
+        let left = self.term(&mut terms)?;
         self.punctuation(',')?;
-        let right = self.term()?;
+        let right = self.term(&mut terms)?;
         self.relationalized_formula(
             [left, right],
             |variables| {
@@ -106,9 +131,10 @@ impl<'source> Parser<'source> {
         depth: u32,
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
-        let element = self.term()?;
+        let mut terms = TermBudget::new(context, depth, 1);
+        let element = self.term(&mut terms)?;
         self.punctuation(',')?;
-        let set = self.term()?;
+        let set = self.term(&mut terms)?;
         self.relationalized_formula(
             [element, set],
             |variables| DefinedFormula::member(variables[0], variables[1]),
@@ -138,7 +164,8 @@ impl<'source> Parser<'source> {
                 expected: "a relation definition alias in formula position",
             });
         };
-        let arguments = self.term_arguments()?;
+        let mut terms = TermBudget::new(context, depth, 1);
+        let arguments = self.term_arguments(offset, name, arity, &mut terms)?;
         self.ensure_definition_arity(offset, name, arity, arguments.len())?;
         self.relationalized_formula(
             arguments,
@@ -152,7 +179,7 @@ impl<'source> Parser<'source> {
         )
     }
 
-    fn term(&mut self) -> Result<ParsedTerm, CompileError> {
+    fn term(&mut self, budget: &mut TermBudget) -> Result<ParsedTerm, CompileError> {
         let offset = self.next_offset();
         let name = self.name()?;
         let offset_after_name = self.offset;
@@ -177,7 +204,17 @@ impl<'source> Parser<'source> {
                 });
             }
         };
-        let arguments = self.term_arguments()?;
+        // Each function contributes one graph atom, a three-node conjunction
+        // and a three-node existential. Preflight before recursive arguments
+        // or constraint allocation; the same limit also bounds the call stack.
+        budget.functions += 1;
+        self.check_expanded_depth(
+            offset,
+            budget.source_depth,
+            budget.atom_depth + 6 * budget.functions,
+        )?;
+        self.charge_formula_nodes(budget.context, 7, offset)?;
+        let arguments = self.term_arguments(offset, name, expected, budget)?;
         self.ensure_definition_arity(offset, name, expected, arguments.len())?;
         self.call_end()?;
 
@@ -203,14 +240,28 @@ impl<'source> Parser<'source> {
         })
     }
 
-    fn term_arguments(&mut self) -> Result<Vec<ParsedTerm>, CompileError> {
+    fn term_arguments(
+        &mut self,
+        offset: usize,
+        name: &str,
+        arity: u32,
+        budget: &mut TermBudget,
+    ) -> Result<Vec<ParsedTerm>, CompileError> {
         let mut arguments = Vec::new();
         self.skip_trivia();
         if self.byte() == Some(b')') {
             return Ok(arguments);
         }
         loop {
-            arguments.push(self.term()?);
+            if arguments.len() == arity as usize {
+                return Err(CompileError::DefinitionArityMismatch {
+                    offset,
+                    name: name.to_owned(),
+                    expected: arity,
+                    actual: arguments.len() + 1,
+                });
+            }
+            arguments.push(self.term(budget)?);
             self.skip_trivia();
             if self.byte() == Some(b')') {
                 return Ok(arguments);
@@ -259,31 +310,24 @@ impl<'source> Parser<'source> {
             graph_constraints.extend(term.graph_constraints);
             witnesses.extend(term.witnesses);
         }
-        let mut formula = atom(&variables);
         let constraint_count = graph_constraints.len();
+        let witness_count = witnesses.len();
+        debug_assert_eq!(constraint_count, witness_count);
+        let expanded_depth =
+            atom_depth + 6 * u32::try_from(witness_count).expect("preflighted term count fits u32");
+        self.check_expanded_depth(offset, source_depth, expanded_depth)?;
+        // Function contributions were charged before parsing their arguments.
+        self.charge_formula_nodes(context, atom_depth - 1, offset)?;
+        let mut formula = atom(&variables);
         for constraint in graph_constraints.into_iter().rev() {
             formula = DefinedFormula::conjunction(constraint, formula);
         }
-        let witness_count = witnesses.len();
         for witness in witnesses.into_iter().rev() {
             formula = DefinedFormula::exists(witness, formula);
         }
         let (_, nodes) = formula
             .encode_canonical_with_node_limit(FORMULA_MAX_NODES)
             .map_err(|source| CompileError::DefinitionFormula { offset, source })?;
-        let additional = nodes.saturating_sub(1);
-        self.charge_formula_nodes(
-            context,
-            u32::try_from(additional).expect("the formula node limit fits u32"),
-            offset,
-        )?;
-        let relational_depth = (0..constraint_count).try_fold(atom_depth, |depth, _| {
-            self.checked_depth_add(offset, depth, 3)
-        })?;
-        let expanded_depth = (0..witness_count).try_fold(relational_depth, |depth, _| {
-            self.checked_depth_add(offset, depth, 3)
-        })?;
-        self.check_expanded_depth(offset, source_depth, expanded_depth)?;
         Ok(ParsedFormula {
             formula,
             expanded_nodes: u32::try_from(nodes).expect("the formula node limit fits u32"),
@@ -379,6 +423,66 @@ impl<'source> Parser<'source> {
         self.check_expanded_depth(offset, depth, expanded_depth)?;
         Ok(ParsedFormula {
             formula: DefinedFormula::for_all(variable, body.formula),
+            expanded_nodes,
+            expanded_depth,
+        })
+    }
+
+    fn parse_quantified(
+        &mut self,
+        offset: usize,
+        depth: u32,
+        context: FormulaContext,
+        existential: bool,
+    ) -> Result<ParsedFormula, CompileError> {
+        self.skip_trivia();
+        let variables = if self.byte() == Some(b'[') {
+            self.offset += 1;
+            let mut variables = Vec::new();
+            loop {
+                if variables.len() == FORMULA_MAX_DEPTH as usize {
+                    return Err(CompileError::FormulaDepthLimitExceeded {
+                        offset,
+                        maximum: FORMULA_MAX_DEPTH,
+                    });
+                }
+                variables.push(self.variable()?);
+                self.skip_trivia();
+                if self.byte() == Some(b']') {
+                    self.offset += 1;
+                    break;
+                }
+                self.punctuation(',')?;
+                self.skip_trivia();
+                if self.byte() == Some(b']') {
+                    self.offset += 1;
+                    break;
+                }
+            }
+            variables
+        } else {
+            vec![self.variable()?]
+        };
+        self.punctuation(',')?;
+        let extra = u32::try_from(variables.len()).expect("bounded binder list fits u32")
+            * if existential { 3 } else { 1 };
+        self.check_expanded_depth(offset, depth, extra + 1)?;
+        self.charge_formula_nodes(context, extra - 1, offset)?;
+        let body = self.parsed_formula(depth + extra, context)?;
+        let expanded_nodes =
+            self.checked_node_sum(context, &[extra, body.expanded_nodes], offset)?;
+        let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, extra)?;
+        self.check_expanded_depth(offset, depth, expanded_depth)?;
+        let mut formula = body.formula;
+        for variable in variables.into_iter().rev() {
+            formula = if existential {
+                DefinedFormula::exists(variable, formula)
+            } else {
+                DefinedFormula::for_all(variable, formula)
+            };
+        }
+        Ok(ParsedFormula {
+            formula,
             expanded_nodes,
             expanded_depth,
         })

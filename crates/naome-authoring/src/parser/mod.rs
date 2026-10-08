@@ -46,10 +46,12 @@ struct StepBinding {
 pub(super) struct Parser<'source> {
     source: &'source str,
     offset: usize,
+    syntax: syntax::SourceSyntax,
     variables: HashMap<&'source str, FreeVariable>,
     definition_aliases: HashMap<&'source str, DefinitionAlias>,
     formula_bindings: HashMap<&'source str, ParsedFormula>,
     steps: HashMap<&'source str, StepBinding>,
+    proof_references: HashMap<&'source str, ProofId>,
     formula_binding_nodes: usize,
     statement_nodes: usize,
     certificate_formula_nodes: usize,
@@ -61,10 +63,12 @@ impl<'source> Parser<'source> {
         Self {
             source,
             offset: 0,
+            syntax: syntax::SourceSyntax::Legacy,
             variables: HashMap::new(),
             definition_aliases: HashMap::new(),
             formula_bindings: HashMap::new(),
             steps: HashMap::new(),
+            proof_references: HashMap::new(),
             formula_binding_nodes: 0,
             statement_nodes: 0,
             certificate_formula_nodes: 0,
@@ -76,17 +80,24 @@ impl<'source> Parser<'source> {
         mut self,
         artifact_state: &ArtifactState,
     ) -> Result<CompiledArtifact, CompileError> {
-        self.keyword("foundation")?;
-        self.punctuation('=')?;
-        let foundation_offset = self.next_offset();
-        let foundation = self.string("a quoted Foundation identifier")?;
-        if foundation != FOUNDATION_ID {
-            return Err(CompileError::FoundationMismatch {
-                offset: foundation_offset,
-            });
+        (self.syntax, self.offset) = syntax::SourceSyntax::header(self.source)
+            .map_err(|offset| CompileError::UnsupportedSyntaxVersion { offset })?;
+        if self.syntax == syntax::SourceSyntax::Legacy {
+            self.keyword("foundation")?;
+            self.punctuation('=')?;
+            let foundation_offset = self.next_offset();
+            let foundation = self.string("a quoted Foundation identifier")?;
+            if foundation != FOUNDATION_ID {
+                return Err(CompileError::FoundationMismatch {
+                    offset: foundation_offset,
+                });
+            }
         }
         if self.peek_word("definitions") {
             self.definition_aliases(artifact_state)?;
+        }
+        if self.syntax == syntax::SourceSyntax::V1 && self.peek_word("refs") {
+            self.proof_references()?;
         }
         if self.peek_word("formulas") {
             self.keyword("formulas")?;
@@ -214,7 +225,7 @@ impl<'source> Parser<'source> {
     fn formula_binding(&mut self) -> Result<(), CompileError> {
         let name_offset = self.next_offset();
         let name = self.name()?;
-        if is_reserved_formula_binding_name(name) {
+        if self.reserved_binding_name(name) {
             return Err(CompileError::Syntax {
                 offset: name_offset,
                 expected: "a non-reserved formula binding name",
@@ -232,6 +243,12 @@ impl<'source> Parser<'source> {
                 name: name.to_owned(),
             });
         }
+        if self.proof_references.contains_key(name) {
+            return Err(CompileError::DuplicateProofReference {
+                offset: name_offset,
+                name: name.to_owned(),
+            });
+        }
         self.punctuation('=')?;
         let parsed = self.parsed_formula(1, FormulaContext::Binding)?;
         self.formula_bindings.insert(name, parsed);
@@ -241,6 +258,10 @@ impl<'source> Parser<'source> {
     fn variable(&mut self) -> Result<FreeVariable, CompileError> {
         let name = self.name()?;
         Ok(self.variable_named(name))
+    }
+
+    fn reserved_binding_name(&self, name: &str) -> bool {
+        is_reserved_formula_binding_name(name) || self.syntax.reserves(name)
     }
 
     fn definition_variable(&mut self) -> Result<FreeVariable, CompileError> {
@@ -274,24 +295,8 @@ impl<'source> Parser<'source> {
     }
 }
 
-fn is_formula_operator_name(name: &str) -> bool {
-    matches!(
-        name,
-        "equal"
-            | "member"
-            | "not_"
-            | "implies"
-            | "forall"
-            | "and_"
-            | "or_"
-            | "iff"
-            | "exists"
-            | "not_equal"
-    )
-}
-
 fn is_reserved_formula_binding_name(name: &str) -> bool {
-    is_formula_operator_name(name)
+    syntax::is_formula_operator(name)
         || matches!(
             name,
             "foundation"
@@ -319,10 +324,6 @@ fn is_reserved_formula_binding_name(name: &str) -> bool {
                 | "cite"
                 | "generalization"
         )
-}
-
-fn is_reserved_definition_alias_name(name: &str) -> bool {
-    is_reserved_formula_binding_name(name)
 }
 
 const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {

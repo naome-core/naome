@@ -29,6 +29,13 @@ pub enum DiagnosticCode {
     DefinitionCheck,
     DefinitionFormula,
     DefinitionExpansion,
+    UnsupportedSyntaxVersion,
+    DuplicateProofReference,
+    UnknownProofReference,
+    QuestionSyntax,
+    QuestionLimit,
+    QuestionOpenFormula,
+    QuestionFormula,
 }
 
 impl DiagnosticCode {
@@ -58,6 +65,13 @@ impl DiagnosticCode {
             Self::DefinitionCheck => "NAO0021",
             Self::DefinitionFormula => "NAO0022",
             Self::DefinitionExpansion => "NAO0023",
+            Self::UnsupportedSyntaxVersion => "NAO0024",
+            Self::DuplicateProofReference => "NAO0025",
+            Self::UnknownProofReference => "NAO0026",
+            Self::QuestionSyntax => "NAO0030",
+            Self::QuestionLimit => "NAO0031",
+            Self::QuestionOpenFormula => "NAO0032",
+            Self::QuestionFormula => "NAO0033",
         }
     }
 }
@@ -137,6 +151,30 @@ pub struct CompileDiagnostic {
 }
 
 impl CompileDiagnostic {
+    pub(crate) fn at(
+        code: DiagnosticCode,
+        message: String,
+        source: &str,
+        span: Option<SourceSpan>,
+    ) -> Self {
+        let primary_span = span.filter(|span| valid_source_span(source, *span));
+        Self {
+            code,
+            message: message.into_boxed_str(),
+            primary_span,
+            primary_position: primary_span.and_then(|span| source_position(source, span.start())),
+        }
+    }
+
+    pub(crate) fn token(
+        code: DiagnosticCode,
+        message: String,
+        source: &str,
+        offset: usize,
+    ) -> Self {
+        Self::at(code, message, source, source_token_span(source, offset))
+    }
+
     /// Returns the stable error-class code.
     pub const fn code(&self) -> DiagnosticCode {
         self.code
@@ -164,6 +202,12 @@ impl CompileDiagnostic {
 pub enum CompileError {
     /// The complete source exceeds its byte budget.
     SourceTooLong { actual: usize, maximum: usize },
+    /// A source header names an unsupported or malformed syntax version.
+    UnsupportedSyntaxVersion { offset: usize },
+    /// A source-only typed proof reference duplicates a declared name.
+    DuplicateProofReference { offset: usize, name: String },
+    /// A citation names no earlier typed proof reference.
+    UnknownProofReference { offset: usize, name: String },
     /// A lexical or grammar boundary failed at this byte offset.
     Syntax {
         offset: usize,
@@ -247,6 +291,9 @@ impl CompileError {
     pub const fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
             Self::SourceTooLong { .. } => DiagnosticCode::SourceTooLong,
+            Self::UnsupportedSyntaxVersion { .. } => DiagnosticCode::UnsupportedSyntaxVersion,
+            Self::DuplicateProofReference { .. } => DiagnosticCode::DuplicateProofReference,
+            Self::UnknownProofReference { .. } => DiagnosticCode::UnknownProofReference,
             Self::Syntax { .. } => DiagnosticCode::Syntax,
             Self::FoundationMismatch { .. } => DiagnosticCode::FoundationMismatch,
             Self::DuplicateStep { .. } => DiagnosticCode::DuplicateStep,
@@ -279,6 +326,9 @@ impl CompileError {
         match self {
             Self::SourceTooLong { .. } => None,
             Self::Syntax { offset, .. }
+            | Self::UnsupportedSyntaxVersion { offset }
+            | Self::DuplicateProofReference { offset, .. }
+            | Self::UnknownProofReference { offset, .. }
             | Self::FoundationMismatch { offset }
             | Self::DuplicateStep { offset, .. }
             | Self::UnknownStep { offset, .. }
@@ -323,6 +373,9 @@ impl CompileError {
         let span = match self {
             Self::SourceTooLong { .. } => return None,
             Self::Syntax { offset, .. }
+            | Self::UnsupportedSyntaxVersion { offset }
+            | Self::DuplicateProofReference { offset, .. }
+            | Self::UnknownProofReference { offset, .. }
             | Self::FoundationMismatch { offset }
             | Self::DuplicateStep { offset, .. }
             | Self::UnknownStep { offset, .. }
@@ -354,6 +407,15 @@ impl CompileError {
                 format!("source has {actual} bytes; the limit is {maximum}")
             }
             Self::Syntax { expected, .. } => format!("expected {expected}"),
+            Self::UnsupportedSyntaxVersion { .. } => {
+                "expected the supported syntax header `nao 1`".to_owned()
+            }
+            Self::DuplicateProofReference { name, .. } => {
+                format!("duplicate proof reference {}", diagnostic_name(name))
+            }
+            Self::UnknownProofReference { name, .. } => {
+                format!("unknown proof reference {}", diagnostic_name(name))
+            }
             Self::FoundationMismatch { .. } => {
                 format!("unsupported Foundation identifier; expected {FOUNDATION_ID:?}")
             }
@@ -433,6 +495,18 @@ impl fmt::Display for CompileError {
             Self::Syntax { offset, expected } => {
                 write!(formatter, "expected {expected} at byte {offset}")
             }
+            Self::UnsupportedSyntaxVersion { offset } => write!(
+                formatter,
+                "expected the supported syntax header `nao 1` at byte {offset}"
+            ),
+            Self::DuplicateProofReference { offset, name } => write!(
+                formatter,
+                "duplicate proof reference {name:?} at byte {offset}"
+            ),
+            Self::UnknownProofReference { offset, name } => write!(
+                formatter,
+                "unknown proof reference {name:?} at byte {offset}"
+            ),
             Self::FoundationMismatch { offset } => write!(
                 formatter,
                 "unsupported Foundation identifier at byte {offset}; expected {FOUNDATION_ID:?}"

@@ -23,15 +23,21 @@ fn main() -> ExitCode {
     match run(&arguments, &mut output) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("naome-author: {error}");
+            if arguments.iter().any(|argument| argument == "--json") {
+                let _ = writeln!(io::stderr().lock(), "{}", error_json(&error));
+            } else {
+                eprintln!("naome-author: {error}");
+            }
             ExitCode::from(error.exit_code())
         }
     }
 }
 
 fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> {
-    let [command, path] = arguments else {
-        return Err(CliError::Usage);
+    let (command, path, json) = match arguments {
+        [command, path] if path != "--json" => (command, path, false),
+        [command, flag, path] if flag == "--json" => (command, path, true),
+        _ => return Err(CliError::Usage),
     };
     if command != OsStr::new("proof") && command != OsStr::new("question") {
         return Err(CliError::Usage);
@@ -45,16 +51,33 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
     };
     let source = read_source(&path, maximum)?;
     if command == OsStr::new("question") {
-        let question = CompiledQuestion::compile(&source).map_err(|source| CliError::Question {
-            path: path.clone(),
-            source,
+        let question = CompiledQuestion::compile_with_diagnostic(&source).map_err(|error| {
+            CliError::Question {
+                path: path.clone(),
+                diagnostic: Some(error.diagnostic().clone()),
+                source: error.into_error(),
+            }
         })?;
         let canonical = question
             .to_canonical_bytes()
             .map_err(|source| CliError::Question {
                 path: path.clone(),
+                diagnostic: None,
                 source,
             })?;
+        if json {
+            let result = serde_json::json!({
+                "schema_version": 1, "ok": true, "kind": "question",
+                "source_hash": hex(question.source_hash()),
+                "resolution_id": hex(question.resolution_id()),
+                "negation_parity": question.negation_parity(),
+                "canonical_core": hex(question.canonical_core()),
+                "proved_target": hex(&question.proved_target().encode_canonical().map_err(|error| CliError::Question { path: path.clone(), diagnostic: None, source: QuestionError::Mathematical(error.to_string()) })?),
+                "refuted_target": hex(&question.refuted_target().encode_canonical().map_err(|error| CliError::Question { path: path.clone(), diagnostic: None, source: QuestionError::Mathematical(error.to_string()) })?),
+                "canonical_question": hex(&canonical),
+            });
+            return writeln!(output, "{result}").map_err(|source| CliError::Output { source });
+        }
         return write_compiled_question(output, &question, &canonical)
             .map_err(|source| CliError::Output { source });
     }
@@ -63,6 +86,25 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
         diagnostic: error.diagnostic(&source),
         source: Box::new(error),
     })?;
+    if json {
+        let result = match &artifact {
+            CompiledArtifact::Proof(proof) => serde_json::json!({
+                "schema_version": 1, "ok": true, "kind": "proof",
+                "statement_id": hex(proof.statement_id().as_bytes()),
+                "derivation_id": hex(proof.derivation_id().as_bytes()),
+                "proof_id": hex(proof.proof_id().as_bytes()),
+                "artifact_id": hex(artifact.artifact_id().as_bytes()),
+                "canonical_proof": hex(proof.canonical_proof_bytes()),
+            }),
+            CompiledArtifact::Definition(definition) => serde_json::json!({
+                "schema_version": 1, "ok": true, "kind": "definition",
+                "definition_id": hex(definition.definition_id().as_bytes()),
+                "artifact_id": hex(definition.artifact_id().as_bytes()),
+                "canonical_definition": hex(definition.canonical_definition_bytes()),
+            }),
+        };
+        return writeln!(output, "{result}").map_err(|source| CliError::Output { source });
+    }
     write_compiled(output, &artifact).map_err(|source| CliError::Output { source })
 }
 
@@ -165,6 +207,7 @@ enum CliError {
     },
     Question {
         path: PathBuf,
+        diagnostic: Option<CompileDiagnostic>,
         source: QuestionError,
     },
     Output {
@@ -219,12 +262,59 @@ impl fmt::Display for CliError {
                     ),
                 }
             }
-            Self::Question { path, source } => {
+            Self::Question { path, source, .. } => {
                 write!(formatter, "{}: {source}", display_path(path))
             }
             Self::Output { source } => write!(formatter, "failed to write output: {source}"),
         }
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut text, "{byte:02x}").expect("String writes cannot fail");
+    }
+    text
+}
+
+fn error_json(error: &CliError) -> serde_json::Value {
+    let diagnostic = match error {
+        CliError::Compile { diagnostic, .. }
+        | CliError::Question {
+            diagnostic: Some(diagnostic),
+            ..
+        } => Some(diagnostic),
+        _ => None,
+    };
+    let phase = match diagnostic.map(CompileDiagnostic::code) {
+        Some(DiagnosticCode::Check | DiagnosticCode::DefinitionCheck) => "check",
+        Some(DiagnosticCode::StatementMismatch | DiagnosticCode::QuestionOpenFormula) => "target",
+        Some(DiagnosticCode::SourceTooLong) => "input",
+        Some(_) => "parse",
+        None if matches!(error, CliError::Output { .. }) => "output",
+        None => "input",
+    };
+    let details = diagnostic.map(|diagnostic| serde_json::json!({
+        "code": diagnostic.code().as_str(),
+        "message": diagnostic.message(),
+        "span": diagnostic.primary_span().map(|span| serde_json::json!({ "start": span.start(), "end": span.end() })),
+        "position": diagnostic.primary_position().map(|position| serde_json::json!({ "line": position.line(), "column": position.column() })),
+    })).or_else(|| match error {
+        CliError::SourceTooLong { maximum, .. } => Some(serde_json::json!({ "code": DiagnosticCode::SourceTooLong.as_str(), "message": format!("source exceeds the {maximum}-byte limit"), "span": null, "position": null })),
+        _ => None,
+    });
+    let message = if details.is_some() {
+        None
+    } else {
+        Some(error.to_string())
+    };
+    serde_json::json!({
+        "schema_version": 1, "ok": false, "phase": phase,
+        "diagnostic": details,
+        "message": message,
+    })
 }
 
 impl Error for CliError {

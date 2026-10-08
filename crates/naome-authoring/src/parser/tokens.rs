@@ -62,7 +62,7 @@ impl<'source> Parser<'source> {
     pub(super) fn keyword(&mut self, expected: &'static str) -> Result<(), CompileError> {
         let offset = self.next_offset();
         let actual = self.name()?;
-        if actual == expected {
+        if actual == expected || actual == self.syntax.keyword(expected) {
             Ok(())
         } else {
             Err(CompileError::Syntax { offset, expected })
@@ -154,12 +154,8 @@ impl<'source> Parser<'source> {
 
     pub(super) fn peek_word(&mut self, expected: &str) -> bool {
         self.skip_trivia();
-        let remainder = &self.source[self.offset..];
-        remainder.starts_with(expected)
-            && remainder[expected.len()..]
-                .chars()
-                .next()
-                .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
+        syntax::word_at(self.source, self.offset, expected)
+            || syntax::word_at(self.source, self.offset, self.syntax.keyword(expected))
     }
 
     pub(super) fn call_end(&mut self) -> Result<(), CompileError> {
@@ -176,18 +172,7 @@ impl<'source> Parser<'source> {
     }
 
     pub(super) fn skip_trivia(&mut self) {
-        loop {
-            while matches!(self.byte(), Some(b' ' | b'\t' | b'\r' | b'\n')) {
-                self.offset += 1;
-            }
-            if self.byte() != Some(b'#') {
-                break;
-            }
-            self.offset += 1;
-            while !matches!(self.byte(), None | Some(b'\n')) {
-                self.offset += 1;
-            }
-        }
+        syntax::trivia(self.source, &mut self.offset);
     }
 
     pub(super) fn byte(&self) -> Option<u8> {

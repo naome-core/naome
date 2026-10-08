@@ -6,6 +6,7 @@ impl<'source> Parser<'source> {
     pub(super) fn proof_step(&mut self) -> Result<ProofStep, CompileError> {
         let rule_offset = self.next_offset();
         let rule = self.name()?;
+        let rule = self.syntax.rule(rule);
         self.punctuation('(')?;
         let step = match rule {
             "simplification" => {
@@ -135,7 +136,7 @@ impl<'source> Parser<'source> {
                 },
             }),
             "cite" => ProofStep::ProofReference {
-                proof_id: self.proof_id()?,
+                proof_id: self.citation()?,
             },
             "generalization" => {
                 let premise = self.earlier_step()?;
@@ -152,6 +153,57 @@ impl<'source> Parser<'source> {
         };
         self.call_end()?;
         Ok(step)
+    }
+
+    pub(super) fn proof_references(&mut self) -> Result<(), CompileError> {
+        self.keyword("refs")?;
+        self.punctuation(':')?;
+        loop {
+            let offset = self.next_offset();
+            let name = self.name()?;
+            if self.reserved_binding_name(name) {
+                return Err(CompileError::Syntax {
+                    offset,
+                    expected: "a non-reserved proof reference name",
+                });
+            }
+            if self.proof_references.contains_key(name) {
+                return Err(CompileError::DuplicateProofReference {
+                    offset,
+                    name: name.to_owned(),
+                });
+            }
+            if self.definition_aliases.contains_key(name) {
+                return Err(CompileError::DuplicateDefinitionAlias {
+                    offset,
+                    name: name.to_owned(),
+                });
+            }
+            self.punctuation('=')?;
+            let id = self.proof_id()?;
+            self.proof_references.insert(name, id);
+            if self.peek_word("formulas")
+                || self.peek_word("statement")
+                || self.peek_word("definition")
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    fn citation(&mut self) -> Result<ProofId, CompileError> {
+        self.skip_trivia();
+        if self.syntax == syntax::SourceSyntax::Legacy || self.byte() == Some(b'"') {
+            return self.proof_id();
+        }
+        let offset = self.next_offset();
+        let name = self.name()?;
+        self.proof_references.get(name).copied().ok_or_else(|| {
+            CompileError::UnknownProofReference {
+                offset,
+                name: name.to_owned(),
+            }
+        })
     }
 
     fn zfc_axiom(&mut self) -> Result<ZfcAxiom, CompileError> {
