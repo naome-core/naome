@@ -142,7 +142,7 @@ struct Node {
     configured: BTreeMap<PeerId, Multiaddr>,
     discovery: discovery::State,
     connections: BTreeMap<ConnectionId, (PeerId, bool)>,
-    relay_listeners: BTreeMap<PeerId, (libp2p::core::transport::ListenerId, Instant)>,
+    relay_listeners: BTreeMap<PeerId, libp2p::core::transport::ListenerId>,
     next_relay_attempt: BTreeMap<PeerId, Instant>,
     enabled: BTreeSet<PeerId>,
     wanted: BTreeMap<ProofId, Wanted>,
@@ -1141,7 +1141,7 @@ impl Node {
                 if let Some(peer) = self
                     .relay_listeners
                     .iter()
-                    .find_map(|(peer, (id, _))| (*id == listener_id).then_some(*peer))
+                    .find_map(|(peer, id)| (*id == listener_id).then_some(*peer))
                 {
                     self.relay_listeners.remove(&peer);
                     self.next_relay_attempt
@@ -1158,7 +1158,7 @@ impl Node {
                 if let Some(peer) = self
                     .relay_listeners
                     .iter()
-                    .find_map(|(peer, (id, _))| (*id == listener_id).then_some(*peer))
+                    .find_map(|(peer, id)| (*id == listener_id).then_some(*peer))
                 {
                     self.relay_listeners.remove(&peer);
                     self.next_relay_attempt

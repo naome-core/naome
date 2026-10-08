@@ -127,7 +127,7 @@ fn python_driver(root: &std::path::Path, mode: &str) -> Command {
             .arg("--run-driver");
         command
     } else {
-        Command::new(if cfg!(windows) { "python" } else { "python3" })
+        Command::new("python3")
     }
 }
 
@@ -333,8 +333,7 @@ mod developer_transport {
                 .unwrap()
                 .as_nanos()
         ));
-        let python = if cfg!(windows) { "python" } else { "python3" };
-        let mut command = Command::new(python);
+        let mut command = Command::new("python3");
         command
             .arg(root.join(if closed_input {
                 "crates/naome-knowledge/tests/support/proof_network_service.py"
