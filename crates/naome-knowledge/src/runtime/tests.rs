@@ -4,9 +4,9 @@ use naome_authoring::CompiledQuestion;
 use naome_proof::ProofId;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-struct Directory(PathBuf);
+pub(super) struct Directory(pub(super) PathBuf);
 impl Directory {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "naome-runtime-api-{}-{}",
@@ -62,7 +62,8 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         stopped_status(&directory.0).await.unwrap(),
         Status {
             running: false,
-            accepted_proofs: 0
+            accepted_proofs: 0,
+            interest: String::new()
         }
     );
     let mut graph = Graph::open(&directory.0).unwrap();
@@ -107,7 +108,8 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         response.unwrap().unwrap(),
         Status {
             running: true,
-            accepted_proofs: 2
+            accepted_proofs: 2,
+            interest: String::new()
         }
     );
     drop(control);
@@ -116,7 +118,8 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         status(&directory.0).await.unwrap(),
         Status {
             running: false,
-            accepted_proofs: 2
+            accepted_proofs: 2,
+            interest: String::new()
         }
     );
     let recovered = Graph::open(&directory.0).unwrap();
@@ -169,7 +172,8 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
         status,
         Status {
             running: false,
-            accepted_proofs: 1
+            accepted_proofs: 1,
+            interest: String::new()
         }
     );
 }
@@ -273,6 +277,61 @@ fn diagnostic_symlinks_cannot_modify_a_foreign_file() {
 }
 
 #[tokio::test]
+async fn interest_respects_graph_ownership_and_instance_bound_control() {
+    let directory = Directory::new();
+    let graph = Graph::open(&directory.0).unwrap();
+    assert!(interest(&directory.0, "cannot write").await.is_err());
+    assert!(!directory.0.join("owner.json").exists());
+    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
+    let text = "\u{0001}".repeat(1024);
+    let (served, response) = tokio::join!(
+        async {
+            let (stream, _) = control.listener.accept().await.unwrap();
+            control.respond(stream, graph.ids().len(), true).await
+        },
+        interest(&directory.0, &text)
+    );
+    assert!(!served.unwrap());
+    assert_eq!(response.unwrap().interest, "\u{0001}".repeat(1024));
+    let snapshot = control.owner_profile().unwrap();
+    assert_eq!(snapshot.version, 1);
+    assert_eq!(snapshot.revision, 1);
+    assert_eq!(snapshot.interest, "\u{0001}".repeat(1024));
+    assert_eq!(snapshot.digest.len(), 64);
+    let (served, _) = tokio::join!(
+        async {
+            let (stream, _) = control.listener.accept().await.unwrap();
+            control.respond(stream, graph.ids().len(), true).await
+        },
+        async {
+            let mut stream = UnixStream::connect(&control.endpoint.socket).await.unwrap();
+            write_frame(
+                &mut stream,
+                &Request {
+                    version: 1,
+                    token: "cd".repeat(32),
+                    operation: Operation::Interest("unauthorized".into()),
+                },
+            )
+            .await
+            .unwrap();
+        }
+    );
+    assert!(served.unwrap_err().contains("instance mismatch"));
+    assert_eq!(owner::load(&directory.0).unwrap(), "\u{0001}".repeat(1024));
+    drop(control);
+    drop(graph);
+    assert_eq!(interest(&directory.0, "").await.unwrap().interest, "");
+}
+
+#[test]
+fn old_status_json_defaults_interest_to_empty() {
+    let status: Status = serde_json::from_str(r#"{"running":false,"accepted_proofs":3}"#).unwrap();
+    assert_eq!(status.interest, "");
+    assert_eq!(status.accepted_proofs, 3);
+}
+
+#[tokio::test]
 async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_never_rotates() {
     let directory = Directory::new();
     let question = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
@@ -324,4 +383,30 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
         .unwrap(),
         serde_json::to_vec(&proof).unwrap()
     );
+}
+
+#[tokio::test]
+async fn uncertain_owner_cannot_supply_a_profile_but_stop_still_works() {
+    let directory = Directory::new();
+    let graph = Graph::open(&directory.0).unwrap();
+    owner::update(&directory.0, "previous").unwrap();
+    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
+    control.owner.lock().unwrap().recovery_error = Some("recovery required".into());
+    assert!(
+        control
+            .owner_profile()
+            .unwrap_err()
+            .contains("recovery required")
+    );
+    let (served, response) = tokio::join!(
+        async {
+            let (stream, _) = control.listener.accept().await.unwrap();
+            control.respond(stream, graph.ids().len(), true).await
+        },
+        request(&directory.0, Operation::Stop, None)
+    );
+    assert!(served.unwrap());
+    let stopped = response.unwrap().unwrap();
+    assert!(!stopped.running);
+    assert_eq!(stopped.interest, "previous");
 }
