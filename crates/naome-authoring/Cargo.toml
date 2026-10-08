@@ -7,10 +7,14 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+developer-tools = []
+
 [[bin]]
 name = "naome-author"
 path = "src/bin/naome.rs"
 doc = false
+required-features = ["developer-tools"]
 
 [dependencies]
 naome-checker = { path = "../naome-checker" }

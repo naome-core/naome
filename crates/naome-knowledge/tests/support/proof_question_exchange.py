@@ -152,7 +152,7 @@ class QuestionDriver(DiscoveryDriver):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--binary", type=Path, required=True, help="developer-tools naome-knowledge-dev executable")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--profile", choices=["test", "release"], required=True)

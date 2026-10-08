@@ -249,6 +249,7 @@ async fn running_node_checked_proof_ingest_invalidates_pending_interest() {
             }
         }),
         commands,
+        None,
     ));
     assert_eq!(context(&handle).await.checked_proofs, 0);
     let readonly_client = handle.clone();

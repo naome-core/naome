@@ -6,13 +6,17 @@
 //! Union convergence requires every relevant question to be selected, compatible
 //! honest peers to reconnect, and data to fit the explicit local resource limits.
 
+mod autonomous;
 mod discovery;
 mod graph;
 mod intake;
+pub mod mocks;
 pub mod network;
 mod object;
 pub mod question;
 pub mod relay;
+#[cfg(unix)]
+pub mod runtime;
 mod store;
 mod wire;
 

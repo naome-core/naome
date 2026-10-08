@@ -2075,6 +2075,7 @@ dependencies = [
  "naome-checker",
  "naome-foundation",
  "naome-proof",
+ "nix",
  "serde",
  "serde_json",
  "sha2 0.11.0",
