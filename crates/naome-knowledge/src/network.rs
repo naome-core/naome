@@ -443,7 +443,9 @@ where
         })
         .with_connection_timeout(REQUEST_TIMEOUT)
         .build();
-    swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    swarm
+        .listen_on(listen)
+        .map_err(|error| format!("listen {}: {error:?}", config.listen))?;
     for address in &settings.external_addresses {
         let address: Multiaddr = address
             .parse()

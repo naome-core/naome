@@ -1832,8 +1832,6 @@ dependencies = [
 [[package]]
 name = "libp2p-tcp"
 version = "0.44.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb6585b9309699f58704ec9ab0bb102eca7a3777170fa91a8678d73ca9cafa93"
 dependencies = [
  "futures",
  "futures-timer",
@@ -1843,6 +1841,7 @@ dependencies = [
  "socket2 0.6.5",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
