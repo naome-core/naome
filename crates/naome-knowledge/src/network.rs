@@ -595,7 +595,7 @@ where
         }
         questions.cancel_closed();
         if let Some(autonomous) = &mut autonomous {
-            let admitted = autonomous.advance(&mut node.graph, &mut questions);
+            let admitted = autonomous.advance(&mut node.graph, &mut questions, control.as_ref());
             node.publish_admitted(&admitted, "mock_producer");
             if let Some(error)=autonomous.error(){return Err(error.to_owned());}
         }

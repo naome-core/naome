@@ -304,6 +304,10 @@ pub(crate) struct Record {
     pub id: u64,
     pub input: Input,
     pub binding: Binding,
+    /// The exact completed provider request is immutable across recovery.
+    /// Absence on a generation record is accepted only as legacy replay data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<crate::generation::Request>,
     pub provider: String,
     pub configuration: String,
     pub settings: RoleSettings,
@@ -370,7 +374,12 @@ impl Drop for Ticket {
 }
 
 enum Command {
-    Submit(Input, Binding, oneshot::Sender<Completion>),
+    Submit(
+        Input,
+        Binding,
+        Option<Box<crate::generation::Request>>,
+        oneshot::Sender<Completion>,
+    ),
     Acknowledge(u64),
     Discard(Input, Binding),
 }
@@ -381,12 +390,36 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    /// Interest retains its existing bounded selector input. Generation must
+    /// carry a completed request rather than inventing absent native context.
     pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
+        self.submit_request(input, binding, None)
+    }
+    pub(crate) fn submit_generation(
+        &self,
+        input: Input,
+        binding: Binding,
+        request: crate::generation::Request,
+    ) -> Result<Ticket, String> {
+        self.submit_request(input, binding, Some(request))
+    }
+    fn submit_request(
+        &self,
+        input: Input,
+        binding: Binding,
+        generation: Option<crate::generation::Request>,
+    ) -> Result<Ticket, String> {
         input.validate()?;
         binding.validate()?;
+        validate_generation(&input, &binding, generation.as_ref())?;
         let (sender, receiver) = oneshot::channel();
         self.sender
-            .try_send(Command::Submit(input.clone(), binding.clone(), sender))
+            .try_send(Command::Submit(
+                input.clone(),
+                binding.clone(),
+                generation.map(Box::new),
+                sender,
+            ))
             .map_err(|_| "research command capacity or stopped service")?;
         Ok(Ticket {
             receiver,
@@ -405,6 +438,26 @@ impl Client {
         self.sender
             .try_send(Command::Discard(input, binding))
             .map_err(|_| "research retirement command capacity or stopped service".into())
+    }
+}
+
+/// Enforce the role and original input/binding before any provider can start.
+fn validate_generation(
+    input: &Input,
+    binding: &Binding,
+    request: Option<&crate::generation::Request>,
+) -> Result<(), String> {
+    match (input, request) {
+        (Input::Find { .. } | Input::Solve { .. }, Some(request)) => {
+            request.validate(input, binding)
+        }
+        (Input::Find { .. } | Input::Solve { .. }, None) => {
+            Err("generation context unavailable: completed request required".into())
+        }
+        (Input::Interest { .. }, None) => Ok(()),
+        (Input::Interest { .. }, Some(_)) => {
+            Err("interest job carries a generation request".into())
+        }
     }
 }
 

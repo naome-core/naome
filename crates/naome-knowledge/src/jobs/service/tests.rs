@@ -32,17 +32,32 @@ fn fixture(units: u32) -> (Directory, Owner) {
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
     (directory, Owner::new(disk, journal, settings))
 }
+fn generation_request(input: &Input, binding: &Binding) -> crate::generation::Request {
+    crate::generation::Request::build(
+        input,
+        binding,
+        &crate::Graph::default(),
+        crate::generation::OwnerContext::Unavailable {
+            reason: "service fixture has no owner control".into(),
+        },
+    )
+    .unwrap()
+}
+fn binding(epoch: u8) -> Binding {
+    Binding::new(
+        [0; 32],
+        naome_checker::question::PrefilterPolicy::default().identity(),
+    )
+    .with_selection([epoch; 32])
+}
 fn submit(owner: &mut Owner, epoch: u8) -> oneshot::Receiver<Completion> {
     let (reply, receipt) = oneshot::channel();
-    owner
-        .submit(
-            Input::Solve {
-                question: crate::mocks::create_question(0),
-            },
-            Binding::new([0; 32], [0; 32]).with_selection([epoch; 32]),
-            reply,
-        )
-        .unwrap();
+    let input = Input::Solve {
+        question: crate::mocks::create_question(0),
+    };
+    let binding = binding(epoch);
+    let request = generation_request(&input, &binding);
+    owner.submit(input, binding, Some(request), reply).unwrap();
     receipt
 }
 
@@ -213,7 +228,8 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
             owner
                 .submit(
                     Input::Find { cursor },
-                    Binding::new([0; 32], [0; 32]),
+                    binding(0),
+                    Some(generation_request(&Input::Find { cursor }, &binding(0))),
                     reply,
                 )
                 .unwrap();
@@ -459,7 +475,8 @@ fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_avai
     owner
         .submit(
             Input::Find { cursor: 0 },
-            Binding::new([0; 32], [0; 32]),
+            binding(0),
+            Some(generation_request(&Input::Find { cursor: 0 }, &binding(0))),
             reply,
         )
         .unwrap();
@@ -481,4 +498,304 @@ fn cleanup_error_is_preserved_alongside_an_earlier_driver_failure() {
     )
     .unwrap_err();
     assert!(error.contains("driver clock failed") && error.contains("termination unconfirmed"));
+}
+
+#[test]
+fn legacy_generation_migration_retires_candidates_and_preserves_original_allowances() {
+    for state in [State::Running, State::Complete, State::InDoubt] {
+        let (directory, mut owner) = fixture(4);
+        let _receipt = submit(&mut owner, 1);
+        owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+        owner.reserve(1, 1).unwrap();
+        let record = owner.journal.records.get_mut(&1).unwrap();
+        record.checkpoint = 1;
+        record.state = state;
+        if state == State::Complete {
+            record.result = Some(Output::NoCandidate);
+        }
+        record.generation = None;
+        let original = record.clone();
+        let original_account = owner.journal.accounts.values().next().unwrap().clone();
+        owner.disk.save(&owner.journal).unwrap();
+        let settings = owner.settings;
+        drop(owner);
+        let (_, journal) = Disk::open(&directory.0, settings, 777).unwrap();
+        let restored = &journal.records[&1];
+        assert_eq!(
+            restored.state,
+            if state == State::InDoubt {
+                State::InDoubt
+            } else {
+                State::Failed
+            }
+        );
+        assert!(restored.result.is_none() && restored.generation.is_none());
+        if state != State::InDoubt {
+            assert!(
+                restored
+                    .failure
+                    .as_ref()
+                    .unwrap()
+                    .contains("legacy generation context unavailable")
+            );
+        }
+        assert_eq!(restored.created_ms, original.created_ms);
+        assert_eq!(restored.expires_ms, original.expires_ms);
+        assert_eq!(restored.reserved_units, original.reserved_units);
+        assert_eq!(restored.checkpoint, original.checkpoint);
+        assert!(restored.spent_ms >= original.spent_ms);
+        let account = journal.accounts.values().next().unwrap();
+        assert_eq!(account.created_ms, original_account.created_ms);
+        assert_eq!(account.expires_ms, original_account.expires_ms);
+        assert_eq!(account.reserved_units, original_account.reserved_units);
+        assert_eq!(journal.next_id, 2);
+        assert_eq!(journal.next_cursor, 0);
+    }
+}
+
+#[test]
+fn legacy_finding_migration_does_not_reissue_the_consumed_cursor() {
+    let (directory, mut owner) = fixture(4);
+    let (reply, _receipt) = oneshot::channel();
+    let input = Input::Find { cursor: 41 };
+    let binding = binding(0);
+    let request = generation_request(&input, &binding);
+    owner.submit(input, binding, Some(request), reply).unwrap();
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    record.generation = None;
+    owner.disk.save(&owner.journal).unwrap();
+    let settings = owner.settings;
+    drop(owner);
+    let (_, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    assert_eq!(journal.next_cursor, 42);
+    assert_eq!(journal.records[&1].state, State::Failed);
+    assert_eq!(journal.next_id, 2);
+}
+
+#[test]
+fn changed_request_context_does_not_alias_or_renew_the_original_obligation() {
+    let (_directory, mut owner) = fixture(4);
+    let _first = submit(&mut owner, 1);
+    let input = Input::Solve {
+        question: crate::mocks::create_question(0),
+    };
+    let binding = binding(1);
+    let request = crate::generation::Request::build(
+        &input,
+        &binding,
+        &crate::Graph::default(),
+        crate::generation::OwnerContext::Unavailable {
+            reason: "different explicit fixture context".into(),
+        },
+    )
+    .unwrap();
+    let (reply, _receipt) = oneshot::channel();
+    owner.submit(input, binding, Some(request), reply).unwrap();
+    assert_eq!(owner.journal.records.len(), 2);
+    assert_eq!(owner.journal.accounts.len(), 1);
+    assert_eq!(
+        owner.journal.records[&1].created_ms,
+        owner.journal.records[&2].created_ms
+    );
+    assert_eq!(
+        owner.journal.records[&1].expires_ms,
+        owner.journal.records[&2].expires_ms
+    );
+}
+
+#[test]
+fn obsolete_complete_requests_retire_without_renewing_time_work_or_finding_cursors() {
+    for finding in [false, true] {
+        for state in [State::Running, State::Complete, State::InDoubt] {
+            let (directory, mut owner) = fixture(4);
+            let input = if finding {
+                Input::Find { cursor: 41 }
+            } else {
+                Input::Solve {
+                    question: crate::mocks::create_question(0),
+                }
+            };
+            let binding = binding(0);
+            let request = generation_request(&input, &binding);
+            let (reply, _receipt) = oneshot::channel();
+            owner.submit(input, binding, Some(request), reply).unwrap();
+            owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+            owner.reserve(1, 1).unwrap();
+            let record = owner.journal.records.get_mut(&1).unwrap();
+            record.checkpoint = 1;
+            record.state = state;
+            if state == State::Complete {
+                record.result = Some(if finding {
+                    Output::Question(crate::mocks::create_question(0))
+                } else {
+                    Output::NoCandidate
+                });
+            }
+            let obsolete = record.generation.clone().unwrap().obsolete_for_test();
+            assert!(!obsolete.current_instructions());
+            obsolete
+                .validate_retained(&record.input, &record.binding)
+                .unwrap();
+            assert!(obsolete.validate(&record.input, &record.binding).is_err());
+            record.generation = Some(obsolete);
+            let original = record.clone();
+            let original_cursor = owner.journal.next_cursor;
+            let original_total_units = owner.journal.total_reserved_units;
+            owner.save().unwrap();
+            let settings = owner.settings;
+            drop(owner);
+            let (disk, journal) = Disk::open(&directory.0, settings, 999).unwrap();
+            let restored = &journal.records[&1];
+            assert_eq!(
+                restored.state,
+                if state == State::InDoubt {
+                    State::InDoubt
+                } else {
+                    State::Failed
+                }
+            );
+            assert_eq!(restored.generation, original.generation);
+            assert!(restored.result.is_none());
+            if state != State::InDoubt {
+                assert!(
+                    restored
+                        .failure
+                        .as_ref()
+                        .unwrap()
+                        .contains("instructions changed")
+                );
+            }
+            assert_eq!(restored.created_ms, original.created_ms);
+            assert_eq!(restored.expires_ms, original.expires_ms);
+            assert_eq!(restored.reserved_units, original.reserved_units);
+            assert_eq!(restored.checkpoint, original.checkpoint);
+            assert!(restored.spent_ms >= original.spent_ms);
+            assert_eq!(journal.next_cursor, original_cursor);
+            assert_eq!(journal.next_id, 2);
+            assert_eq!(journal.total_reserved_units, original_total_units);
+            if !finding {
+                let account = journal.accounts.values().next().unwrap();
+                assert_eq!(account.created_ms, original.created_ms);
+                assert_eq!(account.expires_ms, original.expires_ms);
+                assert_eq!(account.reserved_units, original.reserved_units);
+            }
+            let mut recovered = Owner::new(disk, journal, settings);
+            recovered.save().unwrap();
+            let record = recovered.journal.records[&1].clone();
+            let (reply, _receipt) = oneshot::channel();
+            assert!(
+                recovered
+                    .submit(record.input, record.binding, record.generation, reply)
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn corrupt_request_identity_is_rejected_instead_of_classified_as_an_old_prompt() {
+    let (directory, mut owner) = fixture(4);
+    let _receipt = submit(&mut owner, 1);
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    let mut value = serde_json::to_value(record.generation.as_ref().unwrap()).unwrap();
+    value["system"] =
+        serde_json::json!("an altered instruction without its original request identity");
+    record.generation = Some(serde_json::from_value(value).unwrap());
+    owner.disk.save(&owner.journal).unwrap();
+    let settings = owner.settings;
+    drop(owner);
+    assert!(Disk::open(&directory.0, settings, 0).is_err());
+}
+
+#[test]
+fn hot_save_preserves_exact_canonical_envelope_and_full_completed_request_bytes() {
+    let (directory, mut owner) = fixture(4);
+    let _receipt = submit(&mut owner, 1);
+    owner.save().unwrap();
+    #[derive(Serialize)]
+    struct PreviousEnvelope<'a> {
+        version: u8,
+        payload: &'a Journal,
+        sha256: String,
+    }
+    let expected = serde_json::to_vec(&PreviousEnvelope {
+        version: 1,
+        payload: &owner.journal,
+        sha256: identity(&owner.journal),
+    })
+    .unwrap();
+    let path = directory.0.join("research/jobs.json");
+    assert_eq!(fs::read(&path).unwrap(), expected);
+    let restored: Journal = journal::read(&path, MAX_JOURNAL_BYTES).unwrap().unwrap();
+    restored.validate(owner.settings).unwrap();
+    let request = restored.records[&1].generation.as_ref().unwrap();
+    assert_eq!(
+        request,
+        owner.journal.records[&1].generation.as_ref().unwrap()
+    );
+    request
+        .recheck_retained(&restored.records[&1].input, &restored.records[&1].binding)
+        .unwrap();
+}
+
+#[test]
+fn checkpoint_write_encodes_payload_once_preserving_escaping_and_exact_limit() {
+    use std::cell::Cell;
+    struct Counted<'a> {
+        value: &'a serde_json::Value,
+        calls: &'a Cell<usize>,
+    }
+    impl Serialize for Counted<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.calls.set(self.calls.get() + 1);
+            self.value.serialize(serializer)
+        }
+    }
+    let directory = Directory::new();
+    let path = directory.0.join("checkpoint.json");
+    let value = serde_json::json!({"text":"quotes \" slash \\ newline \n null \u{0000} lambda λ", "array":[true,false,null,42]});
+    #[derive(Serialize)]
+    struct PreviousEnvelope<'a> {
+        version: u8,
+        payload: &'a serde_json::Value,
+        sha256: String,
+    }
+    let expected = serde_json::to_vec(&PreviousEnvelope {
+        version: 1,
+        payload: &value,
+        sha256: identity(&value),
+    })
+    .unwrap();
+    let calls = Cell::new(0);
+    journal::write(
+        &path,
+        &Counted {
+            value: &value,
+            calls: &calls,
+        },
+        expected.len(),
+    )
+    .unwrap();
+    assert_eq!(
+        calls.get(),
+        1,
+        "immutable checkpoint payload must be encoded only once"
+    );
+    assert_eq!(fs::read(&path).unwrap(), expected);
+    let restored: serde_json::Value = journal::read(&path, expected.len()).unwrap().unwrap();
+    assert_eq!(restored, value);
+    assert!(journal::write(&path, &value, expected.len() - 1).is_err());
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        expected,
+        "oversized write must preserve the prior complete checkpoint"
+    );
+}
+
+#[test]
+fn hot_lifecycle_checks_remain_strict_after_immutable_request_qualification() {
+    let (_directory, mut owner) = fixture(4);
+    let _receipt = submit(&mut owner, 1);
+    owner.journal.records.get_mut(&1).unwrap().reserved_units = 5;
+    assert!(owner.save().unwrap_err().contains("budget differs"));
 }

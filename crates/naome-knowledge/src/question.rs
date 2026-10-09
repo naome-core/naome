@@ -485,6 +485,10 @@ where
         )
     }
 
+    /// The current deterministic admission requirements accompany generation.
+    pub(crate) fn generation_policy(&self) -> PrefilterPolicy {
+        self.policy
+    }
     pub(crate) fn context_key(&self, graph: &Graph) -> (Identity, Identity) {
         (self.snapshot(graph).identity(), self.policy.identity())
     }

@@ -179,7 +179,7 @@ impl Owner {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
-                    Some(Command::Submit(input,binding,reply))=>self.submit(input,binding,reply)?,
+                    Some(Command::Submit(input,binding,generation,reply))=>self.submit(input,binding,generation.map(|r|*r),reply)?,
                     Some(Command::Acknowledge(id))=>{
                         if id!=0 {
                             let Some(record)=self.journal.records.get_mut(&id) else {
@@ -325,11 +325,11 @@ impl Owner {
             return Err("research clock moved backwards; no fresh allowance".into());
         }
         self.journal.observed_ms = now;
-        if !self.compact_bytes(0)? {
-            return Err("research reserved result byte capacity".into());
-        }
-        self.journal.validate(self.settings)?;
-        self.disk.save(&self.journal)?;
+        let payload = self
+            .compact_payload(0)?
+            .ok_or("research reserved result byte capacity")?;
+        self.journal.validate_lifecycle(self.settings)?;
+        self.disk.save_payload(&payload)?;
         self.flushed = Instant::now();
         Ok(())
     }
@@ -345,7 +345,7 @@ impl Owner {
                 .max()
                 .unwrap_or(0),
         );
-        self.journal.validate(self.settings)?;
+        self.journal.validate_lifecycle(self.settings)?;
         self.disk.save(&self.journal)
     }
 
@@ -353,11 +353,15 @@ impl Owner {
         &mut self,
         input: Input,
         binding: Binding,
+        generation: Option<crate::generation::Request>,
         reply: oneshot::Sender<Completion>,
     ) -> Result<(), String> {
         if reply.is_closed() {
             return Ok(());
         }
+        input.validate()?;
+        binding.validate()?;
+        validate_generation(&input, &binding, generation.as_ref())?;
         let settings = self.settings.for_input(&input);
         if self
             .journal
@@ -380,6 +384,7 @@ impl Owner {
             .find(|r| {
                 r.input == input
                     && r.binding == binding
+                    && r.generation == generation
                     && !r.acknowledged
                     && r.configuration == identity(&settings)
             })
@@ -399,7 +404,7 @@ impl Owner {
             return Ok(());
         }
         self.compact();
-        let input_bytes = serde_json::to_vec(&(&input, &binding, settings))
+        let input_bytes = serde_json::to_vec(&(&input, &binding, &generation, settings))
             .map_err(|e| e.to_string())?
             .len();
         let reservation = output_reservation(&input)
@@ -485,6 +490,7 @@ impl Owner {
                 id,
                 input: input.clone(),
                 binding: binding.clone(),
+                generation,
                 provider: "naome-deterministic-mocks-v1".into(),
                 configuration: identity(&settings),
                 settings,
@@ -782,6 +788,11 @@ impl Owner {
     }
 
     fn compact_bytes(&mut self, additional: usize) -> Result<bool, String> {
+        self.compact_payload(additional)
+            .map(|payload| payload.is_some())
+    }
+
+    fn compact_payload(&mut self, additional: usize) -> Result<Option<Vec<u8>>, String> {
         self.compact();
         let future = self
             .journal
@@ -793,14 +804,13 @@ impl Owner {
             })
             .ok_or("research result reservation overflow")?;
         loop {
-            let encoded = serde_json::to_vec(&self.journal)
-                .map_err(|e| e.to_string())?
-                .len();
-            if encoded
+            let payload = serde_json::to_vec(&self.journal).map_err(|e| e.to_string())?;
+            if payload
+                .len()
                 .checked_add(future)
                 .is_some_and(|bytes| bytes + 256 <= MAX_JOURNAL_BYTES)
             {
-                return Ok(true);
+                return Ok(Some(payload));
             }
             let oldest = self
                 .journal
@@ -809,7 +819,7 @@ impl Owner {
                 .find(|r| r.state.terminal() && r.acknowledged && !self.running.contains_key(&r.id))
                 .map(|r| r.id);
             let Some(id) = oldest else {
-                return Ok(false);
+                return Ok(None);
             };
             self.journal.records.remove(&id);
             self.journal.retired_jobs = self.journal.retired_jobs.saturating_add(1);
