@@ -4,6 +4,12 @@ static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(unix)]
 #[test]
+fn ordinary_owner_interest_is_exact_durable_and_serialized() {
+    run_autonomous("interest");
+}
+
+#[cfg(unix)]
+#[test]
 fn ordinary_lifecycle_generates_exchanges_and_recovers_checked_proofs() {
     run_autonomous("direct");
 }
@@ -51,7 +57,11 @@ fn run_autonomous(mode: &str) {
     ));
     let mut command = python_driver(&root, mode);
     command
-        .arg(root.join("crates/naome-knowledge/tests/support/autonomous_lifecycle.py"))
+        .arg(root.join(if mode == "interest" {
+            "crates/naome-knowledge/tests/support/owner_interest.py"
+        } else {
+            "crates/naome-knowledge/tests/support/autonomous_lifecycle.py"
+        }))
         .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
         .arg(&directory)
         .args([

@@ -18,7 +18,10 @@ use tokio::{
 };
 
 pub use crate::autonomous::Intervals as RuntimeIntervals;
-const CONTROL_LIMIT: usize = 1_024;
+mod owner;
+pub(crate) use owner::Profile as OwnerProfile;
+
+const CONTROL_LIMIT: usize = 6 * owner::MAX_TEXT_BYTES + 512;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(15);
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
@@ -155,11 +158,13 @@ pub fn report_error(error: &str) {
 }
 
 /// The complete ordinary status surface. Count only unique checked accepted IDs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
     pub running: bool,
     pub accepted_proofs: usize,
+    #[serde(default)]
+    pub interest: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,6 +188,7 @@ struct IdentityReceipt {
 enum Operation {
     Status,
     Stop,
+    Interest(String),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -204,6 +210,12 @@ pub(crate) struct Control {
     listener: UnixListener,
     directory: PathBuf,
     endpoint: Endpoint,
+    owner: Mutex<OwnerState>,
+}
+
+struct OwnerState {
+    text: String,
+    recovery_error: Option<String>,
 }
 
 fn socket_path(directory: &Path) -> PathBuf {
@@ -259,6 +271,7 @@ impl Control {
             return Err("invalid internal launch nonce".into());
         }
         let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+        let text = owner::load(&directory)?;
         let socket = socket_path(&directory);
         match fs::symlink_metadata(&socket) {
             Ok(metadata) if metadata.file_type().is_socket() => {
@@ -293,7 +306,26 @@ impl Control {
             listener,
             directory,
             endpoint,
+            owner: Mutex::new(OwnerState {
+                text,
+                recovery_error: None,
+            }),
         })
+    }
+
+    /// A profile snapshot for same-owner consumers, with validated format,
+    /// revision and digest. Recovery uncertainty never yields a usable profile.
+    pub(crate) fn owner_profile(&self) -> Result<OwnerProfile, String> {
+        let mut owner = self
+            .owner
+            .lock()
+            .map_err(|_| "owner configuration lock poisoned")?;
+        if let Some(error) = &owner.recovery_error {
+            return Err(error.clone());
+        }
+        let profile = owner::profile(&self.directory)?;
+        owner.text = profile.interest.clone();
+        Ok(profile)
     }
 
     pub(crate) async fn respond(
@@ -307,11 +339,44 @@ impl Control {
             return Err("local control instance mismatch".into());
         }
         let stopping = matches!(request.operation, Operation::Stop);
+        let interest = match request.operation {
+            Operation::Status => self.owner_profile()?.interest,
+            Operation::Stop => self
+                .owner
+                .lock()
+                .map_err(|_| "owner configuration lock poisoned")?
+                .text
+                .clone(),
+            Operation::Interest(text) => {
+                // Serialize transitions even if the consumer serves concurrent
+                // clients. Never retain this guard across the response await.
+                let mut owner = self
+                    .owner
+                    .lock()
+                    .map_err(|_| "owner configuration lock poisoned")?;
+                if let Some(error) = &owner.recovery_error {
+                    return Err(error.clone());
+                }
+                match owner::update(&self.directory, &text) {
+                    Ok(text) => {
+                        owner.text = text.clone();
+                        text
+                    }
+                    Err(error) => {
+                        if error.recovery_required {
+                            owner.recovery_error = Some(error.message.clone());
+                        }
+                        return Err(error.message);
+                    }
+                }
+            }
+        };
         let response = Response {
             token: self.endpoint.token.clone(),
             status: Status {
                 running: ready && !stopping,
                 accepted_proofs: count,
+                interest,
             },
         };
         write_frame(&mut stream, &response).await?;
@@ -563,6 +628,22 @@ async fn stopped_status(directory: &Path) -> Result<Status, String> {
     Ok(Status {
         running: false,
         accepted_proofs: graph.ids().len(),
+        interest: owner::load(directory)?,
+    })
+}
+
+async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
+    owner::validate(text)?;
+    if let Some(status) = request(directory, Operation::Interest(text.into()), None).await? {
+        return Ok(status);
+    }
+    // Keep the graph's kernel lock through persistence and status construction.
+    // A daemon or embedding racing this command cannot become another writer.
+    let graph = Graph::open(directory)?;
+    Ok(Status {
+        running: false,
+        accepted_proofs: graph.ids().len(),
+        interest: owner::update(directory, text).map_err(|error| error.message)?,
     })
 }
 
@@ -674,18 +755,21 @@ async fn wait_for_stop(
     }
 }
 
-/// Ordinary CLI has exactly three commands. Configuration is persistent local data.
+/// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
 pub async fn execute() -> Result<(), String> {
+    const USAGE: &str = "usage: naome start | stop | status | interest <text>";
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let [command] = arguments.as_slice() else {
-        return Err("usage: naome start | stop | status".into());
+    let (command, text) = match arguments.as_slice() {
+        [command] if matches!(command.to_str(), Some("start" | "stop" | "status")) => {
+            (command.to_str().expect("matched UTF-8 command"), None)
+        }
+        [command, text] if command == "interest" => {
+            let text = text.to_str().ok_or("interest must be valid UTF-8")?;
+            owner::validate(text)?;
+            ("interest", Some(text))
+        }
+        _ => return Err(USAGE.into()),
     };
-    let command = command
-        .to_str()
-        .ok_or("usage: naome start | stop | status")?;
-    if !matches!(command, "start" | "stop" | "status") {
-        return Err("usage: naome start | stop | status".into());
-    }
     let directory = directory()?;
     if std::env::var_os(DAEMON_NONCE).is_some() {
         if command != "start" {
@@ -698,12 +782,13 @@ pub async fn execute() -> Result<(), String> {
         let (config, intervals) = configuration(&directory)?;
         return network::run_autonomous(config, intervals).await;
     }
-    if command != "start" && !directory.exists() {
+    if matches!(command, "stop" | "status") && !directory.exists() {
         println!(
             "{}",
             serde_json::to_string(&Status {
                 running: false,
-                accepted_proofs: 0
+                accepted_proofs: 0,
+                interest: String::new()
             })
             .map_err(|error| error.to_string())?
         );
@@ -716,6 +801,7 @@ pub async fn execute() -> Result<(), String> {
         "start" => start(&directory).await?,
         "stop" => stop(&directory).await?,
         "status" => status(&directory).await?,
+        "interest" => interest(&directory, text.expect("parsed interest text")).await?,
         _ => unreachable!(),
     };
     println!(
