@@ -157,17 +157,16 @@ fn typed_definition_preserves_exact_identity_and_bytes() {
 fn typed_compile_rejects_the_wrong_foundation() {
     assert_diagnostic(
         "foundation = \"wrong\"",
-        DiagnosticCode::FoundationMismatch,
-        Some((1, 14)),
-        "unsupported Foundation identifier; expected \"naome:zfc\"",
+        DiagnosticCode::Syntax,
+        Some((1, 1)),
+        "expected goal",
     );
 }
 
 #[test]
 fn typed_checker_rejects_invalid_modus_ponens() {
     assert_diagnostic(
-        &fixture("implication-identity.nao")
-            .replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)"),
+        &fixture("implication-identity.nao").replace("mp(p1, p2)", "mp(p2, p1)"),
         DiagnosticCode::Check,
         Some((14, 5)),
         "step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise",
@@ -176,9 +175,7 @@ fn typed_checker_rejects_invalid_modus_ponens() {
 
 #[test]
 fn typed_standalone_compilation_has_no_hidden_citation_state() {
-    let source = format!(
-        "foundation = \"naome:zfc\" statement = forall(x, equal(x, x)) proof: p0 = cite(\"{PROOF_ID}\") return p0"
-    );
+    let source = format!("goal = all(x, eq(x, x)) proof: p0 = cite(\"{PROOF_ID}\") return p0");
     assert_diagnostic(
         &source,
         DiagnosticCode::Check,
@@ -212,8 +209,8 @@ fn typed_compile_rejects_legacy_source_syntax() {
     assert_diagnostic(
         "foundation \"naome:zfc\"; theorem old { statement (forall x (equal x x)); proof { step p0 = (equality-reflexivity x); result p0; } }",
         DiagnosticCode::Syntax,
-        Some((1, 12)),
-        "expected `=`",
+        Some((1, 1)),
+        "expected goal",
     );
 }
 
@@ -222,16 +219,16 @@ fn typed_diagnostics_treat_lf_crlf_and_bare_cr_as_one_line_boundary() {
     for line_break in ["\n", "\r\n", "\r"] {
         assert_diagnostic(
             &format!("{line_break}foundation = \"wrong\""),
-            DiagnosticCode::FoundationMismatch,
-            Some((2, 14)),
-            "unsupported Foundation identifier; expected \"naome:zfc\"",
+            DiagnosticCode::Syntax,
+            Some((2, 1)),
+            "expected goal",
         );
     }
 }
 
 #[test]
 fn typed_eof_diagnostic_has_next_line_and_empty_source_span() {
-    let source = "foundation = \"naome:zfc\"\n";
+    let source = "\n";
     assert_diagnostic(
         source,
         DiagnosticCode::Syntax,
@@ -243,11 +240,11 @@ fn typed_eof_diagnostic_has_next_line_and_empty_source_span() {
 
 #[test]
 fn typed_checker_diagnostic_retains_source_step_after_dependency_reordering() {
-    let source = "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  a0 = equality_reflexivity(x)\n  a1 = simplification(equal(x, x), equal(x, x))\n  broken_result = modus_ponens(a1, a0)\n  b0 = equality_reflexivity(y)\n  root = modus_ponens(b0, broken_result)\n  return root";
+    let source = "goal = eq(x, x)\nproof:\n  a0 = refl(x)\n  a1 = simp(eq(x, x), eq(x, x))\n  broken_result = mp(a1, a0)\n  b0 = refl(y)\n  root = mp(b0, broken_result)\n  return root";
     assert_diagnostic(
         source,
         DiagnosticCode::Check,
-        Some((6, 3)),
+        Some((5, 3)),
         "step \"broken_result\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise",
     );
 }
@@ -271,7 +268,7 @@ fn typed_source_limit_is_global_and_has_no_invented_position() {
 fn typed_long_step_name_is_bounded_in_diagnostic_and_complete_in_source_span() {
     let long_name = "x".repeat(8 * 1024);
     let source = format!(
-        "foundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\nproof:\n  p0 = equality_reflexivity(x)\n  p1 = generalization({long_name}, x)\n  return p1"
+        "goal = all(x, eq(x, x))\nproof:\n  p0 = refl(x)\n  p1 = gen({long_name}, x)\n  return p1"
     );
     let diagnostic = diagnostic(&source);
     let span = diagnostic.primary_span().unwrap();
@@ -281,7 +278,7 @@ fn typed_long_step_name_is_bounded_in_diagnostic_and_complete_in_source_span() {
         diagnostic
             .primary_position()
             .map(|position| (position.line(), position.column())),
-        Some((5, 23))
+        Some((4, 12))
     );
     assert_eq!(
         diagnostic.message(),
@@ -295,22 +292,19 @@ fn typed_long_step_name_is_bounded_in_diagnostic_and_complete_in_source_span() {
 fn typed_questions_preserve_source_codec_and_oriented_targets() {
     for (formula, source_hash, parity, canonical) in [
         (
-            "forall(x,equal(x,x))",
-            "25aa1c064bf74e6eca2ddd89f7bc869e8bfffdc6e697e06b5cb0e666fe2f06db",
+            "all(x,eq(x,x))",
+            "15f08bf3b018ed691db79719172476cdc3a7d7fe95e4045eef4f066b8457921a",
             false,
-            "010000003a666f756e646174696f6e203d20226e616f6d653a7a6663220a73746174656d656e74203d20666f72616c6c28782c657175616c28782c7829290a",
+            "0100000016676f616c203d20616c6c28782c657128782c7829290a",
         ),
         (
-            "not_(forall(x,equal(x,x)))",
-            "6d402eaac58572d35d9c66901af032cee01da061a9caa81bd003b87a6cb1943c",
+            "not(all(x,eq(x,x)))",
+            "4d98fa5f7b43e0dcb71bd9c29e19905adec99e338706d2f7754e363a9830c914",
             true,
-            "0100000040666f756e646174696f6e203d20226e616f6d653a7a6663220a73746174656d656e74203d206e6f745f28666f72616c6c28782c657175616c28782c782929290a",
+            "010000001b676f616c203d206e6f7428616c6c28782c657128782c782929290a",
         ),
     ] {
-        let question = CompiledQuestion::compile(&format!(
-            "foundation = \"naome:zfc\"\nstatement = {formula}\n"
-        ))
-        .unwrap();
+        let question = CompiledQuestion::compile(&format!("goal = {formula}\n")).unwrap();
         assert_eq!(question.source_hash(), &hex_decode::hex32(source_hash));
         assert_eq!(
             hex_string(question.resolution_id()),
@@ -328,10 +322,10 @@ fn typed_questions_preserve_source_codec_and_oriented_targets() {
 #[test]
 fn typed_questions_reject_free_variables_proofs_and_source_fields() {
     for source in [
-        "foundation = \"naome:zfc\" statement = equal(x,x)",
-        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: return p",
-        "foundation = \"naome:zfc\" assumptions = [] statement = forall(x,equal(x,x))",
-        "foundation = \"other\" statement = forall(x,equal(x,x))",
+        "goal = eq(x,x)",
+        "goal = all(x,eq(x,x)) proof: return p",
+        "assumptions = [] goal = all(x,eq(x,x))",
+        "foundation = \"other\" goal = all(x,eq(x,x))",
     ] {
         assert!(CompiledQuestion::compile(source).is_err(), "{source}");
     }
@@ -392,14 +386,13 @@ mod developer_cli {
             assert!(output.stderr.is_empty(), "{output:?}");
             assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
         }
-        let source =
-            TemporarySource::new("foundation = \"naome:zfc\"\nstatement = forall(x,equal(x,x))\n");
+        let source = TemporarySource::new("goal = all(x,eq(x,x))\n");
         let output = run("question", &source.path);
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "{output:?}");
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
-            "source_hash 25aa1c064bf74e6eca2ddd89f7bc869e8bfffdc6e697e06b5cb0e666fe2f06db\nresolution_id 8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf\nnegation_parity false\ncanonical_core 040001000000000100000000\ncanonical_question 010000003a666f756e646174696f6e203d20226e616f6d653a7a6663220a73746174656d656e74203d20666f72616c6c28782c657175616c28782c7829290a\n"
+            "source_hash 15f08bf3b018ed691db79719172476cdc3a7d7fe95e4045eef4f066b8457921a\nresolution_id 8cb7976f42b68e2ecd89e610bac06630c872ae961b02a8863ef3712e89583dcf\nnegation_parity false\ncanonical_core 040001000000000100000000\ncanonical_question 0100000016676f616c203d20616c6c28782c657128782c7829290a\n"
         );
     }
 
@@ -412,7 +405,7 @@ mod developer_cli {
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
             format!(
-                "naome-author: {}:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
+                "naome-author: {}:1:1: error[NAO0002]: expected goal\n",
                 source.path.display()
             )
         );
@@ -432,7 +425,7 @@ mod developer_cli {
         assert_eq!(
             stderr,
             format!(
-                "naome-author: {}/proof\\literal\\ninjected\\r\\u{{2028}}\\u{{2029}}.nao:1:14: error[NAO0003]: unsupported Foundation identifier; expected \"naome:zfc\"\n",
+                "naome-author: {}/proof\\literal\\ninjected\\r\\u{{2028}}\\u{{2029}}.nao:1:1: error[NAO0002]: expected goal\n",
                 source.directory.display()
             )
         );
@@ -495,6 +488,114 @@ mod developer_cli {
             String::from_utf8(output.stderr).unwrap(),
             "naome-author: usage: naome-author proof <proof.nao> | question <question.nao>\n"
         );
+    }
+
+    #[test]
+    fn json_authoring_checks_exact_outputs_and_original_source_errors() {
+        for (command, source) in [
+            (
+                "proof",
+                "goal=all(x,eq(x,x)) proof: a=refl(x) b=gen(a,x) return b",
+            ),
+            ("proof", "def R=relation(x):eq(x,x)"),
+            ("question", "goal=not(all(x,eq(x,x)))"),
+        ] {
+            let file = TemporarySource::new(source);
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args([command, "--json"])
+                .arg(&file.path)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stderr.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(json["schema_version"], 1);
+            assert_eq!(json["ok"], true);
+            if command == "question" {
+                let question = CompiledQuestion::compile(source).unwrap();
+                assert_eq!(
+                    json["canonical_core"],
+                    hex_string(question.canonical_core())
+                );
+                assert_eq!(
+                    json["proved_target"],
+                    hex_string(&question.proved_target().encode_canonical().unwrap())
+                );
+                assert_eq!(
+                    json["refuted_target"],
+                    hex_string(&question.refuted_target().encode_canonical().unwrap())
+                );
+                assert_eq!(
+                    json["canonical_question"],
+                    hex_string(&question.to_canonical_bytes().unwrap())
+                );
+            } else if json["kind"] == "proof" {
+                assert_eq!(json["canonical_proof"], PROOF_BYTES);
+                assert_eq!(json["proof_id"], PROOF_ID);
+            } else {
+                assert_eq!(json["canonical_definition"], SELF_EQUAL_DEFINITION_BYTES);
+                assert_eq!(json["definition_id"], SELF_EQUAL_DEFINITION_ID);
+            }
+        }
+        for (command, source, code, token) in [
+            (
+                "proof",
+                "# ä\r\ngoal=all(x,eq(x,x)) proof: a=refl(x) b=gen(missing,x) return b",
+                "NAO0005",
+                "missing",
+            ),
+            (
+                "question",
+                "# ä\r\nlet: A=eq(x,x) goal=all(x,missing)",
+                "NAO0030",
+                "missing",
+            ),
+            ("proof", "nao 2 goal=all(x,eq(x,x))", "NAO0002", "nao"),
+        ] {
+            let file = TemporarySource::new(source);
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args([command, "--json"])
+                .arg(&file.path)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(json["ok"], false);
+            assert_eq!(json["diagnostic"]["code"], code);
+            let start = json["diagnostic"]["span"]["start"].as_u64().unwrap() as usize;
+            let end = json["diagnostic"]["span"]["end"].as_u64().unwrap() as usize;
+            assert_eq!(&source[start..end], token);
+        }
+    }
+
+    #[test]
+    fn json_flag_requires_one_source_and_raw_limit_keeps_its_code() {
+        for args in [
+            vec!["proof", "--json"],
+            vec!["question", "--json"],
+            vec!["proof", "--json", "--json", "file.nao"],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args(args)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(2));
+            assert!(output.stdout.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(json["phase"], "input");
+        }
+        let file = TemporarySource::new(&" ".repeat(QUESTION_SOURCE_MAX_BYTES + 1));
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .args(["question", "--json"])
+            .arg(&file.path)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(json["diagnostic"]["code"], "NAO0001");
+        assert!(json["diagnostic"]["span"].is_null());
     }
 
     struct TemporarySource {

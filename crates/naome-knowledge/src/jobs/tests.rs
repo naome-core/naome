@@ -85,7 +85,7 @@ fn finite_role_horizons_accept_days_and_reject_unbounded_values() {
 
 #[test]
 fn source_binding_preserves_original_question_orientation_and_strict_schema() {
-    let source = "foundation = \"naome:zfc\" statement = not_(forall(x,member(x,x)))";
+    let source = "goal = not(all(x,mem(x,x)))";
     let input = Input::Solve {
         question: source.into(),
     };

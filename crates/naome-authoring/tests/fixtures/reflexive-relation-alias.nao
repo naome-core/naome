@@ -1,7 +1,7 @@
-foundation = "naome:zfc"
 
-definitions:
+
+defs:
     base = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
 
-definition same = relation(x):
+def same = relation(x):
     base(x)

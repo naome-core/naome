@@ -16,22 +16,16 @@ use std::{
 };
 
 fn source(index: usize) -> String {
-    let a = "forall(x, equal(x,x))";
-    let mut b = "member(y,y)".to_owned();
+    let a = "all(x, eq(x,x))";
+    let mut b = "mem(y,y)".to_owned();
     for bit in format!("{index:b}").bytes() {
         b = format!(
-            "implies({}, {b})",
-            if bit == b'1' {
-                "equal(y,y)"
-            } else {
-                "member(y,y)"
-            }
+            "imp({}, {b})",
+            if bit == b'1' { "eq(y,y)" } else { "mem(y,y)" }
         );
     }
-    b = format!("forall(y,{b})");
-    format!(
-        "foundation = \"naome:zfc\" statement = implies({a},implies({b},{a})) proof: p0 = simplification({a},{b}) return p0"
-    )
+    b = format!("all(y,{b})");
+    format!("goal = imp({a},imp({b},{a})) proof: p0 = simp({a},{b}) return p0")
 }
 
 fn fixture(index: usize) -> (Envelope, Metadata) {
@@ -128,7 +122,9 @@ where
 #[test]
 fn descriptions_bind_the_checked_statement_and_preserve_existing_proof_addresses() {
     let mut graph = Graph::default();
-    let object = graph.author("foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) return p1").unwrap();
+    let object = graph
+        .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+        .unwrap();
     assert_eq!(
         object.proof_id,
         "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
@@ -435,12 +431,12 @@ fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
         .unwrap()
         .unwrap()
         .question
-        .split("statement = ")
+        .split("goal = ")
         .nth(1)
         .unwrap()
         .to_owned();
-    let b = "forall(z,member(z,z))";
-    let root = producer.author(&format!("foundation = \"naome:zfc\" statement = implies({b},{premise}) proof: p0 = cite(\"{}\") p1 = simplification({premise},{b}) p2 = modus_ponens(p0,p1) return p2", helper.proof_id)).unwrap();
+    let b = "all(z,mem(z,z))";
+    let root = producer.author(&format!("goal = imp({b},{premise}) proof: p0 = cite(\"{}\") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2", helper.proof_id)).unwrap();
     let id = ProofId::from_bytes(id_bytes(&root.proof_id).unwrap());
     producer.ingest(root.clone(), Instant::now()).unwrap();
     (root, helper, producer.describe(id).unwrap().unwrap())
@@ -501,7 +497,7 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
         .to_source();
     let owner = producer
         .author(&format!(
-            "foundation = \"naome:zfc\" statement = {formula} proof: p0 = cite(\"{}\") return p0",
+            "goal = {formula} proof: p0 = cite(\"{}\") return p0",
             helper.proof_id
         ))
         .unwrap();
@@ -539,22 +535,16 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
 #[tokio::test]
 async fn necessary_helper_outside_question_codec_is_checked_without_own_question_selection() {
     let mut producer = Graph::default();
-    let mut formula = "equal(x0,x0)".to_owned();
+    let mut formula = "eq(x0,x0)".to_owned();
     for index in 0..40 {
-        formula = format!("forall(x{index},{formula})");
+        formula = format!("all(x{index},{formula})");
     }
-    let mut proof = "p0 = equality_reflexivity(x0)".to_owned();
+    let mut proof = "p0 = refl(x0)".to_owned();
     for index in 0..40 {
-        proof.push_str(&format!(
-            " p{} = generalization(p{},x{index})",
-            index + 1,
-            index
-        ));
+        proof.push_str(&format!(" p{} = gen(p{},x{index})", index + 1, index));
     }
     let helper = producer
-        .author(&format!(
-            "foundation = \"naome:zfc\" statement = {formula} proof: {proof} return p40"
-        ))
+        .author(&format!("goal = {formula} proof: {proof} return p40"))
         .unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
     let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
@@ -562,14 +552,20 @@ async fn necessary_helper_outside_question_codec_is_checked_without_own_question
     let mut steps = format!("p0 = cite(\"{}\")", helper.proof_id);
     let mut previous = "p0".to_owned();
     for (offset, variable) in (1..40).rev().enumerate() {
-        let mut body = "equal(x0,x0)".to_owned();
+        let mut body = "eq(x0,x0)".to_owned();
         for index in 0..variable {
-            body = format!("forall(x{index},{body})");
+            body = format!("all(x{index},{body})");
         }
-        steps.push_str(&format!(" u{offset} = universal_instantiation(x{variable},x{variable},{body}) r{offset} = modus_ponens({previous},u{offset})"));
+        steps.push_str(&format!(
+            " u{offset} = inst(x{variable},x{variable},{body}) r{offset} = mp({previous},u{offset})"
+        ));
         previous = format!("r{offset}");
     }
-    let object = producer.author(&format!("foundation = \"naome:zfc\" statement = forall(x0,equal(x0,x0)) proof: {steps} return {previous}")).unwrap();
+    let object = producer
+        .author(&format!(
+            "goal = all(x0,eq(x0,x0)) proof: {steps} return {previous}"
+        ))
+        .unwrap();
     let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
     producer.ingest(object.clone(), Instant::now()).unwrap();
     let metadata = producer.describe(root).unwrap().unwrap();
@@ -690,7 +686,7 @@ async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_d
     let (object, metadata) = fixture(6);
     let derived = metadata.compile().unwrap().2;
     let original = CompiledQuestion::compile(&format!(
-        "# original owner source\nfoundation = \"naome:zfc\" statement = not_({})",
+        "# original owner source\ngoal = not({})",
         derived.core().to_source()
     ))
     .unwrap();

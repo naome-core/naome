@@ -1,23 +1,23 @@
 # Equality substitution followed by explicit closure of every free variable.
-foundation = "naome:zfc"
 
-statement = forall(
+
+goal = all(
     x,
-    forall(
+    all(
         y,
-        forall(
+        all(
             set,
-            implies(
-                equal(x, y),
-                implies(member(x, set), member(y, set)),
+            imp(
+                eq(x, y),
+                imp(mem(x, set), mem(y, set)),
             ),
         ),
     ),
 )
 
 proof:
-    p0 = equality_substitution(x, y, member(x, set))
-    p1 = generalization(p0, set)
-    p2 = generalization(p1, y)
-    p3 = generalization(p2, x)
+    p0 = subst(x, y, mem(x, set))
+    p1 = gen(p0, set)
+    p2 = gen(p1, y)
+    p3 = gen(p2, x)
     return p3

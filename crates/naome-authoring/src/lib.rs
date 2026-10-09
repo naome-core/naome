@@ -9,7 +9,7 @@ use naome_checker::{
     normalize_and_check_definition_with_state,
 };
 use naome_foundation::{
-    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, FormulaCodecError, FreeVariable, ZfcAxiom,
+    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FormulaCodecError, FreeVariable, ZfcAxiom,
 };
 use naome_proof::{
     ArtifactId, ArtifactPayload, CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES,
@@ -87,6 +87,7 @@ mod diagnostics;
 mod output;
 mod parser;
 mod question;
+mod syntax;
 
 pub use diagnostics::{
     CompileDiagnostic, CompileError, DiagnosticCode, SourcePosition, SourceSpan,
@@ -95,5 +96,5 @@ pub use output::{CompiledArtifact, CompiledDefinition, CompiledProof};
 use parser::Parser;
 pub use question::{
     CompiledQuestion, QUESTION_SOURCE_MAX_BYTES, QUESTION_TARGET_MAX_DEPTH,
-    QUESTION_TARGET_MAX_NODES, QuestionError, QuestionOutcome,
+    QUESTION_TARGET_MAX_NODES, QuestionCompileError, QuestionError, QuestionOutcome,
 };

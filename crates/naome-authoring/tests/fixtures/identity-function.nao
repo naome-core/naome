@@ -1,7 +1,7 @@
-foundation = "naome:zfc"
 
-definition identity = function(
+
+def identity = function(
     input,
     output,
 ):
-    equal(output, input)
+    eq(output, input)

@@ -280,8 +280,6 @@ impl Owner {
             );
         }
         self.charge(id)?;
-        self.running.remove(&id);
-        self.clocks.remove(&id);
         let expired = allowance_expired(&self.journal, id)?;
         let record = self
             .journal
@@ -309,7 +307,11 @@ impl Owner {
             record.acknowledged = true;
         }
         let uncertain = record.state == State::InDoubt;
+        // Keep the completing job protected from terminal-history compaction
+        // until its persisted outcome can be delivered, even if abandoned.
         self.save()?;
+        self.running.remove(&id);
+        self.clocks.remove(&id);
         self.deliver(id);
         if uncertain {
             return Err("provider cleanup or effects require reconciliation".into());

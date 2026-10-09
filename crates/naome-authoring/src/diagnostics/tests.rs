@@ -12,7 +12,6 @@ fn diagnostic_codes_and_source_positions_are_stable() {
             offset: 0,
             expected: "syntax",
         },
-        CompileError::FoundationMismatch { offset: 0 },
         CompileError::DuplicateStep {
             offset: 0,
             name: "step".to_owned(),
@@ -62,8 +61,8 @@ fn diagnostic_codes_and_source_positions_are_stable() {
             .map(|error| error.diagnostic_code().as_str())
             .collect::<Vec<_>>(),
         vec![
-            "NAO0001", "NAO0002", "NAO0003", "NAO0004", "NAO0005", "NAO0006", "NAO0007", "NAO0008",
-            "NAO0009", "NAO0010", "NAO0011", "NAO0012", "NAO0013", "NAO0014",
+            "NAO0001", "NAO0002", "NAO0004", "NAO0005", "NAO0006", "NAO0007", "NAO0008", "NAO0009",
+            "NAO0010", "NAO0011", "NAO0012", "NAO0013", "NAO0014",
         ]
     );
     assert_eq!(errors[0].source_offset(), None);

@@ -1,7 +1,7 @@
 use super::*;
 
 fn source(formula: &str) -> String {
-    format!("foundation = \"naome:zfc\"\nstatement = {formula}\n")
+    format!("goal = {formula}\n")
 }
 fn compile(formula: &str) -> CompiledQuestion {
     CompiledQuestion::compile(&source(formula)).unwrap()
@@ -12,7 +12,7 @@ fn hex(bytes: &[u8]) -> String {
 
 #[test]
 fn canonical_closed_formula_and_resolution_golden() {
-    let question = compile("forall(x, equal(x,x))");
+    let question = compile("all(x, eq(x,x))");
     assert_eq!(hex(question.canonical_core()), "040001000000000100000000");
     assert_eq!(
         hex(question.resolution_id()),
@@ -28,10 +28,10 @@ fn canonical_closed_formula_and_resolution_golden() {
 
 #[test]
 fn alpha_and_leading_negations_share_family_but_keep_orientation() {
-    let plain = compile("forall(x,equal(x,x))");
-    let alpha = compile("forall(y,equal(y,y))");
-    let odd = compile("not_(forall(x,equal(x,x)))");
-    let even = compile("not_(not_(forall(x,equal(x,x))))");
+    let plain = compile("all(x,eq(x,x))");
+    let alpha = compile("all(y,eq(y,y))");
+    let odd = compile("not(all(x,eq(x,x)))");
+    let even = compile("not(not(all(x,eq(x,x))))");
     for question in [&alpha, &odd, &even] {
         assert_eq!(question.resolution_id(), plain.resolution_id());
         assert_eq!(question.canonical_core(), plain.canonical_core());
@@ -46,7 +46,7 @@ fn alpha_and_leading_negations_share_family_but_keep_orientation() {
 
 #[test]
 fn source_codec_golden_and_strict_recompilation() {
-    let question = compile("forall(x,equal(x,x))");
+    let question = compile("all(x,eq(x,x))");
     let bytes = question.to_canonical_bytes().unwrap();
     assert_eq!(bytes[0], 1);
     assert_eq!(
@@ -75,15 +75,15 @@ fn source_codec_golden_and_strict_recompilation() {
 #[test]
 fn existing_closed_question_sources_compile() {
     let a = CompiledQuestion::compile(
-        "# Proof obligation A: universally quantified self-equality.\nfoundation = \"naome:zfc\"\nstatement = forall(y, forall(x, equal(x, x)))\n",
+        "# Proof obligation A: universally quantified self-equality.\ngoal = all(y, all(x, eq(x, x)))\n",
     )
     .unwrap();
     let b = CompiledQuestion::compile(
-        "# Proof obligation B: negative orientation; solution-b.nao refutes this.\nfoundation = \"naome:zfc\"\nstatement = not_(implies(forall(x, equal(x, x)), forall(x, equal(x, x))))\n",
+        "# Proof obligation B: negative orientation; solution-b.nao refutes this.\ngoal = not(imp(all(x, eq(x, x)), all(x, eq(x, x))))\n",
     )
     .unwrap();
     let c = CompiledQuestion::compile(
-        "# Proof obligation C is exactly helper H, already known after A settles.\nfoundation = \"naome:zfc\"\nstatement = forall(x, equal(x, x))\n",
+        "# Proof obligation C is exactly helper H, already known after A settles.\ngoal = all(x, eq(x, x))\n",
     )
     .unwrap();
     assert!(!a.negation_parity());
@@ -98,61 +98,59 @@ fn derived_notation_matches_foundation_constructors() {
     let x = FreeVariable::new(0);
     let atom = Formula::equal(x, x);
     for (expression, formula) in [
-        ("not_equal(x,x)", Formula::negate(atom.clone())),
+        ("ne(x,x)", Formula::negate(atom.clone())),
         (
-            "and_(equal(x,x),member(x,x))",
+            "and(eq(x,x),mem(x,x))",
             Formula::conjunction(atom.clone(), Formula::member(x, x)),
         ),
         (
-            "or_(equal(x,x),member(x,x))",
+            "or(eq(x,x),mem(x,x))",
             Formula::disjunction(atom.clone(), Formula::member(x, x)),
         ),
         (
-            "iff(equal(x,x),member(x,x))",
+            "iff(eq(x,x),mem(x,x))",
             Formula::biconditional(atom.clone(), Formula::member(x, x)),
         ),
         (
-            "exists(y,equal(x,y))",
+            "ex(y,eq(x,y))",
             Formula::exists(
                 FreeVariable::new(1),
                 Formula::equal(x, FreeVariable::new(1)),
             ),
         ),
     ] {
-        let question = compile(&format!("forall(x,{expression})"));
+        let question = compile(&format!("all(x,{expression})"));
         assert_eq!(question.formula(), &Formula::for_all(x, formula));
     }
 }
 
 #[test]
 fn trivia_trailing_comma_and_explicit_resolve_policy() {
-    let input = "# research\nfoundation = \"naome:zfc\"\n statement = forall(x, equal(x,x,),) # target\nsuccess = \"resolve\"\n";
+    let input = "# research\ngoal = all(x, eq(x,x,),) # target\nsuccess = \"resolve\"\n";
     let question = CompiledQuestion::compile(input).unwrap();
     assert_eq!(
         question.resolution_id(),
-        compile("forall(y,equal(y,y))").resolution_id()
+        compile("all(y,eq(y,y))").resolution_id()
     );
 }
 
 #[test]
 fn rejects_free_variables_assumptions_imports_and_bad_syntax() {
     for input in [
-        source("equal(x,x)"),
-        source("forall(x, equal(x,y))"),
-        source("forall(x, unknown(x))"),
-        source("forall(x, equal(f(x),x))"),
-        source("forall(x, equal(x,x),,)"),
-        source("forall(x, equal(x,x)) garbage"),
-        source("forall(x, equal(x,x)) success = \"prove\""),
-        "foundation = \"other\" statement = forall(x,equal(x,x))".to_owned(),
-        "foundation = \"naome:zfc\" assumptions = [] statement = forall(x,equal(x,x))".to_owned(),
-        "foundation = \"naome:zfc\" definitions: h = \"abc\" statement = h(x)".to_owned(),
-        "foundation = \"naome:zfc\" references = [] statement = forall(x,equal(x,x))".to_owned(),
-        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) limits = {target_nodes: 2}"
-            .to_owned(),
-        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) allow_substitution = false"
-            .to_owned(),
-        source("forall(x,equal(x,x)) proof: return p"),
+        source("eq(x,x)"),
+        source("all(x, eq(x,y))"),
+        source("all(x, unknown(x))"),
+        source("all(x, eq(f(x),x))"),
+        source("all(x, eq(x,x),,)"),
+        source("all(x, eq(x,x)) garbage"),
+        source("all(x, eq(x,x)) success = \"prove\""),
+        "foundation = \"other\" goal = all(x,eq(x,x))".to_owned(),
+        "assumptions = [] goal = all(x,eq(x,x))".to_owned(),
+        "defs: h = \"abc\" goal = h(x)".to_owned(),
+        "references = [] goal = all(x,eq(x,x))".to_owned(),
+        "goal = all(x,eq(x,x)) limits = {target_nodes: 2}".to_owned(),
+        "goal = all(x,eq(x,x)) allow_substitution = false".to_owned(),
+        source("all(x,eq(x,x)) proof: return p"),
     ] {
         assert!(
             CompiledQuestion::compile(&input).is_err(),
@@ -163,38 +161,34 @@ fn rejects_free_variables_assumptions_imports_and_bad_syntax() {
 
 #[test]
 fn target_depth_counts_added_negative_target_and_ignores_removed_prefix() {
-    let mut body = "equal(x,x)".to_owned();
+    let mut body = "eq(x,x)".to_owned();
     for _ in 0..30 {
-        body = format!("forall(x,{body})");
+        body = format!("all(x,{body})");
     }
     assert!(CompiledQuestion::compile(&source(&body)).is_ok());
-    let too_deep = format!("forall(x,{body})");
+    let too_deep = format!("all(x,{body})");
     assert_eq!(
         CompiledQuestion::compile(&source(&too_deep)),
         Err(QuestionError::Limit("question target depth"))
     );
     // Leading input negations do not increase either canonical target depth.
     for _ in 0..40 {
-        body = format!("not_({body})");
+        body = format!("not({body})");
     }
     assert!(CompiledQuestion::compile(&source(&body)).is_ok());
 }
 
 #[test]
 fn bounded_expansion_rejects_exponential_iff_and_deep_source() {
-    let mut formula = "equal(x,x)".to_owned();
+    let mut formula = "eq(x,x)".to_owned();
     for _ in 0..20 {
-        formula = format!("iff(equal(x,x),{formula})");
+        formula = format!("iff(eq(x,x),{formula})");
     }
     assert!(matches!(
-        CompiledQuestion::compile(&source(&format!("forall(x,{formula})"))),
+        CompiledQuestion::compile(&source(&format!("all(x,{formula})"))),
         Err(QuestionError::Limit(_))
     ));
-    let deep = format!(
-        "{}forall(x,equal(x,x)){}",
-        "not_(".repeat(300),
-        ")".repeat(300)
-    );
+    let deep = format!("{}all(x,eq(x,x)){}", "not(".repeat(300), ")".repeat(300));
     assert!(matches!(
         CompiledQuestion::compile(&source(&deep)),
         Err(QuestionError::Limit(_))
@@ -209,18 +203,18 @@ fn bounded_expansion_rejects_exponential_iff_and_deep_source() {
 fn nominal_node_boundary_applies_to_the_larger_target() {
     fn tree(leaves: usize) -> String {
         if leaves == 1 {
-            return "equal(x,x)".to_owned();
+            return "eq(x,x)".to_owned();
         }
         let left = leaves / 2;
-        format!("implies({},{})", tree(left), tree(leaves - left))
+        format!("imp({},{})", tree(left), tree(leaves - left))
     }
     // 511 leaves + 510 implications + 2 quantifiers = 1023 core nodes;
     // the negative target has exactly 1024.
-    let exact = source(&format!("forall(y,forall(x,{}))", tree(511)));
+    let exact = source(&format!("all(y,all(x,{}))", tree(511)));
     assert!(CompiledQuestion::compile(&exact).is_ok());
     // 512 leaves + 511 implications + 1 quantifier = 1024 core nodes;
     // the negative target exceeds the ceiling by one.
-    let excessive = source(&format!("forall(x,{})", tree(512)));
+    let excessive = source(&format!("all(x,{})", tree(512)));
     assert_eq!(
         CompiledQuestion::compile(&excessive),
         Err(QuestionError::Limit("question target nodes"))
@@ -235,7 +229,7 @@ fn source_decoder_rejects_bad_utf8_and_oversized_declared_length() {
 
 #[test]
 fn well_formedness_does_not_assert_mathematical_truth() {
-    let question = compile("forall(x,not_equal(x,x))");
+    let question = compile("all(x,ne(x,x))");
     let x = FreeVariable::new(0);
     assert_eq!(
         question.formula(),
@@ -261,10 +255,10 @@ fn checked_proof_matches_exact_targets_with_original_negation_orientation() {
     }
 
     let proof = checked(include_str!("../../tests/fixtures/self-equality.nao"));
-    let question = compile("forall(x,equal(x,x))");
-    let alpha = compile("forall(y,equal(y,y))");
-    let negative = compile("not_(forall(x,equal(x,x)))");
-    let twice_negative = compile("not_(not_(forall(x,equal(x,x))))");
+    let question = compile("all(x,eq(x,x))");
+    let alpha = compile("all(y,eq(y,y))");
+    let negative = compile("not(all(x,eq(x,x)))");
+    let twice_negative = compile("not(not(all(x,eq(x,x))))");
     assert_eq!(
         question.classify_checked_proof(&proof),
         Ok(QuestionOutcome::Proved)
@@ -286,6 +280,18 @@ fn checked_proof_matches_exact_targets_with_original_negation_orientation() {
         "../../tests/fixtures/implication-identity.nao"
     ));
     assert!(question.classify_checked_proof(&unrelated).is_err());
-    let unrelated_question = compile("forall(x,member(x,x))");
+    let unrelated_question = compile("all(x,mem(x,x))");
     assert!(unrelated_question.classify_checked_proof(&proof).is_err());
+}
+
+#[test]
+fn unsupported_operator_diagnostic_marks_the_original_name_before_its_call() {
+    for operator in ["satisfies", "equal", "forall"] {
+        let source = format!("# original UTF8 ä\r\ngoal=all(x,{operator}(x,x))");
+        let error = CompiledQuestion::compile_with_diagnostic(&source).unwrap_err();
+        assert_eq!(error.diagnostic().code(), DiagnosticCode::QuestionSyntax);
+        let span = error.diagnostic().primary_span().unwrap();
+        assert_eq!(&source[span.start()..span.end()], operator);
+        assert_eq!(span.start(), source.find(operator).unwrap());
+    }
 }

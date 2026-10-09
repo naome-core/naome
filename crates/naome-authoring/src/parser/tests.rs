@@ -20,11 +20,11 @@ use super::*;
 
 const SOURCE: &str = r#"
 # Presentation-only comment and indentation.
-foundation = "naome:zfc"
-statement = forall(x, equal(x, x))
+
+goal = all(x, eq(x, x))
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = generalization(p0, x)
+    p0 = refl(x)
+    p1 = gen(p0, x)
     return p1
 "#;
 
@@ -39,22 +39,22 @@ const IMPLICATION_SOURCE: &str = include_str!(concat!(
     "/tests/fixtures/implication-identity.nao"
 ));
 const INLINED_IMPLICATION_SOURCE: &str = r#"
-foundation = "naome:zfc"
-statement = forall(x, implies(equal(x, x), equal(x, x)))
+
+goal = all(x, imp(eq(x, x), eq(x, x)))
 proof:
-    p0 = simplification(equal(x, x), equal(x, x))
-    p1 = simplification(
-        equal(x, x),
-        implies(equal(x, x), equal(x, x)),
+    p0 = simp(eq(x, x), eq(x, x))
+    p1 = simp(
+        eq(x, x),
+        imp(eq(x, x), eq(x, x)),
     )
     p2 = frege(
-        equal(x, x),
-        implies(equal(x, x), equal(x, x)),
-        equal(x, x),
+        eq(x, x),
+        imp(eq(x, x), eq(x, x)),
+        eq(x, x),
     )
-    p3 = modus_ponens(p1, p2)
-    p4 = modus_ponens(p0, p3)
-    p5 = generalization(p4, x)
+    p3 = mp(p1, p2)
+    p4 = mp(p0, p3)
+    p5 = gen(p4, x)
     return p5
 "#;
 const QUANTIFIER_SOURCE: &str = include_str!(concat!(
@@ -79,13 +79,11 @@ const REPLACEMENT_SOURCE: &str = include_str!(concat!(
 ));
 
 fn proof_reference_source(proof_id: &str) -> String {
-    format!(
-        "foundation = \"naome:zfc\" statement = forall(x, equal(x, x)) proof: known = cite(\"{proof_id}\") return known"
-    )
+    format!("goal = all(x, eq(x, x)) proof: known = cite(\"{proof_id}\") return known")
 }
 
 fn complete_source(statement: &str, steps: &str, result: &str) -> String {
-    format!("foundation = \"naome:zfc\" statement = {statement} proof: {steps} return {result}")
+    format!("goal = {statement} proof: {steps} return {result}")
 }
 
 fn checked_state(source: &str) -> (ProofState, CompiledProof) {
@@ -153,7 +151,7 @@ fn assert_check_error(result: Result<CompiledProof, CompileError>, expected: Che
 
 fn compile_schema_step(step: &str) -> Result<CompiledProof, CompileError> {
     compile(&complete_source(
-        "forall(closed, equal(closed, closed))",
+        "all(closed, eq(closed, closed))",
         &format!("schema = {step}"),
         "schema",
     ))
@@ -244,19 +242,19 @@ fn every_repository_example_preserves_its_checked_identities_and_bytes() {
 #[test]
 fn formula_bindings_preserve_the_exact_inlined_checked_artifact() {
     let bound = r#"
-foundation = "naome:zfc"
-formulas:
-    unused = equal(z, z)
-    reflexive = equal(x, x)
-    identity = implies(reflexive, reflexive)
-statement = forall(x, identity)
+
+let:
+    unused = eq(z, z)
+    reflexive = eq(x, x)
+    identity = imp(reflexive, reflexive)
+goal = all(x, identity)
 proof:
-    p0 = simplification(reflexive, reflexive)
-    p1 = simplification(reflexive, identity)
+    p0 = simp(reflexive, reflexive)
+    p1 = simp(reflexive, identity)
     p2 = frege(reflexive, identity, reflexive)
-    p3 = modus_ponens(p1, p2)
-    p4 = modus_ponens(p0, p3)
-    p5 = generalization(p4, x)
+    p3 = mp(p1, p2)
+    p4 = mp(p0, p3)
+    p5 = gen(p4, x)
     return p5
 "#;
     let baseline = compile(INLINED_IMPLICATION_SOURCE).unwrap();
@@ -264,42 +262,42 @@ proof:
     assert_eq!(compile(bound).unwrap(), baseline);
 
     let reordered = bound.replace(
-        "    unused = equal(z, z)\n    reflexive = equal(x, x)",
-        "    reflexive = equal(x, x)\n    unused = equal(z, z)",
+        "    unused = eq(z, z)\n    reflexive = eq(x, x)",
+        "    reflexive = eq(x, x)\n    unused = eq(z, z)",
     );
     assert_eq!(compile(&reordered).unwrap(), baseline);
 
     let renamed = bound
         .replace("reflexive", "r")
         .replace("identity", "i")
-        .replace("unused = equal(z, z)", "other = equal(y, y)");
+        .replace("unused = eq(z, z)", "other = eq(y, y)");
     assert_eq!(compile(&renamed).unwrap(), baseline);
 }
 
 #[test]
 fn binding_expansion_uses_the_global_variable_namespace_and_enclosing_binders() {
     let captured = r#"
-foundation = "naome:zfc"
-formulas:
-    reflexive = equal(x, x)
-    closed = forall(x, reflexive)
-statement = closed
+
+let:
+    reflexive = eq(x, x)
+    closed = all(x, reflexive)
+goal = closed
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = generalization(p0, x)
+    p0 = refl(x)
+    p1 = gen(p0, x)
     return p1
 "#;
     assert_eq!(compile(captured).unwrap(), compile(SOURCE).unwrap());
 
     let independent_namespaces = r#"
-foundation = "naome:zfc"
-formulas:
-    x = equal(x, x)
+
+let:
+    x = eq(x, x)
     p0 = x
-statement = forall(x, p0)
+goal = all(x, p0)
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = generalization(p0, x)
+    p0 = refl(x)
+    p1 = gen(p0, x)
     return p1
 "#;
     assert_eq!(
@@ -308,13 +306,13 @@ proof:
     );
 
     let step_position = r#"
-foundation = "naome:zfc"
-formulas:
-    premise = equal(x, x)
-statement = forall(x, premise)
+
+let:
+    premise = eq(x, x)
+goal = all(x, premise)
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = modus_ponens(premise, p0)
+    p0 = refl(x)
+    p1 = mp(premise, p0)
     return p1
 "#;
     assert!(matches!(
@@ -326,42 +324,27 @@ proof:
 #[test]
 fn bindings_are_accepted_in_every_formula_bearing_proof_operand() {
     for (bound, inlined) in [
+        ("simp(Fact, Fact)", "simp(eq(x, x), eq(x, x))"),
         (
-            "simplification(refl, refl)",
-            "simplification(equal(x, x), equal(x, x))",
+            "frege(Fact, Fact, Fact)",
+            "frege(eq(x, x), eq(x, x), eq(x, x))",
+        ),
+        ("contra(Fact, Fact)", "contra(eq(x, x), eq(x, x))"),
+        ("dist(x, Fact, Fact)", "dist(x, eq(x, x), eq(x, x))"),
+        ("vacuous(Fact)", "vacuous(eq(x, x))"),
+        ("inst(x, x, Fact)", "inst(x, x, eq(x, x))"),
+        ("subst(x, x, Fact)", "subst(x, x, eq(x, x))"),
+        (
+            "sep(Fact, x, x, x, parameters=[Fact])",
+            "sep(eq(x, x), x, x, x, parameters=[Fact])",
         ),
         (
-            "frege(refl, refl, refl)",
-            "frege(equal(x, x), equal(x, x), equal(x, x))",
-        ),
-        (
-            "classical_contraposition(refl, refl)",
-            "classical_contraposition(equal(x, x), equal(x, x))",
-        ),
-        (
-            "universal_distribution(x, refl, refl)",
-            "universal_distribution(x, equal(x, x), equal(x, x))",
-        ),
-        ("vacuous_universal(refl)", "vacuous_universal(equal(x, x))"),
-        (
-            "universal_instantiation(x, x, refl)",
-            "universal_instantiation(x, x, equal(x, x))",
-        ),
-        (
-            "equality_substitution(x, x, refl)",
-            "equality_substitution(x, x, equal(x, x))",
-        ),
-        (
-            "separation(refl, x, x, x, parameters=[refl])",
-            "separation(equal(x, x), x, x, x, parameters=[refl])",
-        ),
-        (
-            "replacement(refl, x, x, x, x, x, parameters=[])",
-            "replacement(equal(x, x), x, x, x, x, x, parameters=[])",
+            "replace(Fact, x, x, x, x, x, parameters=[])",
+            "replace(eq(x, x), x, x, x, x, x, parameters=[])",
         ),
     ] {
         assert_eq!(
-            parse_bound_step("refl = equal(x, x)", bound).unwrap(),
+            parse_bound_step("Fact = eq(x, x)", bound).unwrap(),
             parse_step(inlined).unwrap(),
             "binding changed {bound}"
         );
@@ -372,22 +355,16 @@ fn bindings_are_accepted_in_every_formula_bearing_proof_operand() {
 fn every_derived_formula_lowers_to_the_existing_primitive_structure() {
     for (derived, primitive) in [
         (
-            "and_(equal(x, x), member(y, z))",
-            "not_(implies(equal(x, x), not_(member(y, z))))",
+            "and(eq(x, x), mem(y, z))",
+            "not(imp(eq(x, x), not(mem(y, z))))",
         ),
+        ("or(eq(x, x), mem(y, z))", "imp(not(eq(x, x)), mem(y, z))"),
         (
-            "or_(equal(x, x), member(y, z))",
-            "implies(not_(equal(x, x)), member(y, z))",
+            "iff(eq(x, x), mem(y, z))",
+            "not(imp(imp(eq(x, x), mem(y, z)), not(imp(mem(y, z), eq(x, x)))))",
         ),
-        (
-            "iff(equal(x, x), member(y, z))",
-            "not_(implies(implies(equal(x, x), member(y, z)), not_(implies(member(y, z), equal(x, x)))))",
-        ),
-        (
-            "exists(x, member(x, set))",
-            "not_(forall(x, not_(member(x, set))))",
-        ),
-        ("not_equal(x, y)", "not_(equal(x, y))"),
+        ("ex(x, mem(x, set))", "not(all(x, not(mem(x, set))))"),
+        ("ne(x, y)", "not(eq(x, y))"),
     ] {
         let derived = parse_formula(derived, FormulaContext::Statement).unwrap();
         let primitive = parse_formula(primitive, FormulaContext::Statement).unwrap();
@@ -399,15 +376,14 @@ fn every_derived_formula_lowers_to_the_existing_primitive_structure() {
 
 #[test]
 fn derived_and_primitive_sources_have_exactly_the_same_checked_artifact() {
-    const A: &str = "forall(x, not_equal(x, x))";
-    const B: &str =
-        "exists(y, and_(equal(y, y), or_(member(y, y), iff(equal(y, y), member(y, y)))))";
-    const PRIMITIVE_A: &str = "forall(x, not_(equal(x, x)))";
-    const PRIMITIVE_B: &str = "not_(forall(y, not_(not_(implies(equal(y, y), not_(implies(not_(member(y, y)), not_(implies(implies(equal(y, y), member(y, y)), not_(implies(member(y, y), equal(y, y))))))))))))";
+    const A: &str = "all(x, ne(x, x))";
+    const B: &str = "ex(y, and(eq(y, y), or(mem(y, y), iff(eq(y, y), mem(y, y)))))";
+    const PRIMITIVE_A: &str = "all(x, not(eq(x, x)))";
+    const PRIMITIVE_B: &str = "not(all(y, not(not(imp(eq(y, y), not(imp(not(mem(y, y)), not(imp(imp(eq(y, y), mem(y, y)), not(imp(mem(y, y), eq(y, y))))))))))))";
     let source = |a: &str, b: &str| {
         complete_source(
-            &format!("implies({a}, implies({b}, {a}))"),
-            &format!("p0 = simplification({a}, {b})"),
+            &format!("imp({a}, imp({b}, {a}))"),
+            &format!("p0 = simp({a}, {b})"),
             "p0",
         )
     };
@@ -433,19 +409,19 @@ fn derived_and_primitive_sources_have_exactly_the_same_checked_artifact() {
 #[test]
 fn derived_operands_retain_order_and_exists_binds_capture_free() {
     let left = parse_formula(
-        "and_(equal(left, left), member(right, set))",
+        "and(eq(left, left), mem(right, set))",
         FormulaContext::Certificate,
     )
     .unwrap();
     let swapped = parse_formula(
-        "and_(member(right, set), equal(left, left))",
+        "and(mem(right, set), eq(left, left))",
         FormulaContext::Certificate,
     )
     .unwrap();
     assert_ne!(left.formula, swapped.formula);
 
     let exists = parse_formula(
-        "exists(x, and_(member(x, set), forall(x, member(x, x))))",
+        "ex(x, and(mem(x, set), all(x, mem(x, x))))",
         FormulaContext::Certificate,
     )
     .unwrap();
@@ -466,15 +442,15 @@ fn derived_operands_retain_order_and_exists_binds_capture_free() {
 #[test]
 fn call_commas_arity_and_trailing_commas_are_exact() {
     for source in [
-        "equal(x, y,)",
-        "not_(equal(x, x),)",
-        "implies(equal(x, x), equal(y, y),)",
-        "forall(x, equal(x, x),)",
-        "and_(equal(x, x), equal(y, y),)",
-        "or_(equal(x, x), equal(y, y),)",
-        "iff(equal(x, x), equal(y, y),)",
-        "exists(x, equal(x, x),)",
-        "not_equal(x, y,)",
+        "eq(x, y,)",
+        "not(eq(x, x),)",
+        "imp(eq(x, x), eq(y, y),)",
+        "all(x, eq(x, x),)",
+        "and(eq(x, x), eq(y, y),)",
+        "or(eq(x, x), eq(y, y),)",
+        "iff(eq(x, x), eq(y, y),)",
+        "ex(x, eq(x, x),)",
+        "ne(x, y,)",
     ] {
         assert!(
             parse_formula(source, FormulaContext::Statement).is_ok(),
@@ -483,16 +459,16 @@ fn call_commas_arity_and_trailing_commas_are_exact() {
     }
 
     for source in [
-        "equal(x y)",
-        "equal(x,, y)",
-        "equal(x, y, z)",
-        "equal(x, y,,)",
-        "equal(x)",
-        "not_()",
-        "not_(equal(x, x), equal(y, y))",
-        "forall(x equal(x, x))",
-        "exists(x,)",
-        "not_equal(x)",
+        "eq(x y)",
+        "eq(x,, y)",
+        "eq(x, y, z)",
+        "eq(x, y,,)",
+        "eq(x)",
+        "not()",
+        "not(eq(x, x), eq(y, y))",
+        "all(x eq(x, x))",
+        "ex(x,)",
+        "ne(x)",
     ] {
         assert!(
             matches!(
@@ -503,7 +479,7 @@ fn call_commas_arity_and_trailing_commas_are_exact() {
         );
     }
 
-    for source in ["and_(broken, equal(x, x))", "and_(equal(x, x), broken)"] {
+    for source in ["and(broken, eq(x, x))", "and(eq(x, x), broken)"] {
         assert!(matches!(
             parse_formula(source, FormulaContext::Statement),
             Err(CompileError::UnknownFormulaBinding { name, .. }) if name == "broken"
@@ -511,10 +487,10 @@ fn call_commas_arity_and_trailing_commas_are_exact() {
     }
 
     for (source, expected) in [
-        ("or_(equal(x, x))", "`,`"),
-        ("iff(equal(x, x), equal(y, y), extra)", "`)`"),
-        ("exists(1bad, equal(x, x))", "a name"),
-        ("not_equal(x)", "`,`"),
+        ("or(eq(x, x))", "`,`"),
+        ("iff(eq(x, x), eq(y, y), extra)", "`)`"),
+        ("ex(1bad, eq(x, x))", "a name"),
+        ("ne(x)", "`,`"),
     ] {
         assert!(matches!(
             parse_formula(source, FormulaContext::Statement),
@@ -530,11 +506,11 @@ fn call_commas_arity_and_trailing_commas_are_exact() {
 fn formula_and_rule_spellings_have_one_python_shaped_form() {
     for source in [
         "(equal x x)",
-        "not(equal(x, x))",
-        "and(equal(x, x), equal(y, y))",
-        "or(equal(x, x), equal(y, y))",
-        "not-equal(x, y)",
-        "not_equal(x-y, z)",
+        "not_(eq(x, x))",
+        "and_(eq(x, x), eq(y, y))",
+        "or_(eq(x, x), eq(y, y))",
+        "not-eq(x, y)",
+        "ne(x-y, z)",
     ] {
         assert!(parse_formula(source, FormulaContext::Statement).is_err());
     }
@@ -543,13 +519,16 @@ fn formula_and_rule_spellings_have_one_python_shaped_form() {
         "(equality-reflexivity x)",
         "equality-reflexivity(x)",
         "proof_reference(\"c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73\")",
-        "cite(c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73)",
     ] {
         assert!(matches!(
             parse_step(source),
             Err(CompileError::Syntax { .. })
         ));
     }
+    assert!(matches!(
+        parse_step("cite(c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73)"),
+        Err(CompileError::UnknownProofReference { .. })
+    ));
 }
 
 #[test]
@@ -559,14 +538,14 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
     let z = FreeVariable::new(2);
 
     assert_eq!(
-        parse_step("simplification(equal(x, x), member(y, z))").unwrap(),
+        parse_step("simp(eq(x, x), mem(y, z))").unwrap(),
         ProofStep::Simplification {
             antecedent: Formula::equal(x, x).into(),
             consequent: Formula::member(y, z).into(),
         }
     );
     assert_eq!(
-        parse_step("frege(equal(x, x), member(y, z), equal(z, y))").unwrap(),
+        parse_step("frege(eq(x, x), mem(y, z), eq(z, y))").unwrap(),
         ProofStep::Frege {
             first: Formula::equal(x, x).into(),
             second: Formula::member(y, z).into(),
@@ -574,14 +553,14 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
         }
     );
     assert_eq!(
-        parse_step("classical_contraposition(equal(x, x), member(y, z))").unwrap(),
+        parse_step("contra(eq(x, x), mem(y, z))").unwrap(),
         ProofStep::ClassicalContraposition {
             antecedent: Formula::equal(x, x).into(),
             consequent: Formula::member(y, z).into(),
         }
     );
     assert_eq!(
-        parse_step("universal_distribution(x, equal(x, x), member(y, z))").unwrap(),
+        parse_step("dist(x, eq(x, x), mem(y, z))").unwrap(),
         ProofStep::UniversalDistribution {
             variable: x,
             antecedent: Formula::equal(x, x).into(),
@@ -589,13 +568,13 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
         }
     );
     assert_eq!(
-        parse_step("vacuous_universal(equal(x, x))").unwrap(),
+        parse_step("vacuous(eq(x, x))").unwrap(),
         ProofStep::VacuousUniversal {
             formula: Formula::equal(x, x).into(),
         }
     );
     assert_eq!(
-        parse_step("universal_instantiation(x, y, member(x, z))").unwrap(),
+        parse_step("inst(x, y, mem(x, z))").unwrap(),
         ProofStep::UniversalInstantiation {
             variable: x,
             replacement: y,
@@ -603,18 +582,18 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
         }
     );
     assert_eq!(
-        parse_step_with_names("modus_ponens(p0, p1)", &["p0", "p1"]).unwrap(),
+        parse_step_with_names("mp(p0, p1)", &["p0", "p1"]).unwrap(),
         ProofStep::ModusPonens {
             premise: 0,
             implication: 1,
         }
     );
     assert_eq!(
-        parse_step("equality_reflexivity(x)").unwrap(),
+        parse_step("refl(x)").unwrap(),
         ProofStep::EqualityReflexivity { variable: x }
     );
     assert_eq!(
-        parse_step("equality_substitution(x, y, member(x, z))").unwrap(),
+        parse_step("subst(x, y, mem(x, z))").unwrap(),
         ProofStep::EqualitySubstitution {
             from: x,
             to: y,
@@ -622,10 +601,8 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
         }
     );
     assert_eq!(
-        parse_step(
-            "separation(member(element, filter), element, source, result, parameters=[filter])"
-        )
-        .unwrap(),
+        parse_step("sep(mem(element, filter), element, source, result, parameters=[filter])")
+            .unwrap(),
         ProofStep::Separation(ProofSeparation {
             predicate: Formula::member(FreeVariable::new(0), FreeVariable::new(1)).into(),
             element: FreeVariable::new(0),
@@ -636,7 +613,7 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
     );
     assert_eq!(
         parse_step(
-            "replacement(equal(input, output), input, output, witness, source, result, parameters=[])"
+            "replace(eq(input, output), input, output, witness, source, result, parameters=[])"
         )
         .unwrap(),
         ProofStep::Replacement(ProofReplacement {
@@ -656,7 +633,7 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
         }
     );
     assert_eq!(
-        parse_step_with_names("generalization(p0, x)", &["p0"]).unwrap(),
+        parse_step_with_names("gen(p0, x)", &["p0"]).unwrap(),
         ProofStep::Generalization {
             premise: 0,
             variable: x,
@@ -665,17 +642,36 @@ fn every_proof_call_maps_to_the_existing_protocol_step() {
 }
 
 #[test]
+fn formula_parser_keeps_the_maximum_expanded_depth_on_the_default_stack() {
+    let mut source = format!(
+        "{}iff(eq(x,x),eq(y,y)){}",
+        "not(".repeat((FORMULA_MAX_DEPTH - 5) as usize),
+        ")".repeat((FORMULA_MAX_DEPTH - 5) as usize)
+    );
+    let mut parser = Parser::new(&source);
+
+    assert!(parser.parsed_formula(1, FormulaContext::Statement).is_ok());
+    source = format!("not({source})");
+    let mut parser = Parser::new(&source);
+
+    assert!(matches!(
+        parser.parsed_formula(1, FormulaContext::Statement),
+        Err(CompileError::FormulaDepthLimitExceeded { .. })
+    ));
+}
+
+#[test]
 fn equality_substitution_preserves_roles_and_avoids_capture_under_a_binder() {
     let source = r#"
-foundation = "naome:zfc"
-statement = forall(x, forall(y,
-    implies(equal(x, y),
-        implies(forall(bound, member(x, bound)),
-            forall(bound, member(y, bound))))))
+
+goal = all(x, all(y,
+    imp(eq(x, y),
+        imp(all(bound, mem(x, bound)),
+            all(bound, mem(y, bound))))))
 proof:
-    substitute = equality_substitution(x, y, forall(y, member(x, y)))
-    for_y = generalization(substitute, y)
-    for_x = generalization(for_y, x)
+    substitute = subst(x, y, all(y, mem(x, y)))
+    for_y = gen(substitute, y)
+    for_x = gen(for_y, x)
     return for_x
 "#;
     let proof = compile(source).unwrap();
@@ -693,12 +689,12 @@ proof:
 
     for mutated in [
         source.replace(
-            "equality_substitution(x, y, forall(y, member(x, y)))",
-            "equality_substitution(y, x, forall(y, member(x, y)))",
+            "subst(x, y, all(y, mem(x, y)))",
+            "subst(y, x, all(y, mem(x, y)))",
         ),
         source.replace(
-            "equality_substitution(x, y, forall(y, member(x, y)))",
-            "equality_substitution(x, y, forall(y, member(y, y)))",
+            "subst(x, y, all(y, mem(x, y)))",
+            "subst(x, y, all(y, mem(y, y)))",
         ),
     ] {
         assert!(matches!(
@@ -720,22 +716,22 @@ fn every_fixed_zfc_axiom_uses_one_quoted_snake_case_selector() {
         ("choice", ZfcAxiom::Choice),
     ] {
         assert_eq!(
-            parse_step(&format!("zfc_axiom(\"{selector}\")")).unwrap(),
+            parse_step(&format!("axiom(\"{selector}\")")).unwrap(),
             ProofStep::ZfcAxiom(expected)
         );
         assert_eq!(
-            parse_step(&format!("zfc_axiom(\"{selector}\",)")).unwrap(),
+            parse_step(&format!("axiom(\"{selector}\",)")).unwrap(),
             ProofStep::ZfcAxiom(expected)
         );
     }
 
     for source in [
-        "zfc_axiom(extensionality)",
-        "zfc_axiom(\"power-set\")",
+        "axiom(extensionality)",
+        "axiom(\"power-set\")",
         "zfc-axiom(\"extensionality\")",
-        "zfc_axiom(\"Extensionality\")",
-        "zfc_axiom(\"unsupported\")",
-        "zfc_axiom(\"extensionality\", \"pairing\")",
+        "axiom(\"Extensionality\")",
+        "axiom(\"unsupported\")",
+        "axiom(\"extensionality\", \"pairing\")",
     ] {
         assert!(matches!(
             parse_step(source),
@@ -747,15 +743,15 @@ fn every_fixed_zfc_axiom_uses_one_quoted_snake_case_selector() {
 #[test]
 fn proof_call_arity_and_commas_are_exact() {
     for source in [
-        "simplification(equal(x, x) equal(y, y))",
-        "simplification(equal(x, x),)",
-        "frege(equal(x, x), equal(y, y))",
-        "universal_distribution(x, equal(x, x) equal(y, y))",
-        "universal_instantiation(x, y)",
-        "equality_substitution(x, y, member(x, y), extra)",
-        "generalization(p0 x)",
-        "modus_ponens(p0,, p1)",
-        "equality_reflexivity(x, y)",
+        "simp(eq(x, x) eq(y, y))",
+        "simp(eq(x, x),)",
+        "frege(eq(x, x), eq(y, y))",
+        "dist(x, eq(x, x) eq(y, y))",
+        "inst(x, y)",
+        "subst(x, y, mem(x, y), extra)",
+        "gen(p0 x)",
+        "mp(p0,, p1)",
+        "refl(x, y)",
         "cite()",
     ] {
         let names = ["p0", "p1"];
@@ -769,16 +765,16 @@ fn proof_call_arity_and_commas_are_exact() {
     }
 
     for source in [
-        "simplification(equal(x, x), equal(y, y),)",
-        "frege(equal(x, x), equal(y, y), equal(z, z),)",
-        "classical_contraposition(equal(x, x), equal(y, y),)",
-        "universal_distribution(x, equal(x, x), equal(y, y),)",
-        "vacuous_universal(equal(x, x),)",
-        "universal_instantiation(x, y, equal(x, x),)",
-        "modus_ponens(p0, p1,)",
-        "equality_reflexivity(x,)",
-        "equality_substitution(x, y, equal(x, x),)",
-        "generalization(p0, x,)",
+        "simp(eq(x, x), eq(y, y),)",
+        "frege(eq(x, x), eq(y, y), eq(z, z),)",
+        "contra(eq(x, x), eq(y, y),)",
+        "dist(x, eq(x, x), eq(y, y),)",
+        "vacuous(eq(x, x),)",
+        "inst(x, y, eq(x, x),)",
+        "mp(p0, p1,)",
+        "refl(x,)",
+        "subst(x, y, eq(x, x),)",
+        "gen(p0, x,)",
     ] {
         let names = ["p0", "p1"];
         assert!(parse_step_with_names(source, &names).is_ok(), "{source}");
@@ -788,25 +784,25 @@ fn proof_call_arity_and_commas_are_exact() {
 #[test]
 fn schema_parameter_lists_are_named_comma_delimited_and_trailing_comma_tolerant() {
     for source in [
-        "separation(equal(element, element), element, source, result, parameters=[]) ",
-        "separation(equal(element, element), element, source, result, parameters=[first])",
-        "separation(equal(element, element), element, source, result, parameters=[first, second,],)",
-        "replacement(equal(input, output), input, output, witness, source, result, parameters=[])",
-        "replacement(equal(input, output), input, output, witness, source, result, parameters=[first, second],)",
+        "sep(eq(element, element), element, source, result, parameters=[]) ",
+        "sep(eq(element, element), element, source, result, parameters=[first])",
+        "sep(eq(element, element), element, source, result, parameters=[first, second,],)",
+        "replace(eq(input, output), input, output, witness, source, result, parameters=[])",
+        "replace(eq(input, output), input, output, witness, source, result, parameters=[first, second],)",
     ] {
         assert!(parse_step(source).is_ok(), "{source}");
     }
 
     for source in [
-        "separation(equal(element, element), element, source, result)",
-        "separation(equal(element, element), element, source, result, parameters())",
-        "separation(equal(element, element), element, source, result, parameters=())",
-        "separation(equal(element, element), element, source, result, parameter=[])",
-        "separation(equal(element, element), element, source, result, parameters=[first second])",
-        "separation(equal(element, element), element, source, result, parameters=[,])",
-        "separation(equal(element, element), element, source, result, parameters=[first,, second])",
-        "separation(equal(element, element), element, source, result, parameters=[], extra)",
-        "replacement(equal(input, output), input, output, witness, source, result, extra, parameters=[])",
+        "sep(eq(element, element), element, source, result)",
+        "sep(eq(element, element), element, source, result, parameters())",
+        "sep(eq(element, element), element, source, result, parameters=())",
+        "sep(eq(element, element), element, source, result, parameter=[])",
+        "sep(eq(element, element), element, source, result, parameters=[first second])",
+        "sep(eq(element, element), element, source, result, parameters=[,])",
+        "sep(eq(element, element), element, source, result, parameters=[first,, second])",
+        "sep(eq(element, element), element, source, result, parameters=[], extra)",
+        "replace(eq(input, output), input, output, witness, source, result, extra, parameters=[])",
     ] {
         assert!(
             matches!(parse_step(source), Err(CompileError::Syntax { .. })),
@@ -815,7 +811,7 @@ fn schema_parameter_lists_are_named_comma_delimited_and_trailing_comma_tolerant(
     }
 
     let separation = parse_step(
-        "separation(implies(member(element, source), equal(first, second)), element, source, result, parameters=[first, second])",
+        "sep(imp(mem(element, source), eq(first, second)), element, source, result, parameters=[first, second])",
     )
     .unwrap();
     assert_eq!(
@@ -834,7 +830,7 @@ fn schema_parameter_lists_are_named_comma_delimited_and_trailing_comma_tolerant(
     );
 
     let replacement = parse_step(
-        "replacement(implies(equal(input, output), member(input, parameter)), input, output, witness, source, result, parameters=[parameter, unused])",
+        "replace(imp(eq(input, output), mem(input, parameter)), input, output, witness, source, result, parameters=[parameter, unused])",
     )
     .unwrap();
     assert_eq!(
@@ -856,7 +852,7 @@ fn schema_parameter_lists_are_named_comma_delimited_and_trailing_comma_tolerant(
 
     let statement_id = |parameters| {
         let step = parse_step(&format!(
-            "separation(equal(first, second), element, source, result, parameters=[{parameters}])"
+            "sep(eq(first, second), element, source, result, parameters=[{parameters}])"
         ))
         .unwrap();
         normalize_and_check(ProofCertificate::new(vec![step]).unwrap())
@@ -869,8 +865,8 @@ fn schema_parameter_lists_are_named_comma_delimited_and_trailing_comma_tolerant(
 #[test]
 fn reachable_schema_errors_remain_checker_owned_and_unreachable_ones_are_pruned() {
     const INVALID: &str =
-        "invalid = separation(equal(result, result), element, source, result, parameters=[])";
-    let reachable = complete_source("forall(x, equal(x, x))", INVALID, "invalid");
+        "invalid = sep(eq(result, result), element, source, result, parameters=[])";
+    let reachable = complete_source("all(x, eq(x, x))", INVALID, "invalid");
     assert_check_error(
         compile(&reachable),
         CheckError::Schema {
@@ -879,10 +875,7 @@ fn reachable_schema_errors_remain_checker_owned_and_unreachable_ones_are_pruned(
         },
     );
 
-    let unreachable = SOURCE.replace(
-        "p0 = equality_reflexivity(x)",
-        &format!("{INVALID} p0 = equality_reflexivity(x)"),
-    );
+    let unreachable = SOURCE.replace("p0 = refl(x)", &format!("{INVALID} p0 = refl(x)"));
     assert_eq!(compile(&unreachable).unwrap(), compile(SOURCE).unwrap());
 }
 
@@ -890,23 +883,23 @@ fn reachable_schema_errors_remain_checker_owned_and_unreachable_ones_are_pruned(
 fn combined_schema_errors_follow_foundation_precedence_after_lowering() {
     for (step, expected) in [
         (
-            "separation(equal(result, result), shared, shared, result, parameters=[shared, shared])",
+            "sep(eq(result, result), shared, shared, result, parameters=[shared, shared])",
             SchemaError::RoleVariableCollision(FreeVariable::new(1)),
         ),
         (
-            "separation(equal(result, result), element, source, result, parameters=[source, source])",
+            "sep(eq(result, result), element, source, result, parameters=[source, source])",
             SchemaError::ParameterCollidesWithRole(FreeVariable::new(2)),
         ),
         (
-            "separation(equal(result, result), element, source, result, parameters=[parameter, parameter])",
+            "sep(eq(result, result), element, source, result, parameters=[parameter, parameter])",
             SchemaError::DuplicateParameter(FreeVariable::new(3)),
         ),
         (
-            "separation(implies(equal(result, result), equal(undeclared, undeclared)), element, source, result, parameters=[])",
+            "sep(imp(eq(result, result), eq(undeclared, undeclared)), element, source, result, parameters=[])",
             SchemaError::ForbiddenPredicateVariable(FreeVariable::new(0)),
         ),
         (
-            "separation(implies(equal(undeclared, undeclared), equal(result, result)), element, source, result, parameters=[])",
+            "sep(imp(eq(undeclared, undeclared), eq(result, result)), element, source, result, parameters=[])",
             SchemaError::UndeclaredPredicateVariable(FreeVariable::new(0)),
         ),
     ] {
@@ -936,13 +929,13 @@ theorem equality_is_reflexive {
     assert!(matches!(compile(LEGACY), Err(CompileError::Syntax { .. })));
 
     for source in [
-        SOURCE.replace("foundation =", "foundation"),
-        SOURCE.replace("statement =", "statement:"),
+        format!("foundation = \"naome:zfc\" {SOURCE}"),
+        SOURCE.replace("goal =", "goal:"),
         SOURCE.replace("proof:", "proof"),
         SOURCE.replace("return p1", "result p1"),
         SOURCE.replace("return p1", "return p1;"),
         SOURCE.replace("p0 =", "step p0 ="),
-        SOURCE.replace("equality_reflexivity", "equality-reflexivity"),
+        SOURCE.replace("refl", "equality-reflexivity"),
     ] {
         assert!(matches!(compile(&source), Err(CompileError::Syntax { .. })));
     }
@@ -950,24 +943,24 @@ theorem equality_is_reflexive {
 
 #[test]
 fn indentation_comments_and_python_identifiers_are_presentation_only() {
-    let compact = "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: P0 = equality_reflexivity(x) P1 = generalization(P0,x) return P1";
+    let compact = "goal = all(x,eq(x,x)) proof: P0 = refl(x) P1 = gen(P0,x) return P1";
     assert_eq!(compile(compact).unwrap(), compile(SOURCE).unwrap());
 
     let irregular = r#"
-foundation	=	"naome:zfc"
-statement = forall(
+
+goal = all(
  x,
- equal(x, x), # trailing formula comment
+ eq(x, x), # trailing formula comment
 )
 proof:
-          _p0 = equality_reflexivity(x,) # arbitrary indentation
-	_p1 = generalization(_p0, x,)
+          _p0 = refl(x,) # arbitrary indentation
+	_p1 = gen(_p0, x,)
 return _p1 # EOF comment"#;
     assert_eq!(compile(irregular).unwrap(), compile(SOURCE).unwrap());
 
     for source in [
         SOURCE.replace("p0 =", "p-0 ="),
-        SOURCE.replace("equal(x, x)", "equal(x-y, x-y)"),
+        SOURCE.replace("eq(x, x)", "eq(x-y, x-y)"),
         SOURCE.replace("p0 =", "0p ="),
     ] {
         assert!(matches!(compile(&source), Err(CompileError::Syntax { .. })));
@@ -976,7 +969,7 @@ return _p1 # EOF comment"#;
 
 #[test]
 fn duplicate_unknown_forward_and_nonfinal_steps_fail_at_their_source_offsets() {
-    let duplicate = SOURCE.replace("p1 = generalization(p0, x)", "p0 = generalization(p0, x)");
+    let duplicate = SOURCE.replace("p1 = gen(p0, x)", "p0 = gen(p0, x)");
     let duplicate_offset = duplicate.rfind("p0 =").unwrap();
     assert_eq!(
         compile(&duplicate),
@@ -986,7 +979,7 @@ fn duplicate_unknown_forward_and_nonfinal_steps_fail_at_their_source_offsets() {
         })
     );
 
-    let unknown = SOURCE.replace("generalization(p0, x)", "generalization(missing, x)");
+    let unknown = SOURCE.replace("gen(p0, x)", "gen(missing, x)");
     let unknown_offset = unknown.find("missing").unwrap();
     assert_eq!(
         compile(&unknown),
@@ -996,7 +989,7 @@ fn duplicate_unknown_forward_and_nonfinal_steps_fail_at_their_source_offsets() {
         })
     );
 
-    let forward = SOURCE.replace("p0 = equality_reflexivity(x)", "p0 = generalization(p1, x)");
+    let forward = SOURCE.replace("p0 = refl(x)", "p0 = gen(p1, x)");
     assert!(matches!(
         compile(&forward),
         Err(CompileError::UnknownStep { name, .. }) if name == "p1"
@@ -1012,33 +1005,28 @@ fn duplicate_unknown_forward_and_nonfinal_steps_fail_at_their_source_offsets() {
 #[test]
 fn formula_binding_block_is_nonempty_unique_and_backward_only() {
     let source = |bindings: &str, statement: &str| {
-        format!(
-            "foundation = \"naome:zfc\" formulas: {bindings} statement = {statement} proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
-        )
+        format!("let: {bindings} goal = {statement} proof: p0 = refl(x) p1 = gen(p0, x) return p1")
     };
 
-    let empty = source("", "forall(x, equal(x, x))");
+    let empty = source("", "all(x, eq(x, x))");
     assert_eq!(
         compile(&empty),
         Err(CompileError::Syntax {
-            offset: empty.find("statement").unwrap(),
+            offset: empty.find("goal").unwrap(),
             expected: "at least one formula binding",
         })
     );
 
-    let repeated_block = source(
-        "fact = equal(x, x) formulas: other = equal(x, x)",
-        "forall(x, fact)",
-    );
+    let repeated_block = source("fact = eq(x, x) let: other = eq(x, x)", "all(x, fact)");
     assert_eq!(
         compile(&repeated_block),
         Err(CompileError::Syntax {
-            offset: repeated_block.rfind("formulas:").unwrap(),
+            offset: repeated_block.rfind("let:").unwrap(),
             expected: "a non-reserved formula binding name",
         })
     );
 
-    let duplicate = source("fact = equal(x, x) fact = unsupported(", "forall(x, fact)");
+    let duplicate = source("fact = eq(x, x) fact = unsupported(", "all(x, fact)");
     let duplicate_offset = duplicate.rfind("fact =").unwrap();
     assert_eq!(
         compile(&duplicate),
@@ -1048,8 +1036,8 @@ fn formula_binding_block_is_nonempty_unique_and_backward_only() {
         })
     );
 
-    for bindings in ["fact = fact", "fact = later later = equal(x, x)"] {
-        let invalid = source(bindings, "forall(x, equal(x, x))");
+    for bindings in ["fact = fact", "fact = later later = eq(x, x)"] {
+        let invalid = source(bindings, "all(x, eq(x, x))");
         let reference = if bindings == "fact = fact" {
             invalid.find("= fact").unwrap() + 2
         } else {
@@ -1069,7 +1057,7 @@ fn formula_binding_block_is_nonempty_unique_and_backward_only() {
         );
     }
 
-    let unknown = source("fact = equal(x, x)", "forall(x, missing)");
+    let unknown = source("fact = eq(x, x)", "all(x, missing)");
     assert_eq!(
         compile(&unknown),
         Err(CompileError::UnknownFormulaBinding {
@@ -1082,41 +1070,46 @@ fn formula_binding_block_is_nonempty_unique_and_backward_only() {
 #[test]
 fn fixed_names_and_call_shape_cannot_be_reinterpreted_as_bindings() {
     const RESERVED: &[&str] = &[
-        "foundation",
-        "formulas",
-        "statement",
+        "defs",
+        "refs",
+        "let",
+        "goal",
+        "def",
+        "relation",
+        "function",
+        "success",
         "proof",
         "return",
         "parameters",
-        "equal",
-        "member",
-        "not_",
-        "implies",
-        "forall",
-        "and_",
-        "or_",
+        "eq",
+        "mem",
+        "not",
+        "imp",
+        "all",
+        "and",
+        "or",
         "iff",
-        "exists",
-        "not_equal",
-        "simplification",
+        "ex",
+        "ne",
+        "simp",
         "frege",
-        "classical_contraposition",
-        "universal_distribution",
-        "vacuous_universal",
-        "universal_instantiation",
-        "modus_ponens",
-        "equality_reflexivity",
-        "equality_substitution",
-        "zfc_axiom",
-        "separation",
-        "replacement",
+        "contra",
+        "dist",
+        "vacuous",
+        "inst",
+        "mp",
+        "refl",
+        "subst",
+        "axiom",
+        "sep",
+        "replace",
         "cite",
-        "generalization",
+        "gen",
     ];
 
     for name in RESERVED {
         let source = format!(
-            "foundation = \"naome:zfc\" formulas: {name} = equal(x, x) statement = forall(x, equal(x, x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
+            "let: {name} = eq(x, x) goal = all(x, eq(x, x)) proof: p0 = refl(x) p1 = gen(p0, x) return p1"
         );
         assert!(
             matches!(compile(&source), Err(CompileError::Syntax { .. })),
@@ -1124,42 +1117,34 @@ fn fixed_names_and_call_shape_cannot_be_reinterpreted_as_bindings() {
         );
     }
 
-    for bare in ["equal", "return", "simplification"] {
+    for bare in ["eq", "return", "simp"] {
         let source = complete_source(
-            &format!("forall(x, {bare})"),
-            "p0 = equality_reflexivity(x) p1 = generalization(p0, x)",
+            &format!("all(x, {bare})"),
+            "p0 = refl(x) p1 = gen(p0, x)",
             "p1",
         );
         assert!(matches!(compile(&source), Err(CompileError::Syntax { .. })));
     }
 
-    let unknown_call = complete_source(
-        "forall(x, missing())",
-        "p0 = equality_reflexivity(x) p1 = generalization(p0, x)",
-        "p1",
-    );
+    let unknown_call = complete_source("all(x, missing())", "p0 = refl(x) p1 = gen(p0, x)", "p1");
     assert!(matches!(
         compile(&unknown_call),
         Err(CompileError::UnknownDefinitionAlias { name, .. }) if name == "missing"
     ));
 
-    let unknown_bare = complete_source(
-        "forall(x, missing)",
-        "p0 = equality_reflexivity(x) p1 = generalization(p0, x)",
-        "p1",
-    );
+    let unknown_bare = complete_source("all(x, missing)", "p0 = refl(x) p1 = gen(p0, x)", "p1");
     assert!(matches!(
         compile(&unknown_bare),
         Err(CompileError::UnknownFormulaBinding { name, .. }) if name == "missing"
     ));
 
     let binding_as_axiom_selector = r#"
-foundation = "naome:zfc"
-formulas:
-    selector = equal(x, x)
-statement = forall(x, equal(x, x))
+
+let:
+    selector = eq(x, x)
+goal = all(x, eq(x, x))
 proof:
-    p0 = zfc_axiom(selector)
+    p0 = axiom(selector)
     return p0
 "#;
     assert!(matches!(
@@ -1173,17 +1158,7 @@ proof:
 
 #[test]
 fn formula_binding_failures_keep_source_precedence_and_bounded_full_name_spans() {
-    let wrong_foundation = "foundation = \"wrong\" formulas: fact = missing statement = missing";
-    assert!(matches!(
-        compile(wrong_foundation),
-        Err(CompileError::FoundationMismatch { .. })
-    ));
-
-    let malformed_block = SOURCE.replacen(
-        "statement =",
-        "formulas = fact = equal(x, x) statement =",
-        1,
-    );
+    let malformed_block = SOURCE.replacen("goal =", "let = fact = eq(x, x) goal =", 1);
     assert!(matches!(
         compile(&malformed_block),
         Err(CompileError::Syntax {
@@ -1194,7 +1169,7 @@ fn formula_binding_failures_keep_source_precedence_and_bounded_full_name_spans()
 
     let long_name = "n".repeat(DIAGNOSTIC_NAME_MAX_SCALARS + 32);
     let source = format!(
-        "foundation = \"naome:zfc\" formulas: {long_name} = equal(x, x) {long_name} = equal(x, x) statement = forall(x, equal(x, x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
+        "let: {long_name} = eq(x, x) {long_name} = eq(x, x) goal = all(x, eq(x, x)) proof: p0 = refl(x) p1 = gen(p0, x) return p1"
     );
     let offset = source.rfind(&long_name).unwrap();
     let error = compile(&source).unwrap_err();
@@ -1218,7 +1193,7 @@ fn formula_binding_failures_keep_source_precedence_and_bounded_full_name_spans()
     );
 
     let unknown_source = format!(
-        "foundation = \"naome:zfc\" formulas: fact = equal(x, x) statement = forall(x, {long_name}) proof: p0 = equality_reflexivity(x) p1 = generalization(p0, x) return p1"
+        "let: fact = eq(x, x) goal = all(x, {long_name}) proof: p0 = refl(x) p1 = gen(p0, x) return p1"
     );
     let offset = unknown_source.find(&long_name).unwrap();
     let error = compile(&unknown_source).unwrap_err();
@@ -1253,20 +1228,20 @@ fn complete_parsing_precedes_checking_and_statement_comparison() {
         })
     ));
 
-    let open = complete_source("equal(x, x)", "p0 = equality_reflexivity(x)", "p0");
+    let open = complete_source("eq(x, x)", "p0 = refl(x)", "p0");
     assert!(matches!(
         compile(&open),
         Err(CompileError::Check { source, .. })
             if matches!(source.as_ref(), CheckError::OpenConclusion { .. })
     ));
 
-    let mismatch = SOURCE.replace("forall(x, equal(x, x))", "forall(x, member(x, x))");
+    let mismatch = SOURCE.replace("all(x, eq(x, x))", "all(x, mem(x, x))");
     assert!(matches!(
         compile(&mismatch),
         Err(CompileError::StatementMismatch { .. })
     ));
 
-    let invalid_mp = IMPLICATION_SOURCE.replace("modus_ponens(p1, p2)", "modus_ponens(p2, p1)");
+    let invalid_mp = IMPLICATION_SOURCE.replace("mp(p1, p2)", "mp(p2, p1)");
     assert!(matches!(
         compile(&invalid_mp),
         Err(CompileError::Check { source, .. })
@@ -1308,7 +1283,7 @@ fn formula_bindings_do_not_change_citation_identity_or_reference_authority() {
     let (state, _) = checked_state(SOURCE);
     let inlined = proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX);
     let bound = format!(
-        "foundation = \"naome:zfc\" formulas: reflexive = equal(x, x) closed = forall(x, reflexive) statement = closed proof: known = cite(\"{SELF_EQUALITY_PROOF_ID_HEX}\") return known"
+        "let: reflexive = eq(x, x) closed = all(x, reflexive) goal = closed proof: known = cite(\"{SELF_EQUALITY_PROOF_ID_HEX}\") return known"
     );
     assert_eq!(
         compile_with_proof_state(&bound, &state).unwrap(),
@@ -1322,13 +1297,10 @@ fn formula_bindings_do_not_change_citation_identity_or_reference_authority() {
         },
     );
 
-    let binding_as_id = "foundation = \"naome:zfc\" formulas: dependency = forall(x, equal(x, x)) statement = dependency proof: known = cite(dependency) return known";
+    let binding_as_id = "let: dependency = all(x, eq(x, x)) goal = dependency proof: known = cite(dependency) return known";
     assert!(matches!(
         compile(binding_as_id),
-        Err(CompileError::Syntax {
-            expected: PROOF_ID_EXPECTED,
-            ..
-        })
+        Err(CompileError::UnknownProofReference { name, .. }) if name == "dependency"
     ));
 }
 
@@ -1366,7 +1338,7 @@ fn citation_is_identity_neutral_only_for_presentation_changes() {
         compile_with_proof_state(&proof_reference_source(SELF_EQUALITY_PROOF_ID_HEX), &state)
             .unwrap();
     let renamed = format!(
-        "# presentation only\nfoundation = \"naome:zfc\" statement = forall(value, equal(value, value)) proof: imported = cite(\"{SELF_EQUALITY_PROOF_ID_HEX}\") return imported"
+        "# presentation only\ngoal = all(value, eq(value, value)) proof: imported = cite(\"{SELF_EQUALITY_PROOF_ID_HEX}\") return imported"
     );
     assert_eq!(
         compile_with_proof_state(&renamed, &state).unwrap(),
@@ -1415,8 +1387,8 @@ fn citation_is_identity_neutral_only_for_presentation_changes() {
 fn unreachable_citations_are_parsed_then_pruned_before_resolution() {
     let unknown = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
     let unreachable = SOURCE.replace(
-        "p0 = equality_reflexivity(x)",
-        &format!("unused = cite(\"{unknown}\") p0 = equality_reflexivity(x)"),
+        "p0 = refl(x)",
+        &format!("unused = cite(\"{unknown}\") p0 = refl(x)"),
     );
     assert_eq!(compile(&unreachable).unwrap(), compile(SOURCE).unwrap());
 
@@ -1497,7 +1469,7 @@ fn citation_hex_and_quotes_are_exact_with_precise_byte_offsets() {
 
 #[test]
 fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
-    const IFF: &str = "iff(equal(x, x), equal(y, y))";
+    const IFF: &str = "iff(eq(x, x), eq(y, y))";
     let expanded_nodes = 9;
     for (context, maximum) in [
         (FormulaContext::Binding, FORMULA_BINDING_MAX_NODES),
@@ -1561,7 +1533,7 @@ fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
     let wrap = |count: u32, body: &str| {
         format!(
             "{}{}{}",
-            "not_(".repeat(count as usize),
+            "not(".repeat(count as usize),
             body,
             ")".repeat(count as usize)
         )
@@ -1575,10 +1547,10 @@ fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
             if offset == iff_offset && maximum == FORMULA_MAX_DEPTH
     ));
 
-    let exact_default_stack_boundary = wrap(FORMULA_MAX_DEPTH - 1, "equal(x, x)");
+    let exact_default_stack_boundary = wrap(FORMULA_MAX_DEPTH - 1, "eq(x, x)");
     assert!(parse_formula(&exact_default_stack_boundary, FormulaContext::Statement).is_ok());
-    let over_default_stack_boundary = wrap(FORMULA_MAX_DEPTH, "equal(x, x)");
-    let terminal_offset = over_default_stack_boundary.find("equal").unwrap();
+    let over_default_stack_boundary = wrap(FORMULA_MAX_DEPTH, "eq(x, x)");
+    let terminal_offset = over_default_stack_boundary.find("eq").unwrap();
     assert!(matches!(
         parse_formula(
             &over_default_stack_boundary,
@@ -1591,7 +1563,7 @@ fn derived_formula_node_and_depth_limits_apply_to_expanded_primitives() {
 
 #[test]
 fn formula_alias_uses_recharge_every_context_before_clone() {
-    const SOURCE: &str = "fact = iff(equal(x, x), equal(y, y)) fact";
+    const SOURCE: &str = "fact = iff(eq(x, x), eq(y, y)) fact";
     const NODES: usize = 9;
     const DEPTH: u32 = 5;
 
@@ -1696,11 +1668,11 @@ fn unknown_alias_precedes_an_exhausted_use_budget_in_every_context() {
 fn alias_doubling_cannot_bypass_the_cumulative_retention_budget() {
     use std::fmt::Write as _;
 
-    let mut source = String::from("a0 = equal(x, x) ");
+    let mut source = String::from("a0 = eq(x, x) ");
     for index in 1..=15 {
         write!(
             &mut source,
-            "a{index} = implies(a{}, a{}) ",
+            "a{index} = imp(a{}, a{}) ",
             index - 1,
             index - 1
         )
@@ -1711,7 +1683,7 @@ fn alias_doubling_cannot_bypass_the_cumulative_retention_budget() {
         parser.formula_binding().unwrap();
     }
     assert_eq!(parser.formula_binding_nodes, 65_519);
-    let error_offset = source.rfind("a15 = implies(a14").unwrap() + "a15 = implies(".len();
+    let error_offset = source.rfind("a15 = imp(a14").unwrap() + "a15 = imp(".len();
     let error = parser.formula_binding().unwrap_err();
     assert_eq!(
         error,
@@ -1732,7 +1704,7 @@ fn alias_doubling_cannot_bypass_the_cumulative_retention_budget() {
 
 #[test]
 fn certificate_formula_node_budget_accumulates_across_steps() {
-    const TWO_STEPS: &str = "vacuous_universal(equal(x, x)) vacuous_universal(equal(y, y))";
+    const TWO_STEPS: &str = "vacuous(eq(x, x)) vacuous(eq(y, y))";
 
     let mut at_limit = Parser::new(TWO_STEPS);
     at_limit.certificate_formula_nodes = CERTIFICATE_MAX_FORMULA_NODES - 2;
@@ -1767,12 +1739,10 @@ fn source_and_step_limits_fail_before_unbounded_growth_or_later_syntax() {
         })
     );
 
-    let mut source = String::from(
-        "foundation = \"naome:zfc\" statement = forall(x, equal(x, x)) proof: p0 = equality_reflexivity(x) ",
-    );
+    let mut source = String::from("goal = all(x, eq(x, x)) proof: p0 = refl(x) ");
     for index in 1..CERTIFICATE_MAX_STEPS {
         use std::fmt::Write as _;
-        write!(&mut source, "p{index} = generalization(p{}, x) ", index - 1).unwrap();
+        write!(&mut source, "p{index} = gen(p{}, x) ", index - 1).unwrap();
     }
     source.push_str("excess = unsupported(");
     assert!(matches!(
@@ -1803,21 +1773,11 @@ fn every_truncation_of_the_complete_source_fails_without_output() {
 
 #[test]
 fn diagnostics_use_exact_token_statement_and_eof_spans() {
-    let wrong_foundation = SOURCE.replace("naome:zfc", "wrong");
-    let error = compile(&wrong_foundation).unwrap_err();
-    let diagnostic = error.diagnostic(&wrong_foundation);
-    let span = diagnostic.primary_span().unwrap();
-    assert_eq!(&wrong_foundation[span.start()..span.end()], "\"wrong\"");
-    assert_eq!(diagnostic.code(), DiagnosticCode::FoundationMismatch);
-
-    let mismatch = SOURCE.replace("forall(x, equal(x, x))", "forall(x, member(x, x))");
+    let mismatch = SOURCE.replace("all(x, eq(x, x))", "all(x, mem(x, x))");
     let error = compile(&mismatch).unwrap_err();
     let diagnostic = error.diagnostic(&mismatch);
     let span = diagnostic.primary_span().unwrap();
-    assert_eq!(
-        &mismatch[span.start()..span.end()],
-        "forall(x, member(x, x))"
-    );
+    assert_eq!(&mismatch[span.start()..span.end()], "all(x, mem(x, x))");
     assert_eq!(diagnostic.code(), DiagnosticCode::StatementMismatch);
 
     let truncated = SOURCE.trim_end().strip_suffix("p1").unwrap();
@@ -1836,7 +1796,7 @@ fn checker_diagnostics_map_normalized_steps_back_to_source_assignments() {
     const ONE_ID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
     let unreachable = format!(
-        "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  dead = cite(\"{ONE_ID}\")\n  broken = cite(\"{ZERO_ID}\")\n  root = generalization(broken, x)\n  return root"
+        "goal = eq(x, x)\nproof:\n  dead = cite(\"{ONE_ID}\")\n  broken = cite(\"{ZERO_ID}\")\n  root = gen(broken, x)\n  return root"
     );
     assert_check_diagnostic_origin(
         &unreachable,
@@ -1844,15 +1804,11 @@ fn checker_diagnostics_map_normalized_steps_back_to_source_assignments() {
         &format!("broken = cite(\"{ZERO_ID}\")"),
     );
 
-    let reordered = "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  a0 = equality_reflexivity(x)\n  a1 = simplification(equal(x, x), equal(x, x))\n  broken_result = modus_ponens(a1, a0)\n  b0 = equality_reflexivity(y)\n  root = modus_ponens(b0, broken_result)\n  return root";
-    assert_check_diagnostic_origin(
-        reordered,
-        "broken_result",
-        "broken_result = modus_ponens(a1, a0)",
-    );
+    let reordered = "goal = eq(x, x)\nproof:\n  a0 = refl(x)\n  a1 = simp(eq(x, x), eq(x, x))\n  broken_result = mp(a1, a0)\n  b0 = refl(y)\n  root = mp(b0, broken_result)\n  return root";
+    assert_check_diagnostic_origin(reordered, "broken_result", "broken_result = mp(a1, a0)");
 
     let interned = format!(
-        "foundation = \"naome:zfc\"\nstatement = equal(x, x)\nproof:\n  p0 = cite(\"{ZERO_ID}\")\n  p1 = cite(\"{ZERO_ID}\")\n  root = modus_ponens(p1, p0)\n  return root"
+        "goal = eq(x, x)\nproof:\n  p0 = cite(\"{ZERO_ID}\")\n  p1 = cite(\"{ZERO_ID}\")\n  root = mp(p1, p0)\n  return root"
     );
     assert_check_diagnostic_origin(&interned, "p0", &format!("p0 = cite(\"{ZERO_ID}\")"));
 }
@@ -1885,16 +1841,12 @@ fn consuming_bytes_returns_the_exact_owned_output() {
 
 #[test]
 fn definition_source_names_are_identity_neutral_and_source_helpers_are_rejected() {
-    let first =
-        compile_artifact("foundation = \"naome:zfc\" definition first = relation(x,): equal(x, x)")
-            .unwrap();
-    let renamed = compile_artifact(
-        "foundation = \"naome:zfc\" definition presentation_only = relation(value): equal(value, value)",
-    )
-    .unwrap();
+    let first = compile_artifact("def first = relation(x,): eq(x, x)").unwrap();
+    let renamed =
+        compile_artifact("def presentation_only = relation(value): eq(value, value)").unwrap();
     assert_eq!(first, renamed);
 
-    let formulas = "foundation = \"naome:zfc\" formulas: helper = equal(x, x) definition relation_name = relation(x): equal(x, x)";
+    let formulas = "let: helper = eq(x, x) def relation_name = relation(x): eq(x, x)";
     assert!(matches!(
         compile_artifact(formulas),
         Err(CompileError::Syntax {
@@ -1903,8 +1855,8 @@ fn definition_source_names_are_identity_neutral_and_source_helpers_are_rejected(
         })
     ));
     for duplicate in [
-        "foundation = \"naome:zfc\" definition bad = relation(x, x): equal(x, x)",
-        "foundation = \"naome:zfc\" definition bad = function(x, x): equal(x, x)",
+        "def bad = relation(x, x): eq(x, x)",
+        "def bad = function(x, x): eq(x, x)",
     ] {
         assert!(matches!(
             compile_artifact(duplicate),
@@ -1918,15 +1870,11 @@ fn definition_source_names_are_identity_neutral_and_source_helpers_are_rejected(
 
 #[test]
 fn all_definition_declarations_reach_the_typed_semantic_boundary() {
-    let relation =
-        compile_artifact("foundation = \"naome:zfc\" definition r = relation(x, y): equal(x, y)")
-            .unwrap();
+    let relation = compile_artifact("def r = relation(x, y): eq(x, y)").unwrap();
     assert!(matches!(relation, CompiledArtifact::Definition(_)));
 
-    let function = compile_artifact(
-        "foundation = \"naome:zfc\" definition f = function(input, output): equal(output, input)",
-    )
-    .unwrap_err();
+    let function =
+        compile_artifact("def f = function(input, output): eq(output, input)").unwrap_err();
     assert!(matches!(
         function,
         CompileError::DefinitionCheck { source, .. }
@@ -1940,8 +1888,8 @@ fn all_definition_declarations_reach_the_typed_semantic_boundary() {
     ));
 
     for removed in [
-        "foundation = \"naome:zfc\" definition c = constant(value): equal(value, value)",
-        "foundation = \"naome:zfc\" definition f = function(input, output, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\"): equal(output, input)",
+        "def c = constant(value): eq(value, value)",
+        "def f = function(input, output, obligation = \"0000000000000000000000000000000000000000000000000000000000000000\"): eq(output, input)",
     ] {
         assert!(matches!(
             compile_artifact(removed),
@@ -1953,7 +1901,7 @@ fn all_definition_declarations_reach_the_typed_semantic_boundary() {
 #[test]
 fn definition_parameter_lists_stop_at_the_canonical_graph_arity_bound() {
     assert!(matches!(
-        compile_artifact("foundation = \"naome:zfc\" definition empty = relation(): equal(x, x)"),
+        compile_artifact("def empty = relation(): eq(x, x)"),
         Err(CompileError::Definition {
             source: DefinitionCertificateError::ZeroRelationArity,
             ..
@@ -1964,9 +1912,7 @@ fn definition_parameter_lists_stop_at_the_canonical_graph_arity_bound() {
         .map(|identifier| format!("p{identifier}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let source = format!(
-        "foundation = \"naome:zfc\" definition too_wide = relation({parameters}): equal(p0, p0)"
-    );
+    let source = format!("def too_wide = relation({parameters}): eq(p0, p0)");
     let error = compile_artifact(&source).unwrap_err();
     assert!(matches!(
         &error,
@@ -1986,13 +1932,13 @@ fn definition_parameter_lists_stop_at_the_canonical_graph_arity_bound() {
 fn definition_names_cannot_create_self_or_forward_authority() {
     assert!(matches!(
         compile_artifact(
-            "foundation = \"naome:zfc\" definition recursive = relation(x): recursive(x)"
+            "def recursive = relation(x): recursive(x)"
         ),
         Err(CompileError::UnknownDefinitionAlias { name, .. }) if name == "recursive"
     ));
     assert!(matches!(
         compile_artifact(
-            "foundation = \"naome:zfc\" definitions: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" definition current = relation(x): future(x)"
+            "defs: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" def current = relation(x): future(x)"
         ),
         Err(CompileError::DefinitionNotSelected { .. })
     ));
@@ -2039,7 +1985,7 @@ fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
             DefinedFormula::equal(first, x),
         ),
     );
-    assert_eq!(parse("equal(identity(x), x)"), unary);
+    assert_eq!(parse("eq(identity(x), x)"), unary);
 
     let nested = DefinedFormula::exists(
         first,
@@ -2054,7 +2000,7 @@ fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
             ),
         ),
     );
-    assert_eq!(parse("equal(identity(identity(x)), x)"), nested);
+    assert_eq!(parse("eq(identity(identity(x)), x)"), nested);
 
     let multi_input = DefinedFormula::exists(
         second,
@@ -2069,5 +2015,5 @@ fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
             ),
         ),
     );
-    assert_eq!(parse("equal(binary(x, identity(y)), y)"), multi_input);
+    assert_eq!(parse("eq(binary(x, identity(y)), y)"), multi_input);
 }

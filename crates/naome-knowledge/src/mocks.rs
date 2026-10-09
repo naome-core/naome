@@ -3,16 +3,16 @@ use naome_authoring::CompiledQuestion;
 
 const CATALOG: [(&str, &str); 3] = [
     (
-        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x))",
-        "foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) return p1",
+        "goal = all(x,eq(x,x))",
+        "goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1",
     ),
     (
-        "foundation = \"naome:zfc\" statement = forall(x,implies(member(x,x),member(x,x)))",
-        "foundation = \"naome:zfc\" formulas: a = member(x,x) b = implies(a,a) statement = forall(x,b) proof: p0 = simplification(a,a) p1 = simplification(a,b) p2 = frege(a,b,a) p3 = modus_ponens(p1,p2) p4 = modus_ponens(p0,p3) p5 = generalization(p4,x) return p5",
+        "goal = all(x,imp(mem(x,x),mem(x,x)))",
+        "let: a = mem(x,x) b = imp(a,a) goal = all(x,b) proof: p0 = simp(a,a) p1 = simp(a,b) p2 = frege(a,b,a) p3 = mp(p1,p2) p4 = mp(p0,p3) p5 = gen(p4,x) return p5",
     ),
     (
-        "foundation = \"naome:zfc\" statement = forall(x,forall(y,forall(set,implies(equal(x,y),implies(member(x,set),member(y,set))))))",
-        "foundation = \"naome:zfc\" statement = forall(x,forall(y,forall(set,implies(equal(x,y),implies(member(x,set),member(y,set)))))) proof: p0 = equality_substitution(x,y,member(x,set)) p1 = generalization(p0,set) p2 = generalization(p1,y) p3 = generalization(p2,x) return p3",
+        "goal = all(x,all(y,all(set,imp(eq(x,y),imp(mem(x,set),mem(y,set))))))",
+        "goal = all(x,all(y,all(set,imp(eq(x,y),imp(mem(x,set),mem(y,set)))))) proof: p0 = subst(x,y,mem(x,set)) p1 = gen(p0,set) p2 = gen(p1,y) p3 = gen(p2,x) return p3",
     ),
 ];
 

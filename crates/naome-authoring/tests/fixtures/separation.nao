@@ -1,17 +1,17 @@
 # Separation constructs the intersection selected by an explicit parameter.
-foundation = "naome:zfc"
 
-statement = forall(
+
+goal = all(
     filter,
-    forall(
+    all(
         source,
-        exists(
+        ex(
             result,
-            forall(
+            all(
                 element,
                 iff(
-                    member(element, result),
-                    and_(member(element, source), member(element, filter)),
+                    mem(element, result),
+                    and(mem(element, source), mem(element, filter)),
                 ),
             ),
         ),
@@ -19,8 +19,8 @@ statement = forall(
 )
 
 proof:
-    p0 = separation(
-        member(element, filter),
+    p0 = sep(
+        mem(element, filter),
         element,
         source,
         result,

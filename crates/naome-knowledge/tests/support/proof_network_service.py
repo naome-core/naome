@@ -33,7 +33,7 @@ def main():
         driver.nodes = [node]
         # Preserve this service fixture's original proof address independently
         # of the distinct question family used by the inventory scenarios.
-        producer_source = 'foundation = "naome:zfc" statement = forall(x, equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) return p1'
+        producer_source = 'goal = all(x, eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1'
         producer_source += "#" + "\u0001" * (65536 - len(producer_source.encode()) - 2) + "\n"
         node.start([producer_source], command_input=False, test_controls=False)
         node.wait_event(lambda event: event.get("event") == "command_input_closed")

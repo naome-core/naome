@@ -160,9 +160,7 @@ async fn stale_generated_closure_is_not_published_and_unanswered_work_retries_fr
 async fn unsupported_questions_retry_boundedly_and_a_received_answer_cancels_generation() {
     let mut graph = Graph::default();
     let mut questions = questions();
-    let unsupported =
-        CompiledQuestion::compile("foundation = \"naome:zfc\" statement = forall(x,member(x,x))")
-            .unwrap();
+    let unsupported = CompiledQuestion::compile("goal = all(x,mem(x,x))").unwrap();
     admitted(&mut questions, &graph, &unsupported).await;
     let mut owner = jobs::tests::Manual::new();
     let mut autonomous = Autonomous::new(

@@ -8,7 +8,6 @@ use super::*;
 pub enum DiagnosticCode {
     SourceTooLong,
     Syntax,
-    FoundationMismatch,
     DuplicateStep,
     UnknownStep,
     ReturnNotFinal,
@@ -29,6 +28,12 @@ pub enum DiagnosticCode {
     DefinitionCheck,
     DefinitionFormula,
     DefinitionExpansion,
+    DuplicateProofReference,
+    UnknownProofReference,
+    QuestionSyntax,
+    QuestionLimit,
+    QuestionOpenFormula,
+    QuestionFormula,
 }
 
 impl DiagnosticCode {
@@ -37,7 +42,6 @@ impl DiagnosticCode {
         match self {
             Self::SourceTooLong => "NAO0001",
             Self::Syntax => "NAO0002",
-            Self::FoundationMismatch => "NAO0003",
             Self::DuplicateStep => "NAO0004",
             Self::UnknownStep => "NAO0005",
             Self::ReturnNotFinal => "NAO0006",
@@ -58,6 +62,12 @@ impl DiagnosticCode {
             Self::DefinitionCheck => "NAO0021",
             Self::DefinitionFormula => "NAO0022",
             Self::DefinitionExpansion => "NAO0023",
+            Self::DuplicateProofReference => "NAO0025",
+            Self::UnknownProofReference => "NAO0026",
+            Self::QuestionSyntax => "NAO0030",
+            Self::QuestionLimit => "NAO0031",
+            Self::QuestionOpenFormula => "NAO0032",
+            Self::QuestionFormula => "NAO0033",
         }
     }
 }
@@ -137,6 +147,30 @@ pub struct CompileDiagnostic {
 }
 
 impl CompileDiagnostic {
+    pub(crate) fn at(
+        code: DiagnosticCode,
+        message: String,
+        source: &str,
+        span: Option<SourceSpan>,
+    ) -> Self {
+        let primary_span = span.filter(|span| valid_source_span(source, *span));
+        Self {
+            code,
+            message: message.into_boxed_str(),
+            primary_span,
+            primary_position: primary_span.and_then(|span| source_position(source, span.start())),
+        }
+    }
+
+    pub(crate) fn token(
+        code: DiagnosticCode,
+        message: String,
+        source: &str,
+        offset: usize,
+    ) -> Self {
+        Self::at(code, message, source, source_token_span(source, offset))
+    }
+
     /// Returns the stable error-class code.
     pub const fn code(&self) -> DiagnosticCode {
         self.code
@@ -164,13 +198,15 @@ impl CompileDiagnostic {
 pub enum CompileError {
     /// The complete source exceeds its byte budget.
     SourceTooLong { actual: usize, maximum: usize },
+    /// A source-only typed proof reference duplicates a declared name.
+    DuplicateProofReference { offset: usize, name: String },
+    /// A citation names no earlier typed proof reference.
+    UnknownProofReference { offset: usize, name: String },
     /// A lexical or grammar boundary failed at this byte offset.
     Syntax {
         offset: usize,
         expected: &'static str,
     },
-    /// The source names an unsupported Foundation identifier.
-    FoundationMismatch { offset: usize },
     /// A presentation identifier was declared more than once.
     DuplicateStep { offset: usize, name: String },
     /// A proof step refers to a step that has not already been declared.
@@ -202,7 +238,7 @@ pub enum CompileError {
     UnknownFormulaBinding { offset: usize, name: String },
     /// Expanded formula bindings exceed their cumulative retention budget.
     FormulaBindingNodeLimitExceeded { offset: usize, maximum: usize },
-    /// A proof-only compatibility entry point received a definition source.
+    /// A proof-only entry point received a definition source.
     ExpectedProof { offset: usize },
     /// A source-only selected-definition alias was declared twice.
     DuplicateDefinitionAlias { offset: usize, name: String },
@@ -247,8 +283,9 @@ impl CompileError {
     pub const fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
             Self::SourceTooLong { .. } => DiagnosticCode::SourceTooLong,
+            Self::DuplicateProofReference { .. } => DiagnosticCode::DuplicateProofReference,
+            Self::UnknownProofReference { .. } => DiagnosticCode::UnknownProofReference,
             Self::Syntax { .. } => DiagnosticCode::Syntax,
-            Self::FoundationMismatch { .. } => DiagnosticCode::FoundationMismatch,
             Self::DuplicateStep { .. } => DiagnosticCode::DuplicateStep,
             Self::UnknownStep { .. } => DiagnosticCode::UnknownStep,
             Self::ReturnNotFinal { .. } => DiagnosticCode::ReturnNotFinal,
@@ -279,7 +316,8 @@ impl CompileError {
         match self {
             Self::SourceTooLong { .. } => None,
             Self::Syntax { offset, .. }
-            | Self::FoundationMismatch { offset }
+            | Self::DuplicateProofReference { offset, .. }
+            | Self::UnknownProofReference { offset, .. }
             | Self::DuplicateStep { offset, .. }
             | Self::UnknownStep { offset, .. }
             | Self::ReturnNotFinal { offset }
@@ -323,7 +361,8 @@ impl CompileError {
         let span = match self {
             Self::SourceTooLong { .. } => return None,
             Self::Syntax { offset, .. }
-            | Self::FoundationMismatch { offset }
+            | Self::DuplicateProofReference { offset, .. }
+            | Self::UnknownProofReference { offset, .. }
             | Self::DuplicateStep { offset, .. }
             | Self::UnknownStep { offset, .. }
             | Self::ReturnNotFinal { offset }
@@ -354,8 +393,11 @@ impl CompileError {
                 format!("source has {actual} bytes; the limit is {maximum}")
             }
             Self::Syntax { expected, .. } => format!("expected {expected}"),
-            Self::FoundationMismatch { .. } => {
-                format!("unsupported Foundation identifier; expected {FOUNDATION_ID:?}")
+            Self::DuplicateProofReference { name, .. } => {
+                format!("duplicate proof reference {}", diagnostic_name(name))
+            }
+            Self::UnknownProofReference { name, .. } => {
+                format!("unknown proof reference {}", diagnostic_name(name))
             }
             Self::DuplicateStep { name, .. } => {
                 format!("duplicate step {}", diagnostic_name(name))
@@ -367,7 +409,7 @@ impl CompileError {
             Self::FormulaDepthLimitExceeded { maximum, .. } => {
                 format!("formula exceeds the depth limit {maximum}")
             }
-            Self::Statement { source, .. } => format!("invalid statement: {source}"),
+            Self::Statement { source, .. } => format!("invalid goal: {source}"),
             Self::Certificate { source, .. } => format!("invalid proof structure: {source}"),
             Self::Check { span, source } => {
                 let step_name = source_token_span(source_text, span.start())
@@ -433,9 +475,13 @@ impl fmt::Display for CompileError {
             Self::Syntax { offset, expected } => {
                 write!(formatter, "expected {expected} at byte {offset}")
             }
-            Self::FoundationMismatch { offset } => write!(
+            Self::DuplicateProofReference { offset, name } => write!(
                 formatter,
-                "unsupported Foundation identifier at byte {offset}; expected {FOUNDATION_ID:?}"
+                "duplicate proof reference {name:?} at byte {offset}"
+            ),
+            Self::UnknownProofReference { offset, name } => write!(
+                formatter,
+                "unknown proof reference {name:?} at byte {offset}"
             ),
             Self::DuplicateStep { offset, name } => {
                 write!(formatter, "duplicate step {name:?} at byte {offset}")
@@ -456,7 +502,7 @@ impl fmt::Display for CompileError {
                 formatter,
                 "formula at byte {offset} exceeds the depth limit {maximum}"
             ),
-            Self::Statement { source, .. } => write!(formatter, "invalid statement: {source}"),
+            Self::Statement { source, .. } => write!(formatter, "invalid goal: {source}"),
             Self::Certificate { source, .. } => {
                 write!(formatter, "invalid proof structure: {source}")
             }

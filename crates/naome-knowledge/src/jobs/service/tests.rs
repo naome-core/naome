@@ -190,6 +190,86 @@ fn late_completion_never_delivers_a_candidate_as_complete() {
     assert!(completion.result.is_err());
 }
 
+#[test]
+fn abandoned_oldest_completion_survives_newer_terminal_history() {
+    for state in [State::Cancelled, State::Expired] {
+        let (directory, mut owner) = fixture(4);
+        let receipt = submit(&mut owner, 1);
+        owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+        owner.reserve(1, 1).unwrap();
+        owner.journal.records.get_mut(&1).unwrap().state = state;
+        let (cancel, _) = oneshot::channel();
+        owner.running.insert(
+            1,
+            Running {
+                cancel: Some(cancel),
+                clock: Instant::now(),
+            },
+        );
+        drop(receipt);
+        // A slow cancelled provider may outlive many short finding jobs.
+        for cursor in 0..=TERMINAL_HISTORY as u64 {
+            let (reply, mut receipt) = oneshot::channel();
+            owner
+                .submit(
+                    Input::Find { cursor },
+                    Binding::new([0; 32], [0; 32]),
+                    reply,
+                )
+                .unwrap();
+            let id = owner.journal.next_id - 1;
+            owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+            owner.reserve(id, 1).unwrap();
+            owner.journal.records.get_mut(&id).unwrap().checkpoint = 1;
+            owner
+                .complete(
+                    id,
+                    process::Outcome {
+                        state: State::Complete,
+                        result: Ok(Output::Question(crate::mocks::create_question(cursor))),
+                    },
+                )
+                .unwrap();
+            assert_eq!(receipt.try_recv().unwrap().id, id);
+            owner.journal.records.get_mut(&id).unwrap().acknowledged = true;
+            owner.save().unwrap();
+        }
+        assert_eq!(owner.journal.records.len(), TERMINAL_HISTORY + 1);
+        owner
+            .complete(
+                1,
+                process::Outcome {
+                    state: State::Cancelled,
+                    result: Err("cancelled provider drained".into()),
+                },
+            )
+            .unwrap();
+        assert!(owner.running.is_empty());
+        assert!(!owner.waiters.contains_key(&1));
+        let bytes = fs::read(directory.0.join("research/jobs.json")).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            saved["payload"]["records"]["1"]["state"],
+            serde_json::to_value(state).unwrap()
+        );
+        assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], true);
+        owner.save().unwrap();
+        assert_eq!(owner.journal.records.len(), TERMINAL_HISTORY);
+        assert!(!owner.journal.records.contains_key(&1));
+        let account = owner.journal.accounts.values().next().unwrap();
+        assert_eq!(account.reserved_units, 1);
+        assert!(account.spent_ms > 0);
+        let settings = owner.settings;
+        drop(owner);
+        let (_, recovered) = Disk::open(&directory.0, settings, 0).unwrap();
+        assert_eq!(recovered.records.len(), TERMINAL_HISTORY);
+        assert_eq!(
+            recovered.accounts.values().next().unwrap().reserved_units,
+            1
+        );
+    }
+}
+
 #[tokio::test]
 async fn failed_clock_accounting_still_drains_all_owned_tasks() {
     let (directory, mut owner) = fixture(4);

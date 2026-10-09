@@ -50,6 +50,7 @@ pub(super) struct Parser<'source> {
     definition_aliases: HashMap<&'source str, DefinitionAlias>,
     formula_bindings: HashMap<&'source str, ParsedFormula>,
     steps: HashMap<&'source str, StepBinding>,
+    proof_references: HashMap<&'source str, ProofId>,
     formula_binding_nodes: usize,
     statement_nodes: usize,
     certificate_formula_nodes: usize,
@@ -65,6 +66,7 @@ impl<'source> Parser<'source> {
             definition_aliases: HashMap::new(),
             formula_bindings: HashMap::new(),
             steps: HashMap::new(),
+            proof_references: HashMap::new(),
             formula_binding_nodes: 0,
             statement_nodes: 0,
             certificate_formula_nodes: 0,
@@ -76,22 +78,16 @@ impl<'source> Parser<'source> {
         mut self,
         artifact_state: &ArtifactState,
     ) -> Result<CompiledArtifact, CompileError> {
-        self.keyword("foundation")?;
-        self.punctuation('=')?;
-        let foundation_offset = self.next_offset();
-        let foundation = self.string("a quoted Foundation identifier")?;
-        if foundation != FOUNDATION_ID {
-            return Err(CompileError::FoundationMismatch {
-                offset: foundation_offset,
-            });
-        }
-        if self.peek_word("definitions") {
+        if self.peek_word("defs") {
             self.definition_aliases(artifact_state)?;
         }
-        if self.peek_word("formulas") {
-            self.keyword("formulas")?;
+        if self.peek_word("refs") {
+            self.proof_references()?;
+        }
+        if self.peek_word("let") {
+            self.keyword("let")?;
             self.punctuation(':')?;
-            if self.peek_word("statement") || self.peek_word("definition") {
+            if self.peek_word("goal") || self.peek_word("def") {
                 return Err(CompileError::Syntax {
                     offset: self.next_offset(),
                     expected: "at least one formula binding",
@@ -99,10 +95,10 @@ impl<'source> Parser<'source> {
             }
             loop {
                 self.formula_binding()?;
-                if self.peek_word("statement") {
+                if self.peek_word("goal") {
                     break;
                 }
-                if self.peek_word("definition") {
+                if self.peek_word("def") {
                     return Err(CompileError::Syntax {
                         offset: self.next_offset(),
                         expected: "a proof statement after formula bindings",
@@ -110,10 +106,10 @@ impl<'source> Parser<'source> {
                 }
             }
         }
-        if self.peek_word("definition") {
+        if self.peek_word("def") {
             return self.compile_definition(artifact_state);
         }
-        self.keyword("statement")?;
+        self.keyword("goal")?;
         self.punctuation('=')?;
         let statement_offset = self.next_offset();
         let compact_statement = self.formula(1, FormulaContext::Statement)?;
@@ -214,7 +210,7 @@ impl<'source> Parser<'source> {
     fn formula_binding(&mut self) -> Result<(), CompileError> {
         let name_offset = self.next_offset();
         let name = self.name()?;
-        if is_reserved_formula_binding_name(name) {
+        if self.reserved_binding_name(name) {
             return Err(CompileError::Syntax {
                 offset: name_offset,
                 expected: "a non-reserved formula binding name",
@@ -232,6 +228,12 @@ impl<'source> Parser<'source> {
                 name: name.to_owned(),
             });
         }
+        if self.proof_references.contains_key(name) {
+            return Err(CompileError::DuplicateProofReference {
+                offset: name_offset,
+                name: name.to_owned(),
+            });
+        }
         self.punctuation('=')?;
         let parsed = self.parsed_formula(1, FormulaContext::Binding)?;
         self.formula_bindings.insert(name, parsed);
@@ -241,6 +243,10 @@ impl<'source> Parser<'source> {
     fn variable(&mut self) -> Result<FreeVariable, CompileError> {
         let name = self.name()?;
         Ok(self.variable_named(name))
+    }
+
+    fn reserved_binding_name(&self, name: &str) -> bool {
+        syntax::is_reserved_binding_name(name)
     }
 
     fn definition_variable(&mut self) -> Result<FreeVariable, CompileError> {
@@ -272,57 +278,6 @@ impl<'source> Parser<'source> {
             .expect("the source-byte limit bounds presentation variables");
         variable
     }
-}
-
-fn is_formula_operator_name(name: &str) -> bool {
-    matches!(
-        name,
-        "equal"
-            | "member"
-            | "not_"
-            | "implies"
-            | "forall"
-            | "and_"
-            | "or_"
-            | "iff"
-            | "exists"
-            | "not_equal"
-    )
-}
-
-fn is_reserved_formula_binding_name(name: &str) -> bool {
-    is_formula_operator_name(name)
-        || matches!(
-            name,
-            "foundation"
-                | "definitions"
-                | "definition"
-                | "relation"
-                | "function"
-                | "formulas"
-                | "statement"
-                | "proof"
-                | "return"
-                | "parameters"
-                | "simplification"
-                | "frege"
-                | "classical_contraposition"
-                | "universal_distribution"
-                | "vacuous_universal"
-                | "universal_instantiation"
-                | "modus_ponens"
-                | "equality_reflexivity"
-                | "equality_substitution"
-                | "zfc_axiom"
-                | "separation"
-                | "replacement"
-                | "cite"
-                | "generalization"
-        )
-}
-
-fn is_reserved_definition_alias_name(name: &str) -> bool {
-    is_reserved_formula_binding_name(name)
 }
 
 const fn lowercase_hex_nibble(byte: u8) -> Option<u8> {

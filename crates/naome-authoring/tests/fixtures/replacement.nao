@@ -1,37 +1,37 @@
 # Replacement instantiated for the identity relation.
-foundation = "naome:zfc"
 
-statement = forall(
+
+goal = all(
     source,
-    implies(
-        forall(
+    imp(
+        all(
             input,
-            implies(
-                member(input, source),
-                exists(
+            imp(
+                mem(input, source),
+                ex(
                     output,
-                    and_(
-                        equal(input, output),
-                        forall(
+                    and(
+                        eq(input, output),
+                        all(
                             witness,
-                            implies(
-                                equal(input, witness),
-                                equal(witness, output),
+                            imp(
+                                eq(input, witness),
+                                eq(witness, output),
                             ),
                         ),
                     ),
                 ),
             ),
         ),
-        exists(
+        ex(
             result,
-            forall(
+            all(
                 output,
                 iff(
-                    member(output, result),
-                    exists(
+                    mem(output, result),
+                    ex(
                         input,
-                        and_(member(input, source), equal(input, output)),
+                        and(mem(input, source), eq(input, output)),
                     ),
                 ),
             ),
@@ -40,8 +40,8 @@ statement = forall(
 )
 
 proof:
-    p0 = replacement(
-        equal(input, output),
+    p0 = replace(
+        eq(input, output),
         input,
         output,
         witness,

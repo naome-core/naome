@@ -1,9 +1,9 @@
-foundation = "naome:zfc"
 
-definitions:
+
+defs:
     holds = "4165ac271695531751ada582517549ab2e53d286a820b03de7ac3a0ddc372d19"
 
-definition same_members = relation(left, right):
-    forall(element,
+def same_members = relation(left, right):
+    all(element,
         iff(holds(element, left), holds(element, right)),
     )
