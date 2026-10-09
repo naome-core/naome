@@ -36,12 +36,12 @@ def content_root(compatibility, ids):
 def source(index):
     # Distinct closed schema instances do not settle one another through the
     # receiver's supported MP or one/two universal-instantiation rules.
-    a = "forall(x, equal(x,x))"
-    b = "forall(y, member(y,y))"
+    a = "all(x, eq(x,x))"
+    b = "all(y, mem(y,y))"
     for bit in format(index, "b"):
-        b = f"not_({b})" if bit == "1" else f"forall(z,{b})"
-    statement = f"implies({a},implies({b},{a}))"
-    return f'foundation = "naome:zfc"\nstatement = {statement}\nproof:\n    p0 = simplification({a},{b})\n    return p0\n'
+        b = f"not({b})" if bit == "1" else f"all(z,{b})"
+    statement = f"imp({a},imp({b},{a}))"
+    return f'goal = {statement}\nproof:\n    p0 = simp({a},{b})\n    return p0\n'
 
 
 def inventory_source(depth, used):
@@ -49,7 +49,7 @@ def inventory_source(depth, used):
 
 
 def question_source(proof_source):
-    return 'foundation = "naome:zfc" statement = ' + proof_source.split("statement = ")[1].split("\n")[0]
+    return 'goal = ' + proof_source.split("goal = ")[1].split("\n")[0]
 
 
 def stored_objects(node):
@@ -415,9 +415,9 @@ class Driver:
             # A missing helper leaves no checked/pending/durable orphan.
             self.topology([[0], [1, 3], [2]])
             parent = self.produce(0, 7, "delayed-parent")
-            premise = question_source(source(7)).split("statement = ")[1]
-            b = "forall(z,member(z,z))"
-            child_source = f'foundation = "naome:zfc"\nstatement = implies({b},{premise})\nproof: p0 = cite("{parent["proof_id"]}") p1 = simplification({premise},{b}) p2 = modus_ponens(p0,p1) return p2'
+            premise = question_source(source(7)).split("goal = ")[1]
+            b = "all(z,mem(z,z))"
+            child_source = f'goal = imp({b},{premise})\nproof: p0 = cite("{parent["proof_id"]}") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2'
             compiled_child = self.nodes[0].command("produce", source=child_source)
             child = compiled_child["object"]
             metadata = compiled_child["metadata"]

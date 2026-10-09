@@ -1,19 +1,19 @@
-foundation = "naome:zfc"
 
-definitions:
+
+defs:
     identity = "1b976399f4226292fdea6b89c496e976cbcd86eb1458bc265cdd14e04d1cf854"
 
-statement = forall(x,
-    implies(
-        equal(identity(x,), x),
-        implies(equal(identity(x,), x), equal(identity(x,), x)),
+goal = all(x,
+    imp(
+        eq(identity(x,), x),
+        imp(eq(identity(x,), x), eq(identity(x,), x)),
     ),
 )
 
 proof:
-    p0 = simplification(
-        equal(identity(x,), x),
-        equal(identity(x,), x),
+    p0 = simp(
+        eq(identity(x,), x),
+        eq(identity(x,), x),
     )
-    p1 = generalization(p0, x)
+    p1 = gen(p0, x)
     return p1

@@ -7,9 +7,12 @@ impl<'source> Parser<'source> {
         &mut self,
         artifact_state: &ArtifactState,
     ) -> Result<(), CompileError> {
-        self.keyword("definitions")?;
+        self.keyword("defs")?;
         self.punctuation(':')?;
-        if self.peek_word("formulas") || self.peek_word("statement") || self.peek_word("definition")
+        if self.peek_word("refs")
+            || self.peek_word("let")
+            || self.peek_word("goal")
+            || self.peek_word("def")
         {
             return Err(CompileError::Syntax {
                 offset: self.next_offset(),
@@ -19,7 +22,7 @@ impl<'source> Parser<'source> {
         loop {
             let offset = self.next_offset();
             let name = self.name()?;
-            if is_reserved_definition_alias_name(name) {
+            if self.reserved_binding_name(name) {
                 return Err(CompileError::Syntax {
                     offset,
                     expected: "a non-reserved definition alias",
@@ -46,9 +49,10 @@ impl<'source> Parser<'source> {
                     kind,
                 },
             );
-            if self.peek_word("formulas")
-                || self.peek_word("statement")
-                || self.peek_word("definition")
+            if self.peek_word("refs")
+                || self.peek_word("let")
+                || self.peek_word("goal")
+                || self.peek_word("def")
             {
                 return Ok(());
             }
@@ -60,11 +64,17 @@ impl<'source> Parser<'source> {
         artifact_state: &ArtifactState,
     ) -> Result<CompiledArtifact, CompileError> {
         let definition_offset = self.next_offset();
-        self.keyword("definition")?;
+        self.keyword("def")?;
         let name_offset = self.next_offset();
         let source_name = self.name()?;
         if self.definition_aliases.contains_key(source_name) {
             return Err(CompileError::DuplicateDefinitionAlias {
+                offset: name_offset,
+                name: source_name.to_owned(),
+            });
+        }
+        if self.proof_references.contains_key(source_name) {
+            return Err(CompileError::DuplicateProofReference {
                 offset: name_offset,
                 name: source_name.to_owned(),
             });

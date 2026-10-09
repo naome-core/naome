@@ -54,17 +54,14 @@ impl Graph {
             return Ok(None);
         };
         let derived = naome_authoring::CompiledQuestion::compile(&format!(
-            "foundation = \"naome:zfc\" statement = {}",
+            "goal = {}",
             conclusion.to_source()
         ))
         .map_err(|error| error.to_string())?;
         let metadata = Metadata {
             proof_id: crate::hex(id.as_bytes()),
             statement_id: crate::hex(statement.as_bytes()),
-            question: format!(
-                "foundation = \"naome:zfc\" statement = {}",
-                derived.core().to_source()
-            ),
+            question: format!("goal = {}", derived.core().to_source()),
         };
         let _ = metadata.compile()?;
         Ok(Some(metadata))

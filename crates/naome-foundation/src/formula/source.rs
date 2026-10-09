@@ -27,9 +27,9 @@ fn render(node: &Node, depth: u32, out: &mut String) {
     match node {
         Node::Equal(left, right) | Node::Member(left, right) => {
             out.push_str(if matches!(node, Node::Equal(..)) {
-                "equal("
+                "eq("
             } else {
-                "member("
+                "mem("
             });
             variable(*left, depth, out);
             out.push_str(", ");
@@ -37,19 +37,19 @@ fn render(node: &Node, depth: u32, out: &mut String) {
             out.push(')');
         }
         Node::Not(body) => {
-            out.push_str("not_(");
+            out.push_str("not(");
             render(body, depth, out);
             out.push(')');
         }
         Node::Implies(left, right) => {
-            out.push_str("implies(");
+            out.push_str("imp(");
             render(left, depth, out);
             out.push_str(", ");
             render(right, depth, out);
             out.push(')');
         }
         Node::ForAll(body) => {
-            write!(out, "forall(b{depth}, ").expect("string write");
+            write!(out, "all(b{depth}, ").expect("string write");
             render(body, depth + 1, out);
             out.push(')');
         }
@@ -77,9 +77,9 @@ mod tests {
         );
         assert_eq!(
             formula.to_source(),
-            "forall(b0, forall(b1, implies(member(b0, b1), not_(equal(b0, f4294967295)))))"
+            "all(b0, all(b1, imp(mem(b0, b1), not(eq(b0, f4294967295)))))"
         );
         let vacuous = Formula::for_all(y, Formula::for_all(x, Formula::equal(x, x)));
-        assert_eq!(vacuous.to_source(), "forall(b0, forall(b1, equal(b1, b1)))");
+        assert_eq!(vacuous.to_source(), "all(b0, all(b1, eq(b1, b1)))");
     }
 }

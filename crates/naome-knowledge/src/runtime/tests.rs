@@ -34,14 +34,87 @@ fn closure() -> (Envelope, Envelope, CompiledQuestion) {
         )
         .unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
-    let a = "forall(x,equal(x,x))";
-    let b = "forall(y,member(y,y))";
-    let root=producer.author(&format!("foundation = \"naome:zfc\" statement = implies({b},{a}) proof: p0 = cite(\"{}\") p1 = simplification({a},{b}) p2 = modus_ponens(p0,p1) return p2",helper.proof_id)).unwrap();
-    let question = CompiledQuestion::compile(&format!(
-        "foundation = \"naome:zfc\" statement = implies({b},{a})"
-    ))
-    .unwrap();
+    let a = "all(x,eq(x,x))";
+    let b = "all(y,mem(y,y))";
+    let root=producer.author(&format!("goal = imp({b},{a}) proof: p0 = cite(\"{}\") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2",helper.proof_id)).unwrap();
+    let question = CompiledQuestion::compile(&format!("goal = imp({b},{a})")).unwrap();
     (helper, root, question)
+}
+
+#[tokio::test]
+async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_storage() {
+    let sources = [
+        (
+            "goal=all(x,eq(x,x))",
+            "goal=all(x,eq(x,x)) proof: p0=refl(x) p1=gen(p0,x) return p1",
+        ),
+        (
+            "let: A=mem(x,x) goal=all(x,imp(A,A))",
+            "let: A=mem(x,x) B=imp(A,A) goal=all(x,B) proof: p0=simp(A,A) p1=simp(A,B) p2=frege(A,B,A) p3=mp(p1,p2) p4=mp(p0,p3) p5=gen(p4,x) return p5",
+        ),
+        (
+            "goal=all([x,y,set],imp(eq(x,y),imp(mem(x,set),mem(y,set))))",
+            "goal=all([x,y,set],imp(eq(x,y),imp(mem(x,set),mem(y,set)))) proof: p0=subst(x,y,mem(x,set)) p1=gen(p0,set) p2=gen(p1,y) p3=gen(p2,x) return p3",
+        ),
+    ];
+    for (cursor, (source, proof)) in sources.into_iter().enumerate() {
+        let directory = Directory::new();
+        let mut graph = Graph::open(&directory.0).unwrap();
+        let catalog_question =
+            CompiledQuestion::compile(&crate::mocks::create_question(cursor as u64)).unwrap();
+        let original_bytes = catalog_question.to_canonical_bytes().unwrap();
+        let question = CompiledQuestion::compile(source).unwrap();
+        assert_eq!(question.proved_target(), catalog_question.proved_target());
+        assert_eq!(question.refuted_target(), catalog_question.refuted_target());
+        assert_eq!(question.resolution_id(), catalog_question.resolution_id());
+        assert_ne!(question.source_hash(), catalog_question.source_hash());
+        let before = graph
+            .author(&crate::mocks::create_proof(&catalog_question).unwrap())
+            .unwrap();
+        let envelope = graph.author(proof).unwrap();
+        assert_eq!(envelope, before);
+        let mut questions =
+            crate::question::LocalQuestions::new(Some(crate::mocks::assess_interest as fn(_) -> _));
+        let (_, response) = questions.begin_exchange(
+            &graph,
+            question.clone(),
+            Instant::now() + Duration::from_secs(5),
+        );
+        let interest = tokio::time::timeout(Duration::from_secs(5), questions.completed())
+            .await
+            .unwrap();
+        questions.finish(&graph, interest);
+        let assessment = response.await.unwrap();
+        assert!(assessment.prefilter.passed());
+        assert!(assessment.novelty().is_some());
+        let candidate = envelope.clone().prepare().unwrap();
+        let root = candidate.id;
+        let batch = graph
+            .prepare_batch(root, [(root, candidate)].into(), &question)
+            .unwrap();
+        let delta = questions
+            .prepare_exchange(&graph, &question, &assessment)
+            .unwrap();
+        graph.persist_batch(root, &batch).unwrap();
+        assert_eq!(graph.apply_batch(batch), vec![root]);
+        questions.apply_exchange(delta);
+        drop(graph);
+        let mut replayed = Graph::open(&directory.0).unwrap();
+        assert_eq!(replayed.ids(), vec![root]);
+        assert_eq!(
+            replayed.ingest(envelope, Instant::now()).unwrap().status,
+            "duplicate"
+        );
+        assert_eq!(
+            CompiledQuestion::from_canonical_bytes(&original_bytes).unwrap(),
+            catalog_question
+        );
+        assert_eq!(
+            CompiledQuestion::from_canonical_bytes(&question.to_canonical_bytes().unwrap())
+                .unwrap(),
+            question
+        );
+    }
 }
 
 #[tokio::test]

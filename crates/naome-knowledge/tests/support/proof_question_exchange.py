@@ -40,10 +40,10 @@ class QuestionDriver(DiscoveryDriver):
             self.relay.start()
             self.summary["relay_process_count"] = 1
         sender, absent, selected = self.nodes
-        a = question_source(source(7)).split("statement = ")[1]
-        b = "forall(z,member(z,z))"
-        child_statement = f"implies({b},{a})"
-        child_question = f'foundation = "naome:zfc" statement = {child_statement}'
+        a = question_source(source(7)).split("goal = ")[1]
+        b = "all(z,mem(z,z))"
+        child_statement = f"imp({b},{a})"
+        child_question = f'goal = {child_statement}'
         allowlist = [question_source(source(11)), child_question, question_source(source(31))]
         self.start_participant(sender, "all")
         self.start_participant(absent, None)
@@ -60,7 +60,7 @@ class QuestionDriver(DiscoveryDriver):
         self.wait_set(absent, [])
         # The helper's own question is declined. Its exact bytes are required
         # only after the selected parent commits its actual citation.
-        child_source = f'foundation = "naome:zfc"\nstatement = {child_statement}\nproof: p0 = cite("{helper["object"]["proof_id"]}") p1 = simplification({a},{b}) p2 = modus_ponens(p0,p1) return p2'
+        child_source = f'goal = {child_statement}\nproof: p0 = cite("{helper["object"]["proof_id"]}") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2'
         child = sender.command("produce", source=child_source)
         expected = [accepted["object"]["proof_id"], helper["object"]["proof_id"], child["object"]["proof_id"]]
         self.wait_set(selected, expected)
@@ -134,12 +134,12 @@ class QuestionDriver(DiscoveryDriver):
         if self.mode == "direct":
             sender.command("links", peers=[])
             # Local mathematical production is preserved beyond question limits.
-            formula = "equal(x0,x0)"
-            steps = ["p0 = equality_reflexivity(x0)"]
+            formula = "eq(x0,x0)"
+            steps = ["p0 = refl(x0)"]
             for index in range(34):
-                formula = f"forall(x{index},{formula})"
-                steps.append(f"p{index + 1} = generalization(p{index},x{index})")
-            result = sender.command("produce", source=f'foundation = "naome:zfc" statement = {formula} proof: ' + " ".join(steps) + " return p34")
+                formula = f"all(x{index},{formula})"
+                steps.append(f"p{index + 1} = gen(p{index},x{index})")
+            result = sender.command("produce", source=f'goal = {formula} proof: ' + " ".join(steps) + " return p34")
             assert result["result"]["status"] == "accepted"
             assert result["metadata"] is None and "question" in result["metadata_error"]
             assert result["object"]["proof_id"] in sender.command("status")["ids"]

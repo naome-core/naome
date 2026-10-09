@@ -114,7 +114,9 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
         producer_sources: Vec::new(),
     };
     let mut sender_graph = Graph::open(&sender_dir).unwrap();
-    let object = sender_graph.author("foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) return p1").unwrap();
+    let object = sender_graph
+        .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+        .unwrap();
     let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
     sender_graph.ingest(object, Instant::now()).unwrap();
     let target = *sender_graph

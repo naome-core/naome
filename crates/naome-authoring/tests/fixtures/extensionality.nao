@@ -1,17 +1,17 @@
 # Extensionality: sets with exactly the same members are equal.
-foundation = "naome:zfc"
 
-statement = forall(
+
+goal = all(
     x,
-    forall(
+    all(
         y,
-        implies(
-            forall(z, iff(member(z, x), member(z, y))),
-            equal(x, y),
+        imp(
+            all(z, iff(mem(z, x), mem(z, y))),
+            eq(x, y),
         ),
     ),
 )
 
 proof:
-    p0 = zfc_axiom("extensionality")
+    p0 = axiom("extensionality")
     return p0

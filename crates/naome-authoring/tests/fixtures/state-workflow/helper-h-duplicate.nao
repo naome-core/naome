@@ -1,12 +1,12 @@
 # A different valid certificate of H's exact statement, for substitution in B.
-foundation = "naome:zfc"
-formulas:
-    e = equal(x, x)
-statement = forall(x, e)
+
+let:
+    e = eq(x, x)
+goal = all(x, e)
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = simplification(e, e)
-    p2 = modus_ponens(p0, p1)
-    p3 = modus_ponens(p0, p2)
-    p4 = generalization(p3, x)
+    p0 = refl(x)
+    p1 = simp(e, e)
+    p2 = mp(p0, p1)
+    p3 = mp(p0, p2)
+    p4 = gen(p3, x)
     return p4

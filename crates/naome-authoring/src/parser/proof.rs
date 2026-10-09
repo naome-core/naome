@@ -8,7 +8,7 @@ impl<'source> Parser<'source> {
         let rule = self.name()?;
         self.punctuation('(')?;
         let step = match rule {
-            "simplification" => {
+            "simp" => {
                 let antecedent = self.proof_formula(1, FormulaContext::Certificate)?;
                 self.punctuation(',')?;
                 let consequent = self.proof_formula(1, FormulaContext::Certificate)?;
@@ -29,7 +29,7 @@ impl<'source> Parser<'source> {
                     third,
                 }
             }
-            "classical_contraposition" => {
+            "contra" => {
                 let antecedent = self.proof_formula(1, FormulaContext::Certificate)?;
                 self.punctuation(',')?;
                 let consequent = self.proof_formula(1, FormulaContext::Certificate)?;
@@ -38,7 +38,7 @@ impl<'source> Parser<'source> {
                     consequent,
                 }
             }
-            "universal_distribution" => {
+            "dist" => {
                 let variable = self.variable()?;
                 self.punctuation(',')?;
                 let antecedent = self.proof_formula(1, FormulaContext::Certificate)?;
@@ -50,11 +50,11 @@ impl<'source> Parser<'source> {
                     consequent,
                 }
             }
-            "vacuous_universal" => {
+            "vacuous" => {
                 let formula = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::VacuousUniversal { formula }
             }
-            "universal_instantiation" => {
+            "inst" => {
                 let variable = self.variable()?;
                 self.punctuation(',')?;
                 let replacement = self.variable()?;
@@ -66,7 +66,7 @@ impl<'source> Parser<'source> {
                     body,
                 }
             }
-            "modus_ponens" => {
+            "mp" => {
                 let premise = self.earlier_step()?;
                 self.punctuation(',')?;
                 let implication = self.earlier_step()?;
@@ -75,11 +75,11 @@ impl<'source> Parser<'source> {
                     implication,
                 }
             }
-            "equality_reflexivity" => {
+            "refl" => {
                 let variable = self.variable()?;
                 ProofStep::EqualityReflexivity { variable }
             }
-            "equality_substitution" => {
+            "subst" => {
                 let from = self.variable()?;
                 self.punctuation(',')?;
                 let to = self.variable()?;
@@ -87,8 +87,8 @@ impl<'source> Parser<'source> {
                 let body = self.proof_formula(1, FormulaContext::Certificate)?;
                 ProofStep::EqualitySubstitution { from, to, body }
             }
-            "zfc_axiom" => ProofStep::ZfcAxiom(self.zfc_axiom()?),
-            "separation" => ProofStep::Separation(ProofSeparation {
+            "axiom" => ProofStep::ZfcAxiom(self.zfc_axiom()?),
+            "sep" => ProofStep::Separation(ProofSeparation {
                 predicate: self.proof_formula(1, FormulaContext::Certificate)?,
                 element: {
                     self.punctuation(',')?;
@@ -107,7 +107,7 @@ impl<'source> Parser<'source> {
                     self.schema_parameters()?
                 },
             }),
-            "replacement" => ProofStep::Replacement(ProofReplacement {
+            "replace" => ProofStep::Replacement(ProofReplacement {
                 predicate: self.proof_formula(1, FormulaContext::Certificate)?,
                 input: {
                     self.punctuation(',')?;
@@ -135,9 +135,9 @@ impl<'source> Parser<'source> {
                 },
             }),
             "cite" => ProofStep::ProofReference {
-                proof_id: self.proof_id()?,
+                proof_id: self.citation()?,
             },
-            "generalization" => {
+            "gen" => {
                 let premise = self.earlier_step()?;
                 self.punctuation(',')?;
                 let variable = self.variable()?;
@@ -152,6 +152,54 @@ impl<'source> Parser<'source> {
         };
         self.call_end()?;
         Ok(step)
+    }
+
+    pub(super) fn proof_references(&mut self) -> Result<(), CompileError> {
+        self.keyword("refs")?;
+        self.punctuation(':')?;
+        loop {
+            let offset = self.next_offset();
+            let name = self.name()?;
+            if self.reserved_binding_name(name) {
+                return Err(CompileError::Syntax {
+                    offset,
+                    expected: "a non-reserved proof reference name",
+                });
+            }
+            if self.proof_references.contains_key(name) {
+                return Err(CompileError::DuplicateProofReference {
+                    offset,
+                    name: name.to_owned(),
+                });
+            }
+            if self.definition_aliases.contains_key(name) {
+                return Err(CompileError::DuplicateDefinitionAlias {
+                    offset,
+                    name: name.to_owned(),
+                });
+            }
+            self.punctuation('=')?;
+            let id = self.proof_id()?;
+            self.proof_references.insert(name, id);
+            if self.peek_word("let") || self.peek_word("goal") || self.peek_word("def") {
+                return Ok(());
+            }
+        }
+    }
+
+    fn citation(&mut self) -> Result<ProofId, CompileError> {
+        self.skip_trivia();
+        if self.byte() == Some(b'"') {
+            return self.proof_id();
+        }
+        let offset = self.next_offset();
+        let name = self.name()?;
+        self.proof_references.get(name).copied().ok_or_else(|| {
+            CompileError::UnknownProofReference {
+                offset,
+                name: name.to_owned(),
+            }
+        })
     }
 
     fn zfc_axiom(&mut self) -> Result<ZfcAxiom, CompileError> {

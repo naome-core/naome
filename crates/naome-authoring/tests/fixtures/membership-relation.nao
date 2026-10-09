@@ -1,4 +1,4 @@
-foundation = "naome:zfc"
 
-definition holds = relation(element, set):
-    member(element, set)
+
+def holds = relation(element, set):
+    mem(element, set)

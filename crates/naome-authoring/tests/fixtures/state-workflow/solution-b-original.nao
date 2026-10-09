@@ -1,11 +1,11 @@
 # Original B root uses its submitted duplicate helper.
 # Normalization must replace it with the stored H before publication.
-foundation = "naome:zfc"
-formulas:
-    h = forall(x, equal(x, x))
-statement = implies(h, h)
+
+let:
+    h = all(x, eq(x, x))
+goal = imp(h, h)
 proof:
     p0 = cite("4a9b8d6beabb010e33fddcec0000b66c257eb87e05fda21342e39dd4e7ec534a")
-    p1 = simplification(h, h)
-    p2 = modus_ponens(p0, p1)
+    p1 = simp(h, h)
+    p2 = mp(p0, p1)
     return p2

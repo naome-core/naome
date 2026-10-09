@@ -22,28 +22,28 @@ use naome_proof::{
 };
 
 const SELF_EQUALITY: &str = r#"
-foundation = "naome:zfc"
-statement = forall(x, equal(x, x))
+
+goal = all(x, eq(x, x))
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = generalization(p0, x)
+    p0 = refl(x)
+    p1 = gen(p0, x)
     return p1
 "#;
 
 const NESTED_SELF_EQUALITY: &str = r#"
-foundation = "naome:zfc"
-statement = forall(y, forall(x, equal(x, x)))
+
+goal = all(y, all(x, eq(x, x)))
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = generalization(p0, x)
-    p2 = generalization(p1, y)
+    p0 = refl(x)
+    p1 = gen(p0, x)
+    p2 = gen(p1, y)
     return p2
 "#;
 
 const LONG_SELECTED_DEPENDENCY_PROOF: &str = r#"
-foundation = "naome:zfc"
-statement = forall(a, forall(set,
-    implies(member(a, set), member(a, set))
+
+goal = all(a, all(set,
+    imp(mem(a, set), mem(a, set))
 ))
 
 proof:
@@ -53,73 +53,73 @@ proof:
     p3 = cite("e89dcbf998af185fd368a2531e2f0ee4953cc2232ec93da38ed3e89e21cede71")
     p4 = cite("7db633cf3f2a73749e143c3f26a0083b17c39e8a24c8940f64471cf6b49d515d")
 
-    p5 = simplification(
-        forall(x, equal(x, x)),
-        forall(y, equal(y, y)),
+    p5 = simp(
+        all(x, eq(x, x)),
+        all(y, eq(y, y)),
     )
-    p6 = modus_ponens(p0, p5)
-    p7 = modus_ponens(p1, p6)
+    p6 = mp(p0, p5)
+    p7 = mp(p1, p6)
 
-    p8 = universal_instantiation(x, a, equal(x, x))
-    p9 = modus_ponens(p7, p8)
+    p8 = inst(x, a, eq(x, x))
+    p9 = mp(p7, p8)
 
-    p10 = universal_instantiation(
+    p10 = inst(
         x,
         a,
-        implies(equal(x, x), equal(x, x)),
+        imp(eq(x, x), eq(x, x)),
     )
-    p11 = modus_ponens(p2, p10)
-    p12 = modus_ponens(p9, p11)
+    p11 = mp(p2, p10)
+    p12 = mp(p9, p11)
 
-    p13 = simplification(
-        equal(a, a),
-        forall(x, forall(y,
-            implies(
-                forall(z, iff(member(z, x), member(z, y))),
-                equal(x, y),
+    p13 = simp(
+        eq(a, a),
+        all(x, all(y,
+            imp(
+                all(z, iff(mem(z, x), mem(z, y))),
+                eq(x, y),
             ),
         )),
     )
-    p14 = modus_ponens(p12, p13)
-    p15 = modus_ponens(p4, p14)
+    p14 = mp(p12, p13)
+    p15 = mp(p4, p14)
 
-    p16 = universal_instantiation(
+    p16 = inst(
         x,
         a,
-        forall(y, forall(s,
-            implies(
-                equal(x, y),
-                implies(member(x, s), member(y, s)),
+        all(y, all(s,
+            imp(
+                eq(x, y),
+                imp(mem(x, s), mem(y, s)),
             ),
         )),
     )
-    p17 = modus_ponens(p3, p16)
+    p17 = mp(p3, p16)
 
-    p18 = universal_instantiation(
+    p18 = inst(
         y,
         a,
-        forall(s,
-            implies(
-                equal(a, y),
-                implies(member(a, s), member(y, s)),
+        all(s,
+            imp(
+                eq(a, y),
+                imp(mem(a, s), mem(y, s)),
             ),
         ),
     )
-    p19 = modus_ponens(p17, p18)
+    p19 = mp(p17, p18)
 
-    p20 = universal_instantiation(
+    p20 = inst(
         s,
         set,
-        implies(
-            equal(a, a),
-            implies(member(a, s), member(a, s)),
+        imp(
+            eq(a, a),
+            imp(mem(a, s), mem(a, s)),
         ),
     )
-    p21 = modus_ponens(p19, p20)
+    p21 = mp(p19, p20)
 
-    p22 = modus_ponens(p15, p21)
-    p23 = generalization(p22, set)
-    p24 = generalization(p23, a)
+    p22 = mp(p15, p21)
+    p23 = gen(p22, set)
+    p24 = gen(p23, a)
     return p24
 "#;
 
@@ -224,7 +224,7 @@ fn reference_source(proof_id: ProofId) -> String {
         write!(&mut encoded, "{byte:02x}").unwrap();
     }
     format!(
-        "foundation = \"naome:zfc\" statement = forall(y, forall(x, equal(x, x))) proof: p0 = cite(\"{encoded}\") p1 = generalization(p0, y) return p1"
+        "goal = all(y, all(x, eq(x, x))) proof: p0 = cite(\"{encoded}\") p1 = gen(p0, y) return p1"
     )
 }
 
@@ -365,10 +365,10 @@ fn definitions_and_term_sugar_resolve_only_from_checked_ancestry() {
         ))
     );
     let colliding_name = r#"
-foundation = "naome:zfc"
-definitions:
+
+defs:
     self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
-definition self_equal = relation(x):
+def self_equal = relation(x):
     self_equal(x)
 "#;
     let source =
@@ -406,20 +406,20 @@ definition self_equal = relation(x):
         ))
     );
     let presentation_variant = r#"
-foundation = "naome:zfc"
-definitions:
+
+defs:
     unused = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
     membership = "4165ac271695531751ada582517549ab2e53d286a820b03de7ac3a0ddc372d19"
-definition presentation_only = relation(a, b):
-    forall(candidate, iff(membership(candidate, a), membership(candidate, b)))
+def presentation_only = relation(a, b):
+    all(candidate, iff(membership(candidate, a), membership(candidate, b)))
 "#;
     let presentation_variant =
         compile_artifact_against_proof_context(presentation_variant, &context.state).unwrap();
     assert_eq!(presentation_variant, third);
 
     for source in [
-        "foundation = \"naome:zfc\" definition recursive = relation(x): recursive(x)",
-        "foundation = \"naome:zfc\" definitions: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" definition current = relation(x): future(x)",
+        "def recursive = relation(x): recursive(x)",
+        "defs: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" def current = relation(x): future(x)",
     ] {
         assert!(matches!(
             compile_artifact_against_proof_context(source, &context.state),
@@ -569,7 +569,7 @@ fn empty_set_existence_remains_a_standalone_checked_proof() {
 
     let mut context = CheckedContext::default();
 
-    assert_eq!(SOURCE.len(), 390_826);
+    assert_eq!(SOURCE.len(), 305_707);
     let standalone = compile_artifact(SOURCE).unwrap();
     let standalone = compiled_proof(&standalone);
     assert_eq!(standalone.canonical_proof_bytes().len(), 110_196);
@@ -614,15 +614,15 @@ fn selected_definition_use_composes_through_a_cited_proof_and_dependent_inferenc
     let definition_id = compiled_definition_id(&definition);
 
     let proof_source = r#"
-foundation = "naome:zfc"
-definitions:
+
+defs:
     self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
-statement = forall(x,
-    implies(self_equal(x,), implies(self_equal(x), self_equal(x)))
+goal = all(x,
+    imp(self_equal(x,), imp(self_equal(x), self_equal(x)))
 )
 proof:
-    p0 = simplification(self_equal(x), self_equal(x))
-    p1 = generalization(p0, x)
+    p0 = simp(self_equal(x), self_equal(x))
+    p1 = gen(p0, x)
     return p1
 "#;
     let proof = compile_artifact_against_proof_context(proof_source, &context.state).unwrap();
@@ -651,21 +651,21 @@ proof:
 
     let cited_source = format!(
         r#"
-foundation = "naome:zfc"
-definitions:
+
+defs:
     self_equal = "0196e76ee0ecabbe9e863a19f191ded87b599a4b158c52f75d8ece35ba796035"
-statement = forall(y,
-    implies(self_equal(y), implies(self_equal(y), self_equal(y)))
+goal = all(y,
+    imp(self_equal(y), imp(self_equal(y), self_equal(y)))
 )
 proof:
     p0 = cite("{}")
-    p1 = universal_instantiation(
+    p1 = inst(
         x,
         y,
-        implies(self_equal(x), implies(self_equal(x), self_equal(x))),
+        imp(self_equal(x), imp(self_equal(x), self_equal(x))),
     )
-    p2 = modus_ponens(p0, p1)
-    p3 = generalization(p2, y)
+    p2 = mp(p0, p1)
+    p3 = gen(p2, y)
     return p3
 "#,
         hex_string(proof_id.as_bytes())

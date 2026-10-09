@@ -1,10 +1,7 @@
 //! Bounded compilation of closed research obligations using Foundation notation.
 //!
-//! The source subset is `foundation = "naome:zfc"`, followed by `statement =`
-//! and one formula. An optional `success = "resolve"` follows the formula.
-//! Primitive and derived calls have exactly the authoring compiler's meaning.
-//! Definitions, assumptions, proof imports, and formula aliases are unavailable
-//! in this bounded subset. Compilation proves well-formedness, not truth.
+//! One bounded headerless question language with optional formula bindings.
+//! Targets use the fixed mathematical Foundation and retain exact logical shape.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -13,6 +10,8 @@ use std::fmt;
 use naome_checker::CheckedProof;
 use naome_foundation::{FORMULA_MAX_DEPTH, FOUNDATION_ID, Formula, FreeVariable};
 use sha2::{Digest, Sha256};
+
+use crate::{CompileDiagnostic, DiagnosticCode, SourceSpan, syntax};
 
 /// Maximum UTF-8 bytes in one formal obligation.
 pub const QUESTION_SOURCE_MAX_BYTES: usize = 16 * 1024;
@@ -47,6 +46,56 @@ impl fmt::Display for QuestionError {
 
 impl Error for QuestionError {}
 
+/// A question source failure with an original-source machine-readable diagnostic.
+/// Codec failures continue to use [`QuestionError`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestionCompileError {
+    error: QuestionError,
+    diagnostic: CompileDiagnostic,
+}
+
+impl QuestionCompileError {
+    /// Returns the existing question failure class.
+    pub const fn error(&self) -> &QuestionError {
+        &self.error
+    }
+    /// Returns a stable code, original UTF-8 span and one-based source position.
+    pub const fn diagnostic(&self) -> &CompileDiagnostic {
+        &self.diagnostic
+    }
+    /// Returns the underlying error used by [`CompiledQuestion::compile`].
+    pub fn into_error(self) -> QuestionError {
+        self.error
+    }
+
+    fn code(error: &QuestionError) -> DiagnosticCode {
+        match error {
+            QuestionError::Limit(_) | QuestionError::Overflow => DiagnosticCode::QuestionLimit,
+            QuestionError::Invalid("question has free variables") => {
+                DiagnosticCode::QuestionOpenFormula
+            }
+            QuestionError::Mathematical(_) => DiagnosticCode::QuestionFormula,
+            _ => DiagnosticCode::QuestionSyntax,
+        }
+    }
+
+    fn at(error: QuestionError, source: &str, span: Option<SourceSpan>) -> Self {
+        let diagnostic = CompileDiagnostic::at(Self::code(&error), error.to_string(), source, span);
+        Self { error, diagnostic }
+    }
+}
+
+impl fmt::Display for QuestionCompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+impl Error for QuestionCompileError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// Mathematical orientation established by a checked proof of an exact target.
 /// This grants no publication, scientific relevance, or reward eligibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,8 +120,23 @@ pub struct CompiledQuestion {
 impl CompiledQuestion {
     /// Compiles a bounded obligation without accepting proof or definition input.
     pub fn compile(source: &str) -> Result<Self, QuestionError> {
+        Self::compile_with_diagnostic(source).map_err(QuestionCompileError::into_error)
+    }
+
+    /// Compiles the same bounded question with original-source repair metadata.
+    /// Source spelling may change its source hash, never its target semantics.
+    pub fn compile_with_diagnostic(source: &str) -> Result<Self, QuestionCompileError> {
         if source.len() > QUESTION_SOURCE_MAX_BYTES {
-            return Err(QuestionError::Limit("question source bytes"));
+            let error = QuestionError::Limit("question source bytes");
+            return Err(QuestionCompileError {
+                diagnostic: CompileDiagnostic::at(
+                    DiagnosticCode::SourceTooLong,
+                    error.to_string(),
+                    source,
+                    None,
+                ),
+                error,
+            });
         }
         // At most source.len() leading negations can later be removed.
         // Preflight every expansion against this finite aggregate allowance.
@@ -80,33 +144,56 @@ impl CompiledQuestion {
         let mut parser = Parser {
             source,
             offset: 0,
+            token_offset: 0,
             variables: BTreeMap::new(),
+            bindings: BTreeMap::new(),
+            binding_nodes: 0,
             next_variable: 0,
             maximum_nodes: parse_nodes,
         };
-        parser.word("foundation")?;
-        parser.punctuation(b'=')?;
-        parser.literal("\"naome:zfc\"")?;
-        parser.word("statement")?;
-        parser.punctuation(b'=')?;
-        let parsed = parser.formula(1)?;
-        parser.trivia();
-        if parser.offset < source.len() {
-            parser.word("success")?;
+        let mut statement_span = SourceSpan::point(0);
+        let parsed = (|| -> Result<Parsed, QuestionError> {
+            if parser.peek_word("let") {
+                parser.formula_bindings()?;
+            }
+            parser.word("goal")?;
             parser.punctuation(b'=')?;
-            parser.literal("\"resolve\"")?;
-        }
-        parser.trivia();
-        if parser.offset != source.len() {
-            return Err(QuestionError::Invalid("question trailing source"));
-        }
+            parser.trivia();
+            let start = parser.offset;
+            let parsed = parser.formula(1)?;
+            statement_span = SourceSpan::new(start, parser.offset);
+            parser.trivia();
+            if parser.offset < source.len() {
+                parser.word("success")?;
+                parser.punctuation(b'=')?;
+                parser.literal("\"resolve\"")?;
+            }
+            parser.trivia();
+            if parser.offset != source.len() {
+                parser.token_offset = parser.offset;
+                return Err(QuestionError::Invalid("question trailing source"));
+            }
+            Ok(parsed)
+        })()
+        .map_err(|error| QuestionCompileError {
+            diagnostic: CompileDiagnostic::token(
+                QuestionCompileError::code(&error),
+                error.to_string(),
+                source,
+                parser.token_offset,
+            ),
+            error,
+        })?;
+        let failure = |error| QuestionCompileError::at(error, source, Some(statement_span));
         if !parsed.formula.is_closed() {
-            return Err(QuestionError::Invalid("question has free variables"));
+            return Err(failure(QuestionError::Invalid(
+                "question has free variables",
+            )));
         }
         let encoded = parsed
             .formula
             .encode_canonical_with_node_limit(parse_nodes)
-            .map_err(|error| QuestionError::Mathematical(error.to_string()))?
+            .map_err(|error| failure(QuestionError::Mathematical(error.to_string())))?
             .0;
         // 0x02 is the existing Foundation canonical NOT tag. Removing only
         // leading NOT tags preserves all internal structure and De Bruijn binders.
@@ -114,15 +201,15 @@ impl CompiledQuestion {
         let core_nodes = parsed.nodes - leading;
         let core_depth = parsed.depth - leading;
         if core_nodes + 1 > QUESTION_TARGET_MAX_NODES {
-            return Err(QuestionError::Limit("question target nodes"));
+            return Err(failure(QuestionError::Limit("question target nodes")));
         }
         if core_depth + 1 > QUESTION_TARGET_MAX_DEPTH {
-            return Err(QuestionError::Limit("question target depth"));
+            return Err(failure(QuestionError::Limit("question target depth")));
         }
         let canonical_core = encoded[leading..].to_vec();
         let core =
             Formula::decode_canonical_with_node_limit(&canonical_core, QUESTION_TARGET_MAX_NODES)
-                .map_err(|error| QuestionError::Mathematical(error.to_string()))?
+                .map_err(|error| failure(QuestionError::Mathematical(error.to_string())))?
                 .0;
         let resolution_id = hash(
             b"naome:state:resolution:v1\0",
@@ -243,8 +330,8 @@ impl CompiledQuestion {
     }
 }
 
-// Preserve the original domain and u64-length framing of pure source/core
-// identities. The historical namespace grants no state or opening authority.
+// Domain-separated source/core identities use u64-length framing and grant
+// no state or opening authority.
 fn hash(domain: &[u8], fields: &[&[u8]]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(domain);
@@ -264,7 +351,10 @@ struct Parsed {
 struct Parser<'a> {
     source: &'a str,
     offset: usize,
+    token_offset: usize,
     variables: BTreeMap<&'a str, FreeVariable>,
+    bindings: BTreeMap<&'a str, Parsed>,
+    binding_nodes: usize,
     next_variable: u32,
     maximum_nodes: usize,
 }
@@ -280,17 +370,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
     fn trivia(&mut self) {
-        loop {
-            while matches!(self.byte(), Some(b' ' | b'\t' | b'\r' | b'\n')) {
-                self.offset += 1;
-            }
-            if self.byte() != Some(b'#') {
-                break;
-            }
-            while !matches!(self.byte(), None | Some(b'\n')) {
-                self.offset += 1;
-            }
-        }
+        syntax::trivia(self.source, &mut self.offset);
     }
     fn byte(&self) -> Option<u8> {
         self.source.as_bytes().get(self.offset).copied()
@@ -298,6 +378,7 @@ impl<'a> Parser<'a> {
     fn name(&mut self) -> Result<&'a str, QuestionError> {
         self.trivia();
         let start = self.offset;
+        self.token_offset = start;
         if !self
             .byte()
             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
@@ -314,16 +395,18 @@ impl<'a> Parser<'a> {
         Ok(&self.source[start..self.offset])
     }
     fn word(&mut self, expected: &str) -> Result<(), QuestionError> {
-        if self.name()? != expected {
+        let name = self.name()?;
+        if name != expected {
             return Err(QuestionError::Invalid("question unexpected field"));
         }
         Ok(())
     }
     fn literal(&mut self, expected: &str) -> Result<(), QuestionError> {
         self.trivia();
+        self.token_offset = self.offset;
         if !self.source[self.offset..].starts_with(expected) {
             return Err(QuestionError::Invalid(
-                "question unsupported Foundation or success policy",
+                "question unsupported success policy",
             ));
         }
         self.offset += expected.len();
@@ -331,6 +414,7 @@ impl<'a> Parser<'a> {
     }
     fn punctuation(&mut self, expected: u8) -> Result<(), QuestionError> {
         self.trivia();
+        self.token_offset = self.offset;
         if self.byte() != Some(expected) {
             return Err(QuestionError::Invalid("question punctuation"));
         }
@@ -350,21 +434,119 @@ impl<'a> Parser<'a> {
         self.variables.insert(name, variable);
         Ok(variable)
     }
+
+    fn peek_word(&mut self, expected: &str) -> bool {
+        self.trivia();
+        syntax::word_at(self.source, self.offset, expected)
+    }
+
+    fn formula_bindings(&mut self) -> Result<(), QuestionError> {
+        self.word("let")?;
+        self.punctuation(b':')?;
+        loop {
+            let name = self.name()?;
+            if syntax::is_reserved_binding_name(name) {
+                return Err(QuestionError::Invalid("question reserved formula binding"));
+            }
+            if self.bindings.contains_key(name) {
+                return Err(QuestionError::Invalid("question duplicate formula binding"));
+            }
+            self.punctuation(b'=')?;
+            let parse_allowance = self.maximum_nodes;
+            self.maximum_nodes = QUESTION_TARGET_MAX_NODES - self.binding_nodes;
+            let parsed = self.formula(1)?;
+            self.binding_nodes += parsed.nodes;
+            self.maximum_nodes = parse_allowance;
+            self.bindings.insert(name, parsed);
+            if self.peek_word("goal") {
+                return Ok(());
+            }
+        }
+    }
+
+    fn quantified(
+        &mut self,
+        existential: bool,
+        source_depth: usize,
+    ) -> Result<Parsed, QuestionError> {
+        self.trivia();
+        let variables = if self.byte() == Some(b'[') {
+            self.offset += 1;
+            let mut variables = Vec::new();
+            loop {
+                if variables.len() == FORMULA_MAX_DEPTH as usize {
+                    return Err(QuestionError::Limit("question expansion depth"));
+                }
+                variables.push(self.variable()?);
+                self.trivia();
+                if self.byte() == Some(b']') {
+                    self.offset += 1;
+                    break;
+                }
+                self.punctuation(b',')?;
+                self.trivia();
+                if self.byte() == Some(b']') {
+                    self.offset += 1;
+                    break;
+                }
+            }
+            variables
+        } else {
+            vec![self.variable()?]
+        };
+        self.punctuation(b',')?;
+        let extra = variables.len() * if existential { 3 } else { 1 };
+        self.bounded(extra + 1, source_depth + extra)?;
+        let body = self.formula(source_depth + extra)?;
+        let nodes = body.nodes + extra;
+        let depth = body.depth + extra;
+        self.bounded(nodes, source_depth - 1 + depth)?;
+        let mut formula = body.formula;
+        for variable in variables.into_iter().rev() {
+            formula = if existential {
+                Formula::exists(variable, formula)
+            } else {
+                Formula::for_all(variable, formula)
+            };
+        }
+        Ok(Parsed {
+            formula,
+            nodes,
+            depth,
+        })
+    }
+
     fn formula(&mut self, source_depth: usize) -> Result<Parsed, QuestionError> {
         self.bounded(0, source_depth)?;
         let operator = self.name()?;
+        let operator_offset = self.token_offset;
+        let name_end = self.offset;
+        self.trivia();
+        if self.byte() != Some(b'(') {
+            self.offset = name_end;
+            let binding = self
+                .bindings
+                .get(operator)
+                .ok_or(QuestionError::Invalid("question unknown formula binding"))?;
+            self.bounded(binding.nodes, source_depth - 1 + binding.depth)?;
+            return Ok(Parsed {
+                formula: binding.formula.clone(),
+                nodes: binding.nodes,
+                depth: binding.depth,
+            });
+        }
         self.punctuation(b'(')?;
         let parsed = match operator {
-            "equal" | "member" | "not_equal" => {
+            "eq" | "mem" | "ne" => {
                 let left = self.variable()?;
                 self.punctuation(b',')?;
                 let right = self.variable()?;
-                let formula = if operator == "member" {
+                let formula = if operator == "mem" {
                     Formula::member(left, right)
                 } else {
                     Formula::equal(left, right)
                 };
-                if operator == "not_equal" {
+                if operator == "ne" {
                     Parsed {
                         formula: Formula::negate(formula),
                         nodes: 2,
@@ -378,46 +560,32 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            "not_" | "forall" | "exists" => {
-                let variable = if operator == "not_" {
-                    None
-                } else {
-                    let variable = self.variable()?;
-                    self.punctuation(b',')?;
-                    Some(variable)
-                };
+            "all" | "ex" => self.quantified(operator == "ex", source_depth)?,
+            "not" => {
                 let body = self.formula(source_depth + 1)?;
-                let extra = if operator == "exists" { 3 } else { 1 };
-                let nodes = body.nodes + extra;
-                let depth = body.depth + extra;
+                let nodes = body.nodes + 1;
+                let depth = body.depth + 1;
                 self.bounded(nodes, source_depth - 1 + depth)?;
-                let formula = match variable {
-                    None => Formula::negate(body.formula),
-                    Some(variable) if operator == "forall" => {
-                        Formula::for_all(variable, body.formula)
-                    }
-                    Some(variable) => Formula::exists(variable, body.formula),
-                };
                 Parsed {
-                    formula,
+                    formula: Formula::negate(body.formula),
                     nodes,
                     depth,
                 }
             }
-            "implies" | "and_" | "or_" | "iff" => {
+            "imp" | "and" | "or" | "iff" => {
                 let left = self.formula(source_depth + 1)?;
                 self.punctuation(b',')?;
                 let right = self.formula(source_depth + 1)?;
                 let (nodes, depth) = match operator {
-                    "implies" => (
+                    "imp" => (
                         1 + left.nodes + right.nodes,
                         1 + left.depth.max(right.depth),
                     ),
-                    "and_" => (
+                    "and" => (
                         3 + left.nodes + right.nodes,
                         (2 + left.depth).max(3 + right.depth),
                     ),
-                    "or_" => (
+                    "or" => (
                         2 + left.nodes + right.nodes,
                         (2 + left.depth).max(1 + right.depth),
                     ),
@@ -430,9 +598,9 @@ impl<'a> Parser<'a> {
                 // their children. Exponential source expansion stays bounded.
                 self.bounded(nodes, source_depth - 1 + depth)?;
                 let formula = match operator {
-                    "implies" => Formula::implies(left.formula, right.formula),
-                    "and_" => Formula::conjunction(left.formula, right.formula),
-                    "or_" => Formula::disjunction(left.formula, right.formula),
+                    "imp" => Formula::implies(left.formula, right.formula),
+                    "and" => Formula::conjunction(left.formula, right.formula),
+                    "or" => Formula::disjunction(left.formula, right.formula),
                     _ => Formula::biconditional(left.formula, right.formula),
                 };
                 Parsed {
@@ -442,6 +610,7 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => {
+                self.token_offset = operator_offset;
                 return Err(QuestionError::Invalid(
                     "question unknown formula or unapproved reference",
                 ));

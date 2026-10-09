@@ -1,12 +1,12 @@
 # Derive forall y, y = y by instantiating an earlier universal theorem.
-foundation = "naome:zfc"
 
-statement = forall(y, equal(y, y))
+
+goal = all(y, eq(y, y))
 
 proof:
-    p0 = equality_reflexivity(x)
-    p1 = generalization(p0, x)
-    p2 = universal_instantiation(x, y, equal(x, x))
-    p3 = modus_ponens(p1, p2)
-    p4 = generalization(p3, y)
+    p0 = refl(x)
+    p1 = gen(p0, x)
+    p2 = inst(x, y, eq(x, x))
+    p3 = mp(p1, p2)
+    p4 = gen(p3, y)
     return p4

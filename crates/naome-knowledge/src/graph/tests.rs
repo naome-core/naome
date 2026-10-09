@@ -4,7 +4,7 @@ use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep, StatementId};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const SOURCE: &str = "foundation = \"naome:zfc\" statement = forall(x, equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = generalization(p0,x) return p1";
+const SOURCE: &str = "goal = all(x, eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
 
 fn introduce(graph: &mut Graph) -> Envelope {
     let proof = graph.author(SOURCE).unwrap();
@@ -12,7 +12,12 @@ fn introduce(graph: &mut Graph) -> Envelope {
     proof
 }
 fn citation(graph: &Graph, parent: &Envelope) -> Envelope {
-    graph.author(&format!("foundation = \"naome:zfc\" statement = forall(x, equal(x,x)) proof: p0 = cite(\"{}\") return p0",parent.proof_id)).unwrap()
+    graph
+        .author(&format!(
+            "goal = all(x, eq(x,x)) proof: p0 = cite(\"{}\") return p0",
+            parent.proof_id
+        ))
+        .unwrap()
 }
 
 #[test]
@@ -37,7 +42,7 @@ fn aliases_and_alternative_derivations_coexist_without_ledger_selection() {
         "duplicate"
     );
     assert_eq!(graph.ids().len(), 2);
-    let alternate = graph.author("foundation = \"naome:zfc\" statement = forall(x,equal(x,x)) proof: p0 = equality_reflexivity(x) p1 = simplification(equal(x,x),equal(x,x)) p2 = modus_ponens(p0,p1) p3 = modus_ponens(p0,p2) p4 = generalization(p3,x) return p4").unwrap();
+    let alternate = graph.author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = simp(eq(x,x),eq(x,x)) p2 = mp(p0,p1) p3 = mp(p0,p2) p4 = gen(p3,x) return p4").unwrap();
     assert_eq!(alternate.statement_id, parent.statement_id);
     assert_ne!(alternate.proof_id, parent.proof_id);
     let alternate_checked =
