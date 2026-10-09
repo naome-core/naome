@@ -8,10 +8,11 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import time
 
 from autonomous_lifecycle import (Node,Trial,digest,process_identity,process_group,
-    retain_evidence,write_receipt,wait_until)
+    process_cpu_sample,retain_evidence,write_receipt,wait_until)
 
 
 def journal(node):
@@ -88,16 +89,21 @@ class Probe:
     def witness_cpu(self,node):
         jobs=self.trial.wait(lambda:self.cpu_active(node),maximum=5)
         workers={event['pid'] for event in node.logs() if event.get('event')=='research_worker' and event['job'] in jobs}
-        def times():
-            result=subprocess.run(['ps','-A','-o','pid=,time='],capture_output=True,text=True,timeout=2,check=True)
-            rows={int(parts[0]):parts[1] for line in result.stdout.splitlines() if len(parts:=line.split())==2 and int(parts[0]) in workers}
-            def seconds(value):
-                fields=value.split(':');return sum(float(part)*60**index for index,part in enumerate(reversed(fields)))
-            return {pid:seconds(value) for pid,value in rows.items()}
-        before=times();latencies=self.statuses(node,2);time.sleep(.15);after=times()
-        assert any(after.get(pid,0)>value for pid,value in before.items()),'no positive worker CPU-time delta'
-        write_receipt(self.trial.output/f'cpu-witness-node-{node.index}.json',{'jobs':sorted(jobs),'before_cpu_seconds':before,
-            'after_cpu_seconds':after,'status_seconds':latencies})
+        identities={pid:process_identity(pid) for pid in workers}
+        assert identities and all(identities.values()),'CPU witness requires live worker identities'
+        def samples():
+            return {pid:process_cpu_sample(identity) for pid,identity in identities.items()}
+        before=samples()
+        receipt={'jobs':sorted(jobs),'worker_identities':list(identities.values()),'before_samples':before,
+            'before_cpu_seconds':{pid:sample['cpu_seconds'] for pid,sample in before.items()}}
+        path=self.trial.output/f'cpu-witness-node-{node.index}.json'
+        write_receipt(path,receipt)
+        latencies=self.statuses(node,2);time.sleep(.15);after=samples()
+        receipt.update(after_samples=after,status_seconds=latencies,
+            after_cpu_seconds={pid:sample['cpu_seconds'] for pid,sample in after.items()},
+            measurement_source='linux_proc_stat_ticks' if sys.platform=='linux' else 'darwin_ps_time_fractional')
+        write_receipt(path,receipt)
+        assert any(after[pid]['cpu_seconds']>sample['cpu_seconds'] for pid,sample in before.items()),'no positive worker CPU-time delta'
         self.observe(node)
         return jobs
 

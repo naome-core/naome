@@ -212,6 +212,33 @@ def process_identity(pid):
             "born": " ".join(parts[2:7]), "kernel_birth": born, "command": parts[7]}
 
 
+def process_cpu_sample(identity):
+    """Read CPU time at native resolution for the same retained process birth."""
+    assert identity is not None, "CPU witness requires a live process identity"
+    pid = identity["pid"]
+    assert kernel_birth(pid) == identity["kernel_birth"], "CPU witness process birth changed"
+    sample = {"pid": pid, "kernel_birth": identity["kernel_birth"]}
+    if sys.platform == "linux":
+        # procps TIME displays whole seconds; /proc retains user/system ticks.
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+        assert ["linux_proc_start_ticks", int(fields[19])] == identity["kernel_birth"]
+        ticks_per_second = os.sysconf("SC_CLK_TCK")
+        assert ticks_per_second > 0, "CPU clock resolution unavailable"
+        user_ticks, system_ticks = int(fields[11]), int(fields[12])
+        sample.update(measurement_source="linux_proc_stat_ticks", user_ticks=user_ticks,
+            system_ticks=system_ticks, ticks_per_second=ticks_per_second,
+            cpu_seconds=(user_ticks + system_ticks) / ticks_per_second)
+    elif sys.platform == "darwin":
+        value = subprocess.check_output(["ps", "-p", str(pid), "-o", "time="],
+            text=True, timeout=2).strip()
+        sample.update(measurement_source="darwin_ps_time_fractional", raw_time=value,
+            cpu_seconds=sum(float(part)*60**index for index,part in enumerate(reversed(value.split(":")))))
+    else:
+        raise AssertionError("CPU witness requires supported Linux or macOS")
+    assert kernel_birth(pid) == identity["kernel_birth"], "CPU witness process birth changed"
+    return sample
+
+
 def process_group(identity):
     if identity is None:
         return []
@@ -516,14 +543,17 @@ def guardian_fixture_worker():
         assert len(research) == 3 and all(research), "active research group identities missing"
         write_receipt(trial.output / "research-processes.json", research)
         worker_pid = next(event["pid"] for event in node.logs() if event.get("event") == "research_worker")
-        def cpu_time():
-            value = subprocess.check_output(["ps", "-p", str(worker_pid), "-o", "time="],
-                text=True, timeout=2).strip()
-            return sum(float(part)*60**index for index,part in enumerate(reversed(value.split(":"))))
-        before = cpu_time(); trial.call(node, "status"); time.sleep(.15); after = cpu_time()
-        assert after > before, "active research had no positive CPU delta before driver loss"
-        write_receipt(trial.output / "driver-loss-cpu-witness.json", {"worker": worker_pid,
-            "before_seconds": before, "after_seconds": after})
+        worker = next(identity for identity in research if identity["pid"] == worker_pid)
+        before_sample = process_cpu_sample(worker)
+        cpu_witness = {"worker": worker_pid, "worker_identity": worker,
+            "before_sample": before_sample, "before_seconds": before_sample["cpu_seconds"],
+            "measurement_source": before_sample["measurement_source"]}
+        write_receipt(trial.output / "driver-loss-cpu-witness.json", cpu_witness)
+        trial.call(node, "status"); time.sleep(.15)
+        after_sample = process_cpu_sample(worker)
+        cpu_witness.update(after_sample=after_sample, after_seconds=after_sample["cpu_seconds"])
+        write_receipt(trial.output / "driver-loss-cpu-witness.json", cpu_witness)
+        assert cpu_witness["after_seconds"] > cpu_witness["before_seconds"], "active research had no positive CPU delta before driver loss"
         relay = Relay(trial, args.relay_binary.resolve())
         write_receipt(trial.output / "probe-ready.json", {
             "node": node.process, "node_port": node.port,
