@@ -6,6 +6,71 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const SOURCE: &str = "goal = all(x, eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
 
+#[test]
+fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
+    let producer = Graph::default();
+    let helper = producer.author(SOURCE).unwrap();
+    let root_source = format!(
+        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
+        helper.proof_id
+    );
+    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let mut receiver = Graph::default();
+    let (root, batch) = receiver
+        .prepare_generated(&root_source, &[SOURCE.into()], &question)
+        .unwrap();
+    assert!(
+        receiver.ids().is_empty(),
+        "native preparation grants no store effect"
+    );
+    let admitted = receiver.apply_batch(batch);
+    assert_eq!(admitted.len(), 2);
+    assert!(receiver.contains(root));
+    assert!(receiver.contains(ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap())));
+}
+
+#[test]
+fn generated_missing_invalid_unused_and_wrong_target_helpers_never_publish() {
+    let receiver = Graph::default();
+    let helper = receiver.author(SOURCE).unwrap();
+    let root_source = format!(
+        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
+        helper.proof_id
+    );
+    let question =
+        naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+    assert!(
+        receiver
+            .prepare_generated(&root_source, &[], &question)
+            .is_err()
+    );
+    assert!(
+        receiver
+            .prepare_generated(&root_source, &["invalid helper".into()], &question)
+            .is_err()
+    );
+    let unrelated =
+        naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(1)).unwrap();
+    assert!(
+        receiver
+            .prepare_generated(&root_source, &[SOURCE.into()], &unrelated)
+            .is_err()
+    );
+    assert!(
+        receiver
+            .prepare_generated(
+                &root_source,
+                &[
+                    SOURCE.into(),
+                    crate::mocks::create_proof(&unrelated).unwrap()
+                ],
+                &question
+            )
+            .is_err()
+    );
+    assert!(receiver.ids().is_empty());
+}
+
 fn introduce(graph: &mut Graph) -> Envelope {
     let proof = graph.author(SOURCE).unwrap();
     graph.ingest(proof.clone(), Instant::now()).unwrap();

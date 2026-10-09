@@ -10,6 +10,79 @@ pub(crate) struct CheckedBatch {
 }
 
 impl Graph {
+    /// Check returned native sources in one bounded temporary context, then
+    /// require the exact root and its complete actual cited closure. No helper
+    /// is published or persisted before the final checked batch commit.
+    pub(crate) fn prepare_generated(
+        &self,
+        source: &str,
+        helpers: &[String],
+        question: &CompiledQuestion,
+    ) -> Result<(ProofId, CheckedBatch), String> {
+        if source.len() > crate::MAX_PROOF_BYTES
+            || helpers.len() >= crate::intake::MAX_CLOSURE_OBJECTS
+            || helpers.iter().any(|s| s.len() > crate::MAX_PROOF_BYTES)
+            || source.len() + helpers.iter().map(String::len).sum::<usize>()
+                > crate::intake::MAX_CLOSURE_BYTES
+        {
+            return Err("generated closure source capacity".into());
+        }
+        let mut context = self.context.clone();
+        let mut candidates = BTreeMap::new();
+        // Providers return helpers in dependency order. Reject one incomplete
+        // source rather than repeatedly reparsing an unresolved batch.
+        let mut steps = 0usize;
+        let mut bytes = 0usize;
+        for source in helpers {
+            let compiled = naome_authoring::compile_against_proof_context(source, &context)
+                .map_err(|e| e.to_string())?;
+            let candidate = Envelope::from_compiled(compiled).prepare()?;
+            steps = steps
+                .checked_add(candidate.normal.certificate().steps().len())
+                .ok_or("generated checker work overflow")?;
+            bytes = bytes
+                .checked_add(candidate.envelope.proof.len() / 2)
+                .ok_or("generated closure byte overflow")?;
+            if steps > crate::intake::MAX_CLOSURE_STEPS || bytes > crate::intake::MAX_CLOSURE_BYTES
+            {
+                return Err("generated closure checker work capacity".into());
+            }
+            let checked = check_normal_form_with_state(
+                candidate.envelope.clone().prepare()?.normal,
+                &context,
+            )
+            .map_err(|e| e.to_string())?;
+            context
+                .register_proof_for_replication(checked)
+                .map_err(|e| e.to_string())?;
+            if self.contains(candidate.id) || candidates.insert(candidate.id, candidate).is_some() {
+                return Err("duplicate generated helper".into());
+            }
+        }
+        let root = Envelope::from_compiled(
+            naome_authoring::compile_against_proof_context(source, &context)
+                .map_err(|e| e.to_string())?,
+        )
+        .prepare()?;
+        let id = root.id;
+        if self.contains(id) || candidates.insert(id, root).is_some() {
+            return Err("duplicate generated root".into());
+        }
+        drop(context);
+        let steps = candidates
+            .values()
+            .map(|c| c.normal.certificate().steps().len())
+            .sum::<usize>();
+        let bytes = candidates
+            .values()
+            .map(|c| c.envelope.proof.len() / 2)
+            .sum::<usize>();
+        if steps > crate::intake::MAX_CLOSURE_STEPS || bytes > crate::intake::MAX_CLOSURE_BYTES {
+            return Err("generated closure checker work capacity".into());
+        }
+        self.prepare_batch(id, candidates, question)
+            .map(|batch| (id, batch))
+    }
     #[cfg(test)]
     pub(crate) fn test_batch_cut(&self, cut: crate::store::BatchCut) {
         self.store

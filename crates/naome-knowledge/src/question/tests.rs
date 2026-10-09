@@ -15,6 +15,176 @@ const PROOF: &str = "goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) re
 const QUESTION: &str = "goal = all(x,mem(x,x))";
 const SOLVED: &str = "goal = all(x,eq(x,x))";
 
+type Managed = LocalQuestions<fn(CompiledQuestion) -> std::future::Ready<Result<bool, String>>>;
+
+#[tokio::test]
+async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let mut owner = crate::jobs::tests::Manual::new();
+    let mut local = Managed::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let mut receivers = Vec::new();
+    for _ in 0..4 {
+        let (reply, receiver) = oneshot::channel();
+        local.process(Command::Assess(question(QUESTION), reply), &graph);
+        receivers.push(receiver);
+    }
+    assert!(!local.available_local() && local.available_peer());
+    let (_, peer) = local.begin_peer_exchange(
+        &graph,
+        question(SOLVED),
+        naome_proof::ProofId::from_bytes([1; 32]),
+        crate::jobs::Purpose::Initial,
+        Instant::now() + Duration::from_secs(3600),
+    );
+    assert_eq!(local.pending.len(), 5);
+    assert_eq!(owner.requests().len(), 5);
+    assert!(local.select(Some([2; 32])));
+    assert!(local.pending.is_empty());
+    for receiver in receivers {
+        assert_eq!(receiver.await.unwrap().interest, InterestAssessment::Stale);
+    }
+    assert_eq!(peer.await.unwrap().interest, InterestAssessment::Stale);
+    assert_eq!(local.registry.len(), 0);
+}
+
+#[tokio::test]
+async fn provider_epoch_change_and_owner_failure_invalidate_positive_selection() {
+    let graph = Graph::default();
+    let mut local = LocalQuestions::new(Some(crate::mocks::assess_interest));
+    let selected = question(QUESTION);
+    let (_, receiver) = local.begin_exchange(
+        &graph,
+        selected.clone(),
+        Instant::now() + Duration::from_secs(5),
+    );
+    let result = local.completed().await;
+    local.finish(&graph, result);
+    let assessment = receiver.await.unwrap();
+    assert!(
+        local
+            .prepare_exchange(&graph, &selected, &assessment)
+            .is_ok()
+    );
+    local.select(Some([9; 32]));
+    assert!(
+        local
+            .prepare_exchange(&graph, &selected, &assessment)
+            .is_err()
+    );
+    local.select(None);
+    let (reply, receiver) = oneshot::channel();
+    local.process(Command::Admit(selected, reply), &graph);
+    let admission = receiver.await.unwrap();
+    assert!(admission.assessment.prefilter.passed() && admission.assessment.novelty().is_some());
+    assert_eq!(
+        admission.assessment.interest,
+        InterestAssessment::ProviderFailed
+    );
+    assert_eq!(admission.outcome, AdmissionOutcome::NotInserted);
+    assert!(admission.assessment.selection.is_none());
+    assert_eq!(local.registry.len(), 0);
+}
+
+#[tokio::test]
+async fn durable_admission_restores_original_orientation_and_prepared_delivery_stays_held() {
+    for confirmed in [true, false] {
+        let directory = Directory::new();
+        let graph = Graph::default();
+        let mut owner = crate::jobs::tests::Manual::new();
+        let mut local = Managed::managed(
+            owner.client.clone(),
+            &directory.0,
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        let original = question("goal = not(all(x,mem(x,x)))");
+        let (reply, receiver) = oneshot::channel();
+        local.process(Command::Admit(original.clone(), reply), &graph);
+        let request = owner.requests().remove(0);
+        owner.complete(request.0, Ok(crate::jobs::Output::Interest(true)));
+        let result = local.completed().await;
+        local.finish(&graph, result);
+        let admission = receiver.await.unwrap();
+        let AdmissionOutcome::Admitted(receipt) = admission.outcome else {
+            panic!("native admission expected");
+        };
+        if !confirmed {
+            local
+                .persistence
+                .as_mut()
+                .unwrap()
+                .retain(&original, persistence::Kind::Prepared, Some(&receipt))
+                .unwrap();
+        }
+        drop(local);
+        let recovered = Managed::managed(
+            owner.client.clone(),
+            &directory.0,
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.known.values().next().unwrap().source(),
+            original.source()
+        );
+        assert_eq!(
+            recovered.known.values().next().unwrap().negation_parity(),
+            original.negation_parity()
+        );
+        assert_eq!(recovered.registry.len(), 1);
+        if confirmed {
+            assert_eq!(recovered.admitted.len(), 1);
+            assert_eq!(recovered.restored_unanswered(&graph), vec![original]);
+        } else {
+            assert!(
+                recovered.admitted.is_empty() && recovered.restored_unanswered(&graph).is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+fn established_question_checkpoint_loss_refuses_fresh_provenance() {
+    let directory = Directory::new();
+    let owner = crate::jobs::tests::Manual::new();
+    let local = Managed::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    drop(local);
+    std::fs::remove_file(directory.0.join("research/questions.json")).unwrap();
+    assert!(Managed::managed(owner.client, &directory.0, Duration::from_secs(3600)).is_err());
+}
+
+#[tokio::test]
+async fn changed_epoch_retires_a_result_already_received_before_finish() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let mut owner = crate::jobs::tests::Manual::new();
+    let mut local = Managed::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let (reply, receiver) = oneshot::channel();
+    local.process(Command::Assess(question(QUESTION), reply), &graph);
+    let (id, _) = owner.requests().remove(0);
+    owner.complete(id, Ok(crate::jobs::Output::Interest(true)));
+    assert_eq!(local.completed().await, InterestAssessment::Assessed(true));
+    assert!(local.select(Some([7; 32])));
+    assert_eq!(receiver.await.unwrap().interest, InterestAssessment::Stale);
+    assert_eq!(owner.acknowledgements(), vec![id]);
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {

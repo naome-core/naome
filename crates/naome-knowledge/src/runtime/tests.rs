@@ -483,3 +483,23 @@ async fn uncertain_owner_cannot_supply_a_profile_but_stop_still_works() {
     assert!(!stopped.running);
     assert_eq!(stopped.interest, "previous");
 }
+
+#[tokio::test]
+async fn selection_epoch_binds_owner_revision_text_and_recovery_errors() {
+    let directory = Directory::new();
+    let _graph = Graph::open(&directory.0).unwrap();
+    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
+    let first = control.selection().unwrap();
+    owner::update(&directory.0, "current mathematical interests").unwrap();
+    let second = control.selection().unwrap();
+    assert_ne!(first, second);
+    owner::update(&directory.0, "").unwrap();
+    assert_ne!(first, control.selection().unwrap());
+    control.owner.lock().unwrap().recovery_error = Some("recovery uncertain".into());
+    assert!(control.selection().is_err());
+    let mut watch = Some(control.stop_watch());
+    control.stopping.send_replace(true);
+    tokio::time::timeout(Duration::from_secs(1), requested_stop(&mut watch))
+        .await
+        .unwrap();
+}
