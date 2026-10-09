@@ -50,6 +50,43 @@ fn new_questions() -> Questions {
     LocalQuestions::new(Some(accepting as fn(_) -> _))
 }
 
+#[tokio::test]
+async fn stale_managed_interest_does_not_decline_the_new_graph_context() {
+    let directory = Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let mut owner = crate::jobs::tests::Manual::new();
+    let mut questions =
+        Questions::managed(owner.client.clone(), &directory.0, Duration::from_secs(60)).unwrap();
+    let peer = PeerId::random();
+    let mut intake = Intake::default();
+    let metadata = fixture(41).1;
+    assert_eq!(
+        intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
+        "queued"
+    );
+    assert!(matches!(
+        intake.advance(&mut graph, &mut questions),
+        Progress::Waiting
+    ));
+    let request = owner.requests().remove(0);
+    // A separate checked proof changes the node while the old decision waits.
+    graph.ingest(fixture(42).0, Instant::now()).unwrap();
+    owner.complete(request.0, Ok(crate::jobs::Output::Interest(true)));
+    let completed = questions.completed().await;
+    questions.finish(&graph, completed);
+    assert!(matches!(
+        intake.advance(&mut graph, &mut questions),
+        Progress::Skipped(_, _)
+    ));
+    assert!(intake.needed().is_empty());
+    intake.advance(&mut graph, &mut questions);
+    assert_eq!(
+        intake.enqueue(peer, metadata, &graph).unwrap(),
+        "queued",
+        "old positive selection cannot blacklist a fresh context"
+    );
+}
+
 async fn interest<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph)
 where
     F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,

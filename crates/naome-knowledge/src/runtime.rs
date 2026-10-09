@@ -18,12 +18,14 @@ use tokio::{
 };
 
 pub use crate::autonomous::Intervals as RuntimeIntervals;
+pub use crate::jobs::{Limits as JobLimits, RecoveryPolicy, RoleSettings, Settings as RuntimeJobs};
 mod cli;
 mod owner;
 pub(crate) use owner::Profile as OwnerProfile;
 
 const CONTROL_LIMIT: usize = 6 * owner::MAX_TEXT_BYTES + 512;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
+const CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(15);
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
@@ -211,7 +213,9 @@ pub(crate) struct Control {
     listener: UnixListener,
     directory: PathBuf,
     endpoint: Endpoint,
+    stopping: tokio::sync::watch::Sender<bool>,
     owner: Mutex<OwnerState>,
+    selection_dirty: std::sync::atomic::AtomicBool,
 }
 
 struct OwnerState {
@@ -307,10 +311,12 @@ impl Control {
             listener,
             directory,
             endpoint,
+            stopping: tokio::sync::watch::channel(false).0,
             owner: Mutex::new(OwnerState {
                 text,
                 recovery_error: None,
             }),
+            selection_dirty: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
@@ -324,9 +330,30 @@ impl Control {
         if let Some(error) = &owner.recovery_error {
             return Err(error.clone());
         }
-        let profile = owner::profile(&self.directory)?;
+        let profile = owner::profile(&self.directory).inspect_err(|_error| {
+            self.selection_dirty
+                .store(true, std::sync::atomic::Ordering::Release);
+        })?;
         owner.text = profile.interest.clone();
         Ok(profile)
+    }
+
+    pub(crate) fn selection(&self) -> Result<[u8; 32], String> {
+        let profile = self.owner_profile()?;
+        let bytes = serde_json::to_vec(&(
+            "naome-deterministic-mocks-v1",
+            profile.version,
+            profile.revision,
+            profile.digest,
+            crate::hex(&Sha256::digest(profile.interest.as_bytes())),
+        ))
+        .map_err(|e| e.to_string())?;
+        Ok(Sha256::digest(bytes).into())
+    }
+
+    pub(crate) fn selection_changed(&self) -> bool {
+        self.selection_dirty
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     pub(crate) async fn respond(
@@ -335,11 +362,23 @@ impl Control {
         count: usize,
         ready: bool,
     ) -> Result<bool, String> {
-        let request: Request = read_frame(&mut stream).await?;
+        let request: Request =
+            tokio::time::timeout(CONTROL_REQUEST_TIMEOUT, read_frame(&mut stream))
+                .await
+                .map_err(|_| "local control request timeout")??;
         if request.version != 1 || request.token != self.endpoint.token {
             return Err("local control instance mismatch".into());
         }
+        #[cfg(feature = "developer-tools")]
+        if std::env::var("NAOME_DEV_CONTROL_SENDBUF_BYTES").as_deref() == Ok("1024") {
+            socket2::SockRef::from(&stream)
+                .set_send_buffer_size(1024)
+                .map_err(|e| e.to_string())?;
+        }
         let stopping = matches!(request.operation, Operation::Stop);
+        if stopping {
+            self.stopping.send_replace(true);
+        }
         let interest = match request.operation {
             Operation::Status => self.owner_profile()?.interest,
             Operation::Stop => self
@@ -360,10 +399,14 @@ impl Control {
                 }
                 match owner::update(&self.directory, &text) {
                     Ok(text) => {
+                        self.selection_dirty
+                            .store(true, std::sync::atomic::Ordering::Release);
                         owner.text = text.clone();
                         text
                     }
                     Err(error) => {
+                        self.selection_dirty
+                            .store(true, std::sync::atomic::Ordering::Release);
                         if error.recovery_required {
                             owner.recovery_error = Some(error.message.clone());
                         }
@@ -380,8 +423,16 @@ impl Control {
                 interest,
             },
         };
-        write_frame(&mut stream, &response).await?;
+        // Leave time for a response timeout to settle before the node's stop
+        // drain expires, while provider teardown has already been requested.
+        tokio::time::timeout(CONTROL_REQUEST_TIMEOUT, write_frame(&mut stream, &response))
+            .await
+            .map_err(|_| "local control write timeout")??;
         Ok(stopping)
+    }
+
+    pub(crate) fn stop_watch(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.stopping.subscribe()
     }
 }
 
@@ -410,6 +461,21 @@ pub(crate) async fn accept(control: &Option<Control>) -> Result<UnixStream, Stri
             .map(|(stream, _)| stream)
             .map_err(|error| error.to_string()),
         None => std::future::pending().await,
+    }
+}
+
+pub(crate) async fn requested_stop(watch: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    if let Some(watch) = watch {
+        loop {
+            if *watch.borrow_and_update() {
+                return;
+            }
+            if watch.changed().await.is_err() {
+                return;
+            }
+        }
+    } else {
+        std::future::pending().await
     }
 }
 
@@ -759,6 +825,9 @@ async fn wait_for_stop(
 /// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
 pub async fn execute() -> Result<(), String> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if let Some(result) = crate::jobs::internal(&arguments) {
+        return result;
+    }
     let cli::Arguments {
         command,
         text,

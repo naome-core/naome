@@ -308,6 +308,30 @@ def guardian_main():
             assert record["relay_cleanup"]["owned_group_empty"], "relay group remained after guardian cleanup"
         except Exception as error:
             record["errors"].append(str(error))
+    # Process-backed research owns independent groups. Their node/lifeline
+    # teardown must close them even after this fixture's driver disappears.
+    research_receipt=args.output/"research-processes.json"
+    if research_receipt.exists():
+        try:
+            identities=json.loads(research_receipt.read_text())
+            assert isinstance(identities,list) and len(identities)<=256
+            groups={identity["group"] for identity in identities}
+            assert all(identity["pid"]>1 and identity["kernel_birth"]
+                and str(args.binary.resolve()) in identity["command"]
+                and "--research-" in identity["command"] for identity in identities)
+            def remaining():
+                result=subprocess.run(["ps","-A","-o","pid=,pgid=,command="],
+                    capture_output=True,text=True,timeout=2,check=True)
+                return [line.strip() for line in result.stdout.splitlines()
+                    if len(line.split(None,2))==3 and int(line.split(None,2)[1]) in groups]
+            deadline=time.monotonic()+5
+            members=remaining()
+            while members and time.monotonic()<deadline:
+                time.sleep(.05);members=remaining()
+            record["research_cleanup"]={"retained_processes":len(identities),"remaining_groups":members}
+            assert not members,"research group remained after node/lifeline teardown"
+        except Exception as error:
+            record["errors"].append("research cleanup: "+str(error))
     write_receipt(args.output / "guardian-receipt.json", record)
     return 1 if record["errors"] else 0
 
@@ -479,12 +503,33 @@ def guardian_fixture_worker():
     trial.summary["node_count"] = 1
     try:
         node = Node(trial, 0)
+        write_receipt(trial.output / "research-processes.json", [])
+        node.config["runtime"]["question_interval_ms"] = 100
+        node.config["runtime"]["jobs"] = {"finding": {"mock": {
+            "steps": 0, "cpu_ms": 20000, "descendant": True}}}
+        node.write_config()
         node.start()
+        trial.wait(lambda: any(event.get("event") == "research_working"
+            and event.get("phase") == "cpu_active" for event in node.logs()), maximum=5)
+        research = [process_identity(event["pid"]) for event in node.logs()
+            if event.get("event") in {"research_started", "research_worker", "research_descendant"}]
+        assert len(research) == 3 and all(research), "active research group identities missing"
+        write_receipt(trial.output / "research-processes.json", research)
+        worker_pid = next(event["pid"] for event in node.logs() if event.get("event") == "research_worker")
+        def cpu_time():
+            value = subprocess.check_output(["ps", "-p", str(worker_pid), "-o", "time="],
+                text=True, timeout=2).strip()
+            return sum(float(part)*60**index for index,part in enumerate(reversed(value.split(":"))))
+        before = cpu_time(); trial.call(node, "status"); time.sleep(.15); after = cpu_time()
+        assert after > before, "active research had no positive CPU delta before driver loss"
+        write_receipt(trial.output / "driver-loss-cpu-witness.json", {"worker": worker_pid,
+            "before_seconds": before, "after_seconds": after})
         relay = Relay(trial, args.relay_binary.resolve())
         write_receipt(trial.output / "probe-ready.json", {
             "node": node.process, "node_port": node.port,
             "relay": relay.identity, "relay_port": relay.port,
             "guardian": trial.guardian_identity,
+            "research": research,
         })
         while time.monotonic() < trial.deadline:
             time.sleep(0.1)
@@ -553,6 +598,9 @@ def guardian_loss_probe():
         assert cleanup["identity_match"] and cleanup["owned_group_empty"]
         assert cleanup["signals"] == ["SIGTERM", "SIGKILL"], cleanup
         assert receipt["relay_cleanup"]["owned_group_empty"]
+        assert receipt["research_cleanup"]["retained_processes"] == 3
+        assert receipt["research_cleanup"]["remaining_groups"] == []
+        assert all(not process_group(identity) for identity in ready["research"])
         wait_until(lambda: all(not process_group(ready[role]) for role in ["node", "relay", "guardian"]),
             min(deadline, time.monotonic() + 5))
         assert not process_group(summary["driver"])

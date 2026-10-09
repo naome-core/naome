@@ -2,6 +2,51 @@ use std::{path::PathBuf, process::Command};
 
 static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+fn ordinary_long_jobs_preserve_responsive_peer_control_and_crash_budgets() {
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    for mode in ["roles", "recovery", "limits", "faults", "basic"] {
+        let directory = root.join(".local/proof-network").join(format!(
+            "long-jobs-{mode}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = Command::new("python3")
+            .arg(root.join("crates/naome-knowledge/tests/support/long_jobs.py"))
+            .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
+            .arg(&directory)
+            .args([
+                "--mode",
+                mode,
+                "--timeout",
+                "90",
+                "--profile",
+                if cfg!(debug_assertions) {
+                    "test"
+                } else {
+                    "release"
+                },
+            ])
+            .output()
+            .expect("finite ordinary long-jobs process driver");
+        assert!(
+            output.status.success(),
+            "long-jobs {mode} evidence at {}\n{}\n{}",
+            directory.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn ordinary_owner_interest_is_exact_durable_and_serialized() {

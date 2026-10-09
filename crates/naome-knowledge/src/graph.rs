@@ -41,6 +41,9 @@ pub struct Graph {
 }
 
 impl Graph {
+    pub(crate) fn accepted_count(&self) -> usize {
+        self.objects.len()
+    }
     pub(crate) fn checked_context(&self) -> &ArtifactState {
         &self.context
     }

@@ -3,13 +3,15 @@
 //! Assessment is read-only. Admission rechecks the receiver's current graph,
 //! registry and policy after interest, then commits in the same serialized node
 //! operation. Baseline import is a separate owner-held administrative capability.
-//! The registry is in-memory local knowledge. Peer descriptions carry derived
+//! The ordinary registry preserves original inputs and admission provenance.
+//! Peer descriptions carry derived
 //! obligations; neither their source nor an earlier result authorizes a write.
 
 use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -25,6 +27,10 @@ use crate::Graph;
 
 pub const QUESTION_QUEUE: usize = 8;
 pub const INTEREST_TIMEOUT: Duration = Duration::from_secs(30);
+pub const MAX_REGISTERED_QUESTIONS: usize = 1024;
+pub const MAX_REGISTERED_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_QUESTION_CHECKPOINT_BYTES: usize = 32 * 1024 * 1024;
+mod persistence;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterestAssessment {
@@ -44,6 +50,8 @@ pub struct QuestionAssessment {
     pub prefilter: PrefilterDecision,
     pub interest: InterestAssessment,
     pub submitted_negation_parity: bool,
+    /// Exact provider and owner-selection epoch; absent after owner recovery error.
+    pub selection: Option<Identity>,
 }
 
 impl QuestionAssessment {
@@ -253,6 +261,8 @@ enum Reply {
     Exchange {
         reply: oneshot::Sender<QuestionAssessment>,
         deadline: Instant,
+        root: Option<naome_proof::ProofId>,
+        purpose: crate::jobs::Purpose,
     },
 }
 
@@ -291,27 +301,46 @@ struct Pending {
     question: CompiledQuestion,
     prefilter: PrefilterDecision,
     reply: Reply,
-    future: Pin<Box<dyn Future<Output = InterestAssessment> + Send>>,
+    future: Pin<Box<dyn Future<Output = ProviderResult> + Send>>,
+    job: Option<u64>,
+    peer: bool,
+    selection: Option<Identity>,
+}
+
+struct ProviderResult {
+    assessment: InterestAssessment,
+    job: Option<u64>,
 }
 
 struct AdmittedProvenance {
     question: CompiledQuestion,
-    receipt: AdmissionReceipt,
+    record: Identity,
 }
 
 pub(crate) struct QuestionDelta {
     registry: QuestionRegistry,
+    question: Option<CompiledQuestion>,
 }
+
+pub(crate) type Revision = (usize, usize, Identity, Option<Identity>);
 
 pub(crate) struct LocalQuestions<F> {
     registry: QuestionRegistry,
     policy: PrefilterPolicy,
-    provider: Option<F>,
-    pending: Option<Pending>,
+    provider: Option<Arc<F>>,
+    managed: Option<crate::jobs::Client>,
+    pending: BTreeMap<u64, Pending>,
+    next_pending: u64,
+    finished: Option<u64>,
+    persistence: Option<persistence::Persistence>,
+    storage_error: Option<String>,
+    interest_horizon: Duration,
+    selection: Option<Identity>,
     /// One computed read-only decision, never an admission or interest receipt.
     cached: Option<PrefilterDecision>,
     /// Only successful local admission with an actually delivered receipt.
     admitted: BTreeMap<Identity, AdmittedProvenance>,
+    known: BTreeMap<Identity, CompiledQuestion>,
     #[cfg(test)]
     computations: usize,
 }
@@ -325,13 +354,127 @@ where
         Self {
             registry: QuestionRegistry::new(),
             policy: PrefilterPolicy::default(),
-            provider,
-            pending: None,
+            provider: provider.map(Arc::new),
+            managed: None,
+            pending: BTreeMap::new(),
+            next_pending: 1,
+            finished: None,
+            persistence: None,
+            storage_error: None,
+            interest_horizon: INTEREST_TIMEOUT,
+            selection: Some(
+                crate::object::id_bytes(&crate::jobs::Binding::new([0; 32], [0; 32]).selection)
+                    .expect("canonical built-in provider identity"),
+            ),
             cached: None,
             admitted: BTreeMap::new(),
+            known: BTreeMap::new(),
             #[cfg(test)]
             computations: 0,
         }
+    }
+
+    pub(crate) fn managed(
+        client: crate::jobs::Client,
+        directory: &std::path::Path,
+        horizon: Duration,
+    ) -> Result<Self, String> {
+        let mut local = Self::new(None);
+        let (persistence, entries) = persistence::Persistence::open(directory, local.policy)?;
+        for entry in entries {
+            let question = CompiledQuestion::compile(&entry.source).map_err(|e| e.to_string())?;
+            let record = *question.source_hash();
+            local
+                .registry
+                .insert(
+                    RegisteredQuestion::new(record, question.core())
+                        .map_err(|e| format!("recovered question: {e:?}"))?,
+                )
+                .map_err(|e| format!("recovered registry: {e:?}"))?;
+            // Prepared delivery is deliberately uncertain. It remains known
+            // registry input but grants no original-admission exception.
+            if entry.kind == persistence::Kind::Admitted {
+                local.admitted.insert(
+                    *question.resolution_id(),
+                    AdmittedProvenance {
+                        question: question.clone(),
+                        record,
+                    },
+                );
+            } else if entry.kind == persistence::Kind::Prepared {
+                crate::network::emit(serde_json::json!({"event":"question_recovery_hold",
+                    "source_id":crate::hex(&record),"reason":"original admission delivery is uncertain"}));
+            }
+            local.known.insert(record, question);
+        }
+        local.managed = Some(client);
+        local.interest_horizon = horizon;
+        local.persistence = Some(persistence);
+        Ok(local)
+    }
+
+    pub(crate) fn restored_unanswered(&self, graph: &Graph) -> Vec<CompiledQuestion> {
+        self.admitted
+            .values()
+            .filter_map(|entry| {
+                let request = AssessmentQuestion::new(
+                    FOUNDATION_ID,
+                    entry.question.core(),
+                    entry.question.source().as_bytes(),
+                    &[],
+                    Some(entry.record),
+                )
+                .ok()?;
+                let decision = assess_question(&request, &self.snapshot(graph), &self.policy);
+                decision.passed().then(|| entry.question.clone())
+            })
+            .collect()
+    }
+
+    pub(crate) fn storage_error(&self) -> Option<&str> {
+        self.storage_error.as_deref()
+    }
+    pub(crate) fn uses_jobs(&self) -> bool {
+        self.managed.is_some()
+    }
+    pub(crate) fn interest_deadline(&self, now: Instant) -> Instant {
+        now + self.interest_horizon
+    }
+
+    /// The serialized driver supplies a validated provider/owner epoch. Errors
+    /// invalidate selection instead of reusing the last known profile.
+    pub(crate) fn select(&mut self, selection: Option<Identity>) -> bool {
+        if selection == self.selection {
+            return false;
+        }
+        self.selection = selection;
+        self.cached = None;
+        for (_, pending) in std::mem::take(&mut self.pending) {
+            if let (Some(client), Some(job)) = (&self.managed, pending.job)
+                && let Err(error) = client.acknowledge(job)
+            {
+                self.storage_error = Some(error);
+            }
+            pending.reply.send(
+                QuestionAssessment {
+                    prefilter: pending.prefilter,
+                    interest: InterestAssessment::Stale,
+                    submitted_negation_parity: pending.question.negation_parity(),
+                    selection: pending.selection,
+                },
+                AdmissionOutcome::NotInserted,
+            );
+        }
+        self.finished = None;
+        true
+    }
+
+    fn registry_capacity(&self, question: &CompiledQuestion) -> bool {
+        self.known.contains_key(question.source_hash())
+            || self.registry.len() < MAX_REGISTERED_QUESTIONS
+                && self.known.values().map(|q| q.source().len()).sum::<usize>()
+                    + question.source().len()
+                    <= MAX_REGISTERED_SOURCE_BYTES
     }
 
     fn snapshot<'a>(&'a self, graph: &'a Graph) -> KnowledgeSnapshot<'a> {
@@ -344,6 +487,18 @@ where
 
     pub(crate) fn context_key(&self, graph: &Graph) -> (Identity, Identity) {
         (self.snapshot(graph).identity(), self.policy.identity())
+    }
+    pub(crate) fn revision(&self, graph: &Graph) -> Revision {
+        (
+            graph.accepted_count(),
+            self.registry.len(),
+            self.policy.identity(),
+            self.selection,
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn computation_count(&self) -> usize {
+        self.computations
     }
 
     fn evaluate(
@@ -401,11 +556,30 @@ where
         self.admitted
             .get(question.resolution_id())
             .filter(|entry| entry.question == *question)
-            .map(|entry| entry.receipt.record())
+            .map(|entry| entry.record)
     }
 
     pub(crate) fn available(&self) -> bool {
-        self.pending.is_none()
+        if self.managed.is_some() {
+            self.pending.len() < 8
+        } else {
+            self.pending.is_empty()
+        }
+    }
+
+    pub(crate) fn available_peer(&self) -> bool {
+        if self.managed.is_some() {
+            self.pending.values().filter(|p| p.peer).count() < 4
+        } else {
+            self.available()
+        }
+    }
+    pub(crate) fn available_local(&self) -> bool {
+        if self.managed.is_some() {
+            self.pending.values().filter(|p| !p.peer).count() < 4
+        } else {
+            self.available()
+        }
     }
 
     /// Reassess only owner-admitted unanswered work before calling a producer.
@@ -437,7 +611,47 @@ where
             .map(|entry| entry.question.clone())
             .unwrap_or(derived);
         let (reply, receiver) = oneshot::channel();
-        self.begin(graph, question.clone(), Reply::Exchange { reply, deadline });
+        self.begin(
+            graph,
+            question.clone(),
+            Reply::Exchange {
+                reply,
+                deadline,
+                root: None,
+                purpose: crate::jobs::Purpose::Publication,
+            },
+        );
+        (question, receiver)
+    }
+
+    pub(crate) fn begin_peer_exchange(
+        &mut self,
+        graph: &Graph,
+        derived: CompiledQuestion,
+        root: naome_proof::ProofId,
+        purpose: crate::jobs::Purpose,
+        deadline: Instant,
+    ) -> (CompiledQuestion, oneshot::Receiver<QuestionAssessment>) {
+        let question = self
+            .admitted
+            .get(derived.resolution_id())
+            .filter(|entry| {
+                entry.question.core() == derived.core()
+                    && entry.question.canonical_core() == derived.canonical_core()
+            })
+            .map(|entry| entry.question.clone())
+            .unwrap_or(derived);
+        let (reply, receiver) = oneshot::channel();
+        self.begin(
+            graph,
+            question.clone(),
+            Reply::Exchange {
+                reply,
+                deadline,
+                root: Some(root),
+                purpose,
+            },
+        );
         (question, receiver)
     }
 
@@ -447,6 +661,8 @@ where
         assessment: &QuestionAssessment,
     ) -> bool {
         assessment.prefilter.passed()
+            && self.selection.is_some()
+            && assessment.selection == self.selection
             && assessment.interest == InterestAssessment::Assessed(true)
             && (assessment.novelty().is_some() || self.exchange_record(question).is_some())
     }
@@ -466,7 +682,11 @@ where
             return Err("stale or declined final question assessment".into());
         }
         let mut registry = self.registry.clone();
+        let mut inserted = None;
         if record.is_none() {
+            if !self.registry_capacity(question) {
+                return Err("question registry receiving capacity".into());
+            }
             if fresh.novelty().is_none() {
                 return Err("missing fresh node-local novelty".into());
             }
@@ -475,12 +695,24 @@ where
             registry
                 .insert(entry)
                 .map_err(|reason| format!("question registration: {reason:?}"))?;
+            inserted = Some(question.clone());
         }
-        Ok(QuestionDelta { registry })
+        Ok(QuestionDelta {
+            registry,
+            question: inserted,
+        })
     }
 
     pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) {
         self.registry = delta.registry;
+        if let Some(question) = delta.question {
+            if let Some(persistence) = &mut self.persistence
+                && let Err(error) = persistence.retain(&question, persistence::Kind::Exchange, None)
+            {
+                self.storage_error = Some(error);
+            }
+            self.known.insert(*question.source_hash(), question);
+        }
         self.cached = None;
     }
 
@@ -493,8 +725,17 @@ where
         } else {
             self.assess(graph, &question)
         };
-        if prefilter.passed() && self.pending.is_some() {
+        let peer = matches!(reply, Reply::Exchange { root: Some(_), .. });
+        let available = if self.managed.is_some() {
+            self.pending.values().filter(|p| p.peer == peer).count() < 4
+        } else {
+            self.pending.is_empty()
+        };
+        if prefilter.passed() && !available {
             prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT");
+        }
+        if prefilter.passed() && reply.admission() && !self.registry_capacity(&question) {
+            prefilter = prefilter.reject(RejectionReason::ReceivingLimit, "Q08_REGISTRY_CAPACITY");
         }
         let remaining = match &reply {
             Reply::Exchange { deadline, .. } => deadline
@@ -502,34 +743,113 @@ where
                 .min(INTEREST_TIMEOUT),
             _ => INTEREST_TIMEOUT,
         };
-        if !prefilter.passed() || self.provider.is_none() || remaining.is_zero() {
+        if !prefilter.passed()
+            || self.selection.is_none()
+            || self.provider.is_none() && self.managed.is_none()
+            || self.managed.is_none() && remaining.is_zero()
+            || self.storage_error.is_some()
+        {
             reply.send(
                 QuestionAssessment {
+                    interest: if self.selection.is_none() && prefilter.passed() {
+                        InterestAssessment::ProviderFailed
+                    } else {
+                        InterestAssessment::NotRun
+                    },
                     prefilter,
-                    interest: InterestAssessment::NotRun,
                     submitted_negation_parity: question.negation_parity(),
+                    selection: self.selection,
                 },
                 AdmissionOutcome::NotInserted,
             );
             return;
         }
-        let bounded = tokio::time::timeout(
-            remaining,
-            self.provider.as_ref().expect("configured interest")(question.clone()),
+        let future: Pin<Box<dyn Future<Output = ProviderResult> + Send>> = if let Some(client) =
+            &self.managed
+        {
+            let (purpose, root) = match &reply {
+                Reply::Assessment(_) => (crate::jobs::Purpose::Assessment, None),
+                Reply::Admission(_) => (crate::jobs::Purpose::Admission, None),
+                Reply::Exchange { purpose, root, .. } => {
+                    (*purpose, root.map(|id| crate::hex(id.as_bytes())))
+                }
+            };
+            let binding = crate::jobs::Binding::new(prefilter.snapshot, prefilter.policy)
+                .with_selection(self.selection.expect("available selection epoch"));
+            let request = crate::jobs::Input::Interest {
+                question: question.source().to_owned(),
+                purpose,
+                root,
+            };
+            let ticket = client.submit(request, binding.clone());
+            Box::pin(async move {
+                let Ok(mut ticket) = ticket else {
+                    return ProviderResult {
+                        assessment: InterestAssessment::ProviderFailed,
+                        job: None,
+                    };
+                };
+                match ticket.completed().await {
+                    Ok(completion) => {
+                        let interest = if completion.binding != binding {
+                            InterestAssessment::Stale
+                        } else if completion.state == crate::jobs::State::Expired {
+                            InterestAssessment::TimedOut
+                        } else {
+                            match completion.result {
+                                Ok(crate::jobs::Output::Interest(value)) => {
+                                    InterestAssessment::Assessed(value)
+                                }
+                                _ => InterestAssessment::ProviderFailed,
+                            }
+                        };
+                        ProviderResult {
+                            assessment: interest,
+                            job: (completion.id != 0).then_some(completion.id),
+                        }
+                    }
+                    Err(_) => ProviderResult {
+                        assessment: InterestAssessment::ProviderFailed,
+                        job: None,
+                    },
+                }
+            })
+        } else {
+            let provider = self.provider.as_ref().expect("configured interest").clone();
+            let input = question.clone();
+            // Cooperative embeddings retain their documented nonblocking
+            // contract. Even construction happens only when this future runs.
+            Box::pin(async move {
+                let bounded = tokio::time::timeout(remaining, async move { provider(input).await });
+                let assessment = match bounded.await {
+                    Ok(Ok(yes)) => InterestAssessment::Assessed(yes),
+                    Ok(Err(_)) => InterestAssessment::ProviderFailed,
+                    Err(_) => InterestAssessment::TimedOut,
+                };
+                ProviderResult {
+                    assessment,
+                    job: None,
+                }
+            })
+        };
+        let id = self.next_pending;
+        let Some(next) = id.checked_add(1) else {
+            self.storage_error = Some("question interest identity exhausted".into());
+            return;
+        };
+        self.next_pending = next;
+        self.pending.insert(
+            id,
+            Pending {
+                question,
+                prefilter,
+                reply,
+                future,
+                job: None,
+                peer,
+                selection: self.selection,
+            },
         );
-        let future = Box::pin(async move {
-            match bounded.await {
-                Ok(Ok(yes)) => InterestAssessment::Assessed(yes),
-                Ok(Err(_)) => InterestAssessment::ProviderFailed,
-                Err(_) => InterestAssessment::TimedOut,
-            }
-        });
-        self.pending = Some(Pending {
-            question,
-            prefilter,
-            reply,
-            future,
-        });
     }
 
     pub(crate) fn process(&mut self, command: Command, graph: &Graph) -> bool {
@@ -543,12 +863,23 @@ where
                     let previous = self.registry.clone();
                     let outcome = if self.registry.contains(question.core()) {
                         Err(RejectionReason::ExactDuplicate)
+                    } else if !self.registry_capacity(&question) {
+                        Err(RejectionReason::ReceivingLimit)
                     } else {
                         RegisteredQuestion::new(*question.source_hash(), question.core())
                             .and_then(|entry| self.registry.insert(entry))
                     };
+                    let inserted = outcome.is_ok();
                     if reply.send(outcome).is_err() {
                         self.registry = previous;
+                    } else if inserted {
+                        if let Some(persistence) = &mut self.persistence
+                            && let Err(error) =
+                                persistence.retain(&question, persistence::Kind::Baseline, None)
+                        {
+                            self.storage_error = Some(error);
+                        }
+                        self.known.insert(*question.source_hash(), question);
                     }
                 }
             }
@@ -571,7 +902,7 @@ where
             }
             Command::Stop(reply) => {
                 if !reply.is_closed() {
-                    self.pending = None;
+                    self.pending.clear();
                     let _ = reply.send(());
                     return false;
                 }
@@ -581,17 +912,39 @@ where
     }
 
     pub(crate) async fn completed(&mut self) -> InterestAssessment {
-        match self.pending.as_mut() {
-            Some(pending) => pending.future.as_mut().await,
-            None => std::future::pending().await,
+        if self.pending.is_empty() {
+            return std::future::pending().await;
         }
+        let (id, result) =
+            libp2p::futures::future::select_all(self.pending.iter_mut().map(|(id, pending)| {
+                Box::pin(async move { (*id, pending.future.as_mut().await) })
+            }))
+            .await
+            .0;
+        if let Some(pending) = self.pending.get_mut(&id) {
+            pending.job = result.job;
+        }
+        self.finished = Some(id);
+        result.assessment
     }
 
     pub(crate) fn finish(&mut self, graph: &Graph, interest: InterestAssessment) {
-        let Some(pending) = self.pending.take() else {
+        let Some(id) = self
+            .finished
+            .take()
+            .or_else(|| self.pending.keys().next().copied())
+        else {
+            return;
+        };
+        let Some(pending) = self.pending.remove(&id) else {
             return;
         };
         if pending.reply.is_closed() {
+            if let (Some(client), Some(job)) = (&self.managed, pending.job)
+                && let Err(error) = client.acknowledge(job)
+            {
+                self.storage_error = Some(error);
+            }
             return;
         }
         // Admission always computes again; a cached or caller-manufactured Pass
@@ -606,7 +959,9 @@ where
         } else {
             self.evaluate(graph, &pending.question, !pending.reply.admission())
         };
-        let interest = if pending.prefilter.same_context(&prefilter) {
+        let interest = if pending.selection != self.selection || self.selection.is_none() {
+            InterestAssessment::Stale
+        } else if pending.prefilter.same_context(&prefilter) {
             interest
         } else {
             prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
@@ -615,6 +970,7 @@ where
         let mut previous_registry = None;
         let mut outcome = AdmissionOutcome::NotInserted;
         let mut provenance = None;
+        let mut prepared = false;
         if pending.reply.admission()
             && prefilter.passed()
             && interest == InterestAssessment::Assessed(true)
@@ -634,9 +990,21 @@ where
                         registry_after: self.registry.identity(),
                         novelty,
                     };
+                    if let Some(persistence) = &mut self.persistence {
+                        if let Err(error) = persistence.retain(
+                            &pending.question,
+                            persistence::Kind::Prepared,
+                            Some(&receipt),
+                        ) {
+                            self.registry = previous;
+                            self.storage_error = Some(error);
+                            return;
+                        }
+                        prepared = true;
+                    }
                     provenance = Some(AdmittedProvenance {
                         question: pending.question.clone(),
-                        receipt: receipt.clone(),
+                        record: receipt.record(),
                     });
                     outcome = AdmissionOutcome::Admitted(Box::new(receipt));
                     previous_registry = Some(previous);
@@ -652,6 +1020,7 @@ where
                 prefilter,
                 interest,
                 submitted_negation_parity: pending.question.negation_parity(),
+                selection: pending.selection,
             },
             outcome,
         );
@@ -660,19 +1029,27 @@ where
         if !delivered && let Some(previous) = previous_registry {
             self.registry = previous;
         }
+        if prepared
+            && let Some(persistence) = &mut self.persistence
+            && let Err(error) = persistence.delivered(&pending.question, delivered)
+        {
+            self.storage_error = Some(error);
+            return;
+        }
         if delivered && let Some(provenance) = provenance {
+            self.known
+                .insert(provenance.record, provenance.question.clone());
             self.admitted
                 .insert(*provenance.question.resolution_id(), provenance);
+        }
+        if let (Some(client), Some(job)) = (&self.managed, pending.job)
+            && let Err(error) = client.acknowledge(job)
+        {
+            self.storage_error = Some(error);
         }
     }
 
     pub(crate) fn cancel_closed(&mut self) {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.reply.is_closed())
-        {
-            self.pending = None;
-        }
+        self.pending.retain(|_, pending| !pending.reply.is_closed());
     }
 }

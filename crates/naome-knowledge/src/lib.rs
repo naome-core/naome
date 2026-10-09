@@ -10,6 +10,8 @@ mod autonomous;
 mod discovery;
 mod graph;
 mod intake;
+#[cfg(unix)]
+mod jobs;
 pub mod mocks;
 pub mod network;
 mod object;

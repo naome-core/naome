@@ -24,9 +24,11 @@ pub(crate) const MAX_CLOSURE_CHECKER_WORK_BYTES: usize =
     MAX_CLOSURE_OBJECTS * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
 pub(crate) const ROOT_TTL: Duration = Duration::from_secs(60);
 
+mod managed;
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone)]
 struct Description {
     peer: PeerId,
     id: ProofId,
@@ -53,6 +55,7 @@ struct ApprovedRoot {
     bytes: usize,
     steps: usize,
     checker_work: usize,
+    final_assessment: Option<QuestionAssessment>,
 }
 
 type DeclinedDescriptionKey = (PeerId, ProofId, StatementId, Identity);
@@ -63,6 +66,8 @@ pub(crate) struct Intake {
     queue: VecDeque<Description>,
     active: Option<ApprovedRoot>,
     declined: BTreeMap<DeclinedDescriptionKey, DeclineContext>,
+    waiting: VecDeque<managed::Waiting>,
+    managed_context: Option<((Identity, Identity), crate::question::Revision)>,
 }
 
 pub(crate) enum Progress {
@@ -72,6 +77,21 @@ pub(crate) enum Progress {
 }
 
 impl Intake {
+    pub(crate) fn invalidate_interest(&mut self) {
+        self.declined.clear();
+        self.managed_context = None;
+    }
+    pub(crate) fn selection_boundary_ready(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|root| root.needed.is_empty())
+            || self.waiting.iter().any(|w| match &w.phase {
+                managed::Phase::Initial(reply) | managed::Phase::Final { reply, .. } => {
+                    !reply.is_empty()
+                }
+                managed::Phase::Refresh { ready, .. } => *ready,
+            })
+    }
     pub(crate) fn description_capacity(&self) -> usize {
         MAX_QUEUED_METADATA - self.queue.len()
     }
@@ -80,6 +100,10 @@ impl Intake {
             .as_ref()
             .is_some_and(|root| root.description.id == id)
             || self.queue.iter().any(|description| description.id == id)
+            || self
+                .waiting
+                .iter()
+                .any(|waiting| waiting.description.id == id)
     }
 
     pub(crate) fn enqueue(
@@ -91,6 +115,23 @@ impl Intake {
         let (id, statement, question) = metadata.compile()?;
         if graph.contains(id) {
             return Ok("duplicate");
+        }
+        if let Some(waiting) = self
+            .waiting
+            .iter_mut()
+            .find(|w| w.description.peer == peer && w.description.id == id)
+        {
+            if waiting.description.statement != statement
+                || waiting.description.question != question
+            {
+                return Err("refreshed metadata differs from the original obligation".into());
+            }
+            if let managed::Phase::Refresh { ready, .. } = &mut waiting.phase {
+                *ready = true;
+                waiting.description.created = Instant::now();
+                return Ok("metadata_refreshed");
+            }
+            return Ok("queued_duplicate");
         }
         let same = |description: &Description| {
             description.peer == peer
@@ -221,6 +262,7 @@ impl Intake {
     }
 
     pub(crate) fn abort(&mut self, root_id: ProofId) {
+        self.waiting.retain(|w| w.description.id != root_id);
         if self
             .active
             .as_ref()
@@ -231,6 +273,7 @@ impl Intake {
     }
 
     pub(crate) fn disconnected(&mut self, peer: PeerId) {
+        self.waiting.retain(|w| w.description.peer != peer);
         self.queue.retain(|description| description.peer != peer);
         if self
             .active
@@ -250,6 +293,9 @@ impl Intake {
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
+        if questions.uses_jobs() {
+            return self.advance_managed(graph, questions);
+        }
         let now = Instant::now();
         let (snapshot, policy) = questions.context_key(graph);
         self.declined.retain(|_, (before, old_policy, until)| {
@@ -277,6 +323,7 @@ impl Intake {
                 bytes: 0,
                 steps: 0,
                 checker_work: 0,
+                final_assessment: None,
             });
         }
         let Some(mut root) = self.active.take() else {

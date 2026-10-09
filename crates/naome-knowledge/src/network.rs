@@ -297,6 +297,7 @@ where
         return Err("producer queue capacity".into());
     }
     let graph = Graph::open(&config.directory)?;
+    let directory = config.directory.clone();
     let key = identity::Keypair::from_protobuf_encoding(&crate::store::read_bounded(
         &config.directory.join("identity.key"),
         1024,
@@ -309,11 +310,6 @@ where
     } else {
         None
     };
-    let mut autonomous = autonomy.map(|intervals| {
-        use sha2::Digest;
-        let cursor = sha2::Sha256::digest(own_id.to_bytes())[0] as u64;
-        crate::autonomous::Autonomous::new(intervals, cursor)
-    });
     let automatic = config
         .discovery
         .as_ref()
@@ -487,17 +483,48 @@ where
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut command_input_open = true;
     let mut question_input_open = true;
-    let mut questions = crate::question::LocalQuestions::new(interest);
+    let (mut research, mut autonomous, mut questions) = if let Some(intervals) = autonomy {
+        use sha2::Digest;
+        let cursor = sha2::Sha256::digest(own_id.to_bytes())[0] as u64;
+        let (service, client, recovery) =
+            crate::jobs::Service::open(&directory, intervals.jobs, cursor)?;
+        let questions = crate::question::LocalQuestions::<F>::managed(
+            client.clone(),
+            &directory,
+            Duration::from_millis(intervals.jobs.interest.limits.horizon_ms),
+        )?;
+        let unanswered = questions.restored_unanswered(&node.graph);
+        let autonomous =
+            crate::autonomous::Autonomous::new(intervals, client, recovery, unanswered);
+        (Some(service), Some(autonomous), questions)
+    } else {
+        (None, None, crate::question::LocalQuestions::new(interest))
+    };
+    let mut controls = libp2p::futures::stream::FuturesUnordered::new();
+    let mut stop_watch = control.as_ref().map(crate::runtime::Control::stop_watch);
+    let mut stopping = false;
+    let mut next_profile_check = Instant::now();
+    let mut drain_deadline = None;
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
     // Keep signal receivers alive while another branch processes synchronous work.
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
+    let outcome:Result<(),String>=async {
     loop {
+        // Read the validated owner epoch before polling any final admission.
+        // An error invalidates old selection; stop remains available.
+        if let Some(control)=&control
+            && (control.selection_changed() || Instant::now()>=next_profile_check) {
+                next_profile_check=Instant::now()+Duration::from_secs(1);
+                if questions.select(control.selection().ok()) {
+                node.intake.invalidate_interest();
+                }
+            }
         tokio::select! {
             event = node.swarm.select_next_some() => node.event(event)?,
-            command = commands.recv(), if command_input_open => {
+            command = commands.recv(), if command_input_open && !stopping => {
                 match command {
                     Some(Ok(value)) => if !node.command(value) { break; },
                     Some(Err(error)) => emit(json!({"event":"command_error", "error":error})),
@@ -508,23 +535,45 @@ where
                 }
             },
             _ = tick.tick() => node.tick(),
-            command = inbox.receive(), if question_input_open => {
+            command = inbox.receive(), if question_input_open && !stopping => {
                 match command {
                     Some(command) => if !questions.process(command, &node.graph) { break; },
                     None => question_input_open = false,
                 }
             },
-            interest = questions.completed() => questions.finish(&node.graph, interest),
-            socket = crate::runtime::accept(&control) => {
+            interest = questions.completed(),if !stopping => {
+                if let Some(control)=&control
+                    && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
+                questions.finish(&node.graph, interest);
+            },
+            socket = crate::runtime::accept(&control),if !stopping && controls.len()<8 => {
                 let socket = socket?;
-                match control.as_ref().expect("accepted runtime control").respond(socket,node.graph.ids().len(),node.ready).await {
+                controls.push(control.as_ref().expect("accepted runtime control").respond(socket,node.graph.ids().len(),node.ready));
+            },
+            response=controls.next(),if !controls.is_empty()=>if let Some(response)=response {
+                match response {
                     Ok(true) => break,
                     Ok(false) => {},
                     Err(error) => emit(json!({"event":"control_rejected","error":error})),
                 }
             },
+            _=crate::runtime::requested_stop(&mut stop_watch),if !stopping=>{
+                stopping=true;
+                drain_deadline=Some(Instant::now()+Duration::from_secs(2));
+                if let Some(service)=&mut research{service.begin_shutdown()?;}
+            },
             signal = &mut shutdown => { signal?; break; }
         }
+        if let Some(error)=questions.storage_error(){return Err(error.to_owned());}
+        if let Some(error)=research.as_ref().and_then(crate::jobs::Service::error){return Err(error);}
+        if stopping {
+            if controls.is_empty() || drain_deadline.is_some_and(|until|Instant::now()>=until){break;}
+            continue;
+        }
+        if let Some(control)=&control
+            && (control.selection_changed() || node.intake.selection_boundary_ready()
+                || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
+                && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
         questions.cancel_closed();
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
@@ -548,6 +597,7 @@ where
         if let Some(autonomous) = &mut autonomous {
             let admitted = autonomous.advance(&mut node.graph, &mut questions);
             node.publish_admitted(&admitted, "mock_producer");
+            if let Some(error)=autonomous.error(){return Err(error.to_owned());}
         }
         node.requests();
         if let Some(error) = node.graph.storage_error() {
@@ -558,6 +608,23 @@ where
         if let Some(error) = crate::runtime::log_error() {
             return Err(format!("runtime log failed: {error}"));
         }
+    }
+    Ok(())
+    }.await;
+    // Every ordinary loop/error path drains the owner before releasing Graph's
+    // exclusive directory lock. Pending controls own no independent tasks.
+    let cleanup = match &mut research {
+        Some(service) => service.shutdown().await,
+        None => Ok(()),
+    };
+    match (outcome, cleanup) {
+        (Err(primary), Err(cleanup)) => {
+            return Err(format!(
+                "research cleanup failed: {cleanup}; node failure: {primary}"
+            ));
+        }
+        (Err(error), _) | (_, Err(error)) => return Err(error),
+        _ => {}
     }
     emit(json!({"event":"stopped", "root":hex(&node.graph.content_root())}));
     Ok(())
@@ -1018,6 +1085,23 @@ impl Node {
 
     fn requests(&mut self) {
         let now = Instant::now();
+        for (peer, id) in self.intake.refresh_needed() {
+            if self.request_ready(peer, now)
+                && self.automatic_request_ready(peer, now)
+                && !self.flights.values().any(
+                    |flight| matches!(flight,Flight::Describe{id:requested,..} if *requested==id),
+                )
+            {
+                let request = self
+                    .swarm
+                    .behaviour_mut()
+                    .exchange
+                    .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
+                self.flights.insert(request, Flight::Describe { id, peer });
+                self.charge_automatic_request(peer, now);
+                self.charge_outgoing(peer, now);
+            }
+        }
         // The sole path to Get consumes a private approved root's actual
         // committed dependency closure. Hints and Graph.pending never issue Get.
         for (peer, root, id) in self.intake.needed() {
