@@ -443,9 +443,10 @@ class Node:
     def reserve_port(self):
         if self.reservation is not None:
             return
-        self.reservation = socket.socket()
+        self.reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.reservation.bind(("127.0.0.1", self.port or 0))
+        # Cover the wildcard scope used by discovery and preserve the port on restart.
+        self.reservation.bind(("0.0.0.0", self.port or 0))
         self.reservation.listen(1)
         self.port = self.reservation.getsockname()[1]
 
@@ -817,12 +818,48 @@ def main():
             assert node.stop() == {"running": False, "accepted_proofs": 3, "interest": ""}
             assert digest(node.directory / "identity.key") == node.identity_sha256
             node.config["runtime"]["question_interval_ms"] = 3600000
+            original_listen = node.config["listen"]
+            occupied_listener = args.mode == "direct" and node is receiver
+            if occupied_listener:
+                node.config["listen"] = f"/ip4/0.0.0.0/tcp/{node.port}"
             node.write_config()
+            if occupied_listener:
+                assert node.reservation is not None
+                assert node.reservation.getsockname() == ("0.0.0.0", node.port)
+                identity_receipt_sha256 = digest(node.directory / "identity.json")
+                before_events = len(node.logs())
+                trial.call(node, "start", success=False)
+                assert trial.summary["commands"][-1]["stderr"], "failed startup did not report a CLI error"
+                events = node.logs()[before_events:]
+                assert not any(event.get("event") in {"starting", "ready"} for event in events), "occupied listener published a new running owner"
+                errors = [event.get("error", "") for event in events if event.get("event") == "fatal_error"]
+                assert len(errors) == 1, "occupied listener did not retain exactly one fatal diagnostic"
+                diagnostic = errors[0]
+                assert node.config["listen"] in diagnostic, "listen diagnostic omitted the requested endpoint"
+                assert "AddrInUse" in diagnostic, "listen diagnostic omitted the actual I/O failure kind"
+                cause = diagnostic.partition('message: "')[2].partition('"')[0]
+                assert cause, "listen diagnostic omitted the underlying I/O cause"
+                assert not (node.directory / "control.json").exists(), "failed startup retained a daemon control owner"
+                assert trial.call(node, "status") == {"running": False, "accepted_proofs": 3, "interest": ""}
+                assert digest(node.directory / "identity.key") == node.identity_sha256
+                assert digest(node.directory / "identity.json") == identity_receipt_sha256
+                assert node.ids() == accepted, "failed startup changed durable proofs"
             node.start()
             assert digest(node.directory / "identity.key") == node.identity_sha256
+            if occupied_listener:
+                assert digest(node.directory / "identity.json") == identity_receipt_sha256
             assert node.ids() == accepted
             assert trial.call(node, "status") == expected
             node.stop()
+            if occupied_listener:
+                trial.summary["scenarios"]["occupied_wildcard_listener_rejects_start_and_recovers"] = {
+                    "result": "pass", "requested_listen": node.config["listen"],
+                    "diagnostic": diagnostic, "io_cause": cause, "unique_proofs": 3,
+                    "identity_sha256": node.identity_sha256,
+                    "identity_receipt_sha256": identity_receipt_sha256,
+                    "new_starting_events_on_rejection": 0, "recovered_at_same_endpoint": True}
+                node.config["listen"] = original_listen
+                node.write_config()
         trial.summary["scenarios"]["restart_revalidates_persistent_proofs_and_preserves_identity"] = {"result": "pass", "unique_proofs": 3}
         member = next(path for path in (receiver.directory / "objects").rglob("*.json")
             if path.stem in accepted)

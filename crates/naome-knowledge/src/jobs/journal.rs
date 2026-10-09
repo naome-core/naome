@@ -81,6 +81,13 @@ impl Disk {
         };
         let now = wall_ms()?;
         journal.validate(settings)?;
+        // A recovered serialized envelope crosses the mathematical trust
+        // boundary once. Subsequent saves validate immutable integrity only.
+        for record in journal.records.values() {
+            if let Some(request) = &record.generation {
+                request.recheck_retained(&record.input, &record.binding)?;
+            }
+        }
         for (index, expected) in journal.slots.iter().enumerate() {
             let file = slot_file(&root, index, false)?;
             let metadata = file.metadata().map_err(|e| e.to_string())?;
@@ -123,6 +130,37 @@ impl Disk {
                 };
             }
         }
+        // Legacy generation jobs lack the native request that the provider must
+        // receive. Retire their candidates instead of recreating a snapshot or
+        // renewing the original cursor, obligation horizon or reserved work.
+        // Unknown effects stay held; migration never claims cleanup certainty.
+        for record in journal.records.values_mut() {
+            if matches!(record.input, Input::Find { .. } | Input::Solve { .. })
+                && record.generation.is_none()
+                && record.state != State::InDoubt
+            {
+                record.state = State::Failed;
+                record.result = None;
+                record.failure =
+                    Some("legacy generation context unavailable; request required".into());
+            }
+        }
+        // Complete requests from an earlier instruction revision retain their
+        // exact identity as inert evidence. They cannot be dispatched under the
+        // current contract; uncertain prior effects remain held for recovery.
+        for record in journal.records.values_mut() {
+            if record.state != State::InDoubt
+                && record
+                    .generation
+                    .as_ref()
+                    .is_some_and(|request| !request.current_instructions())
+            {
+                record.state = State::Failed;
+                record.result = None;
+                record.failure =
+                    Some("generation instructions changed; retained request retired".into());
+            }
+        }
         journal.observed_ms = now;
         let disk = Self {
             path,
@@ -137,6 +175,12 @@ impl Disk {
 
     pub(super) fn save(&self, journal: &Journal) -> Result<(), String> {
         write(&self.path, journal, MAX_JOURNAL_BYTES)
+    }
+
+    /// The owner just encoded and bounded this same immutable journal state.
+    /// Reuse those bytes for the digest and atomic write; keep no second state.
+    pub(super) fn save_payload(&self, payload: &[u8]) -> Result<(), String> {
+        write_payload(&self.path, payload, MAX_JOURNAL_BYTES)
     }
 
     /// Seven stable kernel locks cap physical provider lifetimes across a daemon
@@ -174,7 +218,22 @@ impl Disk {
 }
 
 impl Journal {
+    /// Serialized checkpoints must qualify every immutable request before any
+    /// recovery disposition or provider start. Hot saves retain this boundary.
     pub(super) fn validate(&self, settings: Settings) -> Result<(), String> {
+        self.validate_lifecycle(settings)?;
+        for record in self.records.values() {
+            if let Some(request) = &record.generation {
+                request.validate_retained(&record.input, &record.binding)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The owner inserts inputs only after strict submission validation and
+    /// never changes them. Recheck mutable accounting and lifecycle on every
+    /// save without rehashing every retained prompt for unrelated progress.
+    pub(super) fn validate_lifecycle(&self, settings: Settings) -> Result<(), String> {
         if self.version != 1
             || self.compatibility != crate::hex(&crate::compatibility())
             || self.configuration != identity(&settings)
@@ -211,6 +270,9 @@ impl Journal {
         for (id, r) in &self.records {
             r.input.validate()?;
             r.binding.validate()?;
+            if matches!(r.input, Input::Interest { .. }) && r.generation.is_some() {
+                return Err("interest job carries a generation request".into());
+            }
             if *id != r.id
                 || *id >= self.next_id
                 || r.provider != "naome-deterministic-mocks-v1"
@@ -404,15 +466,28 @@ fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
 }
 
 pub(crate) fn write<T: Serialize>(path: &Path, payload: &T, limit: usize) -> Result<(), String> {
-    let bytes = serde_json::to_vec(&Envelope {
-        version: 1,
-        payload,
-        sha256: identity(payload),
-    })
-    .map_err(|e| e.to_string())?;
-    if bytes.len() > limit {
+    let payload = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
+    write_payload(path, &payload, limit)
+}
+
+fn write_payload(path: &Path, payload: &[u8], limit: usize) -> Result<(), String> {
+    // Exact declaration order of Envelope above. The already serialized payload
+    // is inserted verbatim, preserving canonical v1 bytes while encoding once.
+    let sha256 = crate::hex(&Sha256::digest(payload));
+    let header = b"{\"version\":1,\"payload\":";
+    let trailer = format!(",\"sha256\":\"{sha256}\"}}");
+    let length = header
+        .len()
+        .checked_add(payload.len())
+        .and_then(|n| n.checked_add(trailer.len()))
+        .ok_or("research checkpoint byte overflow")?;
+    if length > limit {
         return Err("research checkpoint byte capacity".into());
     }
+    let mut bytes = Vec::with_capacity(length);
+    bytes.extend_from_slice(header);
+    bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(trailer.as_bytes());
     let temporary = path.with_extension("incoming");
     match fs::symlink_metadata(&temporary) {
         Ok(m)

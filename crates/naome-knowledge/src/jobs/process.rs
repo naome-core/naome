@@ -28,17 +28,60 @@ struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 enum Frame {
-    Ready { id: u64, binding: String, pid: u32 },
-    Descendant { id: u64, pid: u32 },
-    CpuActive { id: u64, next: u32 },
-    CpuDone { id: u64, next: u32 },
-    ResultReady { id: u64 },
-    Reserve { id: u64, next: u32 },
-    Progress { id: u64, checkpoint: u32 },
-    Result { id: u64, output: Output },
-    Failed { id: u64 },
-    CleanupComplete { id: u64 },
-    CleanupFailed { id: u64, error: String },
+    Ready {
+        id: u64,
+        binding: String,
+        pid: u32,
+    },
+    Descendant {
+        id: u64,
+        pid: u32,
+    },
+    CpuActive {
+        id: u64,
+        next: u32,
+    },
+    CpuDone {
+        id: u64,
+        next: u32,
+    },
+    ResultReady {
+        id: u64,
+    },
+    GenerationTool {
+        id: u64,
+        request_id: String,
+        operation: String,
+        status: crate::generation::ToolStatus,
+        count: usize,
+        artifact_snapshot: String,
+        graph_root: String,
+        query_id: String,
+        remaining_range_complete: bool,
+        backend_category: Option<String>,
+    },
+    Reserve {
+        id: u64,
+        next: u32,
+    },
+    Progress {
+        id: u64,
+        checkpoint: u32,
+    },
+    Result {
+        id: u64,
+        output: Output,
+    },
+    Failed {
+        id: u64,
+    },
+    CleanupComplete {
+        id: u64,
+    },
+    CleanupFailed {
+        id: u64,
+        error: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -173,6 +216,7 @@ async fn run_owned(
         let mut ready = false;
         let mut checkpoint = record.checkpoint;
         let mut outstanding = None;
+        let mut tool_receipts = 0u8;
         loop {
             let bytes = reader
                 .next()
@@ -214,6 +258,67 @@ async fn run_owned(
                     crate::network::emit(
                         serde_json::json!({"event":"research_working","job":id,"phase":"result_ready"}),
                     );
+                }
+                Frame::GenerationTool {
+                    id,
+                    request_id,
+                    operation,
+                    status,
+                    count,
+                    artifact_snapshot,
+                    graph_root,
+                    query_id,
+                    remaining_range_complete,
+                    backend_category,
+                } if ready
+                    && id == record.id
+                    && outstanding.is_none()
+                    && matches!(record.input, Input::Find { .. } | Input::Solve { .. })
+                    && tool_receipts < 4
+                    && (tool_receipts == 0 || matches!(record.input, Input::Solve { .. }))
+                    && count <= 16 =>
+                {
+                    let request = record
+                        .generation
+                        .as_ref()
+                        .ok_or("generation request absent")?;
+                    let (expected_snapshot, expected_root) = request.context_identity();
+                    crate::object::id_bytes(&query_id)?;
+                    let semantic_state_valid = match (
+                        &status,
+                        count,
+                        remaining_range_complete,
+                        backend_category.as_deref(),
+                    ) {
+                        (
+                            crate::generation::ToolStatus::BackendUnavailable,
+                            0,
+                            false,
+                            Some("retrieval_encoder_not_configured"),
+                        ) => operation == "semantic_search",
+                        (crate::generation::ToolStatus::NoResult, 0, true, None) => true,
+                        (crate::generation::ToolStatus::Ok, 1..=16, _, None) => {
+                            operation != "semantic_search"
+                        }
+                        _ => false,
+                    };
+                    if request_id != request.identity()
+                        || artifact_snapshot != expected_snapshot
+                        || graph_root != expected_root
+                        || !["native_search", "lookup", "fetch", "semantic_search"]
+                            .contains(&operation.as_str())
+                        || !semantic_state_valid
+                    {
+                        return Err("generation retrieval receipt differs from request".into());
+                    }
+                    tool_receipts += 1;
+                    crate::network::emit(serde_json::json!({
+                        "event":"generation_tool_invoked","job":id,"request_id":request_id,
+                        "operation":operation,"status":status,"count":count,
+                        "artifact_snapshot":artifact_snapshot,"graph_root":graph_root,
+                        "query_id":query_id,"remaining_range_complete":remaining_range_complete,
+                        "backend_category":backend_category,
+                    }));
                 }
                 Frame::Reserve { id, next }
                     if ready
@@ -329,6 +434,7 @@ async fn run_owned(
                 | Frame::CpuActive { id, .. }
                 | Frame::CpuDone { id, .. }
                 | Frame::ResultReady { id }
+                | Frame::GenerationTool { id, .. }
                 | Frame::Reserve { id, .. }
                 | Frame::Progress { id, .. }
                 | Frame::Result { id, .. }
@@ -479,6 +585,26 @@ fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
             return Ok(bytes);
         }
     }
+}
+
+fn emit_generation_tool(
+    id: u64,
+    operation: &str,
+    result: &crate::generation::ToolResult,
+) -> Result<(), String> {
+    emit(&Frame::GenerationTool {
+        id,
+        request_id: result.request_id.clone(),
+        operation: operation.into(),
+        status: result.status.clone(),
+        count: result.results.len(),
+        artifact_snapshot: result.artifact_snapshot.clone(),
+        graph_root: result.graph_root.clone(),
+        query_id: result.query_id.clone(),
+        remaining_range_complete: result.remaining_range_complete,
+        backend_category: (result.status == crate::generation::ToolStatus::BackendUnavailable)
+            .then(|| "retrieval_encoder_not_configured".into()),
+    })
 }
 
 fn emit(frame: &Frame) -> Result<(), String> {
@@ -716,6 +842,10 @@ fn work() -> Result<(), String> {
     let record = start.record;
     record.input.validate()?;
     record.binding.validate()?;
+    validate_generation(&record.input, &record.binding, record.generation.as_ref())?;
+    if let Some(request) = &record.generation {
+        request.recheck(&record.input, &record.binding)?;
+    }
     let (sender, receiver) = sync_channel::sync_channel(1);
     // A lost supervisor closes this pipe. This dedicated lifeline reader can
     // still stop the group while the provider main thread is doing CPU work.
@@ -829,14 +959,31 @@ fn work() -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(mock.result_delay_ms));
     }
     let output = match &record.input {
-        Input::Find { cursor } => Output::Question(if mock.outcome == MockOutcome::Malformed {
-            "invalid question".into()
-        } else {
-            crate::mocks::create_question(*cursor)
-        }),
-        Input::Solve { question } => {
-            let compiled =
-                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+        Input::Find { .. } => {
+            let request = record
+                .generation
+                .as_ref()
+                .ok_or("generation request absent")?;
+            let candidate =
+                crate::mocks::create_question_request_with_tools(request, |operation, result| {
+                    emit_generation_tool(record.id, operation, result)
+                })?;
+            Output::Question(if mock.outcome == MockOutcome::Malformed {
+                "invalid question".into()
+            } else {
+                candidate
+            })
+        }
+        Input::Solve { .. } => {
+            let request = record
+                .generation
+                .as_ref()
+                .ok_or("generation request absent")?;
+            let compiled = request.question()?;
+            let candidate =
+                crate::mocks::create_proof_request_with_tools(request, |operation, result| {
+                    emit_generation_tool(record.id, operation, result)
+                })?;
             let source = if mock.outcome == MockOutcome::Malformed {
                 Some("invalid proof".into())
             } else if mock.outcome == MockOutcome::WrongTarget {
@@ -851,7 +998,7 @@ fn work() -> Result<(), String> {
                     .ok_or("mock alternate target absent")?;
                 crate::mocks::create_proof(&other)
             } else {
-                crate::mocks::create_proof(&compiled)
+                candidate
             };
             source
                 .map(|mut source| {

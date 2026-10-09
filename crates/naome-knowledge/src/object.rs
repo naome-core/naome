@@ -51,7 +51,7 @@ impl Metadata {
 
 // Early address binding uses the unchanged checker framing. Only a checked
 // conclusion and classify_checked_proof establish the eventual resolution.
-fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, String> {
+pub(crate) fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, String> {
     let bytes = formula
         .encode_canonical()
         .map_err(|error| error.to_string())?;

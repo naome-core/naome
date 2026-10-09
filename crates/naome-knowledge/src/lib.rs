@@ -7,7 +7,11 @@
 //! honest peers to reconnect, and data to fit the explicit local resource limits.
 
 mod autonomous;
+#[cfg(unix)]
+mod corpus;
 mod discovery;
+#[cfg(unix)]
+mod generation;
 mod graph;
 mod intake;
 #[cfg(unix)]
@@ -28,4 +32,12 @@ pub use graph::{
 pub use object::{
     CHECKER_ID, CODEC_ID, Envelope, GRAPH_POLICY_ID, MAX_DEPENDENCIES, MAX_DEPTH, MAX_PROOF_BYTES,
     compatibility, hex, unhex,
+};
+
+#[cfg(unix)]
+pub use corpus::ProofCorpus;
+#[cfg(unix)]
+pub use corpus::semantic::{
+    EncoderIdentity, SEMANTIC_REPRESENTATION_VERSION, SemanticEncoder, SemanticHit, SemanticIndex,
+    SemanticPage,
 };

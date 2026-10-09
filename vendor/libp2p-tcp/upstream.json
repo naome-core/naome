@@ -1,0 +1,43 @@
+{
+  "package": "libp2p-tcp",
+  "version": "0.44.1",
+  "git": {
+    "sha1": "4682e735cbdfd8f2b59f5478591a4e8ae552fa68"
+  },
+  "path_in_vcs": "transports/tcp",
+  "registry": "https://crates.io/api/v1/crates/libp2p-tcp/0.44.1/download",
+  "crate_sha256": "fb6585b9309699f58704ec9ab0bb102eca7a3777170fa91a8678d73ca9cafa93",
+  "files": {
+    "Cargo.toml": "898c573d2070d7bfdc79b3e1e3cd32250711e450df7a3651cdc4134f5f0dc258",
+    "Cargo.toml.orig": "2aef9877f86ef2bc547e4d56cee9a08f2aca6463994af1d2ee641b4c69bb5939",
+    "src/lib.rs": "d239a69f37b50c044de1935a420fd37709b7799da27fcd4c8a434285b715887e",
+    "src/provider/tokio.rs": "fbf4be936410f7cebbfe564179d2ee522110a9e84b3b97e3fd225ffdc08106d5",
+    "src/provider.rs": "9ae14eaa8f3d3937b716cab21bfa0d4ee75f9174944c4c4f2108085e9c1277e3"
+  },
+  "original_archive_files": {
+    ".cargo_vcs_info.json": "dbdaf19bc9f8923448dde73994f0ba3270a39054401392ad7e04885ec7db003b",
+    "CHANGELOG.md": "5174e1e9737b7dcdc7b43541fcfb1476f27393f09c78c9a6fe75ebbdda57f08f",
+    "Cargo.lock": "db3b97e312b95e936bccd82e5341d79b753df09f07634038bc9b8d8a01193e39",
+    "Cargo.toml": "898c573d2070d7bfdc79b3e1e3cd32250711e450df7a3651cdc4134f5f0dc258",
+    "Cargo.toml.orig": "2aef9877f86ef2bc547e4d56cee9a08f2aca6463994af1d2ee641b4c69bb5939",
+    "src/lib.rs": "d239a69f37b50c044de1935a420fd37709b7799da27fcd4c8a434285b715887e",
+    "src/provider/tokio.rs": "fbf4be936410f7cebbfe564179d2ee522110a9e84b3b97e3fd225ffdc08106d5",
+    "src/provider.rs": "9ae14eaa8f3d3937b716cab21bfa0d4ee75f9174944c4c4f2108085e9c1277e3"
+  },
+  "license": {
+    "url": "https://raw.githubusercontent.com/libp2p/rust-libp2p/4682e735cbdfd8f2b59f5478591a4e8ae552fa68/LICENSE",
+    "sha256": "e10098b8c52fd18ad0f116aac2c0dba1e99ca125d6848640c00688e160a3ee7d",
+    "git_blob": "da84696303f414f0898d89477013509f1a0a16c6",
+    "bytes": 1074
+  },
+  "omissions": {
+    "Cargo.lock": "The workspace Cargo.lock owns resolution; the original nested lock remains in the retained complete .crate archive.",
+    "CHANGELOG.md": "Original upstream release notes remain in the retained complete .crate archive; maintained NAOME prose lives in the Space.",
+    ".cargo_vcs_info.json": "Exact upstream commit/path metadata is preserved in this origin record."
+  },
+  "local_build_adaptation": {
+    "Cargo.toml": "Limit upstream tokio dev features to macros/net/rt/time required by retained tests; preserve workspace dependency versions and unrelated lock edges.",
+    "src/lib.rs": "Extend the existing once-only fresh-port connect fallback from AddrNotAvailable to AddrInUse for a selected reuse bind. Preserve successful reuse, other errors, roles and the existing socket-drop/retry sequence. Register a real pinned-transport reverse-tuple regression.",
+    "src/regression_tests.rs": "Nine original TCP tests retained; one real transport reverse-tuple regression added. The proposed separate bind-collision oracle was disproven by actual successful port reuse and removed; exact rejected source/output retained separately."
+  }
+}

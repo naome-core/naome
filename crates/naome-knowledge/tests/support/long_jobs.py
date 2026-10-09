@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -10,9 +11,10 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 
 from autonomous_lifecycle import (Node,Trial,digest,process_identity,process_group,
-    process_cpu_sample,retain_evidence,write_receipt,wait_until)
+    process_cpu_sample,retain_evidence,stored_objects,write_receipt,wait_until)
 
 
 def journal(node):
@@ -202,6 +204,7 @@ def recovery(trial,probe):
     assert restored['created_ms']==first['created_ms'] and restored['expires_ms']==first['expires_ms']
     assert restored['reserved_units']>=first['reserved_units'] and restored['spent_ms']>=first['spent_ms']
     assert restored['configuration']==first['configuration'] and restored['binding']==first['binding']
+    assert restored['generation']==first['generation'],'recovery must preserve the exact completed model request'
     probe.observe(node);node.stop();probe.ended()
     trial.summary['resumed_job']={'id':restored['id'],'before_checkpoint':first['checkpoint'],'after_checkpoint':restored['checkpoint'],
         'reserved_before':first['reserved_units'],'reserved_after':restored['reserved_units'],'original_expires_ms':first['expires_ms']}
@@ -368,18 +371,154 @@ def faults(trial,probe):
     trial.summary['scenarios']['supervisor_loss_unread_response_and_result_pipe_cleanup']={'result':'pass'}
 
 
+def generation_consumers(node,owner_text,required_prior=None):
+    state=journal(node)
+    completed=[record for record in state['records'].values()
+        if record['state']=='complete' and record['input']['role'] in {'find','solve'}
+        and (required_prior is None or any(reference['proof']==required_prior
+            for reference in record['generation']['checked_context']['references']))]
+    workers={event['job'] for event in node.logs() if event.get('event')=='research_worker'}
+    assert {record['input']['role'] for record in completed}=={'find','solve'}
+    requests=[]
+    retrieval_operations=set()
+    for record in completed:
+        assert record['id'] in workers,'generation candidate lacks a real ready-worker receipt'
+        request=record['generation']
+        assert request['system'] and request['binding']==record['binding']
+        assert request['checked_context']['definitions_supported'] is False
+        assert request['checked_context']['registry_entries_included'] is False
+        assert request['owner_interests']['availability']=='available'
+        assert request['owner_interests']['interest']==owner_text
+        assert owner_text not in request['system'],'owner text must remain separate untrusted request data'
+        identity_payload=['naome:generation-request:v1',request['version'],request['system'],request['binding'],request['task'],request['owner_interests'],request['checked_context'],request['requirements'],request['tools']]
+        request_id=hashlib.sha256(json.dumps(identity_payload,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+        assert request_id==request['request_id'],'request identity does not bind complete instructions and data'
+        receipts=[event for event in node.logs() if event.get('event')=='generation_tool_invoked'
+            and event['job']==record['id']]
+        assert len(receipts)<=(1 if record['input']['role']=='find' else 4),'ordinary mock tool allowance exceeded'
+        operations={receipt['operation'] for receipt in receipts}
+        semantic=[receipt for receipt in receipts if receipt['operation']=='semantic_search']
+        assert len(semantic)==1,'both ordinary mocks must invoke the natural-query tool'
+        expected_semantic='backend_unavailable' if request['checked_context']['references'] else 'no_result'
+        assert semantic[0]['status']==expected_semantic and semantic[0]['count']==0,'semantic results were fabricated without a configured encoder'
+        semantic_query={'operation':'semantic_search','query':'proofs involving addition','top_k':8}
+        query_id=hashlib.sha256(json.dumps([request_id,semantic_query],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+        assert semantic[0]['query_id']==query_id,'the ordinary mock did not invoke the exact sentence query and top-K'
+        assert semantic[0]['remaining_range_complete']==(expected_semantic=='no_result')
+        assert semantic[0]['backend_category']==('retrieval_encoder_not_configured' if expected_semantic=='backend_unavailable' else None)
+        for receipt in receipts:
+            assert receipt['request_id']==request_id,'tool receipt belongs to a different immutable request'
+            assert receipt['artifact_snapshot']==request['checked_context']['artifact_snapshot']
+            assert receipt['graph_root']==request['checked_context']['graph_root']
+            assert receipt['status'] in {'ok','no_result','backend_unavailable'} and 0<=receipt['count']<=16
+            assert receipt['operation']=='semantic_search' or receipt['status']!='backend_unavailable'
+        if record['input']['role']=='find':
+            assert request['task']=={'role':'question','cursor':record['input']['cursor']}
+            assert operations=={'semantic_search'}
+        else:
+            assert request['task']['role']=='proof'
+            assert request['task']['question']==record['input']['question']
+            assert len(request['task']['source_hash'])==64 and len(request['task']['resolution_id'])==64
+            assert request['task']['proved_target'] and request['task']['refuted_target']
+            assert 'native_search' in operations,'ordinary proof mock did not invoke its advertised tool'
+            if request['checked_context']['references']:
+                assert {'lookup','fetch'}.issubset(operations),'checked context was not retrieved by the ordinary mock'
+        retrieval_operations.update(operations)
+        requests.append({'job':record['id'],'role':record['input']['role'],'request':request})
+    return requests,retrieval_operations
+
+
 def basic(trial,probe):
     first,second=Node(trial,0),Node(trial,1)
     for node in [first,second]:node.start();node.stop()
+    owner_text='Equality and membership foundations'
+    assert trial.call(first,'interest',text=owner_text)['interest']==owner_text
     first.config['peers']=[{'id':second.peer,'address':f'/ip4/127.0.0.1/tcp/{second.port}'}]
     first.config['runtime']['question_interval_ms']=100;first.write_config();first.start()
     second.config['peers']=[{'id':first.peer,'address':f'/ip4/127.0.0.1/tcp/{first.port}'}];second.write_config();second.start()
     started=time.monotonic()
     trial.wait(lambda:len(first.ids())==3 and first.ids()==second.ids(),maximum=20)
     trial.summary['convergence_seconds']=time.monotonic()-started
+    # These are ordinary worker processes, not detached builder fixtures. A
+    # completed generation record plus its Ready receipt proves the validated
+    # request reached the producer that generated the checker-accepted catalog.
+    requests,retrieval_operations=generation_consumers(first,owner_text)
+    assert {'semantic_search','native_search'}.issubset(retrieval_operations),'default generation roles lack their required tools'
+    write_receipt(trial.output/'generation-request-consumers.json',requests)
+    trial.summary['scenarios']['ordinary_mock_consumers_receive_complete_generation_requests']={'result':'pass'}
     trial.summary['status_seconds']={str(count):probe.statuses(first,count) for count in [2,8]}
     probe.observe(first);probe.observe(second);first.stop();second.stop();probe.ended()
     trial.summary['scenarios']['matched_default_mock_workload_two_and_eight_control_clients']={'result':'pass'}
+    trial.summary['default_workload_resource_peaks']=dict(probe.peaks)
+    # A separate ordinary node owns one actually checked prior proof before
+    # generation begins. The default two-node timing workload above is intact;
+    # its valid schedule may capture an empty corpus for every catalog solve.
+    phase_started=time.monotonic()
+    seeded=Node(trial,2)
+    trial.summary['node_count']=3
+    seeded.start();seeded.stop()
+    assert trial.call(seeded,'interest',text=owner_text)['interest']==owner_text
+    # Use the standard interval between question starts. Observe and require
+    # exactly one checked result at stop; the interval alone cannot prove it.
+    seeded.config['runtime']['question_interval_ms']=5000
+    seeded.write_config();seeded.start()
+    trial.wait(lambda:len(seeded.ids())>=1,maximum=15)
+    seeded.stop()
+    assert len(seeded.ids())==1,'seeding must retain exactly one actual catalog proof'
+    prior_id=next(iter(seeded.ids()))
+    assert any(event.get('event')=='accepted' and event.get('id')==prior_id
+        and event.get('source')=='mock_producer' for event in seeded.logs()),'prior proof lacks an actual checked ordinary mock admission'
+    prior=next(proof for proof in stored_objects(seeded) if proof['proof_id']==prior_id)
+    seed_requests,_=generation_consumers(seeded,owner_text)
+    seeded.config['runtime']['question_interval_ms']=100
+    seeded.write_config();seeded.start()
+    assert seeded.ids()=={prior_id},'checked prior proof did not survive reopening'
+    def populated_solve():
+        state=journal(seeded)
+        if not state:return None
+        for record in state['records'].values():
+            if record['state']!='complete' or record['input']['role']!='solve':continue
+            refs=record['generation']['checked_context']['references']
+            if len(refs)!=1 or refs[0]['proof']!=prior:continue
+            receipts=[event for event in seeded.logs() if event.get('event')=='generation_tool_invoked'
+                and event['job']==record['id']]
+            if {'semantic_search','native_search','lookup','fetch'}.issubset({r['operation'] for r in receipts}):
+                return record,receipts
+        return None
+    selected,receipts=trial.wait(populated_solve,maximum=20)
+    populated_requests,populated_operations=generation_consumers(seeded,owner_text,prior)
+    assert {'semantic_search','native_search','lookup','fetch'}.issubset(populated_operations),'populated generation consumer lacks an actual retrieval operation'
+    for entry in populated_requests:
+        assert any(reference['proof']==prior for reference in entry['request']['checked_context']['references']),'request omitted the actual checked prior proof'
+    for name,operation in [('lookup',{'operation':'lookup','key':'proof_id','value':prior_id}),
+        ('fetch',{'operation':'fetch','proof_id':prior_id})]:
+        receipt=next(receipt for receipt in receipts if receipt['operation']==name)
+        query_id=hashlib.sha256(json.dumps([selected['generation']['request_id'],operation],ensure_ascii=False,separators=(',',':'),sort_keys=True).encode()).hexdigest()
+        assert receipt['query_id']==query_id and receipt['status']=='ok' and receipt['count']==1,'retrieval receipt does not address the exact prior proof'
+    # A completed mock response is still checked and admitted by the host.
+    generated=trial.wait(lambda:next((event for event in seeded.logs()
+        if event.get('event')=='proof_generated' and event.get('job')==selected['id']),None),maximum=10)
+    assert generated['id']!=prior_id,'populated solve did not construct a new root'
+    trial.wait(lambda:any(event.get('event')=='accepted' and event.get('source')=='mock_producer'
+        and event.get('id')==generated['id'] for event in seeded.logs()),maximum=10)
+    proof_ids=seeded.ids()
+    assert prior_id in proof_ids and generated['id'] in proof_ids and len(proof_ids)>=2,'selected new proof is not actually stored'
+    probe.observe(seeded);seeded.stop();probe.ended()
+    assert proof_ids.issubset(seeded.ids()),'checked output disappeared while stopping'
+    seeded.config['runtime']['question_interval_ms']=3600000
+    seeded.write_config();seeded.start()
+    assert proof_ids.issubset(seeded.ids()),'new checked generation output did not survive reopening'
+    seeded.stop();probe.ended()
+    proof_ids=seeded.ids()
+    write_receipt(trial.output/'generation-populated-context-consumers.json',{
+        'prior_envelope':prior,'seed_requests':seed_requests,'selected_job':selected['id'],
+        'selected_receipts':receipts,'generated_proof':generated,'requests':populated_requests})
+    trial.summary['populated_generation_phase']={'node':2,'prior_proof_id':prior_id,
+        'selected_job':selected['id'],'generated_proof_id':generated['id'],
+        'generation_request_id':selected['generation']['request_id'],
+        'execution_seconds':time.monotonic()-phase_started,'checked_proofs_after':sorted(proof_ids),
+        'scope':'separate sequential checked-context consumer; excluded from default convergence and control timings'}
+    trial.summary['scenarios']['ordinary_mock_consumers_reopen_and_fetch_an_actual_prior_proof']={'result':'pass'}
 
 
 def main():
@@ -394,7 +533,7 @@ def main():
     try:
         globals()[args.mode](trial,probe);trial.summary['result']='pass'
     except Exception as error:
-        trial.summary.update(result='fail',error=str(error))
+        trial.summary.update(result='fail',error=str(error),traceback=traceback.format_exc())
     finally:
         for node in trial.nodes:
             try:probe.observe(node)

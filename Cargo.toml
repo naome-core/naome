@@ -2,6 +2,7 @@
 members = [
     "vendor/libp2p-dcutr",
     "vendor/libp2p-relay",
+    "vendor/libp2p-tcp",
     "crates/naome-authoring",
     "crates/naome-checker",
     "crates/naome-foundation",
@@ -43,3 +44,4 @@ overflow-checks = true
 [patch.crates-io]
 libp2p-dcutr = { path = "vendor/libp2p-dcutr" }
 libp2p-relay = { path = "vendor/libp2p-relay" }
+libp2p-tcp = { path = "vendor/libp2p-tcp" }

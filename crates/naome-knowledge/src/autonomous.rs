@@ -1,5 +1,5 @@
 //! Independent finite role coordination through untrusted durable job results.
-use crate::{Graph, jobs, network::emit, question};
+use crate::{Graph, generation, jobs, network::emit, question};
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::{Identity, RejectionReason};
 use naome_proof::ProofId;
@@ -164,6 +164,7 @@ impl Autonomous {
         &mut self,
         graph: &mut Graph,
         questions: &mut question::LocalQuestions<F>,
+        control: Option<&crate::runtime::Control>,
     ) -> Vec<ProofId>
     where
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
@@ -175,7 +176,13 @@ impl Autonomous {
         // Interest is reacquired from current metadata/owner policy; solve
         // outputs remain untrusted and are resumed only for current obligations.
         if let Some(record) = self.recovered_other.pop_front() {
-            if let jobs::Input::Solve { question: source } = &record.input {
+            if record
+                .generation
+                .as_ref()
+                .is_some_and(|request| !request.current_instructions())
+            {
+                self.retire(record);
+            } else if let jobs::Input::Solve { question: source } = &record.input {
                 if record.state != jobs::State::InDoubt && self.solving.len() >= MAX_SOLVING {
                     self.recovered_other.push_front(record);
                 } else if record.state == jobs::State::InDoubt {
@@ -194,10 +201,15 @@ impl Autonomous {
                     if fresh.passed()
                         && self.publications.len() + self.solving.len() < MAX_PUBLICATIONS
                     {
-                        match self
-                            .client
-                            .submit(record.input.clone(), record.binding.clone())
-                        {
+                        let Some(request) = record.generation.clone() else {
+                            self.retire(record);
+                            return accepted;
+                        };
+                        match self.client.submit_generation(
+                            record.input.clone(),
+                            record.binding.clone(),
+                            request,
+                        ) {
                             Ok(ticket) => {
                                 self.unanswered
                                     .retain(|q| q.resolution_id() != question.resolution_id());
@@ -474,12 +486,22 @@ impl Autonomous {
                 let decision = questions.generation_decision(graph, &question);
                 if decision.passed() {
                     let (snapshot, policy) = questions.context_key(graph);
-                    match self.client.submit(
-                        jobs::Input::Solve {
-                            question: question.source().to_owned(),
-                        },
-                        jobs::Binding::new(snapshot, policy),
-                    ) {
+                    let input = jobs::Input::Solve {
+                        question: question.source().to_owned(),
+                    };
+                    let binding = jobs::Binding::new(snapshot, policy);
+                    let request = owner_context(control).and_then(|owner| {
+                        generation::Request::build_with_policy(
+                            &input,
+                            &binding,
+                            graph,
+                            owner,
+                            questions.generation_policy(),
+                        )
+                    });
+                    match request
+                        .and_then(|request| self.client.submit_generation(input, binding, request))
+                    {
                         Ok(ticket) => {
                             self.solving.insert(
                                 *question.resolution_id(),
@@ -490,7 +512,12 @@ impl Autonomous {
                                 },
                             );
                         }
-                        Err(_) => self.retain(question),
+                        Err(error) => {
+                            emit(
+                                json!({"event":"generation_context_unavailable","role":"proof","error":error}),
+                            );
+                            self.retain(question);
+                        }
                     }
                 } else if !matches!(
                     decision.reason,
@@ -507,8 +534,19 @@ impl Autonomous {
             && questions.available_local()
         {
             self.next_question = now + Duration::from_millis(self.intervals.question_interval_ms);
-            let (input, binding) = if let Some(record) = self.recovered_finding.pop_front() {
-                (record.input, record.binding)
+            let request = if let Some(record) = self.recovered_finding.pop_front() {
+                match record.generation.clone() {
+                    Some(request)
+                        if record.state != jobs::State::InDoubt
+                            && request.current_instructions() =>
+                    {
+                        Ok((record.input, record.binding, request))
+                    }
+                    _ => {
+                        self.retire(record);
+                        return accepted;
+                    }
+                }
             } else {
                 let cursor = self.cursor;
                 let Some(next) = cursor.checked_add(1) else {
@@ -517,16 +555,42 @@ impl Autonomous {
                 };
                 self.cursor = next;
                 let (snapshot, policy) = questions.context_key(graph);
-                (
-                    jobs::Input::Find { cursor },
-                    jobs::Binding::new(snapshot, policy),
-                )
+                let input = jobs::Input::Find { cursor };
+                let binding = jobs::Binding::new(snapshot, policy);
+                owner_context(control).and_then(|owner| {
+                    generation::Request::build_with_policy(
+                        &input,
+                        &binding,
+                        graph,
+                        owner,
+                        questions.generation_policy(),
+                    )
+                    .map(|request| (input, binding, request))
+                })
             };
-            if let Ok(ticket) = self.client.submit(input, binding) {
-                self.finding = Some(Finding { ticket });
+            match request.and_then(|(input, binding, request)| {
+                self.client.submit_generation(input, binding, request)
+            }) {
+                Ok(ticket) => self.finding = Some(Finding { ticket }),
+                Err(error) => emit(
+                    json!({"event":"generation_context_unavailable","role":"question","error":error}),
+                ),
             }
         }
         accepted
+    }
+}
+
+fn owner_context(
+    control: Option<&crate::runtime::Control>,
+) -> Result<generation::OwnerContext, String> {
+    match control {
+        Some(control) => control
+            .owner_profile()
+            .map(generation::OwnerContext::Available),
+        None => Ok(generation::OwnerContext::Unavailable {
+            reason: "owner control is not configured for this runtime".into(),
+        }),
     }
 }
 

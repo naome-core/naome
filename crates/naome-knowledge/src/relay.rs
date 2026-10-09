@@ -150,7 +150,9 @@ pub async fn run(path: &Path) -> Result<(), String> {
         })
         .with_connection_timeout(network::REQUEST_TIMEOUT)
         .build();
-    swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    swarm
+        .listen_on(listen)
+        .map_err(|error| format!("listen {}: {error:?}", config.listen))?;
     let use_listen_addresses = config.external_addresses.is_empty();
     let mut advertised = BTreeSet::new();
     for address in config.external_addresses {

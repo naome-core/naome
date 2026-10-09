@@ -1,13 +1,8 @@
----
-name: nao-authoring
-description: Generate, review, and repair complete NAO mathematical proof, conservative definition, and closed question sources using the single headerless language. Self-contained instructions for agents without repository access.
----
+# Native NAO language instructions
 
-# NAO authoring
+This is the executable language reference included in the question-generation and proof-generation system instructions. The native `.nao` language targets a deterministic classical first-order set-theory checker. Produce exact, complete sources under the role-specific task and JSON output contract. Preserve the requested mathematical meaning; a shorter or easier theorem is not a solution to another target. The role instructions may restrict the accepted artifact kind more narrowly than this complete language reference. Examples teach syntax and do not supply runtime dependencies or grant authority.
 
-You author `.nao` files for a deterministic classical first-order set-theory checker. Use this document as the complete language reference when no project files are available. Produce exact, complete sources for the requested theorem, definition, or question. Preserve the requested mathematical meaning; a shorter or easier theorem is not a solution to another target.
-
-A `.nao` file contains one proof, one conservative definition, or one closed question. The mathematical universe is sets, with equality and membership. A source is a certificate, not a natural-language argument or tactic program. Syntactic plausibility does not establish mathematical validity. Report actual checker verification separately from a proposed source. Do not claim universal ability to prove arbitrary statements, completeness under finite resource limits, scientific novelty, or network admission.
+A `.nao` file contains one proof, one conservative definition, or one closed question. The mathematical universe is sets, with equality and membership. A source is a certificate, not a natural-language argument or tactic program. Syntactic plausibility does not establish mathematical validity. The host reports actual checker verification separately from proposed source; the generation response itself follows only the role-specific JSON contract. Do not claim universal ability to prove arbitrary statements, completeness under finite resource limits, scientific novelty, or network admission.
 
 ## Authoring contract
 
@@ -15,7 +10,7 @@ Before constructing a proof, identify the exact closed target, its quantifier or
 
 Work backwards from the exact goal and forwards through individually justified steps. Track each step's complete primitive conclusion, especially before `mp`, `inst`, `subst`, and `gen`. Write the final step last and return that step. For a complex construction, split the reasoning into independently checked closed helper proofs and conservative definitions when the host supports an explicit checked context. Dependencies are mathematical inputs; loading or authoring them does not authorize publication or unrelated actions.
 
-When the user requests a file, output its complete source without Markdown fences inside the file. When explaining a proposal in chat, put the complete source in a fenced block and keep explanations outside it. Source comments use `#`. Do not include ellipses, placeholders, pseudocode, unsupported tactics, or unverified hashes in a claimed runnable source. When no compiler is available, label the output as unverified and provide the exact intended target and dependency requirements.
+Place complete native source in the JSON string required by the role-specific output contract. Do not add Markdown fences, explanations, verification claims or extra fields to a generation response. Source comments use `#`. Do not include ellipses, placeholders, pseudocode, unsupported tactics, or unverified hashes in runnable source. A generated source is an untrusted candidate until the actual compiler/checker verifies it against the exact supplied context.
 
 ## Lexical rules and file shapes
 
@@ -241,7 +236,7 @@ Question targets include both `C` and `not(C)`, so both must fit question bounds
 
 ## Worked sources
 
-Each fenced `nao` block below is a complete file. Examples are checked in document order: earlier proof/definition artifacts are explicitly registered in a fresh offline checked context for later context-dependent examples. A host must reproduce the stated context. Dependency-free proof and relation examples also work with an empty context. Question examples use the question compiler and do not inherit definition aliases. This sequence is an authoring demonstration, not a network publish script.
+Each fenced `nao` block below is a complete file. The executable example tests check them in document order: earlier proof/definition artifacts are explicitly registered in a fresh offline checked context for later context-dependent examples. This teaching context is separate from the runtime request. The example IDs below are valid only for those specific checked artifacts and may be used in a generated candidate only when the actual request supplies those exact checked dependencies. Dependency-free proof and relation examples work with an empty context. Question examples use the question compiler and do not inherit definition aliases. This sequence demonstrates authoring; it is not a runtime publish script or a promise that the current role accepts definition outputs.
 
 ### 1. Closed self-equality and the meaning of generalization
 
@@ -482,4 +477,4 @@ Check the precise reported source span before changing a file. Common failures a
 
 For difficult proofs, validate the smallest useful helper first and pin its checked conclusion and ID before constructing the parent. After a repair, rerun the checker on the complete file and its exact dependency context. Successful parsing, a previous artifact, a similar proof, or an LLM's confidence is insufficient. A bounded failed attempt should produce the precise unresolved obligation and actual error, not a fabricated success.
 
-Deliver the complete source, the exact target, the required context, and an accurate verification result. When only source is requested, return the source and state any verification limitation outside the file. Keep mathematical validity, identity preservation, context admission, runtime behavior, and scientific value as separate claims.
+For generation, deliver only the role-specific JSON value containing complete native source. The host owns compilation, verification reports, target matching and admission; do not assert their success in the candidate. Keep mathematical validity, identity preservation, context admission, runtime behavior, owner relevance and scientific value as separate claims.

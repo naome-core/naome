@@ -443,7 +443,9 @@ where
         })
         .with_connection_timeout(REQUEST_TIMEOUT)
         .build();
-    swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    swarm
+        .listen_on(listen)
+        .map_err(|error| format!("listen {}: {error:?}", config.listen))?;
     for address in &settings.external_addresses {
         let address: Multiaddr = address
             .parse()
@@ -595,7 +597,7 @@ where
         }
         questions.cancel_closed();
         if let Some(autonomous) = &mut autonomous {
-            let admitted = autonomous.advance(&mut node.graph, &mut questions);
+            let admitted = autonomous.advance(&mut node.graph, &mut questions, control.as_ref());
             node.publish_admitted(&admitted, "mock_producer");
             if let Some(error)=autonomous.error(){return Err(error.to_owned());}
         }
