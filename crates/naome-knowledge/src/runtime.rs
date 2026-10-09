@@ -18,6 +18,7 @@ use tokio::{
 };
 
 pub use crate::autonomous::Intervals as RuntimeIntervals;
+mod cli;
 mod owner;
 pub(crate) use owner::Profile as OwnerProfile;
 
@@ -757,19 +758,12 @@ async fn wait_for_stop(
 
 /// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
 pub async fn execute() -> Result<(), String> {
-    const USAGE: &str = "usage: naome start | stop | status | interest <text>";
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let (command, text) = match arguments.as_slice() {
-        [command] if matches!(command.to_str(), Some("start" | "stop" | "status")) => {
-            (command.to_str().expect("matched UTF-8 command"), None)
-        }
-        [command, text] if command == "interest" => {
-            let text = text.to_str().ok_or("interest must be valid UTF-8")?;
-            owner::validate(text)?;
-            ("interest", Some(text))
-        }
-        _ => return Err(USAGE.into()),
-    };
+    let cli::Arguments {
+        command,
+        text,
+        json,
+    } = cli::Arguments::parse(&arguments)?;
     let directory = directory()?;
     if std::env::var_os(DAEMON_NONCE).is_some() {
         if command != "start" {
@@ -783,15 +777,15 @@ pub async fn execute() -> Result<(), String> {
         return network::run_autonomous(config, intervals).await;
     }
     if matches!(command, "stop" | "status") && !directory.exists() {
-        println!(
-            "{}",
-            serde_json::to_string(&Status {
+        cli::print(
+            command,
+            json,
+            &Status {
                 running: false,
                 accepted_proofs: 0,
-                interest: String::new()
-            })
-            .map_err(|error| error.to_string())?
-        );
+                interest: String::new(),
+            },
+        )?;
         return Ok(());
     }
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
@@ -804,9 +798,5 @@ pub async fn execute() -> Result<(), String> {
         "interest" => interest(&directory, text.expect("parsed interest text")).await?,
         _ => unreachable!(),
     };
-    println!(
-        "{}",
-        serde_json::to_string(&status).map_err(|error| error.to_string())?
-    );
-    Ok(())
+    cli::print(command, json, &status)
 }
