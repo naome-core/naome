@@ -261,13 +261,7 @@ fn durable_restart_rechecks_dependencies_aliases_and_detects_corruption() {
     let graph = Graph::open(&directory).unwrap();
     assert_eq!(graph.content_root(), root);
     drop(graph);
-    std::fs::write(
-        directory
-            .join("objects")
-            .join(format!("{}.json", parent.proof_id)),
-        b"{}",
-    )
-    .unwrap();
+    crate::store::corrupt_payload(&directory, &parent.proof_id);
     assert!(Graph::open(&directory).is_err());
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -350,7 +344,7 @@ fn storage_failure_does_not_publish_memory_state_and_halts_further_admission() {
     let mut graph = Graph::open(&directory).unwrap();
     let object = graph.author(SOURCE).unwrap();
     let root = graph.content_root();
-    std::fs::remove_dir(directory.join("objects")).unwrap();
+    std::fs::remove_file(directory.join(crate::store::DATABASE_FILE)).unwrap();
     assert!(
         graph
             .ingest(object.clone(), Instant::now())

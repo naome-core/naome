@@ -1,0 +1,154 @@
+//! Fallible access to complete, checker-owned mathematical contexts.
+//!
+//! Storage supplies immutable bytes only. It cannot construct a checked view,
+//! select its roots, truncate an index, or restore validity from a stored flag.
+
+use crate::ArtifactState;
+use naome_foundation::Formula;
+use naome_proof::{
+    ArtifactId, DefinitionId, DefinitionKind, DefinitionResolver, DerivationId, ProofId,
+    StatementId,
+};
+use std::{borrow::Cow, error::Error, fmt};
+
+/// A cold context access failed; failure never means authenticated absence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextError {
+    Storage(String),
+    Corrupt,
+    Limit,
+}
+
+impl fmt::Display for ContextError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Storage(message) => write!(f, "checked context storage: {message}"),
+            Self::Corrupt => f.write_str("checked context integrity failure"),
+            Self::Limit => f.write_str("checked context access limit"),
+        }
+    }
+}
+impl Error for ContextError {}
+
+/// Byte storage used by the checker for authenticated immutable nodes.
+/// Reads must reject missing or oversized records before allocating beyond
+/// `maximum`. Writes must preserve an existing address's exact bytes.
+pub trait ContextStorage: Send + Sync {
+    fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError>;
+    fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError>;
+}
+
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+/// The existing finite structural indexes; projections are never proof facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BucketKind {
+    Outgoing,
+    Deductions,
+    Instances,
+}
+
+/// Authenticated proof metadata, read before reserving and loading its formula.
+#[derive(Clone, Copy)]
+pub struct ProofHeader {
+    pub(crate) derivation: DerivationId,
+    pub(crate) statement: StatementId,
+    pub(crate) length: usize,
+}
+impl ProofHeader {
+    pub const fn derivation_id(self) -> DerivationId {
+        self.derivation
+    }
+    pub const fn statement_id(self) -> StatementId {
+        self.statement
+    }
+    pub const fn canonical_length(self) -> usize {
+        self.length
+    }
+}
+
+/// The deterministic minimum concrete proof witness for an accepted statement.
+#[derive(Clone, Copy)]
+pub struct StatementHeader {
+    pub(crate) proof: ProofId,
+    pub(crate) length: usize,
+}
+impl StatementHeader {
+    pub const fn proof_id(self) -> ProofId {
+        self.proof
+    }
+    pub const fn canonical_length(self) -> usize {
+        self.length
+    }
+}
+
+/// An ascending complete structural bucket. An error is not end of iteration.
+pub type StatementCursor<'a> = Box<dyn Iterator<Item = Result<StatementId, ContextError>> + 'a>;
+
+/// Sealed mathematical access implemented only by checker-owned contexts.
+/// Header lengths must be reserved by the caller before formula materialization.
+/// Cache residency must change neither membership nor logical work accounting.
+pub trait ContextView: sealed::Sealed + DefinitionResolver {
+    fn snapshot_id(&self) -> [u8; 32];
+    fn contains_artifact(&self, id: ArtifactId) -> Result<bool, ContextError>;
+    fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError>;
+    fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError>;
+    fn statement_formula(
+        &self,
+        id: StatementId,
+        maximum: usize,
+    ) -> Result<Option<Cow<'_, Formula>>, ContextError>;
+    fn bucket(
+        &self,
+        kind: BucketKind,
+        target: StatementId,
+    ) -> Result<StatementCursor<'_>, ContextError>;
+    fn definition_kind(&self, id: DefinitionId) -> Option<DefinitionKind>;
+}
+
+impl sealed::Sealed for ArtifactState {}
+impl ContextView for ArtifactState {
+    fn snapshot_id(&self) -> [u8; 32] {
+        ArtifactState::snapshot_id(self)
+    }
+    fn contains_artifact(&self, id: ArtifactId) -> Result<bool, ContextError> {
+        Ok(self.question_index.contains_artifact(&id))
+    }
+    fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError> {
+        Ok(self.resolve_proof(id))
+    }
+    fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError> {
+        Ok(self
+            .known_statement(id)
+            .map(|(proof, _, length)| StatementHeader { proof, length }))
+    }
+    fn statement_formula(
+        &self,
+        id: StatementId,
+        maximum: usize,
+    ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
+        let Some((_, _, length)) = self.known_statement(id) else {
+            return Ok(None);
+        };
+        if length > maximum {
+            return Err(ContextError::Limit);
+        }
+        Ok(self.resolve_statement(id).map(Cow::Borrowed))
+    }
+    fn bucket(
+        &self,
+        kind: BucketKind,
+        target: StatementId,
+    ) -> Result<StatementCursor<'_>, ContextError> {
+        Ok(match kind {
+            BucketKind::Outgoing => Box::new(self.question_index.outgoing(target).map(Ok)),
+            BucketKind::Deductions => Box::new(self.question_index.deductions(target).map(Ok)),
+            BucketKind::Instances => Box::new(self.question_index.instances(target).map(Ok)),
+        })
+    }
+    fn definition_kind(&self, id: DefinitionId) -> Option<DefinitionKind> {
+        ArtifactState::definition_kind(self, id)
+    }
+}

@@ -755,18 +755,18 @@ impl Drop for Directory {
 }
 
 #[tokio::test]
-async fn persistence_cuts_preserve_legacy_state_and_recover_only_complete_renamed_batches() {
+async fn persistence_cuts_preserve_existing_state_and_recover_only_complete_catalog_batches() {
     for cut in [
         BatchCut::BeforeWrite,
         BatchCut::DuringWrite,
-        BatchCut::BeforeRename,
-        BatchCut::AfterRename,
+        BatchCut::BeforeCommit,
+        BatchCut::AfterCommit,
     ] {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
-        let legacy = fixture(7).0;
-        let legacy_id = ProofId::from_bytes(id_bytes(&legacy.proof_id).unwrap());
-        graph.ingest(legacy, Instant::now()).unwrap();
+        let existing = fixture(7).0;
+        let existing_id = ProofId::from_bytes(id_bytes(&existing.proof_id).unwrap());
+        graph.ingest(existing, Instant::now()).unwrap();
         let before = graph.content_root();
         let (object, helper, metadata) = dependent_fixture();
         let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
@@ -792,19 +792,19 @@ async fn persistence_cuts_preserve_legacy_state_and_recover_only_complete_rename
         assert_eq!(registered(&mut questions, &graph), 0);
         drop(graph);
         let restarted = Graph::open(&directory.0).unwrap();
-        assert!(restarted.contains(legacy_id));
+        assert!(restarted.contains(existing_id));
         assert_eq!(
             restarted.ids().len(),
-            if cut == BatchCut::AfterRename { 3 } else { 1 }
+            if cut == BatchCut::AfterCommit { 3 } else { 1 }
         );
-        if cut == BatchCut::AfterRename {
+        if cut == BatchCut::AfterCommit {
             assert!(restarted.contains(root) && restarted.contains(helper_id));
         }
     }
 }
 
 #[tokio::test]
-async fn committed_missing_corrupt_extra_or_misnamed_batch_fails_startup() {
+async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
     for mode in 0..4 {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
@@ -823,22 +823,31 @@ async fn committed_missing_corrupt_extra_or_misnamed_batch_fails_startup() {
             Progress::Accepted(_)
         ));
         drop(graph);
-        let batch = std::fs::read_dir(directory.0.join("objects/batches"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let database =
+            rusqlite::Connection::open(directory.0.join(crate::store::DATABASE_FILE)).unwrap();
+        database.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let id = root.as_bytes().as_slice();
         match mode {
             0 => {
-                std::fs::remove_file(batch.join(format!("{}.json", hex(root.as_bytes())))).unwrap()
+                database
+                    .execute("DELETE FROM proofs WHERE id=?1", [id])
+                    .unwrap();
             }
             1 => {
-                std::fs::write(batch.join(format!("{}.json", hex(root.as_bytes()))), b"{}").unwrap()
+                crate::store::corrupt_payload(&directory.0, &hex(root.as_bytes()));
             }
-            2 => std::fs::write(batch.join("unexpected.json"), b"{}").unwrap(),
-            _ => std::fs::rename(&batch, batch.parent().unwrap().join("00".repeat(32))).unwrap(),
+            2 => {
+                database
+                    .execute("DELETE FROM members WHERE proof_id=?1", [id])
+                    .unwrap();
+            }
+            _ => {
+                database
+                    .execute("UPDATE commits SET root=zeroblob(32)", [])
+                    .unwrap();
+            }
         }
+        drop(database);
         assert!(Graph::open(&directory.0).is_err());
     }
 }

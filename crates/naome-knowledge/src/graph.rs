@@ -41,6 +41,10 @@ pub struct Graph {
 }
 
 impl Graph {
+    #[cfg(test)]
+    pub(crate) fn test_database_full(&self) {
+        self.store.as_ref().unwrap().limit_current_pages();
+    }
     pub(crate) fn accepted_count(&self) -> usize {
         self.objects.len()
     }
@@ -91,6 +95,7 @@ impl Graph {
             }
             remaining = waiting;
         }
+        store.finish_replay(graph.content_root())?;
         graph.store = Some(store);
         Ok(graph)
     }

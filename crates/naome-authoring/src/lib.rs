@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt::{self, Write as _};
 
 use naome_checker::{
-    ArtifactState, CheckError, DefinitionCheckError, check_normal_form_with_state,
+    ArtifactState, CheckError, ContextView, DefinitionCheckError, check_normal_form_with_state,
     normalize_and_check_definition_with_state,
 };
 use naome_foundation::{
@@ -51,7 +51,7 @@ pub fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> 
 /// publication, scientific usefulness, or reward eligibility.
 pub fn compile_against_proof_context(
     source: &str,
-    context: &ArtifactState,
+    context: &dyn ContextView,
 ) -> Result<CompiledProof, CompileError> {
     match compile_with_artifact_state(source, context)? {
         CompiledArtifact::Proof(proof) => Ok(proof),
@@ -64,14 +64,14 @@ pub fn compile_against_proof_context(
 /// publication, scientific usefulness, or reward eligibility.
 pub fn compile_artifact_against_proof_context(
     source: &str,
-    context: &ArtifactState,
+    context: &dyn ContextView,
 ) -> Result<CompiledArtifact, CompileError> {
     compile_with_artifact_state(source, context)
 }
 
 fn compile_with_artifact_state(
     source: &str,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<CompiledArtifact, CompileError> {
     if source.len() > AUTHORING_SOURCE_MAX_BYTES {
         return Err(CompileError::SourceTooLong {

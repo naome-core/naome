@@ -215,10 +215,10 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
         .unwrap();
     drop(sender_handle);
     assert!(Graph::open(&receiver_dir).unwrap().ids().is_empty());
-    assert!(
-        std::fs::read_dir(receiver_dir.join("objects"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    let catalog =
+        rusqlite::Connection::open(receiver_dir.join(crate::store::DATABASE_FILE)).unwrap();
+    let count: i64 = catalog
+        .query_row("SELECT count(*) FROM proofs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
 }

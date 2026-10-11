@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import platform
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -53,28 +54,75 @@ def question_source(proof_source):
 
 
 def stored_objects(node):
-    objects = []
-    directory = node.directory / "objects"
-    paths = list(directory.glob("*.json"))
-    batches = directory / "batches"
-    if batches.exists():
-        for batch in sorted(batches.iterdir()):
-            manifest_path = batch / "manifest.json"
-            manifest = json.loads(manifest_path.read_text())
-            assert batch.name == digest(manifest_path)
-            assert manifest["version"] == 1 and manifest["root"] in manifest["members"]
-            assert sorted(path.name for path in batch.iterdir()) == sorted(
-                ["manifest.json"] + [f"{id}.json" for id in manifest["members"]])
-            for id, checksum in manifest["members"].items():
-                path = batch / f"{id}.json"
-                assert digest(path) == checksum
-                paths.append(path)
-    for path in paths:
-        object = json.loads(path.read_text())
-        assert path.name == f'{object["proof_id"]}.json'
-        objects.append(object)
-    assert len({object["proof_id"] for object in objects}) == len(objects)
-    return objects
+    """Independent transactional catalog oracle; stored bytes grant no validity."""
+    database = node.directory / "proof-corpus.sqlite3"
+    receipt = node.directory / "proof-corpus.format"
+    if not database.exists():
+        assert not receipt.exists(), "activated catalog is missing"
+        return []
+    assert receipt.is_file(), "catalog lineage receipt required"
+    format_bytes = receipt.read_bytes()
+    assert len(format_bytes) == 72 and format_bytes[:8] == b"NAOCORP1"
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as catalog:
+        catalog.execute("BEGIN")
+        assert catalog.execute("PRAGMA application_id").fetchone()[0] == 0x4e414f31
+        assert catalog.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert catalog.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert catalog.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert [row[0] for row in catalog.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )] == ["commits", "dependencies", "members", "meta", "proofs"], "current catalog schema required"
+        identity, state, root, count, total = catalog.execute(
+            "SELECT database_id,state,corpus_root,corpus_count,payload_bytes FROM meta WHERE singleton=1"
+        ).fetchone()
+        assert identity == format_bytes[40:] and state == "active"
+        rows = catalog.execute(
+            "SELECT id,statement,compatibility,payload,payload_length,payload_digest,origin_commit FROM proofs ORDER BY id"
+        ).fetchall()
+        assert len(rows) == count <= 4096
+        objects = []
+        by_id = {}
+        payload_bytes = 0
+        for id, statement, compatibility, payload, length, checksum, commit in rows:
+            assert len(id) == len(statement) == len(compatibility) == len(checksum) == len(commit) == 32
+            assert compatibility == format_bytes[8:40]
+            assert len(payload) == length <= 65536 and hashlib.sha256(payload).digest() == checksum
+            object = {"proof_id": id.hex(), "statement_id": statement.hex(),
+                "compatibility": compatibility.hex(), "proof": payload.hex()}
+            assert proof_id(object["statement_id"], object["proof"]) == object["proof_id"]
+            objects.append(object)
+            by_id[id] = (statement, compatibility, length, checksum, commit)
+            payload_bytes += length
+        assert len(by_id) == count and payload_bytes == total <= 64 * 1024 * 1024
+        assert bytes.fromhex(content_root(format_bytes[8:40].hex(), [object["proof_id"] for object in objects])) == root
+        represented = set()
+        for commit, batch_root, members in catalog.execute("SELECT id,root,member_count FROM commits ORDER BY id"):
+            ids = [row[0] for row in catalog.execute("SELECT proof_id FROM members WHERE commit_id=? ORDER BY proof_id", (commit,))]
+            assert len(ids) == members and ids and batch_root in ids
+            framed = b"naome:knowledge:catalog-commit:v1\0" + batch_root + len(ids).to_bytes(4, "big")
+            for id in ids:
+                assert id in by_id and id not in represented
+                represented.add(id)
+                statement, compatibility, length, checksum, origin = by_id[id]
+                assert origin == commit
+                dependencies = catalog.execute("SELECT ordinal,target FROM dependencies WHERE proof_id=? ORDER BY ordinal", (id,)).fetchall()
+                assert [ordinal for ordinal, _ in dependencies] == list(range(len(dependencies)))
+                targets = [target for _, target in dependencies]
+                assert targets == sorted(set(targets)) and len(targets) <= 32
+                assert all(target in by_id for target in targets)
+                framed += id + statement + compatibility + length.to_bytes(4, "big") + checksum
+                framed += len(targets).to_bytes(4, "big") + b"".join(targets)
+            assert hashlib.sha256(framed).digest() == commit
+        assert represented == set(by_id), "every immutable payload belongs to one complete commit"
+        return objects
+
+
+def replace_catalog_payload(node, id, payload):
+    with sqlite3.connect(node.directory / "proof-corpus.sqlite3") as catalog:
+        catalog.execute("PRAGMA ignore_check_constraints=ON")
+        original = catalog.execute("SELECT payload FROM proofs WHERE id=?", (bytes.fromhex(id),)).fetchone()[0]
+        assert catalog.execute("UPDATE proofs SET payload=? WHERE id=?", (payload, bytes.fromhex(id))).rowcount == 1
+        return original
 
 
 class Node:
@@ -522,9 +570,9 @@ class Driver:
                 node.start()
             self.convergence("new_identity_empty_store_catchup", range(4), union, started)
             for node in self.nodes:
-                assert sorted(path.name for path in node.directory.iterdir()) == ["identity.key", "knowledge.lock", "objects"]
+                assert sorted(path.name for path in node.directory.iterdir()) == ["identity.key", "knowledge.lock", "proof-corpus.format", "proof-corpus.sqlite3"]
                 assert len(stored_objects(node)) == len(union)
-            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive lock and checked proof objects only; no ledger, reward, balance or selection state"}
+            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive lock, immutable binary proof catalog and format receipt; no ledger, reward, balance or selection state"}
             self.summary["accepted_ids"] = sorted(union)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], union)
             self.summary["result"] = "pass"
