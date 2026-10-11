@@ -18,6 +18,7 @@ use tokio::{
 };
 
 pub use crate::autonomous::Intervals as RuntimeIntervals;
+pub use crate::corpus::cache::Settings as LocalRetrievalSettings;
 pub use crate::jobs::{Limits as JobLimits, RecoveryPolicy, RoleSettings, Settings as RuntimeJobs};
 mod cli;
 mod owner;
@@ -825,6 +826,9 @@ async fn wait_for_stop(
 /// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
 pub async fn execute() -> Result<(), String> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if let Some(result) = crate::corpus::host::internal(&arguments) {
+        return result;
+    }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result;
     }

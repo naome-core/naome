@@ -30,7 +30,7 @@ fn fixture(units: u32) -> (Directory, Owner) {
     let mut settings = Settings::default();
     settings.solving.limits.work_units = units;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    (directory, Owner::new(disk, journal, settings))
+    (directory, Owner::new(disk, journal, settings).unwrap())
 }
 fn generation_request(input: &Input, binding: &Binding) -> crate::generation::Request {
     crate::generation::Request::build(
@@ -59,6 +59,61 @@ fn submit(owner: &mut Owner, epoch: u8) -> oneshot::Receiver<Completion> {
     let request = generation_request(&input, &binding);
     owner.submit(input, binding, Some(request), reply).unwrap();
     receipt
+}
+
+#[test]
+fn retrieval_and_mock_work_share_the_durable_original_allowance() {
+    let (directory, mut owner) = fixture(3);
+    let _receipt = submit(&mut owner, 1);
+    let request = owner.journal.records[&1]
+        .generation
+        .as_ref()
+        .unwrap()
+        .clone();
+    request
+        .persist_source(&crate::corpus::snapshot::Store::open(&directory.0).unwrap())
+        .unwrap();
+    let original_expiry = owner.journal.records[&1].expires_ms;
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    assert!(
+        owner
+            .reserve_retrieval(1, &"ff".repeat(32), "model_load")
+            .is_err()
+    );
+    assert_eq!(owner.journal.records[&1].reserved_units, 0);
+    owner
+        .reserve_retrieval(1, &request.identity(), "model_load")
+        .unwrap();
+    owner
+        .reserve_retrieval(1, &request.identity(), "document_tokenize")
+        .unwrap();
+    owner.reserve(1, 1).unwrap();
+    owner.journal.records.get_mut(&1).unwrap().checkpoint = 1;
+    assert!(
+        owner
+            .reserve_retrieval(1, &request.identity(), "query_encode")
+            .unwrap_err()
+            .starts_with("research allowance")
+    );
+    assert_eq!(owner.journal.records[&1].reserved_units, 3);
+    assert_eq!(owner.journal.records[&1].retrieval_reserved_units, 2);
+    assert_eq!(owner.journal.records[&1].state, State::Expired);
+    drop(owner);
+    let (_, restored) = Disk::open(
+        &directory.0,
+        {
+            let mut settings = Settings::default();
+            settings.solving.limits.work_units = 3;
+            settings
+        },
+        0,
+    )
+    .unwrap();
+    assert_eq!(restored.records[&1].reserved_units, 3);
+    assert_eq!(restored.records[&1].retrieval_reserved_units, 2);
+    assert_eq!(restored.records[&1].expires_ms, original_expiry);
+    assert_eq!(restored.accounts.values().next().unwrap().reserved_units, 3);
+    assert_eq!(restored.total_reserved_units, 3);
 }
 
 #[test]
@@ -146,7 +201,7 @@ fn uncertain_running_recovery_is_held_even_after_its_original_horizon() {
     let mut settings = Settings::default();
     settings.solving.recovery = RecoveryPolicy::HoldInFlight;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings).unwrap();
     let _receipt = submit(&mut owner, 1);
     let record = owner.journal.records.get_mut(&1).unwrap();
     record.state = State::Running;
@@ -679,7 +734,7 @@ fn obsolete_complete_requests_retire_without_renewing_time_work_or_finding_curso
                 assert_eq!(account.expires_ms, original.expires_ms);
                 assert_eq!(account.reserved_units, original.reserved_units);
             }
-            let mut recovered = Owner::new(disk, journal, settings);
+            let mut recovered = Owner::new(disk, journal, settings).unwrap();
             recovered.save().unwrap();
             let record = recovered.journal.records[&1].clone();
             let (reply, _receipt) = oneshot::channel();
@@ -708,7 +763,7 @@ fn corrupt_request_identity_is_rejected_instead_of_classified_as_an_old_prompt()
 }
 
 #[test]
-fn hot_save_preserves_exact_canonical_envelope_and_full_completed_request_bytes() {
+fn hot_save_preserves_exact_canonical_envelope_and_compact_request_bytes() {
     let (directory, mut owner) = fixture(4);
     let _receipt = submit(&mut owner, 1);
     owner.save().unwrap();
@@ -733,6 +788,11 @@ fn hot_save_preserves_exact_canonical_envelope_and_full_completed_request_bytes(
         request,
         owner.journal.records[&1].generation.as_ref().unwrap()
     );
+    assert!(request.context().is_err());
+    let mut request = request.clone();
+    request
+        .restore_source(&crate::corpus::snapshot::Store::open(&directory.0).unwrap())
+        .unwrap();
     request
         .recheck_retained(&restored.records[&1].input, &restored.records[&1].binding)
         .unwrap();
@@ -798,4 +858,33 @@ fn hot_lifecycle_checks_remain_strict_after_immutable_request_qualification() {
     let _receipt = submit(&mut owner, 1);
     owner.journal.records.get_mut(&1).unwrap().reserved_units = 5;
     assert!(owner.save().unwrap_err().contains("budget differs"));
+}
+
+#[test]
+fn recovery_shares_one_checked_source_across_retained_requests() {
+    let (directory, mut owner) = fixture(4);
+    for cursor in 0..2 {
+        let input = Input::Find { cursor };
+        let binding = binding(0);
+        let request = generation_request(&input, &binding);
+        let (reply, _receiver) = oneshot::channel();
+        owner.submit(input, binding, Some(request), reply).unwrap();
+    }
+    assert_eq!(owner.journal.records.len(), 2);
+    let settings = owner.settings;
+    drop(owner);
+    let (_, recovered) = Disk::open(&directory.0, settings, 0).unwrap();
+    let first = recovered.records[&1]
+        .generation
+        .as_ref()
+        .unwrap()
+        .source()
+        .unwrap();
+    let second = recovered.records[&2]
+        .generation
+        .as_ref()
+        .unwrap()
+        .source()
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(first, second));
 }

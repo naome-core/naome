@@ -371,12 +371,65 @@ def faults(trial,probe):
     trial.summary['scenarios']['supervisor_loss_unread_response_and_result_pipe_cleanup']={'result':'pass'}
 
 
+def frozen_context(node,request):
+    """Verify the exact node-held source referenced by a compact request."""
+    assert request['version']==2 and 'checked_context' not in request
+    assert len(json.dumps(request,ensure_ascii=False,separators=(',',':')).encode())<=262144
+    handle=request['retrieval_snapshot']
+    root=node.directory/'research/snapshots'
+    def row(bucket,key,suffix='.json',raw_digest=True):
+        assert len(key)==64 and all(c in '0123456789abcdef' for c in key)
+        path=root/bucket/(key+suffix)
+        assert path.is_file() and not path.is_symlink()
+        data=path.read_bytes()
+        if raw_digest:
+            assert hashlib.sha256(data).hexdigest()==key,'frozen source row differs from its declared digest'
+        return data
+    manifest=json.loads(row('manifests',handle['snapshot_id']))
+    assert handle['version']==manifest['version']==1
+    for field in ['artifact_snapshot','graph_root','knowledge_snapshot']:
+        assert handle[field]==manifest[field]
+    assert handle['knowledge_snapshot']==request['binding']['snapshot']
+    assert handle['proof_count']==len(manifest['proofs'])
+    assert handle['question_count']==(len(manifest['questions']) if manifest['questions'] is not None else None)
+    references=[]
+    accepted={proof['proof_id']:proof for proof in stored_objects(node)}
+    for proof_id,key in manifest['proofs'].items():
+        stored=json.loads(row('proofs',key,raw_digest=False))
+        assert stored['proof']['proof_id']==proof_id
+        envelope=stored['proof']
+        assert accepted[proof_id]==envelope,'frozen canonical certificate or identities differ from accepted storage'
+        certificate=bytes.fromhex(envelope['proof'])
+        assert certificate.hex()==envelope['proof'] and len(certificate)<=65536
+        foundation=b'naome:zfc'
+        address=(b'naome:proof\0'+len(foundation).to_bytes(4,'big')+foundation
+            +bytes.fromhex(envelope['statement_id'])+len(certificate).to_bytes(4,'big')+certificate)
+        assert hashlib.sha256(address).hexdigest()==proof_id,'canonical ProofId framing differs'
+        statement=row('statements',stored['statement']['digest'],'.txt')
+        assert len(statement)==stored['statement']['bytes']
+        reference={'proof':stored['proof'],'native_conclusion':statement.decode(),
+            'dependencies':stored['dependencies']}
+        # This derived key binds Reference, not the compact StoredProof file or
+        # the unchanged canonical ProofId/StatementId checked by native admission.
+        projection=json.dumps(reference,ensure_ascii=False,separators=(',',':')).encode()
+        assert hashlib.sha256(projection).hexdigest()==key,'frozen complete proof projection digest differs'
+        references.append(reference)
+    ids={reference['proof']['proof_id'] for reference in references}
+    assert all(set(reference['dependencies']).issubset(ids) for reference in references)
+    questions={}
+    for source_hash,key in (manifest['questions'] or {}).items():
+        stored=json.loads(row('questions',key))
+        questions[source_hash]=stored
+    return {'artifact_snapshot':handle['artifact_snapshot'],'graph_root':handle['graph_root'],
+        'references':references,'original_question_records':questions}
+
+
 def generation_consumers(node,owner_text,required_prior=None):
     state=journal(node)
     completed=[record for record in state['records'].values()
         if record['state']=='complete' and record['input']['role'] in {'find','solve'}
         and (required_prior is None or any(reference['proof']==required_prior
-            for reference in record['generation']['checked_context']['references']))]
+            for reference in frozen_context(node,record['generation'])['references']))]
     workers={event['job'] for event in node.logs() if event.get('event')=='research_worker'}
     assert {record['input']['role'] for record in completed}=={'find','solve'}
     requests=[]
@@ -384,32 +437,35 @@ def generation_consumers(node,owner_text,required_prior=None):
     for record in completed:
         assert record['id'] in workers,'generation candidate lacks a real ready-worker receipt'
         request=record['generation']
+        context=frozen_context(node,request)
         assert request['system'] and request['binding']==record['binding']
-        assert request['checked_context']['definitions_supported'] is False
-        assert request['checked_context']['registry_entries_included'] is False
         assert request['owner_interests']['availability']=='available'
         assert request['owner_interests']['interest']==owner_text
         assert owner_text not in request['system'],'owner text must remain separate untrusted request data'
-        identity_payload=['naome:generation-request:v1',request['version'],request['system'],request['binding'],request['task'],request['owner_interests'],request['checked_context'],request['requirements'],request['tools']]
+        identity_payload=['naome:generation-request:v2',request['version'],request['system'],request['binding'],request['task'],request['owner_interests'],request['retrieval_snapshot'],request['requirements'],request['tools']]
         request_id=hashlib.sha256(json.dumps(identity_payload,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
         assert request_id==request['request_id'],'request identity does not bind complete instructions and data'
         receipts=[event for event in node.logs() if event.get('event')=='generation_tool_invoked'
             and event['job']==record['id']]
-        assert len(receipts)<=(1 if record['input']['role']=='find' else 4),'ordinary mock tool allowance exceeded'
+        expected_operations=['semantic_search'] if record['input']['role']=='find' else ['semantic_search','native_search','browse']+(['lookup','fetch'] if context['references'] else [])
+        assert [receipt['operation'] for receipt in receipts]==expected_operations,'ordinary mock tool sequence or finite allowance differs'
         operations={receipt['operation'] for receipt in receipts}
         semantic=[receipt for receipt in receipts if receipt['operation']=='semantic_search']
         assert len(semantic)==1,'both ordinary mocks must invoke the natural-query tool'
-        expected_semantic='backend_unavailable' if request['checked_context']['references'] else 'no_result'
+        expected_semantic='backend_unavailable' if context['references'] else 'no_result'
         assert semantic[0]['status']==expected_semantic and semantic[0]['count']==0,'semantic results were fabricated without a configured encoder'
         semantic_query={'operation':'semantic_search','query':'proofs involving addition','top_k':8}
         query_id=hashlib.sha256(json.dumps([request_id,semantic_query],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
         assert semantic[0]['query_id']==query_id,'the ordinary mock did not invoke the exact sentence query and top-K'
         assert semantic[0]['remaining_range_complete']==(expected_semantic=='no_result')
         assert semantic[0]['backend_category']==('retrieval_encoder_not_configured' if expected_semantic=='backend_unavailable' else None)
-        for receipt in receipts:
+        for sequence,receipt in enumerate(receipts):
             assert receipt['request_id']==request_id,'tool receipt belongs to a different immutable request'
-            assert receipt['artifact_snapshot']==request['checked_context']['artifact_snapshot']
-            assert receipt['graph_root']==request['checked_context']['graph_root']
+            assert receipt['artifact_snapshot']==context['artifact_snapshot']
+            assert receipt['graph_root']==context['graph_root']
+            assert receipt['snapshot_id']==request['retrieval_snapshot']['snapshot_id']
+            assert receipt['tool_sequence']==sequence
+            assert len(receipt['reply_body_sha256'])==64 and 0<receipt['reply_body_bytes']<=262144
             assert receipt['status'] in {'ok','no_result','backend_unavailable'} and 0<=receipt['count']<=16
             assert receipt['operation']=='semantic_search' or receipt['status']!='backend_unavailable'
         if record['input']['role']=='find':
@@ -421,10 +477,12 @@ def generation_consumers(node,owner_text,required_prior=None):
             assert len(request['task']['source_hash'])==64 and len(request['task']['resolution_id'])==64
             assert request['task']['proved_target'] and request['task']['refuted_target']
             assert 'native_search' in operations,'ordinary proof mock did not invoke its advertised tool'
-            if request['checked_context']['references']:
+            if context['references']:
                 assert {'lookup','fetch'}.issubset(operations),'checked context was not retrieved by the ordinary mock'
         retrieval_operations.update(operations)
-        requests.append({'job':record['id'],'role':record['input']['role'],'request':request})
+        assert record.get('retrieval_reserved_units',0)==0,'unconfigured retrieval must perform no model work'
+        requests.append({'job':record['id'],'role':record['input']['role'],'request':request,
+            'frozen_context':context})
     return requests,retrieval_operations
 
 
@@ -478,7 +536,7 @@ def basic(trial,probe):
         if not state:return None
         for record in state['records'].values():
             if record['state']!='complete' or record['input']['role']!='solve':continue
-            refs=record['generation']['checked_context']['references']
+            refs=frozen_context(seeded,record['generation'])['references']
             if len(refs)!=1 or refs[0]['proof']!=prior:continue
             receipts=[event for event in seeded.logs() if event.get('event')=='generation_tool_invoked'
                 and event['job']==record['id']]
@@ -489,7 +547,7 @@ def basic(trial,probe):
     populated_requests,populated_operations=generation_consumers(seeded,owner_text,prior)
     assert {'semantic_search','native_search','lookup','fetch'}.issubset(populated_operations),'populated generation consumer lacks an actual retrieval operation'
     for entry in populated_requests:
-        assert any(reference['proof']==prior for reference in entry['request']['checked_context']['references']),'request omitted the actual checked prior proof'
+        assert any(reference['proof']==prior for reference in entry['frozen_context']['references']),'node-held source omitted the actual checked prior proof'
     for name,operation in [('lookup',{'operation':'lookup','key':'proof_id','value':prior_id}),
         ('fetch',{'operation':'fetch','proof_id':prior_id})]:
         receipt=next(receipt for receipt in receipts if receipt['operation']==name)
@@ -503,11 +561,15 @@ def basic(trial,probe):
         and event.get('id')==generated['id'] for event in seeded.logs()),maximum=10)
     proof_ids=seeded.ids()
     assert prior_id in proof_ids and generated['id'] in proof_ids and len(proof_ids)>=2,'selected new proof is not actually stored'
+    canonical_after={proof['proof_id']:proof for proof in stored_objects(seeded)}
+    assert canonical_after[prior_id]==prior,'retrieval or generation changed the prior canonical certificate'
     probe.observe(seeded);seeded.stop();probe.ended()
     assert proof_ids.issubset(seeded.ids()),'checked output disappeared while stopping'
     seeded.config['runtime']['question_interval_ms']=3600000
     seeded.write_config();seeded.start()
     assert proof_ids.issubset(seeded.ids()),'new checked generation output did not survive reopening'
+    canonical_reopened={proof['proof_id']:proof for proof in stored_objects(seeded)}
+    assert all(canonical_reopened[key]==canonical_after[key] for key in proof_ids),'canonical certificates or identities changed across restart'
     seeded.stop();probe.ended()
     proof_ids=seeded.ids()
     write_receipt(trial.output/'generation-populated-context-consumers.json',{

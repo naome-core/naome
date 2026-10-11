@@ -4,7 +4,7 @@ use naome_authoring::CompiledQuestion;
 /// A complete checked delta, prepared without publishing staged knowledge.
 pub(crate) struct CheckedBatch {
     context: ArtifactState,
-    entries: Vec<(ProofId, Envelope, usize)>,
+    entries: Vec<(ProofId, Envelope, usize, crate::corpus::CachedReference)>,
     bytes: usize,
     context_bytes: usize,
 }
@@ -122,6 +122,7 @@ impl Graph {
         let mut depths = self.depths.clone();
         let mut bytes = self.bytes;
         let mut context_bytes = self.context_bytes;
+        let mut conclusions = self.native_conclusions.clone();
         let mut entries = Vec::new();
         while !candidates.is_empty() {
             let ready: Vec<_> = candidates
@@ -182,11 +183,32 @@ impl Graph {
                         return Err("checked context capacity".into());
                     }
                 }
+                let presentation = conclusions
+                    .entry(candidate.statement)
+                    .or_insert_with(|| {
+                        (
+                            checked.conclusion().to_source().into(),
+                            checked.conclusion().to_controlled_english().into(),
+                        )
+                    })
+                    .clone();
+                let reference = crate::corpus::CachedReference::new(
+                    crate::corpus::Reference {
+                        proof: candidate.envelope.clone(),
+                        native_conclusion: presentation.0,
+                        dependencies: candidate
+                            .dependencies
+                            .iter()
+                            .map(|id| crate::hex(id.as_bytes()))
+                            .collect(),
+                    },
+                    presentation.1,
+                );
                 context
                     .register_proof_for_replication(checked)
                     .map_err(|error| error.to_string())?;
                 depths.insert(id, depth);
-                entries.push((id, candidate.envelope, depth));
+                entries.push((id, candidate.envelope, depth, reference));
             }
         }
         Ok(CheckedBatch {
@@ -205,7 +227,7 @@ impl Graph {
     ) -> Result<(), String> {
         if let Some(store) = &self.store
             && let Err(error) =
-                store.persist_batch(root, batch.entries.iter().map(|(_, object, _)| object))
+                store.persist_batch(root, batch.entries.iter().map(|(_, object, _, _)| object))
         {
             self.storage_error = Some(error.clone());
             return Err(format!("storage halted: {error}"));
@@ -218,10 +240,21 @@ impl Graph {
         self.bytes = batch.bytes;
         self.context_bytes = batch.context_bytes;
         let mut admitted = Vec::with_capacity(batch.entries.len());
-        for (id, object, depth) in batch.entries {
+        for (id, object, depth, reference) in batch.entries {
             self.pending.remove(&id);
             self.depths.insert(id, depth);
             self.objects.insert(id, object);
+            let statement = StatementId::from_bytes(
+                crate::object::id_bytes(&reference.reference.proof.statement_id)
+                    .expect("checked statement identity"),
+            );
+            self.native_conclusions.entry(statement).or_insert_with(|| {
+                (
+                    reference.reference.native_conclusion.clone(),
+                    reference.controlled_conclusion.clone(),
+                )
+            });
+            self.corpus.insert(id, reference);
             admitted.push(id);
         }
         admitted

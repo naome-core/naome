@@ -2,7 +2,7 @@ use crate::object::{Candidate, MAX_DEPTH, Metadata, id_bytes};
 use crate::store::Store;
 use crate::{Envelope, compatibility};
 use naome_checker::{ArtifactState, check_normal_form_with_state};
-use naome_proof::ProofId;
+use naome_proof::{ProofId, StatementId};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -32,6 +32,8 @@ pub struct Ingest {
 pub struct Graph {
     context: ArtifactState,
     objects: BTreeMap<ProofId, Envelope>,
+    corpus: BTreeMap<ProofId, crate::corpus::CachedReference>,
+    native_conclusions: BTreeMap<StatementId, (std::sync::Arc<str>, std::sync::Arc<str>)>,
     depths: BTreeMap<ProofId, usize>,
     pending: BTreeMap<ProofId, (Candidate, Instant)>,
     bytes: usize,
@@ -46,6 +48,11 @@ impl Graph {
     }
     pub(crate) fn checked_context(&self) -> &ArtifactState {
         &self.context
+    }
+    pub(crate) fn corpus_references(
+        &self,
+    ) -> impl Iterator<Item = &crate::corpus::CachedReference> {
+        self.corpus.values()
     }
 
     pub(crate) fn describe(&self, id: ProofId) -> Result<Option<Metadata>, String> {
@@ -225,6 +232,28 @@ impl Graph {
         if self.context_bytes + context_growth > MAX_CONTEXT_BYTES {
             return Err("checked context capacity".into());
         }
+        let presentation = self
+            .native_conclusions
+            .get(&candidate.statement)
+            .cloned()
+            .unwrap_or_else(|| {
+                (
+                    checked.conclusion().to_source().into(),
+                    checked.conclusion().to_controlled_english().into(),
+                )
+            });
+        let reference = crate::corpus::CachedReference::new(
+            crate::corpus::Reference {
+                proof: candidate.envelope.clone(),
+                native_conclusion: presentation.0.clone(),
+                dependencies: candidate
+                    .dependencies
+                    .iter()
+                    .map(|id| crate::hex(id.as_bytes()))
+                    .collect(),
+            },
+            presentation.1.clone(),
+        );
         let mut context = self.context.clone();
         context
             .register_proof_for_replication(checked)
@@ -241,6 +270,10 @@ impl Graph {
         self.context_bytes += context_growth;
         self.depths.insert(candidate.id, depth);
         self.objects.insert(candidate.id, candidate.envelope);
+        self.native_conclusions
+            .entry(candidate.statement)
+            .or_insert(presentation);
+        self.corpus.insert(candidate.id, reference);
         Ok(())
     }
 

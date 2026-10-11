@@ -79,7 +79,7 @@ async fn persisted_prior_proof_is_retrieved_and_cited_in_a_new_admissible_symmet
     )
     .unwrap();
     let mut encoder = ContractEncoder;
-    let index = SemanticIndex::build(&request.checked_context, &mut encoder).unwrap();
+    let index = SemanticIndex::build(request.context().unwrap(), &mut encoder).unwrap();
     let ranked=request.invoke_tool_with_retrieval("semantic_search",&json!({"request_id":request.identity(),"query":"an existing proof that transports equality between values","top_k":1}),Some((&index,&mut encoder))).unwrap();
     assert_eq!(ranked.results.len(), 1);
     assert_eq!(ranked.results[0].proof_id, prior_id);

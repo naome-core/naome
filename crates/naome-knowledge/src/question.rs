@@ -31,6 +31,9 @@ pub const MAX_REGISTERED_QUESTIONS: usize = 1024;
 pub const MAX_REGISTERED_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_QUESTION_CHECKPOINT_BYTES: usize = 32 * 1024 * 1024;
 mod persistence;
+pub(crate) use persistence::Entry as StoredQuestion;
+#[cfg(test)]
+pub(crate) use persistence::Kind as StoredQuestionKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterestAssessment {
@@ -434,8 +437,29 @@ where
     pub(crate) fn storage_error(&self) -> Option<&str> {
         self.storage_error.as_deref()
     }
+    /// Exact durable original records. Target matching never claims causal
+    /// proof provenance, and an unmanaged registry declares them unavailable.
+    pub(crate) fn stored_questions(
+        &self,
+    ) -> Result<Option<BTreeMap<String, StoredQuestion>>, String> {
+        if let Some(error) = &self.storage_error {
+            return Err(format!("durable question projection unavailable: {error}"));
+        }
+        Ok(self
+            .persistence
+            .as_ref()
+            .map(persistence::Persistence::projection))
+    }
+    pub(crate) fn storage_revision(&self) -> u64 {
+        self.persistence
+            .as_ref()
+            .map_or(0, persistence::Persistence::revision)
+    }
     pub(crate) fn uses_jobs(&self) -> bool {
         self.managed.is_some()
+    }
+    pub(crate) fn job_client(&self) -> Option<crate::jobs::Client> {
+        self.managed.clone()
     }
     pub(crate) fn interest_deadline(&self, now: Instant) -> Instant {
         now + self.interest_horizon

@@ -215,6 +215,7 @@ impl Directory {
             peers: Vec::new(),
             discovery: Some(discovery),
             producer_sources: sources,
+            retrieval: None,
         }
     }
 }
@@ -1048,4 +1049,37 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     assert_eq!(checked.conclusion(), &r);
     assert_eq!(checked.proof_id(), witness.proof_id());
     assert_eq!(reopened.content_root(), root);
+}
+
+#[tokio::test]
+async fn failed_prepared_write_cannot_be_exported_as_a_durable_original_question() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let mut owner = crate::jobs::tests::Manual::new();
+    let mut local = Managed::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let original = question(QUESTION);
+    let (reply, receiver) = oneshot::channel();
+    local.process(Command::Admit(original.clone(), reply), &graph);
+    let (id, _) = owner.requests().remove(0);
+    owner.complete(id, Ok(crate::jobs::Output::Interest(true)));
+    let result = local.completed().await;
+    std::fs::create_dir(directory.0.join("research/questions.incoming")).unwrap();
+    local.finish(&graph, result);
+    assert!(receiver.await.is_err());
+    assert!(local.storage_error().is_some());
+    assert_eq!(local.registry.len(), 0);
+    assert!(
+        local
+            .persistence
+            .as_ref()
+            .unwrap()
+            .projection()
+            .contains_key(&crate::hex(original.source_hash()))
+    );
+    assert!(local.stored_questions().is_err());
 }

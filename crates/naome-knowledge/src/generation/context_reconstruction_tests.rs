@@ -81,7 +81,7 @@ fn complete_checked_snapshot_reconstructs_more_dependents_than_the_pending_limit
         },
     )
     .unwrap();
-    let context = &request.checked_context;
+    let context = request.context().unwrap();
     assert_eq!(context.references.len(), wanted + 1);
     let helper_position = context
         .references
@@ -99,8 +99,7 @@ fn complete_checked_snapshot_reconstructs_more_dependents_than_the_pending_limit
     request.recheck(&input, &binding).unwrap();
     // Exercise the recovery boundary with exact serialized bytes as well as
     // the already constructed immutable value; no fixture fact is trusted.
-    let recovered: Request =
-        serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+    let recovered = super::tests::persisted_roundtrip(&request);
     recovered.recheck(&input, &binding).unwrap();
     assert_eq!(recovered, request);
 }

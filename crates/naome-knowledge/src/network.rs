@@ -48,6 +48,8 @@ pub struct Config {
     /// A finite independently operated source queue, attempted once per second.
     #[serde(default)]
     pub producer_sources: Vec<String>,
+    #[serde(default)]
+    pub retrieval: Option<crate::corpus::cache::Settings>,
 }
 pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 
@@ -488,8 +490,15 @@ where
     let (mut research, mut autonomous, mut questions) = if let Some(intervals) = autonomy {
         use sha2::Digest;
         let cursor = sha2::Sha256::digest(own_id.to_bytes())[0] as u64;
-        let (service, client, recovery) =
-            crate::jobs::Service::open(&directory, intervals.jobs, cursor)?;
+        let (service, client, recovery) = match config.retrieval.clone() {
+            Some(settings) => crate::jobs::Service::open_with_retrieval(
+                &directory,
+                intervals.jobs,
+                cursor,
+                Some(settings),
+            )?,
+            None => crate::jobs::Service::open(&directory, intervals.jobs, cursor)?,
+        };
         let questions = crate::question::LocalQuestions::<F>::managed(
             client.clone(),
             &directory,
@@ -507,6 +516,22 @@ where
     let mut stopping = false;
     let mut next_profile_check = Instant::now();
     let mut drain_deadline = None;
+    let mut standalone_retrieval = None;
+    let indexing = if let Some(client) = questions.job_client() {
+        client.index_feed()
+    } else {
+        let feed = crate::corpus::service::IndexFeed::default();
+        if config.retrieval.is_some() {
+            standalone_retrieval = Some(crate::corpus::service::Service::open_with_feed(
+                &directory,
+                BTreeSet::new(),
+                config.retrieval.clone(),
+                feed.clone(),
+            )?);
+        }
+        feed
+    };
+    let mut indexed_revision = None;
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
@@ -515,6 +540,15 @@ where
     tokio::pin!(shutdown);
     let outcome:Result<(),String>=async {
     loop {
+        if config.retrieval.is_some() && !stopping {
+            let revision = (node.graph.accepted_count(), questions.storage_revision());
+            if indexed_revision != Some(revision) {
+                    let (snapshot, _) = questions.context_key(&node.graph);
+                    let seed = crate::corpus::snapshot::Seed::capture(&node.graph, questions.stored_questions()?, &hex(&snapshot))?;
+                    indexing.publish(seed);
+                    indexed_revision = Some(revision);
+            }
+        }
         // Read the validated owner epoch before polling any final admission.
         // An error invalidates old selection; stop remains available.
         if let Some(control)=&control
@@ -563,6 +597,7 @@ where
                 stopping=true;
                 drain_deadline=Some(Instant::now()+Duration::from_secs(2));
                 if let Some(service)=&mut research{service.begin_shutdown()?;}
+                if let Some((service, _)) = &standalone_retrieval { service.begin_shutdown(); }
             },
             signal = &mut shutdown => { signal?; break; }
         }
@@ -618,6 +653,15 @@ where
     let cleanup = match &mut research {
         Some(service) => service.shutdown().await,
         None => Ok(()),
+    };
+    let index_cleanup = match &mut standalone_retrieval {
+        Some((service, _)) => service.shutdown(),
+        None => Ok(()),
+    };
+    let cleanup = match (cleanup, index_cleanup) {
+        (Err(primary), Err(index)) => Err(format!("{primary}; retrieval cleanup: {index}")),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        _ => Ok(()),
     };
     match (outcome, cleanup) {
         (Err(primary), Err(cleanup)) => {

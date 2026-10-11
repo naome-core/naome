@@ -13,6 +13,7 @@ mod definition;
 mod identity;
 mod normal_form;
 mod proof_formula;
+mod source;
 
 use std::error::Error;
 use std::fmt;

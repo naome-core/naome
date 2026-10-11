@@ -37,6 +37,8 @@ pub use object::{
 #[cfg(unix)]
 pub use corpus::ProofCorpus;
 #[cfg(unix)]
+pub use corpus::local::{EmbeddedChunk, LocalEncoder};
+#[cfg(unix)]
 pub use corpus::semantic::{
     EncoderIdentity, SEMANTIC_REPRESENTATION_VERSION, SemanticEncoder, SemanticHit, SemanticIndex,
     SemanticPage,

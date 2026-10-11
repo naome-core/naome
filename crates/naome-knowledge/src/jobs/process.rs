@@ -2,7 +2,7 @@
 use super::*;
 use std::{
     io::{BufRead, Write},
-    os::fd::AsRawFd,
+    os::fd::{AsFd, AsRawFd},
     process::{Child, Command as ProcessCommand, Stdio},
     sync::mpsc as sync_channel,
     time::{Duration, Instant},
@@ -14,7 +14,7 @@ const SUPERVISOR: &str = "--research-supervisor-v1";
 const WORKER: &str = "--research-worker-v1";
 const DESCENDANT: &str = "--research-descendant-v1";
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
-static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,17 +48,11 @@ enum Frame {
     ResultReady {
         id: u64,
     },
-    GenerationTool {
+    ToolCall {
         id: u64,
-        request_id: String,
-        operation: String,
-        status: crate::generation::ToolStatus,
-        count: usize,
-        artifact_snapshot: String,
-        graph_root: String,
-        query_id: String,
-        remaining_range_complete: bool,
-        backend_category: Option<String>,
+        sequence: u32,
+        name: String,
+        arguments: serde_json::Value,
     },
     Reserve {
         id: u64,
@@ -91,7 +85,21 @@ struct Grant {
     next: u32,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolReply {
+    id: u64,
+    sequence: u32,
+    result: crate::generation::ToolResult,
+}
+
 pub(super) enum Event {
+    RetrievalReserve {
+        id: u64,
+        request_id: String,
+        phase: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Reserve {
         id: u64,
         next: u32,
@@ -102,6 +110,61 @@ pub(super) enum Event {
         checkpoint: u32,
         reply: oneshot::Sender<Result<(), String>>,
     },
+}
+
+#[derive(Clone)]
+pub(crate) struct RetrievalBudget {
+    pub id: u64,
+    pub request_id: String,
+    pub deadline: Instant,
+    events: mpsc::Sender<Event>,
+}
+impl RetrievalBudget {
+    #[cfg(test)]
+    pub(crate) fn unserved_test(
+        id: u64,
+        request_id: String,
+        deadline: Instant,
+    ) -> (Self, impl FnMut() -> bool) {
+        let (events, mut receiver) = mpsc::channel(16);
+        (
+            Self {
+                id,
+                request_id,
+                deadline,
+                events,
+            },
+            move || receiver.try_recv().is_ok(),
+        )
+    }
+    pub fn reserve(&self, phase: &str, stopped: &dyn Fn() -> bool) -> Result<(), String> {
+        if stopped() || Instant::now() >= self.deadline {
+            return Err("retrieval original job is cancelled or expired".into());
+        }
+        let (reply, mut receipt) = oneshot::channel();
+        self.events
+            .try_send(Event::RetrievalReserve {
+                id: self.id,
+                request_id: self.request_id.clone(),
+                phase: phase.into(),
+                reply,
+            })
+            .map_err(|_| "retrieval reservation queue is full or stopped")?;
+        loop {
+            if stopped() || Instant::now() >= self.deadline {
+                return Err("retrieval reservation cancelled or expired".into());
+            }
+            match receipt.try_recv() {
+                Ok(result) => return result,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    return Err("retrieval original budget owner stopped".into());
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(2))
+                }
+            }
+        }
+    }
 }
 
 pub(super) struct Outcome {
@@ -115,9 +178,19 @@ pub(super) async fn run(
     events: mpsc::Sender<Event>,
     cancel: oneshot::Receiver<()>,
     slot: std::fs::File,
+    sources: crate::corpus::service::Client,
 ) -> Outcome {
     let state = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let result = run_owned(record, remaining_ms, events, cancel, slot, state.clone()).await;
+    let result = run_owned(
+        record,
+        remaining_ms,
+        events,
+        cancel,
+        slot,
+        state.clone(),
+        sources,
+    )
+    .await;
     let state = state
         .lock()
         .expect("provider disposition owner")
@@ -136,6 +209,7 @@ async fn run_owned(
     mut cancel: oneshot::Receiver<()>,
     slot: std::fs::File,
     disposition: std::sync::Arc<std::sync::Mutex<Option<State>>>,
+    sources: crate::corpus::service::Client,
 ) -> Result<Output, String> {
     let remaining_ms = remaining_ms.min(record.expires_ms.saturating_sub(wall_ms()?));
     if remaining_ms == 0 {
@@ -216,7 +290,7 @@ async fn run_owned(
         let mut ready = false;
         let mut checkpoint = record.checkpoint;
         let mut outstanding = None;
-        let mut tool_receipts = 0u8;
+        let mut tool_receipts = 0u32;
         loop {
             let bytes = reader
                 .next()
@@ -259,66 +333,66 @@ async fn run_owned(
                         serde_json::json!({"event":"research_working","job":id,"phase":"result_ready"}),
                     );
                 }
-                Frame::GenerationTool {
+                Frame::ToolCall {
                     id,
-                    request_id,
-                    operation,
-                    status,
-                    count,
-                    artifact_snapshot,
-                    graph_root,
-                    query_id,
-                    remaining_range_complete,
-                    backend_category,
+                    sequence,
+                    name,
+                    arguments,
                 } if ready
                     && id == record.id
                     && outstanding.is_none()
                     && matches!(record.input, Input::Find { .. } | Input::Solve { .. })
-                    && tool_receipts < 4
-                    && (tool_receipts == 0 || matches!(record.input, Input::Solve { .. }))
-                    && count <= 16 =>
+                    && sequence == tool_receipts
+                    && sequence < 4096 =>
                 {
                     let request = record
                         .generation
                         .as_ref()
                         .ok_or("generation request absent")?;
-                    let (expected_snapshot, expected_root) = request.context_identity();
-                    crate::object::id_bytes(&query_id)?;
-                    let semantic_state_valid = match (
-                        &status,
-                        count,
-                        remaining_range_complete,
-                        backend_category.as_deref(),
-                    ) {
-                        (
-                            crate::generation::ToolStatus::BackendUnavailable,
-                            0,
-                            false,
-                            Some("retrieval_encoder_not_configured"),
-                        ) => operation == "semantic_search",
-                        (crate::generation::ToolStatus::NoResult, 0, true, None) => true,
-                        (crate::generation::ToolStatus::Ok, 1..=16, _, None) => {
-                            operation != "semantic_search"
-                        }
-                        _ => false,
-                    };
-                    if request_id != request.identity()
-                        || artifact_snapshot != expected_snapshot
-                        || graph_root != expected_root
-                        || !["native_search", "lookup", "fetch", "semantic_search"]
-                            .contains(&operation.as_str())
-                        || !semantic_state_valid
-                    {
-                        return Err("generation retrieval receipt differs from request".into());
-                    }
-                    tool_receipts += 1;
+                    let result = sources
+                        .invoke(
+                            request.clone(),
+                            name.clone(),
+                            arguments.clone(),
+                            RetrievalBudget {
+                                id,
+                                request_id: request.identity(),
+                                deadline: Instant::now()
+                                    + deadline
+                                        .saturating_duration_since(tokio::time::Instant::now()),
+                                events: events.clone(),
+                            },
+                        )
+                        .await?;
+                    let body = serde_json::to_vec(&result).map_err(|e| e.to_string())?;
+                    let digest = crate::hex(&Sha256::digest(&body));
                     crate::network::emit(serde_json::json!({
-                        "event":"generation_tool_invoked","job":id,"request_id":request_id,
-                        "operation":operation,"status":status,"count":count,
-                        "artifact_snapshot":artifact_snapshot,"graph_root":graph_root,
-                        "query_id":query_id,"remaining_range_complete":remaining_range_complete,
-                        "backend_category":backend_category,
+                        "event":"generation_tool_invoked", "job":id,"tool_sequence":sequence,
+                        "request_id":request.identity(), "operation":name,
+                        "arguments_digest":identity(&arguments), "status":result.status,
+                        "count":result.results.len(), "artifact_snapshot":result.artifact_snapshot,
+                        "graph_root":result.graph_root, "snapshot_id":request.retrieval_snapshot.as_ref().map(|s|&s.snapshot_id),
+                        "query_id":result.query_id,"remaining_range_complete":result.remaining_range_complete,
+                        "backend_category":match result.status {
+                            crate::generation::ToolStatus::BackendUnavailable=>Some("retrieval_encoder_not_configured"),
+                            crate::generation::ToolStatus::IndexIncomplete=>Some("retrieval_index_incomplete"),
+                            _=>None,
+                        },
+                        "semantic_ranking":result.semantic_ranking,
+                        "reply_body_sha256":digest,"reply_body_bytes":body.len(),
                     }));
+                    let mut bytes = serde_json::to_vec(&ToolReply {
+                        id,
+                        sequence,
+                        result,
+                    })
+                    .map_err(|e| e.to_string())?;
+                    bytes.push(b'\n');
+                    if bytes.len() > MAX_FRAME_BYTES {
+                        return Err("retrieval reply frame capacity".into());
+                    }
+                    input.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                    tool_receipts += 1;
                 }
                 Frame::Reserve { id, next }
                     if ready
@@ -434,7 +508,7 @@ async fn run_owned(
                 | Frame::CpuActive { id, .. }
                 | Frame::CpuDone { id, .. }
                 | Frame::ResultReady { id }
-                | Frame::GenerationTool { id, .. }
+                | Frame::ToolCall { id, .. }
                 | Frame::Reserve { id, .. }
                 | Frame::Progress { id, .. }
                 | Frame::Result { id, .. }
@@ -444,7 +518,11 @@ async fn run_owned(
             }
         }
     };
-    let drain_error = match tokio::time::timeout(Duration::from_secs(3), drain).await {
+    let (drained, retrieval) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(3), drain),
+        tokio::time::timeout(Duration::from_secs(3), sources.cancel_job(record.id))
+    );
+    let drain_error = match drained {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error),
         Err(_) => Some("provider output drain deadline".to_owned()),
@@ -461,6 +539,11 @@ async fn run_owned(
     crate::network::emit(
         serde_json::json!({"event":"research_reaped","job":record.id,"pid":pid,"exit":status.code()}),
     );
+    match retrieval {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(format!("retrieval physical cleanup unconfirmed: {error}")),
+        Err(_) => return Err("retrieval cleanup receipt deadline; recovery is uncertain".into()),
+    }
     // An incomplete Start cannot create a worker. When cancellation closed its
     // lifeline before any complete Start or output frame, reaped supervisor
     // exit is sufficient: no provider group was ever created.
@@ -587,26 +670,6 @@ fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
     }
 }
 
-fn emit_generation_tool(
-    id: u64,
-    operation: &str,
-    result: &crate::generation::ToolResult,
-) -> Result<(), String> {
-    emit(&Frame::GenerationTool {
-        id,
-        request_id: result.request_id.clone(),
-        operation: operation.into(),
-        status: result.status.clone(),
-        count: result.results.len(),
-        artifact_snapshot: result.artifact_snapshot.clone(),
-        graph_root: result.graph_root.clone(),
-        query_id: result.query_id.clone(),
-        remaining_range_complete: result.remaining_range_complete,
-        backend_category: (result.status == crate::generation::ToolStatus::BackendUnavailable)
-            .then(|| "retrieval_encoder_not_configured".into()),
-    })
-}
-
 fn emit(frame: &Frame) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(frame).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
@@ -624,6 +687,24 @@ enum Message {
     ParentClosed,
     Provider(Vec<u8>),
     ProviderClosed,
+}
+
+fn pump_provider<R: BufRead>(
+    reader: &mut R,
+    sender: sync_channel::SyncSender<Message>,
+    closed: &std::sync::atomic::AtomicBool,
+) {
+    let mut total = 0usize;
+    while let Ok(bytes) = line(reader, MAX_FRAME_BYTES) {
+        total = total.saturating_add(bytes.len());
+        if total > MAX_STREAM_BYTES || sender.try_send(Message::Provider(bytes)).is_err() {
+            break;
+        }
+    }
+    // EOF/overflow does not depend on spare queue capacity. The main loop
+    // drains already queued frames, then observes this independent flag.
+    closed.store(true, std::sync::atomic::Ordering::Release);
+    let _ = sender.try_send(Message::ProviderClosed);
 }
 
 struct Worker {
@@ -681,7 +762,8 @@ fn supervise() -> Result<(), String> {
         .stdin
         .take()
         .ok_or("provider worker lifeline absent")?;
-    input.write_all(&bytes).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_millis(start.remaining_ms);
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let output = child
         .child
         .stdout
@@ -689,83 +771,156 @@ fn supervise() -> Result<(), String> {
         .ok_or("provider worker output absent")?;
     let (sender, receiver) = sync_channel::sync_channel(8);
     let parent = sender.clone();
+    let parent_closed = closed.clone();
     std::thread::spawn(move || {
         loop {
-            match line(&mut reader, 256) {
+            match line(&mut reader, MAX_FRAME_BYTES) {
                 Ok(bytes) => {
-                    if parent.send(Message::Parent(bytes)).is_err() {
+                    if parent.try_send(Message::Parent(bytes)).is_err() {
+                        parent_closed.store(true, std::sync::atomic::Ordering::Release);
                         break;
                     }
                 }
                 Err(_) => {
-                    let _ = parent.send(Message::ParentClosed);
+                    parent_closed.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = parent.try_send(Message::ParentClosed);
                     break;
                 }
             }
         }
     });
+    let provider_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let provider_eof = provider_closed.clone();
     std::thread::spawn(move || {
-        let mut reader = std::io::BufReader::new(output);
-        let mut total = 0usize;
-        while let Ok(bytes) = line(&mut reader, MAX_FRAME_BYTES) {
-            total = total.saturating_add(bytes.len());
-            if total > MAX_STREAM_BYTES || sender.send(Message::Provider(bytes)).is_err() {
-                break;
-            }
-        }
-        let _ = sender.send(Message::ProviderClosed);
+        pump_provider(&mut std::io::BufReader::new(output), sender, &provider_eof);
     });
-    let deadline = Instant::now() + Duration::from_millis(start.remaining_ms);
+    let initialized = cancellable_write(&mut input, &bytes, deadline, &closed).is_ok();
     let mut result = None;
+    let mut partial_tail = None;
     loop {
-        if Instant::now() >= deadline {
+        if !initialized {
+            break;
+        }
+        if Instant::now() >= deadline || closed.load(std::sync::atomic::Ordering::Acquire) {
             break;
         }
         match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(Message::Parent(bytes)) => {
-                if input.write_all(&bytes).is_err() {
+                if cancellable_write(&mut input, &bytes, deadline, &closed).is_err() {
                     break;
                 }
             }
             Ok(Message::ParentClosed) => break,
             Ok(Message::Provider(bytes)) => {
-                if matches!(
-                    serde_json::from_slice::<Frame>(&bytes),
-                    Ok(Frame::Result { .. })
-                ) {
-                    result = Some(bytes);
-                } else if std::io::stdout()
-                    .write_all(&bytes)
-                    .and_then(|_| std::io::stdout().flush())
-                    .is_err()
+                match serde_json::from_slice::<Frame>(&bytes) {
+                    Ok(Frame::CleanupComplete { .. } | Frame::CleanupFailed { .. }) | Err(_) => {
+                        break;
+                    }
+                    Ok(Frame::Result { .. }) => {
+                        result = Some(bytes);
+                        continue;
+                    }
+                    Ok(_) => {}
+                }
+                if let Err((written, _)) =
+                    cancellable_write_progress(&mut std::io::stdout(), &bytes, deadline, &closed)
                 {
+                    if written > 0 {
+                        partial_tail = Some(bytes[written..].to_vec());
+                    }
                     break;
                 }
             }
             Ok(Message::ProviderClosed) => break,
             Err(sync_channel::RecvTimeoutError::Disconnected) => break,
-            Err(sync_channel::RecvTimeoutError::Timeout) => {}
+            Err(sync_channel::RecvTimeoutError::Timeout) => {
+                if provider_closed.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+            }
         }
     }
-    if let Err(error) = child.finish() {
-        let _ = emit(&Frame::CleanupFailed {
+    let cleanup = child.finish();
+    let frame = match &cleanup {
+        Ok(()) => Frame::CleanupComplete {
+            id: start.record.id,
+        },
+        Err(error) => Frame::CleanupFailed {
             id: start.record.id,
             error: error.chars().take(256).collect(),
-        });
-        return Err(error);
+        },
+    };
+    let mut confirmation = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
+    confirmation.push(b'\n');
+    let output_deadline = Instant::now() + Duration::from_secs(1);
+    let output_open = std::sync::atomic::AtomicBool::new(false);
+    if let Some(tail) = partial_tail {
+        // Complete an already begun line after the actual group cleanup. A
+        // control receipt must never be appended inside that partial frame.
+        cancellable_write(&mut std::io::stdout(), &tail, output_deadline, &output_open)?;
     }
-    emit(&Frame::CleanupComplete {
-        id: start.record.id,
-    })?;
+    cancellable_write(
+        &mut std::io::stdout(),
+        &confirmation,
+        output_deadline,
+        &output_open,
+    )?;
+    cleanup?;
     drop(input);
     if let Some(result) = result {
-        std::io::stdout()
-            .write_all(&result)
-            .and_then(|_| std::io::stdout().flush())
-            .map_err(|e| e.to_string())
+        cancellable_write(
+            &mut std::io::stdout(),
+            &result,
+            output_deadline,
+            &output_open,
+        )
     } else {
         Err("provider stopped or failed".into())
     }
+}
+
+/// Nonblocking pipe writes retain an independently observed EOF and deadline.
+/// A full provider pipe cannot hold the supervisor's cleanup lifeline.
+fn cancellable_write<W: Write + AsFd>(
+    writer: &mut W,
+    bytes: &[u8],
+    deadline: Instant,
+    closed: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
+    cancellable_write_progress(writer, bytes, deadline, closed).map_err(|(_, error)| error)
+}
+fn cancellable_write_progress<W: Write + AsFd>(
+    writer: &mut W,
+    mut bytes: &[u8],
+    deadline: Instant,
+    closed: &std::sync::atomic::AtomicBool,
+) -> Result<(), (usize, String)> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    let mut written = 0usize;
+    let flags = fcntl(&*writer, FcntlArg::F_GETFL).map_err(|e| (written, e.to_string()))?;
+    fcntl(
+        &*writer,
+        FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK),
+    )
+    .map_err(|e| (written, e.to_string()))?;
+    while !bytes.is_empty() {
+        if Instant::now() >= deadline || closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err((written, "provider pipe write cancelled or expired".into()));
+        }
+        match writer.write(bytes) {
+            Ok(0) => return Err((written, "provider pipe write closed".into())),
+            Ok(n) => {
+                bytes = &bytes[n..];
+                written += n;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(2))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err((written, e.to_string())),
+        }
+    }
+    Ok(())
 }
 
 fn stop_worker(child: &mut Child) -> Result<(), String> {
@@ -843,18 +998,19 @@ fn work() -> Result<(), String> {
     record.input.validate()?;
     record.binding.validate()?;
     validate_generation(&record.input, &record.binding, record.generation.as_ref())?;
-    if let Some(request) = &record.generation {
-        request.recheck(&record.input, &record.binding)?;
-    }
     let (sender, receiver) = sync_channel::sync_channel(1);
     // A lost supervisor closes this pipe. This dedicated lifeline reader can
     // still stop the group while the provider main thread is doing CPU work.
     std::thread::spawn(move || {
         loop {
-            match line(&mut reader, 256) {
+            match line(&mut reader, MAX_FRAME_BYTES) {
                 Ok(bytes) => {
-                    if sender.send(bytes).is_err() {
-                        break;
+                    if sender.try_send(bytes).is_err() {
+                        let _ = nix::sys::signal::killpg(
+                            nix::unistd::getpgrp(),
+                            nix::sys::signal::Signal::SIGKILL,
+                        );
+                        std::process::exit(125);
                     }
                 }
                 Err(_) => {
@@ -866,6 +1022,12 @@ fn work() -> Result<(), String> {
                 }
             }
         }
+    });
+    let lifetime = start.remaining_ms;
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(lifetime));
+        let _ = nix::sys::signal::killpg(nix::unistd::getpgrp(), nix::sys::signal::Signal::SIGKILL);
+        std::process::exit(124);
     });
     emit(&Frame::Ready {
         id: record.id,
@@ -958,6 +1120,27 @@ fn work() -> Result<(), String> {
         emit(&Frame::ResultReady { id: record.id })?;
         std::thread::sleep(Duration::from_millis(mock.result_delay_ms));
     }
+    let mut sequence = 0u32;
+    let mut invoke = |name: &str,
+                      arguments: &serde_json::Value|
+     -> Result<crate::generation::ToolResult, String> {
+        emit(&Frame::ToolCall {
+            id: record.id,
+            sequence,
+            name: name.into(),
+            arguments: arguments.clone(),
+        })?;
+        let reply: ToolReply =
+            serde_json::from_slice(&receiver.recv().map_err(|_| "tool RPC lifeline closed")?)
+                .map_err(|e| e.to_string())?;
+        if reply.id != record.id || reply.sequence != sequence {
+            return Err("tool RPC response job or sequence differs".into());
+        }
+        sequence = sequence
+            .checked_add(1)
+            .ok_or("tool RPC sequence exhausted")?;
+        Ok(reply.result)
+    };
     let output = match &record.input {
         Input::Find { .. } => {
             let request = record
@@ -965,9 +1148,7 @@ fn work() -> Result<(), String> {
                 .as_ref()
                 .ok_or("generation request absent")?;
             let candidate =
-                crate::mocks::create_question_request_with_tools(request, |operation, result| {
-                    emit_generation_tool(record.id, operation, result)
-                })?;
+                crate::mocks::create_question_request_using_tools(request, &mut invoke)?;
             Output::Question(if mock.outcome == MockOutcome::Malformed {
                 "invalid question".into()
             } else {
@@ -980,10 +1161,7 @@ fn work() -> Result<(), String> {
                 .as_ref()
                 .ok_or("generation request absent")?;
             let compiled = request.question()?;
-            let candidate =
-                crate::mocks::create_proof_request_with_tools(request, |operation, result| {
-                    emit_generation_tool(record.id, operation, result)
-                })?;
+            let candidate = crate::mocks::create_proof_request_using_tools(request, &mut invoke)?;
             let source = if mock.outcome == MockOutcome::Malformed {
                 Some("invalid proof".into())
             } else if mock.outcome == MockOutcome::WrongTarget {
@@ -1086,5 +1264,43 @@ mod tests {
         assert_eq!(result, expected);
         assert!(frames.next().await.unwrap().is_none());
         supplier.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pipe_tests {
+    use super::*;
+    #[test]
+    fn provider_overflow_marks_closed_without_queue_capacity() {
+        let (sender, receiver) = sync_channel::sync_channel(1);
+        let closed = std::sync::atomic::AtomicBool::new(false);
+        let mut bytes = std::io::Cursor::new(b"{}\n{}\n".to_vec());
+        pump_provider(&mut bytes, sender, &closed);
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(matches!(receiver.try_recv(), Ok(Message::Provider(_))));
+    }
+    #[test]
+    fn full_pipe_writes_observe_independent_cancellation_and_deadline() {
+        for cancellation in [true, false] {
+            let (mut writer, _unread_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+            let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observer = closed.clone();
+            let actor = std::thread::spawn(move || {
+                if cancellation {
+                    std::thread::sleep(Duration::from_millis(25));
+                    observer.store(true, std::sync::atomic::Ordering::Release);
+                }
+            });
+            let start = Instant::now();
+            let result = cancellable_write(
+                &mut writer,
+                &vec![0u8; 2 * 1024 * 1024],
+                start + Duration::from_millis(100),
+                &closed,
+            );
+            actor.join().unwrap();
+            assert!(result.unwrap_err().contains("cancelled or expired"));
+            assert!(start.elapsed() < Duration::from_secs(1));
+        }
     }
 }

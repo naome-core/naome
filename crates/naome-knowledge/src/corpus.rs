@@ -3,18 +3,53 @@
 //! and ranking never confer proof validity or admission authority.
 use crate::{Envelope, Graph};
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use sha2::{Digest, Sha256};
+use std::{sync::Arc, time::Instant};
 
+pub(crate) mod cache;
+pub(crate) mod cursor;
+pub(crate) mod host;
+mod indexing;
+pub(crate) mod local;
+pub(crate) mod retrieval;
 pub(crate) mod semantic;
+pub(crate) mod service;
+pub(crate) mod snapshot;
 
-pub(crate) const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
+// A node-owned snapshot can hold the complete accepted graph (hex certificates,
+// derived conclusions and bounded dependencies). It never enters a model request.
+pub(crate) const MAX_SNAPSHOT_BYTES: usize = 160 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reference {
     pub(crate) proof: Envelope,
-    pub(crate) native_conclusion: String,
+    pub(crate) native_conclusion: Arc<str>,
     pub(crate) dependencies: Vec<String>,
+}
+
+/// Checked Graph custody creates this immutable projection once on acceptance.
+/// A content digest avoids serializing certificates in the gossip capture path.
+#[derive(Clone)]
+pub(crate) struct CachedReference {
+    pub reference: Arc<Reference>,
+    pub digest: String,
+    /// Derived solely from the checker-owned conclusion; never serialized into
+    /// a native snapshot, accepted object, Request or identity-bearing row.
+    pub controlled_conclusion: Arc<str>,
+}
+
+impl CachedReference {
+    pub fn new(reference: Reference, controlled_conclusion: Arc<str>) -> Self {
+        let digest = crate::hex(&Sha256::digest(
+            serde_json::to_vec(&reference).expect("finite checked projection"),
+        ));
+        Self {
+            reference: Arc::new(reference),
+            digest,
+            controlled_conclusion,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -23,7 +58,7 @@ pub struct ProofCorpus {
     pub(crate) artifact_snapshot: String,
     pub(crate) graph_root: String,
     /// Complete checked local proof set, including every referenced dependency.
-    pub(crate) references: Vec<Reference>,
+    pub(crate) references: Vec<Arc<Reference>>,
     /// The current proof-only graph cannot admit definitions or definition helpers.
     pub(crate) definitions_supported: bool,
     /// The existing local registry remains bound by binding.snapshot. Its entries
@@ -45,50 +80,18 @@ impl ProofCorpus {
         if graph.checked_context().definition_ids().next().is_some() {
             return Err("generation context contains unsupported definitions".into());
         }
-        let mut context = Self {
+        let context = Self {
             artifact_snapshot: crate::hex(&graph.checked_context().snapshot_id()),
             graph_root: crate::hex(&graph.content_root()),
-            references: Vec::new(),
+            references: graph
+                .corpus_references()
+                .map(|row| row.reference.clone())
+                .collect(),
             definitions_supported: false,
             registry_entries_included: false,
         };
-        let mut bytes = 0usize;
-        let mut steps = 0usize;
-        for (id, _, conclusion, canonical_length) in graph.checked_context().proof_conclusions() {
-            if canonical_length > MAX_SNAPSHOT_BYTES {
-                return Err("generation checked context byte limit".into());
-            }
-            let proof = graph
-                .get(&crate::hex(id.as_bytes()))?
-                .ok_or("generation checked proof unavailable")?
-                .clone();
-            let candidate = proof.clone().prepare()?;
-            steps = steps
-                .checked_add(candidate.normal.certificate().steps().len())
-                .ok_or("generation context step overflow")?;
-            if steps > crate::intake::MAX_CLOSURE_STEPS {
-                return Err("generation checked context step limit".into());
-            }
-            let reference = Reference {
-                proof,
-                native_conclusion: conclusion.to_source(),
-                dependencies: candidate
-                    .dependencies
-                    .iter()
-                    .map(|id| crate::hex(id.as_bytes()))
-                    .collect(),
-            };
-            bytes = bytes
-                .checked_add(
-                    serde_json::to_vec(&reference)
-                        .map_err(|e| e.to_string())?
-                        .len(),
-                )
-                .ok_or("generation context overflow")?;
-            if bytes > MAX_SNAPSHOT_BYTES {
-                return Err("generation checked context byte limit".into());
-            }
-            context.references.push(reference);
+        if context.references.len() != graph.accepted_count() {
+            return Err("checked graph projection is incomplete".into());
         }
         Ok(context)
     }
@@ -111,24 +114,35 @@ impl ProofCorpus {
         if self.references.len() > crate::MAX_OBJECTS {
             return Err("proof corpus count limit".into());
         }
-        let mut total = 0usize;
+        let mut certificate_bytes = 0usize;
+        let mut statements = std::collections::BTreeMap::new();
         for reference in &self.references {
-            if reference.native_conclusion.len() > MAX_SNAPSHOT_BYTES
+            if reference.native_conclusion.len() > 16 * naome_foundation::FORMULA_MAX_BYTES
                 || reference.proof.proof.len() > 2 * crate::MAX_PROOF_BYTES
                 || reference.dependencies.len() > crate::MAX_DEPENDENCIES
             {
                 return Err("proof corpus reference capacity differs".into());
             }
-            total = total
-                .checked_add(
-                    serde_json::to_vec(reference)
-                        .map_err(|e| e.to_string())?
-                        .len(),
-                )
-                .ok_or("proof corpus byte overflow")?;
-            if total > MAX_SNAPSHOT_BYTES {
-                return Err("proof corpus snapshot byte limit".into());
+            certificate_bytes = certificate_bytes
+                .checked_add(reference.proof.proof.len() / 2)
+                .ok_or("proof corpus certificate byte overflow")?;
+            if certificate_bytes > crate::MAX_ACCEPTED_BYTES {
+                return Err("proof corpus accepted certificate byte limit".into());
             }
+            if let Some(previous) =
+                statements.insert(&reference.proof.statement_id, &reference.native_conclusion)
+                && previous != &reference.native_conclusion
+            {
+                return Err("proof corpus same-statement conclusions differ".into());
+            }
+        }
+        if statements
+            .values()
+            .map(|source| source.len())
+            .sum::<usize>()
+            > 16 * crate::MAX_CONTEXT_BYTES
+        {
+            return Err("proof corpus distinct statement source byte limit".into());
         }
 
         crate::object::id_bytes(&self.artifact_snapshot)?;
@@ -173,6 +187,9 @@ impl ProofCorpus {
         Ok(())
     }
     pub fn recheck(&self) -> Result<(), String> {
+        self.checked_graph().map(|_| ())
+    }
+    pub(crate) fn checked_graph(&self) -> Result<Graph, String> {
         self.validate()?;
         let mut graph = Graph::default();
         let mut remaining = self.references.iter().collect::<Vec<_>>();
@@ -201,6 +218,6 @@ impl ProofCorpus {
         if graph.ids().len() != self.references.len() || Self::capture(&graph)? != *self {
             return Err("generation checked context binding or closure differs".into());
         }
-        Ok(())
+        Ok(graph)
     }
 }

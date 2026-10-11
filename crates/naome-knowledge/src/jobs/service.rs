@@ -2,7 +2,7 @@ use super::*;
 use journal::{Account, Disk, Journal};
 use libp2p::futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{Arc, Mutex},
     thread::JoinHandle,
@@ -33,6 +33,17 @@ impl Service {
         settings: Settings,
         cursor: u64,
     ) -> Result<(Self, Client, Recovery), String> {
+        Self::open_with_retrieval(directory, settings, cursor, None)
+    }
+    pub(crate) fn open_with_retrieval(
+        directory: &Path,
+        settings: Settings,
+        cursor: u64,
+        retrieval: Option<crate::corpus::cache::Settings>,
+    ) -> Result<(Self, Client, Recovery), String> {
+        if let Some(config) = &retrieval {
+            config.validate()?;
+        }
         settings.validate()?;
         let (disk, journal) = Disk::open(directory, settings, cursor)?;
         let recovery = Recovery {
@@ -45,7 +56,11 @@ impl Service {
                 .collect(),
         };
         let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
-        let client = Client { sender };
+        let indexing = crate::corpus::service::IndexFeed::default();
+        let client = Client {
+            sender,
+            indexing: indexing.clone(),
+        };
         let (halt, stop) = oneshot::channel();
         let (receipt, stopped) = oneshot::channel();
         let error = Arc::new(Mutex::new(None));
@@ -58,7 +73,10 @@ impl Service {
                         .enable_all()
                         .build()
                         .map_err(|e| e.to_string())?;
-                    runtime.block_on(Owner::new(disk, journal, settings).run(receiver, stop))
+                    runtime.block_on(
+                        Owner::new_with_feed(disk, journal, settings, retrieval, indexing)?
+                            .run(receiver, stop),
+                    )
                 })();
                 if let Err(failure) = &result {
                     *report.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure.clone());
@@ -124,7 +142,16 @@ struct Running {
     clock: Instant,
 }
 
+type Prepared = (
+    Input,
+    Binding,
+    Result<Option<crate::generation::Request>, String>,
+    oneshot::Sender<Completion>,
+);
 struct Owner {
+    sources: crate::corpus::service::Client,
+    source_service: crate::corpus::service::Service,
+    preparing: FuturesUnordered<BoxFuture<'static, Prepared>>,
     disk: Disk,
     journal: Journal,
     settings: Settings,
@@ -137,8 +164,37 @@ struct Owner {
 }
 
 impl Owner {
-    fn new(disk: Disk, journal: Journal, settings: Settings) -> Self {
-        Self {
+    #[cfg(test)]
+    fn new(disk: Disk, journal: Journal, settings: Settings) -> Result<Self, String> {
+        Self::new_with_retrieval(disk, journal, settings, None)
+    }
+    #[cfg(test)]
+    fn new_with_retrieval(
+        disk: Disk,
+        journal: Journal,
+        settings: Settings,
+        retrieval: Option<crate::corpus::cache::Settings>,
+    ) -> Result<Self, String> {
+        Self::new_with_feed(disk, journal, settings, retrieval, Default::default())
+    }
+    fn new_with_feed(
+        disk: Disk,
+        journal: Journal,
+        settings: Settings,
+        retrieval: Option<crate::corpus::cache::Settings>,
+        indexing: crate::corpus::service::IndexFeed,
+    ) -> Result<Self, String> {
+        let pins = source_pins(&journal);
+        let (source_service, sources) = crate::corpus::service::Service::open_with_feed(
+            disk.directory(),
+            pins,
+            retrieval,
+            indexing,
+        )?;
+        Ok(Self {
+            sources,
+            source_service,
+            preparing: FuturesUnordered::new(),
             disk,
             journal,
             settings,
@@ -148,7 +204,7 @@ impl Owner {
             tasks: FuturesUnordered::new(),
             next_lane: 0,
             flushed: Instant::now(),
-        }
+        })
     }
 
     async fn run(
@@ -162,9 +218,11 @@ impl Owner {
             .unwrap_or_else(|_| {
                 Err("research driver panicked; pending effects require reconciliation".into())
             });
+        self.source_service.begin_shutdown();
         let cleanup = self.stop_all().await;
 
-        combine_outcomes(result, cleanup)
+        let retrieval = self.source_service.shutdown();
+        combine_outcomes(combine_outcomes(result, cleanup), retrieval)
     }
 
     async fn drive(
@@ -179,7 +237,21 @@ impl Owner {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
-                    Some(Command::Submit(input,binding,generation,reply))=>self.submit(input,binding,generation.map(|r|*r),reply)?,
+                    Some(Command::Submit(input,binding,generation,reply))=> {
+                        if self.preparing.len() >= 8 { reject(reply,binding,"research preparation capacity");continue; }
+                        let sources = self.sources.clone();
+                        self.preparing.push(Box::pin(async move {
+                            let result = match generation { Some(request) => sources.ensure(*request).await.map(Some), None => Ok(None) };
+                            (input,binding,result,reply)
+                        }));
+                    },
+                    Some(Command::Prepare(preparation,reply))=> {
+                        if self.preparing.len() >= 8 { reject(reply,preparation.binding,"research preparation capacity");continue; }
+                        let input = preparation.input.clone();
+                        let binding = preparation.binding.clone();
+                        let sources = self.sources.clone();
+                        self.preparing.push(Box::pin(async move { (input,binding,sources.prepare(*preparation).await.map(Some),reply) }));
+                    },
                     Some(Command::Acknowledge(id))=>{
                         if id!=0 {
                             let Some(record)=self.journal.records.get_mut(&id) else {
@@ -212,6 +284,12 @@ impl Owner {
                 },
                 event=progress.recv()=>if let Some(event)=event {
                     match event {
+                        process::Event::RetrievalReserve{id,request_id,phase,reply}=>{
+                            let result=self.reserve_retrieval(id,&request_id,&phase);
+                            let fatal=result.as_ref().err().filter(|e|!e.starts_with("research allowance")).cloned();
+                            let _=reply.send(result);
+                            if let Some(error)=fatal{return Err(error);}
+                        },
                         process::Event::Reserve{id,next,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
                                 let _=reply.send(Err("research job cancelled or expired".into()));continue;
@@ -240,6 +318,9 @@ impl Owner {
                             if let Some(error)=failure{return Err(error);}
                         },
                     }
+                },
+                preparation=self.preparing.next(),if !self.preparing.is_empty()=>if let Some((input,binding,result,reply))=preparation {
+                    match result { Ok(request)=>self.submit(input,binding,request,reply)?, Err(error)=>reject(reply,binding,&error) }
                 },
                 completion=self.tasks.next(),if !self.tasks.is_empty()=>if let Some((id,outcome))=completion {
                     self.complete(id,outcome)?;
@@ -330,6 +411,7 @@ impl Owner {
             .ok_or("research reserved result byte capacity")?;
         self.journal.validate_lifecycle(self.settings)?;
         self.disk.save_payload(&payload)?;
+        self.sources.update_pins(source_pins(&self.journal));
         self.flushed = Instant::now();
         Ok(())
     }
@@ -362,6 +444,12 @@ impl Owner {
         input.validate()?;
         binding.validate()?;
         validate_generation(&input, &binding, generation.as_ref())?;
+        #[cfg(test)]
+        if let Some(request) = &generation {
+            request.persist_source(&crate::corpus::snapshot::Store::open(
+                self.disk.directory(),
+            )?)?;
+        }
         let settings = self.settings.for_input(&input);
         if self
             .journal
@@ -499,6 +587,7 @@ impl Owner {
                 accounted_ms: now,
                 spent_ms,
                 reserved_units,
+                retrieval_reserved_units: 0,
                 checkpoint: 0,
                 state: State::Queued,
                 result: None,
@@ -548,6 +637,44 @@ impl Owner {
     }
 
     fn reserve(&mut self, id: u64, next: u32) -> Result<(), String> {
+        if self
+            .journal
+            .records
+            .get(&id)
+            .is_none_or(|r| next != r.checkpoint + 1)
+        {
+            return Err("research reservation lifecycle differs".into());
+        }
+        self.reserve_unit(id, false)
+    }
+
+    fn reserve_retrieval(&mut self, id: u64, request_id: &str, phase: &str) -> Result<(), String> {
+        if ![
+            "model_load",
+            "document_tokenize",
+            "document_chunk",
+            "query_tokenize",
+            "query_encode",
+        ]
+        .contains(&phase)
+            || self.journal.records.get(&id).is_none_or(|r| {
+                r.state != State::Running
+                    || r.generation
+                        .as_ref()
+                        .is_none_or(|q| q.identity() != request_id)
+            })
+        {
+            return Err("research allowance retrieval lifecycle or request binding differs".into());
+        }
+        self.reserve_unit(id, true)?;
+        let record = &self.journal.records[&id];
+        crate::network::emit(
+            serde_json::json!({"event":"retrieval_work_reserved","job":id,"request_id":request_id,"phase":phase,"reserved_units":record.reserved_units,"retrieval_reserved_units":record.retrieval_reserved_units,"spent_ms":record.spent_ms,"expires_ms":record.expires_ms}),
+        );
+        Ok(())
+    }
+
+    fn reserve_unit(&mut self, id: u64, retrieval: bool) -> Result<(), String> {
         self.charge(id)?;
         let now = wall_ms()?;
         let record = self
@@ -555,7 +682,7 @@ impl Owner {
             .records
             .get_mut(&id)
             .ok_or("research reservation record absent")?;
-        if record.state != State::Running || next != record.checkpoint + 1 {
+        if record.state != State::Running {
             return Err("research reservation lifecycle differs".into());
         }
         let account_exhausted = self
@@ -577,6 +704,12 @@ impl Owner {
             return Err("research allowance exhausted".into());
         }
         record.reserved_units += 1;
+        if retrieval {
+            record.retrieval_reserved_units = record
+                .retrieval_reserved_units
+                .checked_add(1)
+                .ok_or("retrieval reservation overflow")?;
+        }
         if let Some(account) = self.journal.accounts.get_mut(&record.input.account_key()) {
             account.reserved_units += 1;
         }
@@ -654,6 +787,7 @@ impl Owner {
                 self.save()?;
                 let (cancel, receiver) = oneshot::channel();
                 let events = events.clone();
+                let sources = self.sources.clone();
                 self.running.insert(
                     id,
                     Running {
@@ -668,6 +802,7 @@ impl Owner {
                         events,
                         receiver,
                         slot,
+                        sources,
                     ))
                     .catch_unwind()
                     .await
@@ -977,3 +1112,17 @@ fn combine_outcomes(result: Result<(), String>, cleanup: Result<(), String>) -> 
 
 #[cfg(test)]
 mod tests;
+
+fn source_pins(journal: &Journal) -> BTreeSet<String> {
+    journal
+        .records
+        .values()
+        .filter_map(|record| {
+            record
+                .generation
+                .as_ref()
+                .and_then(|request| request.retrieval_snapshot.as_ref())
+                .map(|handle| handle.snapshot_id.clone())
+        })
+        .collect()
+}

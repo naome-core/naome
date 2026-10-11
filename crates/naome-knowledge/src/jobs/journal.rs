@@ -48,6 +48,13 @@ pub(super) struct Disk {
 }
 
 impl Disk {
+    pub(super) fn directory(&self) -> &Path {
+        self.path
+            .parent()
+            .and_then(Path::parent)
+            .expect("owned research directory")
+    }
+
     pub(super) fn open(
         directory: &Path,
         settings: Settings,
@@ -83,8 +90,11 @@ impl Disk {
         journal.validate(settings)?;
         // A recovered serialized envelope crosses the mathematical trust
         // boundary once. Subsequent saves validate immutable integrity only.
-        for record in journal.records.values() {
-            if let Some(request) = &record.generation {
+        let sources = crate::corpus::snapshot::Store::open(directory)?;
+        let mut verified_sources = BTreeMap::new();
+        for record in journal.records.values_mut() {
+            if let Some(request) = &mut record.generation {
+                request.restore_shared_source(&sources, &mut verified_sources)?;
                 request.recheck_retained(&record.input, &record.binding)?;
             }
         }
@@ -285,6 +295,10 @@ impl Journal {
                         .checked_add(r.settings.limits.horizon_ms)
                         .ok_or("job horizon overflow")?
                 || r.checkpoint > r.reserved_units
+                || r.retrieval_reserved_units > r.reserved_units
+                || r.checkpoint
+                    .checked_add(r.retrieval_reserved_units)
+                    .is_none_or(|units| units > r.reserved_units)
                 || r.reserved_units > r.settings.limits.work_units
                 || r.checkpoint > r.settings.mock.steps
                 || r.acknowledged && !r.state.terminal()

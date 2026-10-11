@@ -5,16 +5,16 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     Baseline,
     Prepared,
     Admitted,
     Exchange,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct FirstAdmission {
+pub(crate) struct FirstAdmission {
     record: String,
     input: String,
     policy: String,
@@ -24,12 +24,40 @@ struct FirstAdmission {
     registry_after: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Entry {
+pub(crate) struct Entry {
     pub source: String,
     pub kind: Kind,
-    first: Option<FirstAdmission>,
+    pub(crate) first: Option<FirstAdmission>,
+}
+
+impl Entry {
+    pub(crate) fn validate(&self, key: &str) -> Result<CompiledQuestion, String> {
+        let question = CompiledQuestion::compile(&self.source).map_err(|e| e.to_string())?;
+        if key != crate::hex(question.source_hash())
+            || matches!(self.kind, Kind::Prepared | Kind::Admitted) != self.first.is_some()
+        {
+            return Err("frozen original question identity or provenance differs".into());
+        }
+        if let Some(first) = &self.first {
+            for value in [
+                &first.record,
+                &first.input,
+                &first.policy,
+                &first.snapshot_before,
+                &first.snapshot_after,
+                &first.registry_before,
+                &first.registry_after,
+            ] {
+                crate::object::id_bytes(value)?;
+            }
+            if first.record != key {
+                return Err("frozen original admission record differs".into());
+            }
+        }
+        Ok(question)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,9 +72,16 @@ struct State {
 pub(super) struct Persistence {
     path: PathBuf,
     state: State,
+    revision: u64,
 }
 
 impl Persistence {
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub(super) fn projection(&self) -> BTreeMap<String, Entry> {
+        self.state.entries.clone()
+    }
     pub(super) fn open(
         directory: &Path,
         policy: PrefilterPolicy,
@@ -114,7 +149,11 @@ impl Persistence {
             }
         }
         let entries = state.entries.values().cloned().collect();
-        let persistence = Self { path, state };
+        let persistence = Self {
+            path,
+            state,
+            revision: 0,
+        };
         persistence.save()?;
         if !initialized {
             crate::jobs::write_marker(&marker, b"naome-question-registry-v1\n")?;
@@ -141,15 +180,21 @@ impl Persistence {
             registry_before: crate::hex(&r.registry_before()),
             registry_after: crate::hex(&r.registry_after()),
         });
-        self.state.entries.insert(
-            crate::hex(question.source_hash()),
-            Entry {
-                source: question.source().to_owned(),
-                kind,
-                first,
-            },
-        );
-        self.save()
+        let key = crate::hex(question.source_hash());
+        let entry = Entry {
+            source: question.source().to_owned(),
+            kind,
+            first,
+        };
+        if self.state.entries.get(&key) == Some(&entry) {
+            return Ok(());
+        }
+        self.state
+            .entries
+            .insert(crate::hex(question.source_hash()), entry);
+        self.save()?;
+        self.revision += 1;
+        Ok(())
     }
 
     pub(super) fn delivered(
@@ -171,6 +216,8 @@ impl Persistence {
         } else {
             self.state.entries.remove(&key);
         }
-        self.save()
+        self.save()?;
+        self.revision += 1;
+        Ok(())
     }
 }

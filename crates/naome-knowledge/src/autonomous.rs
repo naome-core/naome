@@ -490,18 +490,21 @@ impl Autonomous {
                         question: question.source().to_owned(),
                     };
                     let binding = jobs::Binding::new(snapshot, policy);
-                    let request = owner_context(control).and_then(|owner| {
-                        generation::Request::build_with_policy(
-                            &input,
-                            &binding,
+                    let prepared = owner_context(control).and_then(|owner| {
+                        let seed = crate::corpus::snapshot::Seed::capture(
                             graph,
+                            questions.stored_questions()?,
+                            &binding.snapshot,
+                        )?;
+                        Ok(crate::corpus::service::Preparation {
+                            input,
+                            binding,
+                            seed,
                             owner,
-                            questions.generation_policy(),
-                        )
+                            policy: questions.generation_policy(),
+                        })
                     });
-                    match request
-                        .and_then(|request| self.client.submit_generation(input, binding, request))
-                    {
+                    match prepared.and_then(|prepared| self.client.prepare_generation(prepared)) {
                         Ok(ticket) => {
                             self.solving.insert(
                                 *question.resolution_id(),
@@ -534,13 +537,14 @@ impl Autonomous {
             && questions.available_local()
         {
             self.next_question = now + Duration::from_millis(self.intervals.question_interval_ms);
-            let request = if let Some(record) = self.recovered_finding.pop_front() {
+            let ticket = if let Some(record) = self.recovered_finding.pop_front() {
                 match record.generation.clone() {
                     Some(request)
                         if record.state != jobs::State::InDoubt
                             && request.current_instructions() =>
                     {
-                        Ok((record.input, record.binding, request))
+                        self.client
+                            .submit_generation(record.input, record.binding, request)
                     }
                     _ => {
                         self.retire(record);
@@ -558,19 +562,22 @@ impl Autonomous {
                 let input = jobs::Input::Find { cursor };
                 let binding = jobs::Binding::new(snapshot, policy);
                 owner_context(control).and_then(|owner| {
-                    generation::Request::build_with_policy(
-                        &input,
-                        &binding,
+                    let seed = crate::corpus::snapshot::Seed::capture(
                         graph,
-                        owner,
-                        questions.generation_policy(),
-                    )
-                    .map(|request| (input, binding, request))
+                        questions.stored_questions()?,
+                        &binding.snapshot,
+                    )?;
+                    self.client
+                        .prepare_generation(crate::corpus::service::Preparation {
+                            input,
+                            binding,
+                            seed,
+                            owner,
+                            policy: questions.generation_policy(),
+                        })
                 })
             };
-            match request.and_then(|(input, binding, request)| {
-                self.client.submit_generation(input, binding, request)
-            }) {
+            match ticket {
                 Ok(ticket) => self.finding = Some(Finding { ticket }),
                 Err(error) => emit(
                     json!({"event":"generation_context_unavailable","role":"question","error":error}),

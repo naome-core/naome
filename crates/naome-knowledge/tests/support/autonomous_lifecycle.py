@@ -143,7 +143,7 @@ def wait_until(predicate, deadline):
 
 
 def retain_evidence(output, summary, mode, profile):
-    private = {"identity.key", "control.json", ".control-incoming", "knowledge.lock", "lifecycle.lock"}
+    private = {"identity.key", "cursor.key", "cursor.initialized", "control.json", ".control-incoming", "knowledge.lock", "lifecycle.lock", "model.lock"}
     paths = [path for path in sorted(output.rglob("*"))
         if path.is_file() and not path.is_symlink()
         and path.name != "summary.json" and not private.intersection(path.relative_to(output).parts)]

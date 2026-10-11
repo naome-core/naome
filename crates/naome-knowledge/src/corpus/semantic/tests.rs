@@ -11,7 +11,7 @@ const MEMBERSHIP: &str = "let: a = mem(x,x) b = imp(a,a) goal = all(x,b) proof: 
 struct FakeEncoder {
     identity: EncoderIdentity,
     inputs: Vec<String>,
-    proof_vectors: BTreeMap<String, Vec<f32>>,
+    document_vectors: BTreeMap<String, Vec<f32>>,
     query_vector: Vec<f32>,
     fail_on: Option<usize>,
     change_on: Option<usize>,
@@ -27,7 +27,7 @@ impl FakeEncoder {
                 maximum_input_bytes: MAX_REQUEST_BYTES,
             },
             inputs: Vec::new(),
-            proof_vectors: BTreeMap::new(),
+            document_vectors: BTreeMap::new(),
             query_vector: vec![1.0, 0.0],
             fail_on: None,
             change_on: None,
@@ -47,12 +47,9 @@ impl SemanticEncoder for FakeEncoder {
         if self.fail_on == Some(call) {
             return Err("explicit injected fake failure".into());
         }
-        if input.starts_with("naome:semantic-proof-content:v1\n") {
-            for (proof, vector) in &self.proof_vectors {
-                if input
-                    .lines()
-                    .any(|line| line == format!("proof_id: {proof}"))
-                {
+        if input.starts_with("naome:semantic-proof-content:v6\n") {
+            for (line, vector) in &self.document_vectors {
+                if input.lines().any(|candidate| candidate == line) {
                     return Ok(vector.clone());
                 }
             }
@@ -79,7 +76,7 @@ fn fixture() -> (Graph, CheckedContext, String, String) {
 }
 
 #[test]
-fn encoder_receives_full_actual_proof_content_and_exact_text_query() {
+fn encoder_receives_complete_math_once_with_canonical_records_bound_separately() {
     let (mut graph, _, equality, _) = fixture();
     let source = format!("goal = all(x,eq(x,x)) proof: p = cite(\"{equality}\") return p");
     let citing = populate(&mut graph, &source);
@@ -87,45 +84,59 @@ fn encoder_receives_full_actual_proof_content_and_exact_text_query() {
     let mut encoder = FakeEncoder::new();
     let index = SemanticIndex::build(&corpus, &mut encoder).unwrap();
     assert_eq!(encoder.inputs.len(), corpus.references.len());
-    for reference in &corpus.references {
-        let input = encoder
-            .inputs
+    for (input, reference) in encoder.inputs.iter().zip(&corpus.references) {
+        assert!(input.starts_with("naome:semantic-proof-content:v6\n"));
+        assert_eq!(input.matches("Checked primitive conclusion:").count(), 1);
+        assert_eq!(
+            input
+                .matches("Actual normalized certificate constructors and operands:")
+                .count(),
+            1
+        );
+        assert!(!input.contains("normalized_certificate:"));
+        assert!(!input.contains("native_checked_conclusion:"));
+        assert!(!input.contains(&reference.proof.proof_id));
+        assert!(!input.contains(&reference.proof.statement_id));
+        assert!(!input.contains(&reference.proof.compatibility));
+        let indexed = index
+            .proofs
             .iter()
-            .find(|input| {
-                input
-                    .lines()
-                    .any(|line| line == format!("proof_id: {}", reference.proof.proof_id))
-            })
+            .find(|row| row.proof_id == reference.proof.proof_id)
             .unwrap();
-        assert!(input.contains(&reference.native_conclusion));
-        assert!(input.contains(&reference.proof.statement_id));
-        assert!(input.contains(&reference.proof.compatibility));
-        assert!(input.contains("original .nao source is not stored"));
-        assert!(input.contains("normalized_certificate:\nProofCertificate"));
+        assert_eq!(indexed.statement_id, reference.proof.statement_id);
+        assert_eq!(
+            corpus.get_proof(&indexed.proof_id).unwrap().unwrap(),
+            reference.proof
+        );
+        assert_eq!(
+            indexed.content_digest,
+            // The unchanged cache codec hashes the JSON-framed String,
+            // including escaped line breaks, rather than raw UTF-8 bytes.
+            crate::hex(&Sha256::digest(serde_json::to_vec(input).unwrap()))
+        );
     }
     assert!(
         encoder
             .inputs
             .iter()
-            .any(|input| input.contains("EqualityReflexivity"))
+            .any(|input| input.contains("Equality reflexivity instance"))
     );
     assert!(
         encoder
             .inputs
             .iter()
-            .any(|input| input.contains("ModusPonens"))
+            .any(|input| input.contains("Modus ponens using earlier normalized premise"))
     );
-    let cited_content = encoder
-        .inputs
+    let position = corpus
+        .references
         .iter()
-        .find(|input| {
-            input
-                .lines()
-                .any(|line| line == format!("proof_id: {citing}"))
-        })
+        .position(|reference| reference.proof.proof_id == citing)
         .unwrap();
-    assert!(cited_content.contains("ProofReference"));
-    assert!(cited_content.contains(&format!("direct_dependencies: [\"{equality}\"]")));
+    let cited_content = &encoder.inputs[position];
+    assert!(cited_content.contains(&format!(
+        "Citation of the concrete proof cite(\"{equality}\")"
+    )));
+    assert_eq!(corpus.references[position].dependencies, vec![equality]);
     let query = "Find existing proofs involving addition, even if this is a new phrasing.";
     let page = index.search(&corpus, query, 2, &mut encoder).unwrap();
     assert_eq!(encoder.inputs.last().unwrap(), query);
@@ -139,12 +150,13 @@ fn encoder_receives_full_actual_proof_content_and_exact_text_query() {
 fn actual_top_k_uses_cosine_rank_not_magnitude_or_proof_order() {
     let (_, corpus, equality, membership) = fixture();
     let mut encoder = FakeEncoder::new();
+    encoder.document_vectors.insert(
+        "Checked primitive conclusion: (for every set b0, (b0 equals b0)).".into(),
+        vec![0.0, 500.0],
+    );
     encoder
-        .proof_vectors
-        .insert(equality.clone(), vec![0.0, 500.0]);
-    encoder
-        .proof_vectors
-        .insert(membership.clone(), vec![0.25, 0.0]);
+        .document_vectors
+        .insert("Checked primitive conclusion: (for every set b0, (if (b0 is an element of b0), then (b0 is an element of b0))).".into(), vec![0.25, 0.0]);
     let index = SemanticIndex::build(&corpus, &mut encoder).unwrap();
     let page = index
         .search(&corpus, "unrestricted textual question", 1, &mut encoder)
@@ -282,14 +294,9 @@ fn queries_and_encoder_capacity_are_bounded_without_vocabulary_restrictions() {
         encoder.identity.dimensions = dimensions;
         assert!(SemanticIndex::build(&corpus, &mut encoder).is_err());
     }
-    assert!(vector_budget(crate::MAX_OBJECTS, MAX_DIMENSIONS).is_err());
-    assert!(
-        vector_budget(
-            MAX_VECTOR_ELEMENTS / usize::from(MAX_DIMENSIONS),
-            MAX_DIMENSIONS
-        )
-        .is_ok()
-    );
+    assert!(vector_budget(crate::MAX_OBJECTS, MAX_DIMENSIONS).is_ok());
+    assert!(vector_budget(crate::MAX_OBJECTS + 1, MAX_DIMENSIONS).is_err());
+    assert!(vector_budget(crate::MAX_OBJECTS, MAX_DIMENSIONS).is_ok());
 }
 
 #[test]
@@ -329,7 +336,7 @@ fn exported_cache_rechecks_all_source_and_vector_bindings_before_reuse() {
     changed.proofs[0].content_digest = "00".repeat(32);
     assert!(changed.search(&corpus, "text", 1, &mut encoder).is_err());
     let mut changed = index.clone();
-    changed.proofs[0].vector = vec![0.0, 1.0];
+    changed.proofs[0].chunks[0].vector = vec![0.0, 1.0];
     assert!(
         changed
             .search(&corpus, "text", 1, &mut encoder)
@@ -347,10 +354,173 @@ fn cache_decoding_rejects_oversized_vector_arrays_and_malformed_identities() {
     let mut encoder = FakeEncoder::new();
     let index = SemanticIndex::build(&corpus, &mut encoder).unwrap();
     let mut changed = serde_json::to_value(&index).unwrap();
-    changed["proofs"][0]["vector"] =
+    changed["proofs"][0]["chunks"][0]["vector"] =
         serde_json::json!(vec![1.0f32; usize::from(MAX_DIMENSIONS) + 1]);
     assert!(SemanticIndex::from_json(&corpus, &serde_json::to_vec(&changed).unwrap()).is_err());
     let mut changed = serde_json::to_value(index).unwrap();
     changed["proofs"][0]["proof_id"] = serde_json::json!("invented proof");
     assert!(SemanticIndex::from_json(&corpus, &serde_json::to_vec(&changed).unwrap()).is_err());
+}
+
+#[test]
+fn complete_chunk_ranking_finds_later_content_and_rejects_incomplete_chunks() {
+    struct MultiEncoder {
+        base: FakeEncoder,
+        chunks: Vec<Vec<f32>>,
+    }
+    impl SemanticEncoder for MultiEncoder {
+        fn identity(&self) -> EncoderIdentity {
+            self.base.identity()
+        }
+        fn encode(&mut self, input: &str) -> Result<Vec<f32>, String> {
+            self.base.encode(input)
+        }
+        fn encode_document(&mut self, _: &str) -> Result<Vec<Vec<f32>>, String> {
+            Ok(self.chunks.clone())
+        }
+    }
+    let (_, corpus, _, _) = fixture();
+    let mut encoder = MultiEncoder {
+        base: FakeEncoder::new(),
+        chunks: vec![vec![0.0, 3.0], vec![5.0, 0.0]],
+    };
+    let index = SemanticIndex::build(&corpus, &mut encoder).unwrap();
+    let page = index
+        .search(&corpus, "matching later chunk", 2, &mut encoder)
+        .unwrap();
+    assert!(page.complete_corpus_scan);
+    assert!(
+        page.results
+            .iter()
+            .all(|hit| hit.matched_chunk == 1 && hit.document_chunks == 2 && hit.score == 1.0)
+    );
+    assert!(
+        page.results
+            .windows(2)
+            .all(|pair| pair[0].proof_id < pair[1].proof_id)
+    );
+    encoder.base.query_vector = vec![0.0, 1.0];
+    let page = index
+        .search(&corpus, "matching first chunk", 2, &mut encoder)
+        .unwrap();
+    assert!(page.results.iter().all(|hit| hit.matched_chunk == 0));
+    let restored = SemanticIndex::from_json(&corpus, &serde_json::to_vec(&index).unwrap()).unwrap();
+    assert_eq!(
+        restored
+            .search(&corpus, "matching first chunk", 2, &mut encoder)
+            .unwrap(),
+        page
+    );
+    for chunks in [
+        vec![],
+        vec![vec![]],
+        vec![vec![1.0, 0.0]; MAX_DOCUMENT_CHUNKS + 1],
+    ] {
+        encoder.chunks = chunks;
+        assert!(SemanticIndex::build(&corpus, &mut encoder).is_err());
+    }
+    let mut corrupted = index;
+    corrupted.proofs[0].chunks[1].vector = vec![100.0, 0.0];
+    corrupted.index_identity = corrupted.checksum();
+    assert!(
+        SemanticIndex::from_json(&corpus, &serde_json::to_vec(&corrupted).unwrap())
+            .unwrap_err()
+            .contains("not normalized")
+    );
+}
+
+fn source_index_fixture() -> (super::super::snapshot::Frozen, SemanticIndex) {
+    let (graph, _, _, _) = fixture();
+    let source = super::super::snapshot::Frozen::capture(&graph, None, &"00".repeat(32)).unwrap();
+    let identity = FakeEncoder::new().identity();
+    let rows = source
+        .corpus()
+        .references
+        .iter()
+        .map(|reference| {
+            let content = source.semantic_content(&reference.proof.proof_id).unwrap();
+            let split = content.len() / 2;
+            // Artificial spans/vectors test complete persisted coverage only.
+            // They are not an observation of any real tokenizer or encoder.
+            SourceVectorRow::new(
+                identity.clone(),
+                reference,
+                &content,
+                vec![
+                    super::super::local::EmbeddedChunk {
+                        token_start: 0,
+                        token_end: 510,
+                        total_tokens: 511,
+                        byte_start: 0,
+                        byte_end: split,
+                        vector: vec![0., 1.],
+                    },
+                    super::super::local::EmbeddedChunk {
+                        token_start: 510,
+                        token_end: 511,
+                        total_tokens: 511,
+                        byte_start: split,
+                        byte_end: content.len(),
+                        vector: vec![1., 0.],
+                    },
+                ],
+            )
+            .unwrap()
+        })
+        .collect();
+    let index = SemanticIndex::build_source(&source, identity, rows).unwrap();
+    (source, index)
+}
+
+#[test]
+fn source_index_import_rejects_missing_tail_even_with_recomputed_checksum() {
+    let (source, index) = source_index_fixture();
+    SemanticIndex::from_json_source(&source, &serde_json::to_vec(&index).unwrap()).unwrap();
+    for missing in [0, 1] {
+        let mut changed = index.clone();
+        changed.proofs[0].chunks.remove(missing);
+        changed.index_identity = changed.checksum();
+        assert!(
+            SemanticIndex::from_json_source(&source, &serde_json::to_vec(&changed).unwrap())
+                .is_err()
+        );
+    }
+    let mut changed = index;
+    changed.proofs[0].chunks[0].coverage = None;
+    changed.index_identity = changed.checksum();
+    assert!(
+        SemanticIndex::from_json_source(&source, &serde_json::to_vec(&changed).unwrap()).is_err()
+    );
+}
+
+#[test]
+fn saved_ranking_rejects_empty_duplicates_changed_bindings_and_invalid_chunks() {
+    let (source, index) = source_index_fixture();
+    let query = "actual saved ranked window contract";
+    let page = index.search_vector(&source, query, 2, &[1., 0.]).unwrap();
+    let saved: SemanticPage = serde_json::from_slice(&serde_json::to_vec(&page).unwrap()).unwrap();
+    index.validate_ranking(&source, query, 2, &saved).unwrap();
+    for change in 0..8 {
+        let mut bad = saved.clone();
+        match change {
+            0 => bad.results.clear(),
+            1 => bad.results[1] = bad.results[0].clone(),
+            2 => bad.results.reverse(),
+            3 => bad.results[0].score = f64::NAN,
+            4 => bad.results[0].statement_id = "00".repeat(32),
+            5 => bad.results[0].content_digest = "00".repeat(32),
+            6 => bad.results[0].document_chunks = 3,
+            _ => bad.results[0].matched_chunk = 2,
+        }
+        assert!(
+            index.validate_ranking(&source, query, 2, &bad).is_err(),
+            "mutation {change}"
+        );
+    }
+    assert!(
+        index
+            .validate_ranking(&source, "changed query", 2, &saved)
+            .is_err()
+    );
+    assert!(index.validate_ranking(&source, query, 1, &saved).is_err());
 }

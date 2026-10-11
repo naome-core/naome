@@ -358,6 +358,7 @@ async fn obsolete_recovered_requests_are_retired_instead_of_retried_or_left_unac
                 accounted_ms: 0,
                 spent_ms: 1,
                 reserved_units: 1,
+                retrieval_reserved_units: 0,
                 checkpoint: 1,
                 state: jobs::State::Failed,
                 result: None,

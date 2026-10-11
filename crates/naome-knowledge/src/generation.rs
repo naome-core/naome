@@ -1,20 +1,24 @@
 //! Complete immutable provider inputs, captured from the checked runtime graph.
 //! Deserializing a request grants no mathematical or publication authority.
+#[cfg(test)]
+use crate::Graph;
 use crate::corpus::ProofCorpus as CheckedContext;
-use crate::corpus::Reference;
-use crate::{Graph, jobs, runtime::OwnerProfile};
+use crate::corpus::{Reference, snapshot};
+use crate::{jobs, runtime::OwnerProfile};
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::{AssessmentLimits, PrefilterPolicy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// The serialized request includes instructions, context and task without truncation.
 /// This fits the existing process frame and journal reservations; model adapters
 /// must reject unsupported token windows rather than shorten these instructions.
-pub(crate) const MAX_REQUEST_BYTES: usize = crate::corpus::MAX_SNAPSHOT_BYTES;
+pub(crate) const MAX_REQUEST_BYTES: usize = 256 * 1024;
 mod retrieval;
 use crate::corpus::semantic;
-pub(crate) use retrieval::{ResultPage as ToolResult, Status as ToolStatus};
+pub(crate) use retrieval::ResultPage as ToolResult;
+pub(crate) use retrieval::Status as ToolStatus;
 
 const MAX_UNAVAILABLE_REASON_BYTES: usize = 256;
 const NATIVE: &str = include_str!("generation/native_authoring.txt");
@@ -246,7 +250,7 @@ impl Requirements {
 
 /// Provider-neutral, ready-to-send system instructions and separate task data.
 /// No request string is interpolated into the authoritative system instructions.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Request {
     version: u8,
@@ -255,7 +259,16 @@ pub(crate) struct Request {
     binding: jobs::Binding,
     task: Task,
     owner_interests: OwnerInterests,
-    checked_context: CheckedContext,
+    // Retained v1 requests preserve their exact bytes as inert recovery evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checked_context: Option<CheckedContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) retrieval_snapshot: Option<snapshot::Handle>,
+    // Node custody only. Never serialized to a provider or admitted from a pipe.
+    #[serde(skip)]
+    frozen: Option<Arc<snapshot::Frozen>>,
+    #[serde(skip)]
+    cursor_key: Option<crate::corpus::cursor::Key>,
     requirements: Requirements,
     tools: Vec<retrieval::Tool>,
 }
@@ -269,6 +282,7 @@ impl Request {
     ) -> Result<Self, String> {
         Self::build_with_policy(input, binding, graph, owner, PrefilterPolicy::default())
     }
+    #[cfg(test)]
     pub(crate) fn build_with_policy(
         input: &jobs::Input,
         binding: &jobs::Binding,
@@ -276,15 +290,31 @@ impl Request {
         owner: OwnerContext,
         policy: PrefilterPolicy,
     ) -> Result<Self, String> {
+        let frozen = snapshot::Frozen::capture(graph, None, &binding.snapshot)?;
+        Self::build_from_snapshot(input, binding, Arc::new(frozen), owner, policy)
+    }
+    pub(crate) fn build_from_snapshot(
+        input: &jobs::Input,
+        binding: &jobs::Binding,
+        frozen: Arc<snapshot::Frozen>,
+        owner: OwnerContext,
+        policy: PrefilterPolicy,
+    ) -> Result<Self, String> {
+        if frozen.handle().knowledge_snapshot != binding.snapshot {
+            return Err("generation frozen knowledge binding differs".into());
+        }
         let task = Task::from_input(input)?;
         let mut request = Self {
-            version: 1,
+            version: 2,
             request_id: String::new(),
             system: task.system(),
             binding: binding.clone(),
             task,
             owner_interests: OwnerInterests::capture(owner)?,
-            checked_context: CheckedContext::capture(graph)?,
+            checked_context: None,
+            retrieval_snapshot: Some(frozen.handle().clone()),
+            frozen: Some(frozen),
+            cursor_key: Some(crate::corpus::cursor::Key::ephemeral()?),
             requirements: Requirements::new(policy),
             tools: retrieval::tools(),
         };
@@ -304,7 +334,7 @@ impl Request {
         Ok(())
     }
     pub(crate) fn current_instructions(&self) -> bool {
-        self.system == self.task.system() && self.tools == retrieval::tools()
+        self.version == 2 && self.system == self.task.system() && self.tools == retrieval::tools()
     }
     pub(crate) fn validate_retained(
         &self,
@@ -315,7 +345,7 @@ impl Request {
             return Err("generation complete request byte limit".into());
         }
         if self.request_id != self.content_identity()
-            || self.version != 1
+            || ![1, 2].contains(&self.version)
             || self.binding != *binding
             || self.task != Task::from_input(input)?
         {
@@ -323,15 +353,41 @@ impl Request {
         }
         self.owner_interests.validate()?;
         self.requirements.validate(binding)?;
-        self.checked_context.validate()
+        match (
+            self.version,
+            &self.checked_context,
+            &self.retrieval_snapshot,
+        ) {
+            (1, Some(context), None) => context.validate(),
+            (2, None, Some(handle)) => {
+                handle.validate()?;
+                if handle.knowledge_snapshot != binding.snapshot {
+                    return Err("generation frozen knowledge identity differs".into());
+                }
+                if self
+                    .frozen
+                    .as_ref()
+                    .is_some_and(|source| source.handle() != handle)
+                {
+                    return Err("generation private source differs from compact handle".into());
+                }
+                Ok(())
+            }
+            _ => Err("generation request source layout differs".into()),
+        }
     }
+    #[cfg(test)]
     pub(crate) fn recheck(
         &self,
         input: &jobs::Input,
         binding: &jobs::Binding,
     ) -> Result<(), String> {
         self.validate(input, binding)?;
-        self.checked_context.recheck()
+        if self.version == 1 {
+            self.context()?.recheck()
+        } else {
+            self.source().map(|_| ())
+        }
     }
     pub(crate) fn recheck_retained(
         &self,
@@ -339,7 +395,11 @@ impl Request {
         binding: &jobs::Binding,
     ) -> Result<(), String> {
         self.validate_retained(input, binding)?;
-        self.checked_context.recheck()
+        if self.version == 1 {
+            self.context()?.recheck()
+        } else {
+            self.source().map(|_| ())
+        }
     }
     #[cfg(test)]
     pub(crate) fn obsolete_for_test(mut self) -> Self {
@@ -348,33 +408,90 @@ impl Request {
         self.request_id = self.content_identity();
         self
     }
-    pub(crate) fn checked_proof_ids(&self) -> impl Iterator<Item = &str> {
-        self.checked_context
-            .references
-            .iter()
-            .map(|r| r.proof.proof_id.as_str())
+    pub(crate) fn context(&self) -> Result<&CheckedContext, String> {
+        if let Some(context) = &self.checked_context {
+            return Ok(context);
+        }
+        self.frozen
+            .as_ref()
+            .map(|source| source.corpus())
+            .ok_or_else(|| {
+                "node-owned frozen source is unavailable; provider must use tool RPC".into()
+            })
+    }
+    pub(crate) fn source(&self) -> Result<&Arc<snapshot::Frozen>, String> {
+        self.frozen
+            .as_ref()
+            .ok_or_else(|| "node-owned frozen source unavailable".into())
+    }
+    #[cfg(test)]
+    pub(crate) fn restore_source(&mut self, store: &snapshot::Store) -> Result<(), String> {
+        self.restore_shared_source(store, &mut std::collections::BTreeMap::new())
+    }
+    pub(crate) fn restore_shared_source(
+        &mut self,
+        store: &snapshot::Store,
+        cache: &mut std::collections::BTreeMap<String, Arc<snapshot::Frozen>>,
+    ) -> Result<(), String> {
+        if let Some(handle) = &self.retrieval_snapshot {
+            let source = if let Some(source) = cache.get(&handle.snapshot_id) {
+                if source.handle() != handle {
+                    return Err("shared recovery source handle differs".into());
+                }
+                source.clone()
+            } else {
+                let source = Arc::new(store.load(handle)?);
+                cache.insert(handle.snapshot_id.clone(), source.clone());
+                source
+            };
+            self.frozen = Some(source);
+            self.cursor_key = Some(store.cursor_key()?);
+        }
+        Ok(())
+    }
+    pub(crate) fn attach_cursor_key(&mut self, key: crate::corpus::cursor::Key) {
+        self.cursor_key = Some(key);
+    }
+    pub(crate) fn cursor_key(&self) -> Result<&crate::corpus::cursor::Key, String> {
+        self.cursor_key
+            .as_ref()
+            .ok_or_else(|| "node-owned cursor custody unavailable".into())
+    }
+    pub(crate) fn persist_source(&self, store: &snapshot::Store) -> Result<(), String> {
+        let source = self.source()?;
+        if self.retrieval_snapshot.as_ref() != Some(source.handle()) {
+            return Err("generation snapshot custody differs".into());
+        }
+        store.persist(source)
     }
     fn content_identity(&self) -> String {
+        if self.version == 1 {
+            return digest_value(&(
+                "naome:generation-request:v1",
+                self.version,
+                &self.system,
+                &self.binding,
+                &self.task,
+                &self.owner_interests,
+                &self.checked_context,
+                &self.requirements,
+                &self.tools,
+            ));
+        }
         digest_value(&(
-            "naome:generation-request:v1",
+            "naome:generation-request:v2",
             self.version,
             &self.system,
             &self.binding,
             &self.task,
             &self.owner_interests,
-            &self.checked_context,
+            &self.retrieval_snapshot,
             &self.requirements,
             &self.tools,
         ))
     }
     pub(crate) fn identity(&self) -> String {
         self.request_id.clone()
-    }
-    pub(crate) fn context_identity(&self) -> (&str, &str) {
-        (
-            &self.checked_context.artifact_snapshot,
-            &self.checked_context.graph_root,
-        )
     }
     pub(crate) fn invoke_tool(
         &self,
@@ -393,8 +510,85 @@ impl Request {
         if call.request_id != self.identity() {
             return Err("retrieval request identity is stale or differs".into());
         }
-        self.checked_context.recheck()?;
+        if self.version == 1 {
+            self.context()?.recheck()
+        } else {
+            self.source().map(|_| ())
+        }?;
         retrieval::invoke(self, &call, backend)
+    }
+
+    pub(crate) fn validate_tool_reply(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+        reply: &ToolResult,
+    ) -> Result<(), String> {
+        retrieval::validate_reply(self, name, arguments, reply)
+    }
+    pub(crate) fn validate_received_window(
+        &self,
+        query: &str,
+        top_k: u16,
+        query_id: &str,
+        window: &semantic::SemanticPage,
+    ) -> Result<(), String> {
+        retrieval::validate_received_window(self, query, top_k, query_id, window)
+    }
+
+    pub(crate) fn semantic_query(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<Option<(String, u16, bool)>, String> {
+        let call = retrieval::parse_call(name, arguments)?;
+        if call.request_id != self.identity() {
+            return Err("retrieval request identity is stale or differs".into());
+        }
+        match call.operation {
+            retrieval::Operation::SemanticSearch {
+                query,
+                top_k,
+                after,
+                page_size,
+                max_bytes,
+                ..
+            } => {
+                if query.trim().is_empty()
+                    || query.len() > 1024
+                    || !(1..=1024).contains(&top_k)
+                    || !(1..=16).contains(&page_size)
+                    || !(4096..=MAX_REQUEST_BYTES).contains(&max_bytes)
+                {
+                    return Err("retrieval semantic query, page or byte limit".into());
+                }
+                Ok(Some((query, top_k, after.is_some())))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn invoke_tool_with_ranking(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+        ranking: semantic::SemanticPage,
+    ) -> Result<ToolResult, String> {
+        let call = retrieval::parse_call(name, arguments)?;
+        self.context()?;
+        retrieval::invoke_ranked(self, &call, None, Some(ranking))
+    }
+    pub(crate) fn incomplete_tool(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+        reason: &str,
+    ) -> Result<ToolResult, String> {
+        let mut result = self.invoke_tool(name, arguments)?;
+        result.status = retrieval::Status::IndexIncomplete;
+        result.backend_unavailable_reason = Some(reason.chars().take(256).collect());
+        result.remaining_range_complete = false;
+        Ok(result)
     }
     pub(crate) fn cursor(&self) -> Result<u64, String> {
         match self.task {
@@ -425,3 +619,19 @@ mod context_reconstruction_tests;
 
 #[cfg(test)]
 mod reference_reuse_tests;
+
+impl PartialEq for Request {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.request_id == other.request_id
+            && self.system == other.system
+            && self.binding == other.binding
+            && self.task == other.task
+            && self.owner_interests == other.owner_interests
+            && self.checked_context == other.checked_context
+            && self.retrieval_snapshot == other.retrieval_snapshot
+            && self.requirements == other.requirements
+            && self.tools == other.tools
+    }
+}
+impl Eq for Request {}

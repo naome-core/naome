@@ -17,6 +17,8 @@ pub(crate) use journal::{
     marker_valid, read as read_checkpoint, research_directory, write as write_checkpoint,
     write_marker,
 };
+pub(crate) use process::RetrievalBudget;
+pub(crate) use process::SPAWN;
 pub(crate) use service::Recovery;
 pub(crate) use service::Service;
 
@@ -317,11 +319,17 @@ pub(crate) struct Record {
     pub spent_ms: u64,
     /// Charged before starting each unit. Uncertain work is never refunded.
     pub reserved_units: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retrieval_reserved_units: u32,
     pub checkpoint: u32,
     pub state: State,
     pub result: Option<Output>,
     pub acknowledged: bool,
     pub failure: Option<String>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug)]
@@ -374,6 +382,10 @@ impl Drop for Ticket {
 }
 
 enum Command {
+    Prepare(
+        Box<crate::corpus::service::Preparation>,
+        oneshot::Sender<Completion>,
+    ),
     Submit(
         Input,
         Binding,
@@ -387,9 +399,13 @@ enum Command {
 #[derive(Clone)]
 pub(crate) struct Client {
     sender: mpsc::Sender<Command>,
+    indexing: crate::corpus::service::IndexFeed,
 }
 
 impl Client {
+    pub(crate) fn index_feed(&self) -> crate::corpus::service::IndexFeed {
+        self.indexing.clone()
+    }
     /// Interest retains its existing bounded selector input. Generation must
     /// carry a completed request rather than inventing absent native context.
     pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
@@ -402,6 +418,26 @@ impl Client {
         request: crate::generation::Request,
     ) -> Result<Ticket, String> {
         self.submit_request(input, binding, Some(request))
+    }
+    pub(crate) fn prepare_generation(
+        &self,
+        preparation: crate::corpus::service::Preparation,
+    ) -> Result<Ticket, String> {
+        preparation.input.validate()?;
+        preparation.binding.validate()?;
+        let input = preparation.input.clone();
+        let binding = preparation.binding.clone();
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .try_send(Command::Prepare(Box::new(preparation), reply))
+            .map_err(|_| "research preparation command capacity or stopped service")?;
+        Ok(Ticket {
+            receiver,
+            client: self.clone(),
+            input,
+            binding,
+            received: false,
+        })
     }
     fn submit_request(
         &self,
@@ -467,7 +503,7 @@ fn identity(value: &impl Serialize) -> String {
     ))
 }
 
-fn wall_ms() -> Result<u64, String> {
+pub(crate) fn wall_ms() -> Result<u64, String> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "wall clock is before research epoch".to_owned())?

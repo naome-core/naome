@@ -16,7 +16,10 @@ impl Manual {
     pub(crate) fn new() -> Self {
         let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
         Self {
-            client: Client { sender },
+            client: Client {
+                sender,
+                indexing: Default::default(),
+            },
             receiver,
             next: 1,
             waiting: BTreeMap::new(),
@@ -29,6 +32,22 @@ impl Manual {
         let mut requests = Vec::new();
         while let Ok(command) = self.receiver.try_recv() {
             match command {
+                Command::Prepare(preparation, reply) => {
+                    let request = crate::generation::Request::build_from_snapshot(
+                        &preparation.input,
+                        &preparation.binding,
+                        std::sync::Arc::new(preparation.seed.freeze().unwrap()),
+                        preparation.owner,
+                        preparation.policy,
+                    )
+                    .unwrap();
+                    let id = self.next;
+                    self.next += 1;
+                    requests.push((id, preparation.input.clone()));
+                    self.generation.insert(id, request);
+                    self.waiting
+                        .insert(id, (preparation.input, preparation.binding, reply));
+                }
                 Command::Submit(input, binding, generation, reply) => {
                     validate_generation(&input, &binding, generation.as_deref()).unwrap();
                     let id = self.next;
