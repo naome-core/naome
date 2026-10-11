@@ -76,7 +76,7 @@ impl<'source> Parser<'source> {
 
     pub(super) fn compile(
         mut self,
-        artifact_state: &ArtifactState,
+        artifact_state: &dyn ContextView,
     ) -> Result<CompiledArtifact, CompileError> {
         if self.peek_word("defs") {
             self.definition_aliases(artifact_state)?;

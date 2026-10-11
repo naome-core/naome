@@ -204,13 +204,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         [helper_id, root_id].into()
     );
     drop(recovered);
-    let batch = fs::read_dir(directory.0.join("objects/batches"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    fs::write(batch.join(format!("{}.json", helper.proof_id)), b"{}").unwrap();
+    crate::store::corrupt_payload(&directory.0, &helper.proof_id);
     assert!(
         status(&directory.0).await.is_err(),
         "corrupt durable content cannot return a proof count"
@@ -291,11 +285,7 @@ async fn stop_requires_graph_release_and_revalidation_after_confirmed_group_exit
     let mut graph = Graph::open(&directory.0).unwrap();
     graph.ingest(helper.clone(), Instant::now()).unwrap();
     drop(graph);
-    let member = directory
-        .0
-        .join("objects")
-        .join(format!("{}.json", helper.proof_id));
-    fs::write(member, b"{}").unwrap();
+    crate::store::corrupt_payload(&directory.0, &helper.proof_id);
     let corrupt = wait_for_stop(&directory.0, Instant::now(), || {
         Err(nix::errno::Errno::ESRCH)
     })
@@ -447,14 +437,8 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
     initialize(&directory.0).unwrap();
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
     assert_eq!(
-        fs::read(
-            directory
-                .0
-                .join("objects")
-                .join(format!("{}.json", proof.proof_id))
-        )
-        .unwrap(),
-        serde_json::to_vec(&proof).unwrap()
+        crate::store::payload_bytes(&directory.0, &proof.proof_id),
+        crate::unhex(&proof.proof).unwrap()
     );
 }
 

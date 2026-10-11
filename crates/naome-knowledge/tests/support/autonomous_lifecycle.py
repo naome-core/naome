@@ -16,7 +16,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-from proof_network import digest, stored_objects
+from proof_network import digest, stored_objects, replace_catalog_payload
 
 
 class Trial:
@@ -824,16 +824,12 @@ def main():
             assert trial.call(node, "status") == expected
             node.stop()
         trial.summary["scenarios"]["restart_revalidates_persistent_proofs_and_preserves_identity"] = {"result": "pass", "unique_proofs": 3}
-        member = next(path for path in (receiver.directory / "objects").rglob("*.json")
-            if path.stem in accepted)
-        original = member.read_bytes()
+        member = sorted(accepted)[0]
+        original = replace_catalog_payload(receiver, member, b"\xff")
         try:
-            corrupted = json.loads(original)
-            corrupted["proof"] = "ff"
-            member.write_text(json.dumps(corrupted) + "\n")
             trial.call(receiver, "status", success=False)
         finally:
-            member.write_bytes(original)
+            replace_catalog_payload(receiver, member, original)
         assert trial.call(receiver, "status") == {"running": False, "accepted_proofs": 3, "interest": ""}
         trial.summary["scenarios"]["stopped_status_rejects_corrupt_persistent_data_without_an_optimistic_count"] = {"result": "pass"}
         trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": "pass"}

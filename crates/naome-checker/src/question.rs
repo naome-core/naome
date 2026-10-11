@@ -4,7 +4,7 @@
 //! PASS outcome establishes only that the supported deterministic checks
 //! passed against the supplied complete local snapshot.
 
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use naome_foundation::{FOUNDATION_ID, Formula};
 use naome_proof::{
@@ -12,7 +12,8 @@ use naome_proof::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::{ArtifactState, CheckError, statement_id};
+use crate::context::{BucketKind, StatementHeader};
+use crate::{CheckError, ContextError, ContextView, statement_id};
 
 pub type Identity = [u8; 32];
 
@@ -177,14 +178,14 @@ impl<'a> RegisteredQuestion<'a> {
 /// borrows complete incremental indexes and fingerprints in constant time.
 pub struct KnowledgeSnapshot<'a> {
     identity: Identity,
-    artifacts: &'a ArtifactState,
+    artifacts: &'a dyn ContextView,
     questions: &'a QuestionRegistry,
 }
 
 impl<'a> KnowledgeSnapshot<'a> {
     pub fn new(
         context: Identity,
-        artifacts: &'a ArtifactState,
+        artifacts: &'a dyn ContextView,
         questions: &'a QuestionRegistry,
     ) -> Self {
         let mut hash = Sha256::new();
@@ -537,7 +538,11 @@ fn evaluate(
         if !references.insert(*id) {
             return Err((RejectionReason::DuplicateDependency, "Q02_DEPENDENCY_LIST"));
         }
-        if !snapshot.artifacts.question_index.contains_artifact(id) {
+        if !snapshot
+            .artifacts
+            .contains_artifact(*id)
+            .map_err(context_failure)?
+        {
             return Err((RejectionReason::MissingDependency, "Q02_CHECKED_CONTEXT"));
         }
     }
@@ -592,12 +597,20 @@ fn evaluate(
     }
     for (target_id, target, _) in targets {
         work.index()?;
-        for statement in snapshot.artifacts.question_index.instances(target_id) {
-            let (proof, premise, length) = known(snapshot.artifacts, statement, work)?;
+        for statement in snapshot
+            .artifacts
+            .bucket(BucketKind::Instances, target_id)
+            .map_err(context_failure)?
+        {
+            let statement = statement.map_err(context_failure)?;
+            let header = known(snapshot.artifacts, statement, work)?;
+            let proof = header.proof;
+            let length = header.length;
             // Reserve all four projections and their small certificates before
             // any clone/open/substitution. Relevant bucket exhaustion rejects.
             work.formula(length + encoded.len(), 64)?;
-            for instance in index::universal_instances(proof, premise) {
+            let premise = load_formula(snapshot.artifacts, statement, length)?;
+            for instance in index::universal_instances(proof, &premise) {
                 if instance.formula == *target {
                     decision.deduction =
                         Some(recheck(instance.steps, target, snapshot.artifacts, work)?);
@@ -613,11 +626,14 @@ fn evaluate(
     work.index()?;
     for statement in snapshot
         .artifacts
-        .question_index
-        .outgoing(question.question)
+        .bucket(BucketKind::Outgoing, question.question)
+        .map_err(context_failure)?
     {
-        let (forward_id, forward, length) = known(snapshot.artifacts, statement, work)?;
-        work.formula(length + encoded.len(), 8)?;
+        let statement = statement.map_err(context_failure)?;
+        let header = known(snapshot.artifacts, statement, work)?;
+        let forward_id = header.proof;
+        work.formula(header.length + encoded.len(), 8)?;
+        let forward = load_formula(snapshot.artifacts, statement, header.length)?;
         let (antecedent, related) = forward.implication_parts().expect("indexed implication");
         if antecedent != *question.formula {
             continue;
@@ -639,7 +655,7 @@ fn evaluate(
                     vec![ProofStep::ProofReference {
                         proof_id: forward_id,
                     }],
-                    forward,
+                    &forward,
                     snapshot.artifacts,
                     work,
                 )?;
@@ -664,38 +680,65 @@ fn evaluate(
     Ok(())
 }
 
-fn known<'a>(
-    artifacts: &'a ArtifactState,
+fn context_failure(error: ContextError) -> (RejectionReason, &'static str) {
+    match error {
+        ContextError::Limit => (RejectionReason::ExecutionLimit, "Q08_EXECUTION"),
+        _ => (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"),
+    }
+}
+
+fn known(
+    artifacts: &dyn ContextView,
     statement: StatementId,
     work: &mut Work,
-) -> Result<(ProofId, &'a Formula, usize), (RejectionReason, &'static str)> {
+) -> Result<StatementHeader, (RejectionReason, &'static str)> {
     work.index()?;
     work.index()?;
     artifacts
-        .known_statement(statement)
+        .statement_header(statement)
+        .map_err(context_failure)?
         .ok_or((RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))
 }
 
+// Callers reserve header.length before materializing a cold formula.
+fn load_formula(
+    artifacts: &dyn ContextView,
+    statement: StatementId,
+    length: usize,
+) -> Result<Cow<'_, Formula>, (RejectionReason, &'static str)> {
+    artifacts
+        .statement_formula(statement, length)
+        .map_err(context_failure)?
+        .ok_or((RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))
+}
+
+type FormulaLookup<'a> =
+    Result<Option<(ProofId, Cow<'a, Formula>)>, (RejectionReason, &'static str)>;
+
 fn lookup_id<'a>(
-    artifacts: &'a ArtifactState,
+    artifacts: &'a dyn ContextView,
     statement: StatementId,
     formula: &Formula,
     work: &mut Work,
-) -> Result<Option<(ProofId, &'a Formula)>, (RejectionReason, &'static str)> {
+) -> FormulaLookup<'a> {
     work.index()?;
     work.index()?;
-    let Some((proof, registered, length)) = artifacts.known_statement(statement) else {
+    let Some(header) = artifacts
+        .statement_header(statement)
+        .map_err(context_failure)?
+    else {
         return Ok(None);
     };
-    work.formula(length, 2)?;
-    Ok((registered == formula).then_some((proof, registered)))
+    work.formula(header.length, 2)?;
+    let registered = load_formula(artifacts, statement, header.length)?;
+    Ok((registered.as_ref() == formula).then_some((header.proof, registered)))
 }
 
 fn lookup<'a>(
-    artifacts: &'a ArtifactState,
+    artifacts: &'a dyn ContextView,
     formula: &Formula,
     work: &mut Work,
-) -> Result<Option<(ProofId, &'a Formula)>, (RejectionReason, &'static str)> {
+) -> FormulaLookup<'a> {
     let bytes = formula
         .encode_canonical()
         .map_err(|_| (RejectionReason::ExecutionLimit, "Q08_EXECUTION"))?;
@@ -706,7 +749,7 @@ fn lookup<'a>(
 fn recheck(
     steps: Vec<ProofStep>,
     target: &Formula,
-    artifacts: &ArtifactState,
+    artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<DeductionWitness, (RejectionReason, &'static str)> {
     deduction::check_steps(steps, target, artifacts, work)
@@ -714,12 +757,17 @@ fn recheck(
 
 fn checker_reason(error: &CheckError) -> RejectionReason {
     match error {
-        CheckError::FormulaWorkLimitExceeded { .. } | CheckError::DerivedFormula { .. } => {
-            RejectionReason::ExecutionLimit
-        }
+        CheckError::FormulaWorkLimitExceeded { .. }
+        | CheckError::DerivedFormula { .. }
+        | CheckError::ContextAccess {
+            source: ContextError::Limit,
+            ..
+        } => RejectionReason::ExecutionLimit,
         _ => RejectionReason::InvalidEvidence,
     }
 }
 
+#[cfg(test)]
+mod disk_tests;
 #[cfg(test)]
 mod tests;

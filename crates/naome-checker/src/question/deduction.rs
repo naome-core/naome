@@ -13,10 +13,11 @@ use naome_proof::{
 };
 
 use super::{
-    DeductionWitness, INDEX_WORK_BYTES, RejectionReason, Work, checker_reason, known, lookup_id,
+    DeductionWitness, INDEX_WORK_BYTES, RejectionReason, Work, checker_reason, context_failure,
+    known, load_formula, lookup_id,
 };
 use crate::{
-    ArtifactState, CHECKER_MAX_FORMULA_WORK_BYTES, normalize_and_check_with_state, statement_id,
+    CHECKER_MAX_FORMULA_WORK_BYTES, ContextView, normalize_and_check_with_state, statement_id,
 };
 
 type Failure = (RejectionReason, &'static str);
@@ -77,7 +78,7 @@ fn add_goal(
 pub(super) fn derive(
     target_id: StatementId,
     target: &Formula,
-    artifacts: &ArtifactState,
+    artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<Option<DeductionWitness>, Failure> {
     let target_length = target.encode_canonical().map_err(|_| LIMIT)?.len();
@@ -104,10 +105,16 @@ pub(super) fn derive(
             continue;
         }
         work.index()?;
-        for source in artifacts.question_index.deductions(goal_id) {
-            let (proof, original, source_length) = known(artifacts, source, work)?;
+        for source in artifacts
+            .bucket(crate::context::BucketKind::Deductions, goal_id)
+            .map_err(context_failure)?
+        {
+            let source = source.map_err(context_failure)?;
+            let header = known(artifacts, source, work)?;
+            let proof = header.proof;
+            let source_length = header.length;
             work.formula(source_length, 8)?;
-            let mut current = original.clone();
+            let mut current = load_formula(artifacts, source, source_length)?.into_owned();
             let mut current_length = source_length;
             let mut antecedents = Vec::new();
             let mut intermediate_lengths = Vec::new();
@@ -285,7 +292,7 @@ impl Plan {
     fn reference(
         &mut self,
         proof_id: ProofId,
-        artifacts: &ArtifactState,
+        artifacts: &dyn ContextView,
         work: &mut Work,
     ) -> Result<u32, Failure> {
         work.index()?;
@@ -295,12 +302,15 @@ impl Plan {
         for _ in 0..3 {
             work.index()?;
         }
-        let proof = artifacts.resolve_proof(proof_id).ok_or(INVALID)?;
+        let proof = artifacts
+            .proof_header(proof_id)
+            .map_err(context_failure)?
+            .ok_or(INVALID)?;
         let index = self.push(
             ProofStep::ProofReference { proof_id },
-            proof.canonical_length,
+            proof.length,
             33,
-            proof.canonical_length,
+            proof.length,
             work,
         )?;
         self.references.insert(proof_id, index);
@@ -335,7 +345,7 @@ impl Plan {
 fn materialize(
     target_id: StatementId,
     target: &Formula,
-    artifacts: &ArtifactState,
+    artifacts: &dyn ContextView,
     goals: &BTreeMap<StatementId, Goal>,
     clauses: &[Clause],
     evidence: &BTreeMap<StatementId, Evidence>,
@@ -405,7 +415,7 @@ fn materialize(
 pub(super) fn check_steps(
     steps: Vec<ProofStep>,
     target: &Formula,
-    artifacts: &ArtifactState,
+    artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<DeductionWitness, Failure> {
     work.certificate_limits(steps.len(), 4)?;
@@ -418,8 +428,11 @@ pub(super) fn check_steps(
             for _ in 0..3 {
                 work.index()?;
             }
-            let proof = artifacts.resolve_proof(*proof_id).ok_or(INVALID)?;
-            max_reference = max_reference.max(proof.canonical_length);
+            let proof = artifacts
+                .proof_header(*proof_id)
+                .map_err(context_failure)?
+                .ok_or(INVALID)?;
+            max_reference = max_reference.max(proof.length);
             reference_count += 1;
         }
     }
@@ -430,8 +443,11 @@ pub(super) fn check_steps(
     for step in &steps {
         let (length, bytes, cost) = match step {
             ProofStep::ProofReference { proof_id } => {
-                let proof = artifacts.resolve_proof(*proof_id).ok_or(INVALID)?;
-                (proof.canonical_length, 33, proof.canonical_length)
+                let proof = artifacts
+                    .proof_header(*proof_id)
+                    .map_err(context_failure)?
+                    .ok_or(INVALID)?;
+                (proof.length, 33, proof.length)
             }
             ProofStep::UniversalInstantiation { body, .. } => {
                 work.formula(max_reference, 8)?;
@@ -484,7 +500,7 @@ pub(super) fn check_steps(
 fn check_reserved(
     steps: Vec<ProofStep>,
     target: &Formula,
-    artifacts: &ArtifactState,
+    artifacts: &dyn ContextView,
 ) -> Result<DeductionWitness, Failure> {
     let certificate = ProofCertificate::new(steps).map_err(|error| match error {
         ProofCertificateError::TooManySteps { .. }
