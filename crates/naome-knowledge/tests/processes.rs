@@ -4,6 +4,38 @@ static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(all(unix, feature = "developer-tools"))]
 #[test]
+fn native_model_transport_preserves_bool_authority_and_reader_custody() {
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let directory = root.join(".local/proof-network").join(format!(
+        "model-transport-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new("python3")
+        .arg(root.join("crates/naome-knowledge/tests/support/model_transport.py"))
+        .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
+        .arg(&directory)
+        .args(["--timeout", "30", "--cleanup", "9.9"])
+        .output()
+        .expect("finite weightless native model-transport driver");
+    assert!(
+        output.status.success(),
+        "model transport evidence at {}\n{}\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
 fn ordinary_long_jobs_preserve_responsive_peer_control_and_crash_budgets() {
     let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

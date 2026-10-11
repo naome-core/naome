@@ -435,7 +435,7 @@ class Node:
             "directory": str(self.directory),
             "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "peers": [],
             "producer_sources": [], "discovery": {"mdns": False, "dht": False},
-            "runtime": {"question_interval_ms": 3600000, "proof_interval_ms": 100},
+            "runtime": {"question_interval_ms": 3600000, "proof_interval_ms": 100, "mock_interest": True},
         }
         self.write_config()
         trial.nodes.append(self)

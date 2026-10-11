@@ -14,7 +14,7 @@ const SUPERVISOR: &str = "--research-supervisor-v1";
 const WORKER: &str = "--research-worker-v1";
 const DESCENDANT: &str = "--research-descendant-v1";
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
-static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,23 +22,59 @@ struct Start {
     version: u8,
     record: Record,
     remaining_ms: u64,
+    deadline_ns: u64,
     slot_fd: i32,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 enum Frame {
-    Ready { id: u64, binding: String, pid: u32 },
-    Descendant { id: u64, pid: u32 },
-    CpuActive { id: u64, next: u32 },
-    CpuDone { id: u64, next: u32 },
-    ResultReady { id: u64 },
-    Reserve { id: u64, next: u32 },
-    Progress { id: u64, checkpoint: u32 },
-    Result { id: u64, output: Output },
-    Failed { id: u64 },
-    CleanupComplete { id: u64 },
-    CleanupFailed { id: u64, error: String },
+    Ready {
+        id: u64,
+        binding: String,
+        pid: u32,
+    },
+    Descendant {
+        id: u64,
+        pid: u32,
+    },
+    CpuActive {
+        id: u64,
+        next: u32,
+    },
+    CpuDone {
+        id: u64,
+        next: u32,
+    },
+    ResultReady {
+        id: u64,
+    },
+    Reserve {
+        id: u64,
+        next: u32,
+    },
+    Progress {
+        id: u64,
+        checkpoint: u32,
+    },
+    InterestDecision {
+        id: u64,
+        response: serde_json::Value,
+    },
+    Result {
+        id: u64,
+        output: Output,
+    },
+    Failed {
+        id: u64,
+    },
+    CleanupComplete {
+        id: u64,
+    },
+    CleanupFailed {
+        id: u64,
+        error: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,6 +135,15 @@ async fn run_owned(
         *disposition.lock().expect("provider disposition owner") = Some(State::Expired);
         return Err("research deadline expired before launch".into());
     }
+    let now_ns = monotonic_ns()?;
+    let deadline_ns = record
+        .model_deadline_ns
+        .unwrap_or(now_ns.saturating_add(remaining_ms.saturating_mul(1_000_000)));
+    let remaining_ms = remaining_ms.min(deadline_ns.saturating_sub(now_ns) / 1_000_000);
+    if remaining_ms == 0 {
+        *disposition.lock().expect("provider disposition owner") = Some(State::Expired);
+        return Err("original research dispatch deadline expired".into());
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_millis(remaining_ms);
     // This is the only deliberately inherited descriptor besides stdio. It is
     // a resource lease, never accepted-store or identity custody. Keeping it in
@@ -117,6 +162,7 @@ async fn run_owned(
         version: 1,
         record: record.clone(),
         remaining_ms,
+        deadline_ns,
         slot_fd: slot.as_raw_fd(),
     })
     .map_err(|e| e.to_string())?;
@@ -173,6 +219,7 @@ async fn run_owned(
         let mut ready = false;
         let mut checkpoint = record.checkpoint;
         let mut outstanding = None;
+        let mut model_decision = None;
         loop {
             let bytes = reader
                 .next()
@@ -268,16 +315,38 @@ async fn run_owned(
                     input.write_all(&bytes).await.map_err(|e| e.to_string())?;
                     outstanding = None;
                 }
+                Frame::InterestDecision { id, response }
+                    if ready
+                        && id == record.id
+                        && record.input.is_model()
+                        && outstanding == Some(1)
+                        && model_decision.is_none()
+                        && monotonic_ns()? < deadline_ns =>
+                {
+                    let selected = crate::interest::verify_record_decision(&record, &response)?;
+                    model_decision = Some(selected);
+                    // Only the node writes observations. The worker's stdout
+                    // remains the strict private Frame channel.
+                    crate::network::emit(
+                        serde_json::json!({"event":"interest_model_decision","job":id,"response":response}),
+                    );
+                }
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
                 Frame::Result { id, output }
                     if ready
                         && cleaned
                         && outstanding.is_none()
                         && id == record.id
-                        && record.settings.mock.steps > 0
-                        && checkpoint == record.settings.mock.steps =>
+                        && record.input.checkpoints(record.settings) > 0
+                        && checkpoint == record.input.checkpoints(record.settings)
+                        && (!record.input.is_model() || monotonic_ns()? < deadline_ns) =>
                 {
                     output.validate(&record.input)?;
+                    if record.input.is_model()
+                        && !matches!(&output, Output::Interest(selected) if Some(*selected) == model_decision)
+                    {
+                        return Err("model result has no matching verified observation".into());
+                    }
                     return Ok(output);
                 }
                 Frame::Failed { id } if ready && id == record.id => {
@@ -298,6 +367,9 @@ async fn run_owned(
         _=&mut cancel=>{*disposition.lock().expect("provider disposition owner")=Some(State::Cancelled);Err("research cancelled".into())},
         _=tokio::time::sleep_until(deadline)=>{*disposition.lock().expect("provider disposition owner")=Some(State::Expired);Err("research deadline expired".into())},
     };
+    if record.input.is_model() && result.is_err() {
+        *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
+    }
     let completion_state = disposition
         .lock()
         .expect("provider disposition owner")
@@ -331,6 +403,7 @@ async fn run_owned(
                 | Frame::ResultReady { id }
                 | Frame::Reserve { id, .. }
                 | Frame::Progress { id, .. }
+                | Frame::InterestDecision { id, .. }
                 | Frame::Result { id, .. }
                 | Frame::Failed { id }
                     if id == record.id => {}
@@ -365,8 +438,12 @@ async fn run_owned(
         *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
         return Err("provider cleanup receipt is absent; recovery is uncertain".into());
     }
+    // Proxy-group cleanup cannot reconcile effects in the resident worker.
+    // Keep a model error's durable hold even after this local group is reaped.
+    let model_error =
+        record.input.is_model() && (result.is_err() || drain_error.is_some() || !status.success());
     *disposition.lock().expect("provider disposition owner") =
-        completion_state.filter(|state| *state != State::InDoubt);
+        completion_state.filter(|state| *state != State::InDoubt || model_error);
     if let Some(error) = drain_error {
         return Err(match result {
             Err(primary) => format!("{primary}; {error}"),
@@ -742,6 +819,78 @@ fn work() -> Result<(), String> {
         binding: identity(&record),
         pid: std::process::id(),
     })?;
+    if record.input.is_model() {
+        emit(&Frame::Reserve {
+            id: record.id,
+            next: 1,
+        })?;
+        let grant: Grant =
+            serde_json::from_slice(&receiver.recv().map_err(|_| "model durable grant closed")?)
+                .map_err(|e| e.to_string())?;
+        if grant.id != record.id || grant.next != 1 {
+            return Err("model grant binding differs".into());
+        }
+        let scored = crate::interest::score(
+            &record,
+            start.slot_fd,
+            start.remaining_ms,
+            start.deadline_ns,
+        )?;
+        // The existing developer-only fault outcomes exercise this real
+        // producer channel. Default settings always emit one bound frame.
+        #[cfg(feature = "developer-tools")]
+        match record.settings.mock.outcome {
+            MockOutcome::Malformed => crate::network::emit(
+                serde_json::json!({"event":"interest_model_decision","job":record.id,"response":scored.response}),
+            ),
+            MockOutcome::WrongTarget => {
+                let mut response = scored.response;
+                response["source_hash"] = serde_json::json!(crate::hex(&[0; 32]));
+                emit(&Frame::InterestDecision {
+                    id: record.id,
+                    response,
+                })?;
+            }
+            MockOutcome::Failed => {
+                emit(&Frame::InterestDecision {
+                    id: record.id,
+                    response: scored.response.clone(),
+                })?;
+                emit(&Frame::InterestDecision {
+                    id: record.id,
+                    response: scored.response,
+                })?;
+            }
+            MockOutcome::Success => {
+                emit(&Frame::InterestDecision {
+                    id: record.id,
+                    response: scored.response,
+                })?;
+            }
+        }
+        #[cfg(not(feature = "developer-tools"))]
+        emit(&Frame::InterestDecision {
+            id: record.id,
+            response: scored.response,
+        })?;
+        emit(&Frame::Progress {
+            id: record.id,
+            checkpoint: 1,
+        })?;
+        let grant: Grant = serde_json::from_slice(
+            &receiver
+                .recv()
+                .map_err(|_| "model result persistence closed")?,
+        )
+        .map_err(|e| e.to_string())?;
+        if grant.id != record.id || grant.next != 1 {
+            return Err("model result grant differs".into());
+        }
+        return emit(&Frame::Result {
+            id: record.id,
+            output: Output::Interest(scored.selected),
+        });
+    }
     let mut checkpoint = record.checkpoint;
     let mock = record.settings.mock;
     let _descendant = if mock.descendant {

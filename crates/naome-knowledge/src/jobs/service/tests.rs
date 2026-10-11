@@ -482,3 +482,351 @@ fn cleanup_error_is_preserved_alongside_an_earlier_driver_failure() {
     .unwrap_err();
     assert!(error.contains("driver clock failed") && error.contains("termination unconfirmed"));
 }
+
+fn model_input(revision: u64, session_epoch: u8) -> Input {
+    let text = "Set theory";
+    let owner = crate::interest::Owner {
+        version: 1,
+        revision,
+        digest: crate::hex(&[revision as u8; 32]),
+        interest: text.into(),
+        text_sha256: crate::hex(&sha2::Sha256::digest(text.as_bytes())),
+    };
+    let ready = serde_json::json!({"kind":"ready","schema":1,"model_revision":"1cfa9a7208912126459214e8b04321603b3df60c","manifest_hash":"b7d4ab43f8cfc348ff7195e64a5e23fb65ceb0eec55a1761030ac1e9478b018b","prompt_version":"naome:owner-interest:prompt:v1","prompt_hash":"69afc1b7c184eeb83ed7faa55d7fdcfbc67949f0ed10b0c138eaaf0ff5403f98","template_hash":"a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8","device":"mps","load_strategy":"cpu-staged-mps-v1","parameter_bytes":8044936192u64,"labels":{"true":1866,"false":3849},"inventory_hash":crate::hex(&[4;32]),"model_instance":1});
+    Input::Interest {
+        question: crate::mocks::create_question(0),
+        purpose: Purpose::Admission,
+        root: None,
+        owner: Some(owner),
+        model: Some(crate::interest::Session {
+            client: crate::hex(&[session_epoch; 32]),
+            generation: crate::hex(&[session_epoch; 32]),
+            ready,
+        }),
+    }
+}
+#[test]
+fn owner_and_model_sessions_preserve_legacy_interest_bytes_and_budget_key() {
+    let legacy = Input::Interest {
+        question: crate::mocks::create_question(0),
+        purpose: Purpose::Admission,
+        root: None,
+        owner: None,
+        model: None,
+    };
+    let bytes = serde_json::to_vec(&legacy).unwrap();
+    let expected = "{\"role\":\"interest\",\"question\":\"goal = all(x,eq(x,x))\",\"purpose\":\"admission\",\"root\":null}";
+    assert_eq!(bytes, expected.as_bytes());
+    let key = identity(&serde_json::from_str::<serde_json::Value>(&expected).unwrap());
+    // Value's sorted keys are not the historical struct's ordered bytes.
+    assert_ne!(legacy.account_key(), key);
+    assert_eq!(
+        legacy.account_key(),
+        "034ba485577441af03ea772a90f67c68efd424a6aca998b2be630aca366fe041"
+    );
+    for (revision, epoch) in [(1, 1), (2, 1), (1, 2)] {
+        let model = model_input(revision, epoch);
+        model.validate().unwrap();
+        assert_eq!(model.account_key(), legacy.account_key());
+        assert_ne!(serde_json::to_vec(&model).unwrap(), bytes);
+    }
+}
+#[test]
+fn uncertain_model_holds_original_obligation_after_profile_change_and_reopen() {
+    let (directory, mut owner) = fixture(3);
+    let binding = Binding::new([0; 32], [0; 32]);
+    let (reply, _receipt) = oneshot::channel();
+    owner
+        .submit(model_input(1, 1), binding.clone(), reply)
+        .unwrap();
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    record.state = State::InDoubt;
+    record.model_allowance_ms = Some(20_000);
+    record.model_deadline_ns = Some(monotonic_ns().unwrap() + 20_000_000_000);
+    record.spent_ms = 20_000;
+    record.reserved_units = 1;
+    let account = owner.journal.accounts.values_mut().next().unwrap();
+    account.spent_ms = 20_000;
+    account.reserved_units = 1;
+    owner.journal.total_spent_ms = 20_000;
+    owner.journal.total_reserved_units = 1;
+    owner.save().unwrap();
+    for input in [model_input(2, 1), model_input(1, 2)] {
+        let (reply, mut receipt) = oneshot::channel();
+        owner.submit(input, binding.clone(), reply).unwrap();
+        assert_eq!(receipt.try_recv().unwrap().state, State::InDoubt);
+        assert_eq!(owner.journal.next_id, 2);
+    }
+    let settings = owner.settings;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings);
+    let (reply, mut receipt) = oneshot::channel();
+    owner.submit(model_input(3, 3), binding, reply).unwrap();
+    assert_eq!(receipt.try_recv().unwrap().state, State::InDoubt);
+    assert_eq!(
+        owner.journal.accounts.values().next().unwrap().spent_ms,
+        20_000
+    );
+    assert_eq!(owner.journal.total_reserved_units, 1);
+}
+#[test]
+fn prepaid_model_grant_is_not_recharged_or_refunded_on_uncertain_completion() {
+    let (_directory, mut owner) = fixture(2);
+    let (reply, _receipt) = oneshot::channel();
+    owner
+        .submit(model_input(1, 1), Binding::new([0; 32], [0; 32]), reply)
+        .unwrap();
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    record.state = State::Running;
+    record.model_allowance_ms = Some(20_000);
+    record.model_deadline_ns = Some(monotonic_ns().unwrap() + 20_000_000_000);
+    record.spent_ms = 20_000;
+    record.reserved_units = 1;
+    let account = owner.journal.accounts.values_mut().next().unwrap();
+    account.spent_ms = 20_000;
+    account.reserved_units = 1;
+    owner.journal.total_spent_ms = 20_000;
+    owner.journal.total_reserved_units = 1;
+    owner.reserve(1, 1).unwrap();
+    owner.charge(1).unwrap();
+    assert_eq!(owner.journal.total_spent_ms, 20_000);
+    assert_eq!(owner.journal.total_reserved_units, 1);
+    owner
+        .complete(
+            1,
+            process::Outcome {
+                state: State::InDoubt,
+                result: Err("unconfirmed device quiescence".into()),
+            },
+        )
+        .unwrap();
+    assert_eq!(owner.journal.records[&1].state, State::InDoubt);
+    assert_eq!(owner.journal.total_spent_ms, 20_000);
+}
+
+#[test]
+fn queued_same_account_is_not_funded_after_sibling_uncertainty() {
+    let (_directory, mut owner) = fixture(8);
+    let (first, _first) = oneshot::channel();
+    let (second, mut second_receipt) = oneshot::channel();
+    let (other, _other) = oneshot::channel();
+    owner
+        .submit(model_input(1, 1), Binding::new([0; 32], [0; 32]), first)
+        .unwrap();
+    owner
+        .submit(
+            model_input(2, 2),
+            Binding::new([0; 32], [0; 32]).with_selection([2; 32]),
+            second,
+        )
+        .unwrap();
+    let mut different = model_input(3, 3);
+    if let Input::Interest { question, .. } = &mut different {
+        *question = crate::mocks::create_question(1);
+    }
+    owner
+        .submit(different, Binding::new([0; 32], [0; 32]), other)
+        .unwrap();
+    owner.journal.records.get_mut(&1).unwrap().state = State::InDoubt;
+    owner.save().unwrap();
+    let (events, _events) = mpsc::channel(16);
+    owner.schedule(&events).unwrap();
+    assert_eq!(owner.journal.records[&2].state, State::InDoubt);
+    assert_eq!(owner.journal.records[&2].model_allowance_ms, None);
+    assert_eq!(owner.journal.records[&2].reserved_units, 0);
+    assert_eq!(second_receipt.try_recv().unwrap().state, State::InDoubt);
+    assert_eq!(owner.journal.records[&3].state, State::Running);
+    assert_eq!(owner.journal.records[&3].model_allowance_ms, Some(20_000));
+    assert_eq!(owner.journal.total_reserved_units, 1);
+    owner.acknowledge(2).unwrap();
+    assert!(!owner.journal.records[&2].acknowledged);
+}
+
+#[test]
+fn already_running_sibling_keeps_prepaid_cost_and_cannot_deliver_late_positive() {
+    let (_directory, mut owner) = fixture(8);
+    let (first, _first) = oneshot::channel();
+    let (second, mut second_receipt) = oneshot::channel();
+    owner
+        .submit(model_input(1, 1), Binding::new([0; 32], [0; 32]), first)
+        .unwrap();
+    owner
+        .submit(
+            model_input(2, 2),
+            Binding::new([0; 32], [0; 32]).with_selection([2; 32]),
+            second,
+        )
+        .unwrap();
+    let (events, _events) = mpsc::channel(16);
+    owner.schedule(&events).unwrap();
+    assert_eq!(owner.journal.total_reserved_units, 2);
+    let charged = owner.journal.total_spent_ms;
+    owner
+        .complete(
+            1,
+            process::Outcome {
+                state: State::InDoubt,
+                result: Err("injected unknown GPU outcome".into()),
+            },
+        )
+        .unwrap();
+    assert_eq!(owner.journal.records[&2].state, State::InDoubt);
+    assert_eq!(second_receipt.try_recv().unwrap().state, State::InDoubt);
+    assert!(owner.reserve(2, 1).is_err());
+    owner
+        .complete(
+            2,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(Output::Interest(true)),
+            },
+        )
+        .unwrap();
+    assert_eq!(owner.journal.records[&2].state, State::InDoubt);
+    assert!(owner.journal.records[&2].result.is_none());
+    assert_eq!(owner.journal.total_reserved_units, 2);
+    assert_eq!(owner.journal.total_spent_ms, charged);
+}
+
+#[tokio::test]
+async fn local_question_consumes_uncertainty_without_disposing_hold_or_stopping_other_role() {
+    let (directory, mut owner) = fixture(8);
+    let (sender, mut commands) = mpsc::channel(COMMAND_CAPACITY);
+    let client = Client { sender };
+    type Interest =
+        fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>;
+    let mut questions = crate::question::LocalQuestions::<Interest>::managed(
+        client.clone(),
+        &directory.0,
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    let Input::Interest {
+        owner: Some(profile),
+        model: Some(session),
+        ..
+    } = model_input(1, 1)
+    else {
+        panic!()
+    };
+    questions.select_native(Some(([1; 32], Some(profile), Some(session))));
+    let graph = crate::Graph::default();
+    let question =
+        naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+    let (_, reply) =
+        questions.begin_exchange(&graph, question, Instant::now() + Duration::from_secs(20));
+    let Command::Submit(input, binding, sender) = commands.recv().await.unwrap() else {
+        panic!("native question did not submit managed job")
+    };
+    owner.submit(input, binding, sender).unwrap();
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    owner
+        .complete(
+            1,
+            process::Outcome {
+                state: State::InDoubt,
+                result: Err("injected actual completion uncertainty".into()),
+            },
+        )
+        .unwrap();
+    let completion = questions.completed().await;
+    questions.finish(&graph, completion);
+    let assessment = reply.await.unwrap();
+    assert!(!matches!(
+        assessment.interest,
+        crate::question::InterestAssessment::Assessed(true)
+    ));
+    // The consumer must not enqueue an ACK that would treat the hold as a
+    // terminal result. Explicit repeated ACK remains a safe owner no-op.
+    assert!(commands.try_recv().is_err());
+    client.acknowledge(1).unwrap();
+    let Command::Acknowledge(id) = commands.recv().await.unwrap() else {
+        panic!()
+    };
+    owner.acknowledge(id).unwrap();
+    assert_eq!(owner.journal.records[&1].state, State::InDoubt);
+    assert!(!owner.journal.records[&1].acknowledged);
+    let (ticket, mut receipt) = oneshot::channel();
+    owner
+        .submit(
+            Input::Find { cursor: 0 },
+            Binding::new([0; 32], [0; 32]),
+            ticket,
+        )
+        .unwrap();
+    owner.journal.records.get_mut(&2).unwrap().state = State::Running;
+    owner.reserve(2, 1).unwrap();
+    owner.journal.records.get_mut(&2).unwrap().checkpoint = 1;
+    owner
+        .complete(
+            2,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(Output::Question(crate::mocks::create_question(1))),
+            },
+        )
+        .unwrap();
+    assert_eq!(receipt.try_recv().unwrap().state, State::Complete);
+    assert_eq!(owner.journal.records[&1].state, State::InDoubt);
+}
+
+#[test]
+fn expired_original_grant_is_declined_before_connect_without_extra_funding() {
+    let (_directory, mut owner) = fixture(8);
+    let (reply, _receipt) = oneshot::channel();
+    owner
+        .submit(model_input(1, 1), Binding::new([0; 32], [0; 32]), reply)
+        .unwrap();
+    let (events, _events) = mpsc::channel(16);
+    owner.schedule(&events).unwrap();
+    let cost = owner.journal.total_spent_ms;
+    let units = owner.journal.total_reserved_units;
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    record.model_deadline_ns = Some(monotonic_ns().unwrap().saturating_sub(1));
+    let source = record.clone();
+    // This is the actual proxy's preconnect boundary. The invalid slot number
+    // is never used, because the original absolute grant already expired.
+    assert!(
+        crate::interest::score(&source, -1, 20_000, source.model_deadline_ns.unwrap())
+            .unwrap_err()
+            .contains("before connect")
+    );
+    assert!(
+        owner
+            .reserve(1, 1)
+            .unwrap_err()
+            .contains("original model deadline")
+    );
+    assert_eq!(owner.journal.records[&1].state, State::Expired);
+    assert_eq!(owner.journal.total_spent_ms, cost);
+    assert_eq!(owner.journal.total_reserved_units, units);
+}
+
+#[test]
+fn actual_dispatch_delay_consumes_original_grant_before_connect() {
+    let directory = Directory::new();
+    let mut settings = Settings::default();
+    settings.interest.limits.horizon_ms = 30;
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings);
+    let (reply, _receipt) = oneshot::channel();
+    owner
+        .submit(model_input(1, 1), Binding::new([0; 32], [0; 32]), reply)
+        .unwrap();
+    let (events, _events) = mpsc::channel(16);
+    owner.schedule(&events).unwrap();
+    let source = owner.journal.records[&1].clone();
+    let original = source.model_deadline_ns.unwrap();
+    let cost = owner.journal.total_spent_ms;
+    let units = owner.journal.total_reserved_units;
+    std::thread::sleep(Duration::from_millis(40));
+    assert!(
+        crate::interest::score(&source, -1, source.model_allowance_ms.unwrap(), original)
+            .unwrap_err()
+            .contains("before connect")
+    );
+    assert_eq!(owner.journal.records[&1].model_deadline_ns, Some(original));
+    assert_eq!(owner.journal.total_spent_ms, cost);
+    assert_eq!(owner.journal.total_reserved_units, units);
+}

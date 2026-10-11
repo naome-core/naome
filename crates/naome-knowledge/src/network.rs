@@ -306,7 +306,13 @@ where
     let own_id = key.public().to_peer_id();
     #[cfg(unix)]
     let control = if autonomy.is_some() {
-        Some(crate::runtime::Control::bind(&config.directory)?)
+        {
+            let mut control = crate::runtime::Control::bind(&config.directory)?;
+            if autonomy.is_some_and(|intervals| !intervals.mock_interest) {
+                control.enable_model()?;
+            }
+            Some(control)
+        }
     } else {
         None
     };
@@ -518,7 +524,7 @@ where
         if let Some(control)=&control
             && (control.selection_changed() || Instant::now()>=next_profile_check) {
                 next_profile_check=Instant::now()+Duration::from_secs(1);
-                if questions.select(control.selection().ok()) {
+                if questions.select_native(control.owner_interest().ok()) {
                 node.intake.invalidate_interest();
                 }
             }
@@ -543,7 +549,7 @@ where
             },
             interest = questions.completed(),if !stopping => {
                 if let Some(control)=&control
-                    && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
+                    && questions.select_native(control.owner_interest().ok()){node.intake.invalidate_interest();}
                 questions.finish(&node.graph, interest);
             },
             socket = crate::runtime::accept(&control),if !stopping && controls.len()<8 => {
@@ -573,7 +579,7 @@ where
         if let Some(control)=&control
             && (control.selection_changed() || node.intake.selection_boundary_ready()
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
-                && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
+                && questions.select_native(control.owner_interest().ok()){node.intake.invalidate_interest();}
         questions.cancel_closed();
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}

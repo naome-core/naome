@@ -24,6 +24,13 @@ pub struct Intervals {
     pub question_interval_ms: u64,
     pub proof_interval_ms: u64,
     pub jobs: jobs::Settings,
+    /// Explicit weightless controls only; ordinary nodes use resident Qwen.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mock_interest: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Default for Intervals {
@@ -32,6 +39,7 @@ impl Default for Intervals {
             question_interval_ms: 5_000,
             proof_interval_ms: 1_000,
             jobs: jobs::Settings::default(),
+            mock_interest: false,
         }
     }
 }
@@ -45,6 +53,10 @@ impl Intervals {
             return Err("runtime intervals must be between 100 and 3600000 milliseconds".into());
         }
         self.jobs.validate()?;
+        #[cfg(not(feature = "developer-tools"))]
+        if self.mock_interest {
+            return Err("mock interest requires developer-tools".into());
+        }
         Ok(self)
     }
 }

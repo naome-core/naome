@@ -34,7 +34,8 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time", "signal", "
 socket2 = { version = "=0.6.5", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "fs", "user"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["std", "net"] }
+nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "fs", "user", "socket", "uio", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

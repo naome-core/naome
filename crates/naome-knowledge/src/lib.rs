@@ -11,6 +11,8 @@ mod discovery;
 mod graph;
 mod intake;
 #[cfg(unix)]
+mod interest;
+#[cfg(unix)]
 mod jobs;
 pub mod mocks;
 pub mod network;

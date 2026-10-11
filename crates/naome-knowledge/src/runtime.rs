@@ -216,6 +216,7 @@ pub(crate) struct Control {
     stopping: tokio::sync::watch::Sender<bool>,
     owner: Mutex<OwnerState>,
     selection_dirty: std::sync::atomic::AtomicBool,
+    model: Option<crate::interest::Live>,
 }
 
 struct OwnerState {
@@ -317,6 +318,7 @@ impl Control {
                 recovery_error: None,
             }),
             selection_dirty: std::sync::atomic::AtomicBool::new(true),
+            model: None,
         })
     }
 
@@ -336,6 +338,36 @@ impl Control {
         })?;
         owner.text = profile.interest.clone();
         Ok(profile)
+    }
+
+    pub(crate) fn enable_model(&mut self) -> Result<(), String> {
+        self.model = Some(crate::interest::Live::open()?);
+        Ok(())
+    }
+
+    pub(crate) fn owner_interest(
+        &self,
+    ) -> Result<
+        (
+            [u8; 32],
+            Option<crate::interest::Owner>,
+            Option<crate::interest::Session>,
+        ),
+        String,
+    > {
+        if let Some(model) = &self.model {
+            let owner = crate::interest::Owner::from_profile(self.owner_profile()?)?;
+            let state = model.state().ok_or("resident model not ready")?;
+            let selection = crate::interest::host::selection(&owner, &state)?;
+            let session = crate::interest::Session {
+                client: model.token.clone(),
+                generation: state.generation,
+                ready: state.ready,
+            };
+            session.validate()?;
+            return Ok((selection, Some(owner), Some(session)));
+        }
+        Ok((self.selection()?, None, None))
     }
 
     pub(crate) fn selection(&self) -> Result<[u8; 32], String> {
@@ -825,6 +857,9 @@ async fn wait_for_stop(
 /// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
 pub async fn execute() -> Result<(), String> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if let Some(result) = crate::interest::internal(&arguments) {
+        return result;
+    }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result;
     }

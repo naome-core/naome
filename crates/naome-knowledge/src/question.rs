@@ -329,6 +329,8 @@ pub(crate) struct LocalQuestions<F> {
     policy: PrefilterPolicy,
     provider: Option<Arc<F>>,
     managed: Option<crate::jobs::Client>,
+    owner: Option<crate::interest::Owner>,
+    model: Option<crate::interest::Session>,
     pending: BTreeMap<u64, Pending>,
     next_pending: u64,
     finished: Option<u64>,
@@ -356,6 +358,8 @@ where
             policy: PrefilterPolicy::default(),
             provider: provider.map(Arc::new),
             managed: None,
+            owner: None,
+            model: None,
             pending: BTreeMap::new(),
             next_pending: 1,
             finished: None,
@@ -443,6 +447,20 @@ where
 
     /// The serialized driver supplies a validated provider/owner epoch. Errors
     /// invalidate selection instead of reusing the last known profile.
+    pub(crate) fn select_native(
+        &mut self,
+        current: Option<(
+            Identity,
+            Option<crate::interest::Owner>,
+            Option<crate::interest::Session>,
+        )>,
+    ) -> bool {
+        let selection = current.as_ref().map(|v| v.0);
+        self.owner = current.as_ref().and_then(|v| v.1.clone());
+        self.model = current.and_then(|v| v.2);
+        self.select(selection)
+    }
+
     pub(crate) fn select(&mut self, selection: Option<Identity>) -> bool {
         if selection == self.selection {
             return false;
@@ -780,6 +798,8 @@ where
                 question: question.source().to_owned(),
                 purpose,
                 root,
+                owner: self.owner.clone(),
+                model: self.model.clone(),
             };
             let ticket = client.submit(request, binding.clone());
             Box::pin(async move {
@@ -805,7 +825,9 @@ where
                         };
                         ProviderResult {
                             assessment: interest,
-                            job: (completion.id != 0).then_some(completion.id),
+                            job: (completion.id != 0
+                                && completion.state != crate::jobs::State::InDoubt)
+                                .then_some(completion.id),
                         }
                     }
                     Err(_) => ProviderResult {

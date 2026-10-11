@@ -180,18 +180,7 @@ impl Owner {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
                     Some(Command::Submit(input,binding,reply))=>self.submit(input,binding,reply)?,
-                    Some(Command::Acknowledge(id))=>{
-                        if id!=0 {
-                            let Some(record)=self.journal.records.get_mut(&id) else {
-                                if id<self.journal.next_id {continue;}
-                                return Err("unknown research acknowledgement".into());
-                            };
-                            if !record.state.terminal() { return Err("acknowledged research job is still running".into()); }
-                            record.acknowledged=true;
-                            self.compact();
-                            self.save()?;
-                        }
-                    },
+                    Some(Command::Acknowledge(id))=>self.acknowledge(id)?,
                     Some(Command::Discard(input,binding))=>{
                         let ids=self.journal.records.values().filter(|r|r.input==input && r.binding==binding
                             && !r.acknowledged && r.state!=State::InDoubt).map(|r|r.id).collect::<Vec<_>>();
@@ -213,7 +202,7 @@ impl Owner {
                 event=progress.recv()=>if let Some(event)=event {
                     match event {
                         process::Event::Reserve{id,next,reply}=>{
-                            if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
+                            if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired|State::InDoubt)) {
                                 let _=reply.send(Err("research job cancelled or expired".into()));continue;
                             }
                             let result=self.reserve(id,next);
@@ -222,7 +211,7 @@ impl Owner {
                             if let Some(error)=fatal {return Err(error);}
                         },
                         process::Event::Progress{id,checkpoint,reply}=>{
-                            if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
+                            if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired|State::InDoubt)) {
                                 let _=reply.send(Err("research job cancelled or expired".into()));continue;
                             }
                             let result=(||{
@@ -251,7 +240,77 @@ impl Owner {
         Ok(())
     }
 
-    fn complete(&mut self, id: u64, outcome: process::Outcome) -> Result<(), String> {
+    fn account_held(&self, id: u64) -> bool {
+        let Some(record) = self.journal.records.get(&id) else {
+            return false;
+        };
+        let key = record.input.account_key();
+        self.journal.records.values().any(|other| {
+            other.id != id && other.state == State::InDoubt && other.input.account_key() == key
+        })
+    }
+
+    fn deliver_hold(&mut self, id: u64) {
+        let record = &self.journal.records[&id];
+        if let Some(waiters) = self.waiters.remove(&id) {
+            for reply in waiters {
+                let _ = reply.send(Completion {
+                    id,
+                    binding: record.binding.clone(),
+                    spent_ms: record.spent_ms,
+                    reserved_units: record.reserved_units,
+                    state: State::InDoubt,
+                    result: Err("original obligation has uncertain model effects".into()),
+                });
+            }
+        }
+    }
+
+    fn hold_siblings(&mut self, id: u64) -> Result<(), String> {
+        let key = self.journal.records[&id].input.account_key();
+        let siblings = self
+            .journal
+            .records
+            .values()
+            .filter(|r| {
+                r.id != id
+                    && r.input.account_key() == key
+                    && !r.state.terminal()
+                    && r.state != State::InDoubt
+            })
+            .map(|r| r.id)
+            .collect::<Vec<_>>();
+        for sibling in siblings {
+            self.charge(sibling)?;
+            let record = self
+                .journal
+                .records
+                .get_mut(&sibling)
+                .expect("original sibling");
+            record.state = State::InDoubt;
+            record.result = None;
+            record.acknowledged = false;
+            if let Some(running) = self.running.get_mut(&sibling)
+                && let Some(cancel) = running.cancel.take()
+            {
+                let _ = cancel.send(());
+            }
+            self.deliver_hold(sibling);
+        }
+        Ok(())
+    }
+
+    fn complete(&mut self, id: u64, mut outcome: process::Outcome) -> Result<(), String> {
+        if self
+            .journal
+            .records
+            .get(&id)
+            .is_some_and(|r| r.state == State::InDoubt)
+            || self.account_held(id)
+        {
+            outcome.state = State::InDoubt;
+            outcome.result = Err("original obligation remains held by uncertain effects".into());
+        }
         if outcome.state == State::InDoubt {
             // The completed task has already left tasks. Retain uncertainty
             // before any clock or disk operation can fail and lose its outcome.
@@ -268,12 +327,21 @@ impl Owner {
                 .as_ref()
                 .err()
                 .map(|error| failure_detail(error));
+            let model = record.input.is_model();
             let accounting = self.charge(id);
             self.running.remove(&id);
             self.clocks.remove(&id);
             // Persist this fail-closed disposition with the existing observed
             // clock even after rollback. This grants no new time or work.
             let retained = self.retain_uncertainty();
+            if model {
+                self.hold_siblings(id)?;
+                self.deliver_hold(id);
+                return combine_outcomes(
+                    accounting,
+                    combine_outcomes(retained, self.retain_uncertainty()),
+                );
+            }
             return combine_outcomes(
                 Err("provider cleanup or effects require reconciliation".into()),
                 combine_outcomes(accounting, retained),
@@ -317,6 +385,28 @@ impl Owner {
             return Err("provider cleanup or effects require reconciliation".into());
         }
         Ok(())
+    }
+
+    fn acknowledge(&mut self, id: u64) -> Result<(), String> {
+        if id == 0 {
+            return Ok(());
+        }
+        let Some(record) = self.journal.records.get_mut(&id) else {
+            if id < self.journal.next_id {
+                return Ok(());
+            }
+            return Err("unknown research acknowledgement".into());
+        };
+        // A delivered uncertainty receipt never authorizes disposal or refund.
+        if record.state == State::InDoubt {
+            return Ok(());
+        }
+        if !record.state.terminal() {
+            return Err("acknowledged research job is still running".into());
+        }
+        record.acknowledged = true;
+        self.compact();
+        self.save()
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -363,7 +453,7 @@ impl Owner {
             .journal
             .records
             .values()
-            .any(|r| r.input == input && r.state == State::InDoubt)
+            .any(|r| r.input.account_key() == input.account_key() && r.state == State::InDoubt)
         {
             reject_state(
                 reply,
@@ -485,7 +575,7 @@ impl Owner {
                 id,
                 input: input.clone(),
                 binding: binding.clone(),
-                provider: "naome-deterministic-mocks-v1".into(),
+                provider: input.provider().into(),
                 configuration: identity(&settings),
                 settings,
                 created_ms,
@@ -494,6 +584,8 @@ impl Owner {
                 spent_ms,
                 reserved_units,
                 checkpoint: 0,
+                model_allowance_ms: None,
+                model_deadline_ns: None,
                 state: State::Queued,
                 result: None,
                 acknowledged: false,
@@ -532,6 +624,11 @@ impl Owner {
             .records
             .get_mut(&id)
             .ok_or("research accounting record absent")?;
+        let elapsed = if record.model_allowance_ms.is_some() {
+            0
+        } else {
+            elapsed
+        };
         record.spent_ms = record.spent_ms.saturating_add(elapsed);
         record.accounted_ms = now;
         self.journal.total_spent_ms = self.journal.total_spent_ms.saturating_add(elapsed);
@@ -542,8 +639,22 @@ impl Owner {
     }
 
     fn reserve(&mut self, id: u64, next: u32) -> Result<(), String> {
+        if self.account_held(id) {
+            let record = self
+                .journal
+                .records
+                .get_mut(&id)
+                .ok_or("held reservation identity absent")?;
+            record.state = State::InDoubt;
+            record.result = None;
+            record.acknowledged = false;
+            self.deliver_hold(id);
+            self.retain_uncertainty()?;
+            return Err("research allowance held by uncertain original obligation".into());
+        }
         self.charge(id)?;
         let now = wall_ms()?;
+        let now_ns = monotonic_ns()?;
         let record = self
             .journal
             .records
@@ -551,6 +662,18 @@ impl Owner {
             .ok_or("research reservation record absent")?;
         if record.state != State::Running || next != record.checkpoint + 1 {
             return Err("research reservation lifecycle differs".into());
+        }
+        if record.model_allowance_ms.is_some() {
+            if record.model_deadline_ns.is_none_or(|end| now_ns >= end) {
+                record.state = State::Expired;
+                record.result = None;
+                self.save()?;
+                return Err("research allowance original model deadline expired".into());
+            }
+            if next != 1 {
+                return Err("model dispatch reservation differs".into());
+            }
+            return self.save();
         }
         let account_exhausted = self
             .journal
@@ -605,6 +728,20 @@ impl Owner {
                 .take(LANES[lane] - active)
                 .collect::<Vec<_>>();
             for id in ready {
+                if self.account_held(id) {
+                    self.charge(id)?;
+                    let record = self
+                        .journal
+                        .records
+                        .get_mut(&id)
+                        .expect("held dispatch identity");
+                    record.state = State::InDoubt;
+                    record.result = None;
+                    record.acknowledged = false;
+                    self.deliver_hold(id);
+                    self.retain_uncertainty()?;
+                    continue;
+                }
                 let Some(slot) = self.disk.slot(lane)? else {
                     continue;
                 };
@@ -644,6 +781,27 @@ impl Owner {
                     continue;
                 }
                 record.state = State::Running;
+                if record.input.is_model() {
+                    remaining_ms = remaining_ms.min(20_000);
+                    record.model_allowance_ms = Some(remaining_ms);
+                    record.model_deadline_ns = Some(
+                        monotonic_ns()?
+                            .checked_add(remaining_ms * 1_000_000)
+                            .ok_or("model deadline overflow")?,
+                    );
+                    record.spent_ms = record.spent_ms.saturating_add(remaining_ms);
+                    record.reserved_units += 1;
+                    self.journal.total_spent_ms =
+                        self.journal.total_spent_ms.saturating_add(remaining_ms);
+                    self.journal.total_reserved_units += 1;
+                    let account = self
+                        .journal
+                        .accounts
+                        .get_mut(&record.input.account_key())
+                        .ok_or("model original allowance absent")?;
+                    account.spent_ms = account.spent_ms.saturating_add(remaining_ms);
+                    account.reserved_units += 1;
+                }
                 let source = record.clone();
                 self.save()?;
                 let (cancel, receiver) = oneshot::channel();
@@ -706,8 +864,9 @@ impl Owner {
                 .records
                 .get_mut(&id)
                 .expect("research reconciliation identity");
-            let expired =
-                now >= record.expires_ms || record.spent_ms >= record.settings.limits.horizon_ms;
+            let expired = now >= record.expires_ms
+                || record.model_allowance_ms.is_none()
+                    && record.spent_ms >= record.settings.limits.horizon_ms;
             if cancelled || expired {
                 record.state = if expired {
                     State::Expired
@@ -945,6 +1104,10 @@ fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
         .records
         .get(&id)
         .ok_or("completion research identity absent")?;
+    if record.model_allowance_ms.is_some() {
+        return Ok(wall_ms()? >= record.expires_ms
+            || monotonic_ns()? >= record.model_deadline_ns.ok_or("model deadline absent")?);
+    }
     Ok(wall_ms()? >= record.expires_ms
         || record.spent_ms >= record.settings.limits.horizon_ms
         || journal

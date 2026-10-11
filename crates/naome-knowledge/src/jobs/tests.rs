@@ -98,3 +98,53 @@ fn source_binding_preserves_original_question_orientation_and_strict_schema() {
     value["new_budget"] = serde_json::json!(true);
     assert!(serde_json::from_value::<Input>(value).is_err());
 }
+
+#[tokio::test]
+async fn python_clock_matches_rust_original_deadline_domain() {
+    let mut interpreters = vec![std::path::PathBuf::from("python3")];
+    if let Some(path) = std::env::var_os("NAOME_INTEREST_CLOCK_PYTHON") {
+        let path = std::path::PathBuf::from(path);
+        assert!(
+            path.is_absolute(),
+            "selected backend interpreter is absolute"
+        );
+        interpreters.push(path);
+    }
+    for python in interpreters {
+        let before = monotonic_ns().unwrap();
+        let command = "import json,time,sys;print(json.dumps({'clock':'clock_gettime(CLOCK_MONOTONIC)','now_ns':time.clock_gettime_ns(time.CLOCK_MONOTONIC),'expired':time.clock_gettime_ns(time.CLOCK_MONOTONIC)>=int(sys.argv[1]),'python':sys.version.split()[0]}))";
+        let mut child = tokio::process::Command::new(&python);
+        child
+            .args(["-I", "-S", "-B", "-c", command])
+            .arg(before.to_string())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let child = {
+            let _spawn = process::SPAWN.lock().unwrap();
+            child.spawn().expect("native Python clock probe spawn")
+        };
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(2), child.wait_with_output())
+                .await
+                .expect("finite clock probe deadline")
+                .expect("native Python clock probe");
+        let after = monotonic_ns().unwrap();
+        assert!(output.status.success(), "clock probe exited successfully");
+        assert!(output.stdout.len() <= 1024 && output.stderr.len() <= 1024);
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let python_ns = value["now_ns"].as_u64().unwrap();
+        assert!(before <= python_ns && python_ns <= after);
+        assert_eq!(value["expired"], true);
+        assert_eq!(value["clock"], "clock_gettime(CLOCK_MONOTONIC)");
+        println!(
+            "\n{}",
+            serde_json::json!({"clock_probe":value,"interpreter":python,
+                "rust_before_ns":before,"rust_after_ns":after,
+                "scope":"native clock domain only; no model loading or inference"})
+        );
+    }
+}

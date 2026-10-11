@@ -6,7 +6,7 @@
 //! records may be compacted, but obligation budgets and sequence IDs survive.
 
 mod journal;
-mod process;
+pub(crate) mod process;
 mod service;
 
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,7 @@ impl Default for Limits {
     }
 }
 
-/// Deterministic local provider workload. No model or external effect is used.
+/// Deterministic local workloads and developer-only producer fault controls.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct MockWork {
@@ -201,6 +201,10 @@ pub(crate) enum Input {
         question: String,
         purpose: Purpose,
         root: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<crate::interest::Owner>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<crate::interest::Session>,
     },
 }
 
@@ -218,6 +222,20 @@ impl Input {
         {
             crate::object::id_bytes(root)?;
         }
+        if let Self::Interest {
+            owner: Some(owner), ..
+        } = self
+        {
+            owner.validate()?;
+        }
+        if let Self::Interest { owner, model, .. } = self {
+            if owner.is_some() != model.is_some() {
+                return Err("interest owner/model binding absent".into());
+            }
+            if let Some(model) = model {
+                model.validate()?;
+            }
+        }
         Ok(())
     }
 
@@ -231,7 +249,50 @@ impl Input {
     }
 
     fn account_key(&self) -> String {
-        identity(self)
+        // Profile revisions and backend sessions are transport bindings, not
+        // new research obligations or permission to replenish their budgets.
+        #[derive(Serialize)]
+        #[serde(tag = "role", rename_all = "snake_case")]
+        enum Obligation<'a> {
+            Interest {
+                question: &'a str,
+                purpose: Purpose,
+                root: &'a Option<String>,
+            },
+        }
+        match self {
+            Self::Interest {
+                question,
+                purpose,
+                root,
+                ..
+            } => identity(&Obligation::Interest {
+                question,
+                purpose: *purpose,
+                root,
+            }),
+            _ => identity(self),
+        }
+    }
+
+    fn is_model(&self) -> bool {
+        matches!(self, Self::Interest { owner: Some(_), .. })
+    }
+
+    fn checkpoints(&self, settings: RoleSettings) -> u32 {
+        if self.is_model() {
+            1
+        } else {
+            settings.mock.steps
+        }
+    }
+
+    fn provider(&self) -> &'static str {
+        if matches!(self, Self::Interest { owner: Some(_), .. }) {
+            crate::interest::QWEN_PROVIDER
+        } else {
+            crate::interest::MOCK_PROVIDER
+        }
     }
 }
 
@@ -314,6 +375,11 @@ pub(crate) struct Record {
     /// Charged before starting each unit. Uncertain work is never refunded.
     pub reserved_units: u32,
     pub checkpoint: u32,
+    /// Full maximum model dispatch cost is durable before IPC; no refund.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_allowance_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_deadline_ns: Option<u64>,
     pub state: State,
     pub result: Option<Output>,
     pub acknowledged: bool,
@@ -408,7 +474,7 @@ impl Client {
     }
 }
 
-fn identity(value: &impl Serialize) -> String {
+pub(crate) fn identity(value: &impl Serialize) -> String {
     crate::hex(&Sha256::digest(
         serde_json::to_vec(value).expect("finite research value"),
     ))
@@ -429,3 +495,14 @@ pub(crate) fn internal(arguments: &[std::ffi::OsString]) -> Option<Result<(), St
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// One host kernel clock is shared by node, broker and Python worker deadlines.
+pub(crate) fn monotonic_ns() -> Result<u64, String> {
+    let now =
+        nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_err(|e| e.to_string())?;
+    let seconds = u64::try_from(now.tv_sec()).map_err(|_| "negative monotonic clock")?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|n| n.checked_add(now.tv_nsec() as u64))
+        .ok_or_else(|| "monotonic clock overflow".into())
+}

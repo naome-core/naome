@@ -96,6 +96,10 @@ impl Disk {
         // Deterministic mock state is resumable. Charge downtime conservatively;
         // neither a process PID nor a prior provider response grants authority.
         for record in journal.records.values_mut() {
+            if record.model_allowance_ms.is_some() && !record.state.terminal() {
+                record.state = State::InDoubt;
+                continue;
+            }
             if !record.state.terminal() && record.state != State::InDoubt {
                 let elapsed = now
                     .checked_sub(record.accounted_ms)
@@ -213,7 +217,7 @@ impl Journal {
             r.binding.validate()?;
             if *id != r.id
                 || *id >= self.next_id
-                || r.provider != "naome-deterministic-mocks-v1"
+                || r.provider != r.input.provider()
                 || r.settings != settings.for_input(&r.input)
                 || r.configuration != identity(&r.settings)
                 || r.created_ms > r.accounted_ms
@@ -224,11 +228,21 @@ impl Journal {
                         .ok_or("job horizon overflow")?
                 || r.checkpoint > r.reserved_units
                 || r.reserved_units > r.settings.limits.work_units
-                || r.checkpoint > r.settings.mock.steps
+                || r.checkpoint > r.input.checkpoints(r.settings)
+                || r.model_allowance_ms.is_some() != r.model_deadline_ns.is_some()
+                || r.model_deadline_ns == Some(0)
+                || r.model_allowance_ms.is_some_and(|ms| {
+                    !r.input.is_model()
+                        || ms == 0
+                        || ms > 20_000
+                        || r.reserved_units == 0
+                        || r.spent_ms < ms
+                })
                 || r.acknowledged && !r.state.terminal()
                 || (r.state == State::Complete) != r.result.is_some()
                 || r.state == State::Complete
-                    && (r.checkpoint != r.settings.mock.steps || r.settings.mock.steps == 0)
+                    && (r.checkpoint != r.input.checkpoints(r.settings)
+                        || r.input.checkpoints(r.settings) == 0)
             {
                 return Err(
                     "research record identity, lifecycle, checkpoint or budget differs".into(),
