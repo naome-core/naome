@@ -517,7 +517,7 @@ fn owner_and_model_sessions_preserve_legacy_interest_bytes_and_budget_key() {
     let bytes = serde_json::to_vec(&legacy).unwrap();
     let expected = "{\"role\":\"interest\",\"question\":\"goal = all(x,eq(x,x))\",\"purpose\":\"admission\",\"root\":null}";
     assert_eq!(bytes, expected.as_bytes());
-    let key = identity(&serde_json::from_str::<serde_json::Value>(&expected).unwrap());
+    let key = identity(&serde_json::from_str::<serde_json::Value>(expected).unwrap());
     // Value's sorted keys are not the historical struct's ordered bytes.
     assert_ne!(legacy.account_key(), key);
     assert_eq!(

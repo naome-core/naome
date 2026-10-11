@@ -23,6 +23,12 @@ mod cli;
 mod owner;
 pub(crate) use owner::Profile as OwnerProfile;
 
+pub(crate) type OwnerInterest = (
+    [u8; 32],
+    Option<crate::interest::Owner>,
+    Option<crate::interest::Session>,
+);
+
 const CONTROL_LIMIT: usize = 6 * owner::MAX_TEXT_BYTES + 512;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
@@ -345,16 +351,7 @@ impl Control {
         Ok(())
     }
 
-    pub(crate) fn owner_interest(
-        &self,
-    ) -> Result<
-        (
-            [u8; 32],
-            Option<crate::interest::Owner>,
-            Option<crate::interest::Session>,
-        ),
-        String,
-    > {
+    pub(crate) fn owner_interest(&self) -> Result<OwnerInterest, String> {
         if let Some(model) = &self.model {
             let owner = crate::interest::Owner::from_profile(self.owner_profile()?)?;
             let state = model.state().ok_or("resident model not ready")?;
