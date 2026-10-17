@@ -18,6 +18,7 @@ struct Files {
     directory: PathBuf,
     reads: AtomicU64,
     remaining: Mutex<Option<u64>>,
+    failures: Mutex<Vec<ContextError>>,
 }
 impl Files {
     fn new() -> Arc<Self> {
@@ -31,6 +32,7 @@ impl Files {
             directory,
             reads: AtomicU64::new(0),
             remaining: Mutex::new(None),
+            failures: Mutex::new(Vec::new()),
         })
     }
     fn path(&self, address: [u8; 32]) -> PathBuf {
@@ -48,6 +50,9 @@ impl Drop for Files {
     }
 }
 impl ContextStorage for Files {
+    fn record_failure(&self, error: &ContextError) {
+        self.failures.lock().unwrap().push(error.clone());
+    }
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let mut remaining = self.remaining.lock().unwrap();
@@ -463,6 +468,10 @@ fn failed_or_corrupt_cold_reads_never_issue_novelty_or_temporary_evidence() {
     );
     assert_eq!(failed.reason, Some(RejectionReason::InvalidEvidence));
     assert!(failed.novelty().is_none() && failed.deduction.is_none());
+    assert_eq!(
+        twin.files.failures.lock().unwrap().last(),
+        Some(&ContextError::Corrupt)
+    );
     assert!(twin.replay_without_panic().is_err());
 }
 impl Twin {

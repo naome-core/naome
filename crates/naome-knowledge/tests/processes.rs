@@ -102,10 +102,10 @@ fn run_autonomous(mode: &str) {
     ));
     let mut command = python_driver(&root, mode);
     command
-        .arg(root.join(if mode == "interest" {
-            "crates/naome-knowledge/tests/support/owner_interest.py"
-        } else {
-            "crates/naome-knowledge/tests/support/autonomous_lifecycle.py"
+        .arg(root.join(match mode {
+            "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
+            "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
+            _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))
         .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
         .arg(&directory)
@@ -115,6 +115,7 @@ fn run_autonomous(mode: &str) {
                 "mdns" => "180",
                 "direct" => "60",
                 "guardian-probe" => "45",
+                "startup" => "50",
                 _ => "90",
             },
             "--profile",
@@ -143,6 +144,12 @@ fn run_autonomous(mode: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_lifeline_requires_checked_ack_and_reaps_internal_refusals() {
+    run_autonomous("startup");
 }
 
 fn python_driver(root: &std::path::Path, mode: &str) -> Command {

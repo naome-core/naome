@@ -7,6 +7,7 @@
 //! honest peers to reconnect, and data to fit the explicit local resource limits.
 
 mod autonomous;
+mod corpus;
 mod discovery;
 mod graph;
 mod intake;
@@ -22,9 +23,7 @@ pub mod runtime;
 mod store;
 mod wire;
 
-pub use graph::{
-    Graph, Ingest, MAX_ACCEPTED_BYTES, MAX_CONTEXT_BYTES, MAX_OBJECTS, MAX_PENDING, PENDING_TTL,
-};
+pub use graph::{CHECKED_CACHE_BYTES, Graph, Ingest, MAX_PENDING, PENDING_TTL};
 pub use object::{
     CHECKER_ID, CODEC_ID, Envelope, GRAPH_POLICY_ID, MAX_DEPENDENCIES, MAX_DEPTH, MAX_PROOF_BYTES,
     compatibility, hex, unhex,

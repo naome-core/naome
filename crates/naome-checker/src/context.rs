@@ -36,6 +36,9 @@ impl Error for ContextError {}
 pub trait ContextStorage: Send + Sync {
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError>;
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError>;
+    /// Report integrity failures discovered by the checker after a byte read.
+    /// The owner may halt its process; this notification grants no validity.
+    fn record_failure(&self, _error: &ContextError) {}
 }
 
 pub(crate) mod sealed {

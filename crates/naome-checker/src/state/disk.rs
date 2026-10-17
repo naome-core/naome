@@ -30,6 +30,12 @@ pub struct DiskArtifactState {
 }
 
 impl DiskArtifactState {
+    fn report<T>(&self, result: Result<T, ContextError>) -> Result<T, ContextError> {
+        if let Err(error @ (ContextError::Corrupt | ContextError::Storage(_))) = &result {
+            self.proofs.storage().record_failure(error);
+        }
+        result
+    }
     pub fn new(storage: Arc<dyn ContextStorage>) -> Self {
         Self {
             proofs: DiskMap::new(storage.clone()),
@@ -49,10 +55,66 @@ impl DiskArtifactState {
     pub fn contains_statement(&self, id: StatementId) -> Result<bool, ContextError> {
         self.statements.contains_key(id.as_bytes())
     }
+    /// Exact cited-proof DAG depth, authenticated by the live checked roots.
+    /// This is a derived metric; the operating graph owns its depth policy.
+    pub fn proof_dependency_depth(&self, id: ProofId) -> Result<Option<usize>, ContextError> {
+        self.report((|| {
+            self.proofs
+                .get(id.as_bytes())?
+                .map(|record| proof_record(&record).map(|(_, depth)| depth))
+                .transpose()
+        })())
+    }
     pub fn proof_ids(&self) -> impl Iterator<Item = Result<ProofId, ContextError>> {
+        self.proof_ids_after(None)
+    }
+    /// Complete ascending proof cursor, seeking through authenticated ranges.
+    pub fn proof_ids_after(
+        &self,
+        after: Option<ProofId>,
+    ) -> impl Iterator<Item = Result<ProofId, ContextError>> {
         self.proofs
-            .entries()
+            .entries_after(after.map(|id| *id.as_bytes()))
             .map(|entry| entry.map(|(id, _)| ProofId::from_bytes(id)))
+    }
+
+    /// Clone a live checked view into fresh byte storage, preserving its exact
+    /// authenticated roots and snapshot. This cannot restore a persisted root
+    /// or grant validity to new records. Old handles retain their own storage.
+    pub fn copy_to(&self, storage: Arc<dyn ContextStorage>) -> Result<Self, ContextError> {
+        self.report((|| {
+            let next = Self {
+                proofs: self.proofs.copy_to(storage.clone())?,
+                derivations: self.derivations.copy_to(storage.clone())?,
+                statements: self.statements.copy_to(storage.clone())?,
+                artifacts: self.artifacts.copy_to(storage.clone())?,
+                witnesses: self.witnesses.copy_to(storage.clone())?,
+                outgoing: self.outgoing.copy_to(storage.clone())?,
+                deductions: self.deductions.copy_to(storage.clone())?,
+                instances: self.instances.copy_to(storage.clone())?,
+            };
+            for entry in self.statements.entries() {
+                let (id, record) = entry?;
+                let id = StatementId::from_bytes(id);
+                let (address, length) = decode_statement_record(&record)?;
+                let bytes = self.statements.storage().read(address, length)?;
+                if bytes.len() != length
+                    || formula_address(&bytes) != address
+                    || statement_id(&bytes) != id
+                {
+                    return Err(ContextError::Corrupt);
+                }
+                storage.write(address, &bytes)?;
+            }
+            for index in [&self.outgoing, &self.deductions, &self.instances] {
+                for entry in index.entries() {
+                    let (_, record) = entry?;
+                    let bucket = DiskMap::from_root(index.storage(), decode_root(Some(&record))?);
+                    let _ = bucket.copy_to(storage.clone())?;
+                }
+            }
+            Ok(next)
+        })())
     }
 
     /// Aliases coexist only after exact checked identity/conclusion/dependency
@@ -63,6 +125,21 @@ impl DiskArtifactState {
     ) -> Result<Box<[u8]>, ArtifactStateError> {
         self.validate_registration(&proof)?;
         let mut next = self.clone();
+        let mut depth = 0usize;
+        for step in proof.normal_form.certificate().steps() {
+            if let ProofStep::ProofReference { proof_id } = step {
+                depth = depth.max(
+                    self.proof_dependency_depth(*proof_id)
+                        .map_err(ArtifactStateError::Context)?
+                        .ok_or(ArtifactStateError::MissingProofDependency {
+                            proof_id: *proof_id,
+                        })?,
+                );
+            }
+        }
+        let depth = depth
+            .checked_add(1)
+            .ok_or(ArtifactStateError::Context(ContextError::Limit))?;
         let bytes = proof
             .conclusion
             .encode_canonical()
@@ -88,8 +165,10 @@ impl DiskArtifactState {
                 proof.statement_id.as_bytes(),
             )
             .map_err(ArtifactStateError::Context)?;
+        let mut proof_record = proof.derivation_id.as_bytes().to_vec();
+        proof_record.extend_from_slice(&(depth as u64).to_be_bytes());
         next.proofs
-            .insert(*proof.proof_id.as_bytes(), proof.derivation_id.as_bytes())
+            .insert(*proof.proof_id.as_bytes(), &proof_record)
             .map_err(ArtifactStateError::Context)?;
         next.artifacts
             .insert(*ArtifactId::from_proof_id(proof.proof_id).as_bytes(), &[])
@@ -204,20 +283,12 @@ impl DiskArtifactState {
         }
     }
     fn statement_record(&self, id: StatementId) -> Result<Option<([u8; 32], usize)>, ContextError> {
-        let Some(record) = self.statements.get(id.as_bytes())? else {
-            return Ok(None);
-        };
-        if record.len() != 40 {
-            return Err(ContextError::Corrupt);
-        }
-        let length = usize::try_from(u64::from_be_bytes(
-            record[32..].try_into().map_err(|_| ContextError::Corrupt)?,
-        ))
-        .map_err(|_| ContextError::Limit)?;
-        if length == 0 || length > CHECKER_MAX_FORMULA_WORK_BYTES {
-            return Err(ContextError::Limit);
-        }
-        Ok(Some((fixed(&record[..32])?, length)))
+        self.report((|| {
+            let Some(record) = self.statements.get(id.as_bytes())? else {
+                return Ok(None);
+            };
+            decode_statement_record(&record).map(Some)
+        })())
     }
 }
 
@@ -234,75 +305,90 @@ impl ContextView for DiskArtifactState {
         self.artifacts.contains_key(id.as_bytes())
     }
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError> {
-        let Some(derivation) = self.proofs.get(id.as_bytes())? else {
-            return Ok(None);
-        };
-        let derivation = DerivationId::from_bytes(fixed(&derivation)?);
-        let statement = self
-            .derivations
-            .get(derivation.as_bytes())?
-            .ok_or(ContextError::Corrupt)?;
-        let statement = StatementId::from_bytes(fixed(&statement)?);
-        let (_, length) = self
-            .statement_record(statement)?
-            .ok_or(ContextError::Corrupt)?;
-        Ok(Some(ProofHeader {
-            derivation,
-            statement,
-            length,
-        }))
+        self.report((|| {
+            let Some(derivation) = self.proofs.get(id.as_bytes())? else {
+                return Ok(None);
+            };
+            let (derivation, _) = proof_record(&derivation)?;
+            let statement = self
+                .derivations
+                .get(derivation.as_bytes())?
+                .ok_or(ContextError::Corrupt)?;
+            let statement = StatementId::from_bytes(fixed(&statement)?);
+            let (_, length) = self
+                .statement_record(statement)?
+                .ok_or(ContextError::Corrupt)?;
+            Ok(Some(ProofHeader {
+                derivation,
+                statement,
+                length,
+            }))
+        })())
     }
     fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError> {
-        let Some((_, length)) = self.statement_record(id)? else {
-            return Ok(None);
-        };
-        let proof = self
-            .witnesses
-            .get(id.as_bytes())?
-            .ok_or(ContextError::Corrupt)?;
-        Ok(Some(StatementHeader {
-            proof: ProofId::from_bytes(fixed(&proof)?),
-            length,
-        }))
+        self.report((|| {
+            let Some((_, length)) = self.statement_record(id)? else {
+                return Ok(None);
+            };
+            let proof = self
+                .witnesses
+                .get(id.as_bytes())?
+                .ok_or(ContextError::Corrupt)?;
+            Ok(Some(StatementHeader {
+                proof: ProofId::from_bytes(fixed(&proof)?),
+                length,
+            }))
+        })())
     }
     fn statement_formula(
         &self,
         id: StatementId,
         maximum: usize,
     ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
-        let Some((address, length)) = self.statement_record(id)? else {
-            return Ok(None);
-        };
-        if length > maximum {
-            return Err(ContextError::Limit);
-        }
-        let bytes = self.statements.storage().read(address, length)?;
-        if bytes.len() != length || formula_address(&bytes) != address || statement_id(&bytes) != id
-        {
-            return Err(ContextError::Corrupt);
-        }
-        let formula = Formula::decode_canonical(&bytes).map_err(|_| ContextError::Corrupt)?;
-        if !formula.is_closed() {
-            return Err(ContextError::Corrupt);
-        }
-        Ok(Some(Cow::Owned(formula)))
+        self.report((|| {
+            let Some((address, length)) = self.statement_record(id)? else {
+                return Ok(None);
+            };
+            if length > maximum {
+                return Err(ContextError::Limit);
+            }
+            let bytes = self.statements.storage().read(address, length)?;
+            if bytes.len() != length
+                || formula_address(&bytes) != address
+                || statement_id(&bytes) != id
+            {
+                return Err(ContextError::Corrupt);
+            }
+            let formula = Formula::decode_canonical(&bytes).map_err(|_| ContextError::Corrupt)?;
+            if !formula.is_closed() {
+                return Err(ContextError::Corrupt);
+            }
+            Ok(Some(Cow::Owned(formula)))
+        })())
     }
     fn bucket(
         &self,
         kind: BucketKind,
         target: StatementId,
     ) -> Result<StatementCursor<'_>, ContextError> {
-        let index = self.index(kind);
-        let root = index.get(target.as_bytes())?;
-        let bucket = DiskMap::from_root(index.storage(), decode_root(root.as_deref())?);
-        Ok(Box::new(bucket.entries().map(|entry| {
-            entry.and_then(|(key, value)| {
-                if !value.is_empty() {
-                    return Err(ContextError::Corrupt);
+        self.report((|| {
+            let index = self.index(kind);
+            let root = index.get(target.as_bytes())?;
+            let bucket = DiskMap::from_root(index.storage(), decode_root(root.as_deref())?);
+            let storage = index.storage();
+            Ok::<StatementCursor<'_>, ContextError>(Box::new(bucket.entries().map(move |entry| {
+                let result = entry.and_then(|(key, value)| {
+                    if !value.is_empty() {
+                        return Err(ContextError::Corrupt);
+                    }
+                    Ok(StatementId::from_bytes(key))
+                });
+                if let Err(error) = &result {
+                    storage.record_failure(error);
                 }
-                Ok(StatementId::from_bytes(key))
-            })
-        })))
+                result
+            })))
+        })())
     }
     fn definition_kind(&self, _: DefinitionId) -> Option<DefinitionKind> {
         None
@@ -315,6 +401,33 @@ impl DefinitionResolver for DiskArtifactState {
 }
 
 fn fixed(bytes: &[u8]) -> Result<[u8; 32], ContextError> {
+    bytes.try_into().map_err(|_| ContextError::Corrupt)
+}
+fn decode_statement_record(record: &[u8]) -> Result<([u8; 32], usize), ContextError> {
+    if record.len() != 40 {
+        return Err(ContextError::Corrupt);
+    }
+    let length = usize::try_from(u64::from_be_bytes(
+        record[32..].try_into().map_err(|_| ContextError::Corrupt)?,
+    ))
+    .map_err(|_| ContextError::Limit)?;
+    if length == 0 || length > CHECKER_MAX_FORMULA_WORK_BYTES {
+        return Err(ContextError::Corrupt);
+    }
+    Ok((fixed(&record[..32])?, length))
+}
+fn proof_record(bytes: &[u8]) -> Result<(DerivationId, usize), ContextError> {
+    if bytes.len() != 40 {
+        return Err(ContextError::Corrupt);
+    }
+    let depth = usize::try_from(u64::from_be_bytes(fixed_u64(&bytes[32..])?))
+        .map_err(|_| ContextError::Limit)?;
+    if depth == 0 {
+        return Err(ContextError::Corrupt);
+    }
+    Ok((DerivationId::from_bytes(fixed(&bytes[..32])?), depth))
+}
+fn fixed_u64(bytes: &[u8]) -> Result<[u8; 8], ContextError> {
     bytes.try_into().map_err(|_| ContextError::Corrupt)
 }
 fn formula_address(bytes: &[u8]) -> [u8; 32] {
@@ -342,5 +455,152 @@ fn decode_root(bytes: Option<&[u8]>) -> Result<Option<Root>, ContextError> {
             fingerprint: fixed(&bytes[33..])?,
         })),
         _ => Err(ContextError::Corrupt),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use naome_foundation::ZfcAxiom;
+    use naome_proof::ProofCertificate;
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    #[derive(Default)]
+    struct MemoryStorage {
+        bytes: Mutex<BTreeMap<[u8; 32], Vec<u8>>>,
+        reads: Mutex<BTreeMap<[u8; 32], usize>>,
+        failures: Mutex<Vec<ContextError>>,
+    }
+    impl ContextStorage for MemoryStorage {
+        fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
+            *self.reads.lock().unwrap().entry(address).or_default() += 1;
+            let records = self.bytes.lock().unwrap();
+            let bytes = records.get(&address).ok_or(ContextError::Corrupt)?;
+            if bytes.len() > maximum {
+                return Err(ContextError::Limit);
+            }
+            Ok(bytes.clone())
+        }
+        fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
+            let mut records = self.bytes.lock().unwrap();
+            if let Some(previous) = records.get(&address) {
+                if previous != bytes {
+                    return Err(ContextError::Corrupt);
+                }
+            } else {
+                records.insert(address, bytes.to_vec());
+            }
+            Ok(())
+        }
+        fn record_failure(&self, error: &ContextError) {
+            self.failures.lock().unwrap().push(error.clone());
+        }
+    }
+
+    fn register_axiom(
+        state: &mut DiskArtifactState,
+        axiom: ZfcAxiom,
+    ) -> (ProofId, StatementId, Vec<u8>) {
+        let proof = crate::normalize_and_check(
+            ProofCertificate::new(vec![ProofStep::ZfcAxiom(axiom)]).unwrap(),
+        )
+        .unwrap();
+        let expected = (
+            proof.proof_id(),
+            proof.statement_id(),
+            proof.conclusion().encode_canonical().unwrap(),
+        );
+        state.register_proof_for_replication(proof).unwrap();
+        expected
+    }
+
+    #[test]
+    fn copy_reuses_authenticated_statement_records_and_keeps_cold_formulas() {
+        let source = Arc::new(MemoryStorage::default());
+        let mut state = DiskArtifactState::new(source.clone());
+        let expected = [
+            register_axiom(&mut state, ZfcAxiom::Pairing),
+            register_axiom(&mut state, ZfcAxiom::Union),
+        ];
+        let statement_root = state.statements.root().unwrap().address;
+        let snapshot = state.snapshot_id();
+        let ids = state.proof_ids().collect::<Result<Vec<_>, _>>().unwrap();
+        source.reads.lock().unwrap().clear();
+        let copied = state.copy_to(Arc::new(MemoryStorage::default())).unwrap();
+        assert_eq!(
+            source.reads.lock().unwrap().get(&statement_root),
+            Some(&2),
+            "one reachable-node copy and one statement cursor, without per-record lookups"
+        );
+        drop(state);
+        source.bytes.lock().unwrap().clear();
+        assert_eq!(copied.snapshot_id(), snapshot);
+        assert_eq!(
+            copied.proof_ids().collect::<Result<Vec<_>, _>>().unwrap(),
+            ids
+        );
+        for (id, statement, bytes) in expected {
+            assert_eq!(
+                copied.proof_header(id).unwrap().unwrap().statement_id(),
+                statement
+            );
+            assert_eq!(
+                copied
+                    .statement_formula(statement, CHECKER_MAX_FORMULA_WORK_BYTES)
+                    .unwrap()
+                    .unwrap()
+                    .encode_canonical()
+                    .unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn copy_rejects_malformed_statement_records_and_formula_identity_corruption() {
+        let mut oversized = vec![0; 32];
+        oversized.extend_from_slice(&((CHECKER_MAX_FORMULA_WORK_BYTES as u64) + 1).to_be_bytes());
+        for record in [vec![0; 39], vec![0; 41], vec![0; 40], oversized] {
+            let source = Arc::new(MemoryStorage::default());
+            let mut state = DiskArtifactState::new(source.clone());
+            state.statements.insert([1; 32], &record).unwrap();
+            assert!(matches!(
+                state.copy_to(Arc::new(MemoryStorage::default())),
+                Err(ContextError::Corrupt)
+            ));
+            assert!(
+                source
+                    .failures
+                    .lock()
+                    .unwrap()
+                    .contains(&ContextError::Corrupt)
+            );
+        }
+
+        for wrong_statement in [false, true] {
+            let source = Arc::new(MemoryStorage::default());
+            let mut state = DiskArtifactState::new(source.clone());
+            let (_, statement, _) = register_axiom(&mut state, ZfcAxiom::Pairing);
+            if wrong_statement {
+                let record = state.statements.get(statement.as_bytes()).unwrap().unwrap();
+                let mut other = *statement.as_bytes();
+                other[0] ^= 1;
+                state.statements.insert(other, &record).unwrap();
+            } else {
+                let (address, _) = state.statement_record(statement).unwrap().unwrap();
+                source.bytes.lock().unwrap().get_mut(&address).unwrap()[0] ^= 1;
+            }
+            assert!(matches!(
+                state.copy_to(Arc::new(MemoryStorage::default())),
+                Err(ContextError::Corrupt)
+            ));
+            assert!(
+                source
+                    .failures
+                    .lock()
+                    .unwrap()
+                    .contains(&ContextError::Corrupt)
+            );
+        }
     }
 }

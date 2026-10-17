@@ -23,6 +23,7 @@ required-features = ["developer-tools"]
 [dependencies]
 async-trait = "0.1.91"
 libp2p = { version = "0.56.0", default-features = false, features = ["dcutr", "dns", "ed25519", "gossipsub", "identify", "kad", "macros", "mdns", "noise", "relay", "request-response", "tcp", "tokio", "yamux"] }
+lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 naome-authoring = { path = "../naome-authoring" }
 naome-checker = { path = "../naome-checker" }
 naome-foundation = { path = "../naome-foundation" }
@@ -35,7 +36,7 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time", "signal", "
 socket2 = { version = "=0.6.5", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "fs", "user"] }
+nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "fs", "user", "resource", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

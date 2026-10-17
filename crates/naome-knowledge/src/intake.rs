@@ -40,7 +40,7 @@ struct Description {
 enum Phase {
     Initial(oneshot::Receiver<QuestionAssessment>),
     Fetch,
-    Final(oneshot::Receiver<QuestionAssessment>, CheckedBatch),
+    Final(oneshot::Receiver<QuestionAssessment>, Box<CheckedBatch>),
 }
 
 /// Private grant binds a root, peer, derived source and selected original
@@ -113,7 +113,7 @@ impl Intake {
         graph: &Graph,
     ) -> Result<&'static str, String> {
         let (id, statement, question) = metadata.compile()?;
-        if graph.contains(id) {
+        if graph.contains(id)? {
             return Ok("duplicate");
         }
         if let Some(waiting) = self
@@ -247,7 +247,7 @@ impl Intake {
         root.checker_work += naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
         root.needed.remove(&expected);
         for dependency in &candidate.dependencies {
-            if !graph.contains(*dependency)
+            if !graph.contains(*dependency)?
                 && !root.staged.contains_key(dependency)
                 && *dependency != expected
             {
@@ -376,7 +376,7 @@ impl Intake {
                         if selected != root.question {
                             return Err("question provenance changed".into());
                         }
-                        root.phase = Phase::Final(receiver, batch);
+                        root.phase = Phase::Final(receiver, Box::new(batch));
                     } else {
                         return Err("question receiving capacity".into());
                     }
@@ -403,8 +403,8 @@ impl Intake {
                         else {
                             unreachable!()
                         };
-                        graph.persist_batch(id, &batch)?;
-                        let admitted = graph.apply_batch(batch);
+                        let admitted =
+                            graph.commit_batch(id, *batch, root.description.created + ROOT_TTL)?;
                         questions.apply_exchange(delta);
                         return Ok(Some(admitted));
                     }

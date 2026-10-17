@@ -409,8 +409,7 @@ impl Autonomous {
                                 &pending.question,
                                 &assessment,
                             )?;
-                            graph.persist_batch(root, &batch)?;
-                            let admitted = graph.apply_batch(batch);
+                            let admitted = graph.commit_batch(root, batch, pending.expires)?;
                             questions.apply_exchange(delta);
                             Ok(admitted)
                         })();

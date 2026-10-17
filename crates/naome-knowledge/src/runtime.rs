@@ -8,7 +8,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -21,7 +21,10 @@ pub use crate::autonomous::Intervals as RuntimeIntervals;
 pub use crate::jobs::{Limits as JobLimits, RecoveryPolicy, RoleSettings, Settings as RuntimeJobs};
 mod cli;
 mod owner;
+mod replay_guard;
+mod startup;
 pub(crate) use owner::Profile as OwnerProfile;
+pub(crate) use startup::Startup;
 
 const CONTROL_LIMIT: usize = 6 * owner::MAX_TEXT_BYTES + 512;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
@@ -216,6 +219,7 @@ pub(crate) struct Control {
     stopping: tokio::sync::watch::Sender<bool>,
     owner: Mutex<OwnerState>,
     selection_dirty: std::sync::atomic::AtomicBool,
+    startup: Option<Startup>,
 }
 
 struct OwnerState {
@@ -266,9 +270,17 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 impl Control {
     /// Called only after Graph::open owns and revalidates this directory.
-    pub(crate) fn bind(directory: &Path) -> Result<Self, String> {
+    pub(crate) fn bind(directory: &Path, startup: Option<Startup>) -> Result<Self, String> {
         let token = std::env::var(DAEMON_NONCE).map_err(|_| "missing internal launch nonce")?;
-        Self::bind_token(directory, token)
+        let mut control = Self::bind_token(directory, token)?;
+        control.startup = startup;
+        Ok(control)
+    }
+
+    pub(crate) fn startup_ready(&self) {
+        if let Some(startup) = &self.startup {
+            startup.ready();
+        }
     }
 
     fn bind_token(directory: &Path, token: String) -> Result<Self, String> {
@@ -317,6 +329,7 @@ impl Control {
                 recovery_error: None,
             }),
             selection_dirty: std::sync::atomic::AtomicBool::new(true),
+            startup: None,
         })
     }
 
@@ -694,7 +707,7 @@ async fn stopped_status(directory: &Path) -> Result<Status, String> {
     let graph = Graph::open(directory)?;
     Ok(Status {
         running: false,
-        accepted_proofs: graph.ids().len(),
+        accepted_proofs: graph.accepted_count(),
         interest: owner::load(directory)?,
     })
 }
@@ -709,7 +722,7 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
     let graph = Graph::open(directory)?;
     Ok(Status {
         running: false,
-        accepted_proofs: graph.ids().len(),
+        accepted_proofs: graph.accepted_count(),
         interest: owner::update(directory, text).map_err(|error| error.message)?,
     })
 }
@@ -722,12 +735,25 @@ async fn status(directory: &Path) -> Result<Status, String> {
 }
 
 async fn start(directory: &Path) -> Result<Status, String> {
-    if let Some(status) = request(directory, Operation::Status, None).await? {
+    let deadline = tokio::time::Instant::now() + startup::TIMEOUT;
+    // Keep startup cancellation alive while the child performs synchronous
+    // replay. SIGKILL/parent disappearance instead closes the stdin lifeline.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| format!("startup termination signal: {e}"))?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .map_err(|e| format!("startup interrupt signal: {e}"))?;
+    if let Some(status) =
+        tokio::time::timeout_at(deadline, request(directory, Operation::Status, None))
+            .await
+            .map_err(|_| "node startup deadline")??
+    {
         return Ok(status);
     }
     // Prove there is no existing owner before launching. The daemon takes the
     // same kernel lock itself; an external embedding racing this probe wins or fails.
-    drop(Graph::open(directory)?);
+    // Catalog shape establishes no mathematical proof validity. The daemon
+    // alone rebuilds checked roots by complete mathematical corpus replay.
+    drop(crate::store::Store::open(directory)?);
     initialize(directory)?;
     configuration(directory)?;
     let nonce = crate::hex(&Sha256::digest(
@@ -739,41 +765,91 @@ async fn start(directory: &Path) -> Result<Status, String> {
     cap_log(&directory.join("node.log"))?;
     cap_log(&directory.join("node.log.previous"))?;
     let log = open_log(&directory.join("node.log"))?;
+    if tokio::time::Instant::now() >= deadline {
+        return Err("node startup deadline before launch".into());
+    }
     let mut child = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
         .arg("start")
         .env("NAOME_NODE_DIR", directory)
         .env(DAEMON_NONCE, &nonce)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::from(
             log.try_clone().map_err(|error| error.to_string())?,
         ))
         .stderr(Stdio::from(log))
         .spawn()
         .map_err(|error| error.to_string())?;
-    let deadline = Instant::now() + LIFECYCLE_TIMEOUT;
-    loop {
-        if let Some(exit) = child.try_wait().map_err(|error| error.to_string())? {
-            return Err(format!(
-                "node failed to start ({exit}); inspect {}",
-                directory.join("node.log").display()
-            ));
+    let launch = async {
+        child
+            .stdin
+            .as_mut()
+            .ok_or("startup parent lifeline missing")?
+            .write_all(&startup::begin(&nonce))
+            .map_err(|e| e.to_string())?;
+        let status = startup::wait(directory, &nonce, deadline, || {
+            child.try_wait().map_err(|e| e.to_string())
+        })
+        .await?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err("node startup deadline before acknowledgement".into());
         }
-        match request(directory, Operation::Status, Some(&nonce)).await {
-            Ok(Some(status)) if status.running => return Ok(status),
-            Ok(Some(_)) => {}
-            Ok(None) => {}
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
+        child
+            .stdin
+            .as_mut()
+            .ok_or("startup parent lifeline missing")?
+            .write_all(&startup::acknowledge(&nonce))
+            .map_err(|e| e.to_string())?;
+        drop(child.stdin.take());
+        Ok(status)
+    };
+    let result: Result<Status, String> = tokio::select! {
+        result = launch => result,
+        _ = terminate.recv() => Err("node startup cancelled".into()),
+        _ = interrupt.recv() => Err("node startup cancelled".into()),
+    };
+    match result {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            abort_start(&mut child)
+                .await
+                .map_err(|cleanup| format!("{error}; {cleanup}"))?;
+            Err(format!("{error}; owned startup child reaped"))
+        }
+    }
+}
+
+async fn abort_start(child: &mut Child) -> Result<(), String> {
+    // EOF reaches the independent reader even while Graph::open is synchronous.
+    drop(child.stdin.take());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let fallback = Instant::now() + Duration::from_secs(1);
+    let mut signalled = false;
+    loop {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return Ok(());
+        }
+        if !signalled && Instant::now() >= fallback {
+            let pid = nix::unistd::Pid::from_raw(
+                i32::try_from(child.id()).map_err(|_| "invalid owned startup PID")?,
+            );
+            // The still-unreaped direct Child is the launch authority. Group
+            // fallback additionally requires its actual current self-session.
+            if nix::unistd::getpgid(Some(pid)).ok() == Some(pid)
+                && nix::unistd::getsid(Some(pid)).ok() == Some(pid)
+            {
+                nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL)
+                    .map_err(|e| format!("owned startup group cleanup: {e}"))?;
+            } else {
+                child
+                    .kill()
+                    .map_err(|e| format!("owned startup child cleanup: {e}"))?;
             }
+            signalled = true;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("node startup deadline; owned launch was terminated".into());
+            return Err("owned startup exit and reap remain unconfirmed".into());
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -833,17 +909,20 @@ pub async fn execute() -> Result<(), String> {
         text,
         json,
     } = cli::Arguments::parse(&arguments)?;
+    let _replay_guard = replay_guard::optional(command)?;
     let directory = directory()?;
     if std::env::var_os(DAEMON_NONCE).is_some() {
         if command != "start" {
             return Err("invalid internal lifecycle invocation".into());
         }
         nix::unistd::setsid().map_err(|error| format!("detach node session: {error}"))?;
+        let nonce = std::env::var(DAEMON_NONCE).map_err(|_| "missing internal launch nonce")?;
+        let startup = Startup::arm(&nonce)?;
         let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
         LOG.set(Mutex::new(Log::open(&directory)?))
             .map_err(|_| "runtime log already owned")?;
         let (config, intervals) = configuration(&directory)?;
-        return network::run_autonomous(config, intervals).await;
+        return network::run_autonomous(config, intervals, startup).await;
     }
     if matches!(command, "stop" | "status") && !directory.exists() {
         cli::print(

@@ -23,10 +23,16 @@ fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
         receiver.ids().is_empty(),
         "native preparation grants no store effect"
     );
-    let admitted = receiver.apply_batch(batch);
+    let admitted = receiver
+        .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
+        .unwrap();
     assert_eq!(admitted.len(), 2);
-    assert!(receiver.contains(root));
-    assert!(receiver.contains(ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap())));
+    assert!(receiver.contains(root).unwrap());
+    assert!(
+        receiver
+            .contains(ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap()))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -92,11 +98,18 @@ fn aliases_and_alternative_derivations_coexist_without_ledger_selection() {
     let child = citation(&graph, &parent);
     assert_ne!(parent.proof_id, child.proof_id);
     assert_eq!(parent.statement_id, child.statement_id);
+    // Keep the strict selected-state rejection as an independent small oracle.
+    let mut strict = naome_checker::ArtifactState::new();
+    strict
+        .register_proof(
+            check_normal_form_with_state(parent.clone().prepare().unwrap().normal, &strict)
+                .unwrap(),
+        )
+        .unwrap();
     let checked =
-        check_normal_form_with_state(child.clone().prepare().unwrap().normal, &graph.context)
-            .unwrap();
+        check_normal_form_with_state(child.clone().prepare().unwrap().normal, &strict).unwrap();
     assert!(matches!(
-        graph.context.validate_proof_registration(&checked),
+        strict.validate_proof_registration(&checked),
         Err(naome_checker::ArtifactStateError::DuplicateDerivation { .. })
     ));
     let outcome = graph.ingest(child.clone(), Instant::now()).unwrap();
@@ -114,8 +127,7 @@ fn aliases_and_alternative_derivations_coexist_without_ledger_selection() {
         check_normal_form_with_state(alternate.clone().prepare().unwrap().normal, &graph.context)
             .unwrap();
     assert!(
-        graph
-            .context
+        strict
             .validate_proof_registration(&alternate_checked)
             .is_ok()
     );
@@ -135,7 +147,7 @@ fn dependent_waits_for_exact_immutable_parent_then_union_converges() {
         "waiting"
     );
     assert!(second.ids().is_empty());
-    assert_eq!(second.missing().len(), 1);
+    assert_eq!(second.missing().unwrap().len(), 1);
     assert_eq!(
         second
             .ingest(parent, Instant::now())
@@ -356,4 +368,377 @@ fn storage_failure_does_not_publish_memory_state_and_halts_further_admission() {
     assert!(graph.ingest(object, Instant::now()).is_err());
     drop(graph);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn expired_commit_rolls_back_without_publishing_or_halting_the_graph() {
+    let mut graph = Graph::default();
+    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let (root, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
+    let before = graph.content_root();
+    assert_eq!(
+        graph.commit_batch(root, batch, Instant::now() - Duration::from_secs(1)),
+        Err(crate::store::COMMIT_DEADLINE_ERROR.into())
+    );
+    assert_eq!(graph.accepted_count(), 0);
+    assert_eq!(graph.content_root(), before);
+    assert!(graph.ids_page(None, 64).unwrap().is_empty());
+    assert!(graph.storage_error().is_none());
+    let (root, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
+    assert_eq!(
+        graph
+            .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
+            .unwrap(),
+        vec![root]
+    );
+}
+
+#[test]
+fn generation_compaction_preserves_cold_snapshots_and_rejects_old_prepared_batches() {
+    let mut graph = Graph::default();
+    let parent = introduce(&mut graph);
+    let parent_id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let old = graph.context.clone();
+    let old_storage = Arc::downgrade(&graph.checked_storage);
+    let before = old.snapshot_id();
+    let source = format!(
+        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
+        parent.proof_id
+    );
+    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
+    graph.next_compaction = 0;
+    graph.maintain_checked_storage().unwrap();
+    graph.checked_storage.evict_cache();
+    assert!(old.contains_proof(parent_id).unwrap());
+    assert_eq!(graph.context.snapshot_id(), before);
+    assert_eq!(graph.object(parent_id).unwrap(), Some(parent));
+    assert!(
+        graph
+            .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
+            .unwrap_err()
+            .contains("generation changed")
+    );
+    assert_eq!(graph.accepted_count(), 1);
+    assert!(graph.storage_error().is_none());
+    assert!(old_storage.upgrade().is_some());
+    drop(old);
+    assert!(
+        old_storage.upgrade().is_none(),
+        "last snapshot releases its old generation"
+    );
+    let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
+    graph
+        .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(graph.accepted_count(), 2);
+}
+
+#[test]
+fn direct_cold_formula_integrity_failure_halts_the_owner() {
+    let mut graph = Graph::default();
+    let parent = introduce(&mut graph);
+    let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let header = graph.context.proof_header(id).unwrap().unwrap();
+    let formula = graph
+        .context
+        .statement_formula(
+            header.statement_id(),
+            naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
+        )
+        .unwrap()
+        .unwrap()
+        .encode_canonical()
+        .unwrap();
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"naome:checked-formula-storage:v1\0");
+    hash.update(&formula);
+    let address: [u8; 32] = hash.finalize().into();
+    let index = std::fs::read_dir(graph.store.directory())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".checked-context-")
+        })
+        .unwrap();
+    let database = rusqlite::Connection::open(index).unwrap();
+    assert_eq!(
+        database
+            .execute(
+                "UPDATE nodes SET payload=zeroblob(length(payload)) WHERE address=?1",
+                [address.as_slice()]
+            )
+            .unwrap(),
+        1
+    );
+    graph.checked_storage.evict_cache();
+    assert!(matches!(
+        graph.context.statement_formula(
+            header.statement_id(),
+            naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
+        ),
+        Err(naome_checker::ContextError::Corrupt)
+    ));
+    assert!(
+        graph.storage_error().is_some(),
+        "direct ContextView caller reports integrity failure"
+    );
+    assert!(graph.author(SOURCE).unwrap_err().contains("storage halted"));
+}
+
+#[test]
+fn metadata_drift_and_missing_inventory_members_cannot_look_like_absence() {
+    for drift in [true, false] {
+        let mut graph = Graph::default();
+        let parent = introduce(&mut graph);
+        let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+        let before = graph.content_root();
+        let database =
+            rusqlite::Connection::open(graph.store.directory().join(crate::store::DATABASE_FILE))
+                .unwrap();
+        if drift {
+            database
+                .execute(
+                    "UPDATE meta SET corpus_root=zeroblob(32) WHERE singleton=1",
+                    [],
+                )
+                .unwrap();
+        } else {
+            // Simulate external corruption without changing the live owner's protections.
+            database
+                .execute_batch("PRAGMA foreign_keys = OFF;")
+                .unwrap();
+            database
+                .execute("DELETE FROM proofs WHERE id=?1", [id.as_bytes().as_slice()])
+                .unwrap();
+        }
+        assert!(graph.ids_page(None, 64).is_err());
+        assert!(graph.storage_error().is_some());
+        assert_eq!(graph.content_root(), before);
+        assert!(graph.object(id).is_err());
+    }
+}
+
+#[test]
+fn unrelated_external_payload_change_halts_admission_without_advancing_checked_state() {
+    let mut graph = Graph::default();
+    let parent = introduce(&mut graph);
+    let child = graph
+        .author(&format!(
+            "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
+            parent.proof_id
+        ))
+        .unwrap();
+    let before = graph.content_root();
+    let count = graph.accepted_count();
+    let database =
+        rusqlite::Connection::open(graph.store.directory().join(crate::store::DATABASE_FILE))
+            .unwrap();
+    assert_eq!(
+        database
+            .execute(
+                "UPDATE proofs SET payload_digest=zeroblob(32) WHERE id=?1",
+                [crate::unhex(&parent.proof_id).unwrap()],
+            )
+            .unwrap(),
+        1
+    );
+    drop(database);
+    let error = graph.ingest(child, Instant::now()).unwrap_err();
+    assert!(error.contains("outside its owned connection"), "{error}");
+    assert!(graph.storage_error().is_some());
+    assert_eq!(graph.content_root(), before);
+    assert_eq!(graph.accepted_count(), count);
+}
+
+#[test]
+fn replay_compaction_keeps_ingest_scheduling_and_cold_snapshots() {
+    const MIB: usize = 1024 * 1024;
+    for (live, expected) in [
+        (0, 32 * MIB),
+        (32 * MIB, 64 * MIB),
+        (64 * MIB, 96 * MIB),
+        (64 * MIB + 2, 96 * MIB + 3),
+        (usize::MAX - 1, usize::MAX),
+        (usize::MAX, usize::MAX),
+    ] {
+        assert_eq!(Graph::replay_compaction_threshold(live), expected);
+    }
+
+    let mut graph = Graph::default();
+    let envelope = introduce(&mut graph);
+    let id = ProofId::from_bytes(id_bytes(&envelope.proof_id).unwrap());
+    let old = graph.context.clone();
+    let old_storage = Arc::downgrade(&graph.checked_storage);
+    let snapshot = old.snapshot_id();
+    let root = graph.content_root();
+
+    graph.next_compaction = usize::MAX;
+    graph.maintain_checked_storage().unwrap();
+    assert!(old_storage.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
+
+    let live = graph.maintain_checked_storage_at(0).unwrap().unwrap();
+    assert!(!old_storage.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
+    let ingest_threshold = live
+        .saturating_mul(2)
+        .max(live.saturating_add(CHECKED_CACHE_BYTES));
+    assert_eq!(graph.next_compaction, ingest_threshold);
+    graph.checked_storage.evict_cache();
+    assert_eq!(graph.context.snapshot_id(), snapshot);
+    assert!(old.contains_proof(id).unwrap());
+    assert_eq!(graph.object(id).unwrap(), Some(envelope.clone()));
+
+    let current = Arc::downgrade(&graph.checked_storage);
+    graph.next_compaction = 0;
+    assert_eq!(graph.maintain_checked_storage_at(usize::MAX).unwrap(), None);
+    assert_eq!(
+        graph.next_compaction, 0,
+        "a skipped page cannot rebase ingest"
+    );
+    assert!(current.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
+    graph.ingest(envelope.clone(), Instant::now()).unwrap();
+    assert!(!current.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
+    graph.checked_storage.evict_cache();
+    assert_eq!(graph.context.snapshot_id(), snapshot);
+    assert_eq!(graph.content_root(), root);
+    assert_eq!(graph.accepted_count(), 1);
+    assert_eq!(graph.object(id).unwrap(), Some(envelope));
+    assert!(graph.storage_error().is_none());
+    drop(old);
+    assert!(old_storage.upgrade().is_none());
+}
+
+fn startup_prune_directory(name: &str) -> std::path::PathBuf {
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "naome-startup-prune-{}-{}-{name}",
+        std::process::id(),
+        SERIAL.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn startup_prune_fixture(directory: &Path) -> (Graph, Vec<Envelope>, StatementId) {
+    let mut graph = Graph::open(directory).unwrap();
+    let parent = introduce(&mut graph);
+    let target = StatementId::from_bytes(id_bytes(&parent.statement_id).unwrap());
+    let mut envelopes = vec![parent.clone(), citation(&graph, &parent)];
+    graph.ingest(envelopes[1].clone(), Instant::now()).unwrap();
+    for source in [
+        "let: a = all(x,eq(x,x)) goal = imp(a,imp(a,a)) proof: p0 = simp(a,a) return p0",
+        "let: a = all(x,eq(x,x)) b = all(x,all(y,eq(x,x))) goal = imp(a,imp(b,a)) proof: p0 = simp(a,b) return p0",
+    ] {
+        let envelope = graph.author(source).unwrap();
+        assert_eq!(
+            graph
+                .ingest(envelope.clone(), Instant::now())
+                .unwrap()
+                .status,
+            "accepted"
+        );
+        envelopes.push(envelope);
+    }
+    (graph, envelopes, target)
+}
+
+fn startup_prune_buckets(graph: &Graph, target: StatementId) -> Vec<Vec<StatementId>> {
+    use naome_checker::context::BucketKind;
+    [
+        BucketKind::Outgoing,
+        BucketKind::Deductions,
+        BucketKind::Instances,
+    ]
+    .into_iter()
+    .map(|kind| {
+        graph
+            .context
+            .bucket(kind, target)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    })
+    .collect()
+}
+
+#[test]
+fn startup_prune_replays_aliases_dependencies_and_nested_buckets_after_cache_eviction() {
+    let directory = startup_prune_directory("cold-buckets");
+    let (graph, envelopes, target) = startup_prune_fixture(&directory);
+    assert_eq!(envelopes[0].statement_id, envelopes[1].statement_id);
+    assert_ne!(envelopes[0].proof_id, envelopes[1].proof_id);
+    let root = graph.content_root();
+    let snapshot = graph.context.snapshot_id();
+    let buckets = startup_prune_buckets(&graph, target);
+    assert!(buckets[0].len() >= 2 && buckets[1].len() >= 2 && !buckets[2].is_empty());
+    drop(graph);
+
+    let graph = storage::with_startup_prune_test(None, || Graph::open(&directory)).unwrap();
+    graph.checked_storage.evict_cache();
+    assert_eq!(graph.content_root(), root);
+    assert_eq!(graph.context.snapshot_id(), snapshot);
+    assert_eq!(graph.accepted_count(), envelopes.len());
+    assert_eq!(startup_prune_buckets(&graph, target), buckets);
+    assert_eq!(
+        graph
+            .context
+            .proof_dependency_depth(ProofId::from_bytes(
+                id_bytes(&envelopes[1].proof_id).unwrap()
+            ))
+            .unwrap(),
+        Some(2)
+    );
+    for envelope in envelopes {
+        assert_eq!(graph.get(&envelope.proof_id).unwrap(), Some(envelope));
+    }
+    assert!(graph.storage_error().is_none());
+    drop(graph);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn startup_prune_failures_discard_the_generation_and_rebuild_from_canonical_history() {
+    for stage in [
+        storage::StartupPruneStage::Mark,
+        storage::StartupPruneStage::Sweep,
+        storage::StartupPruneStage::Reclaim,
+    ] {
+        let directory = startup_prune_directory(&format!("failure-{stage:?}"));
+        let (graph, envelopes, target) = startup_prune_fixture(&directory);
+        let root = graph.content_root();
+        let snapshot = graph.context.snapshot_id();
+        let buckets = startup_prune_buckets(&graph, target);
+        drop(graph);
+        let error = storage::with_startup_prune_test(Some(stage), || Graph::open(&directory))
+            .err()
+            .expect("no live graph may escape a partial prune");
+        assert!(
+            error.contains(&format!("test-controlled startup prune {stage:?} failure")),
+            "{error}"
+        );
+        assert!(
+            std::fs::read_dir(&directory).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".checked-context-")
+            }),
+            "the failed generation must be unlinked, not recovered by rollback"
+        );
+
+        let graph = Graph::open(&directory).unwrap();
+        graph.checked_storage.evict_cache();
+        assert_eq!(graph.content_root(), root);
+        assert_eq!(graph.context.snapshot_id(), snapshot);
+        assert_eq!(graph.accepted_count(), envelopes.len());
+        assert_eq!(startup_prune_buckets(&graph, target), buckets);
+        for envelope in envelopes {
+            assert_eq!(graph.get(&envelope.proof_id).unwrap(), Some(envelope));
+        }
+        assert!(graph.storage_error().is_none());
+        drop(graph);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

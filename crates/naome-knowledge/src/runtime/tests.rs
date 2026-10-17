@@ -95,8 +95,12 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
         let delta = questions
             .prepare_exchange(&graph, &question, &assessment)
             .unwrap();
-        graph.persist_batch(root, &batch).unwrap();
-        assert_eq!(graph.apply_batch(batch), vec![root]);
+        assert_eq!(
+            graph
+                .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
+                .unwrap(),
+            vec![root]
+        );
         questions.apply_exchange(delta);
         drop(graph);
         let mut replayed = Graph::open(&directory.0).unwrap();
@@ -127,7 +131,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
         "waiting"
     );
-    assert_eq!(graph.ids().len(), 0);
+    assert_eq!(graph.accepted_count(), 0);
     let incomplete = [(root_id, root.clone().prepare().unwrap())].into();
     assert!(graph.prepare_batch(root_id, incomplete, &question).is_err());
     drop(graph);
@@ -148,11 +152,16 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
     .into();
     let batch = graph.prepare_batch(root_id, candidates, &question).unwrap();
     assert!(
-        graph.ids().is_empty(),
+        graph.accepted_count() == 0,
         "checked staging has no published count"
     );
-    graph.persist_batch(root_id, &batch).unwrap();
-    assert_eq!(graph.apply_batch(batch).len(), 2);
+    assert_eq!(
+        graph
+            .commit_batch(root_id, batch, Instant::now() + Duration::from_secs(5))
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
         "duplicate"
@@ -164,13 +173,13 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
     let mut invalid = root.clone();
     invalid.proof = "ff".into();
     assert!(graph.ingest(invalid, Instant::now()).is_err());
-    assert_eq!(graph.ids().len(), 2);
+    assert_eq!(graph.accepted_count(), 2);
     let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
     let (served, response) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
             control
-                .respond(stream, graph.ids().len(), true)
+                .respond(stream, graph.accepted_count(), true)
                 .await
                 .unwrap()
         },
@@ -350,7 +359,7 @@ async fn interest_respects_graph_ownership_and_instance_bound_control() {
     let (served, response) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.ids().len(), true).await
+            control.respond(stream, graph.accepted_count(), true).await
         },
         interest(&directory.0, &text)
     );
@@ -364,7 +373,7 @@ async fn interest_respects_graph_ownership_and_instance_bound_control() {
     let (served, _) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.ids().len(), true).await
+            control.respond(stream, graph.accepted_count(), true).await
         },
         async {
             let mut stream = UnixStream::connect(&control.endpoint.socket).await.unwrap();
@@ -458,7 +467,7 @@ async fn uncertain_owner_cannot_supply_a_profile_but_stop_still_works() {
     let (served, response) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.ids().len(), true).await
+            control.respond(stream, graph.accepted_count(), true).await
         },
         request(&directory.0, Operation::Stop, None)
     );

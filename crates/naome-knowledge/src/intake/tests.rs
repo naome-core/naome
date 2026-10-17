@@ -255,7 +255,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
             assert!(
                 matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids == vec![id])
             );
-            assert!(graph.contains(id));
+            assert!(graph.contains(id).unwrap());
             assert_eq!(registered(&mut questions, &graph), 1);
         } else {
             assert!(
@@ -461,14 +461,14 @@ async fn approved_parent_stages_only_committed_helpers_and_publishes_whole_closu
     );
     intake.payload(peer, root, root, object, &graph).unwrap();
     assert_eq!(intake.needed(), vec![(peer, root, helper_id)]);
-    assert!(graph.ids().is_empty());
+    assert!(graph.accepted_count() == 0);
     assert!(graph.pending_ids().is_empty());
     intake
         .payload(peer, root, helper_id, helper, &graph)
         .unwrap();
     intake.advance(&mut graph, &mut questions);
     assert!(
-        graph.ids().is_empty(),
+        graph.accepted_count() == 0,
         "math checking stages no stored local knowledge"
     );
     assert_eq!(registered(&mut questions, &graph), 0);
@@ -476,8 +476,8 @@ async fn approved_parent_stages_only_committed_helpers_and_publishes_whole_closu
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
-    assert_eq!(graph.ids().len(), 2);
-    assert!(graph.contains(root) && graph.contains(helper_id));
+    assert_eq!(graph.accepted_count(), 2);
+    assert!(graph.contains(root).unwrap() && graph.contains(helper_id).unwrap());
     assert_eq!(registered(&mut questions, &graph), 1);
 }
 
@@ -524,12 +524,12 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
     assert_eq!(graph.pending_ids(), vec![owner_id]);
-    assert_eq!(graph.ids().len(), 2);
-    let (admitted, rejected) = graph.resolve_pending();
+    assert_eq!(graph.accepted_count(), 2);
+    let (admitted, rejected) = graph.resolve_pending().unwrap();
     assert_eq!(admitted, vec![owner_id]);
     assert!(rejected.is_empty());
     assert!(graph.pending_ids().is_empty());
-    assert_eq!(graph.ids().len(), 3);
+    assert_eq!(graph.accepted_count(), 3);
 }
 
 #[tokio::test]
@@ -643,7 +643,7 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
             Progress::Skipped(..)
         ));
         assert_eq!(graph.content_root(), before);
-        assert!(graph.ids().is_empty() && graph.pending_ids().is_empty());
+        assert!(graph.accepted_count() == 0 && graph.pending_ids().is_empty());
         assert_eq!(registered(&mut questions, &graph), usize::from(mode == 3));
     }
 }
@@ -677,7 +677,7 @@ async fn invalid_parent_after_valid_helper_leaves_no_orphan_or_registry_effect()
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Skipped(_, error) if error.contains("checked identity mismatch"))
     );
-    assert!(graph.ids().is_empty() && graph.pending_ids().is_empty());
+    assert!(graph.accepted_count() == 0 && graph.pending_ids().is_empty());
     assert_eq!(registered(&mut questions, &graph), 0);
 }
 
@@ -792,13 +792,13 @@ async fn persistence_cuts_preserve_existing_state_and_recover_only_complete_cata
         assert_eq!(registered(&mut questions, &graph), 0);
         drop(graph);
         let restarted = Graph::open(&directory.0).unwrap();
-        assert!(restarted.contains(existing_id));
+        assert!(restarted.contains(existing_id).unwrap());
         assert_eq!(
-            restarted.ids().len(),
+            restarted.accepted_count(),
             if cut == BatchCut::AfterCommit { 3 } else { 1 }
         );
         if cut == BatchCut::AfterCommit {
-            assert!(restarted.contains(root) && restarted.contains(helper_id));
+            assert!(restarted.contains(root).unwrap() && restarted.contains(helper_id).unwrap());
         }
     }
 }

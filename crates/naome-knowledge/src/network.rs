@@ -33,8 +33,12 @@ pub const MAX_FLIGHTS: usize = 16;
 pub const MAX_FLIGHTS_PER_PEER: usize = 2;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
-const AUTOMATIC_REQUEST_INTERVAL: Duration = Duration::from_millis(200);
+// Space every automatic read, including metadata and inventory. Separate
+// sender/receiver bucket epochs must not turn a refill into a read burst.
+const AUTOMATIC_REQUEST_INTERVAL: Duration = Duration::from_millis(150);
 pub const MAX_COMMAND_BYTES: usize = 8 * crate::MAX_PROOF_BYTES;
+pub const MAX_INVENTORY_PAGE_IDS: usize = INVENTORY_PAGE;
+pub const MAX_STATUS_PAGE_IDS: usize = INVENTORY_PAGE;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,11 +168,13 @@ pub async fn run(config: Config, test_controls: bool) -> Result<(), String> {
 }
 
 /// Autonomous ordinary operation owns its control, schedule and interest future.
-/// It never reads stdin or accepts manual developer operations.
+/// It accepts no manual developer operations. Runtime owns the transient
+/// startup stdin lifeline and releases it only after checked readiness.
 #[cfg(unix)]
 pub(crate) async fn run_autonomous(
     config: Config,
     intervals: crate::autonomous::Intervals,
+    startup: crate::runtime::Startup,
 ) -> Result<(), String> {
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
@@ -181,7 +187,7 @@ pub(crate) async fn run_autonomous(
         inbox,
         Some(crate::mocks::assess_interest),
         commands,
-        Some(intervals),
+        Some((intervals, startup)),
     )
     .await
 }
@@ -277,12 +283,16 @@ pub(crate) async fn run_inner<F, Fut>(
     mut inbox: crate::question::QuestionInbox,
     interest: Option<F>,
     mut commands: mpsc::Receiver<Result<Value, String>>,
-    autonomy: Option<crate::autonomous::Intervals>,
+    autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
 ) -> Result<(), String>
 where
     F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
+    let (autonomy, startup) = match autonomy {
+        Some((intervals, startup)) => (Some(intervals), Some(startup)),
+        None => (None, None),
+    };
     if config.peers.len() > MAX_PEERS {
         return Err("peer count limit".into());
     }
@@ -296,7 +306,13 @@ where
     {
         return Err("producer queue capacity".into());
     }
+    if let Some(startup) = &startup {
+        startup.phase("begin");
+    }
     let graph = Graph::open(&config.directory)?;
+    if let Some(startup) = &startup {
+        startup.phase("checked");
+    }
     let directory = config.directory.clone();
     let key = identity::Keypair::from_protobuf_encoding(&crate::store::read_bounded(
         &config.directory.join("identity.key"),
@@ -306,7 +322,7 @@ where
     let own_id = key.public().to_peer_id();
     #[cfg(unix)]
     let control = if autonomy.is_some() {
-        Some(crate::runtime::Control::bind(&config.directory)?)
+        Some(crate::runtime::Control::bind(&config.directory, startup)?)
     } else {
         None
     };
@@ -522,8 +538,29 @@ where
                 node.intake.invalidate_interest();
                 }
             }
+        // A cold peer may stay quiet after its response. Wake at the next
+        // paced request deadline instead of quantizing reads to the tick.
+        let request_now = Instant::now();
+        let automatic_wake = node
+            .next_automatic_request
+            .values()
+            .filter(|until| **until > request_now)
+            .min()
+            .copied();
         tokio::select! {
-            event = node.swarm.select_next_some() => node.event(event)?,
+            _ = async {
+                if let Some(until) = automatic_wake {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if !stopping => {},
+            event = node.swarm.select_next_some() => {
+                node.event(event)?;
+                if node.ready && let Some(control) = &control {
+                    control.startup_ready();
+                }
+            },
             command = commands.recv(), if command_input_open && !stopping => {
                 match command {
                     Some(Ok(value)) => if !node.command(value) { break; },
@@ -548,7 +585,7 @@ where
             },
             socket = crate::runtime::accept(&control),if !stopping && controls.len()<8 => {
                 let socket = socket?;
-                controls.push(control.as_ref().expect("accepted runtime control").respond(socket,node.graph.ids().len(),node.ready));
+                controls.push(control.as_ref().expect("accepted runtime control").respond(socket,node.graph.accepted_count(),node.ready));
             },
             response=controls.next(),if !controls.is_empty()=>if let Some(response)=response {
                 match response {
@@ -564,6 +601,8 @@ where
             },
             signal = &mut shutdown => { signal?; break; }
         }
+        if let Some(error)=node.graph.storage_error(){return Err(format!(
+            "durable storage failed; restart must reverify: {error}"));}
         if let Some(error)=questions.storage_error(){return Err(error.to_owned());}
         if let Some(error)=research.as_ref().and_then(crate::jobs::Service::error){return Err(error);}
         if stopping {
@@ -574,6 +613,7 @@ where
             && (control.selection_changed() || node.intake.selection_boundary_ready()
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
                 && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
+        node.graph.maintain_checked_storage()?;
         questions.cancel_closed();
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
@@ -584,7 +624,7 @@ where
                 node.publish_admitted(&ids, "fetch");
                 // Earlier explicit owner ingestion can now resolve. This is
                 // not part of the approved peer closure or its atomic batch.
-                let (admitted, rejected) = node.graph.resolve_pending();
+                let (admitted, rejected) = node.graph.resolve_pending()?;
                 node.publish_admitted(&admitted, "local_pending");
                 for (id, error) in rejected {
                     emit(
@@ -769,12 +809,12 @@ impl Node {
             })
             .count()
     }
-    fn want(&mut self, id: ProofId) -> bool {
-        if self.graph.contains(id) || self.intake.contains(id) || self.wanted.contains_key(&id) {
-            return true;
+    fn want(&mut self, id: ProofId) -> Result<bool, String> {
+        if self.graph.contains(id)? || self.intake.contains(id) || self.wanted.contains_key(&id) {
+            return Ok(true);
         }
         if self.wanted.len() >= MAX_FETCHES {
-            return false;
+            return Ok(false);
         }
         self.wanted.insert(
             id,
@@ -784,7 +824,7 @@ impl Node {
                 attempts: 0,
             },
         );
-        true
+        Ok(true)
     }
 
     fn automatic_request_ready(&self, peer: PeerId, now: Instant) -> bool {
@@ -835,8 +875,22 @@ impl Node {
             .and_then(Value::as_str)
             .ok_or("command missing")?
         {
-            "status" => Ok(
-                json!({"ids":self.graph.ids().iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
+            "status" => {
+                let after = value
+                    .get("after")
+                    .filter(|after| !after.is_null())
+                    .map(|after| {
+                        id_bytes(after.as_str().ok_or("after must be a proof ID")?)
+                            .map(ProofId::from_bytes)
+                    })
+                    .transpose()?;
+                let ids = self.graph.ids_page(after, MAX_STATUS_PAGE_IDS)?;
+                let next_after = (ids.len() == MAX_STATUS_PAGE_IDS)
+                    .then(|| ids.last().map(|id| hex(id.as_bytes())))
+                    .flatten();
+                Ok(
+                    json!({"ids":ids.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
+                    "next_after":next_after,"accepted_proofs":self.graph.accepted_count(),
                     "root":hex(&self.graph.content_root()), "pending":self.graph.pending_ids().iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "connected":self.swarm.connected_peers().map(ToString::to_string).collect::<Vec<_>>(),
                     "compatibility":hex(&crate::compatibility()),
@@ -844,7 +898,8 @@ impl Node {
                     "provider_records":self.swarm.behaviour_mut().discovery.kad.as_mut().map(|kad|kad.store_mut().len()).unwrap_or(0),
                     "proof_peers":self.enabled.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "connections":self.connections.iter().map(|(id,(peer,relayed))|json!({"id":id.to_string(),"peer":peer.to_string(),"relayed":relayed})).collect::<Vec<_>>() }),
-            ),
+                )
+            }
             "produce" => {
                 let source = value
                     .get("source")
@@ -854,6 +909,9 @@ impl Node {
                 let id = ProofId::from_bytes(id_bytes(&object.proof_id)?);
                 let result = self.ingest(object.clone(), "producer")?;
                 let metadata = self.graph.describe(id);
+                if let Some(error) = self.graph.storage_error() {
+                    return Err(error);
+                }
                 Ok(json!({"result":result,"object":object,
                     "metadata":metadata.as_ref().ok().and_then(Option::as_ref),
                     "metadata_error":metadata.as_ref().err()}))
@@ -940,7 +998,7 @@ impl Node {
                         .and_then(Value::as_str)
                         .ok_or("id missing")?,
                 )?);
-                if !self.graph.contains(id) {
+                if !self.graph.contains(id)? {
                     return Err("only accepted proofs can be announced".into());
                 }
                 let mut bytes = crate::compatibility().to_vec();
@@ -1117,6 +1175,7 @@ impl Node {
         let enabled: Vec<_> = self.enabled.iter().copied().collect();
         for peer in &enabled {
             if self.request_ready(*peer, now)
+                && self.automatic_request_ready(*peer, now)
                 && MAX_FETCHES - self.wanted.len() >= INVENTORY_PAGE
                 && self
                     .next_inventory
@@ -1133,6 +1192,7 @@ impl Node {
                     .copied()
                     .unwrap_or_default();
                 self.inventory(*peer, progress.after, progress.pages);
+                self.charge_automatic_request(*peer, now);
                 self.charge_outgoing(*peer, now);
             }
         }
@@ -1165,7 +1225,9 @@ impl Node {
                 .cycle()
                 .skip(attempts % enabled.len().max(1))
                 .take(enabled.len())
-                .find(|peer| self.request_ready(**peer, now))
+                .find(|peer| {
+                    self.request_ready(**peer, now) && self.automatic_request_ready(**peer, now)
+                })
                 .copied()
             else {
                 continue;
@@ -1179,6 +1241,7 @@ impl Node {
                 .exchange
                 .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
             self.flights.insert(request, Flight::Describe { id, peer });
+            self.charge_automatic_request(peer, now);
             self.charge_outgoing(peer, now);
             remaining -= 1;
         }
@@ -1380,11 +1443,11 @@ impl Node {
                     let id = ProofId::from_bytes(
                         message.data[32..].try_into().expect("announcement width"),
                     );
-                    if self.graph.contains(id) || !self.charge(propagation_source) {
+                    if self.graph.contains(id)? || !self.charge(propagation_source) {
                         return Ok(());
                     }
                     emit(json!({"event":"announcement","id":hex(id.as_bytes())}));
-                    self.want(id);
+                    self.want(id)?;
                 }
             }
             SwarmEvent::Behaviour(BehaviourEvent::Exchange(request_response::Event::Message {
@@ -1413,7 +1476,7 @@ impl Node {
                             reason: "peer rate limit".into(),
                         }
                     } else {
-                        self.request(peer, request.message.body)
+                        self.request(peer, request.message.body)?
                     };
                     let _ = self
                         .swarm
@@ -1434,7 +1497,7 @@ impl Node {
                         if self.enabled.contains(&peer)
                             && response.message.compatibility == crate::compatibility()
                         {
-                            self.response(peer, flight, response.message.body);
+                            self.response(peer, flight, response.message.body)?;
                         } else if let Flight::Get { root, .. } = flight {
                             self.intake.abort(root);
                             emit(
@@ -1465,15 +1528,13 @@ impl Node {
         Ok(())
     }
 
-    fn request(&mut self, peer: PeerId, body: Body) -> Body {
-        match body {
+    fn request(&mut self, peer: PeerId, body: Body) -> Result<Body, String> {
+        let response = match body {
             Body::Inventory { after } => {
                 let ids = self
                     .graph
-                    .ids()
+                    .ids_page(after.map(ProofId::from_bytes), INVENTORY_PAGE)?
                     .into_iter()
-                    .filter(|id| after.is_none_or(|after| *id.as_bytes() > after))
-                    .take(INVENTORY_PAGE)
                     .map(|id| *id.as_bytes())
                     .collect();
                 Body::InventoryResult { ids }
@@ -1492,20 +1553,17 @@ impl Node {
             },
             Body::Get { root, id } => self
                 .graph
-                .object(ProofId::from_bytes(id))
+                .object(ProofId::from_bytes(id))?
                 .or_else(|| {
                     self.test_controls
                         .then(|| {
                             self.test_objects
                                 .get(&ProofId::from_bytes(id))
-                                .and_then(|(_, object)| object.as_ref())
+                                .and_then(|(_, object)| object.clone())
                         })
                         .flatten()
                 })
-                .map(|object| Body::Object {
-                    root,
-                    object: object.clone(),
-                })
+                .map(|object| Body::Object { root, object })
                 .unwrap_or(Body::Missing),
             Body::Offer { metadata } => match self.intake.enqueue(peer, metadata, &self.graph) {
                 Ok(status) => Body::Receipt {
@@ -1524,10 +1582,14 @@ impl Node {
             _ => Body::Error {
                 reason: "unexpected request kind".into(),
             },
+        };
+        if let Some(error) = self.graph.storage_error() {
+            return Err(error);
         }
+        Ok(response)
     }
 
-    fn response(&mut self, peer: PeerId, flight: Flight, body: Body) {
+    fn response(&mut self, peer: PeerId, flight: Flight, body: Body) -> Result<(), String> {
         let expected_peer = match &flight {
             Flight::Inventory { peer, .. }
             | Flight::Get { peer, .. }
@@ -1536,7 +1598,7 @@ impl Node {
         };
         if peer != expected_peer {
             emit(json!({"event":"rejected", "error":"response peer mismatch"}));
-            return;
+            return Ok(());
         }
         match (flight, body) {
             (Flight::Inventory { peer, after, pages }, Body::InventoryResult { ids }) => {
@@ -1547,24 +1609,22 @@ impl Node {
                         .is_some_and(|id| after.is_some_and(|after| *id <= after))
                 {
                     emit(json!({"event":"rejected","error":"invalid inventory"}));
-                    return;
+                    return Ok(());
                 }
                 // Keep the cursor until every ID is retained or already known.
                 // Queue pressure, throttling, failure and disconnect must not
                 // restart a scan at its prefix or silently discard its tail.
                 let mut retained = true;
                 for id in &ids {
-                    retained &= self.want(ProofId::from_bytes(*id));
+                    retained &= self.want(ProofId::from_bytes(*id))?;
                 }
                 if retained {
-                    if ids.len() == INVENTORY_PAGE
-                        && pages + 1 < crate::MAX_OBJECTS / INVENTORY_PAGE
-                    {
+                    if ids.len() == INVENTORY_PAGE {
                         self.inventory_progress.insert(
                             peer,
                             InventoryProgress {
                                 after: ids.last().copied(),
-                                pages: pages + 1,
+                                pages: pages.saturating_add(1),
                             },
                         );
                     } else {
@@ -1579,7 +1639,7 @@ impl Node {
             (Flight::Describe { id, .. }, Body::Description { metadata }) => {
                 if metadata.proof_id != hex(id.as_bytes()) {
                     emit(json!({"event":"rejected","error":"description ID mismatch"}));
-                    return;
+                    return Ok(());
                 }
                 match self.intake.enqueue(peer, metadata, &self.graph) {
                     Ok("duplicate") => {
@@ -1638,6 +1698,10 @@ impl Node {
             }
             _ => emit(json!({"event":"rejected","error":"unexpected response kind"})),
         }
+        if let Some(error) = self.graph.storage_error() {
+            return Err(error);
+        }
+        Ok(())
     }
 }
 

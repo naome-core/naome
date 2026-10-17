@@ -18,7 +18,7 @@ class QuestionDriver(DiscoveryDriver):
     def wait_set(self, node, ids, timeout=25):
         deadline = min(self.deadline, time.monotonic() + timeout)
         while time.monotonic() < deadline:
-            status = node.command("status")
+            status = node.status_snapshot()
             if set(status["ids"]) == set(ids) and not status["pending"]:
                 return status
             time.sleep(0.1)
@@ -65,7 +65,7 @@ class QuestionDriver(DiscoveryDriver):
         expected = [accepted["object"]["proof_id"], helper["object"]["proof_id"], child["object"]["proof_id"]]
         self.wait_set(selected, expected)
         time.sleep(2)
-        assert absent.command("status")["ids"] == []
+        assert absent.command("status")["accepted_proofs"] == 0
         assert not any(event.get("event") == "exchange_response" and event.get("kind") == "object" for event in absent.events)
         gets = [event for event in sender.events if event.get("event") == "exchange_request" and event.get("kind") == "get"]
         assert not any(event["peer"] == absent.identity for event in gets)
@@ -116,7 +116,7 @@ class QuestionDriver(DiscoveryDriver):
         bad.wait_event(lambda event: event.get("event") == "exchange_request" and event.get("kind") == "describe" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"], since=bad_offset)
         selected.wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("id") == actual["proof_id"], since=selected_offset)
         assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"] for event in bad.events[bad_offset:])
-        assert set(selected.command("status")["ids"]) == set(expected)
+        assert set(selected.ids()) == set(expected)
         self.start_participant(good, "all" if good is sender else None)
         expected.append(actual["proof_id"])
         self.wait_set(selected, expected)
@@ -142,7 +142,7 @@ class QuestionDriver(DiscoveryDriver):
             result = sender.command("produce", source=f'goal = {formula} proof: ' + " ".join(steps) + " return p34")
             assert result["result"]["status"] == "accepted"
             assert result["metadata"] is None and "question" in result["metadata_error"]
-            assert result["object"]["proof_id"] in sender.command("status")["ids"]
+            assert result["object"]["proof_id"] in sender.ids()
             self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": "pass", "accepted_id": result["object"]["proof_id"], "metadata_error": result["metadata_error"]}
         self.assert_caps()
         self.summary["accepted_ids"] = sorted(expected)

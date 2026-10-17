@@ -6,15 +6,18 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 mod catalog;
 use catalog::Catalog;
+pub(crate) use catalog::Summary;
 
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
+pub(crate) const COMMIT_DEADLINE_ERROR: &str =
+    "catalog commit deadline expired before durable commit";
 const FORMAT_FILE: &str = "proof-corpus.format";
-const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP1";
+const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP3";
 const INITIAL_DATABASE: &str = ".proof-corpus-initializing.sqlite3";
 #[cfg(test)]
 std::thread_local! { static FORMAT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -23,6 +26,7 @@ std::thread_local! { static FORMAT_SYNC_FAILURE: std::cell::Cell<bool> = const {
 pub(crate) struct Store {
     directory: PathBuf,
     _lock: File,
+    database_identity: fs::Metadata,
     catalog: Mutex<Catalog>,
     #[cfg(test)]
     cut: Mutex<Option<BatchCut>>,
@@ -45,8 +49,13 @@ pub(crate) enum ReplayCut {
 }
 
 impl Store {
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
     pub fn open(directory: &Path) -> Result<Self, String> {
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+        let directory = directory.as_path();
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -56,15 +65,18 @@ impl Store {
             .map_err(|error| error.to_string())?;
         lock.try_lock()
             .map_err(|error| format!("knowledge directory already owned: {error}"))?;
+        reject_legacy_objects(directory)?;
         let database = directory.join(DATABASE_FILE);
         let receipt = directory.join(FORMAT_FILE);
-        let catalog = if receipt.exists() {
+        let has_receipt = catalog_leaf_exists(&receipt)?;
+        let has_database = catalog_leaf_exists(&database)?;
+        let catalog = if has_receipt {
             let id = read_format(&receipt)?;
-            if !database.is_file() {
+            if !has_database {
                 return Err("activated proof catalog missing".into());
             }
             Catalog::open(&database, id)?
-        } else if database.exists() {
+        } else if has_database {
             // A crash may interrupt initial receipt creation, but only an
             // inactive, fully identified staging database can resume it.
             let id = Catalog::inspect_identity(&database)?;
@@ -83,7 +95,7 @@ impl Store {
                     (id, Catalog::initialize_stage(&incoming, id)?)
                 }
             };
-            if catalog.active()? || !catalog.load()?.is_empty() {
+            if catalog.active()? || catalog.summary()?.count != 0 {
                 return Err("unexpected accepted data in catalog initialization stage".into());
             }
             drop(catalog);
@@ -100,6 +112,8 @@ impl Store {
         Ok(Self {
             directory: directory.to_path_buf(),
             _lock: lock,
+            database_identity: fs::symlink_metadata(&database)
+                .map_err(|error| error.to_string())?,
             catalog: Mutex::new(catalog),
             #[cfg(test)]
             cut: Mutex::new(None),
@@ -108,16 +122,107 @@ impl Store {
         })
     }
 
-    pub fn load(&self) -> Result<Vec<Envelope>, String> {
+    fn ensure_database(&self) -> Result<(), String> {
+        let current = fs::symlink_metadata(self.directory.join(DATABASE_FILE))
+            .map_err(|error| format!("proof catalog disappeared during ownership: {error}"))?;
+        if !current.is_file() {
+            return Err("proof catalog file replaced during ownership".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if current.nlink() != 1
+                || current.dev() != self.database_identity.dev()
+                || current.ino() != self.database_identity.ino()
+            {
+                return Err("proof catalog file replaced during ownership".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn summary(&self) -> Result<Summary, String> {
+        self.ensure_database()?;
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
-        catalog.load()
+        catalog.summary()
+    }
+
+    pub(crate) fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, Envelope)>, String> {
+        self.ensure_database()?;
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        catalog.replay_page(after, limit)
+    }
+
+    pub(crate) fn ids_page(
+        &self,
+        after: Option<ProofId>,
+        limit: usize,
+        expected: Summary,
+    ) -> Result<Vec<ProofId>, String> {
+        self.ensure_database()?;
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        catalog.ids_page(after, limit, expected)
+    }
+
+    pub(crate) fn get(&self, id: ProofId, expected: Summary) -> Result<Option<Envelope>, String> {
+        self.ensure_database()?;
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        catalog.get(id, expected)
+    }
+
+    pub(crate) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, String> {
+        self.ensure_database()?;
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        catalog.contains(id, expected)
+    }
+
+    /// Small test fixtures may collect a corpus; production callers use pages.
+    #[cfg(test)]
+    pub(crate) fn load(&self) -> Result<Vec<Envelope>, String> {
+        let summary = self.summary()?;
+        if summary.count > catalog::MAX_BATCH_OBJECTS {
+            return Err("test fixture collection limit".into());
+        }
+        let mut objects = Vec::with_capacity(summary.count);
+        let mut after = 0;
+        loop {
+            let page = self.replay_page(after, 64)?;
+            if page.is_empty() {
+                break;
+            }
+            for (ordinal, object) in page {
+                after = ordinal;
+                objects.push(object);
+            }
+        }
+        if objects.len() != summary.count {
+            return Err("test fixture catalog count differs".into());
+        }
+        Ok(objects)
     }
 
     /// Only Graph calls this after rechecking every proof mathematically.
     pub(crate) fn finish_replay(&self, root: [u8; 32]) -> Result<(), String> {
+        self.ensure_database()?;
         let catalog = self
             .catalog
             .lock()
@@ -130,19 +235,29 @@ impl Store {
         Ok(())
     }
 
-    pub fn persist(&self, object: &Envelope) -> Result<(), String> {
+    pub(crate) fn persist_checked(
+        &self,
+        object: &Envelope,
+        expected: Summary,
+    ) -> Result<Summary, String> {
         let root = ProofId::from_bytes(crate::object::id_bytes(&object.proof_id)?);
-        self.persist_batch(root, std::iter::once(object))
+        self.persist_batch_checked(root, std::iter::once(object), expected, None)
     }
-    pub fn persist_batch<'a>(
+    pub(crate) fn persist_batch_checked<'a>(
         &self,
         root: ProofId,
         objects: impl Iterator<Item = &'a Envelope>,
-    ) -> Result<(), String> {
-        if !self.directory.join(DATABASE_FILE).is_file() {
-            return Err("proof catalog disappeared during ownership".into());
+        expected: Summary,
+        deadline: Option<Instant>,
+    ) -> Result<Summary, String> {
+        self.ensure_database()?;
+        let mut batch = Vec::new();
+        for object in objects {
+            if batch.len() >= catalog::MAX_BATCH_OBJECTS {
+                return Err("catalog batch object count limit".into());
+            }
+            batch.push(object);
         }
-        let objects: Vec<_> = objects.collect();
         let catalog = self
             .catalog
             .lock()
@@ -151,7 +266,21 @@ impl Store {
         let cut = *self.cut.lock().map_err(|_| "test cut lock poisoned")?;
         #[cfg(not(test))]
         let cut = None;
-        catalog.persist(root, &objects, cut)
+        catalog.persist(root, &batch, expected, deadline, cut)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn persist(&self, object: &Envelope) -> Result<Summary, String> {
+        self.persist_checked(object, self.summary()?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn persist_batch<'a>(
+        &self,
+        root: ProofId,
+        objects: impl Iterator<Item = &'a Envelope>,
+    ) -> Result<Summary, String> {
+        self.persist_batch_checked(root, objects, self.summary()?, None)
     }
     #[cfg(test)]
     pub(crate) fn set_cut(&self, cut: BatchCut) {
@@ -175,6 +304,35 @@ impl Store {
             Ok(())
         }
     }
+}
+
+fn reject_legacy_objects(directory: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(directory.join("objects")) {
+        Ok(_) => Err("unsupported legacy proof corpus objects namespace".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "cannot inspect legacy proof corpus namespace: {error}"
+        )),
+    }
+}
+
+fn catalog_leaf_exists(path: &Path) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("cannot inspect proof corpus leaf: {error}")),
+    };
+    if !metadata.is_file() {
+        return Err("proof corpus leaf must be a regular unaliased file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err("proof corpus leaf has linked aliases".into());
+        }
+    }
+    Ok(true)
 }
 
 fn new_identity(directory: &Path) -> Result<[u8; 32], String> {

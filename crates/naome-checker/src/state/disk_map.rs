@@ -76,11 +76,30 @@ impl DiskMap {
     }
 
     pub(crate) fn entries(&self) -> Entries {
+        self.entries_after(None)
+    }
+    pub(crate) fn entries_after(&self, after: Option<[u8; 32]>) -> Entries {
         Entries {
             storage: self.storage(),
             pending: self.root.into_iter().map(Pending::root).collect(),
-            previous_key: None,
+            previous_key: after,
+            after,
         }
+    }
+
+    /// Copy only nodes reachable from this live authenticated root. The
+    /// traversal stack is bounded independently of the number of entries.
+    pub(crate) fn copy_to(&self, storage: Arc<dyn ContextStorage>) -> Result<Self, ContextError> {
+        let mut stack: Vec<_> = self.root.into_iter().map(Pending::root).collect();
+        while let Some(pending) = stack.pop() {
+            let node = load_node(self.storage.as_ref(), pending)?;
+            storage.write(pending.root.address, &node.encode())?;
+            if let Node::Branch { bit, left, right } = node {
+                stack.push(pending.child(right, bit)?);
+                stack.push(pending.child(left, bit)?);
+            }
+        }
+        Ok(Self::from_root(storage, self.root))
     }
 
     fn write_value(
@@ -193,6 +212,7 @@ pub(crate) struct Entries {
     storage: Arc<dyn ContextStorage>,
     pending: Vec<Pending>,
     previous_key: Option<[u8; 32]>,
+    after: Option<[u8; 32]>,
 }
 
 impl Iterator for Entries {
@@ -200,8 +220,18 @@ impl Iterator for Entries {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(pending) = self.pending.pop() {
+            if self
+                .after
+                .zip(pending.range)
+                .is_some_and(|(after, range)| range.maximum <= after)
+            {
+                continue;
+            }
             let result = (|| match load_node(self.storage.as_ref(), pending)? {
                 Node::Leaf { key, value } => {
+                    if self.after.is_some_and(|after| key <= after) {
+                        return Ok(None);
+                    }
                     if self.previous_key.is_some_and(|previous| previous >= key) {
                         return Err(ContextError::Corrupt);
                     }
@@ -218,6 +248,7 @@ impl Iterator for Entries {
                 Ok(Some(entry)) => return Some(Ok(entry)),
                 Ok(None) => {}
                 Err(error) => {
+                    self.storage.record_failure(&error);
                     self.pending.clear();
                     return Some(Err(error));
                 }
@@ -346,7 +377,10 @@ impl Node {
     }
 
     fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(match self {
+            Self::Leaf { value, .. } => 36 + value.len(),
+            Self::Branch { .. } => 3 + 2 * CHILD_BYTES,
+        });
         bytes.push(VERSION);
         match self {
             Self::Leaf { key, value } => {
@@ -393,6 +427,14 @@ impl Node {
 }
 
 fn load_node(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, ContextError> {
+    let result = load_node_inner(storage, pending);
+    if let Err(error) = &result {
+        storage.record_failure(error);
+    }
+    result
+}
+
+fn load_node_inner(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, ContextError> {
     if pending.depth > 256 {
         return Err(ContextError::Corrupt);
     }
@@ -484,9 +526,13 @@ mod tests {
     struct MemoryStorage {
         bytes: Mutex<BTreeMap<[u8; 32], Vec<u8>>>,
         writes_until_failure: Mutex<Option<usize>>,
+        failures: Mutex<Vec<ContextError>>,
     }
 
     impl ContextStorage for MemoryStorage {
+        fn record_failure(&self, error: &ContextError) {
+            self.failures.lock().unwrap().push(error.clone());
+        }
         fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
             let value = self
                 .bytes
@@ -674,6 +720,10 @@ mod tests {
             .get_mut(&leaf.address)
             .unwrap()[36] ^= 1;
         assert_eq!(map.get(&[0; 32]), Err(ContextError::Corrupt));
+        assert_eq!(
+            storage.failures.lock().unwrap().last(),
+            Some(&ContextError::Corrupt)
+        );
         assert_eq!(map.get(&bit_key(0)), Err(ContextError::Corrupt));
         storage.bytes.lock().unwrap().insert(leaf.address, original);
         map.insert(bit_key(0), b"right").unwrap();
@@ -799,5 +849,34 @@ mod tests {
                 Err(ContextError::Corrupt)
             );
         }
+    }
+    #[test]
+    fn cursor_seeks_authenticated_ranges_and_copy_retains_every_reachable_node() {
+        let source = Arc::new(MemoryStorage::default());
+        let mut map = DiskMap::new(source.clone());
+        let first = [1; 32];
+        let middle = [64; 32];
+        let last = [192; 32];
+        map.insert(first, b"first").unwrap();
+        let first_address = map.root().unwrap().address;
+        map.insert(middle, b"middle").unwrap();
+        map.insert(last, b"last").unwrap();
+        let target = Arc::new(MemoryStorage::default());
+        let copied = map.copy_to(target).unwrap();
+        assert_eq!(copied.root(), map.root());
+        assert_eq!(
+            copied.entries().collect::<Result<Vec<_>, _>>().unwrap(),
+            map.entries().collect::<Result<Vec<_>, _>>().unwrap()
+        );
+        source.bytes.lock().unwrap().remove(&first_address);
+        assert_eq!(
+            map.entries_after(Some(middle))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            vec![(last, b"last".to_vec())]
+        );
+        assert!(map.get(&first).is_err());
+        assert!(map.copy_to(Arc::new(MemoryStorage::default())).is_err());
+        assert_eq!(copied.get(&first).unwrap(), Some(b"first".to_vec()));
     }
 }

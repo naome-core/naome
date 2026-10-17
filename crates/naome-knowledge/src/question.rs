@@ -896,7 +896,7 @@ where
                 let _ = reply.send(LocalQuestionContext {
                     snapshot: self.snapshot(graph).identity(),
                     policy: self.policy.identity(),
-                    checked_proofs: graph.ids().len(),
+                    checked_proofs: graph.accepted_count(),
                     registered_questions: self.registry.len(),
                 });
             }

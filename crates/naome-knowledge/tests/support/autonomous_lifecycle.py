@@ -3,6 +3,7 @@
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from proof_network import digest, stored_objects, replace_catalog_payload
+
+
+class StartupWrapperExit(RuntimeError):
+    """An incomplete sample after the exact direct CLI Child was reaped."""
 
 
 class Trial:
@@ -75,6 +80,294 @@ class Trial:
         assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value
         assert isinstance(value["interest"], str), value
         return value
+
+    def start(self, node, strict_startup=False, cancel_replay=False):
+        """Own the ordinary CLI and witness its actual child before readiness."""
+        command = [str(self.binary), "--json", "start"]
+        if not (strict_startup or cancel_replay):
+            # Functional readiness retains post-ready native daemon custody.
+            # It never qualifies pre-ready custody or startup resource frames.
+            end = self.deadline
+            cleanup_end = end + 2
+            record = {"node": node.index, "wrapper": None,
+                "pre_ready_capture": False, "capture_pending": True,
+                "complete_pre_ready_resource_frames": 0,
+                "sampled_peak_actor_rss_bytes": None,
+                "coverage": "UNQUALIFIED_FUNCTIONAL_ENDPOINT_ONLY",
+                "startup_resource_qualification": "UNQUALIFIED",
+                "clock_domain": "driver_process_local_monotonic",
+                "claim": "ordinary CLI readiness and post-ready daemon custody only; no pre-ready/resource qualification"}
+            self.summary.setdefault("startup_attempts", []).append(record)
+            node.startup_record = record
+            process = None
+            try:
+                remaining = end - time.monotonic()
+                assert remaining > 0, "ordinary functional startup original deadline expired"
+                process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                    env={**os.environ, "NAOME_NODE_DIR": str(node.directory)})
+                record["wrapper_pid"] = process.pid
+                record["wrapper_reaped"] = False
+                remaining = end - time.monotonic()
+                assert remaining > 0, "ordinary functional startup original deadline expired"
+                stdout, stderr = process.communicate(timeout=remaining)
+                record.update(cli_exit_code=process.returncode, wrapper_reaped=True)
+                assert time.monotonic() < end, "ordinary functional startup original deadline expired"
+                self.summary["commands"].append({"node": node.index, "command": command,
+                    "exit_code": process.returncode, "stdout": stdout.decode(), "stderr": stderr.decode()})
+                assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
+                status = json.loads(stdout)
+                assert set(status) == {"running", "accepted_proofs", "interest"}, status
+                assert isinstance(status["running"], bool) and status["running"] is True, status
+                assert type(status["accepted_proofs"]) is int and status["accepted_proofs"] >= 0, status
+                assert isinstance(status["interest"], str), status
+                node.capture_process()
+                record.update(daemon=node.process, capture_pending=True,
+                    post_ready_native_daemon_captured=True)
+                assert time.monotonic() < end, "ordinary functional startup post-ready capture expired"
+                return status
+            except BaseException as error:
+                record.update(error_kind=type(error).__name__, functional_startup_failed=True)
+                if process is not None:
+                    record["unresolved_wrapper_requires_guardian_cleanup"] = process.returncode is None
+                    if process.returncode is None:
+                        remaining = cleanup_end - time.monotonic()
+                        assert remaining > 0, "ordinary functional wrapper signal original deadline expired"
+                        process.kill()  # Only this exact own unreaped CLI Child.
+                        if process.returncode is not None:
+                            record.update(cli_exit_code=process.returncode, wrapper_reaped=True,
+                                unresolved_wrapper_requires_guardian_cleanup=False)
+                        remaining = cleanup_end - time.monotonic()
+                        assert remaining > 0, "ordinary functional wrapper cleanup original deadline expired"
+                        process.communicate(timeout=min(2, remaining))
+                        record.update(cli_exit_code=process.returncode, wrapper_reaped=True,
+                            unresolved_wrapper_requires_guardian_cleanup=False)
+                        assert time.monotonic() < cleanup_end, "ordinary functional wrapper cleanup original deadline expired"
+                endpoint_path = node.directory / "control.json"
+                if endpoint_path.exists():
+                    # Endpoint custody is safety cleanup only after failure.
+                    node.capture_process()
+                if node.process is not None:
+                    record["cleanup"] = stop_owned_group(node.process)
+                raise
+        before_events = node.logs()
+        event_boundary = len(before_events)
+        prefix_sha256 = hashlib.sha256(json.dumps(before_events, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        prior_phase_hashes = {event.get("instance_sha256") for event in before_events
+            if event.get("event") == "startup_replay"
+            and isinstance(event.get("instance_sha256"), str)
+            and len(event["instance_sha256"]) == 64
+            and all(character in "0123456789abcdef" for character in event["instance_sha256"])}
+        assert len(prior_phase_hashes) <= 4096, "startup prior phase-instance inventory capacity"
+        del before_events
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            env={**os.environ, "NAOME_NODE_DIR": str(node.directory)})
+        wrapper = None
+        attempt = len(self.summary.setdefault("startup_attempts", []))
+        record = {"node": node.index, "wrapper": wrapper, "pre_ready_capture": False,
+            "capture_pending": True, "complete_pre_ready_resource_frames": 0,
+            "known_sampled_actor_rss_lower_bound_peak_bytes": 0,
+            "coverage": "UNQUALIFIED", "sampled_peak_actor_rss_bytes": None,
+            "observer_reserve_bytes": 64 * 1024**2,
+            "clock_domain": "driver_process_local_monotonic",
+            "prelaunch_log_event_boundary": event_boundary,
+            "prelaunch_log_prefix_sha256": prefix_sha256,
+            "prelaunch_phase_instance_sha256": sorted(prior_phase_hashes),
+            "claim": "sequential native actor samples; no simultaneous or instantaneous peak claim"}
+        self.summary["startup_attempts"].append(record)
+        node.startup_record = record
+        trace_path = self.output / f"node-{node.index}.startup-{attempt}.ndjson"
+        trace_bytes = 0
+        record.update(trace=str(trace_path), trace_bytes=0)
+        endpoint_path = node.directory / "control.json"
+        daemon = None
+        end = min(self.deadline, time.monotonic() + 1800)
+        observation = None
+
+        def capture_rss(role, sample):
+            # Raw RSS may precede a failed closing-birth check. Preserve its
+            # known negative without granting unfinished custody authority.
+            captured = {**sample, "role": role,
+                "custody": "CLOSING_NATIVE_CHECK_PENDING_NOT_SIGNAL_AUTHORITY"}
+            observation["captured_native_rss"][role] = captured
+            highest = observation["highest_captured_native_rss"].get(role)
+            if highest is None or captured["rss_bytes"] > highest["rss_bytes"]:
+                observation["highest_captured_native_rss"][role] = captured
+            actors = observation["highest_captured_native_rss"].values()
+            assert len({item["pid"] for item in actors}) == len(observation["highest_captured_native_rss"]), "startup RSS roles alias a PID"
+            lower_bound = sum(max(0, item["rss_bytes"]) for item in observation["highest_captured_native_rss"].values())
+            observation["known_sequential_rss_lower_bound_bytes"] = lower_bound
+            record["known_sampled_actor_rss_lower_bound_peak_bytes"] = max(
+                record["known_sampled_actor_rss_lower_bound_peak_bytes"], lower_bound)
+            if lower_bound + record["observer_reserve_bytes"] > 512 * 1024**2:
+                record["known_startup_rss_breach"] = {
+                    "lower_bound_bytes": lower_bound,
+                    "observer_reserve_bytes": record["observer_reserve_bytes"],
+                    "ceiling_bytes": 512 * 1024**2,
+                    "closing_native_custody": "PENDING_NOT_QUALIFIED"}
+                raise AssertionError("known startup sampled RSS lower bound plus reserve exceeded")
+
+        try:
+            wrapper = process_identity(process.pid)
+            record["wrapper"] = wrapper
+            assert wrapper is not None or process.poll() is not None, "live ordinary startup wrapper identity unavailable"
+            with trace_path.open("xb") as trace:
+                while process.poll() is None:
+                    try:
+                        started = time.monotonic()
+                        assert started < end, "ordinary startup original deadline expired"
+                        before_frame_endpoint = endpoint_path.exists()
+                        observation = {"started": started, "captured_native_rss": {},
+                            "highest_captured_native_rss": {}, "complete_four_actor_frame": False}
+                        record["latest_native_actor_observation"] = observation
+                        if daemon is None:
+                            before_endpoint = endpoint_path.exists()
+                            children = direct_children(wrapper, process)
+                            assert len(children) <= 1, "ordinary launcher has unexpected children"
+                            if children:
+                                candidate = process_identity(children[0])
+                                if candidate is None:
+                                    try:
+                                        os.kill(children[0], 0)
+                                    except ProcessLookupError:
+                                        continue
+                                    raise AssertionError("live actual startup child native identity unavailable")
+                                if candidate is not None and candidate["group"] == candidate["session"] == candidate["pid"]:
+                                    # The PPID and native wrapper birth establish
+                                    # custody. Command text is supplementary only.
+                                    sample = process_startup_sample(candidate, captured=lambda item: capture_rss("daemon", item))
+                                    record["early_native_daemon"] = sample
+                                    if sample["parent"] != wrapper["pid"] and process.poll() is not None:
+                                        raise StartupWrapperExit("startup child reparented after exact launcher exit; incomplete capture")
+                                    assert sample["parent"] == wrapper["pid"], "startup child parent changed"
+                                    startup_birth(wrapper, process)
+                                    assert str(self.binary) in candidate["command"], "owned child executable mismatch"
+                                    daemon = candidate
+                                    node.process = daemon
+                                    write_receipt(self.output / f"node-{node.index}.process.json", daemon)
+                                    record.update(daemon=daemon,
+                                        early_native_daemon=sample,
+                                        pre_ready_capture=not before_endpoint and not endpoint_path.exists(),
+                                        coverage="NATIVE_PARENT_CHILD_CUSTODY_ONLY")
+                        actors = [("driver", process_identity(os.getpid())),
+                            ("guardian", self.guardian_identity), ("wrapper", wrapper)]
+                        if daemon is not None:
+                            actors.append(("daemon", daemon))
+                        samples = []
+                        for role, identity in actors:
+                            assert identity is not None, f"startup {role} identity unavailable"
+                            item = process_startup_sample(identity, process if role == "wrapper" else None,
+                                captured=lambda value: capture_rss(role, value))
+                            item["role"] = role
+                            samples.append(item)
+                        startup_birth(wrapper, process)
+                        completed = time.monotonic()
+                        assert completed - started < 2 and completed < end, "startup actor sample stale"
+                        total = sum(item["rss_bytes"] for item in samples)
+                        assert total + record["observer_reserve_bytes"] <= 512 * 1024**2, "startup sampled RSS reserve exceeded"
+                        complete = (len(samples) == 4
+                            and {item["role"] for item in samples} == {"driver", "guardian", "wrapper", "daemon"}
+                            and len({item["pid"] for item in samples}) == 4)
+                        pre_ready_frame = (complete and record["pre_ready_capture"]
+                            and not before_frame_endpoint and not endpoint_path.exists())
+                        observation.update(completed=completed, complete_four_actor_frame=complete,
+                            pre_ready_frame=pre_ready_frame, closing_native_actors=samples)
+                        record["sampled_peak_actor_rss_bytes"] = max(
+                            record["sampled_peak_actor_rss_bytes"] or 0, total)
+                        frame = {"started": started, "completed": completed, "actors": samples,
+                            "sequential_sampled_rss_bytes": total,
+                            "observer_reserve_bytes": record["observer_reserve_bytes"],
+                            "complete_four_actor_frame": complete, "pre_ready_frame": pre_ready_frame}
+                        body = (json.dumps(frame, separators=(",", ":")) + "\n").encode()
+                        assert len(body) <= 8192 and trace_bytes + len(body) <= 32 * 1024**2, "startup trace limit"
+                        trace.write(body)
+                        trace.flush()
+                        trace_bytes += len(body)
+                        record["trace_bytes"] = trace_bytes
+                        published = time.monotonic()
+                        observation["trace_published"] = published
+                        assert published - started < 2 and published < end, "startup frame publication stale"
+                        if pre_ready_frame:
+                            record["complete_pre_ready_resource_frames"] += 1
+                            record["last_complete_pre_ready_resource_frame"] = {
+                                "started": started, "completed": completed, "published": published,
+                                "sequential_sampled_rss_bytes": total,
+                                "observer_reserve_bytes": record["observer_reserve_bytes"]}
+                        if cancel_replay and daemon is not None:
+                            startup_birth(daemon)
+                            events = node.logs()
+                            assert len(events) >= event_boundary, "startup attempt log truncated"
+                            prefix = hashlib.sha256(json.dumps(events[:event_boundary], sort_keys=True,
+                                separators=(",", ":")).encode()).hexdigest()
+                            assert prefix == prefix_sha256, "startup prelaunch log prefix changed"
+                            phases = [(event_boundary + index, event) for index, event in enumerate(events[event_boundary:])
+                                if event.get("event") == "startup_replay" and event.get("pid") == daemon["pid"]]
+                            if phases:
+                                hashes = {event.get("instance_sha256") for _, event in phases}
+                                assert len(hashes) == 1, "startup attempt phase-instance changed"
+                                instance = next(iter(hashes))
+                                assert isinstance(instance, str) and len(instance) == 64 and all(
+                                    character in "0123456789abcdef" for character in instance), "startup attempt phase-instance malformed"
+                                assert instance not in prior_phase_hashes, "startup replay phase reused prelaunch instance"
+                                assert [event.get("phase") for _, event in phases] in (["begin"], ["begin", "checked"]), "startup current attempt phase order malformed"
+                                assert record.get("replay_instance_sha256", instance) == instance, "startup bound replay instance changed"
+                                record["replay_instance_sha256"] = instance
+                            startup_birth(daemon)
+                            if phases and phases[-1][1]["phase"] == "begin" and not endpoint_path.exists():
+                                assert record["pre_ready_capture"], "cancellation lacks native pre-ready custody"
+                                startup_birth(wrapper, process)
+                                assert time.monotonic() < end, "startup cancellation original deadline expired"
+                                process.send_signal(signal.SIGTERM)
+                                record["cancelled_during_observed_replay"] = True
+                                record["cancelled_replay_phase"] = {"log_event_offset": phases[-1][0],
+                                    "pid": daemon["pid"], "phase": "begin", "instance_sha256": instance}
+                                break
+                        time.sleep(min(.01, max(0, end - time.monotonic())))
+                    except StartupWrapperExit:
+                        record['incomplete_sample_after_observed_wrapper_exit'] = True
+                        break
+            stdout, stderr = process.communicate(timeout=max(.001, end - time.monotonic()))
+            record.update(cli_exit_code=process.returncode, wrapper_reaped=True,
+                trace=str(trace_path), trace_bytes=trace_bytes, trace_sha256=digest(trace_path))
+            self.summary["commands"].append({"node": node.index, "command": command,
+                "exit_code": process.returncode, "stdout": stdout.decode(), "stderr": stderr.decode()})
+            if strict_startup:
+                assert daemon is not None and record["pre_ready_capture"], "ordinary startup lacks native pre-ready custody/RSS"
+                assert record["complete_pre_ready_resource_frames"] > 0, "ordinary startup lacks a complete fresh four-actor pre-ready resource frame"
+            if cancel_replay:
+                assert record.get("cancelled_during_observed_replay") is True, "replay ended before cancellation; case unqualified"
+                assert process.returncode != 0 and stdout == b"", "cancelled startup published success"
+                assert b"owned startup child reaped" in stderr, "launcher did not confirm actual child reap"
+                end_cleanup = min(self.deadline, time.monotonic() + 10)
+                wait_until(lambda: not process_group(daemon), end_cleanup)
+                record.update(coverage="CANCELLED_REPLAY_NATIVE_CUSTODY_ONLY", owned_group_empty=True,
+                    launcher_reports_daemon_reaped=True)
+                return None
+            assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
+            status = json.loads(stdout)
+            assert set(status) == {"running", "accepted_proofs", "interest"} and status["running"] is True, status
+            if record["pre_ready_capture"] and record["complete_pre_ready_resource_frames"]:
+                record["coverage"] = "COMPLETE_SAMPLED_PRE_READY_NATIVE_CUSTODY_ONLY"
+            elif record["pre_ready_capture"]:
+                record["coverage"] = "UNQUALIFIED_PRE_READY_RESOURCE_FRAME_MISSING"
+            else:
+                record["coverage"] = "UNQUALIFIED_PRE_READY_CAPTURE_RACED"
+            return status
+        except BaseException as error:
+            record.update(coverage="UNQUALIFIED", error_kind=type(error).__name__)
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=2)
+            record.update(cli_exit_code=process.returncode, wrapper_reaped=True)
+            if endpoint_path.exists():
+                # Existing endpoint custody is available only for safety
+                # cleanup; it cannot repair a missing pre-ready observation.
+                node.capture_process()
+            if node.process is not None:
+                record["cleanup"] = stop_owned_group(node.process)
+            raise
 
     def wait(self, predicate, maximum=15):
         end = time.monotonic() + self.remaining(maximum)
@@ -210,6 +503,100 @@ def process_identity(pid):
         return None
     return {"pid": int(parts[0]), "group": int(parts[1]), "session": session,
             "born": " ".join(parts[2:7]), "kernel_birth": born, "command": parts[7]}
+
+
+def startup_birth(identity, exit_witness=None):
+    born = kernel_birth(identity["pid"])
+    if born is None and exit_witness is not None and exit_witness.poll() is not None:
+        raise StartupWrapperExit("exact startup wrapper exited during an incomplete sample")
+    assert born == identity["kernel_birth"], "startup actor birth changed or unavailable"
+
+
+def direct_children(parent, exit_witness=None):
+    """Use an actual live PPID relationship, never a command-name search."""
+    startup_birth(parent, exit_witness)
+    result = subprocess.run(["ps", "-A", "-o", "pid=,ppid="],
+        capture_output=True, text=True, timeout=2, check=True)
+    rows = result.stdout.splitlines()
+    assert len(rows) <= 4096 and len(result.stdout) <= 256 * 1024, "startup public inventory capacity"
+    children = []
+    for row in rows:
+        fields = row.split()
+        assert len(fields) == 2 and all(part.isdigit() for part in fields), "startup public parent metadata malformed"
+        pid, ppid = map(int, fields)
+        if ppid == parent["pid"]:
+            children.append(pid)
+    startup_birth(parent, exit_witness)
+    return children
+
+
+def process_startup_sample(identity, exit_witness=None, captured=None):
+    """Native positive RSS and parent/group/session for one retained actor."""
+    # Optional raw capture preserves negatives; only the returned sample has
+    # passed every original closing native identity and membership check.
+    pid = identity["pid"]
+    startup_birth(identity, exit_witness)
+    try:
+        if sys.platform == "linux":
+            with Path(f"/proc/{pid}/stat").open("rb") as source:
+                raw = source.read(16385)
+            assert len(raw) <= 16384, "startup native stat width"
+            head, tail = raw.rsplit(b") ", 1)
+            fields = tail.split()
+            assert int(head.split(b" (", 1)[0]) == pid and len(fields) >= 22, "startup native stat layout"
+            assert fields[0] != b"Z", "startup actor is a zombie"
+            parent, group, session = map(int, fields[1:4])
+            assert ["linux_proc_start_ticks", int(fields[19])] == identity["kernel_birth"], "startup native stat birth mismatch"
+            page = os.sysconf("SC_PAGESIZE")
+            assert page > 0, "startup native page width unavailable"
+            rss = int(fields[21]) * page
+            measurement = "linux_proc_stat_native_rss"
+        elif sys.platform == "darwin":
+            class BsdInfo(ctypes.Structure):
+                _fields_ = [("prefix", ctypes.c_uint32 * 12), ("comm", ctypes.c_char * 16),
+                    ("name", ctypes.c_char * 32), ("nfiles", ctypes.c_uint32),
+                    ("pgid", ctypes.c_uint32), ("jobc", ctypes.c_uint32),
+                    ("tdev", ctypes.c_uint32), ("tpgid", ctypes.c_uint32),
+                    ("nice", ctypes.c_int32), ("start_sec", ctypes.c_uint64),
+                    ("start_usec", ctypes.c_uint64)]
+            class TaskInfo(ctypes.Structure):
+                _fields_ = [("times", ctypes.c_uint64 * 6), ("counters", ctypes.c_int32 * 12)]
+            library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            query = library.proc_pidinfo
+            query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+            query.restype = ctypes.c_int
+            bsd, task = BsdInfo(), TaskInfo()
+            width = query(pid, 3, 0, ctypes.byref(bsd), ctypes.sizeof(bsd))
+            if width != ctypes.sizeof(bsd):
+                startup_birth(identity, exit_witness)
+            assert width == ctypes.sizeof(bsd), "startup native BSD unavailable"
+            assert bsd.prefix[3] == pid and bsd.prefix[1] != 5, "startup native BSD actor mismatch or zombie"
+            assert ["darwin_proc_start_time", int(bsd.start_sec), int(bsd.start_usec)] == identity["kernel_birth"], "startup native BSD birth mismatch"
+            width = query(pid, 4, 0, ctypes.byref(task), ctypes.sizeof(task))
+            if width != ctypes.sizeof(task):
+                startup_birth(identity, exit_witness)
+            assert width == ctypes.sizeof(task), "startup native task RSS unavailable"
+            if captured is not None:
+                captured({"pid": pid, "parent": int(bsd.prefix[4]), "group": int(bsd.pgid),
+                    "session": None, "kernel_birth": identity["kernel_birth"],
+                    "rss_bytes": int(task.times[1]), "measurement_source": "darwin_proc_pidtaskinfo_resident_size"})
+            parent, group, session = int(bsd.prefix[4]), int(bsd.pgid), os.getsid(pid)
+            rss = int(task.times[1])
+            measurement = "darwin_proc_pidtaskinfo_resident_size"
+        else:
+            raise AssertionError("startup native samples require a supported platform")
+        if captured is not None:
+            captured({"pid": pid, "parent": parent, "group": group, "session": session,
+                "kernel_birth": identity["kernel_birth"], "rss_bytes": rss, "measurement_source": measurement})
+        assert rss > 0, "startup live actor RSS is unavailable or nonpositive"
+        assert group == identity["group"] == os.getpgid(pid), "startup actor group changed"
+        assert session == identity["session"] == os.getsid(pid), "startup actor session changed"
+        startup_birth(identity, exit_witness)
+        return {"pid": pid, "parent": parent, "group": group, "session": session,
+            "kernel_birth": identity["kernel_birth"], "rss_bytes": rss, "measurement_source": measurement}
+    except (FileNotFoundError, ProcessLookupError):
+        startup_birth(identity, exit_witness)
+        raise
 
 
 def process_cpu_sample(identity):
@@ -470,10 +857,10 @@ class Node:
                 continue
         return events
 
-    def start(self):
+    def start(self, strict_startup=False):
         self.event_offset = len(self.logs())
         self.release_port()
-        result = self.trial.call(self, "start")
+        result = self.trial.start(self, strict_startup=strict_startup)
         assert result["running"]
         self.capture_process()
         event = self.trial.wait(lambda: next((event for event in self.logs()
@@ -490,6 +877,17 @@ class Node:
         assert current is not None, "start returned without a live daemon"
         assert current["pid"] == current["group"] == current["session"], "node does not own an independent OS session"
         assert str(self.trial.binary) in current["command"], current
+        startup_record = getattr(self, "startup_record", {})
+        retained = startup_record.get("daemon") if startup_record.get("capture_pending") else None
+        if retained is not None:
+            assert current == retained, "ready endpoint replaced retained startup child identity"
+        if startup_record.get("capture_pending"):
+            startup_record["capture_pending"] = False
+        else:
+            # Direct legacy start/race callers have no early custody trace.
+            # Keep previous attempt records intact rather than reusing them.
+            self.startup_record = {"coverage": "UNQUALIFIED_LEGACY_ENDPOINT_ONLY",
+                "capture_pending": False, "pre_ready_capture": False}
         self.process = current
         write_receipt(self.trial.output / f"node-{self.index}.process.json", current)
         self.trial.summary["processes"].append({"node": self.index, **current})
