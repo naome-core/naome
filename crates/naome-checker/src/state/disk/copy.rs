@@ -238,8 +238,8 @@ mod tests {
     fn populated() -> (DiskArtifactState, Arc<MemoryStorage>) {
         let storage = Arc::new(MemoryStorage::default());
         let mut state = DiskArtifactState::new(storage.clone());
-        register_axiom(&mut state, ZfcAxiom::Pairing);
-        register_axiom(&mut state, ZfcAxiom::Union);
+        let _ = register_axiom(&mut state, ZfcAxiom::Pairing);
+        let _ = register_axiom(&mut state, ZfcAxiom::Union);
         let implication = crate::normalize_and_check(
             ProofCertificate::new(vec![ProofStep::Simplification {
                 antecedent: ZfcAxiom::Pairing.formula().into(),
