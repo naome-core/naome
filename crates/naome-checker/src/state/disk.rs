@@ -13,6 +13,9 @@ use naome_proof::{
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, sync::Arc};
 
+mod copy;
+pub use copy::{DiskArtifactCopy, DiskCopyBudget, DiskCopyProgress};
+
 /// Complete proof-only checked context with authenticated cold records.
 /// Construction is empty; only mathematical registration can create roots.
 /// Restart must replay every canonical proof. No persisted root is trusted.
@@ -466,10 +469,10 @@ mod tests {
     use std::{collections::BTreeMap, sync::Mutex};
 
     #[derive(Default)]
-    struct MemoryStorage {
-        bytes: Mutex<BTreeMap<[u8; 32], Vec<u8>>>,
-        reads: Mutex<BTreeMap<[u8; 32], usize>>,
-        failures: Mutex<Vec<ContextError>>,
+    pub(super) struct MemoryStorage {
+        pub(super) bytes: Mutex<BTreeMap<[u8; 32], Vec<u8>>>,
+        pub(super) reads: Mutex<BTreeMap<[u8; 32], usize>>,
+        pub(super) failures: Mutex<Vec<ContextError>>,
     }
     impl ContextStorage for MemoryStorage {
         fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
@@ -497,7 +500,7 @@ mod tests {
         }
     }
 
-    fn register_axiom(
+    pub(super) fn register_axiom(
         state: &mut DiskArtifactState,
         axiom: ZfcAxiom,
     ) -> (ProofId, StatementId, Vec<u8>) {

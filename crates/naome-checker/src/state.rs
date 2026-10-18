@@ -13,7 +13,7 @@ use crate::{CheckedDefinition, CheckedProof, question::index::KnowledgeIndex};
 mod disk;
 pub(crate) mod disk_map;
 pub(crate) mod persistent_map;
-pub use disk::DiskArtifactState;
+pub use disk::{DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, DiskCopyProgress};
 
 use persistent_map::{Key256, PersistentMap};
 

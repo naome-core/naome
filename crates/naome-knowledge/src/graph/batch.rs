@@ -7,6 +7,7 @@ pub(crate) struct CheckedBatch {
     entries: Vec<(ProofId, Envelope)>,
     base_snapshot: [u8; 32],
     storage: Arc<CheckedStorage>,
+    copy_epoch: u64,
     context_bytes: usize,
 }
 
@@ -20,6 +21,10 @@ impl Graph {
         helpers: &[String],
         question: &CompiledQuestion,
     ) -> Result<(ProofId, CheckedBatch), String> {
+        self.ensure_live()?;
+        // Capture before helper preparation can write immutable staged nodes.
+        // The shared batch path must never refresh this token after a copy starts.
+        let copy_epoch = self.cold(self.checked_storage.copy_epoch())?;
         if source.len() > crate::MAX_PROOF_BYTES
             || helpers.len() >= crate::intake::MAX_CLOSURE_OBJECTS
             || helpers.iter().any(|s| s.len() > crate::MAX_PROOF_BYTES)
@@ -74,7 +79,7 @@ impl Graph {
         if steps > crate::intake::MAX_CLOSURE_STEPS || bytes > crate::intake::MAX_CLOSURE_BYTES {
             return Err("generated closure checker work capacity".into());
         }
-        self.prepare_batch(id, candidates, question)
+        self.prepare_batch_at_epoch(id, candidates, question, copy_epoch)
             .map(|batch| (id, batch))
     }
     #[cfg(test)]
@@ -84,8 +89,20 @@ impl Graph {
     pub(crate) fn prepare_batch(
         &self,
         root: ProofId,
+        candidates: BTreeMap<ProofId, Candidate>,
+        question: &CompiledQuestion,
+    ) -> Result<CheckedBatch, String> {
+        self.ensure_live()?;
+        let copy_epoch = self.cold(self.checked_storage.copy_epoch())?;
+        self.prepare_batch_at_epoch(root, candidates, question, copy_epoch)
+    }
+
+    fn prepare_batch_at_epoch(
+        &self,
+        root: ProofId,
         mut candidates: BTreeMap<ProofId, Candidate>,
         question: &CompiledQuestion,
+        copy_epoch: u64,
     ) -> Result<CheckedBatch, String> {
         self.ensure_live()?;
         if candidates.is_empty() || candidates.len() > crate::intake::MAX_CLOSURE_OBJECTS {
@@ -195,6 +212,7 @@ impl Graph {
             entries,
             base_snapshot: self.context.snapshot_id(),
             storage: self.checked_storage.clone(),
+            copy_epoch,
             context_bytes,
         })
     }
@@ -212,6 +230,12 @@ impl Graph {
             return Err("stale checked batch context".into());
         }
         if !Arc::ptr_eq(&batch.storage, &self.checked_storage) {
+            return Err("checked batch storage generation changed".into());
+        }
+        let storage = self.checked_storage.clone();
+        let gate = self.cold(storage.write_gate())?;
+        self.ensure_live()?;
+        if batch.copy_epoch != gate.epoch() {
             return Err("checked batch storage generation changed".into());
         }
         let admitted: Vec<_> = batch.entries.iter().map(|(id, _)| *id).collect();
@@ -233,6 +257,7 @@ impl Graph {
         for id in &admitted {
             self.pending.remove(id);
         }
+        drop(gate);
         Ok(admitted)
     }
 }

@@ -10,7 +10,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -21,6 +21,15 @@ const CACHE_ENTRY_BYTES: usize = 512;
 const PREFIX: &str = ".checked-context-";
 const SUFFIX: &str = ".sqlite3";
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    // One-shot, per-thread scheduling only. The production write path has no
+    // hook, and a mirrored target write cannot consume the pause twice.
+    static WRITE_TEST_PAUSE: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
 
 struct CacheEntry {
     bytes: Vec<u8>,
@@ -42,6 +51,7 @@ struct Owner {
 /// lease. Old question/batch clones keep their generation's bytes available.
 pub(super) struct CheckedStorage {
     connection: Mutex<Connection>,
+    write_gate: Mutex<WriteRoute>,
     generation: u64,
     cache: Arc<Mutex<Cache>>,
     path: PathBuf,
@@ -49,7 +59,87 @@ pub(super) struct CheckedStorage {
     halt: Arc<Mutex<Option<String>>>,
 }
 
+/// The one source-generation write boundary. Every successful immutable write
+/// includes the current mirror, even when its local cache or SQL row existed.
+#[derive(Default)]
+pub(super) struct WriteRoute {
+    epoch: u64,
+    mirror: Option<Arc<CheckedStorage>>,
+}
+
+impl WriteRoute {
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub(super) fn attach(
+        &mut self,
+        source: &CheckedStorage,
+        target: Arc<CheckedStorage>,
+    ) -> Result<u64, String> {
+        if self.mirror.is_some() || std::ptr::eq(source, target.as_ref()) {
+            return Err("checked copy mirror already attached or cyclic".into());
+        }
+        if target.write_gate()?.mirror.is_some() {
+            return Err("checked copy target already mirrors another generation".into());
+        }
+        let epoch = self
+            .epoch
+            .checked_add(1)
+            .ok_or("checked copy epoch overflow")?;
+        self.epoch = epoch;
+        self.mirror = Some(target);
+        Ok(epoch)
+    }
+
+    pub(super) fn matches(&self, epoch: u64, target: &Arc<CheckedStorage>) -> bool {
+        self.epoch == epoch
+            && self
+                .mirror
+                .as_ref()
+                .is_some_and(|mirror| Arc::ptr_eq(mirror, target))
+    }
+
+    pub(super) fn detach(
+        &mut self,
+        epoch: u64,
+        target: &Arc<CheckedStorage>,
+    ) -> Result<(), String> {
+        if !self.matches(epoch, target) {
+            return Err("checked copy source epoch or target changed".into());
+        }
+        self.mirror = None;
+        Ok(())
+    }
+}
+
 impl CheckedStorage {
+    pub(super) fn write_gate(&self) -> Result<MutexGuard<'_, WriteRoute>, String> {
+        self.write_gate
+            .lock()
+            .map_err(|_| "checked write gate poisoned".into())
+    }
+
+    pub(super) fn copy_epoch(&self) -> Result<u64, String> {
+        Ok(self.write_gate()?.epoch())
+    }
+
+    /// Drop/abort never commits a target. Recover a poisoned gate only to
+    /// remove our exact route; the shared failure still halts the live owner.
+    pub(super) fn abort_copy(&self, epoch: u64, target: &Arc<CheckedStorage>) {
+        let mut route = self.write_gate.lock().unwrap_or_else(|error| {
+            self.record_failure(&ContextError::Storage("checked write gate poisoned".into()));
+            error.into_inner()
+        });
+        if route.matches(epoch, target) {
+            route.mirror = None;
+        } else if route.mirror.is_some() {
+            self.record_failure(&ContextError::Storage(
+                "checked copy abort found another route".into(),
+            ));
+        }
+    }
+
     /// Batch only disposable index writes. Canonical admission has its own
     /// transaction; unfinished checked generations never become live roots.
     pub(super) fn begin_write_phase(&self) -> Result<(), String> {
@@ -169,6 +259,7 @@ impl CheckedStorage {
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
             connection: Mutex::new(connection),
+            write_gate: Mutex::new(WriteRoute::default()),
             generation: number,
             cache,
             path,
@@ -570,7 +661,32 @@ impl ContextStorage for CheckedStorage {
         self.record_error(self.read_inner(address, maximum))
     }
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
-        self.record_error(self.write_inner(address, bytes))
+        let route = match self.write_gate() {
+            Ok(route) => route,
+            Err(error) => return self.record_error(Err(ContextError::Storage(error))),
+        };
+        #[cfg(test)]
+        WRITE_TEST_PAUSE.with(|slot| {
+            let pause = slot.borrow_mut().take();
+            if let Some(pause) = pause {
+                pause.wait();
+                pause.wait();
+            }
+        });
+        let result = (|| {
+            // write_inner releases both the shared cache and SQL lock before
+            // returning, including its cached and existing-row success paths.
+            self.write_inner(address, bytes)?;
+            if let Some(target) = &route.mirror {
+                target.write(address, bytes)?;
+            }
+            Ok(())
+        })();
+        // Report a failed local or mirrored write before finish can acquire
+        // the source gate and consider publishing this target.
+        let result = self.record_error(result);
+        drop(route);
+        result
     }
 }
 impl Drop for CheckedStorage {
@@ -607,6 +723,7 @@ fn context_error(error: rusqlite::Error) -> ContextError {
 mod tests {
     use super::*;
     use crate::Graph;
+    use naome_checker::ContextView;
 
     #[test]
     fn hot_reads_keep_owned_bytes_and_cached_allocation_generation_and_charge() {
@@ -814,6 +931,282 @@ mod tests {
         old.evict_cache();
         assert_eq!(old.read(address, bytes.len()).unwrap(), bytes);
         assert!(graph.storage_error().is_none());
+    }
+
+    fn rows(storage: &CheckedStorage, address: [u8; 32]) -> i64 {
+        storage
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM nodes WHERE address=?1",
+                [address.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn checked_graph() -> Graph {
+        let mut graph = Graph::default();
+        let object = graph
+            .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+            .unwrap();
+        graph.ingest(object, std::time::Instant::now()).unwrap();
+        graph
+    }
+
+    #[test]
+    fn every_cached_existing_and_unreferenced_write_reaches_the_mirror() {
+        for cached in [false, true] {
+            for target_existing in [false, true] {
+                let graph = Graph::default();
+                let source = &graph.checked_storage;
+                let target = source.successor().unwrap();
+                let address = [67; 32];
+                let bytes = vec![5; 8192];
+                source.write(address, &bytes).unwrap();
+                if target_existing {
+                    target.write(address, &bytes).unwrap();
+                }
+                if cached {
+                    source
+                        .cache
+                        .lock()
+                        .unwrap()
+                        .insert(address, bytes.clone(), source.generation);
+                } else {
+                    source.evict_cache();
+                }
+                assert_eq!(rows(&target, address), if target_existing { 1 } else { 0 });
+                let epoch = source
+                    .write_gate()
+                    .unwrap()
+                    .attach(source, target.clone())
+                    .unwrap();
+                source.write(address, &bytes).unwrap();
+                source.write_gate().unwrap().detach(epoch, &target).unwrap();
+                // Reads alone could use another generation's shared hot bytes.
+                // Evict the entire cache before establishing either SQL row.
+                target.evict_cache();
+                assert_eq!(target.read(address, bytes.len()).unwrap(), bytes);
+                source.evict_cache();
+                assert_eq!(source.read(address, bytes.len()).unwrap(), bytes);
+                assert_eq!(rows(&target, address), 1);
+                assert!(Arc::ptr_eq(&source.cache, &target.cache));
+                assert!(source.cache.lock().unwrap().charged <= HOT_CACHE_BYTES);
+                assert!(graph.storage_error().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn conflicting_mirror_row_is_not_repaired_or_hidden_by_a_source_cache_hit() {
+        let graph = Graph::default();
+        let source = &graph.checked_storage;
+        let target = source.successor().unwrap();
+        let address = [71; 32];
+        source.write(address, b"original source").unwrap();
+        target.write(address, b"different target").unwrap();
+        source.cache.lock().unwrap().insert(
+            address,
+            b"original source".to_vec(),
+            source.generation,
+        );
+        let epoch = source
+            .write_gate()
+            .unwrap()
+            .attach(source, target.clone())
+            .unwrap();
+        assert!(matches!(
+            source.write(address, b"original source"),
+            Err(ContextError::Corrupt)
+        ));
+        source.abort_copy(epoch, &target);
+        assert!(source.write_gate().unwrap().mirror.is_none());
+        target.evict_cache();
+        assert_eq!(
+            target.read_uncached(address, 64).unwrap(),
+            b"different target"
+        );
+        source.evict_cache();
+        assert_eq!(
+            source.read_uncached(address, 64).unwrap(),
+            b"original source"
+        );
+        assert!(graph.storage_error().is_some());
+    }
+
+    #[test]
+    fn source_gate_orders_real_writes_before_attach_and_current_root_handoff() {
+        use std::sync::Barrier;
+        for finishing in [false, true] {
+            let mut graph = checked_graph();
+            if finishing {
+                assert!(graph.test_compaction_step(1).unwrap());
+            }
+            let source = graph.checked_storage.clone();
+            let paused = Arc::new(Barrier::new(2));
+            let writer_pause = paused.clone();
+            let writer_source = source.clone();
+            let writer = std::thread::spawn(move || {
+                WRITE_TEST_PAUSE.with(|slot| *slot.borrow_mut() = Some(writer_pause));
+                writer_source
+                    .write([68; 32], b"inflight immutable bytes")
+                    .unwrap();
+            });
+            paused.wait(); // writer owns the actual source gate
+            let started = Arc::new(Barrier::new(2));
+            let operation_started = started.clone();
+            let operation = std::thread::spawn(move || {
+                operation_started.wait();
+                if finishing {
+                    for _ in 0..4096 {
+                        let _ = graph
+                            .maintain_checked_storage_step(
+                                usize::MAX,
+                                naome_checker::DiskCopyBudget {
+                                    records: 1,
+                                    bytes: naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
+                                },
+                            )
+                            .unwrap();
+                        if graph.compaction.is_none() {
+                            return graph;
+                        }
+                    }
+                    panic!("small copy did not complete");
+                }
+                assert!(graph.test_compaction_step(1).unwrap());
+                graph
+            });
+            started.wait();
+            paused.wait(); // allow write, then queued attach/finish
+            writer.join().unwrap();
+            let graph = operation.join().unwrap();
+            let target = if finishing {
+                assert!(!Arc::ptr_eq(&source, &graph.checked_storage));
+                graph.checked_storage.clone()
+            } else {
+                assert!(Arc::ptr_eq(&source, &graph.checked_storage));
+                graph.compaction.as_ref().unwrap().target.clone()
+            };
+            assert_eq!(rows(&target, [68; 32]), if finishing { 1 } else { 0 });
+            source.write([69; 32], b"after boundary").unwrap();
+            assert_eq!(rows(&target, [69; 32]), if finishing { 0 } else { 1 });
+            if finishing {
+                target.evict_cache();
+                assert_eq!(
+                    target.read([68; 32], 64).unwrap(),
+                    b"inflight immutable bytes"
+                );
+                assert!(source.write_gate().unwrap().mirror.is_none());
+            }
+            assert!(graph.storage_error().is_none());
+        }
+    }
+
+    #[test]
+    fn copy_read_mirror_and_real_sql_commit_failures_halt_without_handoff() {
+        for failure in 0..3 {
+            let mut graph = checked_graph();
+            let source = graph.checked_storage.clone();
+            let snapshot = graph.context.snapshot_id();
+            let corpus = graph.content_root();
+            assert!(graph.test_compaction_step(1).unwrap());
+            let target = graph.compaction.as_ref().unwrap().target.clone();
+            match failure {
+                0 => {
+                    source
+                        .connection
+                        .lock()
+                        .unwrap()
+                        .execute("DELETE FROM nodes", [])
+                        .unwrap();
+                    source.evict_cache();
+                }
+                1 => {
+                    target
+                        .connection
+                        .lock()
+                        .unwrap()
+                        .execute_batch(
+                            "CREATE TRIGGER reject_mirror BEFORE INSERT ON nodes BEGIN
+                         SELECT RAISE(ABORT,'injected mirror I/O refusal'); END;",
+                        )
+                        .unwrap();
+                    assert!(source.write([70; 32], b"unpublished staged write").is_err());
+                }
+                _ => {
+                    // A real deferred constraint lets node writes succeed and
+                    // makes the bounded transaction's COMMIT fail separately.
+                    target
+                        .connection
+                        .lock()
+                        .unwrap()
+                        .execute_batch(
+                            "PRAGMA foreign_keys=ON;
+                         CREATE TABLE copy_parent(id INTEGER PRIMARY KEY);
+                         CREATE TABLE copy_child(id INTEGER REFERENCES copy_parent(id)
+                             DEFERRABLE INITIALLY DEFERRED);
+                         CREATE TRIGGER reject_copy_commit AFTER INSERT ON nodes BEGIN
+                             INSERT INTO copy_child(id) VALUES(1); END;",
+                        )
+                        .unwrap();
+                }
+            }
+            let error = graph.test_compaction_step(1).unwrap_err();
+            if failure == 2 {
+                assert!(error.contains("FOREIGN KEY"), "{error}");
+            }
+            assert!(graph.compaction.is_none());
+            assert!(graph.storage_error().is_some());
+            assert!(source.write_gate().unwrap().mirror.is_none());
+            assert!(Arc::ptr_eq(&source, &graph.checked_storage));
+            assert_eq!(graph.context.snapshot_id(), snapshot);
+            assert_eq!(graph.content_root(), corpus);
+            assert_eq!(graph.store.summary().unwrap().count, 1);
+            assert!(
+                graph
+                    .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn setup_failure_and_cancelled_copy_never_publish_or_retain_a_mirror() {
+        let mut graph = checked_graph();
+        let source = graph.checked_storage.clone();
+        let snapshot = graph.context.snapshot_id();
+        let corpus = graph.content_root();
+        assert!(graph.test_compaction_step(1).unwrap());
+        let target = Arc::downgrade(&graph.compaction.as_ref().unwrap().target);
+        drop(graph.compaction.take());
+        assert!(
+            target.upgrade().is_none(),
+            "abort guard releases the unfinished target"
+        );
+        assert!(source.write_gate().unwrap().mirror.is_none());
+        assert!(Arc::ptr_eq(&source, &graph.checked_storage));
+        assert_eq!(graph.context.snapshot_id(), snapshot);
+        assert_eq!(graph.content_root(), corpus);
+        source.evict_cache();
+        assert_eq!(graph.ids().len(), 1);
+        assert!(graph.storage_error().is_none());
+        // Overflow is rejected before attach; the newly created empty target
+        // must be dropped without changing the live context or route.
+        source.write_gate().unwrap().epoch = u64::MAX;
+        assert!(
+            graph
+                .test_compaction_step(1)
+                .unwrap_err()
+                .contains("epoch overflow")
+        );
+        assert!(graph.compaction.is_none());
+        assert!(source.write_gate().unwrap().mirror.is_none());
+        assert!(graph.storage_error().is_some());
+        assert_eq!(graph.context.snapshot_id(), snapshot);
+        assert_eq!(graph.content_root(), corpus);
     }
 
     #[test]

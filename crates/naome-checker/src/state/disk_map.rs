@@ -2,7 +2,7 @@ use crate::context::{ContextError, ContextStorage};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-const MAX_NODE_BYTES: usize = 4096;
+pub(super) const MAX_NODE_BYTES: usize = 4096;
 const MAX_VALUE_BYTES: usize = 2048;
 const VERSION: u8 = 1;
 const LEAF: u8 = 0;
@@ -90,16 +90,20 @@ impl DiskMap {
     /// Copy only nodes reachable from this live authenticated root. The
     /// traversal stack is bounded independently of the number of entries.
     pub(crate) fn copy_to(&self, storage: Arc<dyn ContextStorage>) -> Result<Self, ContextError> {
-        let mut stack: Vec<_> = self.root.into_iter().map(Pending::root).collect();
-        while let Some(pending) = stack.pop() {
-            let node = load_node(self.storage.as_ref(), pending)?;
-            storage.write(pending.root.address, &node.encode())?;
-            if let Node::Branch { bit, left, right } = node {
-                stack.push(pending.child(right, bit)?);
-                stack.push(pending.child(left, bit)?);
-            }
+        let mut walk = self.walk();
+        while let Some(visit) = walk.step()? {
+            storage.write(visit.address, &visit.bytes)?;
         }
         Ok(Self::from_root(storage, self.root))
+    }
+
+    pub(super) fn walk(&self) -> Walk {
+        Walk {
+            storage: self.storage(),
+            pending: self.root.into_iter().map(Pending::root).collect(),
+            previous_key: None,
+            failed: false,
+        }
     }
 
     fn write_value(
@@ -203,6 +207,65 @@ impl DiskMap {
             root,
             range: node.range(),
         })
+    }
+}
+
+/// One authenticated node per step, including branches that yield no entry.
+/// Nested bucket traversal needs at most one additional bounded DFS stack.
+pub(super) struct Walk {
+    storage: Arc<dyn ContextStorage>,
+    pending: Vec<Pending>,
+    previous_key: Option<[u8; 32]>,
+    failed: bool,
+}
+
+pub(super) struct Visit {
+    pub(super) address: [u8; 32],
+    pub(super) bytes: Vec<u8>,
+    pub(super) entry: Option<([u8; 32], Vec<u8>)>,
+}
+
+impl Walk {
+    pub(super) fn complete(&self) -> bool {
+        !self.failed && self.pending.is_empty()
+    }
+
+    pub(super) fn step(&mut self) -> Result<Option<Visit>, ContextError> {
+        if self.failed {
+            return Err(ContextError::Corrupt);
+        }
+        let Some(pending) = self.pending.pop() else {
+            return Ok(None);
+        };
+        let result = (|| {
+            let node = load_node_inner(self.storage.as_ref(), pending)?;
+            let bytes = node.encode();
+            let entry = match node {
+                Node::Leaf { key, value } => {
+                    if self.previous_key.is_some_and(|previous| previous >= key) {
+                        return Err(ContextError::Corrupt);
+                    }
+                    self.previous_key = Some(key);
+                    Some((key, value))
+                }
+                Node::Branch { bit, left, right } => {
+                    self.pending.push(pending.child(right, bit)?);
+                    self.pending.push(pending.child(left, bit)?);
+                    None
+                }
+            };
+            Ok(Some(Visit {
+                address: pending.root.address,
+                bytes,
+                entry,
+            }))
+        })();
+        if let Err(error) = &result {
+            self.failed = true;
+            self.pending.clear();
+            self.storage.record_failure(error);
+        }
+        result
     }
 }
 
@@ -673,6 +736,33 @@ mod tests {
             map.entries().collect::<Result<Vec<_>, _>>().unwrap().len(),
             257
         );
+        let target = Arc::new(MemoryStorage::default());
+        let mut walk = map.walk();
+        let mut visited = 0;
+        let mut leaves = 0;
+        while let Some(visit) = walk.step().unwrap() {
+            visited += 1;
+            leaves += if visit.entry.is_some() { 1 } else { 0 };
+            assert!(visit.bytes.len() <= MAX_NODE_BYTES);
+            assert!(
+                walk.pending.len() <= 257,
+                "DFS memory follows depth, not corpus size"
+            );
+            target.write(visit.address, &visit.bytes).unwrap();
+        }
+        assert!(walk.complete());
+        assert_eq!(
+            (visited, leaves),
+            (513, 257),
+            "branches consume separate steps"
+        );
+        assert_eq!(target.bytes.lock().unwrap().len(), 513);
+        assert_eq!(
+            DiskMap::from_root(target, map.root())
+                .get(&[0; 32])
+                .unwrap(),
+            Some(b"zero".to_vec())
+        );
         let old = map.clone();
         let mut new_key = [0; 32];
         new_key[31] = 3;
@@ -753,6 +843,12 @@ mod tests {
             Some(Err(ContextError::Storage(_)))
         ));
         assert_eq!(entries.next(), None);
+        let mut walk = map.walk();
+        assert!(walk.step().is_ok()); // root branch
+        assert!(walk.step().is_ok()); // left leaf
+        assert!(walk.step().is_err());
+        assert!(!walk.complete(), "a failed cursor cannot look exhausted");
+        assert!(walk.step().is_err());
     }
 
     #[test]

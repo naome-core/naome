@@ -434,6 +434,174 @@ fn generation_compaction_preserves_cold_snapshots_and_rejects_old_prepared_batch
     assert_eq!(graph.accepted_count(), 2);
 }
 
+fn drain_current_copy(graph: &mut Graph) {
+    assert!(graph.compaction.is_some());
+    for _ in 0..4096 {
+        let _ = graph
+            .maintain_checked_storage_step(
+                usize::MAX,
+                DiskCopyBudget {
+                    records: 1,
+                    bytes: naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
+                },
+            )
+            .unwrap();
+        if graph.compaction.is_none() {
+            return;
+        }
+    }
+    panic!("small test copy did not complete");
+}
+
+#[test]
+fn pre_attach_batch_is_stale_before_canonical_write_while_generation_is_unchanged() {
+    let mut graph = Graph::default();
+    let parent = introduce(&mut graph);
+    let source = format!(
+        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
+        parent.proof_id
+    );
+    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
+    let storage = graph.checked_storage.clone();
+    let epoch = storage.copy_epoch().unwrap();
+    let snapshot = graph.context.snapshot_id();
+    let corpus = graph.content_root();
+    // A persistence attempt would fail and halt this owner. Epoch rejection
+    // must happen before that call, even though snapshot and Arc still match.
+    graph.test_batch_cut(crate::store::BatchCut::BeforeWrite);
+    assert!(graph.test_compaction_step(1).unwrap());
+    assert!(Arc::ptr_eq(&storage, &graph.checked_storage));
+    assert_eq!(graph.context.snapshot_id(), snapshot);
+    assert_ne!(storage.copy_epoch().unwrap(), epoch);
+    assert!(
+        graph
+            .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
+            .unwrap_err()
+            .contains("generation changed")
+    );
+    assert_eq!(graph.accepted_count(), 1);
+    assert_eq!(graph.content_root(), corpus);
+    assert_eq!(graph.store.summary().unwrap().count, 1);
+    assert!(!graph.contains(root).unwrap());
+    assert!(graph.storage_error().is_none());
+}
+
+#[test]
+fn post_attach_batch_and_new_formula_survive_current_root_handoff_with_cold_reads() {
+    let mut graph = Graph::default();
+    let parent = introduce(&mut graph);
+    let parent_id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let old = graph.context.clone();
+    let old_storage = Arc::downgrade(&graph.checked_storage);
+    let old_snapshot = old.snapshot_id();
+    assert!(graph.test_compaction_step(1).unwrap());
+    let source = "goal = imp(all(x,eq(x,x)),imp(all(y,eq(y,y)),all(x,eq(x,x)))) proof: p0 = simp(all(x,eq(x,x)),all(y,eq(y,y))) return p0";
+    let question = naome_authoring::CompiledQuestion::compile(
+        "goal = imp(all(x,eq(x,x)),imp(all(y,eq(y,y)),all(x,eq(x,x))))",
+    )
+    .unwrap();
+    let expected = graph.author(source).unwrap();
+    let (root, batch) = graph.prepare_generated(source, &[], &question).unwrap();
+    graph
+        .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
+        .unwrap();
+    assert!(graph.compaction.is_some(), "commit occurs during the copy");
+    assert!(old_storage.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
+    let current_snapshot = graph.context.snapshot_id();
+    let current_corpus = graph.content_root();
+    assert_ne!(current_snapshot, old_snapshot);
+    drain_current_copy(&mut graph);
+    assert!(!old_storage.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
+    assert_eq!(graph.context.snapshot_id(), current_snapshot);
+    assert_eq!(graph.content_root(), current_corpus);
+    graph.checked_storage.evict_cache();
+    assert_eq!(graph.object(root).unwrap(), Some(expected));
+    let header = graph.context.proof_header(root).unwrap().unwrap();
+    assert!(
+        graph
+            .context
+            .statement_formula(
+                header.statement_id(),
+                naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
+            )
+            .unwrap()
+            .is_some()
+    );
+    assert!(graph.context.contains_proof(parent_id).unwrap());
+    graph.checked_storage.evict_cache();
+    assert!(old.contains_proof(parent_id).unwrap());
+    assert!(!old.contains_proof(root).unwrap());
+    assert!(old_storage.upgrade().is_some());
+    drop(old);
+    assert!(
+        old_storage.upgrade().is_none(),
+        "the cursor retains no hidden source Arc"
+    );
+    assert!(graph.storage_error().is_none());
+}
+
+#[test]
+fn an_expired_post_attach_batch_preserves_deadline_and_partial_copy_state() {
+    let mut graph = Graph::default();
+    let parent = introduce(&mut graph);
+    assert!(graph.test_compaction_step(1).unwrap());
+    let source = format!(
+        "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
+        parent.proof_id
+    );
+    let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
+    let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
+    let before = graph.content_root();
+    assert_eq!(
+        graph.commit_batch(root, batch, Instant::now() - Duration::from_secs(1)),
+        Err(crate::store::COMMIT_DEADLINE_ERROR.into())
+    );
+    assert!(graph.compaction.is_some());
+    assert_eq!(graph.accepted_count(), 1);
+    assert_eq!(graph.content_root(), before);
+    assert!(graph.storage_error().is_none());
+    drain_current_copy(&mut graph);
+    graph.checked_storage.evict_cache();
+    assert!(!graph.contains(root).unwrap());
+    assert_eq!(graph.content_root(), before);
+}
+
+#[test]
+fn four_retained_old_generations_bound_copy_admission_without_changing_snapshots() {
+    let mut graph = Graph::default();
+    let parent = introduce(&mut graph);
+    let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let snapshot = graph.context.snapshot_id();
+    let mut retained = Vec::new();
+    for _ in 0..4 {
+        retained.push(graph.context.clone());
+        assert!(graph.test_compaction_step(1).unwrap());
+        drain_current_copy(&mut graph);
+        assert_eq!(graph.context.snapshot_id(), snapshot);
+    }
+    let current = Arc::downgrade(&graph.checked_storage);
+    assert!(
+        graph
+            .test_compaction_step(1)
+            .unwrap_err()
+            .contains("generation work limit")
+    );
+    assert!(graph.compaction.is_none());
+    assert!(current.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
+    assert!(graph.storage_error().is_none());
+    drop(retained.pop());
+    assert!(graph.test_compaction_step(1).unwrap());
+    drain_current_copy(&mut graph);
+    graph.checked_storage.evict_cache();
+    assert!(graph.context.contains_proof(id).unwrap());
+    for old in retained {
+        graph.checked_storage.evict_cache();
+        assert_eq!(old.snapshot_id(), snapshot);
+        assert!(old.contains_proof(id).unwrap());
+    }
+}
+
 #[test]
 fn direct_cold_formula_integrity_failure_halts_the_owner() {
     let mut graph = Graph::default();

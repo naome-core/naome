@@ -804,6 +804,50 @@ async fn persistence_cuts_preserve_existing_state_and_recover_only_complete_cata
 }
 
 #[tokio::test]
+async fn final_interest_batch_prepared_before_copy_attach_never_reaches_persistence() {
+    let mut graph = Graph::default();
+    graph.ingest(fixture(7).0, Instant::now()).unwrap();
+    let before = graph.content_root();
+    let (object, helper, metadata) = dependent_fixture();
+    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let peer = PeerId::random();
+    let mut questions = new_questions();
+    let mut intake = Intake::default();
+    intake.enqueue(peer, metadata, &graph).unwrap();
+    approve(&mut intake, &mut questions, &mut graph).await;
+    intake.payload(peer, root, root, object, &graph).unwrap();
+    intake
+        .payload(peer, root, helper_id, helper, &graph)
+        .unwrap();
+    intake.advance(&mut graph, &mut questions);
+    assert!(matches!(
+        &intake.active.as_ref().expect("held peer root").phase,
+        Phase::Final(..)
+    ));
+    // The production event loop runs maintenance before intake.advance. Keep
+    // this real batch alive across attach, with the physical copy unfinished.
+    graph.test_batch_cut(BatchCut::BeforeWrite);
+    assert!(graph.test_compaction_step(1).unwrap());
+    interest(&mut questions, &graph).await;
+    match intake.advance(&mut graph, &mut questions) {
+        Progress::Skipped(id, error) => {
+            assert_eq!(id, root);
+            assert!(error.contains("generation changed"), "{error}");
+        }
+        _ => panic!("a pre-attach held batch must be stale"),
+    }
+    assert!(
+        graph.storage_error().is_none(),
+        "persistence cut was never reached"
+    );
+    assert_eq!(graph.content_root(), before);
+    assert_eq!(graph.accepted_count(), 1);
+    assert!(!graph.contains(root).unwrap() && !graph.contains(helper_id).unwrap());
+    assert_eq!(registered(&mut questions, &graph), 0);
+}
+
+#[tokio::test]
 async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
     for mode in 0..4 {
         let directory = Directory::new();

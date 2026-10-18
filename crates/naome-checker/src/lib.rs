@@ -32,7 +32,10 @@ use naome_proof::{
 use sha2::{Digest, Sha256};
 
 pub use context::{ContextError, ContextStorage, ContextView};
-pub use state::{ArtifactState, ArtifactStateError, DiskArtifactState};
+pub use state::{
+    ArtifactState, ArtifactStateError, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget,
+    DiskCopyProgress,
+};
 
 const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
 const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";

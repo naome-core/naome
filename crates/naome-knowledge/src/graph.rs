@@ -1,7 +1,9 @@
 use crate::Envelope;
 use crate::object::{Candidate, MAX_DEPTH, Metadata, id_bytes};
 use crate::store::{Store, Summary};
-use naome_checker::{ContextView, DiskArtifactState, check_normal_form_with_state};
+use naome_checker::{
+    ContextView, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, check_normal_form_with_state,
+};
 use naome_proof::ProofId;
 use sha2::Digest;
 use std::{
@@ -43,12 +45,39 @@ pub struct Graph {
     checked_storage: Arc<CheckedStorage>,
     old_generations: Vec<Weak<CheckedStorage>>,
     next_compaction: usize,
+    compaction: Option<Compaction>,
+}
+
+/// One unpublished successor, owned by the same Graph that publishes roots.
+/// Dropping any partial copy removes its exact mirror before releasing bytes.
+struct Compaction {
+    source: Arc<CheckedStorage>,
+    target: Arc<CheckedStorage>,
+    cursor: Option<DiskArtifactCopy>,
+    epoch: u64,
+}
+
+impl Drop for Compaction {
+    fn drop(&mut self) {
+        self.source.abort_copy(self.epoch, &self.target);
+    }
 }
 
 impl Graph {
     #[cfg(test)]
     pub(crate) fn test_database_full(&self) {
         self.store.limit_current_pages();
+    }
+    #[cfg(test)]
+    pub(crate) fn test_compaction_step(&mut self, records: usize) -> Result<bool, String> {
+        self.maintain_checked_storage_step(
+            0,
+            DiskCopyBudget {
+                records,
+                bytes: naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
+            },
+        )?;
+        Ok(self.compaction.is_some())
     }
     pub fn accepted_count(&self) -> usize {
         self.count
@@ -123,6 +152,7 @@ impl Graph {
             checked_storage: storage,
             old_generations: Vec::new(),
             next_compaction: CHECKED_CACHE_BYTES,
+            compaction: None,
             pending: BTreeMap::new(),
             count: 0,
             bytes: 0,
@@ -207,8 +237,9 @@ impl Graph {
         Ok(graph)
     }
 
-    /// Reclaim unreachable copy-on-write nodes without invalidating retained
-    /// snapshots. All generations share the single bounded cache.
+    /// Advance one bounded copy quantum, reclaiming unreachable copy-on-write
+    /// nodes only at completed handoff. Retained snapshots keep their storage;
+    /// all generations share the single bounded cache.
     pub(crate) fn maintain_checked_storage(&mut self) -> Result<(), String> {
         self.maintain_checked_storage_at(self.next_compaction)
             .map(|_| ())
@@ -237,32 +268,109 @@ impl Graph {
     }
 
     fn maintain_checked_storage_at(&mut self, threshold: usize) -> Result<Option<usize>, String> {
+        self.maintain_checked_storage_step(
+            threshold,
+            DiskCopyBudget {
+                records: 64,
+                bytes: naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
+            },
+        )
+    }
+
+    fn maintain_checked_storage_step(
+        &mut self,
+        threshold: usize,
+        budget: DiskCopyBudget,
+    ) -> Result<Option<usize>, String> {
+        if let Err(error) = self.ensure_live() {
+            drop(self.compaction.take());
+            return Err(error);
+        }
+        // The threshold admits a new copy. An existing cursor keeps making
+        // bounded progress even when a caller supplies a different threshold.
+        if self.compaction.is_none() {
+            if self.cold(self.checked_storage.allocated_bytes())? < threshold {
+                return Ok(None);
+            }
+            self.old_generations
+                .retain(|generation| generation.strong_count() != 0);
+            if self.old_generations.len() >= 4 {
+                return Err("checked snapshot generation work limit".into());
+            }
+            let source = self.checked_storage.clone();
+            let target = self.cold(source.successor())?;
+            let mut gate = self.cold(source.write_gate())?;
+            self.ensure_live()?;
+            let epoch = self.cold(gate.attach(&source, target.clone()))?;
+            // No fallible operation remains between attaching and installing
+            // the abort guard. Pre-attach batches keep their previous epoch.
+            self.compaction = Some(Compaction {
+                source: source.clone(),
+                target: target.clone(),
+                cursor: Some(self.context.begin_copy(target)),
+                epoch,
+            });
+        }
+        let mut copy = self.compaction.take().expect("active checked copy");
+        let result = self.advance_checked_copy(&mut copy, budget);
+        if matches!(result, Ok(None)) {
+            self.compaction = Some(copy);
+        }
+        // On failure or completion, the local guard detaches the old source.
+        result
+    }
+
+    fn advance_checked_copy(
+        &mut self,
+        copy: &mut Compaction,
+        budget: DiskCopyBudget,
+    ) -> Result<Option<usize>, String> {
+        let source = copy.source.clone();
+        let mut gate = self.cold(source.write_gate())?;
         self.ensure_live()?;
-        if self.cold(self.checked_storage.allocated_bytes())? < threshold {
+        if !Arc::ptr_eq(&source, &self.checked_storage) || !gate.matches(copy.epoch, &copy.target) {
+            return self.cold(Err("checked copy source epoch or target changed".into()));
+        }
+        // A transaction contains only this bounded quantum. Mirrored writes
+        // between quanta autocommit; no corpus-sized transaction reaches finish.
+        self.cold(copy.target.begin_write_phase())?;
+        let progress = self.cold(
+            copy.cursor
+                .as_mut()
+                .expect("unfinished checked cursor")
+                .advance(budget)
+                .map_err(|error| error.to_string()),
+        )?;
+        self.cold(copy.target.finish_write_phase())?;
+        if !progress.complete {
             return Ok(None);
         }
-        self.old_generations
-            .retain(|generation| generation.strong_count() != 0);
-        if self.old_generations.len() >= 4 {
-            return Err("checked snapshot generation work limit".into());
-        }
-        let storage = self.cold(self.checked_storage.successor())?;
-        self.cold(storage.begin_write_phase())?;
         let context = self.cold(
-            self.context
-                .copy_to(storage.clone())
-                .map_err(|e| e.to_string()),
+            copy.cursor
+                .take()
+                .expect("complete checked cursor")
+                .finish(&self.context)
+                .map_err(|error| error.to_string()),
         )?;
-        self.cold(storage.finish_write_phase())?;
-        let live = self.cold(storage.allocated_bytes())?;
+        let live = self.cold(copy.target.allocated_bytes())?;
         let threshold = live
             .saturating_mul(2)
             .max(live.saturating_add(CHECKED_CACHE_BYTES));
-        // Copy succeeds completely before the new generation becomes visible.
-        self.old_generations
-            .push(Arc::downgrade(&self.checked_storage));
+        self.cold(gate.detach(copy.epoch, &copy.target))?;
+        // Linearize publication with already reported failures, including a
+        // concurrent cold reader. Everything below is an infallible state move.
+        let halt = self.storage_error.clone();
+        let failure = halt.lock().unwrap_or_else(|error| {
+            let mut failure = error.into_inner();
+            *failure = Some("checked storage halt lock poisoned".into());
+            failure
+        });
+        if let Some(error) = &*failure {
+            return Err(format!("storage halted: {error}"));
+        }
+        self.old_generations.push(Arc::downgrade(&source));
         self.context = context;
-        self.checked_storage = storage;
+        self.checked_storage = copy.target.clone();
         // Startup keeps its smaller threshold local; ingest retains this one.
         self.next_compaction = threshold;
         Ok(Some(live))
