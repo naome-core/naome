@@ -4,13 +4,16 @@
 use crate::store::Store;
 use naome_checker::{ContextError, ContextStorage, DiskArtifactState};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+mod admission;
 mod codec;
+#[cfg(test)]
+mod compaction_discriminator;
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -38,6 +41,7 @@ struct CacheEntry {
 }
 #[derive(Default)]
 struct Cache {
+    closed: bool,
     entries: BTreeMap<[u8; 32], CacheEntry>,
     recency: BTreeMap<u64, [u8; 32]>,
     charged: usize,
@@ -50,8 +54,9 @@ struct Owner {
 /// Every generation shares one byte-accounted cache and canonical directory
 /// lease. Old question/batch clones keep their generation's bytes available.
 pub(super) struct CheckedStorage {
-    connection: Mutex<Connection>,
+    connection: Mutex<IndexConnection>,
     write_gate: Mutex<WriteRoute>,
+    write_ready: Condvar,
     generation: u64,
     cache: Arc<Mutex<Cache>>,
     path: PathBuf,
@@ -59,11 +64,36 @@ pub(super) struct CheckedStorage {
     halt: Arc<Mutex<Option<String>>>,
 }
 
+// A fatal disposable-index phase can close its connection while snapshots
+// retain the generation. Every production SQL access checks this slot.
+struct IndexConnection(Option<Connection>, Option<String>);
+impl IndexConnection {
+    fn open(&self) -> Result<&Connection, String> {
+        if let Some(error) = &self.1 {
+            return Err(format!("checked index close unresolved: {error}"));
+        }
+        self.0
+            .as_ref()
+            .ok_or_else(|| "checked index connection closed".into())
+    }
+}
+// Preserve existing white-box SQL tests; production cannot dereference a
+// closed connection implicitly. Fatal-abort tests inspect the slot directly.
+#[cfg(test)]
+impl std::ops::Deref for IndexConnection {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.open()
+            .expect("test inspected a closed checked connection")
+    }
+}
+
 /// The one source-generation write boundary. Every successful immutable write
 /// includes the current mirror, even when its local cache or SQL row existed.
 #[derive(Default)]
 pub(super) struct WriteRoute {
     epoch: u64,
+    phase_owner: Option<std::thread::ThreadId>,
     mirror: Option<Arc<CheckedStorage>>,
 }
 
@@ -115,9 +145,19 @@ impl WriteRoute {
 
 impl CheckedStorage {
     pub(super) fn write_gate(&self) -> Result<MutexGuard<'_, WriteRoute>, String> {
-        self.write_gate
+        let mut route = self
+            .write_gate
             .lock()
-            .map_err(|_| "checked write gate poisoned".into())
+            .map_err(|_| "checked write gate poisoned")?;
+        let owner = std::thread::current().id();
+        while route.phase_owner.is_some_and(|active| active != owner) {
+            self.require_live()?;
+            route = self
+                .write_ready
+                .wait(route)
+                .map_err(|_| "checked write gate poisoned")?;
+        }
+        Ok(route)
     }
 
     pub(super) fn copy_epoch(&self) -> Result<u64, String> {
@@ -143,20 +183,22 @@ impl CheckedStorage {
     /// Batch only disposable index writes. Canonical admission has its own
     /// transaction; unfinished checked generations never become live roots.
     pub(super) fn begin_write_phase(&self) -> Result<(), String> {
-        let connection = self
+        let connection_guard = self
             .connection
             .lock()
             .map_err(|_| "checked index lock poisoned")?;
+        let connection = connection_guard.open()?;
         if !connection.is_autocommit() {
             return Err("checked index write phase already active".into());
         }
         connection.execute_batch("BEGIN").map_err(|e| e.to_string())
     }
     pub(super) fn finish_write_phase(&self) -> Result<(), String> {
-        let connection = self
+        let connection_guard = self
             .connection
             .lock()
             .map_err(|_| "checked index lock poisoned")?;
+        let connection = connection_guard.open()?;
         if connection.is_autocommit() {
             return Err("checked index write phase missing".into());
         }
@@ -166,7 +208,12 @@ impl CheckedStorage {
     }
     #[cfg(test)]
     pub(super) fn evict_cache(&self) {
-        *self.cache.lock().unwrap() = Cache::default();
+        let mut cache = self.cache.lock().unwrap();
+        let closed = cache.closed;
+        *cache = Cache {
+            closed,
+            ..Cache::default()
+        };
     }
     pub(super) fn open(
         lease: Arc<Store>,
@@ -258,8 +305,9 @@ impl CheckedStorage {
             )
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
-            connection: Mutex::new(connection),
+            connection: Mutex::new(IndexConnection(Some(connection), None)),
             write_gate: Mutex::new(WriteRoute::default()),
+            write_ready: Condvar::new(),
             generation: number,
             cache,
             path,
@@ -268,10 +316,11 @@ impl CheckedStorage {
         }))
     }
     pub(super) fn allocated_bytes(&self) -> Result<usize, String> {
-        let connection = self
+        let connection_guard = self
             .connection
             .lock()
             .map_err(|_| "checked index lock poisoned")?;
+        let connection = connection_guard.open()?;
         let pages: i64 = connection
             .pragma_query_value(None, "page_count", |r| r.get(0))
             .map_err(|e| e.to_string())?;
@@ -292,10 +341,11 @@ impl CheckedStorage {
     ) -> Result<usize, String> {
         let result = (|| {
             {
-                let connection = self
+                let connection_guard = self
                     .connection
                     .lock()
                     .map_err(|_| "checked index lock poisoned")?;
+                let connection = connection_guard.open()?;
                 if !connection.is_autocommit() {
                     return Err("startup prune requires a finished replay page".into());
                 }
@@ -325,10 +375,11 @@ impl CheckedStorage {
                     .map_err(|e| e.to_string())?,
             );
             {
-                let connection = self
+                let connection_guard = self
                     .connection
                     .lock()
                     .map_err(|_| "checked index lock poisoned")?;
+                let connection = connection_guard.open()?;
                 connection
                     .execute(
                         "DELETE FROM nodes WHERE NOT EXISTS(
@@ -349,10 +400,11 @@ impl CheckedStorage {
                 .lock()
                 .map_err(|_| "checked cache lock poisoned")? = Cache::default();
             {
-                let connection = self
+                let connection_guard = self
                     .connection
                     .lock()
                     .map_err(|_| "checked index lock poisoned")?;
+                let connection = connection_guard.open()?;
                 connection
                     .execute_batch("COMMIT")
                     .map_err(|e| e.to_string())?;
@@ -406,10 +458,11 @@ impl CheckedStorage {
         Ok(bytes)
     }
     fn read_uncached(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
-        let connection = self
+        let connection_guard = self
             .connection
             .lock()
             .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
+        let connection = connection_guard.open().map_err(ContextError::Storage)?;
         // Read only a fixed header before fetching or allocating decoded bytes.
         let encoded_bound = codec::maximum_encoded(maximum)?;
         let record: Option<(i64, Option<Vec<u8>>)> = connection
@@ -463,12 +516,15 @@ impl CheckedStorage {
                 return Ok(());
             }
         }
-        let connection = self
+        let connection_guard = self
             .connection
             .lock()
             .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
+        let connection = connection_guard.open().map_err(ContextError::Storage)?;
         let bound = i64::try_from(bound).map_err(|_| ContextError::Limit)?;
         let encoded = codec::encode(bytes)?;
+        #[cfg(test)]
+        admission::test_insert_state(self.generation, connection.is_autocommit());
         let inserted = connection
             .prepare_cached(
                 "INSERT INTO nodes(address,payload) VALUES(?1,?2)
@@ -496,7 +552,7 @@ impl CheckedStorage {
             1 => {}
             _ => return Err(ContextError::Corrupt),
         }
-        drop(connection);
+        drop(connection_guard);
         self.cache
             .lock()
             .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?
@@ -584,6 +640,8 @@ impl ContextStorage for StartupMarker {
                 .connection
                 .lock()
                 .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?
+                .open()
+                .map_err(ContextError::Storage)?
                 .prepare_cached(
                     "INSERT INTO startup_keep(address) VALUES(?1) ON CONFLICT(address) DO NOTHING",
                 )
@@ -618,6 +676,11 @@ impl Cache {
     }
 
     fn insert(&mut self, address: [u8; 32], bytes: Vec<u8>, persisted_generation: u64) {
+        // A cold read that started before a fatal abort may finish later. It
+        // must never repopulate provisional tags after the shared cache closes.
+        if self.closed {
+            return;
+        }
         if let Some(old) = self.entries.remove(&address) {
             self.recency.remove(&old.clock);
             self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
@@ -658,13 +721,16 @@ impl ContextStorage for CheckedStorage {
         *self.halt.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
     }
     fn read(&self, address: [u8; 32], maximum: usize) -> Result<Vec<u8>, ContextError> {
+        self.require_live().map_err(ContextError::Storage)?;
         self.record_error(self.read_inner(address, maximum))
     }
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
+        self.require_live().map_err(ContextError::Storage)?;
         let route = match self.write_gate() {
             Ok(route) => route,
             Err(error) => return self.record_error(Err(ContextError::Storage(error))),
         };
+        self.require_live().map_err(ContextError::Storage)?;
         #[cfg(test)]
         WRITE_TEST_PAUSE.with(|slot| {
             let pause = slot.borrow_mut().take();

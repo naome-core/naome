@@ -271,7 +271,7 @@ impl Graph {
         self.maintain_checked_storage_step(
             threshold,
             DiskCopyBudget {
-                records: 64,
+                records: 128,
                 bytes: naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
             },
         )
@@ -331,8 +331,9 @@ impl Graph {
         if !Arc::ptr_eq(&source, &self.checked_storage) || !gate.matches(copy.epoch, &copy.target) {
             return self.cold(Err("checked copy source epoch or target changed".into()));
         }
-        // A transaction contains only this bounded quantum. Mirrored writes
-        // between quanta autocommit; no corpus-sized transaction reaches finish.
+        // A copy transaction contains only this bounded quantum. Admissions
+        // between quanta use separate per-proof transactions, including mirrors;
+        // no corpus-sized transaction reaches finish.
         self.cold(copy.target.begin_write_phase())?;
         let progress = self.cold(
             copy.cursor
@@ -511,7 +512,10 @@ impl Graph {
         })
     }
 
-    fn check_candidate(&self, candidate: Candidate) -> Result<(DiskArtifactState, usize), String> {
+    fn checked_registration(
+        &self,
+        candidate: Candidate,
+    ) -> Result<(naome_checker::CheckedProof, usize), String> {
         self.ensure_live()?;
         let mut depth = 0usize;
         for id in &candidate.dependencies {
@@ -545,22 +549,45 @@ impl Graph {
                 .map_err(|e| e.to_string())?
                 .len()
         };
+        Ok((checked, growth))
+    }
+
+    fn registered_context(
+        &self,
+        checked: naome_checker::CheckedProof,
+    ) -> Result<DiskArtifactState, String> {
         let mut context = self.context.clone();
         self.cold(
             context
                 .register_proof_for_replication(checked)
                 .map_err(|e| e.to_string()),
         )?;
-        Ok((context, growth))
+        Ok(context)
+    }
+
+    fn check_candidate(&self, candidate: Candidate) -> Result<(DiskArtifactState, usize), String> {
+        // Replay owns its existing bounded page transaction, never a nested
+        // per-admission transaction. Ordinary mathematical rejection is also
+        // determined before any new runtime phase is opened.
+        let (checked, growth) = self.checked_registration(candidate)?;
+        Ok((self.registered_context(checked)?, growth))
     }
 
     fn admit(&mut self, candidate: Candidate) -> Result<(), String> {
         let envelope = candidate.envelope.clone();
-        let (context, growth) = self.check_candidate(candidate)?;
+        let (checked, growth) = self.checked_registration(candidate)?;
         let context_bytes = self
             .context_bytes
             .checked_add(growth)
             .ok_or("checked context byte overflow")?;
+        let source = self.checked_storage.clone();
+        // The phase guard records every setup failure, including native close
+        // errors. Do not overwrite that cleanup evidence through cold().
+        let phase = source
+            .admission_phase()
+            .map_err(|error| format!("storage halted: {error}"))?;
+        let context = self.registered_context(checked)?;
+        let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
         let summary = self.cold(self.store.persist_checked(&envelope, self.fixed_summary()))?;
         // All fallible preparation precedes the durable transaction. Afterwards
         // publish only fixed roots and scalars; no catalog/context read can fail.
@@ -569,6 +596,7 @@ impl Graph {
         self.count = summary.count;
         self.bytes = summary.bytes;
         self.root = summary.root;
+        phase.published(&mut gates);
         Ok(())
     }
 

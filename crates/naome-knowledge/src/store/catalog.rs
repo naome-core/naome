@@ -1000,7 +1000,13 @@ fn inventory_root(connection: &Connection, query: &str, count: usize) -> Result<
     let mut observed = 0usize;
     let mut previous = None;
     while let Some(row) = rows.next().map_err(sql_error)? {
-        let id = key(row.get(0).map_err(sql_error)?)?;
+        let id: [u8; 32] = row
+            .get_ref(0)
+            .map_err(sql_error)?
+            .as_blob()
+            .map_err(|_| "catalog identity type")?
+            .try_into()
+            .map_err(|_| "catalog identity width")?;
         if previous.is_some_and(|previous| previous >= id) {
             return Err("catalog root ordering differs".into());
         }
@@ -1379,4 +1385,98 @@ fn fail_at(cut: Option<BatchCut>, position: BatchCut) -> Result<(), String> {
 
 fn sql_error(error: rusqlite::Error) -> String {
     format!("proof catalog: {error}")
+}
+
+#[cfg(test)]
+mod inventory_root_tests {
+    use super::*;
+
+    #[test]
+    fn root_matches_existing_set_v1_frame_and_empty_root() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute("CREATE TABLE ids (id BLOB)", [])
+            .unwrap();
+        for id in [[2u8; 32], [1u8; 32]] {
+            connection
+                .execute("INSERT INTO ids VALUES (?1)", params![id.as_slice()])
+                .unwrap();
+        }
+        let mut expected = Sha256::new();
+        expected.update(b"naome:knowledge:set:v1\0");
+        expected.update(crate::compatibility());
+        expected.update(2u32.to_be_bytes());
+        expected.update([1u8; 32]);
+        expected.update([2u8; 32]);
+        let expected: [u8; 32] = expected.finalize().into();
+        assert_eq!(
+            inventory_root(&connection, "SELECT id FROM ids ORDER BY id", 2).unwrap(),
+            expected
+        );
+        let empty: [u8; 32] = crate::corpus::start_root_hash(0).unwrap().finalize().into();
+        assert_eq!(
+            inventory_root(&connection, "SELECT id FROM ids WHERE 0", 0).unwrap(),
+            empty
+        );
+    }
+
+    #[test]
+    fn root_rejects_non_blob_values() {
+        let connection = Connection::open_in_memory().unwrap();
+        for query in ["SELECT NULL", "SELECT 1", "SELECT 1.5", "SELECT 'proof'"] {
+            assert_eq!(
+                inventory_root(&connection, query, 1).unwrap_err(),
+                "catalog identity type"
+            );
+        }
+    }
+
+    #[test]
+    fn root_rejects_short_and_overwide_blob_values() {
+        let connection = Connection::open_in_memory().unwrap();
+        for width in [0, 31, 33] {
+            let query = format!("SELECT zeroblob({width})");
+            assert_eq!(
+                inventory_root(&connection, &query, 1).unwrap_err(),
+                "catalog identity width"
+            );
+        }
+    }
+
+    #[test]
+    fn root_rejects_descending_and_duplicate_ids() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute("CREATE TABLE ids (seq INTEGER PRIMARY KEY, id BLOB)", [])
+            .unwrap();
+        for id in [[2u8; 32], [1u8; 32]] {
+            connection
+                .execute("INSERT INTO ids(id) VALUES (?1)", params![id.as_slice()])
+                .unwrap();
+        }
+        for query in [
+            "SELECT id FROM ids ORDER BY seq",
+            "SELECT zeroblob(32) UNION ALL SELECT zeroblob(32)",
+        ] {
+            assert_eq!(
+                inventory_root(&connection, query, 2).unwrap_err(),
+                "catalog root ordering differs"
+            );
+        }
+    }
+
+    #[test]
+    fn root_rejects_observed_count_mismatches() {
+        let connection = Connection::open_in_memory().unwrap();
+        for (query, count) in [
+            ("SELECT zeroblob(32) WHERE 0", 1usize),
+            ("SELECT zeroblob(32)", 0usize),
+            ("SELECT zeroblob(32)", 2usize),
+        ] {
+            assert_eq!(
+                inventory_root(&connection, query, count).unwrap_err(),
+                "catalog root traversal count differs"
+            );
+        }
+    }
 }
