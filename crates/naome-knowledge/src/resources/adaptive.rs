@@ -309,8 +309,9 @@ pub fn sample(directory: &Path) -> Result<Observed, String> {
     #[cfg(target_os = "linux")]
     cgroups(&mut observed)?;
     let stats = nix::sys::statvfs::statvfs(directory).map_err(|e| e.to_string())?;
-    observed.disk_available =
-        u64::from(stats.blocks_available()).saturating_mul(stats.fragment_size());
+    observed.disk_available = (u128::from(stats.blocks_available())
+        * u128::from(stats.fragment_size()))
+    .min(u128::from(u64::MAX)) as u64;
     Ok(observed)
 }
 #[cfg(any(test, target_os = "linux"))]
