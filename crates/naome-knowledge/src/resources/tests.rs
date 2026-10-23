@@ -51,7 +51,6 @@ fn zero_overflow_codec_and_inconsistent_allocations_are_rejected() {
         serde_json::json!({"tuning":{"contacts":usize::MAX}}),
         serde_json::json!({"tuning":{"assessment_operations":usize::MAX}}),
         serde_json::json!({"tuning":{"network_config_bytes":usize::MAX}}),
-        serde_json::json!({"tuning":{"command_bytes":512*1024}}),
         serde_json::json!({"tuning":{"command_bytes":64*MIB,"cli_commands":8}}),
         serde_json::json!({"tuning":{"failure_detail_bytes":usize::MAX}}),
         serde_json::json!({"tuning":{"replay_guard_bytes":385*MIB}}),

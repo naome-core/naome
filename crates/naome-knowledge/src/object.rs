@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+mod tests;
+
 pub const CODEC_ID: &str = "naome:proof-codec:v0";
 pub const CHECKER_ID: &str = "naome:zfc-checker:v0";
 pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-only:v1";
@@ -161,28 +164,45 @@ impl BinaryProof {
                 .checked_mul(64)
                 .ok_or("proof memory overflow")?,
         )?;
-        let certificate = ProofCertificate::from_canonical_bytes(&self.bytes)
-            .map_err(|error| format!("malformed certificate: {error}"))?;
-        let normal = certificate.into_unchecked_normal_form();
-        if normal.canonical_bytes() != self.bytes.as_ref() {
-            return Err("non-normal proof bytes".into());
-        }
-        if content_id(self.statement, &self.bytes) != self.id {
-            return Err("claimed proof ID mismatch".into());
-        }
-        let dependencies = dependencies_with_limit(self.id, &normal, maximum_dependencies)?;
-        if dependencies != self.dependencies {
+        let candidate = prepare_candidate(
+            self.id,
+            self.statement,
+            self.bytes,
+            maximum_dependencies,
+            memory,
+        )?;
+        if candidate.dependencies != self.dependencies {
             return Err("proof dependency metadata differs".into());
         }
-        Ok(Candidate {
-            id: self.id,
-            statement: self.statement,
-            normal,
-            dependencies,
-            bytes: self.bytes,
-            memory,
-        })
+        Ok(candidate)
     }
+}
+
+fn prepare_candidate(
+    id: ProofId,
+    statement: StatementId,
+    bytes: std::sync::Arc<[u8]>,
+    maximum_dependencies: usize,
+    memory: std::sync::Arc<crate::resources::MemoryLease>,
+) -> Result<Candidate, crate::Error> {
+    let certificate = ProofCertificate::from_canonical_bytes(&bytes)
+        .map_err(|error| format!("malformed certificate: {error}"))?;
+    let normal = certificate.into_unchecked_normal_form();
+    if normal.canonical_bytes() != bytes.as_ref() {
+        return Err("non-normal proof bytes".into());
+    }
+    if content_id(statement, &bytes) != id {
+        return Err("claimed proof ID mismatch".into());
+    }
+    let dependencies = dependencies_with_limit(id, &normal, maximum_dependencies)?;
+    Ok(Candidate {
+        id,
+        statement,
+        normal,
+        dependencies,
+        bytes,
+        memory,
+    })
 }
 
 fn dependencies(id: ProofId, normal: &ProofNormalForm) -> Result<BTreeSet<ProofId>, crate::Error> {
@@ -237,24 +257,13 @@ impl Envelope {
                 .ok_or("proof memory overflow")?,
         )?;
         let bytes = unhex(&self.proof)?;
-        let certificate = ProofCertificate::from_canonical_bytes(&bytes)
-            .map_err(|error| format!("malformed certificate: {error}"))?;
-        let normal = certificate.into_unchecked_normal_form();
-        if normal.canonical_bytes() != bytes {
-            return Err("non-normal proof bytes".into());
-        }
-        if content_id(statement, &bytes) != id {
-            return Err("claimed proof ID mismatch".into());
-        }
-        let dependencies = dependencies(id, &normal)?;
-        Ok(Candidate {
+        prepare_candidate(
             id,
             statement,
-            normal,
-            dependencies,
-            bytes: bytes.into(),
+            bytes.into(),
+            crate::resources::limits().proof_dependencies,
             memory,
-        })
+        )
     }
 }
 

@@ -17,9 +17,10 @@ const MIB: usize = 1024 * 1024;
 // The state owner runs one checker at a time. This covers decoded trees,
 // reconstruction temporaries and per-step vectors under its canonical work cap.
 const CHECKER_RESERVE: usize = 64 * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
-// Sparse JSON maps retain over 126 times their source size in tree nodes.
-// Reserve additional allocator and parsing overhead before constructing them.
-pub(crate) const COMMAND_JSON_EXPANSION: usize = 256;
+pub(crate) const COMMAND_PARSE_OVERHEAD: usize = 32 * 1024;
+// An execution budget, not an estimate of arbitrary JSON expansion. The CLI
+// counts tree allocations before parsing and rejects work beyond this budget.
+const COMMAND_PARSE_BUDGET_RATIO: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -113,7 +114,7 @@ resource_policy! {
         fetches: usize = 128;
         flights: usize = 16;
         flights_per_peer: usize = 2;
-        command_bytes: usize = 192 * 1024;
+        command_bytes: usize = 524_288;
         inventory_page: usize = 64;
         status_page: usize = 64;
         transport_events: usize = 64;
@@ -589,7 +590,7 @@ impl Limits {
             .cli_commands
             .checked_add(2)
             .and_then(|n| n.checked_mul(self.command_bytes.checked_mul(2)?.checked_add(2)?))
-            .and_then(|n| n.checked_add(self.command_bytes.checked_mul(COMMAND_JSON_EXPANSION)?))
+            .and_then(|n| n.checked_add(self.command_parse_budget()?))
             .ok_or("command queue memory overflow")?;
         let charged = self
             .checked_cache_bytes
@@ -685,6 +686,11 @@ impl Limits {
     }
     fn allocation_budget(&self) -> usize {
         self.memory_bytes - self.resident_reservation()
+    }
+    pub(crate) fn command_parse_budget(&self) -> Option<usize> {
+        self.command_bytes
+            .checked_mul(COMMAND_PARSE_BUDGET_RATIO)?
+            .checked_add(COMMAND_PARSE_OVERHEAD)
     }
 }
 
