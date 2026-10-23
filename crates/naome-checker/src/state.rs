@@ -10,7 +10,10 @@ use naome_proof::{
 
 use crate::{CheckedDefinition, CheckedProof, question::index::KnowledgeIndex};
 
+mod disk;
+pub(crate) mod disk_map;
 pub(crate) mod persistent_map;
+pub use disk::{DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, DiskCopyProgress};
 
 use persistent_map::{Key256, PersistentMap};
 
@@ -357,7 +360,7 @@ impl ArtifactState {
         Ok(())
     }
 
-    pub(crate) fn resolve_proof(&self, proof_id: ProofId) -> Option<ResolvedProof<'_>> {
+    pub(crate) fn resolve_proof(&self, proof_id: ProofId) -> Option<crate::context::ProofHeader> {
         let derivation_id = *self.proofs.get(&proof_id)?;
         let statement_id = self
             .derivations
@@ -367,10 +370,10 @@ impl ArtifactState {
             .statements
             .get(statement_id)
             .expect("every registered proof has a stored statement");
-        Some(ResolvedProof {
-            conclusion: &statement.conclusion,
-            canonical_length: statement.canonical_length,
-            derivation_id,
+        Some(crate::context::ProofHeader {
+            length: statement.canonical_length,
+            derivation: derivation_id,
+            statement: *statement_id,
         })
     }
 
@@ -399,12 +402,6 @@ struct StoredDefinition {
     certificate: DefinitionCertificate,
 }
 
-pub(crate) struct ResolvedProof<'a> {
-    pub(crate) conclusion: &'a Formula,
-    pub(crate) canonical_length: usize,
-    pub(crate) derivation_id: DerivationId,
-}
-
 impl DefinitionResolver for ArtifactState {
     fn resolve_definition(&self, definition_id: DefinitionId) -> Option<DefinitionResolution<'_>> {
         self.definitions.get(&definition_id).map(|definition| {
@@ -420,6 +417,8 @@ impl DefinitionResolver for ArtifactState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ArtifactStateError {
+    /// Authenticated context storage could not complete the operation.
+    Context(crate::ContextError),
     /// The selected concrete proof is already registered.
     DuplicateProof { proof_id: ProofId },
     /// The selected inference DAG is already registered under another proof.
@@ -445,6 +444,7 @@ pub enum ArtifactStateError {
 impl fmt::Display for ArtifactStateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Context(error) => write!(formatter, "{error}"),
             Self::DuplicateProof { .. } => {
                 formatter.write_str("checked proof is already registered")
             }

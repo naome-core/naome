@@ -71,8 +71,13 @@ mod tests {
             let batch = graph
                 .prepare_batch(root, [(root, candidate)].into(), &question)
                 .unwrap();
-            assert_eq!(graph.apply_batch(batch), vec![root]);
-            assert_eq!(graph.ids().len(), 1);
+            assert_eq!(
+                graph
+                    .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
+                    .unwrap(),
+                vec![root]
+            );
+            assert_eq!(graph.accepted_count(), 1);
         }
     }
 
@@ -113,10 +118,12 @@ mod tests {
                 let delta = questions
                     .prepare_exchange(&graph, &question, &assessment)
                     .unwrap();
-                graph.apply_batch(batch);
+                graph
+                    .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
+                    .unwrap();
                 questions.apply_exchange(delta);
             }
-            assert_eq!(graph.ids().len(), CATALOG.len());
+            assert_eq!(graph.accepted_count(), CATALOG.len());
         }
     }
 }

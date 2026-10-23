@@ -109,7 +109,7 @@ impl Intake {
                 .expect("bounded metadata decision queue");
             let id = waiting.description.id;
             let result = (|| -> Result<bool, String> {
-                if graph.contains(id) {
+                if graph.contains(id)? {
                     return Err("received answer makes pending metadata obsolete".into());
                 }
                 if now >= waiting.until {
@@ -223,8 +223,8 @@ impl Intake {
                 if Instant::now().saturating_duration_since(root.description.created) >= ROOT_TTL {
                     return Err("short commit grant expired".into());
                 }
-                graph.persist_batch(id, &batch)?;
-                let admitted = graph.apply_batch(batch);
+                let admitted =
+                    graph.commit_batch(id, batch, root.description.created + ROOT_TTL)?;
                 questions.apply_exchange(delta);
                 return Ok(Some(admitted));
             }

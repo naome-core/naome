@@ -13,6 +13,8 @@ import signal
 import subprocess
 from types import SimpleNamespace
 
+from proof_network import stored_objects
+
 from autonomous_lifecycle import (
     Node, Trial, digest, process_group, process_identity, retain_evidence,
 )
@@ -174,7 +176,7 @@ def run(trial):
     first.stop()
     first.config["runtime"]["question_interval_ms"] = 3600000
     first.write_config()
-    identities = {str(path.relative_to(first.directory / "objects")): digest(path) for path in (first.directory / "objects").rglob("*.json")}
+    identities = {object["proof_id"]: object for object in stored_objects(first)}
     identity = digest(first.directory / "identity.key")
     first.start()
     assert trial.call(first, "status") == {"running": True, "accepted_proofs": 3, "interest": initial}
@@ -186,7 +188,7 @@ def run(trial):
     first.start()
     assert digest(first.directory / "identity.key") == identity
     assert first.ids() == accepted
-    assert {str(path.relative_to(first.directory / "objects")): digest(path) for path in (first.directory / "objects").rglob("*.json")} == identities
+    assert {object["proof_id"]: object for object in stored_objects(first)} == identities
     trial.summary["scenarios"]["clean_crash_restart_preserves_interest_identity_and_proofs"] = {"result": "pass"}
 
     # Start/stop and interest use one lifecycle lock, regardless of completion order.

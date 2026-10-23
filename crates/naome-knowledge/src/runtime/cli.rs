@@ -10,6 +10,7 @@ pub(super) struct Arguments<'a> {
     pub command: &'a str,
     pub text: Option<&'a str>,
     pub json: bool,
+    pub startup_handoff: bool,
 }
 
 impl<'a> Arguments<'a> {
@@ -17,6 +18,10 @@ impl<'a> Arguments<'a> {
         // Only a leading option selects output, so `interest --json` is text.
         let (json, arguments) = match arguments.split_first() {
             Some((option, rest)) if option == "--json" => (true, rest),
+            _ => (false, arguments),
+        };
+        let (startup_handoff, arguments) = match arguments.split_first() {
+            Some((option, rest)) if json && option == "--startup-handoff" => (true, rest),
             _ => (false, arguments),
         };
         let (command, text) = match arguments {
@@ -30,10 +35,14 @@ impl<'a> Arguments<'a> {
             }
             _ => return Err("usage: naome [--json] start | stop | status | interest <text>\nplace --json before the command for machine output".into()),
         };
+        if startup_handoff && command != "start" {
+            return Err("startup handoff is only valid for --json start".into());
+        }
         Ok(Self {
             command,
             text,
             json,
+            startup_handoff,
         })
     }
 }
@@ -118,6 +127,25 @@ mod tests {
             let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
             assert!(Arguments::parse(&args).is_err());
         }
+    }
+
+    #[test]
+    fn startup_handoff_is_explicit_and_cannot_change_other_operator_commands() {
+        let args = ["--json", "--startup-handoff", "start"].map(OsString::from);
+        let parsed = Arguments::parse(&args).unwrap();
+        assert!(parsed.json && parsed.startup_handoff);
+        assert_eq!(parsed.command, "start");
+        for command in ["stop", "status"] {
+            let args = ["--json", "--startup-handoff", command].map(OsString::from);
+            assert!(Arguments::parse(&args).is_err());
+        }
+        let ordinary = ["--json", "start"].map(OsString::from);
+        assert!(!Arguments::parse(&ordinary).unwrap().startup_handoff);
+        let literal = ["interest", "--startup-handoff"].map(OsString::from);
+        assert_eq!(
+            Arguments::parse(&literal).unwrap().text,
+            Some("--startup-handoff")
+        );
     }
 
     #[test]

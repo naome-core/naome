@@ -1,7 +1,7 @@
 use libp2p::identity;
 use naome_knowledge::{
-    CHECKER_ID, CODEC_ID, GRAPH_POLICY_ID, MAX_ACCEPTED_BYTES, MAX_CONTEXT_BYTES, MAX_DEPENDENCIES,
-    MAX_DEPTH, MAX_OBJECTS, MAX_PENDING, MAX_PROOF_BYTES, PENDING_TTL, compatibility, hex, network,
+    CHECKED_CACHE_BYTES, CHECKER_ID, CODEC_ID, GRAPH_POLICY_ID, MAX_DEPENDENCIES, MAX_DEPTH,
+    MAX_PENDING, MAX_PROOF_BYTES, PENDING_TTL, compatibility, hex, network,
 };
 use serde_json::json;
 use std::{
@@ -45,9 +45,11 @@ async fn execute() -> Result<(), String> {
         ["contract"] => {
             println!("{}",json!({"foundation":naome_foundation::FOUNDATION_ID, "codec":CODEC_ID, "checker":CHECKER_ID,
                 "policy":GRAPH_POLICY_ID,"compatibility":hex(&compatibility()),"routing":network::routing_contract(),"limits":{
-                    "proof_bytes":MAX_PROOF_BYTES,"dependencies":MAX_DEPENDENCIES,"depth":MAX_DEPTH,"objects":MAX_OBJECTS,
-                    "accepted_bytes":MAX_ACCEPTED_BYTES,"pending":MAX_PENDING,"dependency_timeout_seconds":PENDING_TTL.as_secs(),
-                    "checked_context_bytes":MAX_CONTEXT_BYTES,
+                    "proof_bytes":MAX_PROOF_BYTES,"dependencies":MAX_DEPENDENCIES,"depth":MAX_DEPTH,
+                    "pending":MAX_PENDING,"dependency_timeout_seconds":PENDING_TTL.as_secs(),
+                    "checked_cache_bytes":CHECKED_CACHE_BYTES,
+                    "inventory_page_ids":network::MAX_INVENTORY_PAGE_IDS,
+                    "status_page_ids":network::MAX_STATUS_PAGE_IDS,
                     "config_bytes":network::MAX_CONFIG_BYTES,
                     "command_bytes":network::MAX_COMMAND_BYTES,
                     "peers":network::MAX_PEERS,"fetches":network::MAX_FETCHES,"inflight_requests":network::MAX_FLIGHTS,
@@ -55,7 +57,7 @@ async fn execute() -> Result<(), String> {
                     "request_timeout_seconds":network::REQUEST_TIMEOUT.as_secs(),"reconcile_seconds":network::RECONCILE_INTERVAL.as_secs()}}));
             Ok(())
         },
-        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] [--question-interest all | --question-interest-file <questions.json>] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status, produce, ingest, object, describe, links, announce, offer, stop\npeer proof exchange requires an explicit positive question interest selector".into()),
+        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] [--question-interest all | --question-interest-file <questions.json>] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status (optional after ProofId; ids, next_after, accepted_proofs), produce, ingest, object, describe, links, announce, offer, stop\npeer proof exchange requires an explicit positive question interest selector".into()),
     }
 }
 

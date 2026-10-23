@@ -255,7 +255,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
             assert!(
                 matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids == vec![id])
             );
-            assert!(graph.contains(id));
+            assert!(graph.contains(id).unwrap());
             assert_eq!(registered(&mut questions, &graph), 1);
         } else {
             assert!(
@@ -461,14 +461,14 @@ async fn approved_parent_stages_only_committed_helpers_and_publishes_whole_closu
     );
     intake.payload(peer, root, root, object, &graph).unwrap();
     assert_eq!(intake.needed(), vec![(peer, root, helper_id)]);
-    assert!(graph.ids().is_empty());
+    assert!(graph.accepted_count() == 0);
     assert!(graph.pending_ids().is_empty());
     intake
         .payload(peer, root, helper_id, helper, &graph)
         .unwrap();
     intake.advance(&mut graph, &mut questions);
     assert!(
-        graph.ids().is_empty(),
+        graph.accepted_count() == 0,
         "math checking stages no stored local knowledge"
     );
     assert_eq!(registered(&mut questions, &graph), 0);
@@ -476,8 +476,8 @@ async fn approved_parent_stages_only_committed_helpers_and_publishes_whole_closu
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
-    assert_eq!(graph.ids().len(), 2);
-    assert!(graph.contains(root) && graph.contains(helper_id));
+    assert_eq!(graph.accepted_count(), 2);
+    assert!(graph.contains(root).unwrap() && graph.contains(helper_id).unwrap());
     assert_eq!(registered(&mut questions, &graph), 1);
 }
 
@@ -524,12 +524,12 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
     assert_eq!(graph.pending_ids(), vec![owner_id]);
-    assert_eq!(graph.ids().len(), 2);
-    let (admitted, rejected) = graph.resolve_pending();
+    assert_eq!(graph.accepted_count(), 2);
+    let (admitted, rejected) = graph.resolve_pending().unwrap();
     assert_eq!(admitted, vec![owner_id]);
     assert!(rejected.is_empty());
     assert!(graph.pending_ids().is_empty());
-    assert_eq!(graph.ids().len(), 3);
+    assert_eq!(graph.accepted_count(), 3);
 }
 
 #[tokio::test]
@@ -643,7 +643,7 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
             Progress::Skipped(..)
         ));
         assert_eq!(graph.content_root(), before);
-        assert!(graph.ids().is_empty() && graph.pending_ids().is_empty());
+        assert!(graph.accepted_count() == 0 && graph.pending_ids().is_empty());
         assert_eq!(registered(&mut questions, &graph), usize::from(mode == 3));
     }
 }
@@ -677,7 +677,7 @@ async fn invalid_parent_after_valid_helper_leaves_no_orphan_or_registry_effect()
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Skipped(_, error) if error.contains("checked identity mismatch"))
     );
-    assert!(graph.ids().is_empty() && graph.pending_ids().is_empty());
+    assert!(graph.accepted_count() == 0 && graph.pending_ids().is_empty());
     assert_eq!(registered(&mut questions, &graph), 0);
 }
 
@@ -755,18 +755,18 @@ impl Drop for Directory {
 }
 
 #[tokio::test]
-async fn persistence_cuts_preserve_legacy_state_and_recover_only_complete_renamed_batches() {
+async fn persistence_cuts_preserve_existing_state_and_recover_only_complete_catalog_batches() {
     for cut in [
         BatchCut::BeforeWrite,
         BatchCut::DuringWrite,
-        BatchCut::BeforeRename,
-        BatchCut::AfterRename,
+        BatchCut::BeforeCommit,
+        BatchCut::AfterCommit,
     ] {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
-        let legacy = fixture(7).0;
-        let legacy_id = ProofId::from_bytes(id_bytes(&legacy.proof_id).unwrap());
-        graph.ingest(legacy, Instant::now()).unwrap();
+        let existing = fixture(7).0;
+        let existing_id = ProofId::from_bytes(id_bytes(&existing.proof_id).unwrap());
+        graph.ingest(existing, Instant::now()).unwrap();
         let before = graph.content_root();
         let (object, helper, metadata) = dependent_fixture();
         let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
@@ -792,19 +792,63 @@ async fn persistence_cuts_preserve_legacy_state_and_recover_only_complete_rename
         assert_eq!(registered(&mut questions, &graph), 0);
         drop(graph);
         let restarted = Graph::open(&directory.0).unwrap();
-        assert!(restarted.contains(legacy_id));
+        assert!(restarted.contains(existing_id).unwrap());
         assert_eq!(
-            restarted.ids().len(),
-            if cut == BatchCut::AfterRename { 3 } else { 1 }
+            restarted.accepted_count(),
+            if cut == BatchCut::AfterCommit { 3 } else { 1 }
         );
-        if cut == BatchCut::AfterRename {
-            assert!(restarted.contains(root) && restarted.contains(helper_id));
+        if cut == BatchCut::AfterCommit {
+            assert!(restarted.contains(root).unwrap() && restarted.contains(helper_id).unwrap());
         }
     }
 }
 
 #[tokio::test]
-async fn committed_missing_corrupt_extra_or_misnamed_batch_fails_startup() {
+async fn final_interest_batch_prepared_before_copy_attach_never_reaches_persistence() {
+    let mut graph = Graph::default();
+    graph.ingest(fixture(7).0, Instant::now()).unwrap();
+    let before = graph.content_root();
+    let (object, helper, metadata) = dependent_fixture();
+    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let peer = PeerId::random();
+    let mut questions = new_questions();
+    let mut intake = Intake::default();
+    intake.enqueue(peer, metadata, &graph).unwrap();
+    approve(&mut intake, &mut questions, &mut graph).await;
+    intake.payload(peer, root, root, object, &graph).unwrap();
+    intake
+        .payload(peer, root, helper_id, helper, &graph)
+        .unwrap();
+    intake.advance(&mut graph, &mut questions);
+    assert!(matches!(
+        &intake.active.as_ref().expect("held peer root").phase,
+        Phase::Final(..)
+    ));
+    // The production event loop runs maintenance before intake.advance. Keep
+    // this real batch alive across attach, with the physical copy unfinished.
+    graph.test_batch_cut(BatchCut::BeforeWrite);
+    assert!(graph.test_compaction_step(1).unwrap());
+    interest(&mut questions, &graph).await;
+    match intake.advance(&mut graph, &mut questions) {
+        Progress::Skipped(id, error) => {
+            assert_eq!(id, root);
+            assert!(error.contains("generation changed"), "{error}");
+        }
+        _ => panic!("a pre-attach held batch must be stale"),
+    }
+    assert!(
+        graph.storage_error().is_none(),
+        "persistence cut was never reached"
+    );
+    assert_eq!(graph.content_root(), before);
+    assert_eq!(graph.accepted_count(), 1);
+    assert!(!graph.contains(root).unwrap() && !graph.contains(helper_id).unwrap());
+    assert_eq!(registered(&mut questions, &graph), 0);
+}
+
+#[tokio::test]
+async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
     for mode in 0..4 {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
@@ -823,22 +867,31 @@ async fn committed_missing_corrupt_extra_or_misnamed_batch_fails_startup() {
             Progress::Accepted(_)
         ));
         drop(graph);
-        let batch = std::fs::read_dir(directory.0.join("objects/batches"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let database =
+            rusqlite::Connection::open(directory.0.join(crate::store::DATABASE_FILE)).unwrap();
+        database.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let id = root.as_bytes().as_slice();
         match mode {
             0 => {
-                std::fs::remove_file(batch.join(format!("{}.json", hex(root.as_bytes())))).unwrap()
+                database
+                    .execute("DELETE FROM proofs WHERE id=?1", [id])
+                    .unwrap();
             }
             1 => {
-                std::fs::write(batch.join(format!("{}.json", hex(root.as_bytes()))), b"{}").unwrap()
+                crate::store::corrupt_payload(&directory.0, &hex(root.as_bytes()));
             }
-            2 => std::fs::write(batch.join("unexpected.json"), b"{}").unwrap(),
-            _ => std::fs::rename(&batch, batch.parent().unwrap().join("00".repeat(32))).unwrap(),
+            2 => {
+                database
+                    .execute("DELETE FROM members WHERE proof_id=?1", [id])
+                    .unwrap();
+            }
+            _ => {
+                database
+                    .execute("UPDATE commits SET root=zeroblob(32)", [])
+                    .unwrap();
+            }
         }
+        drop(database);
         assert!(Graph::open(&directory.0).is_err());
     }
 }

@@ -5,7 +5,7 @@ use super::*;
 impl<'source> Parser<'source> {
     pub(super) fn definition_aliases(
         &mut self,
-        artifact_state: &ArtifactState,
+        artifact_state: &dyn ContextView,
     ) -> Result<(), CompileError> {
         self.keyword("defs")?;
         self.punctuation(':')?;
@@ -61,7 +61,7 @@ impl<'source> Parser<'source> {
 
     pub(super) fn compile_definition(
         mut self,
-        artifact_state: &ArtifactState,
+        artifact_state: &dyn ContextView,
     ) -> Result<CompiledArtifact, CompileError> {
         let definition_offset = self.next_offset();
         self.keyword("def")?;

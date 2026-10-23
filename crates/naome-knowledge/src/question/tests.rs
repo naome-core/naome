@@ -481,7 +481,7 @@ async fn running_node_checked_proof_ingest_invalidates_pending_interest() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     stop(admin, task).await;
     assert_eq!(
-        Graph::open(&directory.0).unwrap().ids().len(),
+        Graph::open(&directory.0).unwrap().accepted_count(),
         1,
         "actual producer path checked and durably ingested the proof"
     );
@@ -619,7 +619,7 @@ async fn running_node_bounds_pending_interest_and_drops_it_on_cancel_and_stop() 
     assert_eq!(context(&handle).await.registered_questions, 0);
     stop(admin, task).await;
     assert_eq!(second.await.unwrap().unwrap_err(), IntakeError::Stopped);
-    assert!(Graph::open(&directory.0).unwrap().ids().is_empty());
+    assert!(Graph::open(&directory.0).unwrap().accepted_count() == 0);
     assert_eq!(
         dropped.load(Ordering::SeqCst),
         2,
@@ -699,7 +699,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
     let late = graph.author(PROOF).unwrap();
     let late_id = late.proof_id.clone();
     let mut index = 0;
-    while graph.ids().len() < 1025 {
+    while graph.accepted_count() < 1025 {
         assert!(index < 2048, "finite unique checked source family");
         let formula = registry_pattern(index);
         index += 1;
@@ -719,13 +719,9 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
         }
     }
     graph.ingest(late, Instant::now()).unwrap();
-    assert_eq!(graph.ids().len(), 1026);
+    assert_eq!(graph.accepted_count(), 1026);
     let root = graph.content_root();
-    let conclusions = graph
-        .checked_context()
-        .proof_conclusions()
-        .map(|(_, _, _, length)| length)
-        .sum::<usize>();
+    let conclusions = graph.context_bytes();
     assert!(conclusions > 1024 * 1024);
     drop(graph);
     let (handle, admin, inbox) = channel();
@@ -795,7 +791,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
     stop(admin, task).await;
     let reopened = Graph::open(&directory.0).unwrap();
     assert_eq!(reopened.content_root(), root);
-    assert_eq!(reopened.ids().len(), 1026);
+    assert_eq!(reopened.accepted_count(), 1026);
 }
 
 #[tokio::test]

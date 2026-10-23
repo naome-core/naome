@@ -4,13 +4,14 @@
 //! Foundation rules, enforces deterministic formula-processing limits, and
 //! accepts only a closed final formula. External proof references resolve only
 //! through an explicitly supplied, already checked [`ArtifactState`]. The crate
-//! remains deliberately in-memory and has no blocks, persistence, networking,
-//! or source parsing.
+//! owns authenticated checked-context queries but has no filesystem backend,
+//! blocks, networking, or source parsing.
 //! The normalizing and normal-form checking entry points return a
 //! [`CheckedProof`] that keeps the accepted normal form, reconstructed
 //! conclusion, and content identities coupled together and can project only
 //! that normal form's distinct direct proof and definition dependencies.
 
+pub mod context;
 pub mod question;
 mod state;
 
@@ -30,7 +31,11 @@ use naome_proof::{
 };
 use sha2::{Digest, Sha256};
 
-pub use state::{ArtifactState, ArtifactStateError};
+pub use context::{ContextError, ContextStorage, ContextView};
+pub use state::{
+    ArtifactState, ArtifactStateError, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget,
+    DiskCopyProgress,
+};
 
 const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
 const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";
@@ -187,7 +192,7 @@ pub fn check(certificate: &ProofCertificate) -> Result<Formula, CheckError> {
 
 fn check_with_canonical_conclusion(
     certificate: &ProofCertificate,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let steps = certificate.steps();
@@ -316,7 +321,7 @@ pub fn normalize_and_check(certificate: ProofCertificate) -> Result<CheckedProof
 /// checking. On success, the returned proof may be registered afterward.
 pub fn normalize_and_check_with_state(
     certificate: ProofCertificate,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<CheckedProof, CheckError> {
     let normal_form = certificate.into_unchecked_normal_form();
     check_normal_form_with_state(normal_form, artifact_state)
@@ -330,7 +335,7 @@ pub fn normalize_and_check_with_state(
 /// and content identities exactly once.
 pub fn check_normal_form_with_state(
     normal_form: ProofNormalForm,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<CheckedProof, CheckError> {
     check_normal_form_with_resolver(normal_form, artifact_state)
 }
@@ -343,7 +348,7 @@ pub fn check_normal_form_with_state(
 pub fn normalize_and_check_definition_with_state(
     kind: DefinitionKind,
     body: DefinedFormula,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<CheckedDefinition, DefinitionCheckError> {
     let expanded_body = body
         .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
@@ -364,7 +369,7 @@ pub fn normalize_and_check_definition_with_state(
 /// The state is never mutated; register the returned value separately.
 pub fn check_definition_with_state(
     certificate: DefinitionCertificate,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<CheckedDefinition, DefinitionCheckError> {
     let obligation = match certificate.kind() {
         DefinitionKind::Relation { .. } => None,
@@ -407,9 +412,10 @@ pub fn check_definition_with_state(
                 .map_err(DefinitionCheckError::ObligationFormula)?;
             let statement_id = statement_id(&canonical);
             let selected = artifact_state
-                .resolve_statement(statement_id)
+                .statement_formula(statement_id, CHECKER_MAX_FORMULA_WORK_BYTES)
+                .map_err(DefinitionCheckError::ContextAccess)?
                 .ok_or(DefinitionCheckError::UnknownObligationStatement { statement_id })?;
-            if selected != &conclusion {
+            if *selected != conclusion {
                 return Err(DefinitionCheckError::ObligationConclusionMismatch { statement_id });
             }
             Some(CheckedDefinitionObligation {
@@ -461,7 +467,7 @@ fn function_obligation(input_arity: u32, body: Formula) -> Formula {
 
 fn check_normal_form_with_resolver(
     normal_form: ProofNormalForm,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<CheckedProof, CheckError> {
     let (conclusion, canonical_conclusion, derivation_id) = check_with_canonical_conclusion(
         normal_form.certificate(),
@@ -564,7 +570,7 @@ fn derive_step(
     proof_step: &ProofStep,
     results: &mut [Option<CheckedStep>],
     last_uses: &[Option<u32>],
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
     remaining_work: &mut usize,
 ) -> Result<DerivedStep, CheckError> {
     let formula = match proof_step {
@@ -634,17 +640,26 @@ fn derive_step(
                 .map_err(|source| CheckError::Schema { step, source })?
         }
         ProofStep::ProofReference { proof_id } => {
-            let resolved = artifact_state.resolve_proof(*proof_id).ok_or(
-                CheckError::UnknownProofReference {
+            let header = artifact_state
+                .proof_header(*proof_id)
+                .map_err(|source| CheckError::ContextAccess { step, source })?
+                .ok_or(CheckError::UnknownProofReference {
                     step,
                     proof_id: *proof_id,
-                },
-            )?;
-            charge_formula_work(step, resolved.canonical_length, remaining_work)?;
+                })?;
+            // Metadata is bounded; reserve logical work before reading a cold formula.
+            charge_formula_work(step, header.length, remaining_work)?;
+            let formula = artifact_state
+                .statement_formula(header.statement, header.length)
+                .map_err(|source| CheckError::ContextAccess { step, source })?
+                .ok_or(CheckError::ContextAccess {
+                    step,
+                    source: ContextError::Corrupt,
+                })?;
             return Ok(DerivedStep {
-                formula: resolved.conclusion.clone(),
-                precharged_length: Some(resolved.canonical_length),
-                referenced_derivation_id: Some(resolved.derivation_id),
+                formula: formula.into_owned(),
+                precharged_length: Some(header.length),
+                referenced_derivation_id: Some(header.derivation),
             });
         }
         ProofStep::ModusPonens {
@@ -687,7 +702,7 @@ fn derive_step(
 fn primitive_formula<'a>(
     step: u32,
     formula: &'a ProofFormula,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<Cow<'a, Formula>, CheckError> {
     if let Some(formula) = formula.as_primitive() {
         Ok(Cow::Borrowed(formula))
@@ -704,7 +719,7 @@ fn primitive_formula<'a>(
 fn primitive_separation(
     step: u32,
     schema: &ProofSeparation,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<Separation, CheckError> {
     Ok(Separation {
         predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
@@ -718,7 +733,7 @@ fn primitive_separation(
 fn primitive_replacement(
     step: u32,
     schema: &ProofReplacement,
-    artifact_state: &ArtifactState,
+    artifact_state: &dyn ContextView,
 ) -> Result<Replacement, CheckError> {
     Ok(Replacement {
         predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
@@ -777,6 +792,8 @@ fn charge_formula_work(step: u32, amount: usize, remaining: &mut usize) -> Resul
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CheckError {
+    /// A cold checked-context record could not be authenticated or read.
+    ContextAccess { step: u32, source: ContextError },
     /// A referenced proof is absent from the supplied selected-artifact state.
     UnknownProofReference { step: u32, proof_id: ProofId },
     /// A definition-aware rule formula could not be conservatively expanded.
@@ -807,7 +824,8 @@ impl CheckError {
     /// Returns the zero-based normal-form step that caused this failure.
     pub const fn step(&self) -> u32 {
         match self {
-            Self::UnknownProofReference { step, .. }
+            Self::ContextAccess { step, .. }
+            | Self::UnknownProofReference { step, .. }
             | Self::DefinitionExpansion { step, .. }
             | Self::Logic { step, .. }
             | Self::Schema { step, .. }
@@ -821,6 +839,10 @@ impl CheckError {
 impl fmt::Display for CheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ContextAccess { step, source } => write!(
+                formatter,
+                "proof step {step} cannot read checked context: {source}"
+            ),
             Self::UnknownProofReference { step, .. } => {
                 write!(formatter, "proof step {step} references an unknown proof")
             }
@@ -864,6 +886,7 @@ impl fmt::Display for CheckError {
 impl Error for CheckError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::ContextAccess { source, .. } => Some(source),
             Self::Logic { source, .. } => Some(source),
             Self::Schema { source, .. } => Some(source),
             Self::DerivedFormula { source, .. } => Some(source),
@@ -884,6 +907,8 @@ impl Error for CheckError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DefinitionCheckError {
+    /// A cold obligation could not be authenticated or read.
+    ContextAccess(ContextError),
     /// Authoring-only conservative body expansion failed.
     Expansion(DefinitionExpansionError),
     /// The expanded body could not be represented in the canonical formula format.
@@ -901,6 +926,9 @@ pub enum DefinitionCheckError {
 impl fmt::Display for DefinitionCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ContextAccess(source) => {
+                write!(formatter, "definition context cannot be read: {source}")
+            }
             Self::Expansion(source) => write!(formatter, "definition body cannot expand: {source}"),
             Self::CanonicalBody(source) => {
                 write!(formatter, "canonical definition body is invalid: {source}")
@@ -930,6 +958,7 @@ impl fmt::Display for DefinitionCheckError {
 impl Error for DefinitionCheckError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::ContextAccess(source) => Some(source),
             Self::Expansion(source) => Some(source),
             Self::CanonicalBody(source) => Some(source),
             Self::Certificate(source) => Some(source),

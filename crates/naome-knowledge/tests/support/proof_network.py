@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import platform
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -15,6 +16,20 @@ import traceback
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def source_metadata(repo, helper_output):
+    """Report absent archive metadata honestly; existing Git errors stay fatal."""
+    try:
+        (Path(repo) / ".git").lstat()
+    except FileNotFoundError:
+        return {"revision": None, "dirty": None,
+                "source_metadata_status": "unavailable_without_git_metadata"}
+    return {
+        "revision": helper_output(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
+        "dirty": bool(helper_output(["git", "status", "--porcelain"], cwd=repo).strip()),
+        "source_metadata_status": "available_from_git_metadata",
+    }
 
 
 def proof_id(statement, proof):
@@ -27,9 +42,11 @@ def proof_id(statement, proof):
 
 
 def content_root(compatibility, ids):
+    count = len(ids)
+    domain, width = (b"naome:knowledge:set:v1\0", 4) if count <= 0xffffffff else (b"naome:knowledge:set:v2\0", 8)
     return hashlib.sha256(
-        b"naome:knowledge:set:v1\0" + bytes.fromhex(compatibility)
-        + len(ids).to_bytes(4, "big") + b"".join(bytes.fromhex(i) for i in sorted(ids))
+        domain + bytes.fromhex(compatibility) + count.to_bytes(width, "big")
+        + b"".join(bytes.fromhex(i) for i in sorted(ids))
     ).hexdigest()
 
 
@@ -53,28 +70,85 @@ def question_source(proof_source):
 
 
 def stored_objects(node):
-    objects = []
-    directory = node.directory / "objects"
-    paths = list(directory.glob("*.json"))
-    batches = directory / "batches"
-    if batches.exists():
-        for batch in sorted(batches.iterdir()):
-            manifest_path = batch / "manifest.json"
-            manifest = json.loads(manifest_path.read_text())
-            assert batch.name == digest(manifest_path)
-            assert manifest["version"] == 1 and manifest["root"] in manifest["members"]
-            assert sorted(path.name for path in batch.iterdir()) == sorted(
-                ["manifest.json"] + [f"{id}.json" for id in manifest["members"]])
-            for id, checksum in manifest["members"].items():
-                path = batch / f"{id}.json"
-                assert digest(path) == checksum
-                paths.append(path)
-    for path in paths:
-        object = json.loads(path.read_text())
-        assert path.name == f'{object["proof_id"]}.json'
-        objects.append(object)
-    assert len({object["proof_id"] for object in objects}) == len(objects)
-    return objects
+    """Independent transactional catalog oracle; stored bytes grant no validity."""
+    database = node.directory / "proof-corpus.sqlite3"
+    receipt = node.directory / "proof-corpus.format"
+    if not database.exists():
+        assert not receipt.exists(), "activated catalog is missing"
+        return []
+    assert receipt.is_file(), "catalog lineage receipt required"
+    format_bytes = receipt.read_bytes()
+    assert len(format_bytes) == 72 and format_bytes[:8] == b"NAOCORP3"
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as catalog:
+        catalog.execute("BEGIN")
+        assert catalog.execute("PRAGMA application_id").fetchone()[0] == 0x4e414f31
+        assert catalog.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert catalog.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert catalog.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert [row[0] for row in catalog.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )] == ["commits", "dependencies", "members", "meta", "proofs"], "current catalog schema required"
+        assert catalog.execute(
+            "SELECT name,tbl_name FROM sqlite_schema WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall() == [
+            ("commits_by_root", "commits"),
+            ("dependencies_by_target", "dependencies"),
+            ("proofs_by_origin_commit", "proofs"),
+        ], "foreign-key child indexes required"
+        identity, state, root, count, total = catalog.execute(
+            "SELECT database_id,state,corpus_root,corpus_count,payload_bytes FROM meta WHERE singleton=1"
+        ).fetchone()
+        assert identity == format_bytes[40:] and state == "active"
+        rows = catalog.execute(
+            "SELECT id,statement,compatibility,payload,payload_length,payload_digest,origin_commit,replay_order FROM proofs ORDER BY id"
+        ).fetchall()
+        assert len(rows) == count
+        ordinals = {row[0]: row[-1] for row in rows}
+        assert sorted(ordinals.values()) == list(range(1, count + 1)), "complete replay order required"
+        objects = []
+        by_id = {}
+        payload_bytes = 0
+        for id, statement, compatibility, payload, length, checksum, commit, ordinal in rows:
+            assert len(id) == len(statement) == len(compatibility) == len(checksum) == len(commit) == 32
+            assert compatibility == format_bytes[8:40]
+            assert 1 <= len(payload) == length <= 65536 and hashlib.sha256(payload).digest() == checksum
+            object = {"proof_id": id.hex(), "statement_id": statement.hex(),
+                "compatibility": compatibility.hex(), "proof": payload.hex()}
+            assert proof_id(object["statement_id"], object["proof"]) == object["proof_id"]
+            objects.append(object)
+            by_id[id] = (statement, compatibility, length, checksum, commit)
+            payload_bytes += length
+        assert len(by_id) == count and payload_bytes == total
+        assert bytes.fromhex(content_root(format_bytes[8:40].hex(), [object["proof_id"] for object in objects])) == root
+        represented = set()
+        for commit, batch_root, members in catalog.execute("SELECT id,root,member_count FROM commits ORDER BY id"):
+            ids = [row[0] for row in catalog.execute("SELECT proof_id FROM members WHERE commit_id=? ORDER BY proof_id", (commit,))]
+            assert 1 <= len(ids) == members <= 4096 and batch_root in ids
+            assert sum(by_id[id][2] for id in ids) <= 64 * 1024 * 1024, "per-commit payload bound"
+            framed = b"naome:knowledge:catalog-commit:v1\0" + batch_root + len(ids).to_bytes(4, "big")
+            for id in ids:
+                assert id in by_id and id not in represented
+                represented.add(id)
+                statement, compatibility, length, checksum, origin = by_id[id]
+                assert origin == commit
+                dependencies = catalog.execute("SELECT ordinal,target FROM dependencies WHERE proof_id=? ORDER BY ordinal", (id,)).fetchall()
+                assert [ordinal for ordinal, _ in dependencies] == list(range(len(dependencies)))
+                targets = [target for _, target in dependencies]
+                assert targets == sorted(set(targets)) and len(targets) <= 32
+                assert all(target in by_id and ordinals[target] < ordinals[id] for target in targets), "dependency precedes replay consumer"
+                framed += id + statement + compatibility + length.to_bytes(4, "big") + checksum
+                framed += len(targets).to_bytes(4, "big") + b"".join(targets)
+            assert hashlib.sha256(framed).digest() == commit
+        assert represented == set(by_id), "every immutable payload belongs to one complete commit"
+        return objects
+
+
+def replace_catalog_payload(node, id, payload):
+    with sqlite3.connect(node.directory / "proof-corpus.sqlite3") as catalog:
+        catalog.execute("PRAGMA ignore_check_constraints=ON")
+        original = catalog.execute("SELECT payload FROM proofs WHERE id=?", (bytes.fromhex(id),)).fetchone()[0]
+        assert catalog.execute("UPDATE proofs SET payload=? WHERE id=?", (payload, bytes.fromhex(id))).rowcount == 1
+        return original
 
 
 class Node:
@@ -180,6 +254,36 @@ class Node:
             raise AssertionError(f"node {self.index} {command}: {response['error']}")
         return response["result"]
 
+    def status_snapshot(self, timeout=10):
+        """Explicit complete-ID oracle assembled from bounded keyset responses."""
+        deadline = min(self.driver.deadline, time.monotonic() + timeout)
+        limit = self.driver.summary["contract"]["limits"]["status_page_ids"]
+        while time.monotonic() < deadline:
+            first = self.command("status")
+            count, root = first["accepted_proofs"], first["root"]
+            page, ids, after = first, [], None
+            while True:
+                values = page["ids"]
+                assert len(values) <= limit and values == sorted(set(values)), "bounded monotonic status page"
+                assert not values or after is None or values[0] > after, "status cursor must advance"
+                if page["accepted_proofs"] != count or page["root"] != root:
+                    break  # Accepted state changed between requests; restart.
+                ids.extend(values)
+                assert len(ids) <= count, "status page exceeds accepted count"
+                cursor = page["next_after"]
+                assert cursor == (values[-1] if len(values) == limit else None), "status continuation mismatch"
+                if cursor is None:
+                    assert len(ids) == count, "status claimed complete before all accepted IDs were read"
+                    return {**first, "ids": ids, "next_after": None, "ids_complete": True}
+                after = cursor
+                if time.monotonic() >= deadline:
+                    break
+                page = self.command("status", after=after)
+        raise AssertionError(f"node {self.index} did not provide one stable complete status inventory")
+
+    def ids(self):
+        return self.status_snapshot()["ids"]
+
     def wait_event(self, predicate, timeout=10, since=0):
         deadline = min(self.driver.deadline, time.monotonic() + timeout)
         with self.condition:
@@ -234,8 +338,7 @@ class Driver:
             "schema": 1, "result": "running", "node_count": 4, "physical_host_count": 1,
             "producer": "finite deterministic formal source queues and checked-context authoring; no LLM inference",
             "contract": contract, "scenarios": {}, "commands": [], "processes": [], "proofs": {},
-            "revision": self.helper_output(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
-            "dirty": bool(self.helper_output(["git", "status", "--porcelain"], cwd=repo).strip()),
+            **source_metadata(repo, self.helper_output),
             "profile": profile, "binary": str(self.binary), "binary_sha256": digest(self.binary),
             "driver_sha256": digest(__file__), "environment": platform.uname()._asdict(),
             "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -287,7 +390,7 @@ class Driver:
         times, final = {}, {}
         while time.monotonic() < deadline:
             for index in indices:
-                status = self.nodes[index].command("status")
+                status = self.nodes[index].status_snapshot()
                 if set(status["ids"]) == expected and status["root"] == root and not status["pending"]:
                     times.setdefault(str(index), time.monotonic() - started)
                     final[str(index)] = status
@@ -302,7 +405,7 @@ class Driver:
                 print(f"{name}: all {len(indices)} nodes converged in {result['all_node_seconds']:.3f}s", flush=True)
                 return
             time.sleep(interval)
-        counts = {str(index): len(self.nodes[index].command("status")["ids"]) for index in indices}
+        counts = {str(index): self.nodes[index].command("status")["accepted_proofs"] for index in indices}
         raise AssertionError(f"{name}: all-node convergence timeout; accepted_counts={counts}")
 
     def retain_proof(self, label, object):
@@ -347,7 +450,7 @@ class Driver:
             reservations[1].close()
             self.nodes[1].start()
             self.nodes[1].command("links", peers=[])
-            assert self.nodes[1].command("status")["ids"] == []
+            assert self.nodes[1].command("status")["accepted_proofs"] == 0
             started = time.monotonic()
             self.topology([[0, 1]])
             self.convergence("ten_page_inventory_complete_content_catchup", range(2), ids,
@@ -361,7 +464,7 @@ class Driver:
             self.summary["scenarios"]["inventory_tail_discovery"] = {
                 "result": "pass", "object_count": 595, "page_size": 64,
                 "pages": pages, "tail_proof_id": max(ids),
-                "receiver_tail_present": max(ids) in self.nodes[1].command("status")["ids"],
+                "receiver_tail_present": max(ids) in self.nodes[1].ids(),
             }
             self.summary["accepted_ids"] = sorted(ids)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], ids)
@@ -392,7 +495,7 @@ class Driver:
             for index, node in enumerate(self.nodes):
                 event = node.wait_event(lambda event: event.get("event") == "producer_result")
                 id = event["result"]["id"]
-                status = node.command("status")
+                status = node.status_snapshot()
                 assert status["ids"] == [id]
                 object = node.command("object", id=id)["object"]
                 initial.append(self.retain_proof(f"independent-{index}", object))
@@ -425,7 +528,7 @@ class Driver:
             before = len(self.nodes[3].events)
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
             self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and "required dependency missing" in event.get("error", ""), since=before)
-            status = self.nodes[3].command("status")
+            status = self.nodes[3].status_snapshot()
             assert not status["pending"] and set(status["ids"]) == set(initial)
             assert len(stored_objects(self.nodes[3])) == len(initial)
             self.summary["scenarios"]["dependent_before_parent"] = {"result": "pass", "isolated_failed_closure": status, "no_orphan": True}
@@ -443,12 +546,12 @@ class Driver:
             right = self.produce(2, 9, "partition-right")
             self.convergence("partition_left", [0, 1], union + [left["proof_id"]], time.monotonic())
             self.convergence("partition_right", [2, 3], union + [right["proof_id"]], time.monotonic())
-            assert right["proof_id"] not in self.nodes[0].command("status")["ids"]
-            assert left["proof_id"] not in self.nodes[2].command("status")["ids"]
+            assert right["proof_id"] not in self.nodes[0].ids()
+            assert left["proof_id"] not in self.nodes[2].ids()
 
             # Each malformed payload uses a distinct unresolved question and
             # real metadata approval/Get, never a full-payload Offer.
-            baseline = self.nodes[1].command("status")
+            baseline = self.nodes[1].status_snapshot()
             controls = []
             for index, label in enumerate(["malformed", "claimed_id", "compatibility", "mathematical", "statement"]):
                 proof_source = source(50 + index)
@@ -478,7 +581,7 @@ class Driver:
                 offset = len(self.nodes[1].events)
                 self.nodes[0].command("test_offer", peer=self.nodes[1].identity, metadata=metadata, object=object)
                 event = self.nodes[1].wait_event(lambda event: event.get("event") == "proof_skipped" and expected_error in event.get("error", ""), since=offset)
-                status = self.nodes[1].command("status")
+                status = self.nodes[1].status_snapshot()
                 assert status["ids"] == baseline["ids"] and status["root"] == baseline["root"] and not status["pending"]
                 assert len(stored_objects(self.nodes[1])) == len(baseline["ids"])
                 self.summary["scenarios"][f"reject_{label}"] = {"result": "pass", "error": event["error"], "unchanged_root": status["root"], "metadata_first": True}
@@ -495,7 +598,7 @@ class Driver:
                 self.nodes[0].wait_event(lambda event: event.get("event") == "offer_result" and event.get("status") == "duplicate", since=offset)
                 self.nodes[0].command("announce", id=left["proof_id"])
                 time.sleep(0.2)
-            status = self.nodes[1].command("status")
+            status = self.nodes[1].status_snapshot()
             assert status["root"] == baseline["root"] and status["ids"] == baseline["ids"]
             self.summary["scenarios"]["duplicate_delivery_and_announcements"] = {"result": "pass", "deliveries": 3, "announcements": 3, "unchanged_root": status["root"]}
             started = time.monotonic()
@@ -522,9 +625,11 @@ class Driver:
                 node.start()
             self.convergence("new_identity_empty_store_catchup", range(4), union, started)
             for node in self.nodes:
-                assert sorted(path.name for path in node.directory.iterdir()) == ["identity.key", "knowledge.lock", "objects"]
+                # Checked-context generations are disposable; audit durable files after owner shutdown.
+                node.stop()
+                assert sorted(path.name for path in node.directory.iterdir()) == ["identity.key", "knowledge.lock", "proof-corpus.format", "proof-corpus.sqlite3"]
                 assert len(stored_objects(node)) == len(union)
-            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive lock and checked proof objects only; no ledger, reward, balance or selection state"}
+            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive lock, immutable binary proof catalog and format receipt; no ledger, reward, balance or selection state"}
             self.summary["accepted_ids"] = sorted(union)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], union)
             self.summary["result"] = "pass"

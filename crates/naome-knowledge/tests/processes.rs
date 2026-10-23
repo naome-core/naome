@@ -4,6 +4,89 @@ static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(all(unix, feature = "developer-tools"))]
 #[test]
+#[ignore = "Bounded public produce/compaction mechanism screen"]
+fn public_produce_observes_compaction_handoff_with_4096_large_proofs() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "this ignored screen requires Release"
+    );
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = std::env::temp_dir().join(format!(
+        "naome-public-produce-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new("python3")
+        .arg(root.join("crates/naome-knowledge/tests/support/public_produce_compaction.py"))
+        .args([
+            "--binary",
+            env!("CARGO_BIN_EXE_naome-knowledge-dev"),
+            "--output",
+        ])
+        .arg(&directory)
+        .args(["--timeout", "600", "--profile", "release"])
+        .output()
+        .expect("finite public produce process screen");
+    assert!(
+        output.status.success(),
+        "public produce screen (exit 2 is INCONCLUSIVE) at {}\n{}\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+#[ignore = "Bounded larger public produce/generation screen"]
+fn public_produce_observes_large_generation_handoff_with_12288_large_proofs() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "this ignored screen requires Release"
+    );
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = std::env::temp_dir().join(format!(
+        "naome-public-produce-12288-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new("python3")
+        .arg(root.join("crates/naome-knowledge/tests/support/public_produce_compaction.py"))
+        .args([
+            "--binary",
+            env!("CARGO_BIN_EXE_naome-knowledge-dev"),
+            "--output",
+        ])
+        .arg(&directory)
+        .args([
+            "--timeout",
+            "600",
+            "--profile",
+            "release",
+            "--count",
+            "12288",
+        ])
+        .output()
+        .expect("finite public produce process screen");
+    assert!(
+        output.status.success(),
+        "public produce screen (exit 2 is INCONCLUSIVE) at {}\n{}\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
 fn ordinary_long_jobs_preserve_responsive_peer_control_and_crash_budgets() {
     let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -102,10 +185,10 @@ fn run_autonomous(mode: &str) {
     ));
     let mut command = python_driver(&root, mode);
     command
-        .arg(root.join(if mode == "interest" {
-            "crates/naome-knowledge/tests/support/owner_interest.py"
-        } else {
-            "crates/naome-knowledge/tests/support/autonomous_lifecycle.py"
+        .arg(root.join(match mode {
+            "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
+            "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
+            _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))
         .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
         .arg(&directory)
@@ -115,6 +198,7 @@ fn run_autonomous(mode: &str) {
                 "mdns" => "180",
                 "direct" => "60",
                 "guardian-probe" => "45",
+                "startup" => "50",
                 _ => "90",
             },
             "--profile",
@@ -143,6 +227,12 @@ fn run_autonomous(mode: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_lifeline_requires_checked_ack_and_reaps_internal_refusals() {
+    run_autonomous("startup");
 }
 
 fn python_driver(root: &std::path::Path, mode: &str) -> Command {

@@ -1,22 +1,25 @@
+use crate::Envelope;
 use crate::object::{Candidate, MAX_DEPTH, Metadata, id_bytes};
-use crate::store::Store;
-use crate::{Envelope, compatibility};
-use naome_checker::{ArtifactState, check_normal_form_with_state};
+use crate::store::{Store, Summary};
+use naome_checker::{
+    ContextView, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, check_normal_form_with_state,
+};
 use naome_proof::ProofId;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 
 mod batch;
+mod storage;
 pub(crate) use batch::CheckedBatch;
+use storage::CheckedStorage;
 
-pub const MAX_OBJECTS: usize = 4096;
-pub const MAX_ACCEPTED_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_PENDING: usize = 128;
+pub const CHECKED_CACHE_BYTES: usize = storage::HOT_CACHE_BYTES;
 pub const PENDING_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -27,40 +30,104 @@ pub struct Ingest {
     pub rejected: Vec<(ProofId, String)>,
 }
 
+type PendingResolution = (Vec<ProofId>, Vec<(ProofId, String)>);
+
 /// The sole acceptance owner for this operating path. Checked state is private.
-#[derive(Default)]
 pub struct Graph {
-    context: ArtifactState,
-    objects: BTreeMap<ProofId, Envelope>,
-    depths: BTreeMap<ProofId, usize>,
+    context: DiskArtifactState,
     pending: BTreeMap<ProofId, (Candidate, Instant)>,
+    count: usize,
     bytes: usize,
     context_bytes: usize,
-    storage_error: Option<String>,
-    store: Option<Store>,
+    root: [u8; 32],
+    storage_error: Arc<Mutex<Option<String>>>,
+    store: Arc<Store>,
+    checked_storage: Arc<CheckedStorage>,
+    old_generations: Vec<Weak<CheckedStorage>>,
+    next_compaction: usize,
+    compaction: Option<Compaction>,
+}
+
+/// One unpublished successor, owned by the same Graph that publishes roots.
+/// Dropping any partial copy removes its exact mirror before releasing bytes.
+struct Compaction {
+    source: Arc<CheckedStorage>,
+    target: Arc<CheckedStorage>,
+    cursor: Option<DiskArtifactCopy>,
+    epoch: u64,
+}
+
+impl Drop for Compaction {
+    fn drop(&mut self) {
+        self.source.abort_copy(self.epoch, &self.target);
+    }
 }
 
 impl Graph {
-    pub(crate) fn accepted_count(&self) -> usize {
-        self.objects.len()
+    #[cfg(test)]
+    pub(crate) fn test_database_full(&self) {
+        self.store.limit_current_pages();
     }
-    pub(crate) fn checked_context(&self) -> &ArtifactState {
+    #[cfg(test)]
+    pub(crate) fn test_compaction_step(&mut self, records: usize) -> Result<bool, String> {
+        self.maintain_checked_storage_step(
+            0,
+            DiskCopyBudget {
+                records,
+                bytes: naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
+            },
+        )?;
+        Ok(self.compaction.is_some())
+    }
+    pub fn accepted_count(&self) -> usize {
+        self.count
+    }
+    pub(crate) fn checked_context(&self) -> &DiskArtifactState {
         &self.context
     }
+    #[cfg(test)]
+    pub(crate) fn context_bytes(&self) -> usize {
+        self.context_bytes
+    }
+    fn fixed_summary(&self) -> Summary {
+        Summary {
+            root: self.root,
+            count: self.count,
+            bytes: self.bytes,
+        }
+    }
 
+    fn ensure_live(&self) -> Result<(), String> {
+        match self.storage_error() {
+            Some(error) => Err(format!("storage halted: {error}")),
+            None => Ok(()),
+        }
+    }
+    fn cold<T>(&self, result: Result<T, String>) -> Result<T, String> {
+        if let Err(error) = &result {
+            *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+        }
+        result.map_err(|error| format!("storage halted: {error}"))
+    }
     pub(crate) fn describe(&self, id: ProofId) -> Result<Option<Metadata>, String> {
-        let Some((_, statement, conclusion, _)) = self
-            .context
-            .proof_conclusions()
-            .find(|(proof, ..)| *proof == id)
-        else {
+        self.ensure_live()?;
+        let header = self.cold(self.context.proof_header(id).map_err(|e| e.to_string()))?;
+        let Some(header) = header else {
             return Ok(None);
         };
+        let statement = header.statement_id();
+        let conclusion = self
+            .cold(
+                self.context
+                    .statement_formula(statement, naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES)
+                    .map_err(|e| e.to_string()),
+            )?
+            .ok_or("checked proof conclusion missing")?;
         let derived = naome_authoring::CompiledQuestion::compile(&format!(
             "goal = {}",
             conclusion.to_source()
         ))
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
         let metadata = Metadata {
             proof_id: crate::hex(id.as_bytes()),
             statement_id: crate::hex(statement.as_bytes()),
@@ -69,49 +136,262 @@ impl Graph {
         let _ = metadata.compile()?;
         Ok(Some(metadata))
     }
-    /// Locks the directory, checks all persisted bytes and reconstructs dependencies.
-    /// Missing, invalid, incompatible or cyclic durable content fails startup.
+
+    /// Reconstruct empty authenticated roots from bounded owned canonical pages.
+    /// Every dependency must already be checked; stored order grants no validity.
     pub fn open(directory: &Path) -> Result<Self, String> {
-        let store = Store::open(directory)?;
-        let mut remaining = store.load()?;
-        let mut graph = Self::default();
-        while !remaining.is_empty() {
-            let before = remaining.len();
-            let mut waiting = Vec::new();
-            for envelope in remaining {
-                let candidate = envelope.prepare()?;
-                if graph.ready(&candidate) {
-                    graph.admit(candidate)?;
-                } else {
-                    waiting.push(candidate.envelope);
-                }
-            }
-            if waiting.len() == before {
-                return Err("durable graph has missing or cyclic dependencies".into());
-            }
-            remaining = waiting;
+        Self::open_inner(directory, false)
+    }
+    fn open_inner(directory: &Path, cleanup: bool) -> Result<Self, String> {
+        let store = Arc::new(Store::open(directory)?);
+        let summary = store.summary()?;
+        let halt = Arc::new(Mutex::new(None));
+        let storage = CheckedStorage::open(store.clone(), cleanup, halt.clone())?;
+        let mut graph = Self {
+            context: DiskArtifactState::new(storage.clone()),
+            checked_storage: storage,
+            old_generations: Vec::new(),
+            next_compaction: CHECKED_CACHE_BYTES,
+            compaction: None,
+            pending: BTreeMap::new(),
+            count: 0,
+            bytes: 0,
+            context_bytes: 0,
+            root: crate::corpus::start_root_hash(0)?.finalize().into(),
+            storage_error: halt,
+            store,
+        };
+        let mut after = 0u64;
+        let mut replay_compaction = CHECKED_CACHE_BYTES;
+        #[cfg(test)]
+        {
+            replay_compaction = storage::startup_test_threshold(replay_compaction);
         }
-        graph.store = Some(store);
+        loop {
+            let page = graph.store.replay_page(after, 64)?;
+            if page.is_empty() {
+                break;
+            }
+            graph.cold(graph.checked_storage.begin_write_phase())?;
+            for (ordinal, envelope) in page {
+                if ordinal != after.checked_add(1).ok_or("replay ordinal overflow")? {
+                    return Err("durable replay order is incomplete".into());
+                }
+                let candidate = envelope.prepare()?;
+                graph.bytes = graph
+                    .bytes
+                    .checked_add(candidate.normal.canonical_bytes().len())
+                    .ok_or("replayed payload byte overflow")?;
+                let mut ready = true;
+                for dependency in &candidate.dependencies {
+                    if !graph.cold(
+                        graph
+                            .context
+                            .contains_proof(*dependency)
+                            .map_err(|e| e.to_string()),
+                    )? {
+                        ready = false;
+                        break;
+                    }
+                }
+                if !ready {
+                    return Err("durable graph has missing or cyclic dependencies".into());
+                }
+                let (context, growth) = graph.check_candidate(candidate)?;
+                graph.context = context;
+                graph.context_bytes = graph
+                    .context_bytes
+                    .checked_add(growth)
+                    .ok_or("checked context byte overflow")?;
+                graph.count = graph
+                    .count
+                    .checked_add(1)
+                    .ok_or("accepted count overflow")?;
+                after = ordinal;
+            }
+            graph.cold(graph.checked_storage.finish_write_phase())?;
+            if let Some(live) = graph.prune_startup_checked_storage_at(replay_compaction)? {
+                replay_compaction = Self::replay_compaction_threshold(live);
+            }
+        }
+        if graph.count != summary.count
+            || after != u64::try_from(summary.count).map_err(|_| "replay count width")?
+        {
+            return Err("mathematical replay count differs from catalog".into());
+        }
+        let mut hash = crate::corpus::start_root_hash(graph.count)?;
+        let mut checked_count = 0usize;
+        for id in graph.context.proof_ids() {
+            let id = graph.cold(id.map_err(|e| e.to_string()))?;
+            hash.update(id.as_bytes());
+            checked_count = checked_count
+                .checked_add(1)
+                .ok_or("checked replay count overflow")?;
+        }
+        let root: [u8; 32] = hash.finalize().into();
+        if root != summary.root || checked_count != summary.count || graph.bytes != summary.bytes {
+            return Err("mathematically replayed corpus differs from catalog".into());
+        }
+        graph.store.finish_replay(root)?;
+        graph.root = root;
         Ok(graph)
     }
 
+    /// Advance one bounded copy quantum, reclaiming unreachable copy-on-write
+    /// nodes only at completed handoff. Retained snapshots keep their storage;
+    /// all generations share the single bounded cache.
+    pub(crate) fn maintain_checked_storage(&mut self) -> Result<(), String> {
+        self.maintain_checked_storage_at(self.next_compaction)
+            .map(|_| ())
+    }
+
+    fn replay_compaction_threshold(live: usize) -> usize {
+        live.saturating_add(live / 2)
+            .max(live.saturating_add(CHECKED_CACHE_BYTES))
+    }
+
+    // This call path is exclusive to open_inner, before any checked view escapes.
+    // Runtime snapshots and prepared batches still use successor generations.
+    fn prune_startup_checked_storage_at(
+        &mut self,
+        threshold: usize,
+    ) -> Result<Option<usize>, String> {
+        self.ensure_live()?;
+        if self.cold(self.checked_storage.allocated_bytes())? < threshold {
+            return Ok(None);
+        }
+        let live = self.cold(self.checked_storage.prune_startup(&self.context))?;
+        self.next_compaction = live
+            .saturating_mul(2)
+            .max(live.saturating_add(CHECKED_CACHE_BYTES));
+        Ok(Some(live))
+    }
+
+    fn maintain_checked_storage_at(&mut self, threshold: usize) -> Result<Option<usize>, String> {
+        self.maintain_checked_storage_step(
+            threshold,
+            DiskCopyBudget {
+                records: 128,
+                bytes: naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES,
+            },
+        )
+    }
+
+    fn maintain_checked_storage_step(
+        &mut self,
+        threshold: usize,
+        budget: DiskCopyBudget,
+    ) -> Result<Option<usize>, String> {
+        if let Err(error) = self.ensure_live() {
+            drop(self.compaction.take());
+            return Err(error);
+        }
+        // The threshold admits a new copy. An existing cursor keeps making
+        // bounded progress even when a caller supplies a different threshold.
+        if self.compaction.is_none() {
+            if self.cold(self.checked_storage.allocated_bytes())? < threshold {
+                return Ok(None);
+            }
+            self.old_generations
+                .retain(|generation| generation.strong_count() != 0);
+            if self.old_generations.len() >= 4 {
+                return Err("checked snapshot generation work limit".into());
+            }
+            let source = self.checked_storage.clone();
+            let target = self.cold(source.successor())?;
+            let mut gate = self.cold(source.write_gate())?;
+            self.ensure_live()?;
+            let epoch = self.cold(gate.attach(&source, target.clone()))?;
+            // No fallible operation remains between attaching and installing
+            // the abort guard. Pre-attach batches keep their previous epoch.
+            self.compaction = Some(Compaction {
+                source: source.clone(),
+                target: target.clone(),
+                cursor: Some(self.context.begin_copy(target)),
+                epoch,
+            });
+        }
+        let mut copy = self.compaction.take().expect("active checked copy");
+        let result = self.advance_checked_copy(&mut copy, budget);
+        if matches!(result, Ok(None)) {
+            self.compaction = Some(copy);
+        }
+        // On failure or completion, the local guard detaches the old source.
+        result
+    }
+
+    fn advance_checked_copy(
+        &mut self,
+        copy: &mut Compaction,
+        budget: DiskCopyBudget,
+    ) -> Result<Option<usize>, String> {
+        let source = copy.source.clone();
+        let mut gate = self.cold(source.write_gate())?;
+        self.ensure_live()?;
+        if !Arc::ptr_eq(&source, &self.checked_storage) || !gate.matches(copy.epoch, &copy.target) {
+            return self.cold(Err("checked copy source epoch or target changed".into()));
+        }
+        // A copy transaction contains only this bounded quantum. Admissions
+        // between quanta use separate per-proof transactions, including mirrors;
+        // no corpus-sized transaction reaches finish.
+        self.cold(copy.target.begin_write_phase())?;
+        let progress = self.cold(
+            copy.cursor
+                .as_mut()
+                .expect("unfinished checked cursor")
+                .advance(budget)
+                .map_err(|error| error.to_string()),
+        )?;
+        self.cold(copy.target.finish_write_phase())?;
+        if !progress.complete {
+            return Ok(None);
+        }
+        let context = self.cold(
+            copy.cursor
+                .take()
+                .expect("complete checked cursor")
+                .finish(&self.context)
+                .map_err(|error| error.to_string()),
+        )?;
+        let live = self.cold(copy.target.allocated_bytes())?;
+        let threshold = live
+            .saturating_mul(2)
+            .max(live.saturating_add(CHECKED_CACHE_BYTES));
+        self.cold(gate.detach(copy.epoch, &copy.target))?;
+        // Linearize publication with already reported failures, including a
+        // concurrent cold reader. Everything below is an infallible state move.
+        let halt = self.storage_error.clone();
+        let failure = halt.lock().unwrap_or_else(|error| {
+            let mut failure = error.into_inner();
+            *failure = Some("checked storage halt lock poisoned".into());
+            failure
+        });
+        if let Some(error) = &*failure {
+            return Err(format!("storage halted: {error}"));
+        }
+        self.old_generations.push(Arc::downgrade(&source));
+        self.context = context;
+        self.checked_storage = copy.target.clone();
+        // Startup keeps its smaller threshold local; ingest retains this one.
+        self.next_compaction = threshold;
+        Ok(Some(live))
+    }
+
     pub fn author(&self, source: &str) -> Result<Envelope, String> {
+        self.ensure_live()?;
         if source.len() > crate::MAX_PROOF_BYTES {
             return Err("producer source byte limit".into());
         }
-        naome_authoring::compile_against_proof_context(source, &self.context)
+        self.compile_source(source, &self.context)
             .map(Envelope::from_compiled)
-            .map_err(|error| error.to_string())
     }
 
     pub fn ingest(&mut self, envelope: Envelope, now: Instant) -> Result<Ingest, String> {
-        if let Some(error) = &self.storage_error {
-            return Err(format!("storage halted: {error}"));
-        }
+        self.maintain_checked_storage()?;
         let candidate = envelope.prepare()?;
         let id = candidate.id;
-        if let Some(existing) = self.objects.get(&id) {
-            if existing != &candidate.envelope {
+        if let Some(existing) = self.object(id)? {
+            if existing != candidate.envelope {
                 return Err("proof identity collision".into());
             }
             return Ok(Ingest {
@@ -129,7 +409,7 @@ impl Graph {
                 rejected: Vec::new(),
             });
         }
-        if !self.ready(&candidate) {
+        if !self.ready(&candidate)? {
             if self.pending.len() >= MAX_PENDING {
                 return Err("pending capacity".into());
             }
@@ -149,23 +429,25 @@ impl Graph {
             admitted: vec![id],
             rejected: Vec::new(),
         };
-        let (admitted, rejected) = self.resolve_pending();
+        let (admitted, rejected) = self.resolve_pending()?;
         result.admitted.extend(admitted);
         result.rejected.extend(rejected);
         Ok(result)
     }
 
     /// Existing deferred local-owner ingestion, separate from peer staging.
-    pub(crate) fn resolve_pending(&mut self) -> (Vec<ProofId>, Vec<(ProofId, String)>) {
+    pub(crate) fn resolve_pending(&mut self) -> Result<PendingResolution, String> {
+        self.ensure_live()?;
         let mut admitted = Vec::new();
         let mut rejected = Vec::new();
         // Each candidate is removed once. No asynchronous checker queue or busy polling.
         loop {
-            let ready: Vec<_> = self
-                .pending
-                .iter()
-                .filter_map(|(id, (candidate, _))| self.ready(candidate).then_some(*id))
-                .collect();
+            let mut ready = Vec::new();
+            for (id, (candidate, _)) in &self.pending {
+                if self.ready(candidate)? {
+                    ready.push(*id);
+                }
+            }
             if ready.is_empty() {
                 break;
             }
@@ -176,71 +458,145 @@ impl Graph {
                     .expect("selected pending candidate");
                 match self.admit(candidate) {
                     Ok(()) => admitted.push(id),
-                    Err(error) => rejected.push((id, error)),
+                    Err(error) => {
+                        if self.storage_error().is_some() {
+                            return Err(error);
+                        }
+                        rejected.push((id, error));
+                    }
                 }
             }
         }
-        (admitted, rejected)
+        Ok((admitted, rejected))
     }
 
-    fn ready(&self, candidate: &Candidate) -> bool {
-        candidate
-            .dependencies
-            .iter()
-            .all(|id| self.objects.contains_key(id))
+    fn ready(&self, candidate: &Candidate) -> Result<bool, String> {
+        for id in &candidate.dependencies {
+            if !self.contains(*id)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
-    fn admit(&mut self, candidate: Candidate) -> Result<(), String> {
-        if let Some(error) = &self.storage_error {
-            return Err(format!("storage halted: {error}"));
+    fn compile_source(
+        &self,
+        source: &str,
+        context: &DiskArtifactState,
+    ) -> Result<naome_authoring::CompiledProof, String> {
+        self.ensure_live()?;
+        naome_authoring::compile_against_proof_context(source, context).map_err(|error| {
+            let message = error.to_string();
+            if matches!(&error, naome_authoring::CompileError::Check { source, .. }
+                if matches!(source.as_ref(), naome_checker::CheckError::ContextAccess { .. }))
+            {
+                *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(message.clone());
+            }
+            message
+        })
+    }
+
+    fn check_normal(
+        &self,
+        normal: naome_proof::ProofNormalForm,
+        context: &DiskArtifactState,
+    ) -> Result<naome_checker::CheckedProof, String> {
+        check_normal_form_with_state(normal, context).map_err(|error| {
+            let message = format!("mathematically invalid: {error}");
+            if matches!(error, naome_checker::CheckError::ContextAccess { .. }) {
+                *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(message.clone());
+            }
+            message
+        })
+    }
+
+    fn checked_registration(
+        &self,
+        candidate: Candidate,
+    ) -> Result<(naome_checker::CheckedProof, usize), String> {
+        self.ensure_live()?;
+        let mut depth = 0usize;
+        for id in &candidate.dependencies {
+            let parent = self
+                .cold(
+                    self.context
+                        .proof_dependency_depth(*id)
+                        .map_err(|e| e.to_string()),
+                )?
+                .ok_or("missing checked dependency")?;
+            depth = depth.max(parent);
         }
-        let size = candidate.envelope.proof.len() / 2;
-        if self.objects.len() >= MAX_OBJECTS || self.bytes + size > MAX_ACCEPTED_BYTES {
-            return Err("accepted capacity".into());
-        }
-        let depth = candidate
-            .dependencies
-            .iter()
-            .map(|id| self.depths[id])
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let depth = depth.checked_add(1).ok_or("dependency depth overflow")?;
         if depth > MAX_DEPTH {
             return Err("dependency depth limit".into());
         }
-        let checked = check_normal_form_with_state(candidate.normal, &self.context)
-            .map_err(|error| format!("mathematically invalid: {error}"))?;
+        let checked = self.check_normal(candidate.normal, &self.context)?;
         if checked.proof_id() != candidate.id || checked.statement_id() != candidate.statement {
             return Err("checked identity mismatch".into());
         }
-        let context_growth = if self.context.contains_statement(checked.statement_id()) {
+        let growth = if self.cold(
+            self.context
+                .contains_statement(checked.statement_id())
+                .map_err(|e| e.to_string()),
+        )? {
             0
         } else {
             checked
                 .conclusion()
                 .encode_canonical()
-                .map_err(|error| error.to_string())?
+                .map_err(|e| e.to_string())?
                 .len()
         };
-        if self.context_bytes + context_growth > MAX_CONTEXT_BYTES {
-            return Err("checked context capacity".into());
-        }
+        Ok((checked, growth))
+    }
+
+    fn registered_context(
+        &self,
+        checked: naome_checker::CheckedProof,
+    ) -> Result<DiskArtifactState, String> {
         let mut context = self.context.clone();
-        context
-            .register_proof_for_replication(checked)
-            .map_err(|error| error.to_string())?;
-        if let Some(store) = &self.store
-            && let Err(error) = store.persist(&candidate.envelope)
-        {
-            self.storage_error = Some(error.clone());
-            return Err(format!("storage halted: {error}"));
-        }
-        // Publish only after checked registration and successful durable write.
+        self.cold(
+            context
+                .register_proof_for_replication(checked)
+                .map_err(|e| e.to_string()),
+        )?;
+        Ok(context)
+    }
+
+    fn check_candidate(&self, candidate: Candidate) -> Result<(DiskArtifactState, usize), String> {
+        // Replay owns its existing bounded page transaction, never a nested
+        // per-admission transaction. Ordinary mathematical rejection is also
+        // determined before any new runtime phase is opened.
+        let (checked, growth) = self.checked_registration(candidate)?;
+        Ok((self.registered_context(checked)?, growth))
+    }
+
+    fn admit(&mut self, candidate: Candidate) -> Result<(), String> {
+        let envelope = candidate.envelope.clone();
+        let (checked, growth) = self.checked_registration(candidate)?;
+        let context_bytes = self
+            .context_bytes
+            .checked_add(growth)
+            .ok_or("checked context byte overflow")?;
+        let source = self.checked_storage.clone();
+        // The phase guard records every setup failure, including native close
+        // errors. Do not overwrite that cleanup evidence through cold().
+        let phase = source
+            .admission_phase()
+            .map_err(|error| format!("storage halted: {error}"))?;
+        let context = self.registered_context(checked)?;
+        let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
+        let summary = self.cold(self.store.persist_checked(&envelope, self.fixed_summary()))?;
+        // All fallible preparation precedes the durable transaction. Afterwards
+        // publish only fixed roots and scalars; no catalog/context read can fail.
         self.context = context;
-        self.bytes += size;
-        self.context_bytes += context_growth;
-        self.depths.insert(candidate.id, depth);
-        self.objects.insert(candidate.id, candidate.envelope);
+        self.context_bytes = context_bytes;
+        self.count = summary.count;
+        self.bytes = summary.bytes;
+        self.root = summary.root;
+        phase.published(&mut gates);
         Ok(())
     }
 
@@ -274,47 +630,102 @@ impl Graph {
         expired
     }
 
-    pub fn missing(&self) -> BTreeSet<ProofId> {
-        self.pending
-            .values()
-            .flat_map(|(candidate, _)| candidate.dependencies.iter().copied())
-            .filter(|id| !self.objects.contains_key(id) && !self.pending.contains_key(id))
-            .collect()
+    pub fn missing(&self) -> Result<BTreeSet<ProofId>, String> {
+        let mut missing = BTreeSet::new();
+        for (candidate, _) in self.pending.values() {
+            for id in &candidate.dependencies {
+                if !self.pending.contains_key(id) && !self.contains(*id)? {
+                    missing.insert(*id);
+                }
+            }
+        }
+        Ok(missing)
     }
-
     pub fn pending_ids(&self) -> Vec<ProofId> {
         self.pending.keys().copied().collect()
     }
-    pub fn storage_error(&self) -> Option<&str> {
-        self.storage_error.as_deref()
+    pub fn storage_error(&self) -> Option<String> {
+        self.storage_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
-    pub fn contains(&self, id: ProofId) -> bool {
-        self.objects.contains_key(&id)
+    pub fn contains(&self, id: ProofId) -> Result<bool, String> {
+        self.object(id).map(|object| object.is_some())
     }
     pub fn waiting(&self, id: ProofId) -> bool {
         self.pending.contains_key(&id)
     }
-    pub fn object(&self, id: ProofId) -> Option<&Envelope> {
-        self.objects.get(&id)
+    pub fn object(&self, id: ProofId) -> Result<Option<Envelope>, String> {
+        self.ensure_live()?;
+        let checked = self.cold(self.context.contains_proof(id).map_err(|e| e.to_string()))?;
+        // Validate the canonical record once, returning the same owned bytes
+        // used for the checked/canonical membership comparison.
+        let object = self.cold(self.store.get(id, self.fixed_summary()))?;
+        if checked != object.is_some() {
+            return self.cold(Err("checked canonical membership differs".into()));
+        }
+        Ok(object)
     }
-    pub fn ids(&self) -> Vec<ProofId> {
-        self.objects.keys().copied().collect()
+    pub fn ids_page(&self, after: Option<ProofId>, limit: usize) -> Result<Vec<ProofId>, String> {
+        self.ensure_live()?;
+        if limit == 0 || limit > 128 {
+            return Err("inventory page limit".into());
+        }
+        let expected = self.cold(
+            self.context
+                .proof_ids_after(after)
+                .take(limit)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string()),
+        )?;
+        let actual = self.cold(self.store.ids_page(after, limit, self.fixed_summary()))?;
+        if actual != expected {
+            return self.cold(Err("canonical inventory differs from checked set".into()));
+        }
+        for id in &expected {
+            if !self.cold(self.store.contains(*id, self.fixed_summary()))? {
+                return self.cold(Err("checked inventory proof missing".into()));
+            }
+        }
+        Ok(expected)
     }
     pub fn content_root(&self) -> [u8; 32] {
-        let mut hash = Sha256::new();
-        hash.update(b"naome:knowledge:set:v1\0");
-        hash.update(compatibility());
-        hash.update((self.objects.len() as u32).to_be_bytes());
-        for id in self.objects.keys() {
-            hash.update(id.as_bytes());
-        }
-        hash.finalize().into()
+        self.root
     }
-
-    pub fn get(&self, id: &str) -> Result<Option<&Envelope>, String> {
-        Ok(self.object(ProofId::from_bytes(id_bytes(id)?)))
+    pub fn get(&self, id: &str) -> Result<Option<Envelope>, String> {
+        self.object(ProofId::from_bytes(id_bytes(id)?))
+    }
+    #[cfg(test)]
+    pub(crate) fn ids(&self) -> Vec<ProofId> {
+        let mut ids = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self
+                .ids_page(after, 128)
+                .expect("complete small test catalog");
+            if page.is_empty() {
+                return ids;
+            }
+            after = page.last().copied();
+            ids.extend(page);
+        }
     }
 }
 
+#[cfg(test)]
+impl Default for Graph {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "naome-disk-graph-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).expect("new isolated test catalog");
+        Self::open_inner(&directory, true).expect("empty test catalog")
+    }
+}
 #[cfg(test)]
 mod tests;

@@ -95,8 +95,12 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
         let delta = questions
             .prepare_exchange(&graph, &question, &assessment)
             .unwrap();
-        graph.persist_batch(root, &batch).unwrap();
-        assert_eq!(graph.apply_batch(batch), vec![root]);
+        assert_eq!(
+            graph
+                .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
+                .unwrap(),
+            vec![root]
+        );
         questions.apply_exchange(delta);
         drop(graph);
         let mut replayed = Graph::open(&directory.0).unwrap();
@@ -127,7 +131,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
         "waiting"
     );
-    assert_eq!(graph.ids().len(), 0);
+    assert_eq!(graph.accepted_count(), 0);
     let incomplete = [(root_id, root.clone().prepare().unwrap())].into();
     assert!(graph.prepare_batch(root_id, incomplete, &question).is_err());
     drop(graph);
@@ -148,11 +152,16 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
     .into();
     let batch = graph.prepare_batch(root_id, candidates, &question).unwrap();
     assert!(
-        graph.ids().is_empty(),
+        graph.accepted_count() == 0,
         "checked staging has no published count"
     );
-    graph.persist_batch(root_id, &batch).unwrap();
-    assert_eq!(graph.apply_batch(batch).len(), 2);
+    assert_eq!(
+        graph
+            .commit_batch(root_id, batch, Instant::now() + Duration::from_secs(5))
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
         "duplicate"
@@ -164,13 +173,13 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
     let mut invalid = root.clone();
     invalid.proof = "ff".into();
     assert!(graph.ingest(invalid, Instant::now()).is_err());
-    assert_eq!(graph.ids().len(), 2);
+    assert_eq!(graph.accepted_count(), 2);
     let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
     let (served, response) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
             control
-                .respond(stream, graph.ids().len(), true)
+                .respond(stream, graph.accepted_count(), true)
                 .await
                 .unwrap()
         },
@@ -204,13 +213,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         [helper_id, root_id].into()
     );
     drop(recovered);
-    let batch = fs::read_dir(directory.0.join("objects/batches"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    fs::write(batch.join(format!("{}.json", helper.proof_id)), b"{}").unwrap();
+    crate::store::corrupt_payload(&directory.0, &helper.proof_id);
     assert!(
         status(&directory.0).await.is_err(),
         "corrupt durable content cannot return a proof count"
@@ -291,11 +294,7 @@ async fn stop_requires_graph_release_and_revalidation_after_confirmed_group_exit
     let mut graph = Graph::open(&directory.0).unwrap();
     graph.ingest(helper.clone(), Instant::now()).unwrap();
     drop(graph);
-    let member = directory
-        .0
-        .join("objects")
-        .join(format!("{}.json", helper.proof_id));
-    fs::write(member, b"{}").unwrap();
+    crate::store::corrupt_payload(&directory.0, &helper.proof_id);
     let corrupt = wait_for_stop(&directory.0, Instant::now(), || {
         Err(nix::errno::Errno::ESRCH)
     })
@@ -360,7 +359,7 @@ async fn interest_respects_graph_ownership_and_instance_bound_control() {
     let (served, response) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.ids().len(), true).await
+            control.respond(stream, graph.accepted_count(), true).await
         },
         interest(&directory.0, &text)
     );
@@ -374,7 +373,7 @@ async fn interest_respects_graph_ownership_and_instance_bound_control() {
     let (served, _) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.ids().len(), true).await
+            control.respond(stream, graph.accepted_count(), true).await
         },
         async {
             let mut stream = UnixStream::connect(&control.endpoint.socket).await.unwrap();
@@ -447,14 +446,8 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
     initialize(&directory.0).unwrap();
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
     assert_eq!(
-        fs::read(
-            directory
-                .0
-                .join("objects")
-                .join(format!("{}.json", proof.proof_id))
-        )
-        .unwrap(),
-        serde_json::to_vec(&proof).unwrap()
+        crate::store::payload_bytes(&directory.0, &proof.proof_id),
+        crate::unhex(&proof.proof).unwrap()
     );
 }
 
@@ -474,7 +467,7 @@ async fn uncertain_owner_cannot_supply_a_profile_but_stop_still_works() {
     let (served, response) = tokio::join!(
         async {
             let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.ids().len(), true).await
+            control.respond(stream, graph.accepted_count(), true).await
         },
         request(&directory.0, Operation::Stop, None)
     );
@@ -502,4 +495,77 @@ async fn selection_epoch_binds_owner_revision_text_and_recovery_errors() {
     tokio::time::timeout(Duration::from_secs(1), requested_stop(&mut watch))
         .await
         .unwrap();
+}
+
+// Real process boundaries for the maintained abort owner. These source tests
+// are not native qualification of installed CLI/Guardian/resource behavior.
+#[test]
+fn handoff_abort_process_fixture() {
+    let Ok(mode) = std::env::var("NAOME_TEST_HANDOFF_ABORT_FIXTURE") else {
+        return;
+    };
+    if mode == "detach" {
+        nix::unistd::setsid().unwrap();
+    }
+    // No work/descendants precede setsid,matching the daemon's entry invariant.
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[tokio::test]
+async fn handoff_abort_stabilizes_inherited_child_without_inventing_group_absence() {
+    let inherited = (nix::unistd::getpgrp(), nix::unistd::getsid(None).unwrap());
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::tests::handoff_abort_process_fixture",
+            "--nocapture",
+        ])
+        .env("NAOME_TEST_HANDOFF_ABORT_FIXTURE", "inherited")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let report = abort_owned_handoff(
+        &mut child,
+        Instant::now() + Duration::from_millis(500),
+        Some(inherited),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["original_child_reaped"], true);
+    assert_eq!(report["session_state"], "CONFIRMED_STOPPED_BEFORE_DETACH");
+    assert!(report["owned_group_empty"].is_null());
+}
+
+#[tokio::test]
+async fn handoff_abort_handles_the_actual_setsid_race_while_original_child_is_held() {
+    let inherited = (nix::unistd::getpgrp(), nix::unistd::getsid(None).unwrap());
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::tests::handoff_abort_process_fixture",
+            "--nocapture",
+        ])
+        .env("NAOME_TEST_HANDOFF_ABORT_FIXTURE", "detach")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let report = abort_owned_handoff(
+        &mut child,
+        Instant::now() + Duration::from_millis(500),
+        Some(inherited),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["original_child_reaped"], true);
+    match report["session_state"].as_str().unwrap() {
+        "CONFIRMED_STOPPED_DETACHED_SESSION" => assert_eq!(report["owned_group_empty"], true),
+        "CONFIRMED_STOPPED_BEFORE_DETACH" => assert!(report["owned_group_empty"].is_null()),
+        other => panic!("unproved session cannot complete: {other};{report}"),
+    }
 }

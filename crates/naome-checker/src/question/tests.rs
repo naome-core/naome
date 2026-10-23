@@ -1,5 +1,5 @@
 use super::*;
-use crate::{normalize_and_check, normalize_and_check_with_state};
+use crate::{ArtifactState, normalize_and_check, normalize_and_check_with_state};
 use naome_foundation::{FreeVariable, ZfcAxiom};
 use naome_proof::{DefinitionId, ProofCertificate};
 

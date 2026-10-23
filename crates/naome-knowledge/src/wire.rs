@@ -1,4 +1,4 @@
-use crate::{Envelope, object::Metadata, store::MAX_ENVELOPE_BYTES};
+use crate::{Envelope, MAX_PROOF_BYTES, object::Metadata};
 use async_trait::async_trait;
 use libp2p::{
     StreamProtocol,
@@ -10,6 +10,7 @@ use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const INVENTORY_PAGE: usize = 64;
+const MAX_ENVELOPE_BYTES: usize = 2 * MAX_PROOF_BYTES + 512;
 pub(crate) const MAX_FRAME: usize = MAX_ENVELOPE_BYTES + 512;
 pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/2");
 

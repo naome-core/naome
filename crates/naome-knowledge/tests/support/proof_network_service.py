@@ -7,7 +7,7 @@ from pathlib import Path
 import socket
 import sys
 
-from proof_network import Driver, Node, content_root, digest
+from proof_network import Driver, Node, content_root, digest, stored_objects
 
 
 def main():
@@ -45,9 +45,9 @@ def main():
         with socket.create_connection(("127.0.0.1", port), timeout=5):
             pass
         assert node.process.poll() is None
-        objects = list((directory / "objects").glob("*.json"))
+        objects = stored_objects(node)
         assert len(objects) == 1
-        stored = json.loads(objects[0].read_text())
+        stored = objects[0]
         assert stored["proof_id"] == id
         driver.summary["accepted_ids"] = [id]
         driver.summary["content_root"] = content_root(driver.summary["contract"]["compatibility"], [id])
