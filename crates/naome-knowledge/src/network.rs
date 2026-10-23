@@ -638,7 +638,7 @@ where
             command = commands.recv(), if command_input_open && !stopping => {
                 match command {
                     Some(Ok(command)) => {
-                        let parsed_memory = crate::resources::MemoryLease::acquire(command.bytes.len().saturating_mul(64));
+                        let parsed_memory = crate::resources::MemoryLease::acquire(command.bytes.len().saturating_mul(crate::resources::COMMAND_JSON_EXPANSION));
                         match parsed_memory {
                             Err(error) => emit(json!({"event":"command_error","error":error})),
                             Ok(_parsed_memory) => match serde_json::from_slice(&command.bytes) {

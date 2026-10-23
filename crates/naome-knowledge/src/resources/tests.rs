@@ -4,6 +4,14 @@ use super::*;
 fn defaults_scaling_and_independent_overrides_are_validated_before_allocation() {
     let default = ResourceProfile::default().resolve().unwrap();
     assert_eq!(default, DEFAULT);
+    let maximum_envelope = crate::Envelope {
+        compatibility: "00".repeat(32),
+        proof_id: "00".repeat(32),
+        statement_id: "00".repeat(32),
+        proof: "00".repeat(default.proof_bytes),
+    };
+    let command = serde_json::json!({"command":"ingest","object":maximum_envelope});
+    assert!(serde_json::to_vec(&command).unwrap().len() < default.command_bytes);
     let mut profile = ResourceProfile {
         memory_bytes: 1024 * MIB,
         ..ResourceProfile::default()
@@ -43,6 +51,7 @@ fn zero_overflow_codec_and_inconsistent_allocations_are_rejected() {
         serde_json::json!({"tuning":{"contacts":usize::MAX}}),
         serde_json::json!({"tuning":{"assessment_operations":usize::MAX}}),
         serde_json::json!({"tuning":{"network_config_bytes":usize::MAX}}),
+        serde_json::json!({"tuning":{"command_bytes":512*1024}}),
         serde_json::json!({"tuning":{"command_bytes":64*MIB,"cli_commands":8}}),
         serde_json::json!({"tuning":{"failure_detail_bytes":usize::MAX}}),
         serde_json::json!({"tuning":{"replay_guard_bytes":385*MIB}}),
