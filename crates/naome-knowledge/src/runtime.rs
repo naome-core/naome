@@ -29,7 +29,9 @@ pub(crate) use owner::Profile as OwnerProfile;
 pub(crate) use startup::Startup;
 
 fn control_limit() -> usize {
-    6 * crate::resources::limits().owner_text_bytes + 512
+    // Resource reports carry a bounded 4 KiB snapshot, independently of the
+    // configured owner-text capacity. They never duplicate owner text.
+    (6 * crate::resources::limits().owner_text_bytes + 512).max(4096 + 512)
 }
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
 static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
@@ -200,6 +202,7 @@ struct IdentityReceipt {
 #[serde(rename_all = "snake_case")]
 enum Operation {
     Status,
+    Resources,
     Stop,
     Interest(String),
 }
@@ -216,8 +219,18 @@ struct Request {
 #[serde(deny_unknown_fields)]
 struct Response {
     token: String,
-    status: Status,
-    resources: Option<crate::resources::adaptive::Snapshot>,
+    report: Report,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum Report {
+    Status {
+        status: Status,
+    },
+    Resources {
+        snapshot: Option<crate::resources::adaptive::Snapshot>,
+    },
 }
 
 pub(crate) struct Control {
@@ -433,6 +446,7 @@ impl Control {
                 .map_err(|e| e.to_string())?;
         }
         let stopping = matches!(request.operation, Operation::Stop);
+        let resources = matches!(request.operation, Operation::Resources);
         if stopping {
             self.stopping.send_replace(true);
         }
@@ -445,6 +459,7 @@ impl Control {
             // transition finishes, including after a disconnected control client.
             let _ownership = ownership;
             match request.operation {
+                Operation::Resources => Ok(String::new()),
                 Operation::Status => {
                     let mut owner = state
                         .lock()
@@ -490,11 +505,18 @@ impl Control {
         .map_err(|error| format!("owner control worker failed: {error}"))??;
         let response = Response {
             token: self.endpoint.token.clone(),
-            resources: crate::resources::adaptive::current(),
-            status: Status {
-                running: ready && !stopping,
-                accepted_proofs: count,
-                interest,
+            report: if resources {
+                Report::Resources {
+                    snapshot: crate::resources::adaptive::current(),
+                }
+            } else {
+                Report::Status {
+                    status: Status {
+                        running: ready && !stopping,
+                        accepted_proofs: count,
+                        interest,
+                    },
+                }
             },
         };
         // Leave time for a response timeout to settle before the node's stop
@@ -628,7 +650,14 @@ async fn request(
 ) -> Result<Option<Status>, String> {
     request_response(directory, operation, launch)
         .await
-        .map(|response| response.map(|r| r.status))
+        .and_then(|response| {
+            response
+                .map(|r| match r.report {
+                    Report::Status { status } => Ok(status),
+                    _ => Err("unexpected control response type".into()),
+                })
+                .transpose()
+        })
 }
 
 fn directory() -> Result<PathBuf, String> {
@@ -1312,9 +1341,14 @@ async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), Strin
     }
     let configured = adaptive::load(&directory)?;
     let active = if directory.exists() {
-        request_response(&directory, Operation::Status, None)
-            .await?
-            .and_then(|s| s.resources)
+        match request_response(&directory, Operation::Resources, None).await? {
+            Some(Response {
+                report: Report::Resources { snapshot },
+                ..
+            }) => snapshot,
+            None => None,
+            _ => return Err("unexpected resource response type".into()),
+        }
     } else {
         None
     };

@@ -1,4 +1,63 @@
 use super::*;
+
+#[tokio::test]
+async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames() {
+    let interest = "\u{0001}".repeat(crate::resources::limits().owner_text_bytes);
+    let status = Status {
+        running: true,
+        accepted_proofs: 3,
+        interest: interest.clone(),
+    };
+    let response = Response {
+        token: "a".repeat(64),
+        report: Report::Status { status },
+    };
+    let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+    let (written, read) = tokio::join!(
+        write_frame(&mut sender, &response),
+        read_frame::<Response>(&mut receiver)
+    );
+    written.unwrap();
+    let Report::Status { status } = read.unwrap().report else {
+        panic!("owner status report expected");
+    };
+    assert_eq!(status.interest, interest);
+    let snapshot = crate::resources::adaptive::Snapshot::derive(
+        crate::resources::adaptive::Selection::default(),
+        crate::resources::adaptive::Observed {
+            memory_total: 8 * 1024 * 1024 * 1024,
+            memory_available: 4 * 1024 * 1024 * 1024,
+            memory_limit: 8 * 1024 * 1024 * 1024,
+            process_rss: 16 * 1024 * 1024,
+            peak_rss: 16 * 1024 * 1024,
+            process_cpu_ms: 10,
+            cpu_millis: 8000,
+            load_millis: 1000,
+            disk_available: 1024 * 1024 * 1024,
+        },
+        512 * 1024 * 1024,
+    )
+    .unwrap();
+    let resource = Response {
+        token: "a".repeat(64),
+        report: Report::Resources {
+            snapshot: Some(snapshot.clone()),
+        },
+    };
+    let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+    let (written, read) = tokio::join!(
+        write_frame(&mut sender, &resource),
+        read_frame::<Response>(&mut receiver)
+    );
+    written.unwrap();
+    let Report::Resources {
+        snapshot: Some(read),
+    } = read.unwrap().report
+    else {
+        panic!("resource report expected");
+    };
+    assert_eq!(read, snapshot);
+}
 use crate::{Envelope, object::id_bytes};
 use naome_authoring::CompiledQuestion;
 use naome_proof::ProofId;

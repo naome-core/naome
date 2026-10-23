@@ -53,6 +53,7 @@ impl Selection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Observed {
     pub memory_total: u64,
     pub memory_available: u64,
@@ -65,6 +66,7 @@ pub struct Observed {
     pub disk_available: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Budget {
     pub memory_bytes: u64,
     pub concurrency: usize,
@@ -75,6 +77,7 @@ pub struct Budget {
     pub paused: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Snapshot {
     pub selection: Selection,
     pub budget: Budget,

@@ -1,5 +1,5 @@
-//! Process-wide immutable resource policy. Configuration changes require a
-//! restart; no role, worker or peer can mutate limits after allocation begins.
+//! Process-wide immutable resource capacity. Changing this ceiling requires a
+//! restart; adaptive admission budgets below it can change during operation.
 //! Histories are not limited by these working-set and per-operation budgets.
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
