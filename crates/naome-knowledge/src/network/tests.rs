@@ -282,6 +282,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     };
     let directory = ConfigFile::new();
     let mut graph = Graph::open(&directory.0).unwrap();
+    let owner_lifetime = Arc::downgrade(&graph.ownership());
     fn pattern(leaves: usize) -> naome_foundation::Formula {
         let x = naome_foundation::FreeVariable::new(0);
         if leaves == 1 {
@@ -504,6 +505,10 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     controls.shutdown().await.unwrap();
     transport.shutdown().await.unwrap();
     drop(control);
+    assert!(
+        owner_lifetime.upgrade().is_none(),
+        "joined shutdown retained an in-process directory owner"
+    );
     assert_eq!(Graph::open(&directory.0).unwrap().accepted_count(), 0);
     println!(
         "OWNER_LATENCY_METRICS {}",

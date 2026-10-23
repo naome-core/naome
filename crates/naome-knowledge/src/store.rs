@@ -26,13 +26,23 @@ std::thread_local! { static FORMAT_SYNC_FAILURE: std::cell::Cell<bool> = const {
 /// One locked canonical catalog. An immutable receipt binds its durable lineage.
 pub(crate) struct Store {
     directory: PathBuf,
-    _lock: File,
     database_generation: Mutex<crate::storage::FileGeneration>,
     catalog: Mutex<Catalog>,
     #[cfg(test)]
     cut: Mutex<Option<BatchCut>>,
     #[cfg(test)]
     replay_cut: Mutex<Option<ReplayCut>>,
+    // Close catalog state before releasing this owner's directory authority.
+    _lock: DirectoryLock,
+}
+
+struct DirectoryLock(File);
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        // A child spawning concurrently can temporarily inherit this open-file
+        // description. Closing only our descriptor would leave its lock alive.
+        let _ = self.0.unlock();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,6 +76,7 @@ impl Store {
             .map_err(|error| error.to_string())?;
         lock.try_lock()
             .map_err(|error| format!("knowledge directory already owned: {error}"))?;
+        let lock = DirectoryLock(lock);
         let database = directory.join(DATABASE_FILE);
         let receipt = directory.join(FORMAT_FILE);
         let has_receipt = catalog_leaf_exists(&receipt)?;
