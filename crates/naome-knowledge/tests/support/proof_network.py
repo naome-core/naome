@@ -18,6 +18,20 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def source_metadata(repo, helper_output):
+    """Report absent archive metadata honestly; existing Git errors stay fatal."""
+    try:
+        (Path(repo) / ".git").lstat()
+    except FileNotFoundError:
+        return {"revision": None, "dirty": None,
+                "source_metadata_status": "unavailable_without_git_metadata"}
+    return {
+        "revision": helper_output(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
+        "dirty": bool(helper_output(["git", "status", "--porcelain"], cwd=repo).strip()),
+        "source_metadata_status": "available_from_git_metadata",
+    }
+
+
 def proof_id(statement, proof):
     foundation = b"naome:zfc"
     data = bytes.fromhex(proof)
@@ -324,8 +338,7 @@ class Driver:
             "schema": 1, "result": "running", "node_count": 4, "physical_host_count": 1,
             "producer": "finite deterministic formal source queues and checked-context authoring; no LLM inference",
             "contract": contract, "scenarios": {}, "commands": [], "processes": [], "proofs": {},
-            "revision": self.helper_output(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
-            "dirty": bool(self.helper_output(["git", "status", "--porcelain"], cwd=repo).strip()),
+            **source_metadata(repo, self.helper_output),
             "profile": profile, "binary": str(self.binary), "binary_sha256": digest(self.binary),
             "driver_sha256": digest(__file__), "environment": platform.uname()._asdict(),
             "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

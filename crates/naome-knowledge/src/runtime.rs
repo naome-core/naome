@@ -735,7 +735,17 @@ async fn status(directory: &Path) -> Result<Status, String> {
 }
 
 async fn start(directory: &Path) -> Result<Status, String> {
-    let deadline = tokio::time::Instant::now() + startup::TIMEOUT;
+    start_with_handoff(directory, None).await
+}
+
+async fn start_with_handoff(
+    directory: &Path,
+    mut handoff: Option<startup::Handoff>,
+) -> Result<Status, String> {
+    let deadline = match &handoff {
+        Some(owner) => owner.deadline()?,
+        None => tokio::time::Instant::now() + startup::TIMEOUT,
+    };
     // Keep startup cancellation alive while the child performs synchronous
     // replay. SIGKILL/parent disappearance instead closes the stdin lifeline.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -747,6 +757,9 @@ async fn start(directory: &Path) -> Result<Status, String> {
             .await
             .map_err(|_| "node startup deadline")??
     {
+        if handoff.is_some() {
+            return Err("startup handoff requires a new owned daemon".into());
+        }
         return Ok(status);
     }
     // Prove there is no existing owner before launching. The daemon takes the
@@ -768,7 +781,8 @@ async fn start(directory: &Path) -> Result<Status, String> {
     if tokio::time::Instant::now() >= deadline {
         return Err("node startup deadline before launch".into());
     }
-    let mut child = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+    let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    command
         .arg("start")
         .env("NAOME_NODE_DIR", directory)
         .env(DAEMON_NONCE, &nonce)
@@ -777,8 +791,22 @@ async fn start(directory: &Path) -> Result<Status, String> {
             log.try_clone().map_err(|error| error.to_string())?,
         ))
         .stderr(Stdio::from(log))
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .env_remove(startup::HANDOFF_ACTIVE)
+        .env_remove(startup::HANDOFF_CLEANUP)
+        .env_remove(startup::CUSTODY_ACTIVE);
+    if let Some(owner) = &mut handoff {
+        owner.before_offer()?;
+        command.env(startup::CUSTODY_ACTIVE, owner.active_ns.to_string());
+    }
+    let inherited_session = if handoff.is_some() {
+        Some((
+            nix::unistd::getpgrp(),
+            nix::unistd::getsid(None).map_err(|e| e.to_string())?,
+        ))
+    } else {
+        None
+    };
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
     let launch = async {
         child
             .stdin
@@ -786,12 +814,24 @@ async fn start(directory: &Path) -> Result<Status, String> {
             .ok_or("startup parent lifeline missing")?
             .write_all(&startup::begin(&nonce))
             .map_err(|e| e.to_string())?;
-        let status = startup::wait(directory, &nonce, deadline, || {
-            child.try_wait().map_err(|e| e.to_string())
-        })
-        .await?;
+        let status = if let Some(owner) = &mut handoff {
+            // The existing owner lifeline is checked concurrently with RPC,
+            // so a slow readiness exchange cannot delay owned EOF cancellation.
+            tokio::select! {
+                value = startup::wait(directory, &nonce, deadline, || Ok(None)) => value?,
+                lost = owner.wait_for_loss() => { lost?; return Err("startup owner lost".into()); }
+            }
+        } else {
+            startup::wait(directory, &nonce, deadline, || {
+                child.try_wait().map_err(|e| e.to_string())
+            })
+            .await?
+        };
         if tokio::time::Instant::now() >= deadline {
             return Err("node startup deadline before acknowledgement".into());
+        }
+        if let Some(owner) = &mut handoff {
+            owner.transfer(child.id(), &nonce).await?;
         }
         child
             .stdin
@@ -810,12 +850,164 @@ async fn start(directory: &Path) -> Result<Status, String> {
     match result {
         Ok(status) => Ok(status),
         Err(error) => {
-            abort_start(&mut child)
-                .await
-                .map_err(|cleanup| format!("{error}; {cleanup}"))?;
+            let cleanup = match &handoff {
+                Some(owner) => {
+                    let (until, clock_error) = match owner.abort_deadline() {
+                        Ok(until) => (until, None),
+                        Err(error) => (Instant::now(), Some(error)),
+                    };
+                    let mut report =
+                        abort_owned_handoff(&mut child, until, inherited_session).await?;
+                    if let Some(error) = clock_error {
+                        report["clock_error"] = serde_json::json!(error);
+                        report["complete"] = serde_json::json!(false);
+                    }
+                    owner.report_abort(child.id(), &nonce, &report)?;
+                    if report["complete"] == true {
+                        Ok(())
+                    } else {
+                        Err(format!("owned startup abort incomplete: {report}"))
+                    }
+                }
+                None => abort_start(&mut child).await,
+            };
+            cleanup.map_err(|cleanup| format!("{error}; {cleanup}"))?;
             Err(format!("{error}; owned startup child reaped"))
         }
     }
+}
+
+async fn abort_owned_handoff(
+    child: &mut Child,
+    deadline: Instant,
+    inherited: Option<(nix::unistd::Pid, nix::unistd::Pid)>,
+) -> Result<serde_json::Value, String> {
+    use nix::sys::{
+        signal::{Signal, kill, killpg},
+        wait::{WaitPidFlag, WaitStatus, waitpid},
+    };
+    // The opt-in caller never polled/reaped this original Child. Stop it before
+    // interpreting a pre-setsid snapshot; a successful SIGSTOP alone is not proof.
+    drop(child.stdin.take());
+    let pid = nix::unistd::Pid::from_raw(
+        i32::try_from(child.id()).map_err(|_| "invalid original handoff Child PID")?,
+    );
+    let mut errors = Vec::<String>::new();
+    if let Err(error) = kill(pid, Signal::SIGSTOP) {
+        errors.push(format!("original Child stop: {error}"));
+    }
+    let stable_end = deadline.min(Instant::now() + Duration::from_millis(150));
+    let mut stopped = false;
+    let mut reaped = false;
+    let mut authority_lost = false;
+    let mut reaper = "NONE";
+    loop {
+        match waitpid(pid, Some(WaitPidFlag::WUNTRACED | WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Stopped(actual, Signal::SIGSTOP)) if actual == pid => {
+                stopped = true;
+                break;
+            }
+            Ok(WaitStatus::Exited(actual, _)) | Ok(WaitStatus::Signaled(actual, _, _))
+                if actual == pid =>
+            {
+                // waitpid really reaped it. No group or PID signal follows.
+                reaped = true;
+                reaper = "waitpid";
+                errors.push(
+                    "original Child exited before stable session confirmation; group unknown"
+                        .into(),
+                );
+                break;
+            }
+            Ok(WaitStatus::StillAlive) => {}
+            Ok(other) => {
+                errors.push(format!("unconfirmed original Child stop: {other:?}"));
+                break;
+            }
+            Err(error) => {
+                authority_lost = true;
+                errors.push(format!("original Child wait authority: {error}"));
+                break;
+            }
+        }
+        if Instant::now() >= stable_end {
+            errors.push("original Child stop confirmation deadline".into());
+            break;
+        }
+        tokio::time::sleep(
+            Duration::from_millis(5).min(stable_end.saturating_duration_since(Instant::now())),
+        )
+        .await;
+    }
+    let mut state = "UNKNOWN";
+    let mut group_empty: Option<bool> = None;
+    if stopped {
+        match (
+            nix::unistd::getpgid(Some(pid)),
+            nix::unistd::getsid(Some(pid)),
+        ) {
+            (Ok(group), Ok(session)) if group == pid && session == pid => {
+                state = "CONFIRMED_STOPPED_DETACHED_SESSION";
+                group_empty = Some(false);
+            }
+            (Ok(group), Ok(session)) if inherited == Some((group, session)) => {
+                // The actually stopped child cannot race setsid after this
+                // observation. First-party daemon code calls setsid before work.
+                state = "CONFIRMED_STOPPED_BEFORE_DETACH";
+            }
+            observed => errors.push(format!(
+                "stopped original Child session unproved: {observed:?}"
+            )),
+        }
+    }
+    if !reaped && !authority_lost {
+        let signalled = if group_empty.is_some() {
+            // Actual stopped/unreaped session leader pins this original group.
+            killpg(pid, Signal::SIGKILL).map_err(|e| e.to_string())
+        } else {
+            child.kill().map_err(|e| e.to_string())
+        };
+        if let Err(error) = signalled {
+            errors.push(format!("original Child/group kill: {error}"));
+        }
+    }
+    loop {
+        if !reaped && !authority_lost {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    reaped = true;
+                    reaper = "std_Child_try_wait";
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    authority_lost = true;
+                    errors.push(format!("original Child reap: {error}"));
+                }
+            }
+        }
+        if group_empty.is_some() {
+            // Query only after the sole group signal; never signal after reap.
+            group_empty = Some(matches!(killpg(pid, None), Err(nix::errno::Errno::ESRCH)));
+        }
+        let closure_known = group_empty == Some(true) || state == "CONFIRMED_STOPPED_BEFORE_DETACH";
+        if reaped && closure_known {
+            break;
+        }
+        if authority_lost || Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(
+            Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+        )
+        .await;
+    }
+    let closure_known = group_empty == Some(true) || state == "CONFIRMED_STOPPED_BEFORE_DETACH";
+    Ok(
+        serde_json::json!({"complete":errors.is_empty() && reaped && closure_known && Instant::now() <= deadline,
+        "original_child_pid":child.id(),"original_child_reaped":reaped,"reaper":reaper,
+        "session_state":state,"owned_group_empty":group_empty,"errors":errors,
+        "authority_lost":authority_lost}),
+    )
 }
 
 async fn abort_start(child: &mut Child) -> Result<(), String> {
@@ -908,11 +1100,12 @@ pub async fn execute() -> Result<(), String> {
         command,
         text,
         json,
+        startup_handoff,
     } = cli::Arguments::parse(&arguments)?;
     let _replay_guard = replay_guard::optional(command)?;
     let directory = directory()?;
     if std::env::var_os(DAEMON_NONCE).is_some() {
-        if command != "start" {
+        if command != "start" || startup_handoff {
             return Err("invalid internal lifecycle invocation".into());
         }
         nix::unistd::setsid().map_err(|error| format!("detach node session: {error}"))?;
@@ -940,6 +1133,9 @@ pub async fn execute() -> Result<(), String> {
     let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
     let _lock = operation_lock(&directory).await?;
     let status = match command {
+        "start" if startup_handoff => {
+            start_with_handoff(&directory, Some(startup::Handoff::open()?)).await?
+        }
         "start" => start(&directory).await?,
         "stop" => stop(&directory).await?,
         "status" => status(&directory).await?,

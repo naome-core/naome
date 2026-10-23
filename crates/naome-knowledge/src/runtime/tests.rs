@@ -496,3 +496,76 @@ async fn selection_epoch_binds_owner_revision_text_and_recovery_errors() {
         .await
         .unwrap();
 }
+
+// Real process boundaries for the maintained abort owner. These source tests
+// are not native qualification of installed CLI/Guardian/resource behavior.
+#[test]
+fn handoff_abort_process_fixture() {
+    let Ok(mode) = std::env::var("NAOME_TEST_HANDOFF_ABORT_FIXTURE") else {
+        return;
+    };
+    if mode == "detach" {
+        nix::unistd::setsid().unwrap();
+    }
+    // No work/descendants precede setsid,matching the daemon's entry invariant.
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[tokio::test]
+async fn handoff_abort_stabilizes_inherited_child_without_inventing_group_absence() {
+    let inherited = (nix::unistd::getpgrp(), nix::unistd::getsid(None).unwrap());
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::tests::handoff_abort_process_fixture",
+            "--nocapture",
+        ])
+        .env("NAOME_TEST_HANDOFF_ABORT_FIXTURE", "inherited")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let report = abort_owned_handoff(
+        &mut child,
+        Instant::now() + Duration::from_millis(500),
+        Some(inherited),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["original_child_reaped"], true);
+    assert_eq!(report["session_state"], "CONFIRMED_STOPPED_BEFORE_DETACH");
+    assert!(report["owned_group_empty"].is_null());
+}
+
+#[tokio::test]
+async fn handoff_abort_handles_the_actual_setsid_race_while_original_child_is_held() {
+    let inherited = (nix::unistd::getpgrp(), nix::unistd::getsid(None).unwrap());
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::tests::handoff_abort_process_fixture",
+            "--nocapture",
+        ])
+        .env("NAOME_TEST_HANDOFF_ABORT_FIXTURE", "detach")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let report = abort_owned_handoff(
+        &mut child,
+        Instant::now() + Duration::from_millis(500),
+        Some(inherited),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["original_child_reaped"], true);
+    match report["session_state"].as_str().unwrap() {
+        "CONFIRMED_STOPPED_DETACHED_SESSION" => assert_eq!(report["owned_group_empty"], true),
+        "CONFIRMED_STOPPED_BEFORE_DETACH" => assert!(report["owned_group_empty"].is_null()),
+        other => panic!("unproved session cannot complete: {other};{report}"),
+    }
+}
