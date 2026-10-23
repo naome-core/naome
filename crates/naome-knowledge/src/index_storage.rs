@@ -21,12 +21,13 @@ pub(crate) struct IndexStorage {
     identity: (u64, u64),
     version: i64,
     error: Mutex<Option<String>>,
-    _lease: fs::File,
+    _lease: Arc<fs::File>,
+    label: String,
+    mirror: Mutex<Option<Arc<Self>>>,
 }
 impl IndexStorage {
     pub(crate) fn open(directory: &Path, label: &str) -> Result<Arc<Self>, String> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = crate::jobs::research_directory(directory)?;
+        let root = crate::storage::research_directory(directory)?;
         let lease_path = root.join(format!(".disposable-{label}.lock"));
         let lease = fs::OpenOptions::new()
             .read(true)
@@ -53,6 +54,11 @@ impl IndexStorage {
                 fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
             }
         }
+        Self::fresh(&root, label, Arc::new(lease))
+    }
+    fn fresh(root: &Path, label: &str, lease: Arc<fs::File>) -> Result<Arc<Self>, String> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let prefix = format!(".disposable-{label}-");
         let sequence = NEXT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| "disposable index sequence exhausted")?;
@@ -80,21 +86,18 @@ impl IndexStorage {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(|e| e.to_string())?;
-        connection.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA trusted_schema=OFF; CREATE TABLE nodes(address BLOB PRIMARY KEY CHECK(length(address)=32), payload BLOB NOT NULL) STRICT, WITHOUT ROWID;").map_err(|e|e.to_string())?;
+        connection.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE nodes(address BLOB PRIMARY KEY CHECK(length(address)=32), payload BLOB NOT NULL) STRICT, WITHOUT ROWID;").map_err(|e|e.to_string())?;
         connection
             .pragma_update(None, "application_id", APPLICATION_ID)
             .map_err(|e| e.to_string())?;
         connection
             .pragma_update(None, "user_version", 1)
             .map_err(|e| e.to_string())?;
-        let cache = crate::resources::limits().registry_index_cache_bytes / 1024;
-        connection
-            .pragma_update(
-                None,
-                "cache_size",
-                -(i64::try_from(cache.max(1)).map_err(|_| "index cache width")?),
-            )
-            .map_err(|e| e.to_string())?;
+        crate::storage::sqlite_common(
+            &connection,
+            crate::resources::limits().registry_index_cache_bytes,
+        )
+        .map_err(|error| error.to_string())?;
         let version = connection
             .pragma_query_value(None, "data_version", |r| r.get(0))
             .map_err(|e| e.to_string())?;
@@ -105,7 +108,58 @@ impl IndexStorage {
             version,
             error: Mutex::new(None),
             _lease: lease,
+            label: label.to_owned(),
+            mirror: Mutex::new(None),
         }))
+    }
+    pub(crate) fn directory(&self) -> &Path {
+        self.path.parent().expect("index parent")
+    }
+    pub(crate) fn successor(&self) -> Result<Arc<Self>, String> {
+        Self::fresh(
+            self.path.parent().ok_or("index directory missing")?,
+            &self.label,
+            self._lease.clone(),
+        )
+    }
+    pub(crate) fn mirror_to(&self, target: Arc<Self>) -> Result<(), String> {
+        let _connection = self
+            .connection
+            .lock()
+            .map_err(|_| "index connection poisoned")?;
+        let mut mirror = self.mirror.lock().map_err(|_| "index mirror poisoned")?;
+        if mirror.is_some() {
+            return Err("index copy already active".into());
+        }
+        *mirror = Some(target);
+        Ok(())
+    }
+    pub(crate) fn end_mirror(&self, target: &Arc<Self>) {
+        let mut mirror = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        if mirror
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, target))
+        {
+            *mirror = None;
+        }
+    }
+    pub(crate) fn allocated_bytes(&self) -> Result<usize, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "index connection poisoned")?;
+        let connection = connection.as_ref().ok_or("index connection closed")?;
+        self.live(connection).map_err(|e| e.to_string())?;
+        let pages: i64 = connection
+            .pragma_query_value(None, "page_count", |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let size: i64 = connection
+            .pragma_query_value(None, "page_size", |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        pages
+            .checked_mul(size)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or("index allocated size overflow".into())
     }
     pub(crate) fn error(&self) -> Option<String> {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -154,8 +208,8 @@ impl ContextStorage for IndexStorage {
         Ok(bytes)
     }
     fn write(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
-        let connection = self.connection.lock().map_err(|_| ContextError::Corrupt)?;
-        let connection = connection.as_ref().ok_or(ContextError::Corrupt)?;
+        let connection_guard = self.connection.lock().map_err(|_| ContextError::Corrupt)?;
+        let connection = connection_guard.as_ref().ok_or(ContextError::Corrupt)?;
         self.live(connection)?;
         let existing: Option<Vec<u8>> = connection
             .query_row(
@@ -172,14 +226,23 @@ impl ContextStorage for IndexStorage {
             if existing != bytes {
                 return Err(ContextError::Corrupt);
             }
-            return Ok(());
+        } else {
+            connection
+                .execute(
+                    "INSERT INTO nodes VALUES(?1,?2)",
+                    params![address.as_slice(), bytes],
+                )
+                .map_err(sql)?;
         }
-        connection
-            .execute(
-                "INSERT INTO nodes VALUES(?1,?2)",
-                params![address.as_slice(), bytes],
-            )
-            .map_err(sql)?;
+        let mirror = self
+            .mirror
+            .lock()
+            .map_err(|_| ContextError::Corrupt)?
+            .clone();
+        if let Some(mirror) = mirror {
+            mirror.write(address, bytes)?;
+        }
+        drop(connection_guard);
         Ok(())
     }
     fn record_failure(&self, error: &ContextError) {
@@ -228,13 +291,7 @@ fn disposable(path: &Path) -> Result<bool, String> {
 }
 
 fn owned(path: &Path) -> Result<(u64, u64), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-    {
-        return Err("disposable index must be an owned unaliased file".into());
-    }
+    let metadata = crate::storage::owned_file(path)?;
     Ok((metadata.dev(), metadata.ino()))
 }
 fn sql(error: rusqlite::Error) -> ContextError {

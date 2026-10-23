@@ -24,6 +24,7 @@ impl Node {
         self.enabled.remove(&peer);
         self.next_inventory.remove(&peer);
         self.inventory_progress.remove(&peer);
+        self.inventory_summaries.remove(&peer);
         self.next_automatic_request.remove(&peer);
         self.buckets.remove(&peer);
         self.outgoing.remove(&peer);

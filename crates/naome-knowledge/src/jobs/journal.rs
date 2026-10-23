@@ -1,8 +1,8 @@
 use super::*;
+use crate::storage::{marker_valid, research_directory, write_marker};
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{File, OpenOptions},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
@@ -131,7 +131,7 @@ impl Disk {
         let marker = directory.join("research.initialized");
         let established = marker_valid(&marker, b"naome-research-jobs-v3\n")?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open(&path, "naome:research-jobs:v1")?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, "naome:research-jobs:v1")?
         } else {
             if established {
                 return Err("research journal is missing; refusing a fresh allowance".into());
@@ -162,7 +162,7 @@ impl Disk {
         let header: Header = checkpoint.header()?;
         if header.version != 3
             || header.compatibility != crate::hex(&crate::compatibility())
-            || header.configuration != identity(&settings)
+            || crate::object::id_bytes(&header.configuration).is_err()
         {
             return Err("unsupported research journal configuration or header".into());
         }
@@ -183,6 +183,7 @@ impl Disk {
             return Err("research physical slot allocation differs".into());
         }
         let mut journal = Journal::from_header(header);
+        journal.configuration = identity(&settings);
         let mut resident_bytes = 0usize;
         let mut unacknowledged = 0usize;
         checkpoint.scan(
@@ -325,7 +326,7 @@ impl Disk {
                     || record.spent_ms >= record.settings.limits.horizon_ms
                 {
                     State::Expired
-                } else if record.provider == "naome-deterministic-mocks-v1"
+                } else if super::provider::resumable(record)
                     && record.settings.recovery == RecoveryPolicy::DeterministicCheckpoint
                 {
                     State::Suspended
@@ -665,7 +666,7 @@ impl Journal {
 fn validate_record(
     id: u64,
     r: &Record,
-    settings: Settings,
+    _settings: Settings,
     observed_ms: u64,
     next_id: u64,
     next_cursor: u64,
@@ -673,10 +674,10 @@ fn validate_record(
 ) -> Result<(), String> {
     r.input.validate()?;
     r.binding.validate()?;
+    r.settings.validate_history()?;
     if id != r.id
         || id >= next_id
-        || r.provider != "naome-deterministic-mocks-v1"
-        || r.settings != settings.for_input(&r.input)
+        || !super::provider::valid_checkpoint(r)
         || r.configuration != identity(&r.settings)
         || r.created_ms > r.accounted_ms
         || r.accounted_ms > observed_ms
@@ -686,11 +687,8 @@ fn validate_record(
                 .ok_or("job horizon overflow")?
         || r.checkpoint > r.reserved_units
         || r.reserved_units > r.settings.limits.work_units
-        || r.checkpoint > r.settings.mock.steps
         || r.acknowledged && !r.state.terminal()
         || (r.state == State::Complete) != r.result.is_some()
-        || r.state == State::Complete
-            && (r.checkpoint != r.settings.mock.steps || r.settings.mock.steps == 0)
     {
         return Err("research record identity, lifecycle, checkpoint or budget differs".into());
     }
@@ -701,7 +699,7 @@ fn validate_record(
         return Err("research failure detail capacity".into());
     }
     if let Some(output) = &r.result {
-        output.validate(&r.input)?;
+        output.validate_retained(&r.input)?;
     }
     if !matches!(r.input, Input::Find { .. }) {
         let account = account.ok_or("missing original obligation budget")?;
@@ -722,10 +720,10 @@ fn validate_record(
     Ok(())
 }
 
-fn validate_account(key: &str, account: &Account, settings: Settings) -> Result<(), String> {
+fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result<(), String> {
     crate::object::id_bytes(key)?;
-    if ![settings.solving, settings.interest].contains(&account.settings)
-        || account.settings.limits.horizon_ms == 0
+    account.settings.validate_history()?;
+    if account.settings.limits.horizon_ms == 0
         || account.settings.limits.work_units == 0
         || account
             .created_ms
@@ -737,31 +735,6 @@ fn validate_account(key: &str, account: &Account, settings: Settings) -> Result<
         return Err("research obligation allowance corruption".into());
     }
     Ok(())
-}
-
-pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
-    let path = directory.join("research");
-    match fs::symlink_metadata(&path) {
-        Ok(metadata)
-            if metadata.is_dir()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == nix::unistd::geteuid().as_raw() => {}
-        Ok(_) => return Err("research path must be one owned directory".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if marker_valid(
-                &directory.join("research.initialized"),
-                b"naome-research-jobs-v3\n",
-            )? {
-                return Err("established research directory is missing; no fresh allowance".into());
-            }
-            fs::create_dir(&path).map_err(|e| e.to_string())?;
-            File::open(directory)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| e.to_string())?;
-        }
-        Err(e) => return Err(e.to_string()),
-    }
-    Ok(path)
 }
 
 fn slot_file(root: &Path, index: usize, create: bool) -> Result<File, String> {
@@ -796,55 +769,4 @@ fn install_slots(root: &Path) -> Result<Vec<(u64, u64)>, String> {
         .and_then(|f| f.sync_all())
         .map_err(|e| e.to_string())?;
     Ok(slots)
-}
-
-pub(crate) fn marker_valid(path: &Path, expected: &[u8]) -> Result<bool, String> {
-    match read_owned(path, 64)? {
-        None => Ok(false),
-        Some(bytes) if bytes == expected => Ok(true),
-        Some(_) => Err("research initialization marker corruption".into()),
-    }
-}
-
-pub(crate) fn write_marker(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    File::open(path.parent().ok_or("research marker parent absent")?)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())
-}
-
-fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-    {
-        return Err("research checkpoint must be one regular owned file".into());
-    }
-    let mut bytes = Vec::new();
-    file.take(u64::try_from(limit).map_err(|_| "research read limit")? + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > limit {
-        return Err("research checkpoint byte capacity".into());
-    }
-    Ok(Some(bytes))
 }

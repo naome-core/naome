@@ -8,7 +8,11 @@ use sha2::{Digest, Sha256};
 use std::{cell::Cell, collections::BTreeMap, fs, path::Path, time::Instant};
 
 #[cfg(test)]
-std::thread_local! { static SET_SCANS: Cell<usize> = const { Cell::new(0) }; }
+std::thread_local! { static SET_SCANS: Cell<usize> = const { Cell::new(0) }; static PAYLOAD_READS: Cell<usize> = const { Cell::new(0) }; }
+#[cfg(test)]
+pub(super) fn payload_reads() -> usize {
+    PAYLOAD_READS.with(Cell::get)
+}
 #[cfg(test)]
 pub(super) fn set_scan_count() -> usize {
     SET_SCANS.with(Cell::get)
@@ -115,7 +119,7 @@ pub(super) struct Catalog {
 }
 
 impl Catalog {
-    pub(super) fn open(path: &Path, database_id: [u8; 32]) -> Result<Self, String> {
+    pub(super) fn open(path: &Path, database_id: [u8; 32]) -> Result<Self, crate::Error> {
         let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
         if !regular_unaliased(&metadata) {
             return Err("proof catalog must be a regular file".into());
@@ -134,7 +138,10 @@ impl Catalog {
 
     /// Resume only an unpublished initialization file with no initialized schema.
     /// The enclosing Store never invokes this on the final canonical database.
-    pub(super) fn initialize_stage(path: &Path, database_id: [u8; 32]) -> Result<Self, String> {
+    pub(super) fn initialize_stage(
+        path: &Path,
+        database_id: [u8; 32],
+    ) -> Result<Self, crate::Error> {
         if !path.exists() {
             fs::OpenOptions::new()
                 .write(true)
@@ -186,7 +193,7 @@ impl Catalog {
 
     /// Recovery may inspect an existing inactive catalog before the enclosing
     /// lineage receipt was written. This never creates or repairs a schema.
-    pub(super) fn inspect_identity(path: &Path) -> Result<[u8; 32], String> {
+    pub(super) fn inspect_identity(path: &Path) -> Result<[u8; 32], crate::Error> {
         let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
         if !regular_unaliased(&metadata) {
             return Err("proof catalog must be a regular file".into());
@@ -198,17 +205,17 @@ impl Catalog {
         Ok(read_meta(&connection, None)?.database_id)
     }
 
-    pub(super) fn identity(&self) -> Result<[u8; 32], String> {
+    pub(super) fn identity(&self) -> Result<[u8; 32], crate::Error> {
         Ok(self.meta()?.database_id)
     }
 
-    pub(super) fn active(&self) -> Result<bool, String> {
+    pub(super) fn active(&self) -> Result<bool, crate::Error> {
         Ok(self.meta()?.active)
     }
 
     /// Validate the complete catalog with bounded owned records. This establishes
     /// storage integrity only; Graph still rechecks every proof mathematically.
-    pub(super) fn summary(&self) -> Result<Summary, String> {
+    pub(super) fn summary(&self) -> Result<Summary, crate::Error> {
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         let summary = validate_catalog(&transaction, self.database_id)?;
         let version = self.check_data_version(&transaction)?;
@@ -221,7 +228,7 @@ impl Catalog {
         &self,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<(u64, BinaryProof)>, String> {
+    ) -> Result<Vec<(u64, BinaryProof)>, crate::Error> {
         page_limit(limit, crate::resources::limits().replay_page)?;
         let after_sql = i64::try_from(after).map_err(|_| "catalog replay cursor width")?;
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
@@ -275,7 +282,7 @@ impl Catalog {
         after: Option<ProofId>,
         limit: usize,
         expected: Summary,
-    ) -> Result<Vec<ProofId>, String> {
+    ) -> Result<Vec<ProofId>, crate::Error> {
         page_limit(limit, crate::resources::limits().id_page)?;
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
@@ -309,7 +316,7 @@ impl Catalog {
         &self,
         id: ProofId,
         expected: Summary,
-    ) -> Result<Option<BinaryProof>, String> {
+    ) -> Result<Option<BinaryProof>, crate::Error> {
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
@@ -318,14 +325,25 @@ impl Catalog {
         Ok(record.map(|record| record.object))
     }
 
-    pub(super) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, String> {
-        // Preserve payload, digest, content-address and relation checks without
-        // allocating hex or materializing a certificate for a membership query.
-        self.get(id, expected).map(|object| object.is_some())
+    pub(super) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, crate::Error> {
+        // Complete validation/replay establishes this connection's generation.
+        // Foreign SQLite writes invalidate it before any metadata-only answer.
+        let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
+        check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
+        self.require_validated_version(&transaction)?;
+        let present = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM proofs WHERE id=?1)",
+                params![id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(present)
     }
 
     /// The enclosing Graph calls this only after complete mathematical replay.
-    pub(super) fn activate(&self, root: [u8; 32]) -> Result<(), String> {
+    pub(super) fn activate(&self, root: [u8; 32]) -> Result<(), crate::Error> {
         let transaction = begin(&self.connection, TransactionBehavior::Immediate)?;
         let summary = validate_catalog(&transaction, self.database_id)?;
         let version = self.check_data_version(&transaction)?;
@@ -350,7 +368,7 @@ impl Catalog {
         root: ProofId,
         objects: &[&BinaryProof],
         commit: Commit<'_>,
-    ) -> Result<Summary, String> {
+    ) -> Result<Summary, crate::Error> {
         let Commit {
             expected,
             deadline,
@@ -379,7 +397,7 @@ impl Catalog {
         fail_at(cut, BatchCut::BeforeCommit)?;
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             transaction.rollback().map_err(sql_error)?;
-            return Err(COMMIT_DEADLINE_ERROR.into());
+            return Err(COMMIT_DEADLINE_ERROR);
         }
         if let Some(guard) = guard
             && let Err(error) = guard.check()
@@ -387,18 +405,20 @@ impl Catalog {
             transaction.rollback().map_err(sql_error)?;
             return Err(error);
         }
-        transaction.commit().map_err(sql_error)?;
+        transaction
+            .commit()
+            .map_err(|e| crate::Error::UncertainDurability(e.to_string()))?;
         // A failure here is ambiguous durability. The Graph must halt and a
         // restart must replay the complete committed transaction.
         fail_at(cut, BatchCut::AfterCommit)?;
         Ok(summary)
     }
 
-    fn meta(&self) -> Result<Meta, String> {
+    fn meta(&self) -> Result<Meta, crate::Error> {
         read_meta(&self.connection, Some(self.database_id))
     }
 
-    fn check_data_version(&self, connection: &Connection) -> Result<i64, String> {
+    fn check_data_version(&self, connection: &Connection) -> Result<i64, crate::Error> {
         let version: i64 = connection
             .pragma_query_value(None, "data_version", |row| row.get(0))
             .map_err(sql_error)?;
@@ -412,7 +432,7 @@ impl Catalog {
         Ok(version)
     }
 
-    fn require_validated_version(&self, connection: &Connection) -> Result<(), String> {
+    fn require_validated_version(&self, connection: &Connection) -> Result<(), crate::Error> {
         if self.validated_data_version.get().is_none() {
             return Err("proof catalog has not been validated".into());
         }
@@ -428,7 +448,7 @@ impl Catalog {
     }
 
     #[cfg(test)]
-    pub(super) fn set_max_page_count(&self, pages: u64) -> Result<(), String> {
+    pub(super) fn set_max_page_count(&self, pages: u64) -> Result<(), crate::Error> {
         let pages = i64::try_from(pages).map_err(|_| "invalid test page limit")?;
         if pages <= 0 {
             return Err("invalid test page limit".into());
@@ -447,7 +467,7 @@ impl Catalog {
     }
 
     #[cfg(test)]
-    pub(super) fn page_count(&self) -> Result<u64, String> {
+    pub(super) fn page_count(&self) -> Result<u64, crate::Error> {
         let pages: i64 = self
             .connection
             .pragma_query_value(None, "page_count", |row| row.get(0))
@@ -456,7 +476,7 @@ impl Catalog {
     }
 }
 
-fn initialize_schema(connection: &Connection, database_id: [u8; 32]) -> Result<(), String> {
+fn initialize_schema(connection: &Connection, database_id: [u8; 32]) -> Result<(), crate::Error> {
     let transaction = begin(connection, TransactionBehavior::Immediate)?;
     for (_, sql) in TABLES.iter().chain(INDEXES.iter()) {
         transaction.execute_batch(sql).map_err(sql_error)?;
@@ -518,7 +538,7 @@ struct Record {
 
 fn prepare<'a>(
     objects: impl Iterator<Item = &'a BinaryProof>,
-) -> Result<BTreeMap<[u8; 32], Prepared>, String> {
+) -> Result<BTreeMap<[u8; 32], Prepared>, crate::Error> {
     let mut prepared = BTreeMap::new();
     let mut bytes = 0usize;
     for object in objects {
@@ -581,7 +601,7 @@ fn regular_unaliased(metadata: &fs::Metadata) -> bool {
     true
 }
 
-fn open_connection(path: &Path) -> Result<Connection, String> {
+fn open_connection(path: &Path) -> Result<Connection, crate::Error> {
     // Resolve legitimate directory aliases (including macOS /var) without
     // resolving the catalog leaf; SQLite must still refuse a substituted leaf.
     let parent = path
@@ -604,29 +624,14 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
     Ok(connection)
 }
 
-fn configure(connection: &Connection) -> Result<(), String> {
-    connection
-        .busy_timeout(crate::resources::limits().sqlite_busy_timeout)
+fn configure(connection: &Connection) -> Result<(), crate::Error> {
+    crate::storage::sqlite_common(connection, crate::resources::limits().catalog_cache_bytes)
         .map_err(sql_error)?;
     connection
         .execute_batch(
-            "PRAGMA journal_mode = DELETE;
-         PRAGMA synchronous = EXTRA;
-         PRAGMA foreign_keys = ON;
-
-         PRAGMA temp_store = FILE;
-         PRAGMA mmap_size = 0;
-         PRAGMA trusted_schema = OFF;",
+            "PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA foreign_keys=ON;",
         )
         .map_err(sql_error)?;
-    connection
-        .pragma_update(
-            None,
-            "cache_size",
-            -(i64::try_from((crate::resources::limits().catalog_cache_bytes / 1024).max(1))
-                .map_err(|_| "SQLite cache width")?),
-        )
-        .map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     connection
         .pragma_update(None, "fullfsync", true)
@@ -650,7 +655,7 @@ fn configure(connection: &Connection) -> Result<(), String> {
             .pragma_query_value(None, name, |row| row.get(0))
             .map_err(sql_error)?;
         if actual != expected {
-            return Err(format!("catalog pragma {name} differs"));
+            return Err(format!("catalog pragma {name} differs").into());
         }
     }
     #[cfg(target_os = "macos")]
@@ -665,7 +670,7 @@ fn configure(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_version(connection: &Connection) -> Result<(), String> {
+fn verify_version(connection: &Connection) -> Result<(), crate::Error> {
     let application: i64 = connection
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .map_err(sql_error)?;
@@ -678,7 +683,7 @@ fn verify_version(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_schema(connection: &Connection) -> Result<(), String> {
+fn verify_schema(connection: &Connection) -> Result<(), crate::Error> {
     verify_version(connection)?;
     let mut statement = connection
         .prepare(
@@ -710,7 +715,7 @@ fn verify_schema(connection: &Connection) -> Result<(), String> {
         .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
         .map_err(sql_error)?;
     if check != "ok" {
-        return Err(format!("catalog integrity failure: {check}"));
+        return Err(format!("catalog integrity failure: {check}").into());
     }
     verify_foreign_keys(connection)
 }
@@ -729,7 +734,7 @@ fn normalize_sql(sql: &str) -> String {
     sql.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn read_meta(connection: &Connection, expected_id: Option<[u8; 32]>) -> Result<Meta, String> {
+fn read_meta(connection: &Connection, expected_id: Option<[u8; 32]>) -> Result<Meta, crate::Error> {
     if count(connection, "meta")? != 1 {
         return Err("catalog metadata row count differs".into());
     }
@@ -776,7 +781,10 @@ fn read_meta(connection: &Connection, expected_id: Option<[u8; 32]>) -> Result<M
     })
 }
 
-fn validate_catalog(connection: &Connection, database_id: [u8; 32]) -> Result<Summary, String> {
+fn validate_catalog(
+    connection: &Connection,
+    database_id: [u8; 32],
+) -> Result<Summary, crate::Error> {
     verify_schema(connection)?;
     let meta = read_meta(connection, Some(database_id))?;
     let summary = verify_summary(connection, &meta)?;
@@ -813,7 +821,7 @@ fn validate_catalog(connection: &Connection, database_id: [u8; 32]) -> Result<Su
     Ok(summary)
 }
 
-fn check_expected_summary(meta: &Meta, expected: Summary) -> Result<(), String> {
+fn check_expected_summary(meta: &Meta, expected: Summary) -> Result<(), crate::Error> {
     if !meta.active {
         return Err("canonical catalog is not active".into());
     }
@@ -826,7 +834,28 @@ fn check_expected_summary(meta: &Meta, expected: Summary) -> Result<(), String> 
     Ok(())
 }
 
-fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, String> {
+fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, crate::Error> {
+    // Reserve from bounded authenticated metadata before fetching any payload.
+    let length: Option<i64> = connection
+        .query_row(
+            "SELECT payload_length FROM proofs WHERE id=?1",
+            [id.as_slice()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let Some(length) = length else {
+        return Ok(None);
+    };
+    let length = usize::try_from(length).map_err(|_| "catalog payload length width")?;
+    if length == 0 || length > naome_proof::CERTIFICATE_MAX_BYTES {
+        return Err("catalog payload length differs".into());
+    }
+    let memory = crate::resources::MemoryLease::acquire(
+        length.checked_mul(4).ok_or("proof memory overflow")?,
+    )?;
+    #[cfg(test)]
+    PAYLOAD_READS.with(|reads| reads.set(reads.get() + 1));
     type Stored = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>, i64);
     let stored: Option<Stored> = {
         let mut statement = connection
@@ -860,7 +889,7 @@ fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, 
     let origin = key(origin)?;
     let replay_order = replay_ordinal(ordinal)?;
     if payload.is_empty()
-        || payload.len() > crate::resources::limits().proof_bytes
+        || payload.len() > naome_proof::CERTIFICATE_MAX_BYTES
         || usize::try_from(length).ok() != Some(payload.len())
         || <[u8; 32]>::from(Sha256::digest(&payload)) != digest
     {
@@ -878,12 +907,7 @@ fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, 
         id: ProofId::from_bytes(id),
         statement: naome_proof::StatementId::from_bytes(statement),
         bytes: payload.clone().into(),
-        _memory: Some(crate::resources::MemoryLease::acquire(
-            payload
-                .len()
-                .checked_mul(4)
-                .ok_or("proof memory overflow")?,
-        )?),
+        _memory: Some(memory),
         dependencies: dependencies
             .iter()
             .copied()
@@ -942,7 +966,7 @@ fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, 
     }))
 }
 
-fn verify_summary(connection: &Connection, meta: &Meta) -> Result<Summary, String> {
+fn verify_summary(connection: &Connection, meta: &Meta) -> Result<Summary, crate::Error> {
     let summary = corpus_summary(connection)?;
     verify_summary_fields(connection, meta, summary)
 }
@@ -951,7 +975,7 @@ fn verify_summary_fields(
     connection: &Connection,
     meta: &Meta,
     summary: Summary,
-) -> Result<Summary, String> {
+) -> Result<Summary, crate::Error> {
     if summary.count != meta.count
         || summary.bytes != meta.bytes
         || (meta.active && meta.corpus_root != Some(summary.root))
@@ -1014,7 +1038,7 @@ fn verify_summary_fields(
     Ok(summary)
 }
 
-fn corpus_summary(connection: &Connection) -> Result<Summary, String> {
+fn corpus_summary(connection: &Connection) -> Result<Summary, crate::Error> {
     #[cfg(test)]
     SET_SCANS.with(|count| count.set(count.get() + 1));
     let (count, bytes, invalid): (i64, i64, i64) = connection
@@ -1050,7 +1074,7 @@ fn commit_summary(
     preceding: Summary,
     objects: &BTreeMap<[u8; 32], Prepared>,
     next_root: Option<[u8; 32]>,
-) -> Result<Summary, String> {
+) -> Result<Summary, crate::Error> {
     let count = preceding
         .count
         .checked_add(objects.len())
@@ -1091,7 +1115,7 @@ fn insert_commit(
     objects: &BTreeMap<[u8; 32], Prepared>,
     preceding_count: usize,
     cut: Option<BatchCut>,
-) -> Result<bool, String> {
+) -> Result<bool, crate::Error> {
     let existing: Option<i64> = connection
         .query_row(
             "SELECT 1 FROM commits WHERE id = ?1",
@@ -1162,7 +1186,7 @@ fn verify_commit(
     commit: [u8; 32],
     root: [u8; 32],
     objects: &BTreeMap<[u8; 32], Prepared>,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let (stored_root, stored_count): (Vec<u8>, i64) = connection
         .query_row(
             "SELECT substr(root,1,33), member_count FROM commits WHERE id = ?1",
@@ -1188,7 +1212,7 @@ fn verify_proof(
     connection: &Connection,
     expected: &Prepared,
     commit: [u8; 32],
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let record =
         read_record(connection, expected.member.id)?.ok_or("catalog commit proof missing")?;
     if record.member != expected.member
@@ -1200,7 +1224,7 @@ fn verify_proof(
     Ok(())
 }
 
-fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 32]>, crate::Error> {
     let mut statement = connection
         .prepare_cached("SELECT ordinal, substr(target,1,33) FROM dependencies WHERE proof_id = ?1 ORDER BY ordinal")
         .map_err(sql_error)?;
@@ -1209,7 +1233,7 @@ fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 3
     while let Some(row) = rows.next().map_err(sql_error)? {
         let ordinal: i64 = row.get(0).map_err(sql_error)?;
         let target = key(row.get(1).map_err(sql_error)?)?;
-        if dependencies.len() >= crate::resources::limits().proof_dependencies
+        if dependencies.len() >= naome_proof::CERTIFICATE_MAX_STEPS
             || usize::try_from(ordinal).ok() != Some(dependencies.len())
             || dependencies
                 .last()
@@ -1222,7 +1246,7 @@ fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 3
     Ok(dependencies)
 }
 
-fn read_members(connection: &Connection, commit: [u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+fn read_members(connection: &Connection, commit: [u8; 32]) -> Result<Vec<[u8; 32]>, crate::Error> {
     let mut statement = connection
         .prepare_cached(
             "SELECT substr(proof_id,1,33) FROM members WHERE commit_id = ?1 ORDER BY proof_id",
@@ -1244,7 +1268,7 @@ fn read_members(connection: &Connection, commit: [u8; 32]) -> Result<Vec<[u8; 32
     Ok(members)
 }
 
-fn verify_commits(connection: &Connection) -> Result<(), String> {
+fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
     let mut statement = connection
         .prepare("SELECT substr(id,1,33), substr(root,1,33), member_count FROM commits ORDER BY id")
         .map_err(sql_error)?;
@@ -1260,7 +1284,7 @@ fn verify_commits(connection: &Connection) -> Result<(), String> {
         let mut bound = Vec::with_capacity(members.len());
         for member in members {
             let record = read_record(connection, member)?.ok_or("missing catalog commit proof")?;
-            record.object.clone().prepare()?;
+            record.object.clone().prepare_retained()?;
             if record.origin != id {
                 return Err("catalog proof belongs to a different originating commit".into());
             }
@@ -1276,7 +1300,7 @@ fn verify_commits(connection: &Connection) -> Result<(), String> {
 fn commit_digest<'a>(
     root: [u8; 32],
     members: impl Iterator<Item = &'a Member>,
-) -> Result<[u8; 32], String> {
+) -> Result<[u8; 32], crate::Error> {
     let members: Vec<_> = members.collect();
     if members.is_empty()
         || members.len() > crate::resources::limits().batch_objects
@@ -1302,8 +1326,8 @@ fn commit_digest<'a>(
         hash.update(member.statement);
         hash.update(member.compatibility);
         if member.length == 0
-            || member.length > crate::resources::limits().proof_bytes
-            || member.dependencies.len() > crate::resources::limits().proof_dependencies
+            || member.length > naome_proof::CERTIFICATE_MAX_BYTES
+            || member.dependencies.len() > naome_proof::CERTIFICATE_MAX_STEPS
         {
             return Err("catalog commit member width differs".into());
         }
@@ -1332,7 +1356,7 @@ fn commit_digest<'a>(
     Ok(hash.finalize().into())
 }
 
-fn verify_foreign_keys(connection: &Connection) -> Result<(), String> {
+fn verify_foreign_keys(connection: &Connection) -> Result<(), crate::Error> {
     let mut statement = connection
         .prepare("PRAGMA foreign_key_check")
         .map_err(sql_error)?;
@@ -1348,7 +1372,7 @@ fn verify_foreign_keys(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn proof_exists(connection: &Connection, id: [u8; 32]) -> Result<bool, String> {
+fn proof_exists(connection: &Connection, id: [u8; 32]) -> Result<bool, crate::Error> {
     connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM proofs WHERE id = ?1)",
@@ -1358,7 +1382,7 @@ fn proof_exists(connection: &Connection, id: [u8; 32]) -> Result<bool, String> {
         .map_err(sql_error)
 }
 
-fn count(connection: &Connection, table: &str) -> Result<usize, String> {
+fn count(connection: &Connection, table: &str) -> Result<usize, crate::Error> {
     // Every caller supplies one of this module's fixed schema table names.
     let count: i64 = connection
         .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
@@ -1371,17 +1395,17 @@ fn count(connection: &Connection, table: &str) -> Result<usize, String> {
 fn begin(
     connection: &Connection,
     behavior: TransactionBehavior,
-) -> Result<Transaction<'_>, String> {
+) -> Result<Transaction<'_>, crate::Error> {
     Transaction::new_unchecked(connection, behavior).map_err(sql_error)
 }
 
-fn key(bytes: Vec<u8>) -> Result<[u8; 32], String> {
+fn key(bytes: Vec<u8>) -> Result<[u8; 32], crate::Error> {
     bytes
         .try_into()
         .map_err(|_| "catalog identity width".into())
 }
 
-fn replay_ordinal(value: i64) -> Result<u64, String> {
+fn replay_ordinal(value: i64) -> Result<u64, crate::Error> {
     let ordinal = u64::try_from(value).map_err(|_| "catalog replay ordinal width")?;
     if ordinal == 0 {
         return Err("catalog replay ordinal must be positive".into());
@@ -1389,18 +1413,18 @@ fn replay_ordinal(value: i64) -> Result<u64, String> {
     Ok(ordinal)
 }
 
-fn sql_width(value: usize) -> Result<i64, String> {
+fn sql_width(value: usize) -> Result<i64, crate::Error> {
     i64::try_from(value).map_err(|_| "catalog integer width".into())
 }
 
-fn page_limit(limit: usize, maximum: usize) -> Result<(), String> {
+fn page_limit(limit: usize, maximum: usize) -> Result<(), crate::Error> {
     if limit == 0 || limit > maximum {
         return Err("catalog page limit outside supported bounds".into());
     }
     Ok(())
 }
 
-fn fail_at(cut: Option<BatchCut>, position: BatchCut) -> Result<(), String> {
+fn fail_at(cut: Option<BatchCut>, position: BatchCut) -> Result<(), crate::Error> {
     #[cfg(test)]
     if cut == Some(position) {
         return Err("injected batch persistence cut".into());
@@ -1409,6 +1433,6 @@ fn fail_at(cut: Option<BatchCut>, position: BatchCut) -> Result<(), String> {
     Ok(())
 }
 
-fn sql_error(error: rusqlite::Error) -> String {
-    format!("proof catalog: {error}")
+fn sql_error(error: rusqlite::Error) -> crate::Error {
+    crate::Error::CorruptStorage(format!("proof catalog: {error}"))
 }

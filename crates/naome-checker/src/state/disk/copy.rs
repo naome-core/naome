@@ -27,11 +27,11 @@ pub struct DiskCopyProgress {
 }
 
 impl DiskCopyProgress {
-    fn fits(&self, budget: DiskCopyBudget, bytes: usize) -> bool {
+    pub(crate) fn fits(&self, budget: DiskCopyBudget, bytes: usize) -> bool {
         self.records < budget.records && bytes <= budget.bytes.saturating_sub(self.bytes)
     }
 
-    fn node(&mut self, bytes: usize) {
+    pub(crate) fn node(&mut self, bytes: usize) {
         self.records += 1;
         self.node_visits += 1;
         self.bytes += bytes;

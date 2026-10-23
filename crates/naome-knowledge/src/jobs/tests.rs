@@ -110,3 +110,15 @@ fn source_binding_preserves_original_question_orientation_and_strict_schema() {
     value["new_budget"] = serde_json::json!(true);
     assert!(serde_json::from_value::<Input>(value).is_err());
 }
+
+#[cfg(not(feature = "developer-tools"))]
+#[test]
+fn ordinary_product_rejects_developer_workloads_before_spawning() {
+    let mut settings = Settings::default();
+    settings.solving.mock.steps = 2;
+    assert_eq!(
+        settings.validate().unwrap_err(),
+        "controlled mock workloads require developer-tools"
+    );
+    assert!(Settings::default().validate().is_ok());
+}

@@ -11,6 +11,8 @@ mod autonomous;
 mod checkpoint;
 mod corpus;
 mod discovery;
+mod error;
+pub use error::Error;
 mod graph;
 mod index_storage;
 mod intake;
@@ -24,6 +26,7 @@ pub mod relay;
 pub mod resources;
 #[cfg(unix)]
 pub mod runtime;
+mod storage;
 mod store;
 mod wire;
 

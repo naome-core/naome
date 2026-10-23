@@ -8,6 +8,8 @@ use super::{AssessmentLimits, Identity, RegisteredQuestion, RejectionReason};
 use crate::{ContextError, ContextStorage};
 use std::{borrow::Cow, sync::Arc};
 mod cold;
+mod copy;
+pub use copy::QuestionRegistryCopy;
 
 /// The receiver's entire local registry with incremental canonical indexes.
 /// Every record is checked at insertion; snapshots borrow the complete index
@@ -88,6 +90,14 @@ impl QuestionRegistry {
         self.statements.set(statement, bucket);
         self.length = length;
         Ok(())
+    }
+
+    /// Authenticated exact source-record membership, separate from formula equality.
+    pub fn contains_record(&self, record: &Identity) -> Result<bool, ContextError> {
+        match &self.cold {
+            Some(cold) => cold.has_record(record),
+            None => Ok(self.records.contains_key(record)),
+        }
     }
 
     pub const fn len(&self) -> usize {

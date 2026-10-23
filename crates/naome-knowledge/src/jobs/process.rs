@@ -35,7 +35,8 @@ enum Frame {
     Reserve { id: u64, next: u32 },
     Progress { id: u64, checkpoint: u32 },
     Result { id: u64, output: Output },
-    Failed { id: u64 },
+    Failed { id: u64, error: String },
+    Uncertain { id: u64, error: String },
     CleanupComplete { id: u64 },
     CleanupFailed { id: u64, error: String },
 }
@@ -280,14 +281,17 @@ async fn run_owned(
                         && cleaned
                         && outstanding.is_none()
                         && id == record.id
-                        && record.settings.mock.steps > 0
-                        && checkpoint == record.settings.mock.steps =>
+                        && super::provider::complete(&record, checkpoint) =>
                 {
                     output.validate(&record.input)?;
                     return Ok(output);
                 }
-                Frame::Failed { id } if ready && id == record.id => {
-                    return Err("deterministic provider failed".into());
+                Frame::Uncertain { id, error } if ready && id == record.id => {
+                    *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
+                    return Err(error);
+                }
+                Frame::Failed { id, error } if ready && id == record.id => {
+                    return Err(error);
                 }
                 Frame::CleanupFailed { id, error } if id == record.id => {
                     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
@@ -338,7 +342,8 @@ async fn run_owned(
                 | Frame::Reserve { id, .. }
                 | Frame::Progress { id, .. }
                 | Frame::Result { id, .. }
-                | Frame::Failed { id }
+                | Frame::Failed { id, .. }
+                | Frame::Uncertain { id, .. }
                     if id == record.id => {}
                 _ => return Err("provider cleanup identity differs".to_owned()),
             }
@@ -769,146 +774,91 @@ fn work() -> Result<(), String> {
         binding: identity(&record),
         pid: std::process::id(),
     })?;
-    let mut checkpoint = record.checkpoint;
-    let mock = record.settings.mock;
-    let _descendant = if mock.descendant {
-        let mut child = ProcessCommand::new(std::env::current_exe().map_err(|e| e.to_string())?)
-            .arg(DESCENDANT)
-            .env(INTERNAL, "descendant-v1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        let output = child.stdout.take().ok_or("descendant readiness absent")?;
-        let child = Descendant(child);
-        if line(&mut std::io::BufReader::new(output), 64)? != b"naome descendant ready v1\n" {
-            return Err("descendant readiness differs".into());
-        }
-        emit(&Frame::Descendant {
-            id: record.id,
-            pid: child.0.id(),
-        })?;
-        Some(child)
-    } else {
-        None
+    let mut provider = super::provider::select(&record)?;
+    let mut owner = WorkerControl {
+        id: record.id,
+        receiver,
+        descendants: Vec::new(),
     };
-    while mock.steps == 0 || checkpoint < mock.steps {
-        let next = checkpoint
-            .checked_add(1)
-            .ok_or("provider checkpoint overflow")?;
-        emit(&Frame::Reserve {
+    match super::provider::drive(provider.as_mut(), &mut owner, record.checkpoint) {
+        Ok(output) => emit(&Frame::Result {
             id: record.id,
-            next,
-        })?;
-        let grant: Grant =
-            serde_json::from_slice(&receiver.recv().map_err(|_| "provider permission closed")?)
-                .map_err(|e| e.to_string())?;
-        if grant.id != record.id || grant.next != next {
-            return Err("provider reservation identity differs".into());
-        }
-        if mock.step_ms > 0 {
-            std::thread::sleep(Duration::from_millis(mock.step_ms));
-        }
-        if mock.cpu_ms > 0 {
-            emit(&Frame::CpuActive {
-                id: record.id,
-                next,
-            })?;
-            let until = Instant::now() + Duration::from_millis(mock.cpu_ms);
-            let mut value = 0u64;
-            while Instant::now() < until {
-                value = std::hint::black_box(value.wrapping_mul(1664525).wrapping_add(1013904223));
-            }
-            std::hint::black_box(value);
-            emit(&Frame::CpuDone {
-                id: record.id,
-                next,
-            })?;
-        }
-        if mock.steps == 0 {
-            // A true pending stand-in holds one charged reservation. Its
-            // lifeline reader and supervisor enforce cancellation/deadline.
-            loop {
-                std::thread::park();
-            }
-        }
-        checkpoint = next;
-        emit(&Frame::Progress {
+            output,
+        }),
+        Err(super::provider::Failure::Failed(error)) => emit(&Frame::Failed {
             id: record.id,
-            checkpoint,
-        })?;
+            error,
+        }),
+        Err(super::provider::Failure::Uncertain(error)) => emit(&Frame::Uncertain {
+            id: record.id,
+            error,
+        }),
+    }
+}
+
+struct WorkerControl {
+    id: u64,
+    receiver: sync_channel::Receiver<Vec<u8>>,
+    descendants: Vec<Descendant>,
+}
+impl WorkerControl {
+    fn grant(&self, next: u32) -> Result<(), String> {
         let grant: Grant = serde_json::from_slice(
-            &receiver
+            &self
+                .receiver
                 .recv()
-                .map_err(|_| "provider checkpoint acknowledgement closed")?,
+                .map_err(|_| "provider durable grant closed")?,
         )
         .map_err(|e| e.to_string())?;
-        if grant.id != record.id || grant.next != checkpoint {
-            return Err("provider durable checkpoint acknowledgement differs".into());
+        if grant.id != self.id || grant.next != next {
+            return Err("provider durable grant identity differs".into());
+        }
+        Ok(())
+    }
+}
+impl super::provider::Supervisor for WorkerControl {
+    fn reserve(&mut self, next: u32) -> Result<(), String> {
+        emit(&Frame::Reserve { id: self.id, next })?;
+        self.grant(next)
+    }
+    fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String> {
+        emit(&Frame::Progress {
+            id: self.id,
+            checkpoint,
+        })?;
+        self.grant(checkpoint)
+    }
+    fn probe(&mut self, probe: super::provider::Probe) -> Result<(), String> {
+        use super::provider::Probe;
+        match probe {
+            Probe::CpuActive(next) => emit(&Frame::CpuActive { id: self.id, next }),
+            Probe::CpuDone(next) => emit(&Frame::CpuDone { id: self.id, next }),
+            Probe::ResultReady => emit(&Frame::ResultReady { id: self.id }),
+            Probe::Descendant => {
+                let mut child =
+                    ProcessCommand::new(std::env::current_exe().map_err(|e| e.to_string())?)
+                        .arg(DESCENDANT)
+                        .env(INTERNAL, "descendant-v1")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .map_err(|e| e.to_string())?;
+                let output = child.stdout.take().ok_or("descendant readiness absent")?;
+                let child = Descendant(child);
+                if line(&mut std::io::BufReader::new(output), 64)? != b"naome descendant ready v1\n"
+                {
+                    return Err("descendant readiness differs".into());
+                }
+                emit(&Frame::Descendant {
+                    id: self.id,
+                    pid: child.0.id(),
+                })?;
+                self.descendants.push(child);
+                Ok(())
+            }
         }
     }
-    if mock.outcome == MockOutcome::Failed {
-        return emit(&Frame::Failed { id: record.id });
-    }
-    if mock.result_delay_ms > 0 {
-        emit(&Frame::ResultReady { id: record.id })?;
-        std::thread::sleep(Duration::from_millis(mock.result_delay_ms));
-    }
-    let output = match &record.input {
-        Input::Find { cursor } => Output::Question(if mock.outcome == MockOutcome::Malformed {
-            "invalid question".into()
-        } else {
-            crate::mocks::create_question(*cursor)
-        }),
-        Input::Solve { question } => {
-            let compiled =
-                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
-            let source = if mock.outcome == MockOutcome::Malformed {
-                Some("invalid proof".into())
-            } else if mock.outcome == MockOutcome::WrongTarget {
-                let other = (0..3)
-                    .find_map(|cursor| {
-                        let other = naome_authoring::CompiledQuestion::compile(
-                            &crate::mocks::create_question(cursor),
-                        )
-                        .ok()?;
-                        (other.resolution_id() != compiled.resolution_id()).then_some(other)
-                    })
-                    .ok_or("mock alternate target absent")?;
-                crate::mocks::create_proof(&other)
-            } else {
-                crate::mocks::create_proof(&compiled)
-            };
-            source
-                .map(|mut source| {
-                    source.push_str(
-                        &" ".repeat(
-                            mock.proof_padding_bytes.min(
-                                crate::resources::limits()
-                                    .proof_bytes
-                                    .saturating_sub(source.len()),
-                            ),
-                        ),
-                    );
-                    Output::Proof {
-                        source,
-                        helpers: Vec::new(),
-                    }
-                })
-                .unwrap_or(Output::NoCandidate)
-        }
-        Input::Interest { question, .. } => {
-            let compiled =
-                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
-            let yes = libp2p::futures::executor::block_on(crate::mocks::assess_interest(compiled))?;
-            Output::Interest(yes && mock.outcome != MockOutcome::Malformed)
-        }
-    };
-    emit(&Frame::Result {
-        id: record.id,
-        output,
-    })
 }
 
 fn descendant() -> Result<(), String> {

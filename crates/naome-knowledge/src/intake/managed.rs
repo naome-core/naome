@@ -231,12 +231,14 @@ impl Intake {
                 {
                     return Err("short commit grant expired".into());
                 }
-                let admitted = graph.commit_batch(
+                let admitted = questions.publish_exchange(
+                    graph,
                     id,
                     batch,
+                    delta,
+                    root.description.grant.clone(),
                     root.description.created + crate::resources::limits().root_timeout,
                 )?;
-                questions.apply_exchange(delta);
                 return Ok(Some(admitted));
             }
             // Checked staging is deliberately dropped while final interest may

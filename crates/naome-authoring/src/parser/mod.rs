@@ -46,7 +46,7 @@ struct StepBinding {
 pub(super) struct Parser<'source> {
     source: &'source str,
     offset: usize,
-    variables: HashMap<&'source str, FreeVariable>,
+    variables: syntax::Variables<'source>,
     definition_aliases: HashMap<&'source str, DefinitionAlias>,
     formula_bindings: HashMap<&'source str, ParsedFormula>,
     steps: HashMap<&'source str, StepBinding>,
@@ -54,7 +54,6 @@ pub(super) struct Parser<'source> {
     formula_binding_nodes: usize,
     statement_nodes: usize,
     certificate_formula_nodes: usize,
-    next_variable_identifier: u32,
 }
 
 impl<'source> Parser<'source> {
@@ -62,7 +61,7 @@ impl<'source> Parser<'source> {
         Self {
             source,
             offset: 0,
-            variables: HashMap::new(),
+            variables: syntax::Variables::default(),
             definition_aliases: HashMap::new(),
             formula_bindings: HashMap::new(),
             steps: HashMap::new(),
@@ -70,7 +69,6 @@ impl<'source> Parser<'source> {
             formula_binding_nodes: 0,
             statement_nodes: 0,
             certificate_formula_nodes: 0,
-            next_variable_identifier: 0,
         }
     }
 
@@ -209,19 +207,23 @@ impl<'source> Parser<'source> {
 
     fn formula_binding(&mut self) -> Result<(), CompileError> {
         let name_offset = self.next_offset();
-        let name = self.name()?;
-        if self.reserved_binding_name(name) {
-            return Err(CompileError::Syntax {
+        let name = syntax::binding_name(self.source, &mut self.offset, |name| {
+            self.formula_bindings.contains_key(name)
+        })
+        .map_err(|error| match error {
+            syntax::BindingError::Name => CompileError::Syntax {
+                offset: name_offset,
+                expected: "a name",
+            },
+            syntax::BindingError::Reserved => CompileError::Syntax {
                 offset: name_offset,
                 expected: "a non-reserved formula binding name",
-            });
-        }
-        if self.formula_bindings.contains_key(name) {
-            return Err(CompileError::DuplicateFormulaBinding {
+            },
+            syntax::BindingError::Duplicate => CompileError::DuplicateFormulaBinding {
                 offset: name_offset,
-                name: name.to_owned(),
-            });
-        }
+                name: self.source[name_offset..self.offset].to_owned(),
+            },
+        })?;
         if self.definition_aliases.contains_key(name) {
             return Err(CompileError::DuplicateDefinitionAlias {
                 offset: name_offset,
@@ -252,7 +254,7 @@ impl<'source> Parser<'source> {
     fn definition_variable(&mut self) -> Result<FreeVariable, CompileError> {
         let offset = self.next_offset();
         let name = self.name()?;
-        if self.variables.contains_key(name) {
+        if self.variables.contains(name) {
             return Err(CompileError::Syntax {
                 offset,
                 expected: "a unique definition parameter",
@@ -262,21 +264,15 @@ impl<'source> Parser<'source> {
     }
 
     fn variable_named(&mut self, name: &'source str) -> FreeVariable {
-        if let Some(variable) = self.variables.get(name) {
-            return *variable;
-        }
-        let variable = self.fresh_variable();
-        self.variables.insert(name, variable);
-        variable
+        self.variables
+            .named(name)
+            .expect("source byte limit bounds presentation variables")
     }
 
     fn fresh_variable(&mut self) -> FreeVariable {
-        let variable = FreeVariable::new(self.next_variable_identifier);
-        self.next_variable_identifier = self
-            .next_variable_identifier
-            .checked_add(1)
-            .expect("the source-byte limit bounds presentation variables");
-        variable
+        self.variables
+            .fresh()
+            .expect("source byte limit bounds presentation variables")
     }
 }
 

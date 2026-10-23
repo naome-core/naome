@@ -320,6 +320,18 @@ pub(crate) struct QuestionDelta {
     question: Option<CompiledQuestion>,
 }
 
+struct RegistryCompaction {
+    source: Arc<crate::index_storage::IndexStorage>,
+    target: Arc<crate::index_storage::IndexStorage>,
+    cursor: Option<naome_checker::question::QuestionRegistryCopy>,
+    _disk: crate::resources::DiskLease,
+}
+impl Drop for RegistryCompaction {
+    fn drop(&mut self) {
+        self.source.end_mirror(&self.target);
+    }
+}
+
 pub(crate) type Revision = (usize, usize, Identity, Option<Identity>);
 
 pub(crate) struct LocalQuestions<F> {
@@ -332,6 +344,9 @@ pub(crate) struct LocalQuestions<F> {
     finished: Option<u64>,
     persistence: Option<persistence::Persistence>,
     index_storage: Option<Arc<crate::index_storage::IndexStorage>>,
+    compaction: Option<RegistryCompaction>,
+    next_compaction: usize,
+    old_indexes: Vec<std::sync::Weak<crate::index_storage::IndexStorage>>,
     storage_error: Option<String>,
     interest_horizon: Duration,
     selection: Option<Identity>,
@@ -360,6 +375,9 @@ where
             finished: None,
             persistence: None,
             index_storage: None,
+            compaction: None,
+            next_compaction: crate::resources::limits().registry_index_cache_bytes,
+            old_indexes: Vec::new(),
             storage_error: None,
             interest_horizon: crate::resources::limits().interest_timeout,
             selection: Some(
@@ -404,6 +422,75 @@ where
         })?;
         self.persistence = Some(persistence);
         self.index_storage = Some(storage);
+        Ok(())
+    }
+
+    pub(crate) fn maintain_registry(&mut self) -> Result<(), crate::Error> {
+        let Some(storage) = self.index_storage.clone() else {
+            return Ok(());
+        };
+        self.old_indexes.retain(|index| index.strong_count() > 0);
+        if self.compaction.is_none()
+            && self.old_indexes.len() < crate::resources::limits().retained_generations
+            && storage.allocated_bytes()? >= self.next_compaction
+        {
+            let bytes = storage
+                .allocated_bytes()?
+                .checked_mul(2)
+                .ok_or("registry compaction disk overflow")?;
+            let disk = match crate::resources::DiskLease::acquire(
+                storage.directory(),
+                u64::try_from(bytes).map_err(|_| "registry disk width")?,
+            ) {
+                Ok(disk) => disk,
+                Err(error) if error.retryable() => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            let target = storage.successor()?;
+            storage.mirror_to(target.clone())?;
+            let mut copy = RegistryCompaction {
+                source: storage,
+                target,
+                cursor: None,
+                _disk: disk,
+            };
+            copy.cursor = Some(
+                self.registry
+                    .begin_copy(copy.target.clone())
+                    .map_err(|e| e.to_string())?,
+            );
+            self.compaction = Some(copy);
+        }
+        if let Some(mut copy) = self.compaction.take() {
+            let progress = match copy.cursor.as_mut().expect("active registry copy").advance(
+                naome_checker::DiskCopyBudget {
+                    records: crate::resources::limits().compaction_records,
+                    bytes: crate::resources::limits().compaction_bytes,
+                },
+            ) {
+                Ok(progress) => progress,
+                Err(naome_checker::ContextError::Limit) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            if progress.complete {
+                let registry = copy
+                    .cursor
+                    .take()
+                    .expect("complete registry copy")
+                    .finish(&self.registry)
+                    .map_err(|e| e.to_string())?;
+                let live = copy.target.allocated_bytes()?;
+                self.next_compaction = live.saturating_mul(2).max(
+                    live.saturating_add(crate::resources::limits().registry_index_cache_bytes),
+                );
+                copy.source.end_mirror(&copy.target);
+                self.old_indexes.push(Arc::downgrade(&copy.source));
+                self.registry = registry;
+                self.index_storage = Some(copy.target.clone());
+            } else {
+                self.compaction = Some(copy);
+            }
+        }
         Ok(())
     }
 
@@ -786,17 +873,109 @@ where
         })
     }
 
-    pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) {
+    /// One publication completion contract for local generation and peer intake.
+    /// The durable outbox survives every cut between proof, registry and job ack.
+    pub(crate) fn publish_exchange(
+        &mut self,
+        graph: &mut Graph,
+        root: naome_proof::ProofId,
+        batch: crate::graph::CheckedBatch,
+        delta: QuestionDelta,
+        peer: Option<crate::graph::PeerGrant>,
+        deadline: Instant,
+    ) -> Result<Vec<naome_proof::ProofId>, crate::Error> {
+        if let (Some(persistence), Some(question)) = (&mut self.persistence, &delta.question)
+            && let Err(error) = persistence.stage_publication(root, question)
+        {
+            if error.fatal() {
+                self.storage_error = Some(error.to_string());
+            }
+            return Err(error);
+        }
+        let admitted = match graph.commit_batch_granted(root, batch, deadline, peer) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                if !error.fatal() {
+                    self.finish_publication(root)?;
+                }
+                return Err(error);
+            }
+        };
+        self.apply_exchange(delta)
+            .map_err(crate::Error::UncertainDurability)?;
+        self.finish_publication(root)?;
+        Ok(admitted)
+    }
+
+    fn finish_publication(&mut self, root: naome_proof::ProofId) -> Result<(), crate::Error> {
+        if let Some(persistence) = &mut self.persistence
+            && let Err(error) = persistence.finish_publication(root)
+        {
+            self.storage_error = Some(error.to_string());
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply_exchange(&mut self, delta: QuestionDelta) -> Result<(), String> {
+        if let Some(question) = &delta.question
+            && let Some(persistence) = &mut self.persistence
+            && let Err(error) = persistence.retain(question, persistence::Kind::Exchange, None)
+        {
+            self.storage_error = Some(error.clone());
+            return Err(error);
+        }
         self.registry = delta.registry;
         if let Some(question) = delta.question {
-            if let Some(persistence) = &mut self.persistence
-                && let Err(error) = persistence.retain(&question, persistence::Kind::Exchange, None)
-            {
-                self.storage_error = Some(error);
-            }
             self.remember(question, false);
         }
         self.cached = None;
+        Ok(())
+    }
+
+    pub(crate) fn recover_publications(&mut self, graph: &Graph) -> Result<(), String> {
+        loop {
+            let entries = match &self.persistence {
+                Some(p) => p.publications()?,
+                None => return Ok(()),
+            };
+            if entries.is_empty() {
+                return Ok(());
+            }
+            for (root, question) in entries {
+                if graph.contains(root)? {
+                    let metadata = graph
+                        .describe(root)?
+                        .ok_or("publication root description missing")?;
+                    let (_, _, recovered) = metadata.compile()?;
+                    if recovered.canonical_core() != question.canonical_core()
+                        || recovered.resolution_id() != question.resolution_id()
+                    {
+                        return Err("publication recovery target differs from checked graph".into());
+                    }
+                    let mut registry = self.registry.clone();
+                    if !registry
+                        .contains_record(question.source_hash())
+                        .map_err(|e| e.to_string())?
+                    {
+                        registry
+                            .insert(
+                                RegisteredQuestion::new(*question.source_hash(), question.core())
+                                    .map_err(|e| format!("publication recovery: {e:?}"))?,
+                            )
+                            .map_err(|e| format!("publication recovery: {e:?}"))?;
+                    }
+                    self.apply_exchange(QuestionDelta {
+                        registry,
+                        question: Some(question),
+                    })?;
+                }
+                self.persistence
+                    .as_mut()
+                    .expect("persistent publication recovery")
+                    .finish_publication(root)?;
+            }
+        }
     }
 
     fn begin(&mut self, graph: &Graph, question: CompiledQuestion, reply: Reply) {

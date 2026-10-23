@@ -10,7 +10,7 @@ use std::{borrow::Cow, sync::Arc};
 #[derive(Clone)]
 pub(super) struct DiskRegistry {
     pub(super) records: DiskMap,
-    statements: DiskMap,
+    pub(super) statements: DiskMap,
     pub(super) contents: DiskMap,
 }
 impl DiskRegistry {
@@ -145,7 +145,7 @@ impl DiskRegistry {
         Ok(())
     }
 }
-fn formula_address(bytes: &[u8]) -> Identity {
+pub(super) fn formula_address(bytes: &[u8]) -> Identity {
     let mut hash = Sha256::new();
     hash.update(b"naome:registered-question-formula:v1\0");
     hash.update(bytes);

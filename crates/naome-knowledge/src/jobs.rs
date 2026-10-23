@@ -7,6 +7,7 @@
 
 mod journal;
 mod process;
+mod provider;
 mod service;
 mod tracked;
 
@@ -14,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
-pub(crate) use journal::{marker_valid, research_directory, write_marker};
 pub(crate) use service::Recovery;
 pub(crate) use service::Service;
 
@@ -103,6 +103,32 @@ pub struct Settings {
     pub interest: RoleSettings,
 }
 
+impl RoleSettings {
+    /// Historical allowances are validated against the current value format,
+    /// never against defaults for newly admitted obligations.
+    fn validate_history(self) -> Result<(), String> {
+        if self.limits.horizon_ms == 0
+            || self.limits.work_units == 0
+            || self.mock.proof_padding_bytes > naome_authoring::AUTHORING_SOURCE_MAX_BYTES
+            || [
+                self.limits.horizon_ms,
+                self.mock.step_ms,
+                self.mock.cpu_ms,
+                self.mock.result_delay_ms,
+            ]
+            .into_iter()
+            .any(|ms| {
+                std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(ms))
+                    .is_none()
+            })
+        {
+            return Err("research historical role value exceeds its format".into());
+        }
+        Ok(())
+    }
+}
+
 impl Settings {
     pub(crate) fn validate(self) -> Result<Self, String> {
         for role in [self.finding, self.solving, self.interest] {
@@ -159,7 +185,7 @@ impl Binding {
             snapshot: crate::hex(&snapshot),
             policy: crate::hex(&policy),
             compatibility: crate::hex(&crate::compatibility()),
-            selection: identity(&"naome-deterministic-mocks-v1"),
+            selection: identity(&provider::DEFAULT_PROVIDER),
         }
     }
 
@@ -260,6 +286,28 @@ pub(crate) enum Output {
 
 impl Output {
     fn validate(&self, input: &Input) -> Result<(), String> {
+        self.validate_with_limits(
+            input,
+            crate::resources::limits().proof_bytes,
+            crate::resources::limits().closure_objects,
+            crate::resources::limits().closure_bytes,
+        )
+    }
+    fn validate_retained(&self, input: &Input) -> Result<(), String> {
+        self.validate_with_limits(
+            input,
+            naome_authoring::AUTHORING_SOURCE_MAX_BYTES,
+            naome_proof::CERTIFICATE_MAX_STEPS,
+            crate::checkpoint::MAX_ROW / 8,
+        )
+    }
+    fn validate_with_limits(
+        &self,
+        input: &Input,
+        source_bytes: usize,
+        objects: usize,
+        bytes: usize,
+    ) -> Result<(), String> {
         match (self, input) {
             (Self::Question(source), Input::Find { .. })
                 if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES =>
@@ -267,13 +315,10 @@ impl Output {
                 Ok(())
             }
             (Self::Proof { source, helpers }, Input::Solve { .. })
-                if source.len() <= crate::resources::limits().proof_bytes
-                    && helpers.len() < crate::resources::limits().closure_objects
-                    && helpers
-                        .iter()
-                        .all(|s| s.len() <= crate::resources::limits().proof_bytes)
-                    && source.len() + helpers.iter().map(String::len).sum::<usize>()
-                        <= crate::resources::limits().closure_bytes =>
+                if source.len() <= source_bytes
+                    && helpers.len() < objects
+                    && helpers.iter().all(|s| s.len() <= source_bytes)
+                    && source.len() + helpers.iter().map(String::len).sum::<usize>() <= bytes =>
             {
                 Ok(())
             }

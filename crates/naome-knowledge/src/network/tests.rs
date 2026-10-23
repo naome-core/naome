@@ -192,9 +192,9 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
         .unwrap();
     assert_eq!(receiver_handle.context().await.unwrap().checked_proofs, 0);
     commands
-        .send(Ok(
+        .send(Ok(QueuedCommand::from_value(
             json!({"command":"links","peers":[],"request":"disable-during-final"}),
-        ))
+        )))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), drop_notify.notified())
@@ -282,6 +282,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     };
     let directory = ConfigFile::new();
     let mut graph = Graph::open(&directory.0).unwrap();
+    let owner_lifetime = Arc::downgrade(&graph.ownership());
     fn pattern(leaves: usize) -> naome_foundation::Formula {
         let x = naome_foundation::FreeVariable::new(0);
         if leaves == 1 {
@@ -322,10 +323,10 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         Arc::new(crate::runtime::Control::bind_test(&directory.0, graph.ownership()).unwrap());
     let mut server = isolated_transport();
     let server_peer = *server.local_peer_id();
-    server
+    let primary_listener = server
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
         .unwrap();
-    let (shared, mut events, mut transport) = worker::Transport::spawn(server);
+    let (shared, mut events, mut transport) = worker::Transport::spawn(server, primary_listener);
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let SwarmEvent::NewListenAddr { address, .. } = events.recv().await.unwrap().event {
@@ -414,6 +415,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     let id = client.behaviour_mut().exchange.send_request(
         &server_peer,
         Frame::new(Body::Inventory {
+            known: None,
             after: None,
             limit: 1,
         }),
@@ -503,6 +505,10 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     controls.shutdown().await.unwrap();
     transport.shutdown().await.unwrap();
     drop(control);
+    assert!(
+        owner_lifetime.upgrade().is_none(),
+        "joined shutdown retained an in-process directory owner"
+    );
     assert_eq!(Graph::open(&directory.0).unwrap().accepted_count(), 0);
     println!(
         "OWNER_LATENCY_METRICS {}",
@@ -513,10 +519,10 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
 #[tokio::test]
 async fn transport_queue_failure_permanently_revokes_publication() {
     let mut swarm = isolated_transport();
-    swarm
+    let primary_listener = swarm
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
         .unwrap();
-    let (shared, events, mut transport) = worker::Transport::spawn(swarm);
+    let (shared, events, mut transport) = worker::Transport::spawn(swarm, primary_listener);
     let guard = crate::graph::CommitGuard::new(shared.epoch.clone(), 0, None, None);
     drop(events);
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -537,4 +543,30 @@ async fn transport_queue_failure_permanently_revokes_publication() {
     assert_eq!(terminal, u64::MAX);
     let later_guard = crate::graph::CommitGuard::new(shared.epoch.clone(), terminal, None, None);
     assert_eq!(later_guard.check().unwrap_err(), crate::graph::STALE_COMMIT);
+}
+
+#[test]
+fn inventory_summary_stops_unchanged_rounds_and_changed_corpora_resume_pages() {
+    let mut graph = Graph::default();
+    let empty = graph.content_root();
+    assert!(
+        matches!(inventory_response(&graph, Some(empty), None, 1).unwrap(), Body::InventoryUnchanged { root } if root == empty)
+    );
+    let (_, result) = graph
+        .produce("goal=all(x,eq(x,x)) proof: a=refl(x) b=gen(a,x) return b")
+        .unwrap();
+    let root = graph.content_root();
+    assert_ne!(root, empty);
+    assert!(
+        matches!(inventory_response(&graph, Some(empty), None, 1).unwrap(), Body::InventoryResult { root: observed, ids, .. } if observed == root && ids == [*result.id.as_bytes()])
+    );
+    for _ in 0..8 {
+        assert!(matches!(
+            inventory_response(&graph, Some(root), None, 1).unwrap(),
+            Body::InventoryUnchanged { .. }
+        ));
+    }
+    assert!(
+        matches!(inventory_response(&graph, Some(root), Some(*result.id.as_bytes()), 1).unwrap(), Body::InventoryResult { ids, next: None, .. } if ids.is_empty())
+    );
 }

@@ -315,7 +315,7 @@ fn public_ingest_batches_real_source_and_mirror_inserts_before_canonical_commit(
         assert_eq!(graph.object(id).unwrap(), Some(envelope));
         assert_eq!(graph.accepted_count(), 17);
         assert_eq!(
-            graph.describe(id).unwrap_err(),
+            graph.describe(id).unwrap_err().to_string(),
             "question limit exceeded: question source bytes"
         );
     }
@@ -528,7 +528,7 @@ fn prepared_batch_staleness_deadline_and_last_snapshot_generation_lifetime_survi
     let (id, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
     assert_eq!(
         graph.commit_batch(id, batch, Instant::now() - Duration::from_secs(1)),
-        Err(crate::store::COMMIT_DEADLINE_ERROR.into())
+        Err(crate::store::COMMIT_DEADLINE_ERROR)
     );
     assert!(graph.storage_error().is_none());
     assert!(autocommit(&source));

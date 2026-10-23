@@ -409,7 +409,7 @@ fn expired_commit_rolls_back_without_publishing_or_halting_the_graph() {
     let before = graph.content_root();
     assert_eq!(
         graph.commit_batch(root, batch, Instant::now() - Duration::from_secs(1)),
-        Err(crate::store::COMMIT_DEADLINE_ERROR.into())
+        Err(crate::store::COMMIT_DEADLINE_ERROR)
     );
     assert_eq!(graph.accepted_count(), 0);
     assert_eq!(graph.content_root(), before);
@@ -586,7 +586,7 @@ fn an_expired_post_attach_batch_preserves_deadline_and_partial_copy_state() {
     let before = graph.content_root();
     assert_eq!(
         graph.commit_batch(root, batch, Instant::now() - Duration::from_secs(1)),
-        Err(crate::store::COMMIT_DEADLINE_ERROR.into())
+        Err(crate::store::COMMIT_DEADLINE_ERROR)
     );
     assert!(graph.compaction.is_some());
     assert_eq!(graph.accepted_count(), 1);
@@ -612,11 +612,9 @@ fn four_retained_old_generations_bound_copy_admission_without_changing_snapshots
         assert_eq!(graph.context.snapshot_id(), snapshot);
     }
     let current = Arc::downgrade(&graph.checked_storage);
-    assert!(
-        graph
-            .test_compaction_step(1)
-            .unwrap_err()
-            .contains("generation work limit")
+    assert_eq!(
+        graph.test_compaction_step(1).unwrap_err(),
+        crate::Error::ExecutionLimit
     );
     assert!(graph.compaction.is_none());
     assert!(current.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
@@ -940,4 +938,178 @@ fn startup_prune_failures_discard_the_generation_and_rebuild_from_canonical_hist
         drop(graph);
         std::fs::remove_dir_all(directory).unwrap();
     }
+}
+
+#[test]
+fn local_source_production_reuses_one_sealed_check_with_identical_transport_bytes() {
+    let producer = Graph::default();
+    let expected = producer.author(SOURCE).unwrap();
+    let mut graph = Graph::default();
+    let (object, result) = graph.produce(SOURCE).unwrap();
+    assert_eq!(object, expected);
+    assert_eq!(result.status, "accepted");
+    assert_eq!(graph.checker_calls(), (1, 0));
+    assert_eq!(graph.object(result.id).unwrap(), Some(expected));
+}
+
+#[test]
+fn disk_pressure_rejects_every_preparation_and_batch_commit_without_integrity_halt() {
+    let mut graph = Graph::default();
+    let envelope = graph.author(SOURCE).unwrap();
+    let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let (root, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
+    crate::resources::with_disk_available(
+        u128::from(crate::resources::limits().disk_reserve_bytes),
+        || {
+            assert!(matches!(
+                graph.ingest(envelope.clone(), Instant::now()),
+                Err(crate::Error::DiskOverload { .. })
+            ));
+            assert!(matches!(
+                graph.produce(SOURCE),
+                Err(crate::Error::DiskOverload { .. })
+            ));
+            assert!(matches!(
+                graph.prepare_generated(SOURCE, &[], &question),
+                Err(crate::Error::DiskOverload { .. })
+            ));
+            let candidate = envelope.prepare().unwrap();
+            assert!(matches!(
+                graph.prepare_batch(root, [(root, candidate)].into(), &question),
+                Err(crate::Error::DiskOverload { .. })
+            ));
+            assert!(matches!(
+                graph.commit_batch(root, batch, Instant::now() + Duration::from_secs(5)),
+                Err(crate::Error::DiskOverload { .. })
+            ));
+        },
+    );
+    assert!(graph.storage_error().is_none());
+    assert_eq!(graph.accepted_count(), 0);
+}
+
+#[test]
+fn catalog_allocation_overload_is_retryable_and_never_sets_integrity_halt() {
+    let mut graph = Graph::default();
+    let (_, result) = graph.produce(SOURCE).unwrap();
+    crate::resources::fail_next_memory_allocation();
+    let error = graph.object(result.id).unwrap_err();
+    assert!(error.retryable(), "{error:?}");
+    assert!(graph.storage_error().is_none());
+    assert!(graph.object(result.id).unwrap().is_some());
+}
+
+#[test]
+fn unchanged_blocked_backlog_performs_no_sql_writes_and_wakes_on_exact_dependency() {
+    let mut producer = Graph::default();
+    let parent = introduce(&mut producer);
+    let child = citation(&producer, &parent);
+    let mut graph = Graph::default();
+    graph.ingest(child, Instant::now()).unwrap();
+    graph.resolve_pending().unwrap();
+    let changes = graph.backlog().unwrap().changes();
+    for _ in 0..8 {
+        assert!(graph.resolve_pending().unwrap().0.is_empty());
+    }
+    assert_eq!(graph.backlog().unwrap().changes(), changes);
+    assert_eq!(
+        graph.ingest(parent, Instant::now()).unwrap().admitted.len(),
+        2
+    );
+    assert_eq!(graph.pending_count().unwrap(), 0);
+}
+
+#[test]
+fn a_peer_root_grant_revokes_only_its_publication() {
+    for revoked in [false, true] {
+        let mut graph = Graph::default();
+        let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+        let (root, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
+        let related = PeerGrant::new();
+        let unrelated = PeerGrant::new();
+        unrelated.0.store(false, Ordering::Release);
+        if revoked {
+            related.0.store(false, Ordering::Release);
+        }
+        let result = graph.commit_batch_granted(
+            root,
+            batch,
+            Instant::now() + Duration::from_secs(5),
+            Some(related),
+        );
+        if revoked {
+            assert_eq!(result.unwrap_err(), crate::Error::StaleAuthority);
+        } else {
+            assert_eq!(result.unwrap(), [root]);
+        }
+        assert!(graph.storage_error().is_none());
+    }
+}
+
+#[test]
+fn narrowed_intake_limits_replay_current_proofs_without_changing_their_identity() {
+    const TEST: &str = "graph::tests::narrowed_intake_limits_replay_current_proofs_without_changing_their_identity";
+    if let Some(path) = std::env::var_os("NAOME_NARROW_INTAKE_TEST") {
+        let profile: crate::resources::ResourceProfile = serde_json::from_value(
+            serde_json::json!({"tuning":{"proof_bytes":64,"inventory_page":1}}),
+        )
+        .unwrap();
+        crate::resources::configure(profile).unwrap();
+        let mut graph = Graph::open(Path::new(&path)).unwrap();
+        assert_eq!(graph.accepted_count(), 1);
+        let id = graph.ids_page(None, 1).unwrap()[0];
+        let object = graph.object(id).unwrap().unwrap();
+        assert!(object.proof.len() > 128);
+        assert!(matches!(
+            graph.ingest(object, Instant::now()),
+            Err(crate::Error::InputLimit(_))
+        ));
+        assert!(graph.storage_error().is_none());
+        return;
+    }
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let mut steps = vec![ProofStep::EqualityReflexivity {
+        variable: FreeVariable::new(0),
+    }];
+    for index in 0..32 {
+        steps.push(ProofStep::Generalization {
+            premise: index,
+            variable: FreeVariable::new(index),
+        });
+    }
+    let checked =
+        naome_checker::normalize_and_check(ProofCertificate::new(steps).unwrap()).unwrap();
+    let object = crate::object::BinaryProof::from_checked(&checked)
+        .unwrap()
+        .envelope();
+    graph.ingest(object, Instant::now()).unwrap();
+    drop(graph);
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--nocapture"])
+        .env("NAOME_NARROW_INTAKE_TEST", &directory.0)
+        .env_remove("NAOME_EFFECTIVE_RESOURCES")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn a_backlog_write_failure_halts_storage_instead_of_becoming_an_input_rejection() {
+    let mut producer = Graph::default();
+    let parent = introduce(&mut producer);
+    let child = citation(&producer, &parent);
+    let mut graph = Graph::default();
+    crate::checkpoint::fail_next_commit();
+    assert!(matches!(
+        graph.ingest(child, Instant::now()),
+        Err(crate::Error::UncertainDurability(_))
+    ));
+    assert!(graph.storage_error().is_some());
+    assert_eq!(graph.accepted_count(), 0);
 }

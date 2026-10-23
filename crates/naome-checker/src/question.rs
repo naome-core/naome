@@ -20,7 +20,7 @@ pub type Identity = [u8; 32];
 mod deduction;
 pub(crate) mod index;
 mod registry;
-pub use registry::QuestionRegistry;
+pub use registry::{QuestionRegistry, QuestionRegistryCopy};
 
 /// Hard limits for one question and the work performed by one assessment.
 /// These impose no total checked-graph or registry cardinality/byte ceiling.

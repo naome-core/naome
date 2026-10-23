@@ -64,6 +64,35 @@ pub(super) struct SharedSwarm {
     changed: Arc<Notify>,
     pub(super) busy: Arc<OwnerActivity>,
     pub(super) epoch: Arc<AtomicU64>,
+    grants: Arc<Mutex<PeerGrants>>,
+}
+#[derive(Default)]
+struct PeerGrants {
+    roots: BTreeMap<(PeerId, ProofId), std::sync::Weak<AtomicBool>>,
+    requests: HashMap<request_response::OutboundRequestId, std::sync::Weak<AtomicBool>>,
+}
+impl PeerGrants {
+    fn failed_request(&mut self, request: request_response::OutboundRequestId) {
+        if let Some(lease) = self
+            .requests
+            .remove(&request)
+            .and_then(|lease| lease.upgrade())
+        {
+            lease.store(false, Ordering::Release);
+        }
+    }
+    fn revoke_peer(&mut self, peer: PeerId) {
+        self.roots.retain(|(owner, _), lease| {
+            if *owner == peer {
+                if let Some(lease) = lease.upgrade() {
+                    lease.store(false, Ordering::Release);
+                }
+                false
+            } else {
+                lease.strong_count() > 0
+            }
+        });
+    }
 }
 
 pub(super) struct BehaviourGuard<'a> {
@@ -87,6 +116,50 @@ impl Drop for BehaviourGuard<'_> {
     }
 }
 impl SharedSwarm {
+    pub(super) fn grant(&self, peer: PeerId, root: ProofId) -> crate::graph::PeerGrant {
+        let mut grants = self.grants.lock().expect("peer grant lock");
+        grants.roots.retain(|_, lease| lease.strong_count() > 0);
+        if let Some(lease) = grants
+            .roots
+            .get(&(peer, root))
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return crate::graph::PeerGrant(lease);
+        }
+        let grant = crate::graph::PeerGrant::new();
+        grants.roots.insert((peer, root), Arc::downgrade(&grant.0));
+        grant
+    }
+    fn fresh_grant(&self, peer: PeerId, root: ProofId) -> crate::graph::PeerGrant {
+        {
+            let mut grants = self.grants.lock().expect("peer grant lock");
+            if grants
+                .roots
+                .get(&(peer, root))
+                .and_then(std::sync::Weak::upgrade)
+                .is_some_and(|lease| !lease.load(Ordering::Acquire))
+            {
+                grants.roots.remove(&(peer, root));
+            }
+        }
+        self.grant(peer, root)
+    }
+    pub(super) fn request_granted(
+        &self,
+        peer: PeerId,
+        frame: Frame,
+        grant: crate::graph::PeerGrant,
+    ) -> request_response::OutboundRequestId {
+        self.with(|swarm| {
+            let request = swarm.behaviour_mut().exchange.send_request(&peer, frame);
+            self.grants
+                .lock()
+                .expect("peer grant lock")
+                .requests
+                .insert(request, Arc::downgrade(&grant.0));
+            request
+        })
+    }
     pub(super) fn behaviour_mut(&self) -> BehaviourGuard<'_> {
         BehaviourGuard {
             swarm: self.swarm.lock().expect("transport lock"),
@@ -131,6 +204,7 @@ impl SharedSwarm {
 pub(super) struct TransportEvent {
     pub(super) event: SwarmEvent<BehaviourEvent>,
     pub(super) epoch: u64,
+    pub(super) grant: Option<crate::graph::PeerGrant>,
 }
 
 pub(super) struct Transport {
@@ -140,12 +214,14 @@ pub(super) struct Transport {
 impl Transport {
     pub(super) fn spawn(
         swarm: Swarm<Behaviour>,
+        primary_listener: libp2p::core::transport::ListenerId,
     ) -> (SharedSwarm, mpsc::Receiver<TransportEvent>, Self) {
         let shared = SharedSwarm {
             swarm: Arc::new(Mutex::new(swarm)),
             changed: Arc::new(Notify::new()),
             busy: Arc::new(OwnerActivity::new()),
             epoch: Arc::new(AtomicU64::new(0)),
+            grants: Arc::new(Mutex::new(PeerGrants::default())),
         };
         let (send, events) = mpsc::channel(crate::resources::limits().transport_events);
         let (stop, mut halted) = oneshot::channel();
@@ -161,16 +237,31 @@ impl Transport {
                         std::pin::Pin::new(&mut *driver.swarm.lock().expect("transport lock")).poll_next(cx)
                     }) => event.ok_or("proof transport ended")?,
                 };
-                let revokes = matches!(
-                    &event,
-                    SwarmEvent::ConnectionClosed {
-                        num_established: 0,
-                        ..
-                    } | SwarmEvent::ListenerClosed { .. }
-                        | SwarmEvent::Behaviour(BehaviourEvent::Exchange(
-                            request_response::Event::OutboundFailure { .. }
-                        ))
-                );
+                let revokes = matches!(&event, SwarmEvent::ListenerClosed { listener_id, .. } if *listener_id == primary_listener);
+                {
+                    let mut grants = driver.grants.lock().expect("peer grant lock");
+                    match &event {
+                        SwarmEvent::ConnectionClosed {
+                            peer_id,
+                            num_established: 0,
+                            ..
+                        } => grants.revoke_peer(*peer_id),
+                        SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                            request_response::Event::OutboundFailure { request_id, .. },
+                        )) => {
+                            grants.failed_request(*request_id);
+                        }
+                        SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                            request_response::Event::Message {
+                                message: request_response::Message::Response { request_id, .. },
+                                ..
+                            },
+                        )) => {
+                            grants.requests.remove(request_id);
+                        }
+                        _ => {}
+                    }
+                }
                 let incompatible = if let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
                     discovery::BehaviourEvent::Identify(libp2p::identify::Event::Received {
                         peer_id,
@@ -185,7 +276,21 @@ impl Transport {
                 } else {
                     false
                 };
-                if revokes || incompatible {
+                if incompatible
+                    && let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
+                        discovery::BehaviourEvent::Identify(libp2p::identify::Event::Received {
+                            peer_id,
+                            ..
+                        }),
+                    )) = &event
+                {
+                    driver
+                        .grants
+                        .lock()
+                        .expect("peer grant lock")
+                        .revoke_peer(*peer_id);
+                }
+                if revokes {
                     driver
                         .epoch
                         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
@@ -218,9 +323,38 @@ impl Transport {
                     );
                     continue;
                 }
+                // Capture authority before queuing. A later disconnect/failure
+                // revokes this exact lease even while the owner is checking.
+                let grant = match &event {
+                    SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                        request_response::Event::Message { peer, message, .. },
+                    )) => {
+                        let body = match message {
+                            request_response::Message::Request { request, .. } => {
+                                &request.message.body
+                            }
+                            request_response::Message::Response { response, .. } => {
+                                &response.message.body
+                            }
+                        };
+                        match body {
+                            Body::Offer { metadata } | Body::Description { metadata } => {
+                                crate::object::id_bytes(&metadata.proof_id)
+                                    .ok()
+                                    .map(|id| driver.fresh_grant(*peer, ProofId::from_bytes(id)))
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
                 let epoch = driver.epoch.load(Ordering::Acquire);
-                send.try_send(TransportEvent { event, epoch })
-                    .map_err(|_| "bounded transport event queue exhausted")?;
+                send.try_send(TransportEvent {
+                    event,
+                    epoch,
+                    grant,
+                })
+                .map_err(|_| "bounded transport event queue exhausted")?;
             }
         });
         (
@@ -364,5 +498,42 @@ impl Drop for Controls {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn peer_and_request_revocation_leave_unrelated_roots_and_node_lifetime_valid() {
+        let peer_a = PeerId::random();
+        let peer_b = PeerId::random();
+        let root_a = crate::graph::PeerGrant::new();
+        let root_b = crate::graph::PeerGrant::new();
+        let mut grants = PeerGrants::default();
+        grants.roots.insert(
+            (peer_a, ProofId::from_bytes([1; 32])),
+            Arc::downgrade(&root_a.0),
+        );
+        grants.roots.insert(
+            (peer_b, ProofId::from_bytes([2; 32])),
+            Arc::downgrade(&root_b.0),
+        );
+        let lifetime = Arc::new(AtomicU64::new(0));
+        let local = crate::graph::CommitGuard::new(lifetime.clone(), 0, None, None);
+        grants.revoke_peer(peer_b);
+        assert!(root_a.check().is_ok());
+        assert_eq!(root_b.check().unwrap_err(), crate::Error::StaleAuthority);
+        assert!(local.check().is_ok());
+        let mut exchange = request_response::Behaviour::with_codec(
+            Codec::default(),
+            [(PROTOCOL, request_response::ProtocolSupport::Full)],
+            request_response::Config::default(),
+        );
+        let request = exchange.send_request(&peer_a, Frame::new(Body::Missing));
+        grants.requests.insert(request, Arc::downgrade(&root_a.0));
+        grants.failed_request(request);
+        assert_eq!(root_a.check().unwrap_err(), crate::Error::StaleAuthority);
+        assert!(local.check().is_ok());
     }
 }

@@ -115,6 +115,11 @@ pub(super) fn derive(
             let source_length = header.length;
             work.formula(source_length, 8)?;
             let source_formula = load_formula(artifacts, source, source_length)?;
+            let projection = source_formula
+                .canonical_implication()
+                .map_err(|_| LIMIT)?
+                .ok_or(INVALID)?;
+            let mut lengths = projection.consequents().map(<[u8]>::len);
             let mut current = source_formula.view();
             let mut current_length = source_length;
             let mut antecedents = Vec::new();
@@ -122,11 +127,11 @@ pub(super) fn derive(
             loop {
                 work.formula(current_length, 8)?;
                 let (antecedent, consequent) = current.implication_parts().ok_or(INVALID)?;
-                let bytes = consequent.encode_canonical().map_err(|_| LIMIT)?;
+                let length = lengths.next().ok_or(INVALID)?;
                 work.charge(std::mem::size_of::<Formula>() + 64)
                     .map_err(|_| LIMIT)?;
                 antecedents.push(antecedent.to_owned());
-                intermediate_lengths.push(bytes.len());
+                intermediate_lengths.push(length);
                 if consequent == goals[&goal_id].formula {
                     let mut premises = Vec::new();
                     for antecedent in antecedents {
@@ -145,7 +150,7 @@ pub(super) fn derive(
                     });
                     break;
                 }
-                current_length = bytes.len();
+                current_length = length;
                 current = consequent;
             }
         }

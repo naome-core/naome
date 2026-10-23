@@ -24,6 +24,7 @@ mod tests;
 
 #[derive(Clone)]
 struct Description {
+    grant: Option<crate::graph::PeerGrant>,
     peer: PeerId,
     id: ProofId,
     statement: StatementId,
@@ -100,11 +101,21 @@ impl Intake {
                 .any(|waiting| waiting.description.id == id)
     }
 
+    #[cfg(test)]
     pub(crate) fn enqueue(
         &mut self,
         peer: PeerId,
         metadata: Metadata,
         graph: &Graph,
+    ) -> Result<&'static str, String> {
+        self.enqueue_with_grant(peer, metadata, graph, None)
+    }
+    pub(crate) fn enqueue_with_grant(
+        &mut self,
+        peer: PeerId,
+        metadata: Metadata,
+        graph: &Graph,
+        grant: Option<crate::graph::PeerGrant>,
     ) -> Result<&'static str, String> {
         let (id, statement, question) = metadata.compile()?;
         if graph.contains(id)? {
@@ -123,6 +134,7 @@ impl Intake {
             if let managed::Phase::Refresh { ready, .. } = &mut waiting.phase {
                 *ready = true;
                 waiting.description.created = Instant::now();
+                waiting.description.grant = grant;
                 return Ok("metadata_refreshed");
             }
             return Ok("queued_duplicate");
@@ -151,6 +163,7 @@ impl Intake {
             return Err("description queue capacity".into());
         }
         self.queue.push_back(Description {
+            grant,
             peer,
             id,
             statement,
@@ -411,12 +424,14 @@ impl Intake {
                         else {
                             unreachable!()
                         };
-                        let admitted = graph.commit_batch(
+                        let admitted = questions.publish_exchange(
+                            graph,
                             id,
                             *batch,
+                            delta,
+                            root.description.grant.clone(),
                             root.description.created + crate::resources::limits().root_timeout,
                         )?;
-                        questions.apply_exchange(delta);
                         return Ok(Some(admitted));
                     }
                     Err(oneshot::error::TryRecvError::Empty) => {}

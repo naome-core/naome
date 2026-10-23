@@ -16,8 +16,7 @@ use catalog::Catalog;
 pub(crate) use catalog::Summary;
 
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
-pub(crate) const COMMIT_DEADLINE_ERROR: &str =
-    "catalog commit deadline expired before durable commit";
+pub(crate) const COMMIT_DEADLINE_ERROR: crate::Error = crate::Error::Deadline;
 const FORMAT_FILE: &str = "proof-corpus.format";
 const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP3";
 const INITIAL_DATABASE: &str = ".proof-corpus-initializing.sqlite3";
@@ -27,13 +26,23 @@ std::thread_local! { static FORMAT_SYNC_FAILURE: std::cell::Cell<bool> = const {
 /// One locked canonical catalog. An immutable receipt binds its durable lineage.
 pub(crate) struct Store {
     directory: PathBuf,
-    _lock: File,
-    database_identity: fs::Metadata,
+    database_generation: Mutex<crate::storage::FileGeneration>,
     catalog: Mutex<Catalog>,
     #[cfg(test)]
     cut: Mutex<Option<BatchCut>>,
     #[cfg(test)]
     replay_cut: Mutex<Option<ReplayCut>>,
+    // Close catalog state before releasing this owner's directory authority.
+    _lock: DirectoryLock,
+}
+
+struct DirectoryLock(File);
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        // A child spawning concurrently can temporarily inherit this open-file
+        // description. Closing only our descriptor would leave its lock alive.
+        let _ = self.0.unlock();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,7 +63,7 @@ impl Store {
     pub(crate) fn directory(&self) -> &Path {
         &self.directory
     }
-    pub fn open(directory: &Path) -> Result<Self, String> {
+    pub fn open(directory: &Path) -> Result<Self, crate::Error> {
         fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
         let directory = directory.as_path();
@@ -67,6 +76,7 @@ impl Store {
             .map_err(|error| error.to_string())?;
         lock.try_lock()
             .map_err(|error| format!("knowledge directory already owned: {error}"))?;
+        let lock = DirectoryLock(lock);
         let database = directory.join(DATABASE_FILE);
         let receipt = directory.join(FORMAT_FILE);
         let has_receipt = catalog_leaf_exists(&receipt)?;
@@ -113,8 +123,9 @@ impl Store {
         Ok(Self {
             directory: directory.to_path_buf(),
             _lock: lock,
-            database_identity: fs::symlink_metadata(&database)
-                .map_err(|error| error.to_string())?,
+            database_generation: Mutex::new(crate::storage::FileGeneration::of(
+                &fs::symlink_metadata(&database).map_err(|e| e.to_string())?,
+            )),
             catalog: Mutex::new(catalog),
             #[cfg(test)]
             cut: Mutex::new(None),
@@ -123,31 +134,34 @@ impl Store {
         })
     }
 
-    fn ensure_database(&self) -> Result<(), String> {
-        let current = fs::symlink_metadata(self.directory.join(DATABASE_FILE))
-            .map_err(|error| format!("proof catalog disappeared during ownership: {error}"))?;
-        if !current.is_file() {
-            return Err("proof catalog file replaced during ownership".into());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if current.nlink() != 1
-                || current.dev() != self.database_identity.dev()
-                || current.ino() != self.database_identity.ino()
-            {
-                return Err("proof catalog file replaced during ownership".into());
-            }
+    fn ensure_database(&self) -> Result<(), crate::Error> {
+        let current = crate::storage::owned_file(&self.directory.join(DATABASE_FILE))?;
+        let expected = self
+            .database_generation
+            .lock()
+            .map_err(|_| "proof catalog generation poisoned")?;
+        if crate::storage::FileGeneration::of(&current) != *expected {
+            return Err(crate::Error::CorruptStorage(
+                "proof catalog file changed outside its owned connection".into(),
+            ));
         }
         Ok(())
     }
+    fn record_generation(&self) -> Result<(), crate::Error> {
+        let metadata = crate::storage::owned_file(&self.directory.join(DATABASE_FILE))
+            .map_err(crate::Error::UncertainDurability)?;
+        *self.database_generation.lock().map_err(|_| {
+            crate::Error::UncertainDurability("proof catalog generation poisoned".into())
+        })? = crate::storage::FileGeneration::of(&metadata);
+        Ok(())
+    }
 
-    pub(crate) fn summary(&self) -> Result<Summary, String> {
-        self.ensure_database()?;
+    pub(crate) fn summary(&self) -> Result<Summary, crate::Error> {
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
         catalog.summary()
     }
 
@@ -155,12 +169,12 @@ impl Store {
         &self,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<(u64, BinaryProof)>, String> {
-        self.ensure_database()?;
+    ) -> Result<Vec<(u64, BinaryProof)>, crate::Error> {
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
         catalog.replay_page(after, limit)
     }
 
@@ -169,12 +183,12 @@ impl Store {
         after: Option<ProofId>,
         limit: usize,
         expected: Summary,
-    ) -> Result<Vec<ProofId>, String> {
-        self.ensure_database()?;
+    ) -> Result<Vec<ProofId>, crate::Error> {
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
         catalog.ids_page(after, limit, expected)
     }
 
@@ -182,33 +196,37 @@ impl Store {
         &self,
         id: ProofId,
         expected: Summary,
-    ) -> Result<Option<BinaryProof>, String> {
-        self.ensure_database()?;
+    ) -> Result<Option<BinaryProof>, crate::Error> {
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
         catalog.get(id, expected)
     }
 
     #[cfg(test)]
-    pub(crate) fn get(&self, id: ProofId, expected: Summary) -> Result<Option<Envelope>, String> {
+    pub(crate) fn get(
+        &self,
+        id: ProofId,
+        expected: Summary,
+    ) -> Result<Option<Envelope>, crate::Error> {
         self.get_binary(id, expected)
             .map(|object| object.map(|object| object.envelope()))
     }
 
-    pub(crate) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, String> {
-        self.ensure_database()?;
+    pub(crate) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, crate::Error> {
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
         catalog.contains(id, expected)
     }
 
     /// Small test fixtures may collect a corpus; production callers use pages.
     #[cfg(test)]
-    pub(crate) fn load(&self) -> Result<Vec<Envelope>, String> {
+    pub(crate) fn load(&self) -> Result<Vec<Envelope>, crate::Error> {
         let summary = self.summary()?;
         if summary.count > crate::resources::limits().batch_objects {
             return Err("test fixture collection limit".into());
@@ -232,15 +250,16 @@ impl Store {
     }
 
     /// Only Graph calls this after rechecking every proof mathematically.
-    pub(crate) fn finish_replay(&self, root: [u8; 32]) -> Result<(), String> {
-        self.ensure_database()?;
+    pub(crate) fn finish_replay(&self, root: [u8; 32]) -> Result<(), crate::Error> {
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
         #[cfg(test)]
         self.fail_replay(ReplayCut::BeforeActivation)?;
         catalog.activate(root)?;
+        self.record_generation()?;
         #[cfg(test)]
         self.fail_replay(ReplayCut::AfterActivation)?;
         Ok(())
@@ -251,7 +270,7 @@ impl Store {
         &self,
         object: &Envelope,
         expected: Summary,
-    ) -> Result<Summary, String> {
+    ) -> Result<Summary, crate::Error> {
         let root = ProofId::from_bytes(crate::object::id_bytes(&object.proof_id)?);
         self.persist_batch_checked(root, std::iter::once(object), expected, None)
     }
@@ -262,7 +281,7 @@ impl Store {
         objects: impl Iterator<Item = &'a Envelope>,
         expected: Summary,
         deadline: Option<Instant>,
-    ) -> Result<Summary, String> {
+    ) -> Result<Summary, crate::Error> {
         let objects = objects
             .map(|object| object.clone().prepare().map(|c| c.record()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -277,7 +296,7 @@ impl Store {
         deadline: Option<Instant>,
         next_root: [u8; 32],
         guard: Option<&crate::graph::CommitGuard>,
-    ) -> Result<Summary, String> {
+    ) -> Result<Summary, crate::Error> {
         self.persist_records(root, objects, expected, deadline, Some(next_root), guard)
     }
 
@@ -289,8 +308,7 @@ impl Store {
         deadline: Option<Instant>,
         next_root: Option<[u8; 32]>,
         guard: Option<&crate::graph::CommitGuard>,
-    ) -> Result<Summary, String> {
-        self.ensure_database()?;
+    ) -> Result<Summary, crate::Error> {
         let mut batch = Vec::new();
         for object in objects {
             if batch.len() >= crate::resources::limits().batch_objects {
@@ -302,11 +320,12 @@ impl Store {
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
         #[cfg(test)]
         let cut = *self.cut.lock().map_err(|_| "test cut lock poisoned")?;
         #[cfg(not(test))]
         let cut = None;
-        catalog.persist(
+        let result = catalog.persist(
             root,
             &batch,
             catalog::Commit {
@@ -316,11 +335,21 @@ impl Store {
                 next_root,
                 guard,
             },
-        )
+        );
+        // Physical generation follows every owned transaction, including a
+        // rollback or ambiguous COMMIT. This grants no checked membership:
+        // Graph remains halted on uncertain durability and replay is mandatory.
+        match (result, self.record_generation()) {
+            (Err(primary), Err(generation)) => Err(crate::Error::UncertainDurability(format!(
+                "{primary}; generation observation failed: {generation}"
+            ))),
+            (_, Err(generation)) => Err(generation),
+            (result, Ok(())) => result,
+        }
     }
 
     #[cfg(test)]
-    pub(crate) fn persist(&self, object: &Envelope) -> Result<Summary, String> {
+    pub(crate) fn persist(&self, object: &Envelope) -> Result<Summary, crate::Error> {
         self.persist_checked(object, self.summary()?)
     }
 
@@ -329,7 +358,7 @@ impl Store {
         &self,
         root: ProofId,
         objects: impl Iterator<Item = &'a Envelope>,
-    ) -> Result<Summary, String> {
+    ) -> Result<Summary, crate::Error> {
         self.persist_batch_checked(root, objects, self.summary()?, None)
     }
     #[cfg(test)]
@@ -347,7 +376,7 @@ impl Store {
         *self.replay_cut.lock().unwrap() = Some(cut);
     }
     #[cfg(test)]
-    fn fail_replay(&self, cut: ReplayCut) -> Result<(), String> {
+    fn fail_replay(&self, cut: ReplayCut) -> Result<(), crate::Error> {
         if *self.replay_cut.lock().unwrap() == Some(cut) {
             Err("injected replay cut".into())
         } else {
@@ -356,11 +385,11 @@ impl Store {
     }
 }
 
-fn catalog_leaf_exists(path: &Path) -> Result<bool, String> {
+fn catalog_leaf_exists(path: &Path) -> Result<bool, crate::Error> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("cannot inspect proof corpus leaf: {error}")),
+        Err(error) => return Err(format!("cannot inspect proof corpus leaf: {error}").into()),
     };
     if !metadata.is_file() {
         return Err("proof corpus leaf must be a regular unaliased file".into());
@@ -375,7 +404,7 @@ fn catalog_leaf_exists(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-fn new_identity(directory: &Path) -> Result<[u8; 32], String> {
+fn new_identity(directory: &Path) -> Result<[u8; 32], crate::Error> {
     let mut hash = Sha256::new();
     hash.update(b"naome:proof-catalog-lineage:v1\0");
     hash.update(directory.to_string_lossy().as_bytes());
@@ -389,7 +418,7 @@ fn new_identity(directory: &Path) -> Result<[u8; 32], String> {
     );
     Ok(hash.finalize().into())
 }
-fn read_format(path: &Path) -> Result<[u8; 32], String> {
+fn read_format(path: &Path) -> Result<[u8; 32], crate::Error> {
     let mut bytes = Vec::new();
     receipt_file(path, false)?
         .take(73)
@@ -402,7 +431,7 @@ fn read_format(path: &Path) -> Result<[u8; 32], String> {
         .try_into()
         .map_err(|_| "proof corpus format identity width".into())
 }
-fn write_format(directory: &Path, id: [u8; 32]) -> Result<(), String> {
+fn write_format(directory: &Path, id: [u8; 32]) -> Result<(), crate::Error> {
     let mut bytes = FORMAT_MAGIC.to_vec();
     bytes.extend_from_slice(&crate::compatibility());
     bytes.extend_from_slice(&id);
@@ -446,7 +475,7 @@ fn write_format(directory: &Path, id: [u8; 32]) -> Result<(), String> {
     fs::rename(&pending, directory.join(FORMAT_FILE)).map_err(|error| error.to_string())?;
     sync_directory(directory)
 }
-fn receipt_file(path: &Path, write: bool) -> Result<File, String> {
+fn receipt_file(path: &Path, write: bool) -> Result<File, crate::Error> {
     let before = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !before.is_file() {
         return Err("proof corpus receipt must be a regular unaliased file".into());
@@ -476,14 +505,14 @@ fn receipt_file(path: &Path, write: bool) -> Result<File, String> {
     }
     Ok(file)
 }
-fn sync_directory(directory: &Path) -> Result<(), String> {
+fn sync_directory(directory: &Path) -> Result<(), crate::Error> {
     #[cfg(unix)]
     File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())?;
     Ok(())
 }
-pub(crate) fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, crate::Error> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
     if !metadata.is_file() {

@@ -67,7 +67,7 @@ fn retries_and_selection_changes_share_the_original_obligation_allowance() {
     retry.state = State::Running;
     owner.reserve(2, 1).unwrap();
     owner.journal.records.get_mut(&2).unwrap().checkpoint = 1;
-    assert!(owner.reserve(2, 2).unwrap_err().contains("allowance"));
+    assert_eq!(owner.reserve(2, 2).unwrap(), Reservation::Exhausted);
     assert_eq!(
         owner
             .journal
@@ -101,7 +101,7 @@ fn overlapping_epochs_cannot_reserve_more_than_the_shared_work_budget() {
     owner.journal.records.get_mut(&1).unwrap().checkpoint = 1;
     owner.reserve(2, 1).unwrap();
     owner.journal.records.get_mut(&2).unwrap().checkpoint = 1;
-    assert!(owner.reserve(1, 2).is_err());
+    assert_eq!(owner.reserve(1, 2).unwrap(), Reservation::Exhausted);
     assert_eq!(
         owner
             .journal
@@ -112,6 +112,84 @@ fn overlapping_epochs_cannot_reserve_more_than_the_shared_work_budget() {
             .reserved_units,
         2
     );
+}
+
+#[tokio::test]
+async fn reservation_events_keep_exhaustion_local_but_stop_on_persistence_failure() {
+    for corrupt_storage in [false, true] {
+        let (directory, mut owner) = fixture(1);
+        let _receipt = submit(&mut owner, 1);
+        owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+        assert_eq!(owner.reserve(1, 1).unwrap(), Reservation::Granted);
+        owner.journal.records.get_mut(&1).unwrap().checkpoint = 1;
+        let settings = owner.settings;
+        if corrupt_storage {
+            let external =
+                rusqlite::Connection::open(directory.0.join("research/jobs.sqlite3")).unwrap();
+            external
+                .execute("UPDATE checkpoint SET entry_count=entry_count+1", [])
+                .unwrap();
+        }
+        let (commands, receive) = mpsc::channel(2);
+        let (halt, stopped) = oneshot::channel();
+        let (events, progress) = mpsc::channel(2);
+        let sender = events.clone();
+        let task = tokio::spawn(owner.run(receive, stopped, events, progress));
+        let (reply, outcome) = oneshot::channel();
+        sender
+            .send(process::Event::Reserve {
+                id: 1,
+                next: 2,
+                reply,
+            })
+            .await
+            .unwrap();
+        let rejection = tokio::time::timeout(Duration::from_secs(2), outcome)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        if corrupt_storage {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(2), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            assert!(commands.is_closed());
+        } else {
+            // This diagnostic deliberately differs from the former control
+            // prefix. The normal outcome still leaves the real driver running.
+            assert_eq!(rejection, "research work budget exhausted");
+            let (reply, page) = oneshot::channel();
+            commands
+                .send(Command::Recover {
+                    after: 0,
+                    before: 2,
+                    reply,
+                })
+                .await
+                .unwrap();
+            let page = tokio::time::timeout(Duration::from_secs(2), page)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(page.records.len(), 1);
+            assert_eq!(page.records[0].state, State::Expired);
+            assert_eq!(page.records[0].reserved_units, 1);
+            assert!(!task.is_finished());
+            halt.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let (_, recovered) = Disk::open(&directory.0, settings, 0).unwrap();
+            assert_eq!(recovered.records[&1].state, State::Expired);
+        }
+    }
 }
 
 #[test]
@@ -781,4 +859,30 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
     let mut owner = Owner::new(disk, journal, settings);
     let id = submit_find(&mut owner, total as u64);
     assert!(id >= end);
+}
+
+#[test]
+fn narrower_new_job_defaults_preserve_original_budget_accounts_and_retry_allowances() {
+    let (directory, mut owner) = fixture(3);
+    let _request = submit(&mut owner, 1);
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    owner.reserve(1, 1).unwrap();
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    record.checkpoint = 1;
+    record.state = State::Failed;
+    record.acknowledged = true;
+    owner.save().unwrap();
+    let original = owner.journal.records[&1].clone();
+    let mut settings = owner.settings;
+    settings.solving.limits.work_units = 1;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings);
+    let _retry = submit(&mut owner, 2);
+    let retry = &owner.journal.records[&2];
+    assert_eq!(retry.settings, original.settings);
+    assert_eq!(retry.created_ms, original.created_ms);
+    assert_eq!(retry.expires_ms, original.expires_ms);
+    assert_eq!(retry.reserved_units, 1);
+    assert_eq!(owner.journal.total_reserved_units, 1);
 }

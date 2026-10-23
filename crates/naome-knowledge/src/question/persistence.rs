@@ -3,6 +3,13 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[cfg(test)]
+thread_local! { static FAIL_EXCHANGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+pub(super) fn fail_next_exchange() {
+    FAIL_EXCHANGE.with(|value| value.set(true));
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Kind {
@@ -57,12 +64,12 @@ struct Backlog {
 }
 impl Persistence {
     pub(super) fn open(directory: &Path, policy: PrefilterPolicy) -> Result<Self, String> {
-        let root = crate::jobs::research_directory(directory)?;
+        let root = crate::storage::research_directory(directory)?;
         let path = root.join("questions.sqlite3");
         let marker = directory.join("question-registry.initialized");
-        let established = crate::jobs::marker_valid(&marker, b"naome-question-registry-v2\n")?;
+        let established = crate::storage::marker_valid(&marker, b"naome-question-registry-v2\n")?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open(&path, "naome:questions:v1")?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, "naome:questions:v1")?
         } else {
             if established {
                 return Err(
@@ -79,13 +86,15 @@ impl Persistence {
             };
             crate::checkpoint::Checkpoint::create(&path, "naome:questions:v1", &header, vec![])?
         };
-        checkpoint.require_kinds(&["question", "admitted", "backlog", "queued"])?;
+        checkpoint.require_kinds(&["question", "admitted", "backlog", "queued", "publication"])?;
         let header: Header = checkpoint.header()?;
         if header.version != 2
             || header.compatibility != crate::hex(&crate::compatibility())
-            || header.policy != crate::hex(&policy.identity())
+            || crate::object::id_bytes(&header.policy).is_err()
         {
-            return Err("question registry version, compatibility or policy differs".into());
+            return Err(
+                "question registry version, compatibility or policy identity differs".into(),
+            );
         }
         let persistence = Self {
             checkpoint,
@@ -93,7 +102,7 @@ impl Persistence {
             fault: std::sync::Mutex::new(None),
         };
         if !established {
-            crate::jobs::write_marker(&marker, b"naome-question-registry-v2\n")?;
+            crate::storage::write_marker(&marker, b"naome-question-registry-v2\n")?;
         }
         Ok(persistence)
     }
@@ -297,16 +306,78 @@ impl Persistence {
             ],
         )
     }
+    /// An outbox entry precedes the proof commit. Recovery decides its outcome
+    /// from the rechecked graph, never from a persisted success flag.
+    pub(super) fn stage_publication(
+        &mut self,
+        root: naome_proof::ProofId,
+        question: &CompiledQuestion,
+    ) -> Result<(), crate::Error> {
+        crate::resources::require_disk_space(
+            self.checkpoint.directory(),
+            QUESTION_ENTRY_MAX_BYTES as u64 * 4,
+        )?;
+        self.checkpoint
+            .commit(
+                &self.header,
+                vec![crate::checkpoint::Update::put(
+                    "publication",
+                    crate::hex(root.as_bytes()),
+                    &question.source(),
+                )?],
+            )
+            .map_err(crate::Error::UncertainDurability)
+    }
+    pub(super) fn finish_publication(
+        &mut self,
+        root: naome_proof::ProofId,
+    ) -> Result<(), crate::Error> {
+        self.checkpoint
+            .commit(
+                &self.header,
+                vec![crate::checkpoint::Update::Remove {
+                    kind: "publication",
+                    key: crate::hex(root.as_bytes()),
+                }],
+            )
+            .map_err(crate::Error::UncertainDurability)
+    }
+    pub(super) fn publications(
+        &self,
+    ) -> Result<Vec<(naome_proof::ProofId, CompiledQuestion)>, String> {
+        self.checkpoint
+            .page(
+                "publication",
+                None,
+                crate::resources::limits().publications,
+                crate::resources::limits().active_job_bytes,
+            )?
+            .into_iter()
+            .map(|(key, bytes)| {
+                let root = naome_proof::ProofId::from_bytes(crate::object::id_bytes(&key)?);
+                let source: String = crate::checkpoint::decode(&bytes)?;
+                let question = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
+                Ok((root, question))
+            })
+            .collect()
+    }
+
     pub(super) fn retain(
         &mut self,
         question: &CompiledQuestion,
         kind: Kind,
         receipt: Option<&AdmissionReceipt>,
     ) -> Result<(), String> {
-        crate::resources::require_disk_space(
-            self.checkpoint.directory(),
-            question.source().len() as u64,
-        )?;
+        #[cfg(test)]
+        if kind == Kind::Exchange && FAIL_EXCHANGE.with(|value| value.replace(false)) {
+            return Err("injected question persistence failure".into());
+        }
+        if kind != Kind::Exchange {
+            crate::resources::require_disk_space(
+                self.checkpoint.directory(),
+                question.source().len() as u64,
+            )?;
+        }
         let first = receipt.map(|r| FirstAdmission {
             record: crate::hex(&r.record()),
             input: crate::hex(&r.input()),
@@ -424,7 +495,7 @@ mod tests {
     #[test]
     fn original_source_orientation_and_first_admission_survive_row_updates_and_restart() {
         let directory = crate::checkpoint::tests::Directory::new();
-        let root = crate::jobs::research_directory(&directory.0).unwrap();
+        let root = crate::storage::research_directory(&directory.0).unwrap();
         let policy = PrefilterPolicy::default();
         let question = CompiledQuestion::compile("goal = not(all(x,eq(x,x)))").unwrap();
         let key = crate::hex(question.source_hash());
@@ -598,4 +669,27 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
             "question history drives RSS: {line}"
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn stricter_assessment_policy_preserves_current_sources_and_first_policy_identity() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let old = PrefilterPolicy::default();
+    let question = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
+    let mut persistence = Persistence::open(&directory.0, old).unwrap();
+    persistence.retain(&question, Kind::Baseline, None).unwrap();
+    drop(persistence);
+    let mut narrowed = old;
+    narrowed.limits.operations /= 2;
+    let persistence = Persistence::open(&directory.0, narrowed).unwrap();
+    assert_eq!(persistence.header.policy, crate::hex(&old.identity()));
+    let mut sources = Vec::new();
+    persistence
+        .replay(|_, question| {
+            sources.push(question.source().to_owned());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(sources, [question.source()]);
 }

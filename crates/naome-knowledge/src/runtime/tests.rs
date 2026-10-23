@@ -101,7 +101,7 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
                 .unwrap(),
             vec![root]
         );
-        questions.apply_exchange(delta);
+        questions.apply_exchange(delta).unwrap();
         drop(graph);
         let mut replayed = Graph::open(&directory.0).unwrap();
         assert_eq!(replayed.ids(), vec![root]);
