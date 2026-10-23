@@ -217,6 +217,7 @@ struct Request {
 struct Response {
     token: String,
     status: Status,
+    resources: Option<crate::resources::adaptive::Snapshot>,
 }
 
 pub(crate) struct Control {
@@ -489,6 +490,7 @@ impl Control {
         .map_err(|error| format!("owner control worker failed: {error}"))??;
         let response = Response {
             token: self.endpoint.token.clone(),
+            resources: crate::resources::adaptive::current(),
             status: Status {
                 running: ready && !stopping,
                 accepted_proofs: count,
@@ -574,11 +576,11 @@ async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result
     .map_err(|error| error.to_string())
 }
 
-async fn request(
+async fn request_response(
     directory: &Path,
     operation: Operation,
     launch: Option<&str>,
-) -> Result<Option<Status>, String> {
+) -> Result<Option<Response>, String> {
     let Some(endpoint) = endpoint(directory)? else {
         return Ok(None);
     };
@@ -616,7 +618,17 @@ async fn request(
     if response.token != endpoint.token {
         return Err("local control response instance mismatch".into());
     }
-    Ok(Some(response.status))
+    Ok(Some(response))
+}
+
+async fn request(
+    directory: &Path,
+    operation: Operation,
+    launch: Option<&str>,
+) -> Result<Option<Status>, String> {
+    request_response(directory, operation, launch)
+        .await
+        .map(|response| response.map(|r| r.status))
 }
 
 fn directory() -> Result<PathBuf, String> {
@@ -1161,15 +1173,24 @@ async fn wait_for_stop(
 pub async fn execute() -> Result<(), String> {
     crate::resources::initialize_from_environment()?;
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if arguments.as_slice() == [std::ffi::OsString::from("resources")]
-        || arguments.as_slice()
-            == [
-                std::ffi::OsString::from("--json"),
-                std::ffi::OsString::from("resources"),
-            ]
-    {
-        println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"limits":crate::resources::limits(),"memory_charge":crate::resources::memory_usage(),"available_parallelism":std::thread::available_parallelism().map_or(1,usize::from)})).map_err(|e|e.to_string())?);
-        return Ok(());
+    let plain = if arguments.first().is_some_and(|a| a == "--json") {
+        &arguments[1..]
+    } else {
+        &arguments[..]
+    };
+    if plain.first().is_some_and(|a| a == "resources") {
+        return resources_command(&plain[1..]).await;
+    }
+    if plain.first().is_some_and(|a| a == "proof") {
+        let policy_directory = directory()?;
+        let proof_args = if arguments.first().is_some_and(|a| a == "--json") {
+            let mut args = vec![std::ffi::OsString::from("--json")];
+            args.extend_from_slice(&plain[1..]);
+            args
+        } else {
+            plain[1..].to_vec()
+        };
+        return crate::proof_work::cli::execute(&proof_args, &policy_directory).await;
     }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result;
@@ -1221,4 +1242,92 @@ pub async fn execute() -> Result<(), String> {
         _ => unreachable!(),
     };
     cli::print(command, json, &status)
+}
+
+async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), String> {
+    use crate::resources::adaptive::{self, Profile, Selection, Snapshot};
+    let directory = directory()?;
+    if arguments.first().is_some_and(|v| v == "history") {
+        if arguments.len() > 2 {
+            return Err("usage: naome resources history [after]".into());
+        }
+        let after = arguments
+            .get(1)
+            .map(|s| {
+                s.to_str()
+                    .ok_or("invalid history cursor")?
+                    .parse::<u64>()
+                    .map_err(|e| e.to_string())
+            })
+            .transpose()?
+            .unwrap_or(0);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&adaptive::history::page(&directory, after)?)
+                .map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    if !arguments.is_empty() {
+        let profile = match arguments[0].to_str() {
+            Some("dynamic") => Profile::Dynamic,
+            Some("heavy") => Profile::Heavy,
+            Some("light") => Profile::Light,
+            Some("custom") => Profile::Custom,
+            _ => return Err(
+                "usage: naome resources [dynamic|heavy|light|custom <limits.json>|history [after]]"
+                    .into(),
+            ),
+        };
+        let custom = if profile == Profile::Custom {
+            let [_, path] = arguments else {
+                return Err("custom requires a limits.json file".into());
+            };
+            let mut bytes = Vec::new();
+            File::open(path)
+                .and_then(|f| f.take(4097).read_to_end(&mut bytes))
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 4096 {
+                return Err("custom resource settings capacity".into());
+            }
+            Some(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?)
+        } else {
+            if arguments.len() != 1 {
+                return Err("resource profile takes no extra arguments".into());
+            }
+            None
+        };
+        let selection = Selection { profile, custom };
+        selection.validate()?;
+        if selection
+            .custom
+            .as_ref()
+            .is_some_and(|c| c.memory_bytes > crate::resources::limits().memory_bytes as u64)
+        {
+            return Err("custom memory exceeds the installed process capacity; configure NAOME_RESOURCE_CONFIG before launch".into());
+        }
+        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        let _lock = operation_lock(&directory).await?;
+        adaptive::save(&directory, &selection)?;
+    }
+    let configured = adaptive::load(&directory)?;
+    let active = if directory.exists() {
+        request_response(&directory, Operation::Status, None)
+            .await?
+            .and_then(|s| s.resources)
+    } else {
+        None
+    };
+    let location = if directory.exists() {
+        directory.as_path()
+    } else {
+        std::path::Path::new("/tmp")
+    };
+    let proposed = Snapshot::derive(
+        configured.clone(),
+        adaptive::sample(location)?,
+        crate::resources::limits().memory_bytes as u64,
+    )?;
+    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"limits":crate::resources::limits(),"configured":configured,"active":active,"caller_observation":proposed,"memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
+    Ok(())
 }

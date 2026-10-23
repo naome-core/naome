@@ -2,6 +2,8 @@
 //! restart; no role, worker or peer can mutate limits after allocation begins.
 //! Histories are not limited by these working-set and per-operation budgets.
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+pub mod adaptive;
 use std::{
     sync::{
         Arc, OnceLock,

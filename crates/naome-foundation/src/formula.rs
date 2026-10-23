@@ -1,6 +1,7 @@
 //! Primitive first-order formulas for set theory.
 
 mod canonical;
+pub mod graph;
 mod source;
 
 pub use canonical::{

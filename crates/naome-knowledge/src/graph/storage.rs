@@ -135,6 +135,32 @@ impl WriteRoute {
 }
 
 impl CheckedStorage {
+    pub(super) fn adapt_cache(&self) -> Result<(), String> {
+        self.cache
+            .lock()
+            .map_err(|_| "checked cache lock poisoned")?
+            .trim(crate::resources::adaptive::cache(
+                crate::resources::limits().checked_cache_bytes,
+            ));
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "checked index lock poisoned")?;
+        connection
+            .open()?
+            .pragma_update(
+                None,
+                "cache_size",
+                -i64::try_from(
+                    (crate::resources::adaptive::cache(
+                        crate::resources::limits().checked_index_cache_bytes,
+                    ) / 1024)
+                        .max(1),
+                )
+                .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+    }
     #[cfg(test)]
     pub(super) fn delay_next_write(
         started: std::sync::mpsc::Sender<()>,
@@ -654,6 +680,16 @@ impl ContextStorage for StartupMarker {
     }
 }
 impl Cache {
+    fn trim(&mut self, limit: usize) {
+        while self.charged > limit {
+            let Some((_, key)) = self.recency.pop_first() else {
+                break;
+            };
+            if let Some(old) = self.entries.remove(&key) {
+                self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
+            }
+        }
+    }
     fn touch(&mut self, address: [u8; 32]) {
         if self.clock == u64::MAX {
             let Some(entry) = self.entries.remove(&address) else {
@@ -685,17 +721,13 @@ impl Cache {
             self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
         }
         let charge = bytes.capacity().saturating_add(CACHE_ENTRY_BYTES);
-        if charge > crate::resources::limits().checked_cache_bytes {
+        let limit =
+            crate::resources::adaptive::cache(crate::resources::limits().checked_cache_bytes);
+        self.trim(limit);
+        if charge > limit {
             return;
         }
-        while self.charged > crate::resources::limits().checked_cache_bytes - charge {
-            let Some((_, key)) = self.recency.pop_first() else {
-                break;
-            };
-            if let Some(old) = self.entries.remove(&key) {
-                self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
-            }
-        }
+        self.trim(limit - charge);
         if self.clock == u64::MAX {
             self.entries.clear();
             self.recency.clear();

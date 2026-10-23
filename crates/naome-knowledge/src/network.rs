@@ -584,6 +584,10 @@ where
     let mut stop_watch = control.as_ref().map(|control| control.stop_watch());
     let mut stopping = false;
     let mut next_profile_check = Instant::now();
+    let mut resources = control
+        .as_ref()
+        .map(|_| crate::resources::adaptive::history::Controller::open(&directory))
+        .transpose()?;
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
@@ -593,6 +597,7 @@ where
     let owner_busy = node.swarm.busy.clone();
     let outcome:Result<(),String>=worker::while_polled(owner_busy, async {
     loop {
+        if let Some(resources)=&mut resources {resources.refresh()?;}
         // Read the validated owner epoch before polling any final admission.
         // An error invalidates old selection; stop remains available.
         if let Some(control)=&control
@@ -1237,7 +1242,8 @@ impl Node {
     fn tick(&mut self) {
         let now = Instant::now();
         self.discovery_tick(now);
-        if now >= self.next_production
+        if crate::resources::adaptive::batch(1) > 0
+            && now >= self.next_production
             && let Some(source) = self.producer_sources.pop_front()
         {
             self.next_production = now + crate::resources::limits().production_interval;
@@ -1298,7 +1304,8 @@ impl Node {
     fn request_ready(&self, peer: PeerId, now: Instant) -> bool {
         self.enabled.contains(&peer)
             && self.swarm.is_connected(&peer)
-            && self.flights.len() < crate::resources::limits().flights
+            && self.flights.len()
+                < crate::resources::adaptive::network(crate::resources::limits().flights)
             && self.flight_count(peer) < crate::resources::limits().flights_per_peer
             && self.outgoing_ready(peer, now)
     }

@@ -631,7 +631,9 @@ impl Owner {
                 .keys()
                 .filter(|id| self.journal.records[id].input.lane() == lane)
                 .count();
-            if active >= lanes()[lane] {
+            let available = crate::resources::adaptive::slots(lanes().iter().sum())
+                .saturating_sub(self.running.len());
+            if active >= lanes()[lane] || available == 0 {
                 continue;
             }
             let ready = self
@@ -647,7 +649,7 @@ impl Owner {
                             .is_some_and(|w| w.iter().any(|w| !w.is_closed()))
                 })
                 .map(|r| r.id)
-                .take(lanes()[lane] - active)
+                .take((lanes()[lane] - active).min(available))
                 .collect::<Vec<_>>();
             for id in ready {
                 let Some(slot) = self.disk.slot(lane)? else {

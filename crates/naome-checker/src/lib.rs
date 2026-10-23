@@ -12,6 +12,7 @@
 //! that normal form's distinct direct proof and definition dependencies.
 
 pub mod context;
+pub mod program;
 pub mod question;
 mod state;
 

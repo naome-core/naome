@@ -21,6 +21,8 @@ mod jobs;
 pub mod mocks;
 pub mod network;
 mod object;
+#[cfg(unix)]
+pub mod proof_work;
 pub mod question;
 pub mod relay;
 pub mod resources;
