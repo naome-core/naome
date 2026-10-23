@@ -59,7 +59,11 @@ impl Service {
                         .enable_all()
                         .build()
                         .map_err(|e| e.to_string())?;
-                    runtime.block_on(Owner::new(disk, journal, settings).run(receiver, stop))
+                    let (events, progress) =
+                        mpsc::channel(crate::resources::limits().provider_events);
+                    runtime.block_on(
+                        Owner::new(disk, journal, settings).run(receiver, stop, events, progress),
+                    )
                 })();
                 if let Err(failure) = &result {
                     *report.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure.clone());
@@ -138,6 +142,12 @@ struct Owner {
     flushed: Instant,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reservation {
+    Granted,
+    Exhausted,
+}
+
 impl Owner {
     fn new(disk: Disk, journal: Journal, settings: Settings) -> Self {
         let recovery_skip = journal.records.keys().copied().collect();
@@ -159,8 +169,10 @@ impl Owner {
         mut self,
         commands: mpsc::Receiver<Command>,
         halt: oneshot::Receiver<()>,
+        events: mpsc::Sender<process::Event>,
+        progress: mpsc::Receiver<process::Event>,
     ) -> Result<(), String> {
-        let result = std::panic::AssertUnwindSafe(self.drive(commands, halt))
+        let result = std::panic::AssertUnwindSafe(self.drive(commands, halt, events, progress))
             .catch_unwind()
             .await
             .unwrap_or_else(|_| {
@@ -175,8 +187,9 @@ impl Owner {
         &mut self,
         mut commands: mpsc::Receiver<Command>,
         mut halt: oneshot::Receiver<()>,
+        events: mpsc::Sender<process::Event>,
+        mut progress: mpsc::Receiver<process::Event>,
     ) -> Result<(), String> {
-        let (events, mut progress) = mpsc::channel(crate::resources::limits().provider_events);
         let mut tick = tokio::time::interval(crate::resources::limits().job_tick_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -228,10 +241,11 @@ impl Owner {
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
                                 let _=reply.send(Err("research job cancelled or expired".into()));continue;
                             }
-                            let result=self.reserve(id,next);
-                            let fatal=result.as_ref().err().filter(|e|!e.starts_with("research allowance")).cloned();
-                            let _=reply.send(result);
-                            if let Some(error)=fatal {return Err(error);}
+                            match self.reserve(id,next) {
+                                Ok(Reservation::Granted)=>{let _=reply.send(Ok(()));},
+                                Ok(Reservation::Exhausted)=>{let _=reply.send(Err("research work budget exhausted".into()));},
+                                Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error);},
+                            }
                         },
                         process::Event::Progress{id,checkpoint,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
@@ -586,7 +600,7 @@ impl Owner {
         Ok(())
     }
 
-    fn reserve(&mut self, id: u64, next: u32) -> Result<(), String> {
+    fn reserve(&mut self, id: u64, next: u32) -> Result<Reservation, String> {
         self.charge(id)?;
         let now = wall_ms()?;
         let record = self
@@ -613,14 +627,15 @@ impl Owner {
             record.state = State::Expired;
             record.result = None;
             self.save()?;
-            return Err("research allowance exhausted".into());
+            return Ok(Reservation::Exhausted);
         }
         record.reserved_units += 1;
         if let Some(account) = self.journal.accounts.get_mut(&record.input.account_key()) {
             account.reserved_units += 1;
         }
         self.journal.total_reserved_units = self.journal.total_reserved_units.saturating_add(1);
-        self.save()
+        self.save()?;
+        Ok(Reservation::Granted)
     }
 
     fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
