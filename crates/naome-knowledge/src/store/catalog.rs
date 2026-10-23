@@ -625,7 +625,8 @@ fn open_connection(path: &Path) -> Result<Connection, crate::Error> {
 }
 
 fn configure(connection: &Connection) -> Result<(), crate::Error> {
-    crate::storage::sqlite_common(connection, crate::resources::limits().catalog_cache_bytes)?;
+    crate::storage::sqlite_common(connection, crate::resources::limits().catalog_cache_bytes)
+        .map_err(sql_error)?;
     connection
         .execute_batch(
             "PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA foreign_keys=ON;",

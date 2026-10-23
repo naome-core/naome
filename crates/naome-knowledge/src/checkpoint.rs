@@ -561,7 +561,8 @@ fn connect(path: &Path) -> Result<Connection, String> {
     crate::storage::sqlite_common(
         &connection,
         crate::resources::limits().checkpoint_cache_bytes,
-    )?;
+    )
+    .map_err(sql)?;
     connection
         .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA;")
         .map_err(sql)?;

@@ -95,20 +95,16 @@ pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, String> {
 pub(crate) fn sqlite_common(
     connection: &rusqlite::Connection,
     cache_bytes: usize,
-) -> Result<(), String> {
+) -> Result<(), rusqlite::Error> {
+    connection.busy_timeout(crate::resources::limits().sqlite_busy_timeout)?;
     connection
-        .busy_timeout(crate::resources::limits().sqlite_busy_timeout)
-        .map_err(|e| e.to_string())?;
-    connection
-        .execute_batch("PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA trusted_schema=OFF;")
-        .map_err(|e| e.to_string())?;
-    connection
-        .pragma_update(
-            None,
-            "cache_size",
-            -i64::try_from((cache_bytes / 1024).max(1)).map_err(|_| "SQLite cache width")?,
-        )
-        .map_err(|e| e.to_string())
+        .execute_batch("PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA trusted_schema=OFF;")?;
+    connection.pragma_update(
+        None,
+        "cache_size",
+        -i64::try_from((cache_bytes / 1024).max(1))
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
+    )
 }
 
 /// The exact inode and physical write generation owned by a serialized store.

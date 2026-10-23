@@ -279,7 +279,8 @@ impl CheckedStorage {
         crate::storage::sqlite_common(
             &connection,
             crate::resources::limits().checked_index_cache_bytes,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         if startup {
             // Only the fresh, exclusive startup generation is pruned in place.
             // SQLite requires the pointer map before any table is created.

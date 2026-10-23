@@ -96,7 +96,8 @@ impl IndexStorage {
         crate::storage::sqlite_common(
             &connection,
             crate::resources::limits().registry_index_cache_bytes,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let version = connection
             .pragma_query_value(None, "data_version", |r| r.get(0))
             .map_err(|e| e.to_string())?;
