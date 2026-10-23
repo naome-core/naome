@@ -657,7 +657,10 @@ fn evaluate(
         let forward_id = header.proof;
         work.formula(header.length + encoded.len(), 8)?;
         let forward = load_formula(snapshot.artifacts, statement, header.length)?;
-        let (antecedent, related) = forward.implication_parts().expect("indexed implication");
+        let (antecedent, related) = forward
+            .view()
+            .implication_parts()
+            .expect("indexed implication");
         if antecedent != *question.formula {
             continue;
         }
@@ -678,11 +681,11 @@ fn evaluate(
                     .get(&record)
                     .map_err(context_failure)?
                     .as_deref()
-                    != Some(&related)
+                    .is_none_or(|formula| related != *formula)
             {
                 continue;
             }
-            let backward = Formula::implies(related.clone(), question.formula.clone());
+            let backward = Formula::implies(related.to_owned(), question.formula.clone());
             if let Some((backward_id, _)) = lookup(snapshot.artifacts, &backward, work)? {
                 recheck(
                     vec![ProofStep::ProofReference {
