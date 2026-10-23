@@ -14,17 +14,12 @@ impl Node {
     }
 
     pub(super) fn forget_contact(&mut self, peer: PeerId) {
-        let contact = self.discovery.book.lock().retire(peer, Instant::now());
-        if let Some(contact) = contact {
-            for address in contact.addresses {
-                remove_exchange_address(&mut self.swarm.behaviour_mut().exchange, &peer, &address);
-            }
-        }
+        self.discovery.book.lock().retire(peer, Instant::now());
         if let Some(kad) = self.swarm.behaviour_mut().discovery.kad.as_mut() {
             kad.remove_peer(&peer);
         }
         if let Some(mdns) = self.swarm.behaviour_mut().discovery.mdns.as_mut() {
-            discovery::expire_mdns(mdns, &peer);
+            mdns.retain_nodes(|known| known != &peer);
         }
         self.enabled.remove(&peer);
         self.next_inventory.remove(&peer);
@@ -50,19 +45,20 @@ impl Node {
                 let Some(contact) = book.contacts.get(&peer) else {
                     return;
                 };
-                if contact.compatible && !contact.infrastructure && contact.enabled {
+                let (compatible, infrastructure, enabled, dht, addresses) = (
+                    contact.compatible,
+                    contact.infrastructure,
+                    contact.enabled,
+                    contact.dht,
+                    contact.addresses.iter().cloned().collect::<Vec<_>>(),
+                );
+                drop(book);
+                if compatible && !infrastructure && enabled {
                     self.enabled.insert(peer);
                 }
-                for address in &contact.addresses {
-                    if !contact.infrastructure {
-                        add_exchange_address(
-                            &mut self.swarm.behaviour_mut().exchange,
-                            &peer,
-                            address.clone(),
-                        );
-                    }
-                    if contact.compatible
-                        && contact.dht
+                for address in &addresses {
+                    if compatible
+                        && dht
                         && let Some(kad) = self.swarm.behaviour_mut().discovery.kad.as_mut()
                     {
                         kad.add_address(&peer, address.clone());
@@ -103,7 +99,7 @@ impl Node {
                 (contact.connected
                     && !contact.compatible
                     && contact.connected_at.is_some_and(|since| {
-                        now.duration_since(since) >= discovery::IDENTIFY_TIMEOUT
+                        now.duration_since(since) >= crate::resources::limits().identify_timeout
                     }))
                 .then_some(*peer)
             })
@@ -124,7 +120,7 @@ impl Node {
                     {
                         return None;
                     }
-                    contact.retry_at = now + RECONCILE_INTERVAL;
+                    contact.retry_at = now + crate::resources::limits().reconcile_interval;
                     Some((*peer, contact.addresses.iter().cloned().collect::<Vec<_>>()))
                 })
                 .collect()
@@ -172,7 +168,7 @@ impl Node {
             address.push(Protocol::P2p(peer));
             address.push(Protocol::P2pCircuit);
             self.next_relay_attempt
-                .insert(peer, now + RECONCILE_INTERVAL);
+                .insert(peer, now + crate::resources::limits().reconcile_interval);
             match self.swarm.listen_on(address) {
                 Ok(listener) => {
                     self.relay_listeners.insert(peer, listener);

@@ -194,6 +194,7 @@ def run(trial):
     # Start/stop and interest use one lifecycle lock, regardless of completion order.
     first.stop()
     first.release_port()
+    trial.begin_functional_start(first,"owner_interest_start_race")
     with ThreadPoolExecutor(max_workers=2) as pool:
         start = pool.submit(trial.call, first, "start")
         update = pool.submit(trial.call, first, "interest", text="race start")

@@ -215,3 +215,41 @@ async fn busy_gossip_wakes_do_not_repeat_formal_work_for_unchanged_pending_jobs(
     assert_eq!(questions.computation_count(), before);
     assert_eq!(autonomous.solving.len(), 1);
 }
+
+#[tokio::test]
+async fn unchanged_successful_publication_retains_the_first_checked_batch() {
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    let selected = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    admitted(&mut questions, &graph, &selected).await;
+    let mut owner = jobs::tests::Manual::new();
+    let mut autonomous = Autonomous::new(
+        intervals(3_600_000),
+        owner.client.clone(),
+        owner.recovery(),
+        vec![selected.clone()],
+    );
+    autonomous.next_proof = Instant::now();
+    autonomous.advance(&mut graph, &mut questions);
+    let request = owner.requests().remove(0);
+    owner.complete(
+        request.0,
+        Ok(jobs::Output::Proof {
+            source: mocks::create_proof(&selected).unwrap(),
+            helpers: Vec::new(),
+        }),
+    );
+    autonomous.advance(&mut graph, &mut questions);
+    assert_eq!(graph.checker_calls(), (1, 0));
+    let interest = tokio::time::timeout(Duration::from_secs(5), questions.completed())
+        .await
+        .unwrap();
+    questions.finish(&graph, interest);
+    assert_eq!(autonomous.advance(&mut graph, &mut questions).len(), 1);
+    assert_eq!(
+        graph.checker_calls(),
+        (1, 0),
+        "unchanged root is compiled/checked once across selection and commit"
+    );
+    assert_eq!(graph.accepted_count(), 1);
+}

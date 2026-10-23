@@ -470,6 +470,13 @@ pub fn assess_question(
     snapshot: &KnowledgeSnapshot<'_>,
     policy: &PrefilterPolicy,
 ) -> PrefilterDecision {
+    let reads = crate::context::cache::ReadContext::new(snapshot.artifacts);
+    let cached_snapshot = KnowledgeSnapshot {
+        identity: snapshot.identity,
+        artifacts: &reads,
+        questions: snapshot.questions,
+    };
+    let snapshot = &cached_snapshot;
     let mut decision = PrefilterDecision {
         outcome: PrefilterOutcome::Pass,
         reason: None,
@@ -549,16 +556,32 @@ fn evaluate(
     if let Some(record) = question.registered_record {
         work.index()?;
         work.formula(encoded.len(), 2)?;
-        if snapshot.questions.get(&record) != Some(question.formula) {
+        if snapshot
+            .questions
+            .get(&record)
+            .map_err(context_failure)?
+            .as_deref()
+            != Some(question.formula)
+        {
             return Err((RejectionReason::InvalidRegistry, "Q02_SELF_RECORD"));
         }
     }
     work.index()?;
-    for record in snapshot.questions.records_for(question.question) {
+    for record in snapshot
+        .questions
+        .records_for(question.question)
+        .map_err(context_failure)?
+    {
+        let record = record.map_err(context_failure)?;
         work.index()?;
         work.formula(encoded.len(), 2)?;
         if Some(record) != question.registered_record
-            && snapshot.questions.get(&record) == Some(question.formula)
+            && snapshot
+                .questions
+                .get(&record)
+                .map_err(context_failure)?
+                .as_deref()
+                == Some(question.formula)
         {
             decision.related_record = Some(record);
             return Err((RejectionReason::ExactDuplicate, "Q03_CANONICAL_DUPLICATE"));
@@ -642,10 +665,20 @@ fn evaluate(
             .encode_canonical()
             .map_err(|_| (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT"))?;
         work.index()?;
-        for record in snapshot.questions.records_for(statement_id(&bytes)) {
+        for record in snapshot
+            .questions
+            .records_for(statement_id(&bytes))
+            .map_err(context_failure)?
+        {
+            let record = record.map_err(context_failure)?;
             work.index()?;
             if Some(record) == question.registered_record
-                || snapshot.questions.get(&record) != Some(&related)
+                || snapshot
+                    .questions
+                    .get(&record)
+                    .map_err(context_failure)?
+                    .as_deref()
+                    != Some(&related)
             {
                 continue;
             }

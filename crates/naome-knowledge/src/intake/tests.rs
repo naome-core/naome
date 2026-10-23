@@ -146,12 +146,12 @@ async fn metadata_capacity_keeps_one_active_root_and_eight_bounded_waiting_descr
     let before = graph.content_root();
     let mut questions = new_questions();
     let mut intake = Intake::default();
-    for index in 0..MAX_QUEUED_METADATA {
+    for index in 0..crate::resources::limits().queued_metadata {
         intake
             .enqueue(peer, fixture(100 + index).1, &graph)
             .unwrap();
     }
-    let next = fixture(100 + MAX_QUEUED_METADATA).1;
+    let next = fixture(100 + crate::resources::limits().queued_metadata).1;
     assert_eq!(intake.description_capacity(), 0);
     assert!(
         intake
@@ -178,7 +178,10 @@ async fn metadata_capacity_keeps_one_active_root_and_eight_bounded_waiting_descr
     assert_eq!(graph.content_root(), before);
     intake.disconnected(peer);
     assert!(intake.needed().is_empty());
-    assert_eq!(intake.description_capacity(), MAX_QUEUED_METADATA);
+    assert_eq!(
+        intake.description_capacity(),
+        crate::resources::limits().queued_metadata
+    );
 }
 
 #[tokio::test]
@@ -186,7 +189,10 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
     use naome_foundation::{Formula, FreeVariable};
     use naome_proof::{ProofCertificate, ProofStep};
 
-    for count in [MAX_CLOSURE_STEPS, MAX_CLOSURE_STEPS + 1] {
+    for count in [
+        crate::resources::limits().closure_steps,
+        crate::resources::limits().closure_steps + 1,
+    ] {
         let variable = FreeVariable::new(0);
         let formula = Formula::equal(variable, variable);
         let mut steps = vec![
@@ -218,7 +224,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
         .unwrap();
         assert_eq!(checked.normal_form().certificate().steps().len(), count);
         let bytes = checked.normal_form().canonical_bytes();
-        assert!(bytes.len() < crate::MAX_PROOF_BYTES);
+        assert!(bytes.len() < crate::resources::limits().proof_bytes);
         eprintln!(
             "checked_transport_boundary steps={count} canonical_bytes={} proof_id={}",
             bytes.len(),
@@ -247,9 +253,12 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
         let mut intake = Intake::default();
         intake.enqueue(peer, metadata, &graph).unwrap();
         approve(&mut intake, &mut questions, &mut graph).await;
-        if count == MAX_CLOSURE_STEPS {
+        if count == crate::resources::limits().closure_steps {
             intake.payload(peer, id, id, object, &graph).unwrap();
-            assert_eq!(intake.active.as_ref().unwrap().steps, MAX_CLOSURE_STEPS);
+            assert_eq!(
+                intake.active.as_ref().unwrap().steps,
+                crate::resources::limits().closure_steps
+            );
             intake.advance(&mut graph, &mut questions);
             interest(&mut questions, &graph).await;
             assert!(
@@ -267,7 +276,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
             assert!(intake.active.as_ref().unwrap().staged.is_empty());
             intake.abort(id);
             assert_eq!(graph.content_root(), before);
-            assert!(graph.pending_ids().is_empty());
+            assert!(graph.pending_ids().unwrap().is_empty());
             assert_eq!(registered(&mut questions, &graph), 0);
         }
     }
@@ -332,7 +341,8 @@ async fn changed_context_and_expired_grants_cannot_fetch_or_stage_proofs() {
     let mut intake = Intake::default();
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     approve(&mut intake, &mut questions, &mut graph).await;
-    intake.active.as_mut().unwrap().description.created = Instant::now() - ROOT_TTL;
+    intake.active.as_mut().unwrap().description.created =
+        Instant::now() - crate::resources::limits().root_timeout;
     assert!(intake.needed().is_empty());
     assert!(!intake.authorizes(peer, id, id));
     assert!(
@@ -343,7 +353,8 @@ async fn changed_context_and_expired_grants_cannot_fetch_or_stage_proofs() {
     );
     let mut queued = Intake::default();
     queued.enqueue(peer, metadata, &graph).unwrap();
-    queued.queue.front_mut().unwrap().created = Instant::now() - ROOT_TTL;
+    queued.queue.front_mut().unwrap().created =
+        Instant::now() - crate::resources::limits().root_timeout;
     assert!(matches!(
         queued.advance(&mut graph, &mut questions),
         Progress::Skipped(..)
@@ -462,7 +473,7 @@ async fn approved_parent_stages_only_committed_helpers_and_publishes_whole_closu
     intake.payload(peer, root, root, object, &graph).unwrap();
     assert_eq!(intake.needed(), vec![(peer, root, helper_id)]);
     assert!(graph.accepted_count() == 0);
-    assert!(graph.pending_ids().is_empty());
+    assert!(graph.pending_ids().unwrap().is_empty());
     intake
         .payload(peer, root, helper_id, helper, &graph)
         .unwrap();
@@ -523,12 +534,12 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Accepted(ids) if ids.len() == 2)
     );
-    assert_eq!(graph.pending_ids(), vec![owner_id]);
+    assert_eq!(graph.pending_ids().unwrap(), vec![owner_id]);
     assert_eq!(graph.accepted_count(), 2);
     let (admitted, rejected) = graph.resolve_pending().unwrap();
     assert_eq!(admitted, vec![owner_id]);
     assert!(rejected.is_empty());
-    assert!(graph.pending_ids().is_empty());
+    assert!(graph.pending_ids().unwrap().is_empty());
     assert_eq!(graph.accepted_count(), 3);
 }
 
@@ -643,7 +654,7 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
             Progress::Skipped(..)
         ));
         assert_eq!(graph.content_root(), before);
-        assert!(graph.accepted_count() == 0 && graph.pending_ids().is_empty());
+        assert!(graph.accepted_count() == 0 && graph.pending_ids().unwrap().is_empty());
         assert_eq!(registered(&mut questions, &graph), usize::from(mode == 3));
     }
 }
@@ -677,7 +688,7 @@ async fn invalid_parent_after_valid_helper_leaves_no_orphan_or_registry_effect()
     assert!(
         matches!(intake.advance(&mut graph, &mut questions), Progress::Skipped(_, error) if error.contains("checked identity mismatch"))
     );
-    assert!(graph.accepted_count() == 0 && graph.pending_ids().is_empty());
+    assert!(graph.accepted_count() == 0 && graph.pending_ids().unwrap().is_empty());
     assert_eq!(registered(&mut questions, &graph), 0);
 }
 

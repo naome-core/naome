@@ -1,6 +1,6 @@
 use super::*;
 use std::{
-    collections::BTreeMap,
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -15,6 +15,8 @@ pub(super) struct Account {
     pub expires_ms: u64,
     pub spent_ms: u64,
     pub reserved_units: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -29,22 +31,93 @@ pub(super) struct Journal {
     pub retired_jobs: u64,
     pub total_spent_ms: u64,
     pub total_reserved_units: u64,
-    pub records: BTreeMap<u64, Record>,
-    pub accounts: BTreeMap<String, Account>,
+    pub records: super::tracked::TrackedMap<u64, Record>,
+    pub accounts: super::tracked::TrackedMap<String, Account>,
     pub slots: Vec<(u64, u64)>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Envelope<T> {
+struct Header {
     version: u8,
-    payload: T,
-    sha256: String,
+    compatibility: String,
+    configuration: String,
+    next_id: u64,
+    next_cursor: u64,
+    observed_ms: u64,
+    retired_jobs: u64,
+    total_spent_ms: u64,
+    total_reserved_units: u64,
+    slots: Vec<(u64, u64)>,
+    resident_records: Vec<u64>,
+    workers: [usize; 4],
+}
+impl Journal {
+    fn header(&self) -> Header {
+        Header {
+            version: 3,
+            compatibility: self.compatibility.clone(),
+            configuration: self.configuration.clone(),
+            next_id: self.next_id,
+            next_cursor: self.next_cursor,
+            observed_ms: self.observed_ms,
+            retired_jobs: self.retired_jobs,
+            total_spent_ms: self.total_spent_ms,
+            total_reserved_units: self.total_reserved_units,
+            slots: self.slots.clone(),
+            resident_records: self.records.keys().copied().collect(),
+            workers: crate::resources::limits().workers,
+        }
+    }
+    fn from_header(header: Header) -> Self {
+        Self {
+            version: 3,
+            compatibility: header.compatibility,
+            configuration: header.configuration,
+            next_id: header.next_id,
+            next_cursor: header.next_cursor,
+            observed_ms: header.observed_ms,
+            retired_jobs: header.retired_jobs,
+            total_spent_ms: header.total_spent_ms,
+            total_reserved_units: header.total_reserved_units,
+            slots: header.slots,
+            records: super::tracked::TrackedMap::new(),
+            accounts: super::tracked::TrackedMap::new(),
+        }
+    }
+    pub(super) fn remember_holds(&mut self) -> Result<(), String> {
+        for record in self
+            .records
+            .values()
+            .filter(|r| r.state == State::InDoubt && !matches!(r.input, Input::Find { .. }))
+        {
+            let key = record.input.account_key();
+            let previous = self
+                .accounts
+                .get(&key)
+                .ok_or("uncertain job original account missing")?
+                .held;
+            let held = Some(previous.map_or(record.id, |old| old.min(record.id)));
+            if previous != held {
+                self.accounts.get_mut(&key).expect("original account").held = held;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn encoded_active_len(&mut self) -> Result<usize, String> {
+        self.records
+            .encoded_len()?
+            .checked_add(self.accounts.encoded_len()?)
+            .and_then(|bytes| bytes.checked_add(4096))
+            .ok_or("active journal byte overflow".into())
+    }
 }
 
 pub(super) struct Disk {
     path: PathBuf,
     slots: Vec<(u64, u64)>,
+    workers: [usize; 4],
+    checkpoint: crate::checkpoint::Checkpoint,
 }
 
 impl Disk {
@@ -54,31 +127,160 @@ impl Disk {
         cursor: u64,
     ) -> Result<(Self, Journal), String> {
         let root = research_directory(directory)?;
-        let path = root.join("jobs.json");
+        let path = root.join("jobs.sqlite3");
         let marker = directory.join("research.initialized");
-        let initialized = marker_valid(&marker, b"naome-research-jobs-v1\n")?;
-        let mut journal: Journal = match read(&path, MAX_JOURNAL_BYTES)? {
-            Some(value) => value,
-            None => {
-                if initialized {
-                    return Err("research journal is missing; refusing a fresh allowance".into());
+        let established = marker_valid(&marker, b"naome-research-jobs-v3\n")?;
+        let checkpoint = if path.exists() {
+            crate::checkpoint::Checkpoint::open(&path, "naome:research-jobs:v1")?
+        } else {
+            if established {
+                return Err("research journal is missing; refusing a fresh allowance".into());
+            }
+            let journal = Journal {
+                version: 3,
+                compatibility: crate::hex(&crate::compatibility()),
+                configuration: identity(&settings),
+                next_id: 1,
+                next_cursor: cursor,
+                observed_ms: wall_ms()?,
+                retired_jobs: 0,
+                total_spent_ms: 0,
+                total_reserved_units: 0,
+                records: super::tracked::TrackedMap::new(),
+                accounts: super::tracked::TrackedMap::new(),
+                slots: install_slots(&root)?,
+            };
+            journal.validate(settings)?;
+            crate::checkpoint::Checkpoint::create(
+                &path,
+                "naome:research-jobs:v1",
+                &journal.header(),
+                vec![],
+            )?
+        };
+        checkpoint.require_kinds(&["record", "account", "request", "history"])?;
+        let header: Header = checkpoint.header()?;
+        if header.version != 3
+            || header.compatibility != crate::hex(&crate::compatibility())
+            || header.configuration != identity(&settings)
+        {
+            return Err("unsupported research journal configuration or header".into());
+        }
+        let resident = header
+            .resident_records
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if resident.len() != header.resident_records.len() {
+            return Err("research resident record index differs".into());
+        }
+        let old_workers = header.workers;
+        if old_workers
+            .iter()
+            .try_fold(0usize, |n, w| n.checked_add(*w))
+            != Some(header.slots.len())
+        {
+            return Err("research physical slot allocation differs".into());
+        }
+        let mut journal = Journal::from_header(header);
+        let mut resident_bytes = 0usize;
+        let mut unacknowledged = 0usize;
+        checkpoint.scan(
+            "record",
+            crate::resources::limits().active_job_bytes,
+            |key, bytes| {
+                let record: Record = crate::checkpoint::decode(bytes)?;
+                if record.id.to_string() != key
+                    || checkpoint.get::<u64>("history", &format!("{:020}", record.id), 32)?
+                        != Some(record.id)
+                {
+                    return Err("research record row identity differs".into());
                 }
-                Journal {
-                    version: 1,
-                    compatibility: crate::hex(&crate::compatibility()),
-                    configuration: identity(&settings),
-                    next_id: 1,
-                    next_cursor: cursor,
-                    observed_ms: wall_ms()?,
-                    retired_jobs: 0,
-                    total_spent_ms: 0,
-                    total_reserved_units: 0,
-                    records: BTreeMap::new(),
-                    accounts: BTreeMap::new(),
-                    slots: install_slots(&root)?,
+                let account = if matches!(record.input, Input::Find { .. }) {
+                    None
+                } else {
+                    checkpoint.get::<Account>("account", &record.input.account_key(), 8192)?
+                };
+                validate_record(
+                    record.id,
+                    &record,
+                    settings,
+                    journal.observed_ms,
+                    journal.next_id,
+                    journal.next_cursor,
+                    account.as_ref(),
+                )?;
+                if !record.acknowledged {
+                    unacknowledged = unacknowledged
+                        .checked_add(1)
+                        .ok_or("research request count overflow")?;
+                    if checkpoint.get::<u64>(
+                        "request",
+                        &super::request_key(&record.input, &record.binding, record.settings),
+                        64,
+                    )? != Some(record.id)
+                    {
+                        return Err("research unacknowledged request index differs".into());
+                    }
+                }
+                if resident.contains(&record.id) {
+                    resident_bytes = resident_bytes
+                        .checked_add(bytes.len() + key.len() + 128)
+                        .ok_or("research resident memory overflow")?;
+                    if resident_bytes > crate::resources::limits().active_job_bytes {
+                        return Err("research resident rows exceed active memory budget".into());
+                    }
+                    journal.records.insert(record.id, record);
+                }
+                Ok(())
+            },
+        )?;
+        if checkpoint.count("history")? != checkpoint.count("record")? {
+            return Err("research history index cardinality differs".into());
+        }
+        if checkpoint.count("request")? != unacknowledged {
+            return Err("research request index cardinality differs".into());
+        }
+        if resident.len() != journal.records.len() {
+            return Err("research resident record is missing".into());
+        }
+        let needed = journal
+            .records
+            .values()
+            .filter(|r| !matches!(r.input, Input::Find { .. }))
+            .map(|r| r.input.account_key())
+            .collect::<BTreeSet<_>>();
+        let mut units = 0u64;
+        let mut spent = 0u64;
+        checkpoint.scan("account", 8192, |key, bytes| {
+            let account: Account = crate::checkpoint::decode(bytes)?;
+            validate_account(key, &account, settings)?;
+            units = units
+                .checked_add(u64::from(account.reserved_units))
+                .ok_or("research archive unit overflow")?;
+            spent = spent
+                .checked_add(account.spent_ms)
+                .ok_or("research archive time overflow")?;
+            if let Some(id) = account.held {
+                let held = checkpoint
+                    .get::<Record>(
+                        "record",
+                        &id.to_string(),
+                        crate::resources::limits().active_job_bytes,
+                    )?
+                    .ok_or("held research job is missing")?;
+                if held.state != State::InDoubt || held.input.account_key() != key {
+                    return Err("held research account identity differs".into());
                 }
             }
-        };
+            if needed.contains(key) {
+                journal.accounts.insert(key.to_owned(), account);
+            }
+            Ok(())
+        })?;
+        if units > journal.total_reserved_units || spent > journal.total_spent_ms {
+            return Err("research archived allowance differs".into());
+        }
         let now = wall_ms()?;
         journal.validate(settings)?;
         for (index, expected) in journal.slots.iter().enumerate() {
@@ -87,6 +289,15 @@ impl Disk {
             if (metadata.dev(), metadata.ino()) != *expected {
                 return Err("research physical slot identity differs".into());
             }
+        }
+        let mut reconfiguration_locks = Vec::new();
+        if old_workers != crate::resources::limits().workers {
+            for index in 0..journal.slots.len() {
+                let file = slot_file(&root, index, false)?;
+                file.try_lock().map_err(|_|"provider slot reconfiguration requires every previous physical worker to drain")?;
+                reconfiguration_locks.push(file);
+            }
+            journal.slots = install_slots(&root)?;
         }
         if now < journal.observed_ms {
             return Err(
@@ -124,32 +335,246 @@ impl Disk {
             }
         }
         journal.observed_ms = now;
-        let disk = Self {
+        journal.remember_holds()?;
+        let mut disk = Self {
             path,
             slots: journal.slots.clone(),
+            workers: crate::resources::limits().workers,
+            checkpoint,
         };
-        disk.save(&journal)?;
-        if !initialized {
-            write_marker(&marker, b"naome-research-jobs-v1\n")?;
+        disk.save(&mut journal)?;
+        drop(reconfiguration_locks);
+        if !established {
+            write_marker(&marker, b"naome-research-jobs-v3\n")?;
         }
         Ok((disk, journal))
     }
 
-    pub(super) fn save(&self, journal: &Journal) -> Result<(), String> {
-        write(&self.path, journal, MAX_JOURNAL_BYTES)
+    pub(super) fn save(&mut self, journal: &mut Journal) -> Result<(), String> {
+        journal.remember_holds()?;
+        if journal.encoded_active_len()? > crate::resources::limits().active_job_bytes {
+            return Err("active journal byte capacity".into());
+        }
+        let mut updates = journal
+            .records
+            .updates("record")?
+            .into_iter()
+            .filter(|update| matches!(update, crate::checkpoint::Update::Put { .. }))
+            .collect::<Vec<_>>();
+        updates.extend(journal.accounts.updates("account")?);
+        for (id, record) in &journal.records {
+            if !journal.records.changed(id) {
+                continue;
+            }
+            let history = format!("{id:020}");
+            if self
+                .checkpoint
+                .get::<u64>("history", &history, 32)?
+                .is_none()
+            {
+                updates.push(crate::checkpoint::Update::put("history", history, id)?);
+            }
+            let key = super::request_key(&record.input, &record.binding, record.settings);
+            if record.acknowledged {
+                if self.checkpoint.get::<u64>("request", &key, 64)? == Some(*id) {
+                    updates.push(crate::checkpoint::Update::Remove {
+                        kind: "request",
+                        key,
+                    });
+                }
+            } else {
+                updates.push(crate::checkpoint::Update::put("request", key, id)?);
+            }
+        }
+
+        self.checkpoint.commit(&journal.header(), updates)?;
+        journal.records.clean();
+        journal.accounts.clean();
+        let retained = journal
+            .records
+            .values()
+            .filter(|r| !matches!(r.input, Input::Find { .. }))
+            .map(|r| r.input.account_key())
+            .collect::<BTreeSet<_>>();
+        journal.accounts.evict_except(&retained);
+        Ok(())
     }
 
-    /// Seven stable kernel locks cap physical provider lifetimes across a daemon
+    /// Fixed-width history keys give a bounded FIFO scan through the startup
+    /// snapshot. New work cannot extend this recovery horizon indefinitely.
+    pub(super) fn recovery_page(
+        &self,
+        after: u64,
+        before: u64,
+        skip: &BTreeSet<u64>,
+    ) -> Result<super::RecoveryPage, String> {
+        let rows = self.checkpoint.page(
+            "history",
+            Some(&format!("{after:020}")),
+            crate::resources::limits().terminal_job_page,
+            crate::resources::limits().provider_stream_bytes,
+        )?;
+        let mut records = Vec::new();
+        let mut next = None;
+        let mut bytes = 0usize;
+        for (key, payload) in rows {
+            let id: u64 = crate::checkpoint::decode(&payload)?;
+            if id == 0 || key != format!("{id:020}") {
+                return Err("research FIFO history identity differs".into());
+            }
+            if id >= before {
+                next = None;
+                break;
+            }
+            if !skip.contains(&id) {
+                let record = self
+                    .checkpoint
+                    .get::<Record>(
+                        "record",
+                        &id.to_string(),
+                        crate::resources::limits().active_job_bytes,
+                    )?
+                    .ok_or("research history record is missing")?;
+                if record.id != id {
+                    return Err("research history record identity differs".into());
+                }
+                if !record.acknowledged {
+                    let size = crate::checkpoint::encode(&record)?.len();
+                    if !records.is_empty()
+                        && bytes
+                            .checked_add(size)
+                            .is_none_or(|n| n > crate::resources::limits().active_job_bytes)
+                    {
+                        break;
+                    }
+                    bytes = bytes
+                        .checked_add(size)
+                        .ok_or("research recovery bytes overflow")?;
+                    records.push(record);
+                }
+            }
+            next = Some(id);
+        }
+        Ok(super::RecoveryPage { records, next })
+    }
+
+    pub(super) fn request(
+        &self,
+        input: &Input,
+        binding: &Binding,
+        settings: RoleSettings,
+    ) -> Result<Option<Record>, String> {
+        let key = super::request_key(input, binding, settings);
+        let Some(id) = self.checkpoint.get::<u64>("request", &key, 64)? else {
+            return Ok(None);
+        };
+        let record = self
+            .checkpoint
+            .get::<Record>(
+                "record",
+                &id.to_string(),
+                crate::resources::limits().active_job_bytes,
+            )?
+            .ok_or("indexed research request is missing")?;
+        if record.id != id
+            || record.input != *input
+            || record.binding != *binding
+            || record.settings != settings
+            || record.acknowledged
+        {
+            return Err("research request identity index differs".into());
+        }
+        Ok(Some(record))
+    }
+    pub(super) fn acknowledge(&mut self, journal: &Journal, id: u64) -> Result<(), String> {
+        let Some(mut record) = self.checkpoint.get::<Record>(
+            "record",
+            &id.to_string(),
+            crate::resources::limits().active_job_bytes,
+        )?
+        else {
+            if id < journal.next_id {
+                return Ok(());
+            }
+            return Err("unknown research acknowledgement".into());
+        };
+        if !record.state.terminal() {
+            return Err("acknowledged research job is still running or held".into());
+        }
+        record.acknowledged = true;
+        let key = super::request_key(&record.input, &record.binding, record.settings);
+        let mut updates = vec![crate::checkpoint::Update::put("record", id, &record)?];
+        if self.checkpoint.get::<u64>("request", &key, 64)? == Some(id) {
+            updates.push(crate::checkpoint::Update::Remove {
+                kind: "request",
+                key,
+            });
+        }
+        self.checkpoint.commit(&journal.header(), updates)
+    }
+    pub(super) fn directory(&self) -> &Path {
+        self.path.parent().expect("canonical research parent")
+    }
+    pub(super) fn account(&self, key: &str) -> Result<Option<Account>, String> {
+        self.checkpoint.get("account", key, 8192)
+    }
+
+    #[cfg(test)]
+    pub(super) fn account_count(&self) -> usize {
+        let mut count = 0;
+        self.checkpoint
+            .scan("account", 8192, |_, _| {
+                count += 1;
+                Ok(())
+            })
+            .unwrap();
+        count
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_write_stats(&self) -> (usize, usize) {
+        self.checkpoint.last_write
+    }
+
+    #[cfg(test)]
+    pub(super) fn saved(&self) -> Result<serde_json::Value, String> {
+        let mut value =
+            serde_json::to_value(self.checkpoint.header::<Header>()?).map_err(|e| e.to_string())?;
+        let resident = self.checkpoint.header::<Header>()?.resident_records;
+        for kind in ["record", "account"] {
+            let mut records = serde_json::Map::new();
+            self.checkpoint.scan(
+                kind,
+                crate::resources::limits().active_job_bytes,
+                |key, bytes| {
+                    if kind == "record"
+                        && key.parse::<u64>().is_ok_and(|id| !resident.contains(&id))
+                    {
+                        return Ok(());
+                    }
+                    records.insert(
+                        key.to_owned(),
+                        serde_json::from_slice(bytes).map_err(|e| e.to_string())?,
+                    );
+                    Ok(())
+                },
+            )?;
+            value[if kind == "record" {
+                "records"
+            } else {
+                "accounts"
+            }] = serde_json::Value::Object(records);
+        }
+        Ok(serde_json::json!({"payload":value}))
+    }
+
+    /// Stable kernel locks cap physical provider lifetimes across a daemon
     /// crash. Supervisors, workers and their owned descendants retain the same
     /// open description until exit; a restart never signals a persisted PID.
     pub(super) fn slot(&self, lane: usize) -> Result<Option<File>, String> {
-        let range = match lane {
-            0 => 0..1,
-            1 => 1..3,
-            2 => 3..5,
-            3 => 5..7,
-            _ => return Err("research slot lane differs".into()),
-        };
+        let count = *self.workers.get(lane).ok_or("research slot lane differs")?;
+        let first = self.workers[..lane].iter().sum::<usize>();
+        let range = first..first + count;
         let root = self.path.parent().ok_or("research slot parent absent")?;
         for index in range {
             let file = slot_file(root, index, false)?;
@@ -175,13 +600,19 @@ impl Disk {
 
 impl Journal {
     pub(super) fn validate(&self, settings: Settings) -> Result<(), String> {
-        if self.version != 1
+        self.validate_changes(settings, true)
+    }
+
+    pub(super) fn validate_delta(&self, settings: Settings) -> Result<(), String> {
+        self.validate_changes(settings, false)
+    }
+
+    fn validate_changes(&self, settings: Settings, full: bool) -> Result<(), String> {
+        if self.version != 3
             || self.compatibility != crate::hex(&crate::compatibility())
             || self.configuration != identity(&settings)
             || self.next_id == 0
-            || self.records.len() > MAX_RECORDS
-            || self.accounts.len() > MAX_ACCOUNTS
-            || self.slots.len() != 7
+            || self.slots.is_empty()
         {
             return Err(
                 "research journal version, compatibility, configuration or capacity differs".into(),
@@ -209,70 +640,103 @@ impl Journal {
             return Err("research aggregate original allowance differs".into());
         }
         for (id, r) in &self.records {
-            r.input.validate()?;
-            r.binding.validate()?;
-            if *id != r.id
-                || *id >= self.next_id
-                || r.provider != "naome-deterministic-mocks-v1"
-                || r.settings != settings.for_input(&r.input)
-                || r.configuration != identity(&r.settings)
-                || r.created_ms > r.accounted_ms
-                || r.accounted_ms > self.observed_ms
-                || r.expires_ms
-                    != r.created_ms
-                        .checked_add(r.settings.limits.horizon_ms)
-                        .ok_or("job horizon overflow")?
-                || r.checkpoint > r.reserved_units
-                || r.reserved_units > r.settings.limits.work_units
-                || r.checkpoint > r.settings.mock.steps
-                || r.acknowledged && !r.state.terminal()
-                || (r.state == State::Complete) != r.result.is_some()
-                || r.state == State::Complete
-                    && (r.checkpoint != r.settings.mock.steps || r.settings.mock.steps == 0)
-            {
-                return Err(
-                    "research record identity, lifecycle, checkpoint or budget differs".into(),
-                );
+            if !full && !self.records.changed(id) {
+                continue;
             }
-            if r.failure.as_ref().is_some_and(|reason| reason.len() > 512) {
-                return Err("research failure detail capacity".into());
-            }
-            if let Some(output) = &r.result {
-                output.validate(&r.input)?;
-            }
-            if !matches!(r.input, Input::Find { .. }) {
-                let account = self
-                    .accounts
-                    .get(&r.input.account_key())
-                    .ok_or("missing original obligation budget")?;
-                if account.settings != r.settings
-                    || account.created_ms != r.created_ms
-                    || account.expires_ms != r.expires_ms
-                    || account.reserved_units < r.reserved_units
-                    || account.spent_ms < r.spent_ms
-                {
-                    return Err("research original obligation budget differs".into());
-                }
-            }
-            if let Input::Find { cursor } = r.input
-                && cursor >= self.next_cursor
-            {
-                return Err("research finding cursor binding differs".into());
-            }
+            validate_record(
+                *id,
+                r,
+                settings,
+                self.observed_ms,
+                self.next_id,
+                self.next_cursor,
+                self.accounts.get(&r.input.account_key()),
+            )?;
         }
-        for (key, a) in &self.accounts {
-            crate::object::id_bytes(key)?;
-            if ![settings.solving, settings.interest].contains(&a.settings)
-                || !(10..=MAX_HORIZON_MS).contains(&a.settings.limits.horizon_ms)
-                || !(1..=1_000_000).contains(&a.settings.limits.work_units)
-                || a.created_ms.checked_add(a.settings.limits.horizon_ms) != Some(a.expires_ms)
-                || a.reserved_units > a.settings.limits.work_units
-            {
-                return Err("research obligation allowance corruption".into());
+        for (key, account) in &self.accounts {
+            if full || self.accounts.changed(key) {
+                validate_account(key, account, settings)?;
             }
         }
         Ok(())
     }
+}
+
+fn validate_record(
+    id: u64,
+    r: &Record,
+    settings: Settings,
+    observed_ms: u64,
+    next_id: u64,
+    next_cursor: u64,
+    account: Option<&Account>,
+) -> Result<(), String> {
+    r.input.validate()?;
+    r.binding.validate()?;
+    if id != r.id
+        || id >= next_id
+        || r.provider != "naome-deterministic-mocks-v1"
+        || r.settings != settings.for_input(&r.input)
+        || r.configuration != identity(&r.settings)
+        || r.created_ms > r.accounted_ms
+        || r.accounted_ms > observed_ms
+        || r.expires_ms
+            != r.created_ms
+                .checked_add(r.settings.limits.horizon_ms)
+                .ok_or("job horizon overflow")?
+        || r.checkpoint > r.reserved_units
+        || r.reserved_units > r.settings.limits.work_units
+        || r.checkpoint > r.settings.mock.steps
+        || r.acknowledged && !r.state.terminal()
+        || (r.state == State::Complete) != r.result.is_some()
+        || r.state == State::Complete
+            && (r.checkpoint != r.settings.mock.steps || r.settings.mock.steps == 0)
+    {
+        return Err("research record identity, lifecycle, checkpoint or budget differs".into());
+    }
+    if r.failure
+        .as_ref()
+        .is_some_and(|reason| reason.len() > crate::checkpoint::MAX_ROW)
+    {
+        return Err("research failure detail capacity".into());
+    }
+    if let Some(output) = &r.result {
+        output.validate(&r.input)?;
+    }
+    if !matches!(r.input, Input::Find { .. }) {
+        let account = account.ok_or("missing original obligation budget")?;
+        if account.settings != r.settings
+            || account.created_ms != r.created_ms
+            || account.expires_ms != r.expires_ms
+            || account.reserved_units < r.reserved_units
+            || account.spent_ms < r.spent_ms
+        {
+            return Err("research original obligation budget differs".into());
+        }
+    }
+    if let Input::Find { cursor } = r.input
+        && cursor >= next_cursor
+    {
+        return Err("research finding cursor binding differs".into());
+    }
+    Ok(())
+}
+
+fn validate_account(key: &str, account: &Account, settings: Settings) -> Result<(), String> {
+    crate::object::id_bytes(key)?;
+    if ![settings.solving, settings.interest].contains(&account.settings)
+        || account.settings.limits.horizon_ms == 0
+        || account.settings.limits.work_units == 0
+        || account
+            .created_ms
+            .checked_add(account.settings.limits.horizon_ms)
+            != Some(account.expires_ms)
+        || account.held == Some(0)
+        || account.reserved_units > account.settings.limits.work_units
+    {
+        return Err("research obligation allowance corruption".into());
+    }
+    Ok(())
 }
 
 pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
@@ -286,7 +750,7 @@ pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if marker_valid(
                 &directory.join("research.initialized"),
-                b"naome-research-jobs-v1\n",
+                b"naome-research-jobs-v3\n",
             )? {
                 return Err("established research directory is missing; no fresh allowance".into());
             }
@@ -322,7 +786,7 @@ fn slot_file(root: &Path, index: usize, create: bool) -> Result<File, String> {
 
 fn install_slots(root: &Path) -> Result<Vec<(u64, u64)>, String> {
     let mut slots = Vec::new();
-    for index in 0..7 {
+    for index in 0..crate::resources::limits().workers.iter().sum() {
         let file = slot_file(root, index, true)?;
         file.sync_all().map_err(|e| e.to_string())?;
         let metadata = file.metadata().map_err(|e| e.to_string())?;
@@ -358,24 +822,6 @@ pub(crate) fn write_marker(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn read<T: serde::de::DeserializeOwned + Serialize>(
-    path: &Path,
-    limit: usize,
-) -> Result<Option<T>, String> {
-    let Some(raw) = read_owned(path, limit)? else {
-        return Ok(None);
-    };
-    let envelope: Envelope<T> =
-        serde_json::from_slice(&raw).map_err(|e| format!("research checkpoint corruption: {e}"))?;
-    if envelope.version != 1
-        || identity(&envelope.payload) != envelope.sha256
-        || serde_json::to_vec(&envelope).map_err(|e| e.to_string())? != raw
-    {
-        return Err("research checkpoint digest or version differs".into());
-    }
-    Ok(Some(envelope.payload))
-}
-
 fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
     let file = match OpenOptions::new()
         .read(true)
@@ -401,52 +847,4 @@ fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
         return Err("research checkpoint byte capacity".into());
     }
     Ok(Some(bytes))
-}
-
-pub(crate) fn write<T: Serialize>(path: &Path, payload: &T, limit: usize) -> Result<(), String> {
-    let bytes = serde_json::to_vec(&Envelope {
-        version: 1,
-        payload,
-        sha256: identity(payload),
-    })
-    .map_err(|e| e.to_string())?;
-    if bytes.len() > limit {
-        return Err("research checkpoint byte capacity".into());
-    }
-    let temporary = path.with_extension("incoming");
-    match fs::symlink_metadata(&temporary) {
-        Ok(m)
-            if m.is_file()
-                && m.nlink() == 1
-                && !m.file_type().is_symlink()
-                && m.uid() == nix::unistd::geteuid().as_raw() =>
-        {
-            fs::remove_file(&temporary).map_err(|e| e.to_string())?
-        }
-        Ok(_) => return Err("research incoming path differs".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.to_string()),
-    }
-    if let Ok(m) = fs::symlink_metadata(path)
-        && (!m.is_file()
-            || m.nlink() != 1
-            || m.file_type().is_symlink()
-            || m.uid() != nix::unistd::geteuid().as_raw())
-    {
-        return Err("research checkpoint path differs".into());
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(&temporary)
-        .map_err(|e| e.to_string())?;
-    file.write_all(&bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    fs::rename(&temporary, path).map_err(|e| e.to_string())?;
-    File::open(path.parent().ok_or("research parent directory")?)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())
 }

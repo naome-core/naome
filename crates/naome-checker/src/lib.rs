@@ -31,14 +31,12 @@ use naome_proof::{
 };
 use sha2::{Digest, Sha256};
 
-pub use context::{ContextError, ContextStorage, ContextView};
+pub use context::{ContextError, ContextStorage, ContextView, ReadCacheLimits};
 pub use state::{
     ArtifactState, ArtifactStateError, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget,
     DiskCopyProgress,
 };
 
-const STATEMENT_ID_DOMAIN: &[u8] = b"naome:statement\0";
-const PROOF_ID_DOMAIN: &[u8] = b"naome:proof\0";
 const DERIVATION_NODE_ID_DOMAIN: &[u8] = b"naome:derivation-node\0";
 const FUNCTION_OBLIGATION_FIXED_NODES: usize = 9;
 const FUNCTION_OBLIGATION_FIXED_DEPTH: u32 = 8;
@@ -195,6 +193,8 @@ fn check_with_canonical_conclusion(
     artifact_state: &dyn ContextView,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
+    let reads = context::cache::ReadContext::new(artifact_state);
+    let artifact_state: &dyn ContextView = &reads;
     let steps = certificate.steps();
     let final_step = u32::try_from(steps.len() - 1)
         .expect("ProofCertificate is non-empty and has a bounded step count");
@@ -507,28 +507,12 @@ fn derivation_id(
 }
 
 fn statement_id(canonical_conclusion: &[u8]) -> StatementId {
-    StatementId::from_bytes(foundation_scoped_hash(
-        STATEMENT_ID_DOMAIN,
-        &[],
-        canonical_conclusion,
-    ))
+    StatementId::of_canonical_formula(canonical_conclusion)
+        .expect("checked formula length fits u32")
 }
-
 fn proof_id(statement_id: StatementId, normal_form: &ProofNormalForm) -> ProofId {
-    ProofId::from_bytes(foundation_scoped_hash(
-        PROOF_ID_DOMAIN,
-        statement_id.as_bytes(),
-        normal_form.canonical_bytes(),
-    ))
-}
-
-fn foundation_scoped_hash(domain: &[u8], binding: &[u8], payload: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    update_framed(&mut hasher, FOUNDATION_ID.as_bytes());
-    hasher.update(binding);
-    update_framed(&mut hasher, payload);
-    hasher.finalize().into()
+    ProofId::of_canonical_certificate(statement_id, normal_form.canonical_bytes())
+        .expect("checked certificate length fits u32")
 }
 
 fn update_framed(hasher: &mut Sha256, bytes: &[u8]) {
@@ -650,7 +634,7 @@ fn derive_step(
             // Metadata is bounded; reserve logical work before reading a cold formula.
             charge_formula_work(step, header.length, remaining_work)?;
             let formula = artifact_state
-                .statement_formula(header.statement, header.length)
+                .proof_formula(header, header.length)
                 .map_err(|source| CheckError::ContextAccess { step, source })?
                 .ok_or(CheckError::ContextAccess {
                     step,

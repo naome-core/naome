@@ -1,4 +1,4 @@
-use crate::{Envelope, MAX_PROOF_BYTES, object::Metadata};
+use crate::{Envelope, object::Metadata};
 use async_trait::async_trait;
 use libp2p::{
     StreamProtocol,
@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-pub(crate) const INVENTORY_PAGE: usize = 64;
-const MAX_ENVELOPE_BYTES: usize = 2 * MAX_PROOF_BYTES + 512;
-pub(crate) const MAX_FRAME: usize = MAX_ENVELOPE_BYTES + 512;
-pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/2");
+pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/3");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,23 +21,46 @@ pub(crate) struct Message {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum Body {
-    Inventory { after: Option<[u8; 32]> },
-    Describe { id: [u8; 32] },
-    Get { root: [u8; 32], id: [u8; 32] },
-    Offer { metadata: Metadata },
-    InventoryResult { ids: Vec<[u8; 32]> },
-    Description { metadata: Metadata },
-    Object { root: [u8; 32], object: Envelope },
+    Inventory {
+        after: Option<[u8; 32]>,
+        limit: usize,
+    },
+    Describe {
+        id: [u8; 32],
+    },
+    Get {
+        root: [u8; 32],
+        id: [u8; 32],
+    },
+    Offer {
+        metadata: Metadata,
+    },
+    InventoryResult {
+        ids: Vec<[u8; 32]>,
+        next: Option<[u8; 32]>,
+    },
+    Description {
+        metadata: Metadata,
+    },
+    Object {
+        root: [u8; 32],
+        object: Envelope,
+    },
     Missing,
-    Receipt { status: String },
-    Error { reason: String },
+    Receipt {
+        status: String,
+    },
+    Error {
+        reason: String,
+    },
 }
 
 #[derive(Debug)]
 pub(crate) struct Frame {
     pub message: Message,
-    // Across all connections, retain at most 32 decoded inbound frames.
+    // Across all connections, retain only the configured inbound working set.
     _permit: Option<OwnedSemaphorePermit>,
+    _memory: Option<Arc<crate::resources::MemoryLease>>,
 }
 
 impl Frame {
@@ -51,6 +71,7 @@ impl Frame {
                 body,
             },
             _permit: None,
+            _memory: None,
         }
     }
 }
@@ -62,7 +83,7 @@ pub(crate) struct Codec {
 impl Default for Codec {
     fn default() -> Self {
         Self {
-            budget: Arc::new(Semaphore::new(32)),
+            budget: Arc::new(Semaphore::new(crate::resources::limits().inbound_frames)),
         }
     }
 }
@@ -72,7 +93,7 @@ impl Codec {
         let mut header = [0; 4];
         stream.read_exact(&mut header).await?;
         let length = u32::from_be_bytes(header) as usize;
-        if length > MAX_FRAME {
+        if length > frame_limit() {
             return Err(invalid("frame byte limit"));
         }
         let permit = self
@@ -80,6 +101,12 @@ impl Codec {
             .clone()
             .try_acquire_owned()
             .map_err(|_| invalid("frame capacity"))?;
+        let memory = crate::resources::MemoryLease::acquire(
+            length
+                .checked_mul(4)
+                .ok_or_else(|| invalid("frame memory overflow"))?,
+        )
+        .map_err(invalid)?;
         let mut bytes = vec![0; length];
         stream.read_exact(&mut bytes).await?;
         let mut trailing = [0];
@@ -90,6 +117,7 @@ impl Codec {
         Ok(Frame {
             message,
             _permit: Some(permit),
+            _memory: Some(memory),
         })
     }
 
@@ -98,8 +126,11 @@ impl Codec {
         stream: &mut T,
         frame: Frame,
     ) -> io::Result<()> {
-        let bytes = serde_json::to_vec(&frame.message).map_err(invalid)?;
-        if bytes.len() > MAX_FRAME {
+        let _memory = crate::resources::MemoryLease::acquire(frame_limit()).map_err(invalid)?;
+        let mut output = BoundedOutput(Vec::new());
+        serde_json::to_writer(&mut output, &frame.message).map_err(invalid)?;
+        let bytes = output.0;
+        if bytes.len() > frame_limit() {
             return Err(invalid("frame byte limit"));
         }
         stream
@@ -107,6 +138,24 @@ impl Codec {
             .await?;
         stream.write_all(&bytes).await?;
         stream.close().await
+    }
+}
+
+fn frame_limit() -> usize {
+    2 * crate::resources::limits().proof_bytes + 1024
+}
+
+struct BoundedOutput(Vec<u8>);
+impl std::io::Write for BoundedOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > frame_limit().saturating_sub(self.0.len()) {
+            return Err(invalid("frame byte limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -157,20 +206,24 @@ mod tests {
     use libp2p::futures::io::Cursor;
 
     fn encoded() -> Vec<u8> {
-        let bytes =
-            serde_json::to_vec(&Frame::new(Body::Inventory { after: None }).message).unwrap();
+        let bytes = serde_json::to_vec(
+            &Frame::new(Body::Inventory {
+                after: None,
+                limit: crate::resources::limits().inventory_page,
+            })
+            .message,
+        )
+        .unwrap();
         let mut framed = (bytes.len() as u32).to_be_bytes().to_vec();
         framed.extend(bytes);
         framed
     }
 
     #[test]
-    fn v2_rejects_legacy_payload_offers_unknown_metadata_and_unbound_gets() {
-        let envelope = serde_json::json!({"compatibility":"00".repeat(32),"proof_id":"00".repeat(32),"statement_id":"00".repeat(32),"proof":"00"});
+    fn current_message_schema_requires_exact_fields_and_types() {
         for body in [
-            serde_json::json!({"kind":"Offer","object":envelope}),
-            serde_json::json!({"kind":"Get","id":vec![0u8;32]}),
-            serde_json::json!({"kind":"Offer","metadata":{"proof_id":"00".repeat(32),"statement_id":"00".repeat(32),"question":"goal = all(x,eq(x,x))","proof":"00"}}),
+            serde_json::json!({"kind":"Inventory","after":null,"limit":"untrusted"}),
+            serde_json::json!({"kind":"Inventory","after":null,"limit":1,"extra":true}),
         ] {
             assert!(
                 serde_json::from_value::<Message>(
@@ -179,7 +232,7 @@ mod tests {
                 .is_err()
             );
         }
-        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/2");
+        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/3");
     }
 
     #[tokio::test]
@@ -199,7 +252,7 @@ mod tests {
         let mut truncated = encoded();
         truncated.pop();
         assert!(codec.read(&mut Cursor::new(truncated)).await.is_err());
-        let header = (MAX_FRAME as u32 + 1).to_be_bytes().to_vec();
+        let header = (frame_limit() as u32 + 1).to_be_bytes().to_vec();
         assert!(
             codec
                 .read(&mut Cursor::new(header))
@@ -215,7 +268,7 @@ mod tests {
         let codec = Codec::default();
         let other = codec.clone();
         let mut retained = Vec::new();
-        for _ in 0..32 {
+        for _ in 0..crate::resources::limits().inbound_frames {
             retained.push(codec.read(&mut Cursor::new(encoded())).await.unwrap());
         }
         assert!(

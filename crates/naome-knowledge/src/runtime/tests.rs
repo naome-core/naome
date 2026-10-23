@@ -234,10 +234,14 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
     ]
     .into_iter();
     let mut observed = 0;
-    let status = wait_for_stop(&directory.0, Instant::now() + LIFECYCLE_TIMEOUT, || {
-        observed += 1;
-        observations.next().expect("unexpected further observation")
-    })
+    let status = wait_for_stop(
+        &directory.0,
+        Instant::now() + crate::resources::limits().lifecycle_timeout,
+        || {
+            observed += 1;
+            observations.next().expect("unexpected further observation")
+        },
+    )
     .await
     .unwrap();
     assert_eq!(
@@ -310,7 +314,7 @@ fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events()
     for name in ["node.log", "node.log.previous"] {
         let mut file = File::create(directory.0.join(name)).unwrap();
         let line = b"{\"event\":\"historical\"}\n";
-        for _ in 0..3 * MAX_LOG_BYTES as usize / line.len() {
+        for _ in 0..3 * crate::resources::limits().log_segment_bytes as usize / line.len() {
             file.write_all(line).unwrap();
         }
     }
@@ -320,12 +324,12 @@ fn retained_logs_are_bounded_after_oversized_restart_rotation_and_large_events()
             .unwrap();
     }
     assert!(
-        log.write(&serde_json::json!({"detail":"x".repeat(MAX_LOG_BYTES as usize)}))
+        log.write(&serde_json::json!({"detail":"x".repeat(crate::resources::limits().log_segment_bytes as usize)}))
             .is_err()
     );
     for name in ["node.log", "node.log.previous"] {
         let path = directory.0.join(name);
-        assert!(path.metadata().unwrap().len() <= MAX_LOG_BYTES);
+        assert!(path.metadata().unwrap().len() <= crate::resources::limits().log_segment_bytes);
         for line in fs::read_to_string(path).unwrap().lines() {
             let _: serde_json::Value = serde_json::from_str(line).unwrap();
         }
@@ -337,7 +341,7 @@ fn diagnostic_symlinks_cannot_modify_a_foreign_file() {
     let directory = Directory::new();
     let foreign = Directory::new();
     let destination = foreign.0.join("unrelated.data");
-    let original = vec![b'x'; MAX_LOG_BYTES as usize + 1024];
+    let original = vec![b'x'; crate::resources::limits().log_segment_bytes as usize + 1024];
     fs::write(&destination, &original).unwrap();
     std::os::unix::fs::symlink(&destination, directory.0.join("node.log")).unwrap();
     assert!(Log::open(&directory.0).is_err());
@@ -394,13 +398,6 @@ async fn interest_respects_graph_ownership_and_instance_bound_control() {
     drop(control);
     drop(graph);
     assert_eq!(interest(&directory.0, "").await.unwrap().interest, "");
-}
-
-#[test]
-fn old_status_json_defaults_interest_to_empty() {
-    let status: Status = serde_json::from_str(r#"{"running":false,"accepted_proofs":3}"#).unwrap();
-    assert_eq!(status.interest, "");
-    assert_eq!(status.accepted_proofs, 3);
 }
 
 #[tokio::test]

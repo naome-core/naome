@@ -4,7 +4,7 @@ use naome_authoring::CompiledQuestion;
 /// A complete checked delta, prepared without publishing staged knowledge.
 pub(crate) struct CheckedBatch {
     context: DiskArtifactState,
-    entries: Vec<(ProofId, Envelope)>,
+    entries: Vec<(ProofId, crate::object::BinaryProof)>,
     base_snapshot: [u8; 32],
     storage: Arc<CheckedStorage>,
     copy_epoch: u64,
@@ -25,62 +25,112 @@ impl Graph {
         // Capture before helper preparation can write immutable staged nodes.
         // The shared batch path must never refresh this token after a copy starts.
         let copy_epoch = self.cold(self.checked_storage.copy_epoch())?;
-        if source.len() > crate::MAX_PROOF_BYTES
-            || helpers.len() >= crate::intake::MAX_CLOSURE_OBJECTS
-            || helpers.iter().any(|s| s.len() > crate::MAX_PROOF_BYTES)
+        if source.len() > crate::resources::limits().proof_bytes
+            || helpers.len() >= crate::resources::limits().closure_objects
+            || helpers
+                .iter()
+                .any(|s| s.len() > crate::resources::limits().proof_bytes)
             || source.len() + helpers.iter().map(String::len).sum::<usize>()
-                > crate::intake::MAX_CLOSURE_BYTES
+                > crate::resources::limits().closure_bytes
         {
             return Err("generated closure source capacity".into());
         }
         let mut context = self.context.clone();
-        let mut candidates = BTreeMap::new();
-        // Providers return helpers in dependency order. Reject one incomplete
-        // source rather than repeatedly reparsing an unresolved batch.
+        let mut records = BTreeMap::new();
+        let mut entries = Vec::new();
         let mut steps = 0usize;
         let mut bytes = 0usize;
-        for source in helpers {
-            let compiled = self.compile_source(source, &context)?;
-            let candidate = Envelope::from_compiled(compiled).prepare()?;
+        let mut context_bytes = self.context_bytes;
+        let mut root = None;
+        // Compilation returns a sealed CheckedProof. Keep that result rather
+        // than converting it to transport syntax and invoking Checker again.
+        for source in helpers
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(source))
+        {
+            let checked = self.compile_source(source, &context)?.into_checked_proof();
+            let record = crate::object::BinaryProof::from_checked(&checked)?;
+            let id = record.id;
             steps = steps
-                .checked_add(candidate.normal.certificate().steps().len())
+                .checked_add(checked.normal_form().certificate().steps().len())
                 .ok_or("generated checker work overflow")?;
             bytes = bytes
-                .checked_add(candidate.envelope.proof.len() / 2)
+                .checked_add(record.bytes.len())
                 .ok_or("generated closure byte overflow")?;
-            if steps > crate::intake::MAX_CLOSURE_STEPS || bytes > crate::intake::MAX_CLOSURE_BYTES
+            if steps > crate::resources::limits().closure_steps
+                || bytes > crate::resources::limits().closure_bytes
             {
                 return Err("generated closure checker work capacity".into());
             }
-            let checked =
-                self.check_normal(candidate.envelope.clone().prepare()?.normal, &context)?;
-            context
-                .register_proof_for_replication(checked)
-                .map_err(|e| e.to_string())?;
-            if self.contains(candidate.id)? || candidates.insert(candidate.id, candidate).is_some()
-            {
-                return Err("duplicate generated helper".into());
+            if self.contains(id)? || records.contains_key(&id) {
+                return Err("duplicate generated object".into());
+            }
+            if !self.cold(
+                context
+                    .contains_statement(checked.statement_id())
+                    .map_err(|e| e.to_string()),
+            )? {
+                context_bytes = context_bytes
+                    .checked_add(
+                        checked
+                            .conclusion()
+                            .encode_canonical()
+                            .map_err(|e| e.to_string())?
+                            .len(),
+                    )
+                    .ok_or("checked context capacity")?;
+            }
+            root = Some(id);
+            // The final compilation is the root. All helpers must belong to
+            // its actual cited closure; no unrelated checked helper is admitted.
+            if entries.len() == helpers.len() {
+                question
+                    .classify_checked_proof(&checked)
+                    .map_err(|e| e.to_string())?;
+            }
+            self.cold(
+                context
+                    .register_proof_for_replication(checked)
+                    .map_err(|e| e.to_string()),
+            )?;
+            records.insert(id, record.dependencies.clone());
+            entries.push((id, record));
+        }
+        let root = root.ok_or("missing generated root")?;
+        let mut reachable = BTreeSet::new();
+        let mut queue = vec![root];
+        while let Some(id) = queue.pop() {
+            if !reachable.insert(id) {
+                continue;
+            }
+            for dependency in records.get(&id).ok_or("missing generated dependency")? {
+                if !self.contains(*dependency)? {
+                    queue.push(*dependency);
+                }
             }
         }
-        let root = Envelope::from_compiled(self.compile_source(source, &context)?).prepare()?;
-        let id = root.id;
-        if self.contains(id)? || candidates.insert(id, root).is_some() {
-            return Err("duplicate generated root".into());
+        if reachable.len() != records.len() {
+            return Err("unrequested staged object".into());
         }
-        drop(context);
-        let steps = candidates
-            .values()
-            .map(|c| c.normal.certificate().steps().len())
-            .sum::<usize>();
-        let bytes = candidates
-            .values()
-            .map(|c| c.envelope.proof.len() / 2)
-            .sum::<usize>();
-        if steps > crate::intake::MAX_CLOSURE_STEPS || bytes > crate::intake::MAX_CLOSURE_BYTES {
-            return Err("generated closure checker work capacity".into());
-        }
-        self.prepare_batch_at_epoch(id, candidates, question, copy_epoch)
-            .map(|batch| (id, batch))
+        Ok((
+            root,
+            CheckedBatch {
+                context,
+                entries,
+                base_snapshot: self.context.snapshot_id(),
+                storage: self.checked_storage.clone(),
+                copy_epoch,
+                context_bytes,
+            },
+        ))
+    }
+
+    pub(crate) fn batch_current(&self, batch: &CheckedBatch) -> Result<bool, String> {
+        self.ensure_live()?;
+        Ok(batch.base_snapshot == self.context.snapshot_id()
+            && Arc::ptr_eq(&batch.storage, &self.checked_storage)
+            && batch.copy_epoch == self.cold(self.checked_storage.copy_epoch())?)
     }
     #[cfg(test)]
     pub(crate) fn test_batch_cut(&self, cut: crate::store::BatchCut) {
@@ -105,7 +155,7 @@ impl Graph {
         copy_epoch: u64,
     ) -> Result<CheckedBatch, String> {
         self.ensure_live()?;
-        if candidates.is_empty() || candidates.len() > crate::intake::MAX_CLOSURE_OBJECTS {
+        if candidates.is_empty() || candidates.len() > crate::resources::limits().closure_objects {
             return Err("checked batch operation capacity".into());
         }
         if !candidates.contains_key(&root) {
@@ -157,24 +207,10 @@ impl Graph {
                 if self.contains(id)? {
                     return Err("stale staged object already stored".into());
                 }
-                let mut depth = 0usize;
-                for dependency in &candidate.dependencies {
-                    depth = depth.max(
-                        self.cold(
-                            context
-                                .proof_dependency_depth(*dependency)
-                                .map_err(|e| e.to_string()),
-                        )?
-                        .ok_or("missing checked dependency")?,
-                    );
-                }
-                let depth = depth.checked_add(1).ok_or("dependency depth overflow")?;
-                if depth > MAX_DEPTH {
-                    return Err("dependency depth limit".into());
-                }
                 bytes = bytes
-                    .checked_add(candidate.envelope.proof.len() / 2)
+                    .checked_add(candidate.bytes.len())
                     .ok_or("accepted byte overflow")?;
+                let record = candidate.record();
                 let checked = self.check_normal(candidate.normal, &context)?;
                 if checked.proof_id() != id || checked.statement_id() != candidate.statement {
                     return Err("checked identity mismatch".into());
@@ -204,7 +240,7 @@ impl Graph {
                         .register_proof_for_replication(checked)
                         .map_err(|error| error.to_string()),
                 )?;
-                entries.push((id, candidate.envelope));
+                entries.push((id, record));
             }
         }
         Ok(CheckedBatch {
@@ -226,6 +262,7 @@ impl Graph {
         deadline: Instant,
     ) -> Result<Vec<ProofId>, String> {
         self.ensure_live()?;
+        self.publication_current()?;
         if batch.base_snapshot != self.context.snapshot_id() {
             return Err("stale checked batch context".into());
         }
@@ -239,11 +276,18 @@ impl Graph {
             return Err("checked batch storage generation changed".into());
         }
         let admitted: Vec<_> = batch.entries.iter().map(|(id, _)| *id).collect();
-        let result = self.store.persist_batch_checked(
+        let result = self.store.persist_binary_batch(
             root,
             batch.entries.iter().map(|(_, object)| object),
             self.fixed_summary(),
             Some(deadline),
+            crate::corpus::root(
+                self.count
+                    .checked_add(batch.entries.len())
+                    .ok_or("accepted count overflow")?,
+                batch.context.proof_set_fingerprint(),
+            )?,
+            self.commit_guard.as_ref(),
         );
         let summary = match result {
             Err(error) if error == crate::store::COMMIT_DEADLINE_ERROR => return Err(error),

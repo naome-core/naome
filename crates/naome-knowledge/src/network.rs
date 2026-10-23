@@ -5,7 +5,7 @@
 use crate::{
     Envelope, Graph, discovery, hex,
     object::{Metadata, id_bytes},
-    wire::{Body, Codec, Frame, INVENTORY_PAGE, PROTOCOL},
+    wire::{Body, Codec, Frame, PROTOCOL},
 };
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, allow_block_list, connection_limits,
@@ -23,22 +23,14 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+mod exchange;
+mod worker;
+use std::sync::{Arc, atomic::Ordering};
 
-pub const MAX_PEERS: usize = 16;
 // JSON may encode one source byte as six bytes (for example, a control byte).
 // Leave additional bounded space for peer metadata and formatting.
-pub const MAX_CONFIG_BYTES: usize = 8 * crate::MAX_PROOF_BYTES;
-pub const MAX_FETCHES: usize = 128;
-pub const MAX_FLIGHTS: usize = 16;
-pub const MAX_FLIGHTS_PER_PEER: usize = 2;
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
 // Space every automatic read, including metadata and inventory. Separate
 // sender/receiver bucket epochs must not turn a refill into a read burst.
-const AUTOMATIC_REQUEST_INTERVAL: Duration = Duration::from_millis(150);
-pub const MAX_COMMAND_BYTES: usize = 8 * crate::MAX_PROOF_BYTES;
-pub const MAX_INVENTORY_PAGE_IDS: usize = INVENTORY_PAGE;
-pub const MAX_STATUS_PAGE_IDS: usize = INVENTORY_PAGE;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,37 +51,38 @@ pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 /// change the mathematical compatibility fingerprint or proof admission.
 pub fn routing_contract() -> Value {
     json!({
+        "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":5,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
-            "protocol":"/naome/knowledge/2", "topic":"naome-knowledge-v2",
+            "protocol":"/naome/knowledge/3", "topic":"naome-knowledge-v3",
             "interest":"Explicit local positive selection before root fetch and before commit",
             "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
-            "limits":{"active_roots":1,"queued_metadata":crate::intake::MAX_QUEUED_METADATA,
-                "closure_objects":crate::intake::MAX_CLOSURE_OBJECTS,"closure_bytes":crate::intake::MAX_CLOSURE_BYTES,
-                "closure_steps":crate::intake::MAX_CLOSURE_STEPS,"checker_work_bytes":crate::intake::MAX_CLOSURE_CHECKER_WORK_BYTES,
-                "root_lifetime_seconds":crate::intake::ROOT_TTL.as_secs(),"outgoing_request_burst_per_peer":7,"outgoing_request_refill_seconds":1}
+            "limits":{"active_roots":1,"queued_metadata":crate::resources::limits().queued_metadata,
+                "closure_objects":crate::resources::limits().closure_objects,"closure_bytes":crate::resources::limits().closure_bytes,
+                "closure_steps":crate::resources::limits().closure_steps,"checker_work_bytes":crate::resources::limits().closure_work_bytes,
+                "root_lifetime_seconds":crate::resources::limits().root_timeout.as_secs(),"outgoing_request_burst_per_peer":crate::resources::limits().request_burst,"outgoing_request_refill_ms":crate::resources::limits().request_rate_window.as_millis()}
         },
         "identify_protocol":discovery::protocol_version(false),
         "dht_protocol":format!("/naome/knowledge/kad/{}/1", hex(&crate::compatibility())),
         "participation_key":hex(discovery::provider_key().as_ref()),
         "defaults":DiscoveryConfig::default(),
         "limits":{
-            "contacts":discovery::MAX_CONTACTS,"addresses_per_contact":discovery::MAX_ADDRESSES,
-            "address_bytes":discovery::MAX_ADDRESS_BYTES,"bootstrap":discovery::MAX_BOOTSTRAP,
-            "relays":discovery::MAX_RELAYS,"contact_ttl_seconds":discovery::CONTACT_TTL.as_secs(),
-            "identify_timeout_seconds":discovery::IDENTIFY_TIMEOUT.as_secs(),
-            "mdns_ttl_seconds":discovery::MDNS_TTL.as_secs(),
-            "discovery_interval_seconds":discovery::DISCOVERY_INTERVAL.as_secs(),
-            "provider_records":discovery::MAX_CONTACTS,"provider_ttl_seconds":discovery::PROVIDER_TTL.as_secs(),
-            "application_queries":discovery::MAX_APPLICATION_QUERIES,
-            "query_timeout_seconds":discovery::QUERY_TIMEOUT.as_secs(),
-            "established_connections":32,"connections_per_peer":2,"connections_per_peer_with_upgrade":3
+            "contacts":crate::resources::limits().contacts,"addresses_per_contact":crate::resources::limits().addresses_per_contact,
+            "address_bytes":crate::resources::limits().address_bytes,"bootstrap":crate::resources::limits().bootstrap_peers,
+            "relays":crate::resources::limits().relay_peers,"contact_ttl_seconds":crate::resources::limits().contact_ttl.as_secs(),
+            "identify_timeout_seconds":crate::resources::limits().identify_timeout.as_secs(),
+            "mdns_ttl_seconds":crate::resources::limits().mdns_ttl.as_secs(),
+            "discovery_interval_seconds":crate::resources::limits().discovery_interval.as_secs(),
+            "provider_records":crate::resources::limits().contacts,"provider_ttl_seconds":crate::resources::limits().provider_ttl.as_secs(),
+            "application_queries":crate::resources::limits().application_queries,
+            "query_timeout_seconds":crate::resources::limits().query_timeout.as_secs(),
+            "established_connections":crate::resources::limits().established_connections,"connections_per_peer":crate::resources::limits().connections_per_peer,"connections_per_peer_with_upgrade":crate::resources::limits().upgrade_connections_per_peer
         },
         "query_limit_scope":"Count all current queries before starting application work; libp2p may add one automatic bootstrap query",
         "relay_service":{
-            "reservations":crate::relay::MAX_RESERVATIONS,"reservations_per_peer":1,
-            "circuits":crate::relay::MAX_CIRCUITS,"source_circuits":crate::relay::MAX_SOURCE_CIRCUITS,
-            "circuit_bytes":crate::relay::MAX_CIRCUIT_BYTES,
-            "duration_seconds":crate::relay::CIRCUIT_DURATION.as_secs()
+            "reservations":crate::resources::limits().relay_reservations,"reservations_per_peer":crate::resources::limits().relay_reservations_per_peer,
+            "circuits":crate::resources::limits().relay_circuits,"source_circuits":crate::resources::limits().relay_circuits_per_peer,
+            "circuit_bytes":crate::resources::limits().relay_circuit_bytes,
+            "duration_seconds":crate::resources::limits().relay_circuit_duration.as_secs()
         }
     })
 }
@@ -102,7 +95,7 @@ struct Behaviour {
     relay: relay::client::Behaviour,
     limits: connection_limits::Behaviour,
     gossip: gossipsub::Behaviour,
-    exchange: request_response::Behaviour<Codec>,
+    exchange: exchange::Exchange,
 }
 
 struct Wanted {
@@ -141,7 +134,8 @@ struct InventoryProgress {
 struct Node {
     ready: bool,
     graph: Graph,
-    swarm: Swarm<Behaviour>,
+    swarm: worker::SharedSwarm,
+    transport_epoch: u64,
     topic: gossipsub::IdentTopic,
     configured: BTreeMap<PeerId, Multiaddr>,
     discovery: discovery::State,
@@ -179,7 +173,7 @@ pub(crate) async fn run_autonomous(
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
-    let (sender, commands) = mpsc::channel(8);
+    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
     drop(sender);
     run_inner(
         config,
@@ -220,7 +214,7 @@ pub async fn run_with_interest(
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
-    let (sender, commands) = mpsc::channel(8);
+    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
     // Preserve the existing CLI input reader only for the CLI-oriented wrapper.
     std::thread::spawn(move || read_commands(sender));
     run_inner(
@@ -251,7 +245,7 @@ where
     F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
-    let (sender, commands) = mpsc::channel(8);
+    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
     drop(sender);
     run_inner(config, test_controls, inbox, Some(interest), commands, None).await
 }
@@ -264,7 +258,7 @@ pub async fn run_with_questions_without_interest(
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
 ) -> Result<(), String> {
-    let (sender, commands) = mpsc::channel(8);
+    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
     drop(sender);
     run_inner(
         config,
@@ -280,10 +274,60 @@ pub async fn run_with_questions_without_interest(
 pub(crate) async fn run_inner<F, Fut>(
     config: Config,
     test_controls: bool,
+    inbox: crate::question::QuestionInbox,
+    interest: Option<F>,
+    commands: mpsc::Receiver<Result<Value, String>>,
+    autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
+) -> Result<(), String>
+where
+    F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+{
+    let (stop, cancel) = tokio::sync::oneshot::channel();
+    let (reply, result) = tokio::sync::oneshot::channel();
+    let thread = std::thread::Builder::new()
+        .name("naome-state-owner".into())
+        .spawn(move || {
+            let outcome = (|| {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .max_blocking_threads(crate::resources::limits().control_clients)
+                    .thread_name("naome-transport")
+                    .enable_all()
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                runtime.block_on(run_owner(
+                    config,
+                    test_controls,
+                    inbox,
+                    interest,
+                    commands,
+                    autonomy,
+                    cancel,
+                ))
+            })();
+            let _ = reply.send(outcome);
+        })
+        .map_err(|e| e.to_string())?;
+    let mut owner = worker::OwnerThread {
+        thread: Some(thread),
+        stop: Some(stop),
+    };
+    let outcome = result
+        .await
+        .unwrap_or_else(|_| Err("node state owner stopped without a receipt".into()));
+    owner.join()?;
+    outcome
+}
+
+pub(crate) async fn run_owner<F, Fut>(
+    config: Config,
+    test_controls: bool,
     mut inbox: crate::question::QuestionInbox,
     interest: Option<F>,
     mut commands: mpsc::Receiver<Result<Value, String>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
+    mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String>
 where
     F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
@@ -293,16 +337,16 @@ where
         Some((intervals, startup)) => (Some(intervals), Some(startup)),
         None => (None, None),
     };
-    if config.peers.len() > MAX_PEERS {
+    if config.peers.len() > crate::resources::limits().configured_peers {
         return Err("peer count limit".into());
     }
-    if config.producer_sources.len() > 32
+    if config.producer_sources.len() > crate::resources::limits().producer_sources
         || config
             .producer_sources
             .iter()
             .map(String::len)
             .sum::<usize>()
-            > crate::MAX_PROOF_BYTES
+            > crate::resources::limits().producer_bytes
     {
         return Err("producer queue capacity".into());
     }
@@ -322,7 +366,11 @@ where
     let own_id = key.public().to_peer_id();
     #[cfg(unix)]
     let control = if autonomy.is_some() {
-        Some(crate::runtime::Control::bind(&config.directory, startup)?)
+        Some(Arc::new(crate::runtime::Control::bind_owned(
+            &config.directory,
+            startup,
+            graph.ownership(),
+        )?))
     } else {
         None
     };
@@ -335,9 +383,9 @@ where
         mdns: config.peers.is_empty(),
         ..Default::default()
     });
-    if settings.bootstrap.len() > discovery::MAX_BOOTSTRAP
-        || settings.relays.len() > discovery::MAX_RELAYS
-        || settings.external_addresses.len() > discovery::MAX_ADDRESSES
+    if settings.bootstrap.len() > crate::resources::limits().bootstrap_peers
+        || settings.relays.len() > crate::resources::limits().relay_peers
+        || settings.external_addresses.len() > crate::resources::limits().addresses_per_contact
     {
         return Err("discovery configuration capacity".into());
     }
@@ -398,20 +446,20 @@ where
     }
     let limits = connection_limits::Behaviour::new(
         connection_limits::ConnectionLimits::default()
-            .with_max_pending_incoming(Some(16))
-            .with_max_pending_outgoing(Some(16))
-            .with_max_established(Some(32))
+            .with_max_pending_incoming(Some(crate::resources::limits().pending_connections))
+            .with_max_pending_outgoing(Some(crate::resources::limits().pending_connections))
+            .with_max_established(Some(crate::resources::limits().established_connections))
             .with_max_established_per_peer(Some(
                 if settings.hole_punch && !settings.relays.is_empty() {
-                    3
+                    crate::resources::limits().upgrade_connections_per_peer
                 } else {
-                    2
+                    crate::resources::limits().connections_per_peer
                 },
             )),
     );
     let gossip_config = gossipsub::ConfigBuilder::default()
-        .max_transmit_size(1024)
-        .heartbeat_interval(Duration::from_secs(1))
+        .max_transmit_size(crate::resources::limits().gossip_packet_bytes)
+        .heartbeat_interval(crate::resources::limits().gossip_heartbeat)
         .build()
         .map_err(|error| error.to_string())?;
     let mut gossip = gossipsub::Behaviour::new(
@@ -419,16 +467,19 @@ where
         gossip_config,
     )
     .map_err(|error| error.to_string())?;
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v2");
+    let topic = gossipsub::IdentTopic::new("naome-knowledge-v3");
     gossip
         .subscribe(&topic)
         .map_err(|error| error.to_string())?;
-    let exchange = request_response::Behaviour::with_codec(
-        Codec::default(),
-        [(PROTOCOL, request_response::ProtocolSupport::Full)],
-        request_response::Config::default()
-            .with_request_timeout(REQUEST_TIMEOUT)
-            .with_max_concurrent_streams(4),
+    let exchange = exchange::Exchange::new(
+        request_response::Behaviour::with_codec(
+            Codec::default(),
+            [(PROTOCOL, request_response::ProtocolSupport::Full)],
+            request_response::Config::default()
+                .with_request_timeout(crate::resources::limits().request_timeout)
+                .with_max_concurrent_streams(crate::resources::limits().exchange_streams),
+        ),
+        book.clone(),
     );
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
@@ -454,10 +505,10 @@ where
         .map_err(|error| error.to_string())?
         .with_swarm_config(|config| {
             config
-                .with_idle_connection_timeout(Duration::from_secs(60))
-                .with_max_negotiating_inbound_streams(16)
+                .with_idle_connection_timeout(crate::resources::limits().idle_connection_timeout)
+                .with_max_negotiating_inbound_streams(crate::resources::limits().inbound_streams)
         })
-        .with_connection_timeout(REQUEST_TIMEOUT)
+        .with_connection_timeout(crate::resources::limits().request_timeout)
         .build();
     swarm.listen_on(listen).map_err(|error| error.to_string())?;
     for address in &settings.external_addresses {
@@ -470,11 +521,13 @@ where
         }
         swarm.add_external_address(address);
     }
+    let (swarm, mut events, mut transport) = worker::Transport::spawn(swarm);
     let enabled = BTreeSet::new();
     let mut node = Node {
         ready: false,
         graph,
         swarm,
+        transport_epoch: 0,
         topic,
         configured,
         discovery: discovery::State::new(book, settings, false),
@@ -493,9 +546,9 @@ where
         test_objects: BTreeMap::new(),
         test_controls,
         producer_sources: config.producer_sources.into(),
-        next_production: Instant::now() + Duration::from_secs(1),
+        next_production: Instant::now() + crate::resources::limits().production_interval,
     };
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut command_input_open = true;
     let mut question_input_open = true;
@@ -514,30 +567,39 @@ where
             crate::autonomous::Autonomous::new(intervals, client, recovery, unanswered);
         (Some(service), Some(autonomous), questions)
     } else {
-        (None, None, crate::question::LocalQuestions::new(interest))
+        let mut questions = crate::question::LocalQuestions::new(interest);
+        questions.attach_persistence(&directory)?;
+        (None, None, questions)
     };
-    let mut controls = libp2p::futures::stream::FuturesUnordered::new();
-    let mut stop_watch = control.as_ref().map(crate::runtime::Control::stop_watch);
+    let published = Arc::new(worker::PublishedStatus::default());
+    published
+        .count
+        .store(node.graph.accepted_count(), Ordering::Release);
+    let mut controls = worker::Controls::spawn(control.clone(), published.clone());
+    let mut stop_watch = control.as_ref().map(|control| control.stop_watch());
     let mut stopping = false;
     let mut next_profile_check = Instant::now();
-    let mut drain_deadline = None;
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
     // Keep signal receivers alive while another branch processes synchronous work.
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
-    let outcome:Result<(),String>=async {
+    let owner_busy = node.swarm.busy.clone();
+    let outcome:Result<(),String>=worker::while_polled(owner_busy, async {
     loop {
         // Read the validated owner epoch before polling any final admission.
         // An error invalidates old selection; stop remains available.
         if let Some(control)=&control
             && (control.selection_changed() || Instant::now()>=next_profile_check) {
-                next_profile_check=Instant::now()+Duration::from_secs(1);
+                next_profile_check=Instant::now()+crate::resources::limits().profile_poll_interval;
                 if questions.select(control.selection().ok()) {
                 node.intake.invalidate_interest();
                 }
             }
+        node.graph.set_commit_guard(crate::graph::CommitGuard::new(
+            node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+        ));
         // A cold peer may stay quiet after its response. Wake at the next
         // paced request deadline instead of quantizing reads to the tick.
         let request_now = Instant::now();
@@ -548,6 +610,7 @@ where
             .min()
             .copied();
         tokio::select! {
+            _ = &mut cancel => break,
             _ = async {
                 if let Some(until) = automatic_wake {
                     tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
@@ -555,15 +618,21 @@ where
                     std::future::pending::<()>().await;
                 }
             }, if !stopping => {},
-            event = node.swarm.select_next_some() => {
-                node.event(event)?;
+            event = events.recv() => {
+                let event = event.ok_or("proof transport stopped or exceeded its event capacity")?;
+                node.transport_epoch = event.epoch;
+                node.graph.set_commit_guard(crate::graph::CommitGuard::new(
+                    node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+                ));
+                node.event(event.event)?;
+                published.ready.store(node.ready, Ordering::Release);
                 if node.ready && let Some(control) = &control {
                     control.startup_ready();
                 }
             },
             command = commands.recv(), if command_input_open && !stopping => {
                 match command {
-                    Some(Ok(value)) => if !node.command(value) { break; },
+                    Some(Ok(value)) => { if !node.command(value) { break; } },
                     Some(Err(error)) => emit(json!({"event":"command_error", "error":error})),
                     None => {
                         command_input_open = false;
@@ -571,10 +640,10 @@ where
                     },
                 }
             },
-            _ = tick.tick() => node.tick(),
+            _ = tick.tick() => { node.tick(); },
             command = inbox.receive(), if question_input_open && !stopping => {
                 match command {
-                    Some(command) => if !questions.process(command, &node.graph) { break; },
+                    Some(command) => { if !questions.process(command, &node.graph) { break; } },
                     None => question_input_open = false,
                 }
             },
@@ -583,36 +652,28 @@ where
                     && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
                 questions.finish(&node.graph, interest);
             },
-            socket = crate::runtime::accept(&control),if !stopping && controls.len()<8 => {
-                let socket = socket?;
-                controls.push(control.as_ref().expect("accepted runtime control").respond(socket,node.graph.accepted_count(),node.ready));
-            },
-            response=controls.next(),if !controls.is_empty()=>if let Some(response)=response {
-                match response {
-                    Ok(true) => break,
-                    Ok(false) => {},
-                    Err(error) => emit(json!({"event":"control_rejected","error":error})),
-                }
-            },
             _=crate::runtime::requested_stop(&mut stop_watch),if !stopping=>{
                 stopping=true;
-                drain_deadline=Some(Instant::now()+Duration::from_secs(2));
+
                 if let Some(service)=&mut research{service.begin_shutdown()?;}
             },
             signal = &mut shutdown => { signal?; break; }
         }
+        published.count.store(node.graph.accepted_count(), Ordering::Release);
         if let Some(error)=node.graph.storage_error(){return Err(format!(
             "durable storage failed; restart must reverify: {error}"));}
         if let Some(error)=questions.storage_error(){return Err(error.to_owned());}
         if let Some(error)=research.as_ref().and_then(crate::jobs::Service::error){return Err(error);}
         if stopping {
-            if controls.is_empty() || drain_deadline.is_some_and(|until|Instant::now()>=until){break;}
-            continue;
+            break;
         }
         if let Some(control)=&control
             && (control.selection_changed() || node.intake.selection_boundary_ready()
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
                 && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
+        node.graph.set_commit_guard(crate::graph::CommitGuard::new(
+            node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+        ));
         node.graph.maintain_checked_storage()?;
         questions.cancel_closed();
         match node.intake.advance(&mut node.graph, &mut questions) {
@@ -640,6 +701,7 @@ where
             if let Some(error)=autonomous.error(){return Err(error.to_owned());}
         }
         node.requests();
+        published.count.store(node.graph.accepted_count(), Ordering::Release);
         if let Some(error) = node.graph.storage_error() {
             return Err(format!(
                 "durable storage failed; restart must reverify: {error}"
@@ -650,13 +712,16 @@ where
         }
     }
     Ok(())
-    }.await;
+    }).await;
     // Every ordinary loop/error path drains the owner before releasing Graph's
     // exclusive directory lock. Pending controls own no independent tasks.
+    let control_cleanup = controls.shutdown().await;
+    let transport_cleanup = transport.shutdown().await;
     let cleanup = match &mut research {
         Some(service) => service.shutdown().await,
         None => Ok(()),
     };
+    let cleanup = cleanup.and(control_cleanup).and(transport_cleanup);
     match (outcome, cleanup) {
         (Err(primary), Err(cleanup)) => {
             return Err(format!(
@@ -684,27 +749,8 @@ pub(crate) fn require_tcp_address(address: &Multiaddr) -> Result<(), String> {
 
 pub(crate) fn yamux_config() -> yamux::Config {
     let mut config = yamux::Config::default();
-    config.set_max_num_streams(16);
+    config.set_max_num_streams(crate::resources::limits().inbound_streams);
     config
-}
-
-// The pinned request-response implementation automatically retains discovery
-// hints. Its removal API is necessary to reconcile that cache with our caps.
-#[allow(deprecated)]
-fn remove_exchange_address(
-    exchange: &mut request_response::Behaviour<Codec>,
-    peer: &PeerId,
-    address: &Multiaddr,
-) {
-    exchange.remove_address(peer, address);
-}
-#[allow(deprecated)]
-fn add_exchange_address(
-    exchange: &mut request_response::Behaviour<Codec>,
-    peer: &PeerId,
-    address: Multiaddr,
-) {
-    exchange.add_address(peer, address);
 }
 
 fn body_kind(body: &Body) -> &'static str {
@@ -746,11 +792,14 @@ fn read_commands(sender: mpsc::Sender<Result<Value, String>>) {
     loop {
         let mut bytes = Vec::new();
         let read = (&mut input)
-            .take(MAX_COMMAND_BYTES as u64 + 1)
+            .take(crate::resources::limits().command_bytes as u64 + 1)
             .read_until(b'\n', &mut bytes);
         match read {
             Ok(0) => break,
-            Ok(_) if bytes.len() > MAX_COMMAND_BYTES || bytes.last() != Some(&b'\n') => {
+            Ok(_)
+                if bytes.len() > crate::resources::limits().command_bytes
+                    || bytes.last() != Some(&b'\n') =>
+            {
                 let _ =
                     sender.blocking_send(Err("command byte limit or missing final newline".into()));
                 break;
@@ -797,6 +846,12 @@ pub(crate) async fn shutdown_signal() -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn retryable_publication(error: &str) -> bool {
+    error == crate::graph::STALE_COMMIT
+        || error.starts_with("memory overload")
+        || error.starts_with("disk overload")
+}
+
 impl Node {
     fn flight_count(&self, target: PeerId) -> usize {
         self.flights
@@ -813,7 +868,7 @@ impl Node {
         if self.graph.contains(id)? || self.intake.contains(id) || self.wanted.contains_key(&id) {
             return Ok(true);
         }
-        if self.wanted.len() >= MAX_FETCHES {
+        if self.wanted.len() >= crate::resources::limits().fetches {
             return Ok(false);
         }
         self.wanted.insert(
@@ -834,8 +889,10 @@ impl Node {
     }
 
     fn charge_automatic_request(&mut self, peer: PeerId, now: Instant) {
-        self.next_automatic_request
-            .insert(peer, now + AUTOMATIC_REQUEST_INTERVAL);
+        self.next_automatic_request.insert(
+            peer,
+            now + crate::resources::limits().automatic_request_interval,
+        );
     }
 
     fn ingest(&mut self, object: Envelope, source: &str) -> Result<Value, String> {
@@ -884,15 +941,17 @@ impl Node {
                             .map(ProofId::from_bytes)
                     })
                     .transpose()?;
-                let ids = self.graph.ids_page(after, MAX_STATUS_PAGE_IDS)?;
-                let next_after = (ids.len() == MAX_STATUS_PAGE_IDS)
+                let ids = self
+                    .graph
+                    .ids_page(after, crate::resources::limits().status_page)?;
+                let next_after = (ids.len() == crate::resources::limits().status_page)
                     .then(|| ids.last().map(|id| hex(id.as_bytes())))
                     .flatten();
                 Ok(
                     json!({"ids":ids.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "next_after":next_after,"accepted_proofs":self.graph.accepted_count(),
-                    "root":hex(&self.graph.content_root()), "pending":self.graph.pending_ids().iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
-                    "connected":self.swarm.connected_peers().map(ToString::to_string).collect::<Vec<_>>(),
+                    "root":hex(&self.graph.content_root()), "root_format":crate::CORPUS_ROOT_FORMAT, "pending_count":self.graph.pending_count()?, "pending":self.graph.pending_ids()?.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
+                    "connected":self.swarm.connected_peers().map(|peer| peer.to_string()).collect::<Vec<_>>(),
                     "compatibility":hex(&crate::compatibility()),
                     "contacts":self.contact_status(),
                     "provider_records":self.swarm.behaviour_mut().discovery.kad.as_mut().map(|kad|kad.store_mut().len()).unwrap_or(0),
@@ -942,7 +1001,9 @@ impl Node {
                 )
                 .map_err(|error| error.to_string())?;
                 let (id, _, _) = metadata.compile()?;
-                if self.test_objects.len() >= 8 && !self.test_objects.contains_key(&id) {
+                if self.test_objects.len() >= crate::resources::limits().developer_objects
+                    && !self.test_objects.contains_key(&id)
+                {
                     return Err("test object capacity".into());
                 }
                 self.test_objects.insert(id, (metadata, None));
@@ -1011,7 +1072,7 @@ impl Node {
                 Ok(json!({"announced":hex(id.as_bytes())}))
             }
             "offer" | "test_offer" => {
-                if self.flights.len() >= MAX_FLIGHTS {
+                if self.flights.len() >= crate::resources::limits().flights {
                     return Err("request capacity".into());
                 }
                 let peer: PeerId = value
@@ -1023,7 +1084,7 @@ impl Node {
                 if !self.enabled.contains(&peer) || !self.swarm.is_connected(&peer) {
                     return Err("peer not connected and enabled".into());
                 }
-                if self.flight_count(peer) >= MAX_FLIGHTS_PER_PEER {
+                if self.flight_count(peer) >= crate::resources::limits().flights_per_peer {
                     return Err("peer request capacity".into());
                 }
                 let now = Instant::now();
@@ -1039,12 +1100,12 @@ impl Node {
                     )
                     .map_err(|error| error.to_string())?;
                     if let Some(object) = value.get("object") {
-                        if self.test_objects.len() >= 8 {
+                        if self.test_objects.len() >= crate::resources::limits().developer_objects {
                             return Err("test object capacity".into());
                         }
                         let object: Envelope = serde_json::from_value(object.clone())
                             .map_err(|error| error.to_string())?;
-                        if object.proof.len() > 2 * crate::MAX_PROOF_BYTES {
+                        if object.proof.len() > 2 * crate::resources::limits().proof_bytes {
                             return Err("test proof byte limit".into());
                         }
                         self.test_objects.insert(
@@ -1086,7 +1147,9 @@ impl Node {
         })();
         match result {
             Ok(result) => emit(json!({"event":"response","request":request,"result":result})),
-            Err(error) => emit(json!({"event":"response","request":request,"error":error})),
+            Err(error) => emit(
+                json!({"event":"response","request":request,"retryable":retryable_publication(&error),"error":error}),
+            ),
         }
         value.get("command").and_then(Value::as_str) != Some("stop")
     }
@@ -1097,37 +1160,52 @@ impl Node {
         if now >= self.next_production
             && let Some(source) = self.producer_sources.pop_front()
         {
-            self.next_production = now + Duration::from_secs(1);
+            self.next_production = now + crate::resources::limits().production_interval;
             let result = self
                 .graph
                 .author(&source)
                 .and_then(|object| self.ingest(object, "deterministic_producer"));
             match result {
                 Ok(result) => emit(json!({"event":"producer_result", "result":result})),
+                Err(error) if retryable_publication(&error) => {
+                    self.producer_sources.push_back(source);
+                    emit(json!({"event":"producer_deferred", "error":error}));
+                }
                 Err(error) => emit(json!({"event":"producer_rejected", "error":error})),
             }
         }
-        for id in self.graph.expire(now) {
-            emit(json!({"event":"dependency_timeout", "id":hex(id.as_bytes())}));
+        match self.graph.resolve_pending() {
+            Ok((admitted, rejected)) => {
+                self.publish_admitted(&admitted, "local_backlog");
+                for (id, error) in rejected {
+                    emit(
+                        json!({"event":"rejected","id":hex(id.as_bytes()),"source":"local_backlog","error":error}),
+                    );
+                }
+            }
+            Err(error) => emit(json!({"event":"proof_backlog_error","error":error})),
         }
         self.wanted.retain(|_, wanted| {
-            now.duration_since(wanted.since) < crate::PENDING_TTL && wanted.attempts < 16
+            now.duration_since(wanted.since) < crate::resources::limits().pending_retry
+                && wanted.attempts < crate::resources::limits().wanted_attempts
         });
     }
 
     fn outgoing_ready(&self, peer: PeerId, now: Instant) -> bool {
         self.outgoing.get(&peer).is_none_or(|bucket| {
-            bucket.tokens > 0 || now.duration_since(bucket.reset) >= Duration::from_secs(1)
+            bucket.tokens > 0
+                || now.duration_since(bucket.reset)
+                    >= crate::resources::limits().request_rate_window
         })
     }
 
     fn charge_outgoing(&mut self, peer: PeerId, now: Instant) {
         let bucket = self.outgoing.entry(peer).or_insert(Bucket {
-            tokens: 7,
+            tokens: crate::resources::limits().request_burst,
             reset: now,
         });
-        if now.duration_since(bucket.reset) >= Duration::from_secs(1) {
-            bucket.tokens = 7;
+        if now.duration_since(bucket.reset) >= crate::resources::limits().request_rate_window {
+            bucket.tokens = crate::resources::limits().request_burst;
             bucket.reset = now;
         }
         bucket.tokens -= 1;
@@ -1136,8 +1214,8 @@ impl Node {
     fn request_ready(&self, peer: PeerId, now: Instant) -> bool {
         self.enabled.contains(&peer)
             && self.swarm.is_connected(&peer)
-            && self.flights.len() < MAX_FLIGHTS
-            && self.flight_count(peer) < MAX_FLIGHTS_PER_PEER
+            && self.flights.len() < crate::resources::limits().flights
+            && self.flight_count(peer) < crate::resources::limits().flights_per_peer
             && self.outgoing_ready(peer, now)
     }
 
@@ -1176,7 +1254,8 @@ impl Node {
         for peer in &enabled {
             if self.request_ready(*peer, now)
                 && self.automatic_request_ready(*peer, now)
-                && MAX_FETCHES - self.wanted.len() >= INVENTORY_PAGE
+                && crate::resources::limits().fetches - self.wanted.len()
+                    >= crate::resources::limits().inventory_page
                 && self
                     .next_inventory
                     .get(peer)
@@ -1234,7 +1313,7 @@ impl Node {
             };
             let wanted = self.wanted.get_mut(&id).expect("queued description");
             wanted.attempts += 1;
-            wanted.retry = now + RECONCILE_INTERVAL;
+            wanted.retry = now + crate::resources::limits().reconcile_interval;
             let request = self
                 .swarm
                 .behaviour_mut()
@@ -1248,25 +1327,29 @@ impl Node {
     }
 
     fn inventory(&mut self, peer: PeerId, after: Option<[u8; 32]>, pages: usize) {
-        let id = self
-            .swarm
-            .behaviour_mut()
-            .exchange
-            .send_request(&peer, Frame::new(Body::Inventory { after }));
+        let id = self.swarm.behaviour_mut().exchange.send_request(
+            &peer,
+            Frame::new(Body::Inventory {
+                after,
+                limit: crate::resources::limits().inventory_page,
+            }),
+        );
         self.flights
             .insert(id, Flight::Inventory { peer, after, pages });
-        self.next_inventory
-            .insert(peer, Instant::now() + RECONCILE_INTERVAL);
+        self.next_inventory.insert(
+            peer,
+            Instant::now() + crate::resources::limits().reconcile_interval,
+        );
     }
 
     fn charge(&mut self, peer: PeerId) -> bool {
         let now = Instant::now();
         let bucket = self.buckets.entry(peer).or_insert(Bucket {
-            tokens: 8,
+            tokens: crate::resources::limits().request_burst,
             reset: now,
         });
-        if now.duration_since(bucket.reset) >= Duration::from_secs(1) {
-            bucket.tokens = 8;
+        if now.duration_since(bucket.reset) >= crate::resources::limits().request_rate_window {
+            bucket.tokens = crate::resources::limits().request_burst;
             bucket.reset = now;
         }
         if bucket.tokens == 0 {
@@ -1291,8 +1374,10 @@ impl Node {
                     .find_map(|(peer, id)| (*id == listener_id).then_some(*peer))
                 {
                     self.relay_listeners.remove(&peer);
-                    self.next_relay_attempt
-                        .insert(peer, Instant::now() + RECONCILE_INTERVAL);
+                    self.next_relay_attempt.insert(
+                        peer,
+                        Instant::now() + crate::resources::limits().reconcile_interval,
+                    );
                     self.swarm.remove_listener(listener_id);
                     emit(
                         json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":error.to_string()}),
@@ -1308,8 +1393,10 @@ impl Node {
                     .find_map(|(peer, id)| (*id == listener_id).then_some(*peer))
                 {
                     self.relay_listeners.remove(&peer);
-                    self.next_relay_attempt
-                        .insert(peer, Instant::now() + RECONCILE_INTERVAL);
+                    self.next_relay_attempt.insert(
+                        peer,
+                        Instant::now() + crate::resources::limits().reconcile_interval,
+                    );
                 } else {
                     return Err("proof listener closed".into());
                 }
@@ -1373,23 +1460,6 @@ impl Node {
                     json!({"event":"disconnected", "peer":peer_id.to_string(), "connection_id":connection_id.to_string(),
                     "connections":num_established, "cause":format!("{cause:?}")}),
                 );
-            }
-            SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
-                let book = self.discovery.book.lock();
-                // The library may retain the same hint with a /p2p suffix.
-                // Keep only the exact normalized addresses owned by the book;
-                // otherwise retirement could leave a second cache entry behind.
-                let retained = book
-                    .contacts
-                    .get(&peer_id)
-                    .is_some_and(|contact| contact.addresses.contains(&address));
-                if !retained {
-                    remove_exchange_address(
-                        &mut self.swarm.behaviour_mut().exchange,
-                        &peer_id,
-                        &address,
-                    );
-                }
             }
             SwarmEvent::NewExternalAddrCandidate { address } => {
                 // Identify observations are DCUtR candidates, not evidence of
@@ -1530,14 +1600,25 @@ impl Node {
 
     fn request(&mut self, peer: PeerId, body: Body) -> Result<Body, String> {
         let response = match body {
-            Body::Inventory { after } => {
-                let ids = self
+            Body::Inventory { after, limit } => {
+                if limit == 0 {
+                    return Ok(Body::Error {
+                        reason: "inventory page limit must be positive".into(),
+                    });
+                }
+                let limit = limit.min(crate::resources::limits().inventory_page);
+                let ids: Vec<_> = self
                     .graph
-                    .ids_page(after.map(ProofId::from_bytes), INVENTORY_PAGE)?
+                    .ids_page(after.map(ProofId::from_bytes), limit)?
                     .into_iter()
                     .map(|id| *id.as_bytes())
                     .collect();
-                Body::InventoryResult { ids }
+                let next = if ids.len() == limit {
+                    ids.last().copied()
+                } else {
+                    None
+                };
+                Body::InventoryResult { ids, next }
             }
             Body::Describe { id } => match if self.test_controls {
                 self.test_objects
@@ -1601,8 +1682,9 @@ impl Node {
             return Ok(());
         }
         match (flight, body) {
-            (Flight::Inventory { peer, after, pages }, Body::InventoryResult { ids }) => {
-                if ids.len() > INVENTORY_PAGE
+            (Flight::Inventory { peer, after, pages }, Body::InventoryResult { ids, next }) => {
+                if ids.len() > crate::resources::limits().inventory_page
+                    || next.is_some_and(|next| Some(&next) != ids.last())
                     || !ids.windows(2).all(|pair| pair[0] < pair[1])
                     || ids
                         .first()
@@ -1619,11 +1701,11 @@ impl Node {
                     retained &= self.want(ProofId::from_bytes(*id))?;
                 }
                 if retained {
-                    if ids.len() == INVENTORY_PAGE {
+                    if next.is_some() {
                         self.inventory_progress.insert(
                             peer,
                             InventoryProgress {
-                                after: ids.last().copied(),
+                                after: next,
                                 pages: pages.saturating_add(1),
                             },
                         );
@@ -1706,9 +1788,11 @@ impl Node {
 }
 
 pub fn read_config(path: &Path) -> Result<Config, String> {
-    let mut config: Config =
-        serde_json::from_slice(&crate::store::read_bounded(path, MAX_CONFIG_BYTES)?)
-            .map_err(|error| error.to_string())?;
+    let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
+        path,
+        crate::resources::limits().network_config_bytes,
+    )?)
+    .map_err(|error| error.to_string())?;
     if config.directory.is_relative() {
         config.directory = path
             .parent()

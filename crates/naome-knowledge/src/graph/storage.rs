@@ -16,10 +16,8 @@ use std::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
-pub(crate) const HOT_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const CACHE_ENTRY_BYTES: usize = 512;
 const PREFIX: &str = ".checked-context-";
 const SUFFIX: &str = ".sqlite3";
@@ -34,6 +32,10 @@ thread_local! {
     };
 }
 
+#[cfg(test)]
+thread_local! {
+    static WRITE_TEST_DELAY:std::cell::RefCell<Option<(std::sync::mpsc::Sender<()>,std::sync::mpsc::Receiver<()>)>>=const{std::cell::RefCell::new(None)};
+}
 struct CacheEntry {
     bytes: Vec<u8>,
     persisted_generation: u64,
@@ -77,17 +79,6 @@ impl IndexConnection {
             .ok_or_else(|| "checked index connection closed".into())
     }
 }
-// Preserve existing white-box SQL tests; production cannot dereference a
-// closed connection implicitly. Fatal-abort tests inspect the slot directly.
-#[cfg(test)]
-impl std::ops::Deref for IndexConnection {
-    type Target = Connection;
-    fn deref(&self) -> &Connection {
-        self.open()
-            .expect("test inspected a closed checked connection")
-    }
-}
-
 /// The one source-generation write boundary. Every successful immutable write
 /// includes the current mirror, even when its local cache or SQL row existed.
 #[derive(Default)]
@@ -144,6 +135,14 @@ impl WriteRoute {
 }
 
 impl CheckedStorage {
+    #[cfg(test)]
+    pub(super) fn delay_next_write(
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        WRITE_TEST_DELAY.with(|slot| *slot.borrow_mut() = Some((started, release)));
+    }
+
     pub(super) fn write_gate(&self) -> Result<MutexGuard<'_, WriteRoute>, String> {
         let mut route = self
             .write_gate
@@ -278,7 +277,7 @@ impl CheckedStorage {
         )
         .map_err(|e| e.to_string())?;
         connection
-            .busy_timeout(Duration::from_millis(100))
+            .busy_timeout(crate::resources::limits().sqlite_busy_timeout)
             .map_err(|e| e.to_string())?;
         if startup {
             // Only the fresh, exclusive startup generation is pruned in place.
@@ -298,10 +297,20 @@ impl CheckedStorage {
         connection
             .execute_batch(
                 "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
-            PRAGMA cache_size=-4096; PRAGMA temp_store=FILE; PRAGMA mmap_size=0;
+             PRAGMA temp_store=FILE; PRAGMA mmap_size=0;
             PRAGMA trusted_schema=OFF;
             CREATE TABLE nodes(address BLOB PRIMARY KEY CHECK(length(address)=32),
                 payload BLOB NOT NULL) STRICT, WITHOUT ROWID;",
+            )
+            .map_err(|e| e.to_string())?;
+        connection
+            .pragma_update(
+                None,
+                "cache_size",
+                -(i64::try_from(
+                    (crate::resources::limits().checked_index_cache_bytes / 1024).max(1),
+                )
+                .map_err(|_| "SQLite cache width")?),
             )
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
@@ -686,10 +695,10 @@ impl Cache {
             self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
         }
         let charge = bytes.capacity().saturating_add(CACHE_ENTRY_BYTES);
-        if charge > HOT_CACHE_BYTES {
+        if charge > crate::resources::limits().checked_cache_bytes {
             return;
         }
-        while self.charged > HOT_CACHE_BYTES - charge {
+        while self.charged > crate::resources::limits().checked_cache_bytes - charge {
             let Some((_, key)) = self.recency.pop_first() else {
                 break;
             };
@@ -737,6 +746,13 @@ impl ContextStorage for CheckedStorage {
             if let Some(pause) = pause {
                 pause.wait();
                 pause.wait();
+            }
+        });
+        #[cfg(test)]
+        WRITE_TEST_DELAY.with(|slot| {
+            if let Some((started, release)) = slot.borrow_mut().take() {
+                let _ = started.send(());
+                let _ = release.recv_timeout(std::time::Duration::from_secs(10));
             }
         });
         let result = (|| {
@@ -818,7 +834,7 @@ mod tests {
             assert_eq!(entry.bytes.capacity(), capacity);
             assert_eq!(entry.persisted_generation, storage.generation);
             assert_eq!(cache.charged, charged);
-            assert!(cache.charged <= HOT_CACHE_BYTES);
+            assert!(cache.charged <= crate::resources::limits().checked_cache_bytes);
             cache.clock
         };
         assert!(matches!(
@@ -877,7 +893,7 @@ mod tests {
                 assert_eq!(entry.bytes.capacity(), capacity);
                 assert_eq!(entry.persisted_generation, storage.generation);
                 assert_eq!(cache.charged, capacity + CACHE_ENTRY_BYTES);
-                assert!(cache.charged <= HOT_CACHE_BYTES);
+                assert!(cache.charged <= crate::resources::limits().checked_cache_bytes);
             }
             successor.write(address, &bytes).unwrap();
             successor.evict_cache();
@@ -899,6 +915,8 @@ mod tests {
         let (count, stored): (i64, i64) = storage
             .connection
             .lock()
+            .unwrap()
+            .open()
             .unwrap()
             .query_row(
                 "SELECT count(*),sum(length(payload)) FROM nodes",
@@ -956,6 +974,8 @@ mod tests {
                 .connection
                 .lock()
                 .unwrap()
+                .open()
+                .unwrap()
                 .query_row(
                     "SELECT payload FROM nodes WHERE address=?1",
                     params![address.as_slice()],
@@ -1003,6 +1023,8 @@ mod tests {
         storage
             .connection
             .lock()
+            .unwrap()
+            .open()
             .unwrap()
             .query_row(
                 "SELECT count(*) FROM nodes WHERE address=?1",
@@ -1059,7 +1081,10 @@ mod tests {
                 assert_eq!(source.read(address, bytes.len()).unwrap(), bytes);
                 assert_eq!(rows(&target, address), 1);
                 assert!(Arc::ptr_eq(&source.cache, &target.cache));
-                assert!(source.cache.lock().unwrap().charged <= HOT_CACHE_BYTES);
+                assert!(
+                    source.cache.lock().unwrap().charged
+                        <= crate::resources::limits().checked_cache_bytes
+                );
                 assert!(graph.storage_error().is_none());
             }
         }
@@ -1186,6 +1211,8 @@ mod tests {
                         .connection
                         .lock()
                         .unwrap()
+                        .open()
+                        .unwrap()
                         .execute("DELETE FROM nodes", [])
                         .unwrap();
                     source.evict_cache();
@@ -1194,6 +1221,8 @@ mod tests {
                     target
                         .connection
                         .lock()
+                        .unwrap()
+                        .open()
                         .unwrap()
                         .execute_batch(
                             "CREATE TRIGGER reject_mirror BEFORE INSERT ON nodes BEGIN
@@ -1208,6 +1237,8 @@ mod tests {
                     target
                         .connection
                         .lock()
+                        .unwrap()
+                        .open()
                         .unwrap()
                         .execute_batch(
                             "PRAGMA foreign_keys=ON;
@@ -1286,6 +1317,8 @@ mod tests {
             .connection
             .lock()
             .unwrap()
+            .open()
+            .unwrap()
             .execute(
                 "INSERT INTO nodes(address,payload) VALUES(?1,?2)",
                 params![address.as_slice(), encoded],
@@ -1306,6 +1339,8 @@ mod tests {
         storage
             .connection
             .lock()
+            .unwrap()
+            .open()
             .unwrap()
             .execute(
                 "INSERT INTO nodes(address,payload) VALUES(?1,zeroblob(8192))",
@@ -1386,7 +1421,8 @@ mod tests {
                 let address: [u8; 32] = hash.finalize().into();
                 assert_eq!(storage.read(address, raw.len()).unwrap(), raw, "{target}");
                 {
-                    let connection = storage.connection.lock().unwrap();
+                    let guard = storage.connection.lock().unwrap();
+                    let connection = guard.open().unwrap();
                     let changed = match damage {
                         "missing" => connection
                             .execute("DELETE FROM nodes WHERE address=?1", [address.as_slice()]),
@@ -1420,7 +1456,8 @@ mod tests {
                 // This proves that the ordinary source read still has the correct hot value.
                 assert_eq!(storage.read(address, raw.len()).unwrap(), raw);
                 let persistent = || {
-                    let connection = storage.connection.lock().unwrap();
+                    let guard = storage.connection.lock().unwrap();
+                    let connection = guard.open().unwrap();
                     let count: i64 = connection
                         .query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))
                         .unwrap();
@@ -1504,7 +1541,8 @@ mod tests {
             assert!(after_file.blocks() < before_file.blocks());
         }
         {
-            let connection = storage.connection.lock().unwrap();
+            let guard = storage.connection.lock().unwrap();
+            let connection = guard.open().unwrap();
             assert!(connection.is_autocommit());
             assert_eq!(
                 connection
@@ -1555,6 +1593,8 @@ mod tests {
                 .connection
                 .lock()
                 .unwrap()
+                .open()
+                .unwrap()
                 .query_row(
                     "SELECT count(*) FROM sqlite_schema WHERE name='startup_keep'",
                     [],
@@ -1570,6 +1610,8 @@ mod tests {
                 .connection
                 .lock()
                 .unwrap()
+                .open()
+                .unwrap()
                 .pragma_query_value(None, "auto_vacuum", |row| row.get::<_, i64>(0))
                 .unwrap(),
             0
@@ -1580,7 +1622,15 @@ mod tests {
                 .unwrap_err()
                 .contains("incremental vacuum")
         );
-        assert!(successor.connection.lock().unwrap().is_autocommit());
+        assert!(
+            successor
+                .connection
+                .lock()
+                .unwrap()
+                .open()
+                .unwrap()
+                .is_autocommit()
+        );
         drop(graph);
         drop(storage);
         drop(successor);

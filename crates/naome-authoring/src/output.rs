@@ -6,10 +6,7 @@ use super::*;
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
 pub struct CompiledProof {
-    canonical_proof_bytes: Box<[u8]>,
-    statement_id: StatementId,
-    derivation_id: DerivationId,
-    proof_id: ProofId,
+    checked: naome_checker::CheckedProof,
 }
 
 /// Canonical checked output of one successful definition compilation.
@@ -82,42 +79,39 @@ impl CompiledArtifact {
 impl CompiledProof {
     /// Returns the exact canonical proof normal-form bytes.
     pub fn canonical_proof_bytes(&self) -> &[u8] {
-        &self.canonical_proof_bytes
+        self.checked.normal_form().canonical_bytes()
     }
 
     /// Consumes this result and returns its exact canonical proof bytes.
     pub fn into_canonical_proof_bytes(self) -> Box<[u8]> {
-        self.canonical_proof_bytes
+        self.checked.into_normal_form().into_canonical_bytes()
     }
 
     /// Returns the checked conclusion identity.
     pub const fn statement_id(&self) -> StatementId {
-        self.statement_id
+        self.checked.statement_id()
     }
 
     /// Returns the checked reference-transparent derivation identity.
     pub const fn derivation_id(&self) -> DerivationId {
-        self.derivation_id
+        self.checked.derivation_id()
     }
 
     /// Returns the checked concrete canonical proof identity.
     pub const fn proof_id(&self) -> ProofId {
-        self.proof_id
+        self.checked.proof_id()
     }
 }
 
 impl CompiledProof {
+    /// Retains the compiler's sealed mathematical result for registration in
+    /// the same immutable dependency context. This grants no publication rights.
+    pub fn into_checked_proof(self) -> naome_checker::CheckedProof {
+        self.checked
+    }
+
     pub(super) fn from_checked(checked: naome_checker::CheckedProof) -> Self {
-        let statement_id = checked.statement_id();
-        let derivation_id = checked.derivation_id();
-        let proof_id = checked.proof_id();
-        let canonical_proof_bytes = checked.into_normal_form().into_canonical_bytes();
-        Self {
-            canonical_proof_bytes,
-            statement_id,
-            derivation_id,
-            proof_id,
-        }
+        Self { checked }
     }
 }
 

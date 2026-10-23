@@ -488,3 +488,131 @@ impl Twin {
         Ok(())
     }
 }
+
+#[test]
+fn authenticated_header_and_operation_cache_avoid_reloading_formulas_without_changing_limits() {
+    use crate::context::cache::ReadContext;
+    let mut twin = Twin::new();
+    let (id, formula) = twin.register(equality_steps());
+    twin.files.reads.store(0, Ordering::Relaxed);
+    {
+        let reads = ReadContext::new(&twin.disk);
+        let header = reads.proof_header(id).unwrap().unwrap();
+        assert_eq!(
+            reads
+                .proof_formula(header, header.length)
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            &formula
+        );
+        let cold = twin.files.reads.load(Ordering::Relaxed);
+        assert_eq!(
+            cold, 4,
+            "three authenticated headers followed by one formula read"
+        );
+        let first = reads.proof_formula(header, header.length).unwrap().unwrap();
+        assert!(matches!(&first, std::borrow::Cow::Borrowed(_)));
+        for _ in 0..16 {
+            let warm = reads.proof_header(id).unwrap().unwrap();
+            let cached = reads.proof_formula(warm, warm.length).unwrap().unwrap();
+            assert!(
+                std::ptr::eq(first.as_ref(), cached.as_ref()),
+                "warm formulas borrow the same decoded tree"
+            );
+            assert_eq!(
+                reads
+                    .proof_formula(warm, warm.length)
+                    .unwrap()
+                    .unwrap()
+                    .as_ref(),
+                &formula
+            );
+        }
+        assert_eq!(twin.files.reads.load(Ordering::Relaxed), cold);
+        assert_eq!(
+            reads.proof_formula(header, header.length - 1).unwrap_err(),
+            ContextError::Limit
+        );
+    }
+    let reads = ReadContext::new(&twin.disk);
+    let header = reads.proof_header(id).unwrap().unwrap();
+    assert_eq!(
+        reads
+            .proof_formula(header, header.length)
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        &formula
+    );
+    assert_eq!(
+        twin.files.reads.load(Ordering::Relaxed),
+        8,
+        "new operations authenticate cold state again"
+    );
+}
+
+#[test]
+fn proof_registration_rules_match_for_duplicates_collisions_aliases_and_missing_dependencies() {
+    fn checked() -> crate::CheckedProof {
+        crate::normalize_and_check(ProofCertificate::new(equality_steps()).unwrap()).unwrap()
+    }
+    let mut twin = Twin::new();
+    let (parent, _) = twin.register(equality_steps());
+    for fault in 0..4 {
+        let mut memory = checked();
+        let mut disk = checked();
+        match fault {
+            0 => {}
+            1 => {
+                memory.derivation_id = naome_proof::DerivationId::from_bytes([9; 32]);
+                disk.derivation_id = memory.derivation_id;
+            }
+            2 => {
+                memory.proof_id = ProofId::from_bytes([8; 32]);
+                disk.proof_id = memory.proof_id;
+                memory.statement_id = StatementId::from_bytes([7; 32]);
+                disk.statement_id = memory.statement_id;
+            }
+            3 => {
+                memory.proof_id = ProofId::from_bytes([8; 32]);
+                disk.proof_id = memory.proof_id;
+                memory.derivation_id = naome_proof::DerivationId::from_bytes([9; 32]);
+                disk.derivation_id = memory.derivation_id;
+                memory.conclusion = Formula::negate(memory.conclusion);
+                disk.conclusion = Formula::negate(disk.conclusion);
+            }
+            _ => unreachable!(),
+        }
+        let before = twin.memory.snapshot_id();
+        let expected = twin
+            .memory
+            .register_proof_for_replication(memory)
+            .unwrap_err();
+        assert_eq!(
+            twin.disk.register_proof_for_replication(disk).unwrap_err(),
+            expected
+        );
+        assert_eq!(twin.memory.snapshot_id(), before);
+        assert_eq!(twin.disk.snapshot_id(), before);
+    }
+    // A genuinely checked reference remains invalid for registration in an
+    // empty replica until its real dependency is registered there.
+    let certificate =
+        ProofCertificate::new(vec![ProofStep::ProofReference { proof_id: parent }]).unwrap();
+    let memory = normalize_and_check_with_state(certificate.clone(), &twin.memory).unwrap();
+    let disk = normalize_and_check_with_state(certificate, &twin.disk).unwrap();
+    let mut empty = ArtifactState::new();
+    let mut cold = DiskArtifactState::new(Files::new());
+    let error = empty.register_proof_for_replication(memory).unwrap_err();
+    assert_eq!(
+        error,
+        crate::ArtifactStateError::MissingProofDependency { proof_id: parent }
+    );
+    assert_eq!(
+        cold.register_proof_for_replication(disk).unwrap_err(),
+        error
+    );
+    // Replication admits a distinct normalized alias for the same derivation.
+    let _ = twin.register(vec![ProofStep::ProofReference { proof_id: parent }]);
+}

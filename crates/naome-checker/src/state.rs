@@ -5,7 +5,7 @@ use std::fmt;
 use naome_foundation::Formula;
 use naome_proof::{
     DefinitionCertificate, DefinitionId, DefinitionKind, DefinitionResolution, DefinitionResolver,
-    DerivationId, ProofId, ProofStep, StatementId,
+    DerivationId, ProofId, StatementId,
 };
 
 use crate::{CheckedDefinition, CheckedProof, question::index::KnowledgeIndex};
@@ -13,6 +13,7 @@ use crate::{CheckedDefinition, CheckedProof, question::index::KnowledgeIndex};
 mod disk;
 pub(crate) mod disk_map;
 pub(crate) mod persistent_map;
+mod registration;
 pub use disk::{DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, DiskCopyProgress};
 
 use persistent_map::{Key256, PersistentMap};
@@ -232,77 +233,7 @@ impl ArtifactState {
         &self,
         proof: &CheckedProof,
     ) -> Result<(), ArtifactStateError> {
-        if let Some(existing_derivation_id) = self.proofs.get(&proof.proof_id).copied() {
-            let existing_statement_id = self
-                .derivations
-                .get(&existing_derivation_id)
-                .expect("every registered proof has a registered derivation");
-            if existing_derivation_id != proof.derivation_id
-                || *existing_statement_id != proof.statement_id
-            {
-                return Err(ArtifactStateError::ProofIdentityCollision {
-                    proof_id: proof.proof_id,
-                });
-            }
-            let existing_statement = self
-                .statements
-                .get(existing_statement_id)
-                .expect("every registered proof has a stored statement");
-            return if existing_statement.conclusion == proof.conclusion {
-                Err(ArtifactStateError::DuplicateProof {
-                    proof_id: proof.proof_id,
-                })
-            } else {
-                Err(ArtifactStateError::StatementIdentityCollision {
-                    statement_id: proof.statement_id,
-                })
-            };
-        }
-
-        for step in proof.normal_form.certificate().steps() {
-            if let ProofStep::ProofReference { proof_id } = step
-                && !self.proofs.contains_key(proof_id)
-            {
-                return Err(ArtifactStateError::MissingProofDependency {
-                    proof_id: *proof_id,
-                });
-            }
-            for definition_id in step.definition_references() {
-                if !self.definitions.contains_key(&definition_id) {
-                    return Err(ArtifactStateError::MissingDefinitionDependency { definition_id });
-                }
-            }
-        }
-
-        if let Some(existing_statement_id) = self.derivations.get(&proof.derivation_id) {
-            if *existing_statement_id != proof.statement_id {
-                return Err(ArtifactStateError::DerivationIdentityCollision {
-                    derivation_id: proof.derivation_id,
-                });
-            }
-            let existing_statement = self
-                .statements
-                .get(existing_statement_id)
-                .expect("every registered derivation has a stored statement");
-            return if existing_statement.conclusion == proof.conclusion {
-                Err(ArtifactStateError::DuplicateDerivation {
-                    derivation_id: proof.derivation_id,
-                })
-            } else {
-                Err(ArtifactStateError::StatementIdentityCollision {
-                    statement_id: proof.statement_id,
-                })
-            };
-        }
-
-        if let Some(existing_statement) = self.statements.get(&proof.statement_id)
-            && existing_statement.conclusion != proof.conclusion
-        {
-            return Err(ArtifactStateError::StatementIdentityCollision {
-                statement_id: proof.statement_id,
-            });
-        }
-        Ok(())
+        registration::validate(self, proof, false)
     }
 
     /// Registers one checked definition without replacing selected state.
@@ -371,6 +302,7 @@ impl ArtifactState {
             .get(statement_id)
             .expect("every registered proof has a stored statement");
         Some(crate::context::ProofHeader {
+            location: None,
             length: statement.canonical_length,
             derivation: derivation_id,
             statement: *statement_id,
@@ -390,6 +322,18 @@ impl ArtifactState {
         self.statements
             .get(&statement_id)
             .map(|statement| &statement.conclusion)
+    }
+}
+
+impl registration::RegistrationView for ArtifactState {
+    fn has_proof(&self, id: ProofId) -> Result<bool, crate::ContextError> {
+        Ok(self.proofs.contains_key(&id))
+    }
+    fn derivation_statement(
+        &self,
+        id: DerivationId,
+    ) -> Result<Option<StatementId>, crate::ContextError> {
+        Ok(self.derivations.get(&id).copied())
     }
 }
 

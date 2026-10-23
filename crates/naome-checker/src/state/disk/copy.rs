@@ -200,6 +200,7 @@ impl DiskArtifactCopy {
                 instances,
             ] = maps(current).map(|map| DiskMap::from_root(self.target.clone(), map.root()));
             Ok(DiskArtifactState {
+                read_cache: current.read_cache,
                 proofs,
                 derivations,
                 statements,

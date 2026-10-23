@@ -1,4 +1,3 @@
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 pub(crate) trait Key256: Copy + Eq {
@@ -163,29 +162,24 @@ impl<K, V> Node<K, V> {
     }
 
     fn branch(bit: u8, left: Arc<Self>, right: Arc<Self>) -> Self {
-        let mut hash = Sha256::new();
-        hash.update(b"naome:checked-map:branch:v1\0");
-        hash.update([bit]);
-        hash.update(left.fingerprint());
-        hash.update(right.fingerprint());
+        let fingerprint =
+            crate::context::fingerprint::branch(bit, left.fingerprint(), right.fingerprint());
         Self::Branch {
             bit,
             left,
             right,
-            fingerprint: hash.finalize().into(),
+            fingerprint,
         }
     }
 }
 
 impl<K: Key256, V> Node<K, V> {
     fn leaf(key: K, value: V) -> Self {
-        let mut hash = Sha256::new();
-        hash.update(b"naome:checked-map:leaf:v1\0");
-        hash.update(key.as_key_bytes());
+        let fingerprint = crate::context::fingerprint::leaf(key.as_key_bytes());
         Self::Leaf {
             key,
             value,
-            fingerprint: hash.finalize().into(),
+            fingerprint,
         }
     }
 }

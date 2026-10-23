@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import signal
 import socket
+import sqlite3
+import hashlib
 import subprocess
 import sys
 import time
@@ -16,8 +18,22 @@ from autonomous_lifecycle import (Node,Trial,digest,process_identity,process_gro
 
 
 def journal(node):
-    path=node.directory/'research/jobs.json'
-    return json.loads(path.read_text())['payload'] if path.exists() else None
+    path=node.directory/'research/jobs.sqlite3'
+    if not path.exists(): return None
+    with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1) as connection:
+        connection.execute('BEGIN')
+        state=json.loads(connection.execute('SELECT header FROM checkpoint WHERE singleton=1').fetchone()[0])
+        for kind,name in [('record','records'),('account','accounts')]:
+            state[name]={key:json.loads(payload) for key,payload in connection.execute(
+                'SELECT key,payload FROM entries WHERE kind=? ORDER BY key',(kind,))}
+    state['archived_record_count']=len(state['records'])
+    if 'resident_records' in state:
+        retained=set(map(str,state['resident_records']))
+        state['records']={key:record for key,record in state['records'].items() if key in retained}
+    active={hashlib.sha256(json.dumps(record['input'],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+        for record in state['records'].values() if record['input']['role']!='find'}
+    state['active_account_count']=len(active)
+    return state
 
 
 def lane(record):
@@ -57,11 +73,11 @@ class Probe:
         write_receipt(self.trial.output/'research-processes.json',list(self.identities.values()))
         state=journal(node)
         if state:
-            assert len(state['records'])<=96 and len(state['accounts'])<=256
+            assert len(state['records'])<=96 and state['active_account_count']<=256
             self.peaks['records']=max(self.peaks['records'],len(state['records']))
             self.peaks['accounts']=max(self.peaks['accounts'],len(state['accounts']))
-            size=(node.directory/'research/jobs.json').stat().st_size
-            assert size<=64*1024*1024
+            size=(node.directory/'research/jobs.sqlite3').stat().st_size
+            assert sum(len(json.dumps(record)) for record in state['records'].values())<=64*1024*1024
             self.peaks['journal_bytes']=max(self.peaks['journal_bytes'],size)
         pids={identity['pid'] for identity in self.identities.values()}
         pids.update(n.process['pid'] for n in self.trial.nodes if n.process)
@@ -152,7 +168,7 @@ def roles(trial,probe):
     overlap=trial.wait(overlapping,maximum=15)
     probe.witness_cpu(receiver)
     trial.summary['overlap']={'running_lanes':sorted({lane(r) for r in overlap['records'].values() if r['state']=='running'}),
-        'journal_sha256':digest(receiver.directory/'research/jobs.json')}
+        'journal_sha256':digest(receiver.directory/'research/jobs.sqlite3')}
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
     trial.wait(lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
@@ -262,9 +278,9 @@ def limits(trial,probe):
     def restore_state(action):
         assert not process_group(node.process),'refusing state restoration while the recorded daemon group remains'
         action()
-    path=node.directory/'research/jobs.json';original=path.read_bytes()
+    path=node.directory/'research/jobs.sqlite3';original=path.read_bytes()
     path.write_bytes(b'{corrupt')
-    try:rejected_start('corrupt_journal','research checkpoint corruption:')
+    try:rejected_start('corrupt_journal','transactional checkpoint:')
     finally:restore_state(lambda:path.write_bytes(original))
     saved_journal=node.directory/'saved-journal';path.rename(saved_journal)
     try:rejected_start('missing_journal','research journal is missing; refusing a fresh allowance')

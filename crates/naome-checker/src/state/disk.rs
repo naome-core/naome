@@ -1,5 +1,7 @@
 use super::disk_map::{DiskMap, Root};
-use crate::context::{BucketKind, ProofHeader, StatementCursor, StatementHeader, sealed};
+use crate::context::{
+    BucketKind, FormulaLocation, ProofHeader, StatementCursor, StatementHeader, sealed,
+};
 use crate::question::index::projections;
 use crate::{
     ArtifactStateError, CHECKER_MAX_FORMULA_WORK_BYTES, CheckedProof, ContextError, ContextStorage,
@@ -30,6 +32,7 @@ pub struct DiskArtifactState {
     outgoing: DiskMap,
     deductions: DiskMap,
     instances: DiskMap,
+    read_cache: crate::ReadCacheLimits,
 }
 
 impl DiskArtifactState {
@@ -49,7 +52,22 @@ impl DiskArtifactState {
             outgoing: DiskMap::new(storage.clone()),
             deductions: DiskMap::new(storage.clone()),
             instances: DiskMap::new(storage),
+            read_cache: crate::ReadCacheLimits::DEFAULT,
         }
+    }
+
+    pub fn with_read_cache_limits(
+        mut self,
+        limits: crate::ReadCacheLimits,
+    ) -> Result<Self, ContextError> {
+        self.read_cache = crate::ReadCacheLimits::new(limits.entries, limits.bytes)?;
+        Ok(self)
+    }
+
+    /// Fingerprint of the complete checked concrete-proof set. This exposes
+    /// no persisted roots and cannot restore mathematical validity.
+    pub fn proof_set_fingerprint(&self) -> [u8; 32] {
+        self.proofs.fingerprint()
     }
 
     pub fn contains_proof(&self, id: ProofId) -> Result<bool, ContextError> {
@@ -87,6 +105,7 @@ impl DiskArtifactState {
     pub fn copy_to(&self, storage: Arc<dyn ContextStorage>) -> Result<Self, ContextError> {
         self.report((|| {
             let next = Self {
+                read_cache: self.read_cache,
                 proofs: self.proofs.copy_to(storage.clone())?,
                 derivations: self.derivations.copy_to(storage.clone())?,
                 statements: self.statements.copy_to(storage.clone())?,
@@ -217,59 +236,7 @@ impl DiskArtifactState {
     }
 
     fn validate_registration(&self, proof: &CheckedProof) -> Result<(), ArtifactStateError> {
-        if let Some(header) = self
-            .proof_header(proof.proof_id)
-            .map_err(ArtifactStateError::Context)?
-        {
-            if header.derivation != proof.derivation_id || header.statement != proof.statement_id {
-                return Err(ArtifactStateError::ProofIdentityCollision {
-                    proof_id: proof.proof_id,
-                });
-            }
-            self.require_same_statement(proof)?;
-            return Err(ArtifactStateError::DuplicateProof {
-                proof_id: proof.proof_id,
-            });
-        }
-        for step in proof.normal_form.certificate().steps() {
-            if let ProofStep::ProofReference { proof_id } = step
-                && !self
-                    .contains_proof(*proof_id)
-                    .map_err(ArtifactStateError::Context)?
-            {
-                return Err(ArtifactStateError::MissingProofDependency {
-                    proof_id: *proof_id,
-                });
-            }
-            if let Some(definition_id) = step.definition_references().into_iter().next() {
-                return Err(ArtifactStateError::MissingDefinitionDependency { definition_id });
-            }
-        }
-        if let Some(statement) = self
-            .derivations
-            .get(proof.derivation_id.as_bytes())
-            .map_err(ArtifactStateError::Context)?
-            && fixed(&statement).map_err(ArtifactStateError::Context)?
-                != *proof.statement_id.as_bytes()
-        {
-            return Err(ArtifactStateError::DerivationIdentityCollision {
-                derivation_id: proof.derivation_id,
-            });
-        }
-        self.require_same_statement(proof)
-    }
-
-    fn require_same_statement(&self, proof: &CheckedProof) -> Result<(), ArtifactStateError> {
-        if let Some(formula) = self
-            .statement_formula(proof.statement_id, CHECKER_MAX_FORMULA_WORK_BYTES)
-            .map_err(ArtifactStateError::Context)?
-            && *formula != proof.conclusion
-        {
-            return Err(ArtifactStateError::StatementIdentityCollision {
-                statement_id: proof.statement_id,
-            });
-        }
-        Ok(())
+        super::registration::validate(self, proof, true)
     }
     fn index(&self, kind: BucketKind) -> &DiskMap {
         match kind {
@@ -285,6 +252,35 @@ impl DiskArtifactState {
             BucketKind::Instances => &mut self.instances,
         }
     }
+    fn formula_at(
+        &self,
+        id: StatementId,
+        location: Option<FormulaLocation>,
+        length: usize,
+        maximum: usize,
+    ) -> Result<Cow<'_, Formula>, ContextError> {
+        self.report((|| {
+            let location = location.ok_or(ContextError::Corrupt)?;
+            if location.snapshot != self.snapshot_id() {
+                return Err(ContextError::Corrupt);
+            }
+            if length > maximum {
+                return Err(ContextError::Limit);
+            }
+            let bytes = self.statements.storage().read(location.address, length)?;
+            if bytes.len() != length
+                || formula_address(&bytes) != location.address
+                || statement_id(&bytes) != id
+            {
+                return Err(ContextError::Corrupt);
+            }
+            let formula = Formula::decode_canonical(&bytes).map_err(|_| ContextError::Corrupt)?;
+            if !formula.is_closed() {
+                return Err(ContextError::Corrupt);
+            }
+            Ok(Cow::Owned(formula))
+        })())
+    }
     fn statement_record(&self, id: StatementId) -> Result<Option<([u8; 32], usize)>, ContextError> {
         self.report((|| {
             let Some(record) = self.statements.get(id.as_bytes())? else {
@@ -295,8 +291,25 @@ impl DiskArtifactState {
     }
 }
 
+impl super::registration::RegistrationView for DiskArtifactState {
+    fn has_proof(&self, id: ProofId) -> Result<bool, ContextError> {
+        self.contains_proof(id)
+    }
+    fn derivation_statement(&self, id: DerivationId) -> Result<Option<StatementId>, ContextError> {
+        self.report(
+            self.derivations
+                .get(id.as_bytes())?
+                .map(|bytes| fixed(&bytes).map(StatementId::from_bytes))
+                .transpose(),
+        )
+    }
+}
+
 impl sealed::Sealed for DiskArtifactState {}
 impl ContextView for DiskArtifactState {
+    fn read_cache_limits(&self) -> crate::ReadCacheLimits {
+        self.read_cache
+    }
     fn snapshot_id(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(b"naome:checked-artifact-snapshot:v1\0");
@@ -318,10 +331,14 @@ impl ContextView for DiskArtifactState {
                 .get(derivation.as_bytes())?
                 .ok_or(ContextError::Corrupt)?;
             let statement = StatementId::from_bytes(fixed(&statement)?);
-            let (_, length) = self
+            let (address, length) = self
                 .statement_record(statement)?
                 .ok_or(ContextError::Corrupt)?;
             Ok(Some(ProofHeader {
+                location: Some(FormulaLocation {
+                    address,
+                    snapshot: self.snapshot_id(),
+                }),
                 derivation,
                 statement,
                 length,
@@ -330,7 +347,7 @@ impl ContextView for DiskArtifactState {
     }
     fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError> {
         self.report((|| {
-            let Some((_, length)) = self.statement_record(id)? else {
+            let Some((address, length)) = self.statement_record(id)? else {
                 return Ok(None);
             };
             let proof = self
@@ -338,6 +355,10 @@ impl ContextView for DiskArtifactState {
                 .get(id.as_bytes())?
                 .ok_or(ContextError::Corrupt)?;
             Ok(Some(StatementHeader {
+                location: Some(FormulaLocation {
+                    address,
+                    snapshot: self.snapshot_id(),
+                }),
                 proof: ProofId::from_bytes(fixed(&proof)?),
                 length,
             }))
@@ -368,6 +389,23 @@ impl ContextView for DiskArtifactState {
             }
             Ok(Some(Cow::Owned(formula)))
         })())
+    }
+    fn proof_formula(
+        &self,
+        header: ProofHeader,
+        maximum: usize,
+    ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
+        self.formula_at(header.statement, header.location, header.length, maximum)
+            .map(Some)
+    }
+    fn statement_formula_from_header(
+        &self,
+        id: StatementId,
+        header: StatementHeader,
+        maximum: usize,
+    ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
+        self.formula_at(id, header.location, header.length, maximum)
+            .map(Some)
     }
     fn bucket(
         &self,

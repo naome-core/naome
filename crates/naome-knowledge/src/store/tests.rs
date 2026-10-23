@@ -38,141 +38,6 @@ fn fixtures() -> (Envelope, Envelope) {
     (parent, child)
 }
 
-#[test]
-fn directory_lease_precedes_legacy_and_canonical_namespace_checks() {
-    let directory = Directory::new();
-    let (parent, _) = fixtures();
-    let mut owner = Graph::open(&directory.0).unwrap();
-    owner.ingest(parent, Instant::now()).unwrap();
-    fs::create_dir(directory.0.join("objects")).unwrap();
-    let before = [DATABASE_FILE, FORMAT_FILE].map(|name| fs::read(directory.0.join(name)).unwrap());
-    assert!(
-        Graph::open(&directory.0)
-            .unwrap_err_string()
-            .contains("already owned")
-    );
-    drop(owner);
-    assert!(
-        Graph::open(&directory.0)
-            .unwrap_err_string()
-            .contains("legacy proof corpus")
-    );
-    assert_eq!(
-        [DATABASE_FILE, FORMAT_FILE].map(|name| fs::read(directory.0.join(name)).unwrap()),
-        before
-    );
-}
-
-#[test]
-fn legacy_flat_and_committed_batch_corpora_are_refused_without_changing_data() {
-    #[derive(serde::Serialize)]
-    struct LegacyManifest {
-        version: u8,
-        root: String,
-        members: std::collections::BTreeMap<String, String>,
-    }
-    for batched in [false, true] {
-        for existing_catalog in [false, true] {
-            let directory = Directory::new();
-            let (parent, child) = fixtures();
-            if existing_catalog {
-                let mut graph = Graph::open(&directory.0).unwrap();
-                graph.ingest(parent.clone(), Instant::now()).unwrap();
-            }
-            let canonical_before =
-                [DATABASE_FILE, FORMAT_FILE].map(|name| fs::read(directory.0.join(name)).ok());
-            let objects = directory.0.join("objects");
-            fs::create_dir(&objects).unwrap();
-            let mut preserved = Vec::new();
-            if batched {
-                let mut manifest = LegacyManifest {
-                    version: 1,
-                    root: child.proof_id.clone(),
-                    members: std::collections::BTreeMap::new(),
-                };
-                for object in [&parent, &child] {
-                    let bytes = serde_json::to_vec(object).unwrap();
-                    manifest
-                        .members
-                        .insert(object.proof_id.clone(), crate::hex(&Sha256::digest(&bytes)));
-                }
-                let manifest = serde_json::to_vec(&manifest).unwrap();
-                let batch = objects
-                    .join("batches")
-                    .join(crate::hex(&Sha256::digest(&manifest)));
-                fs::create_dir_all(&batch).unwrap();
-                preserved.push((batch.join("manifest.json"), manifest));
-                for object in [&parent, &child] {
-                    preserved.push((
-                        batch.join(format!("{}.json", object.proof_id)),
-                        serde_json::to_vec(object).unwrap(),
-                    ));
-                }
-            } else {
-                preserved.push((
-                    objects.join(format!("{}.json", parent.proof_id)),
-                    serde_json::to_vec(&parent).unwrap(),
-                ));
-            }
-            for (path, bytes) in &preserved {
-                fs::write(path, bytes).unwrap();
-            }
-            assert!(
-                Graph::open(&directory.0)
-                    .unwrap_err_string()
-                    .contains("legacy proof corpus")
-            );
-            for (path, bytes) in preserved {
-                assert_eq!(fs::read(path).unwrap(), bytes);
-            }
-            assert_eq!(
-                [DATABASE_FILE, FORMAT_FILE].map(|name| fs::read(directory.0.join(name)).ok()),
-                canonical_before
-            );
-            assert!(!directory.0.join(INITIAL_DATABASE).exists());
-            assert!(!directory.0.join(".proof-corpus-format-incoming").exists());
-        }
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn legacy_namespace_types_and_links_are_refused_without_following_them() {
-    use std::os::unix::fs::symlink;
-    for kind in 0..4 {
-        let directory = Directory::new();
-        let objects = directory.0.join("objects");
-        let target = directory.0.join("unrelated");
-        match kind {
-            0 => fs::create_dir(&objects).unwrap(),
-            1 => fs::write(&objects, b"unrelated bytes").unwrap(),
-            2 => {
-                fs::write(&target, b"unrelated bytes").unwrap();
-                symlink(&target, &objects).unwrap();
-            }
-            _ => symlink(&target, &objects).unwrap(),
-        }
-        let before = fs::symlink_metadata(&objects).unwrap();
-        let link_before = fs::read_link(&objects).ok();
-        let target_before = fs::read(&target).ok();
-        assert!(
-            Graph::open(&directory.0)
-                .unwrap_err_string()
-                .contains("legacy proof corpus")
-        );
-        use std::os::unix::fs::MetadataExt;
-        assert_eq!(fs::symlink_metadata(&objects).unwrap().ino(), before.ino());
-        assert_eq!(fs::read_link(&objects).ok(), link_before);
-        assert_eq!(fs::read(&target).ok(), target_before);
-        if kind == 1 {
-            assert_eq!(fs::read(&objects).unwrap(), b"unrelated bytes");
-        }
-        for name in [DATABASE_FILE, FORMAT_FILE, INITIAL_DATABASE] {
-            assert!(fs::symlink_metadata(directory.0.join(name)).is_err());
-        }
-    }
-}
-
 #[cfg(unix)]
 #[test]
 fn canonical_leaf_aliases_and_nonregular_files_cannot_publish_or_replace_data() {
@@ -264,23 +129,11 @@ fn namespace_metadata_errors_are_not_treated_as_absence() {
     let directory = Directory::new();
     let blocked = directory.0.join("not-a-directory");
     fs::write(&blocked, b"unrelated bytes").unwrap();
-    assert_eq!(
-        fs::symlink_metadata(blocked.join("objects"))
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::NotADirectory
-    );
-    assert!(
-        reject_legacy_objects(&blocked)
-            .unwrap_err()
-            .contains("cannot inspect")
-    );
     assert!(
         catalog_leaf_exists(&blocked.join(DATABASE_FILE))
             .unwrap_err()
             .contains("cannot inspect")
     );
-    assert!(reject_legacy_objects(&directory.0).is_ok());
     assert!(!catalog_leaf_exists(&directory.0.join(DATABASE_FILE)).unwrap());
     assert_eq!(fs::read(&blocked).unwrap(), b"unrelated bytes");
 }
@@ -431,27 +284,6 @@ fn missing_or_changed_foreign_key_indexes_refuse_startup() {
             assert!(Graph::open(&directory.0).is_err());
             assert_eq!(fs::read(directory.0.join(DATABASE_FILE)).unwrap(), before);
         }
-    }
-}
-
-#[test]
-fn previous_catalog_schema_and_receipt_are_rejected_without_conversion() {
-    for receipt in [false, true] {
-        let directory = Directory::new();
-        drop(Graph::open(&directory.0).unwrap());
-        if receipt {
-            let mut bytes = fs::read(directory.0.join(FORMAT_FILE)).unwrap();
-            bytes[..8].copy_from_slice(b"NAOCORP2");
-            fs::write(directory.0.join(FORMAT_FILE), bytes).unwrap();
-        } else {
-            let database = rusqlite::Connection::open(directory.0.join(DATABASE_FILE)).unwrap();
-            database.pragma_update(None, "user_version", 2).unwrap();
-        }
-        let before = fs::read(directory.0.join(DATABASE_FILE)).unwrap();
-        let format = fs::read(directory.0.join(FORMAT_FILE)).unwrap();
-        assert!(Graph::open(&directory.0).is_err());
-        assert_eq!(fs::read(directory.0.join(DATABASE_FILE)).unwrap(), before);
-        assert_eq!(fs::read(directory.0.join(FORMAT_FILE)).unwrap(), format);
     }
 }
 
@@ -726,7 +558,7 @@ fn large_fixture() -> Envelope {
         statement_id: crate::hex(checked.statement_id().as_bytes()),
         proof: crate::hex(checked.normal_form().canonical_bytes()),
     };
-    assert!(object.proof.len() / 2 <= crate::MAX_PROOF_BYTES);
+    assert!(object.proof.len() / 2 <= crate::resources::limits().proof_bytes);
     object
 }
 
@@ -1187,4 +1019,38 @@ fn inventory_pages_seek_past_the_cursor_without_rescanning_prior_ids() {
     let reopened = Graph::open(&directory.0).unwrap();
     assert_eq!(reopened.ids(), expected);
     assert_eq!(reopened.content_root(), root);
+}
+
+#[test]
+fn growing_live_commits_never_rescan_the_corpus_set() {
+    use naome_foundation::{Formula, FreeVariable};
+    let mut graph = Graph::default();
+    let scans = catalog::set_scan_count();
+    let variable = FreeVariable::new(0);
+    let mut pattern = Formula::equal(variable, variable);
+    for _ in 0..65 {
+        pattern = Formula::for_all(variable, pattern);
+        let checked = naome_checker::normalize_and_check(
+            ProofCertificate::new(vec![ProofStep::Simplification {
+                antecedent: pattern.clone().into(),
+                consequent: pattern.clone().into(),
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+        let object = crate::object::BinaryProof::from_checked(&checked)
+            .unwrap()
+            .envelope();
+        graph.ingest(object, Instant::now()).unwrap();
+        assert_eq!(
+            catalog::set_scan_count(),
+            scans,
+            "a live commit may touch only its delta"
+        );
+    }
+    assert_eq!(graph.accepted_count(), 65);
+    assert_eq!(
+        graph.content_root(),
+        crate::corpus::root(65, graph.checked_context().proof_set_fingerprint()).unwrap()
+    );
 }

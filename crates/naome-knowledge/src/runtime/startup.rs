@@ -11,9 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) const TIMEOUT: Duration = Duration::from_secs(1800);
 const MAX_FRAME: usize = 80;
-const POLL: Duration = Duration::from_millis(10);
 
 // An inherited pipe is the owner's live capability. These absolute times only
 // narrow the existing startup interval; they grant no resource or proof authority.
@@ -129,7 +127,7 @@ impl Handoff {
     pub async fn wait_for_loss(&mut self) -> Result<(), String> {
         loop {
             self.before_offer()?;
-            tokio::time::sleep(POLL).await;
+            tokio::time::sleep(crate::resources::limits().custody_poll_interval).await;
         }
     }
 
@@ -184,7 +182,8 @@ impl Handoff {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    tokio::time::sleep(POLL.min(left)).await
+                    tokio::time::sleep(crate::resources::limits().custody_poll_interval.min(left))
+                        .await
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(format!("startup owner read: {e}")),
@@ -233,7 +232,7 @@ impl Startup {
         if custody_active.is_some_and(|end| native_ns().map_or(true, |now| now >= end)) {
             return Err("original daemon custody endpoint expired before arming".into());
         }
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = Instant::now() + crate::resources::limits().startup_timeout;
         let ready = Arc::new(AtomicBool::new(false));
         let witness = ready.clone();
         use sha2::Digest;
@@ -316,7 +315,8 @@ pub(super) async fn wait(
             return Ok(status);
         }
         tokio::time::sleep(
-            Duration::from_millis(50)
+            crate::resources::limits()
+                .lifecycle_poll_interval
                 .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
         )
         .await;
@@ -364,7 +364,11 @@ fn observe(
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())));
+                std::thread::sleep(
+                    crate::resources::limits()
+                        .custody_poll_interval
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return Err("startup parent lifeline unreadable".into()),
@@ -454,7 +458,7 @@ mod tests {
             Cursor::new([begin(&token), acknowledge(&token)].concat()),
             &token,
             &AtomicBool::new(true),
-            Instant::now() + TIMEOUT,
+            Instant::now() + crate::resources::limits().startup_timeout,
             Some(0),
             send,
         );
@@ -462,22 +466,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn checked_ready_can_arrive_after_the_old_lifecycle_window() {
+    async fn checked_ready_can_arrive_after_the_control_lifecycle_timeout() {
         let directory = crate::runtime::tests::Directory::new();
         let token = "ab".repeat(32);
         let started = tokio::time::Instant::now();
-        let deadline = started + TIMEOUT;
+        let deadline = started + crate::resources::limits().startup_timeout;
         let serve = async {
             // Virtual time tests the startup/RPC distinction. It supplies no
             // native replay, large-corpus, custody or resource qualification.
-            tokio::time::sleep(Duration::from_secs(16)).await;
+            tokio::time::sleep(
+                crate::resources::limits().lifecycle_timeout + Duration::from_secs(1),
+            )
+            .await;
             let control = super::super::Control::bind_token(&directory.0, token.clone()).unwrap();
             let (stream, _) = control.listener.accept().await.unwrap();
             control.respond(stream, 0, true).await.unwrap();
         };
         let (status, ()) = tokio::join!(wait(&directory.0, &token, deadline, || Ok(None)), serve);
         assert!(status.unwrap().running);
-        assert!(tokio::time::Instant::now() - started >= Duration::from_secs(16));
+        assert!(
+            tokio::time::Instant::now() - started
+                >= crate::resources::limits().lifecycle_timeout + Duration::from_secs(1)
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -3,29 +3,32 @@
 ## Language defaults
 
 Write chat replies, progress updates and questions in German by default. Write
-durable outputs in English, including Space content, visual labels, code,
+durable outputs in English, including visual labels, code,
 comments, documentation, work records, commit messages and PR content. Keep
 each artifact consistent; preserve quotations, archived sources, fixed bytes
 and established identifiers. An explicit language request for the task takes
 precedence.
 
-## Documentation and task routing
+## Documentation and work
 
-Maintain NAOME documentation, whitepapers, research, decisions, evidence and work
-tracking in the [NAOME Space](https://chatgpt.com/space/page_6abd15f8b06c8191849e7d5b25f0550e).
-Use `$naome-space`, read its [Agent operating guide](https://chatgpt.com/space/page_b7369d115b688191a1f45fda42b1c8fb)
-and the relevant domain Pages, and update affected records within the authorized
-scope. Keep code, executable experiments, fixtures, licenses and this bootstrap
-in Git; build, test and runtime operation must not require cloud access.
-Follow the guide's **Choose the format for the reader** rule: use editable
-documents, sheets, presentations or visuals when they make the task clearer,
-with one authoritative source and explicit provenance for derived artifacts.
+Work in the current chat by default. Use the current source, supplied artifacts,
+and existing local documentation. Return review findings in chat unless a saved
+report is requested. Keep build, test, and runtime operation independent of cloud
+documentation or project-management services.
 
-Originating chats coordinate substantial repository work with
-`$main-task-coordinator`; dispatched workers use `$implementation-task-worker`
-and do not redispatch the same assignment. A direct request to work in the
-current chat takes precedence. Completion reports authorize only the read-only
-next-work assessment, not another implementation scope or PR.
+Use additional worker chats, subagents, external records, native Goals, Factory
+admission, or effort tracking only when explicitly requested. Existing installed
+controls, resource limits, active ownership, and the pull-request rules below
+remain binding. A completed review or PR does not authorize a successor scope.
+
+## Pre-release compatibility
+
+NAOME is pre-release software. Implement and test the current formats and APIs.
+Do not add migrations, compatibility fallbacks, legacy adapters, deprecated APIs,
+or tests dedicated to obsolete formats or behavior unless the user explicitly
+requests migration or legacy support for the task. Remove obsolete paths within
+the requested scope; do not preserve them speculatively. Keep current-format
+validation, corruption detection, and crash-recovery guarantees.
 
 ## Guarded pull-request automation
 

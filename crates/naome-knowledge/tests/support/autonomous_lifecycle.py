@@ -81,6 +81,19 @@ class Trial:
         assert isinstance(value["interest"], str), value
         return value
 
+    def begin_functional_start(self, node, mode):
+        record = {"node": node.index, "mode": mode, "wrapper": None,
+            "pre_ready_capture": False, "capture_pending": True,
+            "complete_pre_ready_resource_frames": 0,
+            "sampled_peak_actor_rss_bytes": None,
+            "coverage": "UNQUALIFIED_FUNCTIONAL_ENDPOINT_ONLY",
+            "startup_resource_qualification": "UNQUALIFIED",
+            "clock_domain": "driver_process_local_monotonic",
+            "claim": "ordinary CLI readiness and post-ready daemon custody only; no pre-ready/resource qualification"}
+        self.summary.setdefault("startup_attempts", []).append(record)
+        node.startup_record = record
+        return record
+
     def start(self, node, strict_startup=False, cancel_replay=False):
         """Own the ordinary CLI and witness its actual child before readiness."""
         command = [str(self.binary), "--json", "start"]
@@ -89,16 +102,7 @@ class Trial:
             # It never qualifies pre-ready custody or startup resource frames.
             end = self.deadline
             cleanup_end = end + 2
-            record = {"node": node.index, "wrapper": None,
-                "pre_ready_capture": False, "capture_pending": True,
-                "complete_pre_ready_resource_frames": 0,
-                "sampled_peak_actor_rss_bytes": None,
-                "coverage": "UNQUALIFIED_FUNCTIONAL_ENDPOINT_ONLY",
-                "startup_resource_qualification": "UNQUALIFIED",
-                "clock_domain": "driver_process_local_monotonic",
-                "claim": "ordinary CLI readiness and post-ready daemon custody only; no pre-ready/resource qualification"}
-            self.summary.setdefault("startup_attempts", []).append(record)
-            node.startup_record = record
+            record = self.begin_functional_start(node, "ordinary_start")
             process = None
             try:
                 remaining = end - time.monotonic()
@@ -877,17 +881,13 @@ class Node:
         assert current is not None, "start returned without a live daemon"
         assert current["pid"] == current["group"] == current["session"], "node does not own an independent OS session"
         assert str(self.trial.binary) in current["command"], current
-        startup_record = getattr(self, "startup_record", {})
-        retained = startup_record.get("daemon") if startup_record.get("capture_pending") else None
+        startup_record = self.startup_record
+        retained = startup_record.get("daemon")
+        assert startup_record["capture_pending"] or retained == current, "native custody requires an explicit current start attempt"
         if retained is not None:
             assert current == retained, "ready endpoint replaced retained startup child identity"
-        if startup_record.get("capture_pending"):
-            startup_record["capture_pending"] = False
-        else:
-            # Direct legacy start/race callers have no early custody trace.
-            # Keep previous attempt records intact rather than reusing them.
-            self.startup_record = {"coverage": "UNQUALIFIED_LEGACY_ENDPOINT_ONLY",
-                "capture_pending": False, "pre_ready_capture": False}
+        startup_record["capture_pending"] = False
+        startup_record["daemon"] = current
         self.process = current
         write_receipt(self.trial.output / f"node-{self.index}.process.json", current)
         self.trial.summary["processes"].append({"node": self.index, **current})
@@ -1158,6 +1158,7 @@ def main():
         receiver.start()
         sender.event_offset = len(sender.logs())
         sender.release_port()
+        trial.begin_functional_start(sender,"concurrent_start")
         with ThreadPoolExecutor(max_workers=2) as pool:
             statuses = list(pool.map(lambda _: trial.call(sender, "start"), range(2)))
         assert all(status["running"] for status in statuses)

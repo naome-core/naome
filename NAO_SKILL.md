@@ -237,7 +237,7 @@ A negated equality atom also matters: `ne(f(x),x)` places `not(eq(u,x))` inside 
 
 A question proposes a closed formula; it is not evidence for that formula. Only leading `not` operators are stripped to select a shared resolution core. Their parity determines the proved and refuted targets. If `C` is the core, an even parity question is proved by a checked proof of exactly `C` and refuted by a proof of exactly `not(C)`. An odd parity question reverses those outcomes. Internal negations and logical structure are preserved. Double negation does not give an automatic inference rule for ordinary proof goals.
 
-Question targets include both `C` and `not(C)`, so both must fit question bounds. Renaming bound variables preserves the mathematical core. Changing whitespace, comments, bindings, or source spellings changes the exact-source hash and encoded question source; it need not change the resolution identity. Do not hand-edit canonical bytes or manufacture IDs. An encoded question retains its original source and recompiles that source using this language. Unsupported source is rejected; no legacy source decoder or migration is provided.
+Question targets include both `C` and `not(C)`, so both must fit question bounds. Renaming bound variables preserves the mathematical core. Changing whitespace, comments, bindings, or source spellings changes the exact-source hash and encoded question source; it need not change the resolution identity. Do not hand-edit canonical bytes or manufacture IDs. An encoded question retains its original source and recompiles that source using this language. Every encoded source must compile under this grammar.
 
 ## Worked sources
 

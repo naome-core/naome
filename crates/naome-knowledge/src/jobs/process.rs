@@ -13,7 +13,6 @@ const INTERNAL: &str = "NAOME_INTERNAL_RESEARCH_PROVIDER";
 const SUPERVISOR: &str = "--research-supervisor-v1";
 const WORKER: &str = "--research-worker-v1";
 const DESCENDANT: &str = "--research-descendant-v1";
-const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
@@ -109,6 +108,10 @@ async fn run_owned(
         .arg(SUPERVISOR)
         .env_clear()
         .env(INTERNAL, "supervisor-v1")
+        .env(
+            "NAOME_EFFECTIVE_RESOURCES",
+            crate::resources::child_snapshot()?,
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -141,9 +144,12 @@ async fn run_owned(
         // Start has not been written: close the lifeline, retain this Child
         // through termination, and preserve uncertain ownership on any error.
         drop(child.stdin.take());
-        if tokio::time::timeout(Duration::from_secs(3), child.wait())
-            .await
-            .is_err()
+        if tokio::time::timeout(
+            crate::resources::limits().provider_drain_timeout,
+            child.wait(),
+        )
+        .await
+        .is_err()
         {
             child
                 .start_kill()
@@ -338,12 +344,22 @@ async fn run_owned(
             }
         }
     };
-    let drain_error = match tokio::time::timeout(Duration::from_secs(3), drain).await {
+    let drain_error = match tokio::time::timeout(
+        crate::resources::limits().provider_drain_timeout,
+        drain,
+    )
+    .await
+    {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error),
         Err(_) => Some("provider output drain deadline".to_owned()),
     };
-    let status = match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+    let status = match tokio::time::timeout(
+        crate::resources::limits().provider_drain_timeout,
+        child.wait(),
+    )
+    .await
+    {
         Ok(status) => status.map_err(|e| e.to_string())?,
         Err(_) => {
             child.start_kill().map_err(|e| e.to_string())?;
@@ -409,7 +425,7 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
                 .position(|b| *b == b'\n')
                 .map(|n| n + 1)
                 .unwrap_or(buffer.len());
-            if self.partial.len() + end > MAX_FRAME_BYTES {
+            if self.partial.len() + end > max_frame_bytes() {
                 return Err("provider frame capacity".into());
             }
             let complete = buffer[end - 1] == b'\n';
@@ -420,7 +436,7 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
                     .total
                     .checked_add(self.partial.len())
                     .ok_or("provider stream overflow")?;
-                if self.total > MAX_STREAM_BYTES {
+                if self.total > crate::resources::limits().provider_stream_bytes {
                     return Err("provider stream capacity".into());
                 }
                 return Ok(Some(std::mem::take(&mut self.partial)));
@@ -484,7 +500,7 @@ fn line(reader: &mut impl BufRead, limit: usize) -> Result<Vec<u8>, String> {
 fn emit(frame: &Frame) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(frame).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
-    if bytes.len() > MAX_FRAME_BYTES {
+    if bytes.len() > max_frame_bytes() {
         return Err("provider output capacity".into());
     }
     std::io::stdout()
@@ -531,9 +547,14 @@ fn supervise() -> Result<(), String> {
     // cancellation so the group cannot be confused with a recycled PID.
     nix::unistd::setsid().map_err(|e| e.to_string())?;
     let mut reader = std::io::BufReader::new(std::io::stdin());
-    let bytes = line(&mut reader, MAX_FRAME_BYTES)?;
+    let bytes = line(&mut reader, max_frame_bytes())?;
     let start: Start = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if start.version != 1 || !(1..=MAX_HORIZON_MS).contains(&start.remaining_ms) {
+    if start.version != 1
+        || (start.remaining_ms == 0
+            || Instant::now()
+                .checked_add(Duration::from_millis(start.remaining_ms))
+                .is_none())
+    {
         return Err("provider start version or horizon differs".into());
     }
     start.record.input.validate()?;
@@ -561,7 +582,8 @@ fn supervise() -> Result<(), String> {
         .stdout
         .take()
         .ok_or("provider worker output absent")?;
-    let (sender, receiver) = sync_channel::sync_channel(8);
+    let (sender, receiver) =
+        sync_channel::sync_channel(crate::resources::limits().supervisor_commands);
     let parent = sender.clone();
     std::thread::spawn(move || {
         loop {
@@ -581,9 +603,11 @@ fn supervise() -> Result<(), String> {
     std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(output);
         let mut total = 0usize;
-        while let Ok(bytes) = line(&mut reader, MAX_FRAME_BYTES) {
+        while let Ok(bytes) = line(&mut reader, max_frame_bytes()) {
             total = total.saturating_add(bytes.len());
-            if total > MAX_STREAM_BYTES || sender.send(Message::Provider(bytes)).is_err() {
+            if total > crate::resources::limits().provider_stream_bytes
+                || sender.send(Message::Provider(bytes)).is_err()
+            {
                 break;
             }
         }
@@ -595,7 +619,7 @@ fn supervise() -> Result<(), String> {
         if Instant::now() >= deadline {
             break;
         }
-        match receiver.recv_timeout(Duration::from_millis(50)) {
+        match receiver.recv_timeout(crate::resources::limits().supervisor_poll_interval) {
             Ok(Message::Parent(bytes)) => {
                 if input.write_all(&bytes).is_err() {
                     break;
@@ -624,7 +648,10 @@ fn supervise() -> Result<(), String> {
     if let Err(error) = child.finish() {
         let _ = emit(&Frame::CleanupFailed {
             id: start.record.id,
-            error: error.chars().take(256).collect(),
+            error: error
+                .chars()
+                .take(crate::resources::limits().failure_detail_bytes)
+                .collect(),
         });
         return Err(error);
     }
@@ -685,14 +712,14 @@ fn stop_worker(child: &mut Child) -> Result<(), String> {
                 signal_errors.join("; ")
             ));
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(crate::resources::limits().cleanup_poll_interval);
     }
     let until = Instant::now() + Duration::from_secs(1);
     loop {
         match nix::sys::signal::killpg(group, None) {
             Err(nix::errno::Errno::ESRCH) => return Ok(()),
             Ok(()) | Err(nix::errno::Errno::EPERM) if Instant::now() < until => {
-                std::thread::sleep(Duration::from_millis(20))
+                std::thread::sleep(crate::resources::limits().cleanup_poll_interval)
             }
             _ => {
                 return Err(format!(
@@ -711,8 +738,8 @@ fn stop_worker(child: &mut Child) -> Result<(), String> {
 fn work() -> Result<(), String> {
     nix::unistd::setsid().map_err(|e| e.to_string())?;
     let mut reader = std::io::BufReader::new(std::io::stdin());
-    let start: Start =
-        serde_json::from_slice(&line(&mut reader, MAX_FRAME_BYTES)?).map_err(|e| e.to_string())?;
+    let start: Start = serde_json::from_slice(&line(&mut reader, max_frame_bytes())?)
+        .map_err(|e| e.to_string())?;
     let record = start.record;
     record.input.validate()?;
     record.binding.validate()?;
@@ -857,8 +884,11 @@ fn work() -> Result<(), String> {
                 .map(|mut source| {
                     source.push_str(
                         &" ".repeat(
-                            mock.proof_padding_bytes
-                                .min(crate::MAX_PROOF_BYTES.saturating_sub(source.len())),
+                            mock.proof_padding_bytes.min(
+                                crate::resources::limits()
+                                    .proof_bytes
+                                    .saturating_sub(source.len()),
+                            ),
                         ),
                     );
                     Output::Proof {

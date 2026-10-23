@@ -195,21 +195,50 @@ impl CompiledQuestion {
             .encode_canonical_with_node_limit(parse_nodes)
             .map_err(|error| failure(QuestionError::Mathematical(error.to_string())))?
             .0;
+        Self::from_parts(source, parsed.formula, encoded, parsed.nodes, parsed.depth)
+            .map_err(failure)
+    }
+
+    /// Constructs a derived question from an already available formal formula.
+    /// It enforces the same target limits and identities as source compilation;
+    /// the generated source records presentation provenance, never proof validity.
+    pub fn from_formula(formula: Formula) -> Result<Self, QuestionError> {
+        let encoded = formula
+            .encode_canonical()
+            .map_err(|e| QuestionError::Mathematical(e.to_string()))?;
+        if !formula.is_closed() {
+            return Err(QuestionError::Invalid("question has free variables"));
+        }
+        let (nodes, depth) = formula.view().node_count_and_depth();
+        let source = format!("goal = {}", formula.to_source());
+        if source.len() > QUESTION_SOURCE_MAX_BYTES {
+            return Err(QuestionError::Limit("question source bytes"));
+        }
+        Self::from_parts(&source, formula, encoded, nodes, depth)
+    }
+
+    fn from_parts(
+        source: &str,
+        formula: Formula,
+        encoded: Vec<u8>,
+        nodes: usize,
+        depth: usize,
+    ) -> Result<Self, QuestionError> {
         // 0x02 is the existing Foundation canonical NOT tag. Removing only
         // leading NOT tags preserves all internal structure and De Bruijn binders.
         let leading = encoded.iter().take_while(|&&tag| tag == 0x02).count();
-        let core_nodes = parsed.nodes - leading;
-        let core_depth = parsed.depth - leading;
+        let core_nodes = nodes - leading;
+        let core_depth = depth - leading;
         if core_nodes + 1 > QUESTION_TARGET_MAX_NODES {
-            return Err(failure(QuestionError::Limit("question target nodes")));
+            return Err(QuestionError::Limit("question target nodes"));
         }
         if core_depth + 1 > QUESTION_TARGET_MAX_DEPTH {
-            return Err(failure(QuestionError::Limit("question target depth")));
+            return Err(QuestionError::Limit("question target depth"));
         }
         let canonical_core = encoded[leading..].to_vec();
         let core =
             Formula::decode_canonical_with_node_limit(&canonical_core, QUESTION_TARGET_MAX_NODES)
-                .map_err(|error| failure(QuestionError::Mathematical(error.to_string())))?
+                .map_err(|error| QuestionError::Mathematical(error.to_string()))?
                 .0;
         let resolution_id = hash(
             b"naome:state:resolution:v1\0",
@@ -218,7 +247,7 @@ impl CompiledQuestion {
         Ok(Self {
             source: source.to_owned(),
             source_hash: hash(b"naome:state:question-source:v1\0", &[source.as_bytes()]),
-            formula: parsed.formula,
+            formula,
             negative_target: Formula::negate(core.clone()),
             core,
             canonical_core,

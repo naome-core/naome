@@ -200,14 +200,8 @@ fn exact_typed_references_are_resolved_only_by_the_caller_context() {
 }
 
 #[test]
-fn old_headers_long_spellings_and_complete_input_boundaries_fail_closed() {
+fn complete_input_and_identifier_boundaries_fail_closed() {
     for bad in [
-        format!("nao 1 {SIMPLE}"),
-        format!("nao 2 {SIMPLE}"),
-        format!("foundation=\"naome:zfc\" {SIMPLE}"),
-        SIMPLE.replace("goal=", "statement="),
-        SIMPLE.replace("eq(x,x)", "equal(x,x)"),
-        SIMPLE.replace("refl(x)", "equality_reflexivity(x)"),
         format!("{SIMPLE} {SIMPLE}"),
         format!("{SIMPLE} garbage"),
         SIMPLE.replace("return b", "return a"),
@@ -377,24 +371,4 @@ fn checker_valid_wrong_target_is_rejected_and_exact_question_orientation_matches
         compile(&wrong),
         Err(CompileError::StatementMismatch { .. })
     ));
-}
-
-#[test]
-fn source_bearing_question_codec_rejects_unsupported_source_without_translation() {
-    for unsupported in [
-        "foundation=\"naome:zfc\" statement=forall(x,equal(x,x))",
-        "nao 1 goal=all(x,eq(x,x))",
-        "statement=all(x,eq(x,x))",
-        "goal=forall(x,equal(x,x))",
-    ] {
-        let mut bytes = vec![1];
-        bytes.extend_from_slice(&(unsupported.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(unsupported.as_bytes());
-        assert!(CompiledQuestion::from_canonical_bytes(&bytes).is_err());
-    }
-    let current = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
-    assert_eq!(
-        CompiledQuestion::from_canonical_bytes(&current.to_canonical_bytes().unwrap()).unwrap(),
-        current
-    );
 }

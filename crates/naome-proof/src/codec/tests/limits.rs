@@ -21,7 +21,7 @@ fn decoder_rejects_every_truncated_golden_prefix_and_trailing_bytes() {
 }
 
 #[test]
-fn decoder_rejects_unknown_tags_and_legacy_prefixes() {
+fn decoder_rejects_unknown_tags() {
     assert_eq!(
         ProofCertificate::from_canonical_bytes(&[1]),
         Err(ProofCertificateError::UnexpectedEnd)
@@ -34,20 +34,6 @@ fn decoder_rejects_unknown_tags_and_legacy_prefixes() {
         ProofCertificate::from_canonical_bytes(&[0, 0, 0, 1, ZFC_AXIOM, 0xff,]),
         Err(ProofCertificateError::UnknownZfcAxiomTag(0xff))
     );
-    assert_eq!(
-        ProofCertificate::from_canonical_bytes(&[0, 0, 0, 0, 1, ZFC_AXIOM, 0x01]),
-        Err(ProofCertificateError::EmptyCertificate)
-    );
-}
-
-#[test]
-fn removed_envelope_prefixes_cannot_bypass_step_count_decoding() {
-    for encoded in [[0, 0, 0, 1, 0], [0, 0, 1, 0, 0]] {
-        assert_eq!(
-            ProofCertificate::from_canonical_bytes(&encoded),
-            Err(ProofCertificateError::UnexpectedEnd)
-        );
-    }
 }
 
 #[test]

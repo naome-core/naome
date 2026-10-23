@@ -139,3 +139,29 @@ impl ArtifactId {
 
 #[cfg(test)]
 mod tests;
+
+/// These address functions preserve the original Foundation framing. They only
+/// bind bytes and claims; they perform no decoding, checking or admission.
+impl StatementId {
+    pub fn of_canonical_formula(bytes: &[u8]) -> Option<Self> {
+        scoped_hash(b"naome:statement\0", &[], bytes).map(Self::from_bytes)
+    }
+}
+impl ProofId {
+    pub fn of_canonical_certificate(statement: StatementId, bytes: &[u8]) -> Option<Self> {
+        scoped_hash(b"naome:proof\0", statement.as_bytes(), bytes).map(Self::from_bytes)
+    }
+}
+fn scoped_hash(domain: &[u8], binding: &[u8], payload: &[u8]) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let length = u32::try_from(payload.len()).ok()?;
+    let mut hash = Sha256::new();
+    hash.update(domain);
+    let foundation = naome_foundation::FOUNDATION_ID.as_bytes();
+    hash.update((foundation.len() as u32).to_be_bytes());
+    hash.update(foundation);
+    hash.update(binding);
+    hash.update(length.to_be_bytes());
+    hash.update(payload);
+    Some(hash.finalize().into())
+}

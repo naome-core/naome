@@ -9,20 +9,14 @@ use libp2p::PeerId;
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::Identity;
 use naome_proof::{ProofId, StatementId};
+#[cfg(test)]
+use std::time::Duration;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::sync::oneshot;
-
-pub(crate) const MAX_QUEUED_METADATA: usize = 8;
-pub(crate) const MAX_CLOSURE_OBJECTS: usize = 128;
-pub(crate) const MAX_CLOSURE_BYTES: usize = 2 * 1024 * 1024;
-pub(crate) const MAX_CLOSURE_STEPS: usize = 4096;
-pub(crate) const MAX_CLOSURE_CHECKER_WORK_BYTES: usize =
-    MAX_CLOSURE_OBJECTS * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
-pub(crate) const ROOT_TTL: Duration = Duration::from_secs(60);
 
 mod managed;
 #[cfg(test)]
@@ -93,7 +87,7 @@ impl Intake {
             })
     }
     pub(crate) fn description_capacity(&self) -> usize {
-        MAX_QUEUED_METADATA - self.queue.len()
+        crate::resources::limits().queued_metadata - self.queue.len()
     }
     pub(crate) fn contains(&self, id: ProofId) -> bool {
         self.active
@@ -153,7 +147,7 @@ impl Intake {
         {
             return Ok("declined");
         }
-        if self.queue.len() >= MAX_QUEUED_METADATA {
+        if self.queue.len() >= crate::resources::limits().queued_metadata {
             return Err("description queue capacity".into());
         }
         self.queue.push_back(Description {
@@ -171,7 +165,8 @@ impl Intake {
             .as_ref()
             .filter(|root| {
                 matches!(root.phase, Phase::Fetch)
-                    && Instant::now().duration_since(root.description.created) < ROOT_TTL
+                    && Instant::now().duration_since(root.description.created)
+                        < crate::resources::limits().root_timeout
             })
             .map(|root| {
                 root.needed
@@ -189,7 +184,8 @@ impl Intake {
                 && matches!(root.phase, Phase::Fetch)
                 && root.initial.is_some()
                 && root.needed.contains(&id)
-                && Instant::now().duration_since(root.description.created) < ROOT_TTL
+                && Instant::now().duration_since(root.description.created)
+                    < crate::resources::limits().root_timeout
         })
     }
 
@@ -202,7 +198,9 @@ impl Intake {
         graph: &Graph,
     ) -> Result<(), String> {
         let root = self.active.as_mut().ok_or("unrequested proof payload")?;
-        if Instant::now().duration_since(root.description.created) >= ROOT_TTL {
+        if Instant::now().duration_since(root.description.created)
+            >= crate::resources::limits().root_timeout
+        {
             return Err("expired proof fetch grant".into());
         }
         if root.description.peer != peer
@@ -215,12 +213,12 @@ impl Intake {
         }
         // Reserve before certificate decoding or normal-form construction.
         let bytes = object.proof.len() / 2;
-        if object.proof.len() > 2 * crate::MAX_PROOF_BYTES
+        if object.proof.len() > 2 * crate::resources::limits().proof_bytes
             || !object.proof.len().is_multiple_of(2)
-            || root.staged.len() >= MAX_CLOSURE_OBJECTS
-            || root.bytes + bytes > MAX_CLOSURE_BYTES
+            || root.staged.len() >= crate::resources::limits().closure_objects
+            || root.bytes + bytes > crate::resources::limits().closure_bytes
             || root.checker_work + naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
-                > MAX_CLOSURE_CHECKER_WORK_BYTES
+                > crate::resources::limits().closure_work_bytes
         {
             return Err("staged closure byte or object capacity".into());
         }
@@ -232,11 +230,13 @@ impl Intake {
         )?;
         let steps =
             u32::from_be_bytes(header.try_into().map_err(|_| "certificate header")?) as usize;
-        if steps == 0 || steps > MAX_CLOSURE_STEPS - root.steps {
+        if steps == 0 || steps > crate::resources::limits().closure_steps - root.steps {
             return Err("staged closure step work limit".into());
         }
         let candidate = object.prepare()?;
-        if Instant::now().duration_since(root.description.created) >= ROOT_TTL {
+        if Instant::now().duration_since(root.description.created)
+            >= crate::resources::limits().root_timeout
+        {
             return Err("expired proof staging grant".into());
         }
         if candidate.id == root_id && candidate.statement != root.description.statement {
@@ -255,7 +255,7 @@ impl Intake {
             }
         }
         root.staged.insert(expected, candidate);
-        if root.staged.len() + root.needed.len() > MAX_CLOSURE_OBJECTS {
+        if root.staged.len() + root.needed.len() > crate::resources::limits().closure_objects {
             return Err("staged closure dependency capacity".into());
         }
         Ok(())
@@ -305,13 +305,15 @@ impl Intake {
             && questions.available()
             && let Some(description) = self.queue.pop_front()
         {
-            if Instant::now().duration_since(description.created) >= ROOT_TTL {
+            if Instant::now().duration_since(description.created)
+                >= crate::resources::limits().root_timeout
+            {
                 return Progress::Skipped(description.id, "queued root intake deadline".into());
             }
             let (question, receiver) = questions.begin_exchange(
                 graph,
                 description.question.clone(),
-                description.created + ROOT_TTL,
+                description.created + crate::resources::limits().root_timeout,
             );
             self.active = Some(ApprovedRoot {
                 description,
@@ -331,7 +333,9 @@ impl Intake {
         };
         let id = root.description.id;
         let operation = (|| -> Result<Option<Vec<ProofId>>, String> {
-            if now.duration_since(root.description.created) >= ROOT_TTL {
+            if now.duration_since(root.description.created)
+                >= crate::resources::limits().root_timeout
+            {
                 return Err("root intake deadline".into());
             }
             if matches!(root.phase, Phase::Fetch)
@@ -365,13 +369,15 @@ impl Intake {
                         &root.question,
                     )?;
                     if questions.available() {
-                        if Instant::now().duration_since(root.description.created) >= ROOT_TTL {
+                        if Instant::now().duration_since(root.description.created)
+                            >= crate::resources::limits().root_timeout
+                        {
                             return Err("root validation deadline".into());
                         }
                         let (selected, receiver) = questions.begin_exchange(
                             graph,
                             root.question.clone(),
-                            root.description.created + ROOT_TTL,
+                            root.description.created + crate::resources::limits().root_timeout,
                         );
                         if selected != root.question {
                             return Err("question provenance changed".into());
@@ -395,7 +401,9 @@ impl Intake {
                         }
                         let delta =
                             questions.prepare_exchange(graph, &root.question, &assessment)?;
-                        if Instant::now().duration_since(root.description.created) >= ROOT_TTL {
+                        if Instant::now().duration_since(root.description.created)
+                            >= crate::resources::limits().root_timeout
+                        {
                             return Err("root commit deadline".into());
                         }
                         let Phase::Final(_, batch) =
@@ -403,8 +411,11 @@ impl Intake {
                         else {
                             unreachable!()
                         };
-                        let admitted =
-                            graph.commit_batch(id, *batch, root.description.created + ROOT_TTL)?;
+                        let admitted = graph.commit_batch(
+                            id,
+                            *batch,
+                            root.description.created + crate::resources::limits().root_timeout,
+                        )?;
                         questions.apply_exchange(delta);
                         return Ok(Some(admitted));
                     }
@@ -422,7 +433,7 @@ impl Intake {
                 Progress::Waiting
             }
             Err(error) => {
-                if self.declined.len() < crate::network::MAX_FETCHES {
+                if self.declined.len() < crate::resources::limits().fetches {
                     self.declined.insert(
                         (
                             root.description.peer,
@@ -430,7 +441,11 @@ impl Intake {
                             root.description.statement,
                             *root.description.question.source_hash(),
                         ),
-                        (snapshot, policy, now + crate::PENDING_TTL),
+                        (
+                            snapshot,
+                            policy,
+                            now + crate::resources::limits().pending_retry,
+                        ),
                     );
                 }
                 Progress::Skipped(id, error)

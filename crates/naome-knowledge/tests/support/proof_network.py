@@ -42,12 +42,29 @@ def proof_id(statement, proof):
 
 
 def content_root(compatibility, ids):
-    count = len(ids)
-    domain, width = (b"naome:knowledge:set:v1\0", 4) if count <= 0xffffffff else (b"naome:knowledge:set:v2\0", 8)
-    return hashlib.sha256(
-        domain + bytes.fromhex(compatibility) + count.to_bytes(width, "big")
-        + b"".join(bytes.fromhex(i) for i in sorted(ids))
-    ).hexdigest()
+    def leaf(key):
+        return hashlib.sha256(b"naome:checked-map:leaf:v1\0" + key).digest()
+    def branch(bit, left, right):
+        return hashlib.sha256(b"naome:checked-map:branch:v1\0" + bytes([bit]) + left + right).digest()
+    pending = []
+    previous = None
+    current = bytes(32)
+    ordered = sorted(bytes.fromhex(identity) for identity in ids)
+    assert len(set(ordered)) == len(ordered)
+    for key in ordered:
+        if previous is not None:
+            difference = int.from_bytes(previous, "big") ^ int.from_bytes(key, "big")
+            bit = 256 - difference.bit_length()
+            while pending and pending[-1][0] >= bit:
+                level, left = pending.pop()
+                current = branch(level, left, current)
+            pending.append((bit, current))
+        current, previous = leaf(key), key
+    while pending:
+        bit, left = pending.pop()
+        current = branch(bit, left, current)
+    return hashlib.sha256(b"naome:knowledge:set:v3\0" + bytes.fromhex(compatibility)
+        + len(ordered).to_bytes(8, "big") + current).hexdigest()
 
 
 def source(index):
@@ -82,7 +99,7 @@ def stored_objects(node):
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as catalog:
         catalog.execute("BEGIN")
         assert catalog.execute("PRAGMA application_id").fetchone()[0] == 0x4e414f31
-        assert catalog.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert catalog.execute("PRAGMA user_version").fetchone()[0] == 5
         assert catalog.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
         assert catalog.execute("PRAGMA foreign_key_check").fetchall() == []
         assert [row[0] for row in catalog.execute(
@@ -230,6 +247,17 @@ class Node:
             self.condition.notify_all()
 
     def command(self, command, timeout=10, **fields):
+        deadline = min(self.driver.deadline, time.monotonic() + timeout)
+        while True:
+            response = self._command_once(command, deadline, fields)
+            if "error" not in response:
+                return response["result"]
+            if response.get("retryable") is not True or time.monotonic() >= deadline:
+                raise AssertionError(f"node {self.index} {command}: {response['error']}")
+            # Retry transient publication revocation under the original cutoff.
+            time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+
+    def _command_once(self, command, deadline, fields):
         self.driver.check_deadline()
         self.serial += 1
         request = f"{self.index}-{self.generation}-{self.serial}"
@@ -240,7 +268,6 @@ class Node:
                                   "sent_monotonic": time.monotonic(), "value": value}) + "\n")
         self.process.stdin.write(json.dumps(value) + "\n")
         self.process.stdin.flush()
-        deadline = time.monotonic() + timeout
         with self.condition:
             while request not in self.responses:
                 if self.process.poll() is not None:
@@ -250,9 +277,8 @@ class Node:
                     raise AssertionError(f"node {self.index} command timeout: {command}")
                 self.condition.wait(min(remaining, 0.5))
             response = self.responses.pop(request)
-        if "error" in response:
-            raise AssertionError(f"node {self.index} {command}: {response['error']}")
-        return response["result"]
+        return response
+
 
     def status_snapshot(self, timeout=10):
         """Explicit complete-ID oracle assembled from bounded keyset responses."""
@@ -627,9 +653,14 @@ class Driver:
             for node in self.nodes:
                 # Checked-context generations are disposable; audit durable files after owner shutdown.
                 node.stop()
-                assert sorted(path.name for path in node.directory.iterdir()) == ["identity.key", "knowledge.lock", "proof-corpus.format", "proof-corpus.sqlite3"]
+                assert sorted(path.name for path in node.directory.iterdir()) == [
+                    "identity.key", "knowledge.lock", "proof-corpus.format",
+                    "proof-corpus.sqlite3", "question-registry.initialized", "research"]
+                assert sorted(path.name for path in (node.directory / "research").iterdir()) == [
+                    ".disposable-questions.lock", "proof-backlog.initialized",
+                    "proof-backlog.sqlite3", "questions.sqlite3"]
                 assert len(stored_objects(node)) == len(union)
-            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive lock, immutable binary proof catalog and format receipt; no ledger, reward, balance or selection state"}
+            self.summary["scenarios"]["economy_independence"] = {"result": "pass", "storage": "identity, exclusive locks, immutable binary proof catalog, durable local question/proof queues and initialization receipts; no ledger, reward or balance state"}
             self.summary["accepted_ids"] = sorted(union)
             self.summary["content_root"] = content_root(self.summary["contract"]["compatibility"], union)
             self.summary["result"] = "pass"

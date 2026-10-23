@@ -1,24 +1,21 @@
 use super::{BatchCut, COMMIT_DEADLINE_ERROR};
-use crate::{Envelope, MAX_DEPENDENCIES, MAX_PROOF_BYTES};
+use crate::object::BinaryProof;
 use naome_proof::ProofId;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 use sha2::{Digest, Sha256};
-use std::{
-    cell::Cell,
-    collections::BTreeMap,
-    fs,
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{cell::Cell, collections::BTreeMap, fs, path::Path, time::Instant};
+
+#[cfg(test)]
+std::thread_local! { static SET_SCANS: Cell<usize> = const { Cell::new(0) }; }
+#[cfg(test)]
+pub(super) fn set_scan_count() -> usize {
+    SET_SCANS.with(Cell::get)
+}
 
 const APPLICATION_ID: i64 = 0x4e414f31;
-const SCHEMA_VERSION: i64 = 3;
-pub(super) const MAX_BATCH_OBJECTS: usize = 4096;
-const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
-const MAX_REPLAY_PAGE: usize = 64;
-const MAX_IDS_PAGE: usize = 128;
+const SCHEMA_VERSION: i64 = 5;
 const IDS_PAGE_QUERY: &str = "SELECT substr(id,1,33) FROM proofs
     WHERE id > ?1 ORDER BY id LIMIT ?2";
 
@@ -41,7 +38,7 @@ const TABLES: [(&str, &str); 5] = [
         "CREATE TABLE commits (
         id BLOB PRIMARY KEY CHECK(length(id) = 32),
         root BLOB NOT NULL CHECK(length(root) = 32),
-        member_count INTEGER NOT NULL CHECK(member_count BETWEEN 1 AND 4096),
+        member_count INTEGER NOT NULL CHECK(member_count >= 1),
         FOREIGN KEY(root) REFERENCES proofs(id) DEFERRABLE INITIALLY DEFERRED
     ) STRICT, WITHOUT ROWID",
     ),
@@ -52,7 +49,7 @@ const TABLES: [(&str, &str); 5] = [
         replay_order INTEGER NOT NULL UNIQUE CHECK(replay_order > 0),
         statement BLOB NOT NULL CHECK(length(statement) = 32),
         compatibility BLOB NOT NULL CHECK(length(compatibility) = 32),
-        payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 65536),
+        payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 4194304),
         payload_length INTEGER NOT NULL CHECK(payload_length = length(payload)),
         payload_digest BLOB NOT NULL CHECK(length(payload_digest) = 32),
         origin_commit BLOB NOT NULL CHECK(length(origin_commit) = 32),
@@ -63,7 +60,7 @@ const TABLES: [(&str, &str); 5] = [
         "dependencies",
         "CREATE TABLE dependencies (
         proof_id BLOB NOT NULL CHECK(length(proof_id) = 32),
-        ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 0 AND 31),
+        ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 0 AND 65535),
         target BLOB NOT NULL CHECK(length(target) = 32),
         PRIMARY KEY(proof_id, ordinal),
         UNIQUE(proof_id, target),
@@ -103,6 +100,14 @@ const INDEXES: [(&str, &str); 3] = [
 
 /// One connection, serialized by the enclosing Store mutex and directory lock.
 /// Stored syntax and hashes never establish mathematical proof validity.
+pub(super) struct Commit<'a> {
+    pub expected: Summary,
+    pub deadline: Option<Instant>,
+    pub cut: Option<BatchCut>,
+    pub next_root: Option<[u8; 32]>,
+    pub guard: Option<&'a crate::graph::CommitGuard>,
+}
+
 pub(super) struct Catalog {
     connection: Connection,
     database_id: [u8; 32],
@@ -216,8 +221,8 @@ impl Catalog {
         &self,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<(u64, Envelope)>, String> {
-        page_limit(limit, MAX_REPLAY_PAGE)?;
+    ) -> Result<Vec<(u64, BinaryProof)>, String> {
+        page_limit(limit, crate::resources::limits().replay_page)?;
         let after_sql = i64::try_from(after).map_err(|_| "catalog replay cursor width")?;
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         let meta = read_meta(&transaction, Some(self.database_id))?;
@@ -259,7 +264,7 @@ impl Catalog {
             if record.replay_order != ordinal {
                 return Err("catalog replay proof order differs".into());
             }
-            objects.push((ordinal, record.envelope));
+            objects.push((ordinal, record.object));
         }
         transaction.commit().map_err(sql_error)?;
         Ok(objects)
@@ -271,7 +276,7 @@ impl Catalog {
         limit: usize,
         expected: Summary,
     ) -> Result<Vec<ProofId>, String> {
-        page_limit(limit, MAX_IDS_PAGE)?;
+        page_limit(limit, crate::resources::limits().id_page)?;
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
@@ -300,17 +305,22 @@ impl Catalog {
         Ok(ids)
     }
 
-    pub(super) fn get(&self, id: ProofId, expected: Summary) -> Result<Option<Envelope>, String> {
+    pub(super) fn get(
+        &self,
+        id: ProofId,
+        expected: Summary,
+    ) -> Result<Option<BinaryProof>, String> {
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
         let record = read_record(&transaction, *id.as_bytes())?;
         transaction.commit().map_err(sql_error)?;
-        Ok(record.map(|record| record.envelope))
+        Ok(record.map(|record| record.object))
     }
 
     pub(super) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, String> {
-        // A corrupt record is an error even when the caller only needs presence.
+        // Preserve payload, digest, content-address and relation checks without
+        // allocating hex or materializing a certificate for a membership query.
         self.get(id, expected).map(|object| object.is_some())
     }
 
@@ -338,11 +348,16 @@ impl Catalog {
     pub(super) fn persist(
         &self,
         root: ProofId,
-        objects: &[&Envelope],
-        expected: Summary,
-        deadline: Option<Instant>,
-        cut: Option<BatchCut>,
+        objects: &[&BinaryProof],
+        commit: Commit<'_>,
     ) -> Result<Summary, String> {
+        let Commit {
+            expected,
+            deadline,
+            cut,
+            next_root,
+            guard,
+        } = commit;
         let prepared = prepare(objects.iter().copied())?;
         let root = *root.as_bytes();
         let commit = commit_digest(root, prepared.values().map(|object| &object.member))?;
@@ -357,7 +372,7 @@ impl Catalog {
         let inserted = insert_commit(&transaction, commit, root, &prepared, meta.count, cut)?;
         let summary = if inserted {
             verify_commit(&transaction, commit, root, &prepared)?;
-            commit_summary(&transaction, expected, &prepared)?
+            commit_summary(&transaction, expected, &prepared, next_root)?
         } else {
             expected
         };
@@ -365,6 +380,12 @@ impl Catalog {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             transaction.rollback().map_err(sql_error)?;
             return Err(COMMIT_DEADLINE_ERROR.into());
+        }
+        if let Some(guard) = guard
+            && let Err(error) = guard.check()
+        {
+            transaction.rollback().map_err(sql_error)?;
+            return Err(error);
         }
         transaction.commit().map_err(sql_error)?;
         // A failure here is ambiguous durability. The Graph must halt and a
@@ -492,24 +513,24 @@ struct Record {
     member: Member,
     origin: [u8; 32],
     replay_order: u64,
-    envelope: Envelope,
+    object: BinaryProof,
 }
 
 fn prepare<'a>(
-    objects: impl Iterator<Item = &'a Envelope>,
+    objects: impl Iterator<Item = &'a BinaryProof>,
 ) -> Result<BTreeMap<[u8; 32], Prepared>, String> {
     let mut prepared = BTreeMap::new();
     let mut bytes = 0usize;
     for object in objects {
-        if prepared.len() >= MAX_BATCH_OBJECTS {
+        if prepared.len() >= crate::resources::limits().batch_objects {
             return Err("catalog batch object count limit".into());
         }
-        let candidate = object.clone().prepare()?;
-        let payload = candidate.normal.canonical_bytes().to_vec();
+        let candidate = object;
+        let payload = candidate.bytes.to_vec();
         bytes = bytes
             .checked_add(payload.len())
             .ok_or("catalog batch byte overflow")?;
-        if bytes > MAX_BATCH_BYTES {
+        if bytes > crate::resources::limits().batch_bytes {
             return Err("catalog batch byte capacity".into());
         }
         let id = *candidate.id.as_bytes();
@@ -578,26 +599,34 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
     )
     .map_err(sql_error)?;
     connection
-        .busy_timeout(Duration::from_millis(100))
+        .busy_timeout(crate::resources::limits().sqlite_busy_timeout)
         .map_err(sql_error)?;
     Ok(connection)
 }
 
 fn configure(connection: &Connection) -> Result<(), String> {
     connection
-        .busy_timeout(Duration::from_millis(100))
+        .busy_timeout(crate::resources::limits().sqlite_busy_timeout)
         .map_err(sql_error)?;
     connection
         .execute_batch(
             "PRAGMA journal_mode = DELETE;
          PRAGMA synchronous = EXTRA;
          PRAGMA foreign_keys = ON;
-         PRAGMA cache_size = -8192;
+
          PRAGMA temp_store = FILE;
          PRAGMA mmap_size = 0;
          PRAGMA trusted_schema = OFF;",
         )
         .map_err(sql_error)?;
+    connection
+        .pragma_update(
+            None,
+            "cache_size",
+            -(i64::try_from((crate::resources::limits().catalog_cache_bytes / 1024).max(1))
+                .map_err(|_| "SQLite cache width")?),
+        )
+        .map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     connection
         .pragma_update(None, "fullfsync", true)
@@ -670,7 +699,7 @@ fn verify_schema(connection: &Connection) -> Result<(), String> {
         }
         .ok_or("unexpected catalog schema object")?;
         if sql.len() > 8192 || normalize_sql(&sql) != normalize_sql(expected.1) {
-            return Err("catalog schema differs from version 3".into());
+            return Err("catalog schema differs from current version".into());
         }
         found += 1;
     }
@@ -687,11 +716,17 @@ fn verify_schema(connection: &Connection) -> Result<(), String> {
 }
 
 fn normalize_sql(sql: &str) -> String {
-    sql.trim()
-        .trim_end_matches(';')
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut sql = sql.to_owned();
+    // ALTER TABLE quotes only these exact known table identifiers. Do not
+    // remove arbitrary quotes from expressions or relax supported constraints.
+    for (name, _) in &TABLES {
+        sql = sql.replace(&format!("TABLE \"{name}\""), &format!("TABLE {name}"));
+        sql = sql.replace(
+            &format!("REFERENCES \"{name}\""),
+            &format!("REFERENCES {name}"),
+        );
+    }
+    sql.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn read_meta(connection: &Connection, expected_id: Option<[u8; 32]>) -> Result<Meta, String> {
@@ -796,7 +831,7 @@ fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, 
     let stored: Option<Stored> = {
         let mut statement = connection
             .prepare_cached(
-                "SELECT substr(statement,1,33), substr(compatibility,1,33), substr(payload,1,65537),
+                "SELECT substr(statement,1,33), substr(compatibility,1,33), substr(payload,1,4194305),
                 payload_length, substr(payload_digest,1,33), substr(origin_commit,1,33), replay_order
          FROM proofs WHERE id = ?1",
             )
@@ -825,27 +860,36 @@ fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, 
     let origin = key(origin)?;
     let replay_order = replay_ordinal(ordinal)?;
     if payload.is_empty()
-        || payload.len() > MAX_PROOF_BYTES
+        || payload.len() > crate::resources::limits().proof_bytes
         || usize::try_from(length).ok() != Some(payload.len())
         || <[u8; 32]>::from(Sha256::digest(&payload)) != digest
     {
         return Err("catalog payload length or digest differs".into());
     }
-    let envelope = Envelope {
-        compatibility: crate::hex(&compatibility),
-        proof_id: crate::hex(&id),
-        statement_id: crate::hex(&statement),
-        proof: crate::hex(&payload),
-    };
-    let candidate = envelope.prepare()?;
-    let dependencies = read_dependencies(connection, id)?;
-    if !dependencies
-        .iter()
-        .copied()
-        .eq(candidate.dependencies.iter().map(|id| *id.as_bytes()))
+    if compatibility != crate::compatibility()
+        || crate::object::content_id(naome_proof::StatementId::from_bytes(statement), &payload)
+            .as_bytes()
+            != &id
     {
-        return Err("catalog dependency metadata differs from canonical proof".into());
+        return Err("catalog canonical proof identity differs".into());
     }
+    let dependencies = read_dependencies(connection, id)?;
+    let object = BinaryProof {
+        id: ProofId::from_bytes(id),
+        statement: naome_proof::StatementId::from_bytes(statement),
+        bytes: payload.clone().into(),
+        _memory: Some(crate::resources::MemoryLease::acquire(
+            payload
+                .len()
+                .checked_mul(4)
+                .ok_or("proof memory overflow")?,
+        )?),
+        dependencies: dependencies
+            .iter()
+            .copied()
+            .map(ProofId::from_bytes)
+            .collect(),
+    };
     let member_origin: Option<Vec<u8>> = {
         let mut statement = connection
             .prepare_cached("SELECT substr(commit_id,1,33) FROM members WHERE proof_id = ?1")
@@ -894,7 +938,7 @@ fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, 
         },
         origin,
         replay_order,
-        envelope: candidate.envelope,
+        object,
     }))
 }
 
@@ -971,11 +1015,13 @@ fn verify_summary_fields(
 }
 
 fn corpus_summary(connection: &Connection) -> Result<Summary, String> {
+    #[cfg(test)]
+    SET_SCANS.with(|count| count.set(count.get() + 1));
     let (count, bytes, invalid): (i64, i64, i64) = connection
         .query_row(
             "SELECT count(*), coalesce(sum(payload_length), 0),
             coalesce(sum(CASE WHEN payload_length != length(payload)
-                OR length(payload) NOT BETWEEN 1 AND 65536 THEN 1 ELSE 0 END), 0) FROM proofs",
+                OR length(payload) NOT BETWEEN 1 AND 4194304 THEN 1 ELSE 0 END), 0) FROM proofs",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -985,47 +1031,25 @@ fn corpus_summary(connection: &Connection) -> Result<Summary, String> {
     if invalid != 0 {
         return Err("catalog payload width differs".into());
     }
-    let root = inventory_root(
-        connection,
-        "SELECT substr(id,1,33) FROM proofs ORDER BY id",
-        count,
-    )?;
-    Ok(Summary { root, count, bytes })
-}
-
-fn inventory_root(connection: &Connection, query: &str, count: usize) -> Result<[u8; 32], String> {
-    let mut hash = crate::corpus::start_root_hash(count)?;
-    let mut statement = connection.prepare(query).map_err(sql_error)?;
+    let mut fingerprint = naome_checker::context::ProofSetFingerprint::default();
+    let mut statement = connection
+        .prepare("SELECT substr(id,1,33) FROM proofs ORDER BY id")
+        .map_err(sql_error)?;
     let mut rows = statement.query([]).map_err(sql_error)?;
-    let mut observed = 0usize;
-    let mut previous = None;
     while let Some(row) = rows.next().map_err(sql_error)? {
-        let id: [u8; 32] = row
-            .get_ref(0)
-            .map_err(sql_error)?
-            .as_blob()
-            .map_err(|_| "catalog identity type")?
-            .try_into()
-            .map_err(|_| "catalog identity width")?;
-        if previous.is_some_and(|previous| previous >= id) {
-            return Err("catalog root ordering differs".into());
-        }
-        hash.update(id);
-        previous = Some(id);
-        observed = observed
-            .checked_add(1)
-            .ok_or("catalog root count overflow")?;
+        fingerprint
+            .push(ProofId::from_bytes(key(row.get(0).map_err(sql_error)?)?))
+            .map_err(|e| e.to_string())?;
     }
-    if observed != count {
-        return Err("catalog root traversal count differs".into());
-    }
-    Ok(hash.finalize().into())
+    let root = crate::corpus::root(count, fingerprint.finish())?;
+    Ok(Summary { root, count, bytes })
 }
 
 fn commit_summary(
     connection: &Connection,
     preceding: Summary,
     objects: &BTreeMap<[u8; 32], Prepared>,
+    next_root: Option<[u8; 32]>,
 ) -> Result<Summary, String> {
     let count = preceding
         .count
@@ -1038,14 +1062,15 @@ fn commit_summary(
                 .checked_add(object.member.length)
                 .ok_or("catalog byte overflow")
         })?;
-    // The validated generation has one immutable member per proof. Its unique
-    // proof_id index covers this traversal without reading canonical payloads.
-    // The public set:v1 count and sorted-ID hash are unchanged.
-    let root = inventory_root(
-        connection,
-        "SELECT substr(proof_id,1,33) FROM members ORDER BY proof_id",
-        count,
-    )?;
+    let root = match next_root {
+        Some(root) => root,
+        // Envelope fixtures deliberately bypass mathematical checking. Only
+        // tests may reconstruct a proposed set root from stored syntax.
+        #[cfg(test)]
+        None => corpus_summary(connection)?.root,
+        #[cfg(not(test))]
+        None => return Err("checked successor fingerprint missing".into()),
+    };
     let summary = Summary { root, count, bytes };
     let changed = connection.execute(
         "UPDATE meta SET corpus_root = ?1, corpus_count = ?2, payload_bytes = ?3 WHERE singleton = 1",
@@ -1167,7 +1192,7 @@ fn verify_proof(
     let record =
         read_record(connection, expected.member.id)?.ok_or("catalog commit proof missing")?;
     if record.member != expected.member
-        || record.envelope.proof != crate::hex(&expected.payload)
+        || record.object.bytes.as_ref() != expected.payload.as_slice()
         || record.origin != commit
     {
         return Err("immutable catalog proof collision or corruption".into());
@@ -1184,7 +1209,7 @@ fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 3
     while let Some(row) = rows.next().map_err(sql_error)? {
         let ordinal: i64 = row.get(0).map_err(sql_error)?;
         let target = key(row.get(1).map_err(sql_error)?)?;
-        if dependencies.len() >= MAX_DEPENDENCIES
+        if dependencies.len() >= crate::resources::limits().proof_dependencies
             || usize::try_from(ordinal).ok() != Some(dependencies.len())
             || dependencies
                 .last()
@@ -1209,7 +1234,7 @@ fn read_members(connection: &Connection, commit: [u8; 32]) -> Result<Vec<[u8; 32
     let mut members = Vec::new();
     while let Some(row) = rows.next().map_err(sql_error)? {
         let id = key(row.get(0).map_err(sql_error)?)?;
-        if members.len() >= MAX_BATCH_OBJECTS
+        if members.len() >= crate::resources::limits().batch_objects
             || members.last().is_some_and(|previous| *previous >= id)
         {
             return Err("catalog membership ordering or count differs".into());
@@ -1235,6 +1260,7 @@ fn verify_commits(connection: &Connection) -> Result<(), String> {
         let mut bound = Vec::with_capacity(members.len());
         for member in members {
             let record = read_record(connection, member)?.ok_or("missing catalog commit proof")?;
+            record.object.clone().prepare()?;
             if record.origin != id {
                 return Err("catalog proof belongs to a different originating commit".into());
             }
@@ -1253,7 +1279,7 @@ fn commit_digest<'a>(
 ) -> Result<[u8; 32], String> {
     let members: Vec<_> = members.collect();
     if members.is_empty()
-        || members.len() > MAX_BATCH_OBJECTS
+        || members.len() > crate::resources::limits().batch_objects
         || !members.iter().any(|member| member.id == root)
     {
         return Err("invalid catalog commit membership".into());
@@ -1276,15 +1302,15 @@ fn commit_digest<'a>(
         hash.update(member.statement);
         hash.update(member.compatibility);
         if member.length == 0
-            || member.length > MAX_PROOF_BYTES
-            || member.dependencies.len() > MAX_DEPENDENCIES
+            || member.length > crate::resources::limits().proof_bytes
+            || member.dependencies.len() > crate::resources::limits().proof_dependencies
         {
             return Err("catalog commit member width differs".into());
         }
         bytes = bytes
             .checked_add(member.length)
             .ok_or("catalog batch byte overflow")?;
-        if bytes > MAX_BATCH_BYTES {
+        if bytes > crate::resources::limits().batch_bytes {
             return Err("catalog batch byte capacity".into());
         }
         hash.update(
@@ -1385,98 +1411,4 @@ fn fail_at(cut: Option<BatchCut>, position: BatchCut) -> Result<(), String> {
 
 fn sql_error(error: rusqlite::Error) -> String {
     format!("proof catalog: {error}")
-}
-
-#[cfg(test)]
-mod inventory_root_tests {
-    use super::*;
-
-    #[test]
-    fn root_matches_existing_set_v1_frame_and_empty_root() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute("CREATE TABLE ids (id BLOB)", [])
-            .unwrap();
-        for id in [[2u8; 32], [1u8; 32]] {
-            connection
-                .execute("INSERT INTO ids VALUES (?1)", params![id.as_slice()])
-                .unwrap();
-        }
-        let mut expected = Sha256::new();
-        expected.update(b"naome:knowledge:set:v1\0");
-        expected.update(crate::compatibility());
-        expected.update(2u32.to_be_bytes());
-        expected.update([1u8; 32]);
-        expected.update([2u8; 32]);
-        let expected: [u8; 32] = expected.finalize().into();
-        assert_eq!(
-            inventory_root(&connection, "SELECT id FROM ids ORDER BY id", 2).unwrap(),
-            expected
-        );
-        let empty: [u8; 32] = crate::corpus::start_root_hash(0).unwrap().finalize().into();
-        assert_eq!(
-            inventory_root(&connection, "SELECT id FROM ids WHERE 0", 0).unwrap(),
-            empty
-        );
-    }
-
-    #[test]
-    fn root_rejects_non_blob_values() {
-        let connection = Connection::open_in_memory().unwrap();
-        for query in ["SELECT NULL", "SELECT 1", "SELECT 1.5", "SELECT 'proof'"] {
-            assert_eq!(
-                inventory_root(&connection, query, 1).unwrap_err(),
-                "catalog identity type"
-            );
-        }
-    }
-
-    #[test]
-    fn root_rejects_short_and_overwide_blob_values() {
-        let connection = Connection::open_in_memory().unwrap();
-        for width in [0, 31, 33] {
-            let query = format!("SELECT zeroblob({width})");
-            assert_eq!(
-                inventory_root(&connection, &query, 1).unwrap_err(),
-                "catalog identity width"
-            );
-        }
-    }
-
-    #[test]
-    fn root_rejects_descending_and_duplicate_ids() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute("CREATE TABLE ids (seq INTEGER PRIMARY KEY, id BLOB)", [])
-            .unwrap();
-        for id in [[2u8; 32], [1u8; 32]] {
-            connection
-                .execute("INSERT INTO ids(id) VALUES (?1)", params![id.as_slice()])
-                .unwrap();
-        }
-        for query in [
-            "SELECT id FROM ids ORDER BY seq",
-            "SELECT zeroblob(32) UNION ALL SELECT zeroblob(32)",
-        ] {
-            assert_eq!(
-                inventory_root(&connection, query, 2).unwrap_err(),
-                "catalog root ordering differs"
-            );
-        }
-    }
-
-    #[test]
-    fn root_rejects_observed_count_mismatches() {
-        let connection = Connection::open_in_memory().unwrap();
-        for (query, count) in [
-            ("SELECT zeroblob(32) WHERE 0", 1usize),
-            ("SELECT zeroblob(32)", 0usize),
-            ("SELECT zeroblob(32)", 2usize),
-        ] {
-            assert_eq!(
-                inventory_root(&connection, query, count).unwrap_err(),
-                "catalog root traversal count differs"
-            );
-        }
-    }
 }

@@ -11,18 +11,14 @@ use libp2p::{
 };
 use serde::Deserialize;
 use serde_json::json;
+#[cfg(test)]
+use std::time::Duration;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
-
-pub const MAX_CIRCUITS: usize = 16;
-pub const MAX_RESERVATIONS: usize = 16;
-pub const MAX_SOURCE_CIRCUITS: usize = 4;
-pub const MAX_CIRCUIT_BYTES: u64 = 8 * 1024 * 1024;
-pub const CIRCUIT_DURATION: Duration = Duration::from_secs(120);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,16 +40,20 @@ struct Behaviour {
 fn rate_limiter() -> Box<dyn relay::RateLimiter> {
     // The default library limiter retains one bucket per historical identity.
     // Use an explicit count and short finite window for this bounded service.
-    let buckets = Arc::new(Mutex::new(BTreeMap::<PeerId, (Instant, u8)>::new()));
+    let buckets = Arc::new(Mutex::new(BTreeMap::<PeerId, (Instant, usize)>::new()));
     Box::new(move |peer, _: &Multiaddr, now: Instant| {
         let mut buckets = buckets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        buckets.retain(|_, (since, _)| now.duration_since(*since) < Duration::from_secs(2));
-        if buckets.len() >= discovery::MAX_CONTACTS && !buckets.contains_key(&peer) {
+        buckets.retain(|_, (since, _)| {
+            now.duration_since(*since) < crate::resources::limits().relay_rate_window
+        });
+        if buckets.len() >= crate::resources::limits().contacts && !buckets.contains_key(&peer) {
             return false;
         }
-        let (_, tokens) = buckets.entry(peer).or_insert((now, 4));
+        let (_, tokens) = buckets
+            .entry(peer)
+            .or_insert((now, crate::resources::limits().relay_request_burst));
         if *tokens == 0 {
             return false;
         }
@@ -65,7 +65,7 @@ fn rate_limiter() -> Box<dyn relay::RateLimiter> {
 pub async fn run(path: &Path) -> Result<(), String> {
     let mut config: Config = serde_json::from_slice(&crate::store::read_bounded(
         path,
-        network::MAX_CONFIG_BYTES,
+        crate::resources::limits().network_config_bytes,
     )?)
     .map_err(|error| error.to_string())?;
     if config.directory.is_relative() {
@@ -81,7 +81,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
     )?)
     .map_err(|error| error.to_string())?;
     let own = key.public().to_peer_id();
-    if config.external_addresses.len() > discovery::MAX_ADDRESSES {
+    if config.external_addresses.len() > crate::resources::limits().addresses_per_contact {
         return Err("relay advertised address capacity".into());
     }
     let listen: Multiaddr = config
@@ -105,24 +105,24 @@ pub async fn run(path: &Path) -> Result<(), String> {
     }
     let limits = connection_limits::Behaviour::new(
         connection_limits::ConnectionLimits::default()
-            .with_max_pending_incoming(Some(16))
-            .with_max_pending_outgoing(Some(16))
-            .with_max_established(Some(32))
-            .with_max_established_per_peer(Some(2)),
+            .with_max_pending_incoming(Some(crate::resources::limits().pending_connections))
+            .with_max_pending_outgoing(Some(crate::resources::limits().pending_connections))
+            .with_max_established(Some(crate::resources::limits().established_connections))
+            .with_max_established_per_peer(Some(crate::resources::limits().connections_per_peer)),
     );
     let relay = relay::Behaviour::new(
         own,
         relay::Config {
-            max_reservations: MAX_RESERVATIONS,
-            max_reservations_per_peer: 1,
-            reservation_duration: CIRCUIT_DURATION,
+            max_reservations: crate::resources::limits().relay_reservations,
+            max_reservations_per_peer: crate::resources::limits().relay_reservations_per_peer,
+            reservation_duration: crate::resources::limits().relay_circuit_duration,
             reservation_rate_limiters: vec![rate_limiter()],
-            max_circuits: MAX_CIRCUITS,
+            max_circuits: crate::resources::limits().relay_circuits,
             // The local dependency patch uses inclusive pre-insertion limits.
             // Destination-only circuits retain the global circuit bound.
-            max_circuits_per_peer: MAX_SOURCE_CIRCUITS,
-            max_circuit_duration: CIRCUIT_DURATION,
-            max_circuit_bytes: MAX_CIRCUIT_BYTES,
+            max_circuits_per_peer: crate::resources::limits().relay_circuits_per_peer,
+            max_circuit_duration: crate::resources::limits().relay_circuit_duration,
+            max_circuit_bytes: crate::resources::limits().relay_circuit_bytes,
             circuit_src_rate_limiters: vec![rate_limiter()],
         },
     );
@@ -145,10 +145,10 @@ pub async fn run(path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .with_swarm_config(|config| {
             config
-                .with_idle_connection_timeout(Duration::from_secs(60))
-                .with_max_negotiating_inbound_streams(16)
+                .with_idle_connection_timeout(crate::resources::limits().idle_connection_timeout)
+                .with_max_negotiating_inbound_streams(crate::resources::limits().inbound_streams)
         })
-        .with_connection_timeout(network::REQUEST_TIMEOUT)
+        .with_connection_timeout(crate::resources::limits().request_timeout)
         .build();
     swarm.listen_on(listen).map_err(|error| error.to_string())?;
     let use_listen_addresses = config.external_addresses.is_empty();
@@ -162,7 +162,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
         advertised.insert(address);
     }
     let mut state = discovery::State::new(book.clone(), settings, true);
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     network::emit(
         json!({"event":"relay_starting", "peer_id":own.to_string(), "compatibility":crate::hex(&crate::compatibility())}),
@@ -177,7 +177,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                     // Relay-v2 reservations must contain at least one relay
                     // endpoint. For local operation advertise bounded concrete
                     // listeners; public mappings use explicit operator hints.
-                    if use_listen_addresses && advertised.len() < discovery::MAX_ADDRESSES
+                    if use_listen_addresses && advertised.len() < crate::resources::limits().addresses_per_contact
                         && discovery::routing_address(&address, own, &BTreeSet::new()).is_ok()
                         && advertised.insert(address.clone()) {
                         swarm.add_external_address(address.clone());
@@ -228,7 +228,7 @@ pub async fn run(path: &Path) -> Result<(), String> {
                     network::emit(json!({"event":"contact_expired", "peer":peer.to_string()}));
                 }
                 let unidentified: Vec<_> = book.lock().contacts.iter().filter_map(|(peer, contact)| {
-                    (contact.connected && !contact.compatible && contact.connected_at.is_some_and(|since| since.elapsed() >= discovery::IDENTIFY_TIMEOUT)).then_some(*peer)
+                    (contact.connected && !contact.compatible && contact.connected_at.is_some_and(|since| since.elapsed() >= crate::resources::limits().identify_timeout)).then_some(*peer)
                 }).collect();
                 for peer in unidentified { let _ = swarm.disconnect_peer_id(peer); }
             },
@@ -254,7 +254,7 @@ mod tests {
             assert!(limiter.try_next(first, &address, now));
         }
         assert!(!limiter.try_next(first, &address, now));
-        for _ in 1..discovery::MAX_CONTACTS {
+        for _ in 1..crate::resources::limits().contacts {
             assert!(limiter.try_next(peer(), &address, now));
         }
         let extra = peer();

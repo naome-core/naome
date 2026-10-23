@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use std::error::Error;
 use std::fmt;
 
-use super::{Formula, FreeVariable, Node, Variable};
+use super::{Formula, FormulaView, FreeVariable, Node, Variable};
 
 /// Maximum encoded byte length admitted by the formula codec.
 ///
@@ -34,7 +34,65 @@ const FOR_ALL: u8 = 0x04;
 const FREE_VARIABLE: u8 = 0x00;
 const BOUND_VARIABLE: u8 = 0x01;
 
+/// One encoding shared by all outer implication-spine projections. Suffixes
+/// retain the original canonical bytes; hashing them keeps existing identities.
+pub struct CanonicalImplication {
+    bytes: Vec<u8>,
+    antecedent_end: usize,
+    consequents: Vec<usize>,
+}
+impl CanonicalImplication {
+    pub fn antecedent(&self) -> &[u8] {
+        &self.bytes[1..self.antecedent_end]
+    }
+    pub fn consequents(&self) -> impl Iterator<Item = &[u8]> {
+        self.consequents.iter().map(|start| &self.bytes[*start..])
+    }
+}
+
+impl FormulaView<'_> {
+    pub fn encode_canonical(self) -> Result<Vec<u8>, FormulaCodecError> {
+        let mut output = Vec::new();
+        encode_node(
+            self.0,
+            0,
+            &mut NodeBudget::new(FORMULA_MAX_NODES),
+            &mut FreeVariableEncoding::Preserve,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+}
+
 impl Formula {
+    /// Encodes an implication once and exposes its borrowed canonical ranges.
+    pub fn canonical_implication(&self) -> Result<Option<CanonicalImplication>, FormulaCodecError> {
+        let Node::Implies(_, _) = &self.0 else {
+            return Ok(None);
+        };
+        let bytes = self.encode_canonical()?;
+        fn width(node: &Node) -> usize {
+            match node {
+                Node::Equal(..) | Node::Member(..) => 11,
+                Node::Not(body) | Node::ForAll(body) => 1 + width(body),
+                Node::Implies(left, right) => 1 + width(left) + width(right),
+            }
+        }
+        let mut current = &self.0;
+        let mut offset = 0;
+        let mut consequents = Vec::new();
+        while let Node::Implies(left, right) = current {
+            offset += 1 + width(left);
+            consequents.push(offset);
+            current = right;
+        }
+        Ok(Some(CanonicalImplication {
+            antecedent_end: consequents[0],
+            bytes,
+            consequents,
+        }))
+    }
+
     /// Encodes this formula using the canonical Proof Certificate format.
     ///
     /// Binder names are absent from the encoding. Bound variables retain the

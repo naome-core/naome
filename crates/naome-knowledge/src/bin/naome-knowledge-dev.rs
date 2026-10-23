@@ -1,8 +1,5 @@
 use libp2p::identity;
-use naome_knowledge::{
-    CHECKED_CACHE_BYTES, CHECKER_ID, CODEC_ID, GRAPH_POLICY_ID, MAX_DEPENDENCIES, MAX_DEPTH,
-    MAX_PENDING, MAX_PROOF_BYTES, PENDING_TTL, compatibility, hex, network,
-};
+use naome_knowledge::{CHECKER_ID, CODEC_ID, GRAPH_POLICY_ID, compatibility, hex, network};
 use serde_json::json;
 use std::{
     fs::{self, OpenOptions},
@@ -12,6 +9,10 @@ use std::{
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    if let Err(error) = naome_knowledge::resources::initialize_from_environment() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
     if let Err(error) = execute().await {
         eprintln!("{error}");
         std::process::exit(1);
@@ -45,16 +46,16 @@ async fn execute() -> Result<(), String> {
         ["contract"] => {
             println!("{}",json!({"foundation":naome_foundation::FOUNDATION_ID, "codec":CODEC_ID, "checker":CHECKER_ID,
                 "policy":GRAPH_POLICY_ID,"compatibility":hex(&compatibility()),"routing":network::routing_contract(),"limits":{
-                    "proof_bytes":MAX_PROOF_BYTES,"dependencies":MAX_DEPENDENCIES,"depth":MAX_DEPTH,
-                    "pending":MAX_PENDING,"dependency_timeout_seconds":PENDING_TTL.as_secs(),
-                    "checked_cache_bytes":CHECKED_CACHE_BYTES,
-                    "inventory_page_ids":network::MAX_INVENTORY_PAGE_IDS,
-                    "status_page_ids":network::MAX_STATUS_PAGE_IDS,
-                    "config_bytes":network::MAX_CONFIG_BYTES,
-                    "command_bytes":network::MAX_COMMAND_BYTES,
-                    "peers":network::MAX_PEERS,"fetches":network::MAX_FETCHES,"inflight_requests":network::MAX_FLIGHTS,
-                    "inflight_requests_per_peer":network::MAX_FLIGHTS_PER_PEER,
-                    "request_timeout_seconds":network::REQUEST_TIMEOUT.as_secs(),"reconcile_seconds":network::RECONCILE_INTERVAL.as_secs()}}));
+                    "proof_bytes":naome_knowledge::resources::limits().proof_bytes,"dependencies":naome_knowledge::resources::limits().proof_dependencies,"dependency_depth":"derived; no configured ceiling",
+                    "pending":naome_knowledge::resources::limits().pending_page,"dependency_timeout_seconds":naome_knowledge::resources::limits().pending_retry.as_secs(),
+                    "checked_cache_bytes":naome_knowledge::resources::limits().checked_cache_bytes,
+                    "inventory_page_ids":naome_knowledge::resources::limits().inventory_page,
+                    "status_page_ids":naome_knowledge::resources::limits().status_page,
+                    "config_bytes":naome_knowledge::resources::limits().network_config_bytes,
+                    "command_bytes":naome_knowledge::resources::limits().command_bytes,
+                    "peers":naome_knowledge::resources::limits().configured_peers,"fetches":naome_knowledge::resources::limits().fetches,"inflight_requests":naome_knowledge::resources::limits().flights,
+                    "inflight_requests_per_peer":naome_knowledge::resources::limits().flights_per_peer,
+                    "request_timeout_seconds":naome_knowledge::resources::limits().request_timeout.as_secs(),"reconcile_seconds":naome_knowledge::resources::limits().reconcile_interval.as_secs()}}));
             Ok(())
         },
         _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] [--question-interest all | --question-interest-file <questions.json>] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status (optional after ProofId; ids, next_after, accepted_proofs), produce, ingest, object, describe, links, announce, offer, stop\npeer proof exchange requires an explicit positive question interest selector".into()),
@@ -84,7 +85,9 @@ fn interest_options(
                 }
                 let selected: Selected = serde_json::from_slice(&read_interest(Path::new(file))?)
                     .map_err(|error| error.to_string())?;
-                if selected.questions.len() > 128 {
+                if selected.questions.len()
+                    > naome_knowledge::resources::limits().developer_questions
+                {
                     return Err("question interest count limit".into());
                 }
                 let questions = selected
@@ -120,10 +123,10 @@ fn read_interest(path: &Path) -> Result<Vec<u8>, String> {
     {
         return Err("expected regular question interest file".into());
     }
-    file.take(65_537)
+    file.take(naome_knowledge::resources::limits().producer_bytes as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
-    if bytes.len() > 65_536 {
+    if bytes.len() > naome_knowledge::resources::limits().producer_bytes {
         return Err("question interest file byte limit".into());
     }
     Ok(bytes)
