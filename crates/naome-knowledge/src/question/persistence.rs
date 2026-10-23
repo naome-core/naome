@@ -562,14 +562,7 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
                 .source(),
             first.source()
         );
-        let peak = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
-            .unwrap()
-            .max_rss() as u64;
-        let peak = if cfg!(target_os = "linux") {
-            peak * 1024
-        } else {
-            peak
-        };
+        let peak = crate::checkpoint::tests::image_peak_rss_bytes();
         assert!(peak < 192 * 1024 * 1024, "isolated question RSS: {peak}");
         println!(
             "QUESTION_HISTORY_METRICS {}",

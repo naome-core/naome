@@ -20,6 +20,77 @@ impl Drop for Directory {
     }
 }
 
+// Linux getrusage preserves pre-exec statistics from the launcher. VmHWM is
+// scoped to the current memory image, so parallel parent tests cannot inflate
+// the isolated history comparison. Missing measurements fail the test.
+pub(crate) fn image_peak_rss_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        let status = fs::read_to_string("/proc/self/status").unwrap();
+        let mut fields = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .expect("current-image RSS high-water mark")
+            .split_whitespace();
+        let kib: u64 = fields.next().unwrap().parse().unwrap();
+        assert_eq!(fields.next(), Some("kB"));
+        assert_eq!(fields.next(), None);
+        kib.checked_mul(1024).unwrap()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        u64::try_from(
+            nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
+                .unwrap()
+                .max_rss(),
+        )
+        .unwrap()
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rss_measurement_does_not_inherit_the_launchers_memory() {
+    const TEST: &str = "checkpoint::tests::rss_measurement_does_not_inherit_the_launchers_memory";
+    if std::env::var_os("NAOME_RSS_IMAGE_PROBE").is_some() {
+        let image = image_peak_rss_bytes();
+        let lifetime = u64::try_from(
+            nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
+                .unwrap()
+                .max_rss(),
+        )
+        .unwrap()
+        .checked_mul(1024)
+        .unwrap();
+        assert!(
+            lifetime >= image + 32 * 1024 * 1024,
+            "launcher RSS was not isolated: lifetime={lifetime}, image={image}"
+        );
+        println!(
+            "RSS_IMAGE_METRICS {}",
+            serde_json::json!({"lifetime_peak_bytes":lifetime,"image_peak_bytes":image})
+        );
+        return;
+    }
+    let mut memory = vec![0u8; 64 * 1024 * 1024];
+    for page in memory.chunks_mut(4096) {
+        page[0] = 1;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+        .env("NAOME_RSS_IMAGE_PROBE", "1")
+        .output()
+        .unwrap();
+    std::hint::black_box(&memory);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!("{stdout}");
+}
+
 #[test]
 fn interrupted_updates_roll_back_every_row_and_the_header() {
     let directory = Directory::new();

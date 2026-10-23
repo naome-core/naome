@@ -24,6 +24,35 @@ fn disk_bytes(path: &Path) -> u64 {
         .sum()
 }
 
+// Keep this example independent of new internal APIs for matched baseline runs.
+fn peak_rss_bytes() -> Result<u64, String> {
+    #[cfg(target_os = "linux")]
+    {
+        // getrusage also retains a pre-exec launcher's high-water mark.
+        let status = std::fs::read_to_string("/proc/self/status").map_err(|e| e.to_string())?;
+        let mut fields = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .ok_or("current-image RSS high-water mark is missing")?
+            .split_whitespace();
+        let kib: u64 = fields
+            .next()
+            .ok_or("missing RSS value")?
+            .parse::<u64>()
+            .map_err(|e| e.to_string())?;
+        if fields.next() != Some("kB") || fields.next().is_some() {
+            return Err("RSS units differ".into());
+        }
+        kib.checked_mul(1024).ok_or_else(|| "RSS byte width".into())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
+            .map_err(|e| e.to_string())?;
+        u64::try_from(usage.max_rss()).map_err(|e| e.to_string())
+    }
+}
+
 fn main() -> Result<(), String> {
     let directory = std::env::args_os()
         .nth(1)
@@ -85,14 +114,7 @@ fn main() -> Result<(), String> {
     assert_eq!(graph.accepted_count(), OBJECTS);
     assert_eq!(graph.content_root(), root);
     let replay_seconds = replay.elapsed().as_secs_f64();
-    let peak = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
-        .map_err(|e| e.to_string())?
-        .max_rss() as u64;
-    let peak = if cfg!(target_os = "linux") {
-        peak * 1024
-    } else {
-        peak
-    };
+    let peak = peak_rss_bytes()?;
     let canonical_bytes = std::fs::metadata(directory.join("proof-corpus.sqlite3"))
         .map_err(|e| e.to_string())?
         .len();

@@ -644,14 +644,7 @@ fn thousands_of_obligations_keep_only_retained_accounts_across_process_restarts(
             max_bytes < 256 * 1024,
             "active accounting bytes: {max_bytes}"
         );
-        let peak = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
-            .unwrap()
-            .max_rss() as u64;
-        let peak = if cfg!(target_os = "linux") {
-            peak * 1024
-        } else {
-            peak
-        };
+        let peak = crate::checkpoint::tests::image_peak_rss_bytes();
         assert!(peak < 128 * 1024 * 1024, "isolated peak RSS: {peak}");
         println!(
             "BUDGET_HISTORY_METRICS {}",
