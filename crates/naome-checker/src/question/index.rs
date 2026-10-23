@@ -100,6 +100,11 @@ pub(crate) fn projections(proof: ProofId, formula: &Formula) -> Vec<(BucketKind,
             result.push((BucketKind::Instances, statement_id(&bytes)));
         }
     }
+    result.extend(
+        super::instantiation::projections(formula)
+            .into_iter()
+            .map(|key| (BucketKind::Instances, key)),
+    );
     result
 }
 

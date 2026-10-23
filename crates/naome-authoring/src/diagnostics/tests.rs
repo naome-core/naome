@@ -1,4 +1,5 @@
 use super::*;
+use naome_foundation::Formula;
 
 #[test]
 fn diagnostic_codes_and_source_positions_are_stable() {
@@ -41,6 +42,13 @@ fn diagnostic_codes_and_source_positions_are_stable() {
         },
         CompileError::StatementMismatch {
             span: SourceSpan::point(0),
+            comparison: Box::new(
+                naome_foundation::FormulaMismatch::between(
+                    &Formula::equal(FreeVariable::new(0), FreeVariable::new(0)),
+                    &Formula::member(FreeVariable::new(0), FreeVariable::new(0)),
+                )
+                .unwrap(),
+            ),
         },
         CompileError::DuplicateFormulaBinding {
             offset: 0,

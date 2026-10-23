@@ -1,8 +1,11 @@
 //! Primitive first-order formulas for set theory.
 
 mod canonical;
+mod comparison;
 pub mod graph;
 mod source;
+
+pub use comparison::{FormulaMismatch, FormulaPathSegment};
 
 pub use canonical::{
     CanonicalImplication, FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES,
@@ -43,10 +46,26 @@ pub struct Formula(Node);
 
 /// Borrowed structural view. Projection copies no recursive subtrees and
 /// establishes no inference or independent well-formedness for an inner binder.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FormulaView<'a>(&'a Node);
 
 impl<'a> FormulaView<'a> {
+    pub fn negated(self) -> Option<Self> {
+        match self.0 {
+            Node::Not(body) => Some(Self(body)),
+            _ => None,
+        }
+    }
+
+    /// Returns free variable operands of an outer equality. Bound operands
+    /// remain unavailable until their enclosing quantifiers have been opened.
+    pub fn equality_variables(self) -> Option<(FreeVariable, FreeVariable)> {
+        match self.0 {
+            Node::Equal(Variable::Free(left), Variable::Free(right)) => Some((*left, *right)),
+            _ => None,
+        }
+    }
+
     pub fn implication_parts(self) -> Option<(Self, Self)> {
         match self.0 {
             Node::Implies(left, right) => Some((Self(left), Self(right))),

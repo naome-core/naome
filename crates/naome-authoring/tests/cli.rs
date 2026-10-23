@@ -155,11 +155,48 @@ fn typed_definition_preserves_exact_identity_and_bytes() {
 
 #[test]
 fn typed_checker_rejects_invalid_modus_ponens() {
-    assert_diagnostic(
-        &fixture("implication-identity.nao").replace("mp(p1, p2)", "mp(p2, p1)"),
-        DiagnosticCode::Check,
-        Some((14, 5)),
-        "step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise",
+    let source = fixture("implication-identity.nao").replace("mp(p1, p2)", "mp(p2, p1)");
+    let diagnostic = diagnostic(&source);
+    assert_eq!(diagnostic.code(), DiagnosticCode::Check);
+    assert_eq!(
+        diagnostic
+            .primary_position()
+            .map(|position| (position.line(), position.column())),
+        Some((14, 5))
+    );
+    assert!(diagnostic.message().starts_with("step \"p3\" violates Foundation logic: modus ponens requires an implication whose antecedent equals the premise; expected "));
+    let comparison = diagnostic.formula_mismatch().unwrap();
+    assert_eq!(comparison.expected(), "eq(f0, f0)");
+    assert!(comparison.actual().starts_with("imp(imp(eq(f0, f0),"));
+    assert!(comparison.path().is_empty());
+}
+
+#[test]
+fn typed_formula_diagnostics_explain_inference_and_goal_mismatches() {
+    let source = "goal=all(x,eq(x,x)) proof: a=refl(x) b=simp(mem(x,x),eq(x,x)) c=mp(a,b) return c";
+    let diagnostic = diagnostic(source);
+    let comparison = diagnostic.formula_mismatch().unwrap();
+    assert_eq!(comparison.expected(), "mem(f0, f0)");
+    assert_eq!(comparison.actual(), "eq(f0, f0)");
+    assert!(comparison.path().is_empty());
+    assert_eq!(
+        &source
+            [diagnostic.primary_span().unwrap().start()..diagnostic.primary_span().unwrap().end()],
+        "c=mp(a,b)"
+    );
+    let source = "goal=all(x,mem(x,x)) proof: a=refl(x) b=gen(a,x) return b";
+    let diagnostic = crate::diagnostic(source);
+    assert_eq!(diagnostic.code(), DiagnosticCode::StatementMismatch);
+    let comparison = diagnostic.formula_mismatch().unwrap();
+    assert_eq!(comparison.expected(), "all(b0, mem(b0, b0))");
+    assert_eq!(comparison.actual(), "all(b0, eq(b0, b0))");
+    assert_eq!(
+        comparison
+            .path()
+            .iter()
+            .map(|edge| edge.as_str())
+            .collect::<Vec<_>>(),
+        ["quantified"]
     );
 }
 
@@ -584,6 +621,38 @@ mod developer_cli {
     impl Drop for TemporarySource {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[test]
+    fn json_mismatches_expose_formula_previews_and_structural_paths() {
+        for (source, expected, actual, path) in [
+            (
+                "goal=all(x,eq(x,x)) proof: a=refl(x) b=simp(mem(x,x),eq(x,x)) c=mp(a,b) return c",
+                "mem(f0, f0)",
+                "eq(f0, f0)",
+                vec![],
+            ),
+            (
+                "goal=all(x,mem(x,x)) proof: a=refl(x) b=gen(a,x) return b",
+                "all(b0, mem(b0, b0))",
+                "all(b0, eq(b0, b0))",
+                vec!["quantified"],
+            ),
+        ] {
+            let file = TemporarySource::new(source);
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args(["proof", "--json"])
+                .arg(&file.path)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            let comparison = &json["diagnostic"]["formula_mismatch"];
+            assert_eq!(comparison["expected"], expected);
+            assert_eq!(comparison["actual"], actual);
+            assert_eq!(comparison["path"], serde_json::json!(path));
         }
     }
 }

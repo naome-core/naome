@@ -198,6 +198,10 @@ impl<'source> Parser<'source> {
         if checked.conclusion() != &statement {
             return Err(CompileError::StatementMismatch {
                 span: statement_span,
+                comparison: Box::new(
+                    naome_foundation::FormulaMismatch::between(&statement, checked.conclusion())
+                        .expect("the statement and conclusion differ"),
+                ),
             });
         }
         Ok(CompiledArtifact::Proof(CompiledProof::from_checked(

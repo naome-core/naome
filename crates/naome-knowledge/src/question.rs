@@ -579,7 +579,7 @@ where
                 )
                 .ok()?;
                 let decision = assess_question(&request, &self.snapshot(graph), &self.policy);
-                decision.passed().then(|| entry.question.clone())
+                (decision.passed() || decision.inconclusive()).then(|| entry.question.clone())
             })
             .collect()
     }
@@ -714,7 +714,7 @@ where
                 other => other,
             };
         }
-        self.cached = Some(decision.clone());
+        self.cached = (!decision.inconclusive()).then(|| decision.clone());
         decision
     }
 

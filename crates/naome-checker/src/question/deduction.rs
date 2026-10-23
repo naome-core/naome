@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use naome_foundation::Formula;
+use naome_foundation::{Formula, FreeVariable};
 use naome_proof::{
     CERTIFICATE_MAX_BYTES, CERTIFICATE_MAX_FORMULA_NODES, CERTIFICATE_MAX_STEPS, ProofCertificate,
     ProofCertificateError, ProofId, ProofStep, StatementId,
@@ -20,25 +20,30 @@ use crate::{
     CHECKER_MAX_FORMULA_WORK_BYTES, ContextView, normalize_and_check_with_state, statement_id,
 };
 
-type Failure = (RejectionReason, &'static str);
-const LIMIT: Failure = (RejectionReason::ExecutionLimit, "Q08_EXECUTION");
-const INVALID: Failure = (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT");
+pub(super) type Failure = (RejectionReason, &'static str);
+pub(super) const LIMIT: Failure = (RejectionReason::ExecutionLimit, "Q08_EXECUTION");
+pub(super) const INVALID: Failure = (RejectionReason::InvalidEvidence, "Q02_CHECKED_CONTEXT");
 
 struct Goal {
     formula: Formula,
     length: usize,
-    seed: Option<ProofId>,
+    seed: Option<Source>,
 }
 struct Clause {
-    source: ProofId,
+    source: Source,
     premises: Vec<StatementId>,
     consequence: StatementId,
     intermediate_lengths: Vec<usize>,
 }
 #[derive(Clone, Copy)]
 enum Evidence {
-    Seed(ProofId),
+    Seed(StatementId),
     Derived(usize),
+}
+
+enum Source {
+    Proof(ProofId),
+    Generated(Program),
 }
 
 fn add_goal(
@@ -81,6 +86,47 @@ pub(super) fn derive(
     artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<Option<DeductionWitness>, Failure> {
+    derive_plan(target_id, target, artifacts, work, false)?
+        .map(|plan| plan.finish(target, artifacts, work))
+        .transpose()
+}
+
+pub(super) fn derive_instantiated(
+    target: &Formula,
+    artifacts: &dyn ContextView,
+    work: &mut Work,
+) -> Result<Option<DeductionWitness>, Failure> {
+    let length = target.encode_canonical().map_err(|_| LIMIT)?.len();
+    work.formula(length, 8)?;
+    let mut opened = target.clone();
+    let mut variables = Vec::new();
+    for identifier in 0..super::instantiation::MAX_INSTANTIATIONS {
+        work.formula(length, 4)?;
+        let variable = FreeVariable::new(identifier as u32);
+        let Some(body) = opened.open_outer_universal(variable) else {
+            break;
+        };
+        variables.push(variable);
+        opened = body;
+    }
+    let id = statement_id(&opened.encode_canonical().map_err(|_| LIMIT)?);
+    let Some(mut plan) = derive_plan(id, &opened, artifacts, work, true)? else {
+        return Ok(None);
+    };
+    let mut root = u32::try_from(plan.steps.len() - 1).map_err(|_| LIMIT)?;
+    for variable in variables.into_iter().rev() {
+        root = plan.generalize(root, variable, work)?;
+    }
+    plan.finish(target, artifacts, work).map(Some)
+}
+
+fn derive_plan(
+    target_id: StatementId,
+    target: &Formula,
+    artifacts: &dyn ContextView,
+    work: &mut Work,
+    instantiated: bool,
+) -> Result<Option<Plan>, Failure> {
     let target_length = target.encode_canonical().map_err(|_| LIMIT)?.len();
     work.formula(target_length, 8)?;
     let mut goals = BTreeMap::new();
@@ -101,8 +147,54 @@ pub(super) fn derive(
     while let Some(goal_id) = pending.pop_first() {
         work.index()?;
         if let Some((proof, _)) = lookup_id(artifacts, goal_id, &goals[&goal_id].formula, work)? {
-            goals.get_mut(&goal_id).expect("queued goal").seed = Some(proof);
+            goals.get_mut(&goal_id).expect("queued goal").seed = Some(Source::Proof(proof));
             continue;
+        }
+        if instantiated {
+            if let Some(plan) = super::elementary::plan(&goals[&goal_id].formula, work)? {
+                goals.get_mut(&goal_id).expect("queued goal").seed =
+                    Some(Source::Generated(plan.into_program()));
+                continue;
+            }
+            work.formula(goals[&goal_id].length, 8)?;
+            let key = super::instantiation::key(&goals[&goal_id].formula);
+            work.index()?;
+            for source in artifacts
+                .bucket(crate::context::BucketKind::Instances, key)
+                .map_err(context_failure)?
+            {
+                let source = source.map_err(context_failure)?;
+                let header = known(artifacts, source, work)?;
+                work.formula(header.length, 8)?;
+                let formula = load_formula(artifacts, source, header.length)?;
+                let Some(candidate) = super::instantiation::specialize(
+                    header.proof,
+                    &formula,
+                    &goals[&goal_id].formula,
+                    artifacts,
+                    work,
+                )?
+                else {
+                    continue;
+                };
+                if candidate.formula == goals[&goal_id].formula {
+                    goals.get_mut(&goal_id).expect("queued goal").seed =
+                        Some(Source::Generated(candidate.program));
+                    break;
+                }
+                add_clause(
+                    Source::Generated(candidate.program),
+                    &candidate.formula,
+                    goal_id,
+                    &mut goals,
+                    &mut pending,
+                    &mut clauses,
+                    work,
+                )?;
+            }
+            if goals[&goal_id].seed.is_some() {
+                continue;
+            }
         }
         work.index()?;
         for source in artifacts
@@ -111,48 +203,18 @@ pub(super) fn derive(
         {
             let source = source.map_err(context_failure)?;
             let header = known(artifacts, source, work)?;
-            let proof = header.proof;
             let source_length = header.length;
             work.formula(source_length, 8)?;
             let source_formula = load_formula(artifacts, source, source_length)?;
-            let projection = source_formula
-                .canonical_implication()
-                .map_err(|_| LIMIT)?
-                .ok_or(INVALID)?;
-            let mut lengths = projection.consequents().map(<[u8]>::len);
-            let mut current = source_formula.view();
-            let mut current_length = source_length;
-            let mut antecedents = Vec::new();
-            let mut intermediate_lengths = Vec::new();
-            loop {
-                work.formula(current_length, 8)?;
-                let (antecedent, consequent) = current.implication_parts().ok_or(INVALID)?;
-                let length = lengths.next().ok_or(INVALID)?;
-                work.charge(std::mem::size_of::<Formula>() + 64)
-                    .map_err(|_| LIMIT)?;
-                antecedents.push(antecedent.to_owned());
-                intermediate_lengths.push(length);
-                if consequent == goals[&goal_id].formula {
-                    let mut premises = Vec::new();
-                    for antecedent in antecedents {
-                        let premise =
-                            add_goal(antecedent, source_length, &mut goals, &mut pending, work)?;
-                        work.charge(64).map_err(|_| LIMIT)?;
-                        premises.push(premise);
-                    }
-                    work.charge(std::mem::size_of::<Clause>() + 128)
-                        .map_err(|_| LIMIT)?;
-                    clauses.push(Clause {
-                        source: proof,
-                        premises,
-                        consequence: goal_id,
-                        intermediate_lengths,
-                    });
-                    break;
-                }
-                current_length = length;
-                current = consequent;
-            }
+            add_clause(
+                Source::Proof(header.proof),
+                &source_formula,
+                goal_id,
+                &mut goals,
+                &mut pending,
+                &mut clauses,
+                work,
+            )?;
         }
     }
     work.charge(clauses.len().checked_mul(32).ok_or(LIMIT)?)
@@ -169,9 +231,9 @@ pub(super) fn derive(
     let mut evidence = BTreeMap::new();
     let mut ready = BTreeSet::new();
     for (id, goal) in &goals {
-        if let Some(proof) = goal.seed {
+        if goal.seed.is_some() {
             work.index()?;
-            evidence.insert(*id, Evidence::Seed(proof));
+            evidence.insert(*id, Evidence::Seed(*id));
             ready.insert(*id);
         }
     }
@@ -199,17 +261,17 @@ pub(super) fn derive(
     if !evidence.contains_key(&target_id) {
         return Ok(None);
     }
-    materialize(
-        target_id, target, artifacts, &goals, &clauses, &evidence, work,
-    )
-    .map(Some)
+    materialize(target_id, artifacts, &goals, &clauses, &evidence, work).map(Some)
 }
 
 struct PlannedStep {
     step: ProofStep,
     length: usize,
 }
-struct Plan {
+pub(super) struct Program {
+    steps: Vec<PlannedStep>,
+}
+pub(super) struct Plan {
     steps: Vec<PlannedStep>,
     encoded_bytes: usize,
     checker_work: usize,
@@ -262,7 +324,62 @@ impl Work {
 }
 
 impl Plan {
-    fn new() -> Self {
+    pub(super) fn into_program(self) -> Program {
+        Program { steps: self.steps }
+    }
+
+    fn append(
+        &mut self,
+        program: &Program,
+        artifacts: &dyn ContextView,
+        work: &mut Work,
+    ) -> Result<u32, Failure> {
+        work.charge(program.steps.len().checked_mul(8).ok_or(LIMIT)?)
+            .map_err(|_| LIMIT)?;
+        let mut remapped = Vec::new();
+        for entry in &program.steps {
+            let position = match &entry.step {
+                ProofStep::ProofReference { proof_id } => {
+                    self.reference(*proof_id, artifacts, work)?
+                }
+                ProofStep::ModusPonens {
+                    premise,
+                    implication,
+                } => self.modus_ponens(
+                    remapped[*premise as usize],
+                    remapped[*implication as usize],
+                    entry.length,
+                    work,
+                )?,
+                ProofStep::Generalization { premise, variable } => {
+                    self.generalize(remapped[*premise as usize], *variable, work)?
+                }
+                step => {
+                    work.formula(entry.length, 8)?;
+                    self.axiom(step.clone(), entry.length, work)?
+                }
+            };
+            if self.steps[position as usize].length != entry.length {
+                return Err(INVALID);
+            }
+            remapped.push(position);
+        }
+        remapped.last().copied().ok_or(INVALID)
+    }
+
+    fn source(
+        &mut self,
+        source: &Source,
+        artifacts: &dyn ContextView,
+        work: &mut Work,
+    ) -> Result<u32, Failure> {
+        match source {
+            Source::Proof(proof) => self.reference(*proof, artifacts, work),
+            Source::Generated(program) => self.append(program, artifacts, work),
+        }
+    }
+
+    pub(super) fn new() -> Self {
         Self {
             steps: Vec::new(),
             encoded_bytes: 4,
@@ -295,7 +412,7 @@ impl Plan {
         Ok(index)
     }
 
-    fn reference(
+    pub(super) fn reference(
         &mut self,
         proof_id: ProofId,
         artifacts: &dyn ContextView,
@@ -323,7 +440,7 @@ impl Plan {
         Ok(index)
     }
 
-    fn modus_ponens(
+    pub(super) fn modus_ponens(
         &mut self,
         premise: u32,
         implication: u32,
@@ -346,17 +463,72 @@ impl Plan {
             work,
         )
     }
+
+    pub(super) fn axiom(
+        &mut self,
+        step: ProofStep,
+        length: usize,
+        work: &mut Work,
+    ) -> Result<u32, Failure> {
+        if step
+            .local_references()
+            .into_iter()
+            .any(|reference| reference.is_some())
+        {
+            return Err(INVALID);
+        }
+        work.formula(length, 8)?;
+        let encoded = step.encoded_length().map_err(|_| LIMIT)?;
+        self.push(step, length, encoded, length, work)
+    }
+
+    pub(super) fn generalize(
+        &mut self,
+        premise: u32,
+        variable: FreeVariable,
+        work: &mut Work,
+    ) -> Result<u32, Failure> {
+        let previous = self.steps[premise as usize].length;
+        let length = previous.checked_add(1).ok_or(LIMIT)?;
+        self.push(
+            ProofStep::Generalization { premise, variable },
+            length,
+            9,
+            previous.checked_add(length).ok_or(LIMIT)?,
+            work,
+        )
+    }
+
+    pub(super) fn finish(
+        self,
+        target: &Formula,
+        artifacts: &dyn ContextView,
+        work: &mut Work,
+    ) -> Result<DeductionWitness, Failure> {
+        let length = self.steps.last().ok_or(INVALID)?.length;
+        let checker_work = self.checker_work.checked_add(length).ok_or(LIMIT)?;
+        work.reserve_certificate(
+            self.steps.len(),
+            self.encoded_bytes,
+            checker_work,
+            self.references.len(),
+        )?;
+        check_reserved(
+            self.steps.into_iter().map(|entry| entry.step).collect(),
+            target,
+            artifacts,
+        )
+    }
 }
 
 fn materialize(
     target_id: StatementId,
-    target: &Formula,
     artifacts: &dyn ContextView,
     goals: &BTreeMap<StatementId, Goal>,
     clauses: &[Clause],
     evidence: &BTreeMap<StatementId, Evidence>,
     work: &mut Work,
-) -> Result<DeductionWitness, Failure> {
+) -> Result<Plan, Failure> {
     let mut plan = Plan::new();
     let mut outputs = BTreeMap::new();
     let mut pending = vec![(target_id, false)];
@@ -367,8 +539,9 @@ fn materialize(
             continue;
         }
         match evidence.get(&id).copied().ok_or(INVALID)? {
-            Evidence::Seed(proof) => {
-                let step = plan.reference(proof, artifacts, work)?;
+            Evidence::Seed(seed) => {
+                let step =
+                    plan.source(goals[&seed].seed.as_ref().ok_or(INVALID)?, artifacts, work)?;
                 outputs.insert(id, step);
             }
             Evidence::Derived(index) => {
@@ -383,7 +556,7 @@ fn materialize(
                         }
                     }
                 } else {
-                    let mut implication = plan.reference(clause.source, artifacts, work)?;
+                    let mut implication = plan.source(&clause.source, artifacts, work)?;
                     for (premise, length) in
                         clause.premises.iter().zip(&clause.intermediate_lengths)
                     {
@@ -402,18 +575,57 @@ fn materialize(
     if root as usize + 1 != plan.steps.len() {
         return Err(INVALID);
     }
-    let final_work = plan
-        .checker_work
-        .checked_add(goals[&target_id].length)
-        .ok_or(LIMIT)?;
-    work.reserve_certificate(
-        plan.steps.len(),
-        plan.encoded_bytes,
-        final_work,
-        plan.references.len(),
-    )?;
-    let steps = plan.steps.into_iter().map(|entry| entry.step).collect();
-    check_reserved(steps, target, artifacts)
+    Ok(plan)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_clause(
+    source: Source,
+    formula: &Formula,
+    goal: StatementId,
+    goals: &mut BTreeMap<StatementId, Goal>,
+    pending: &mut BTreeSet<StatementId>,
+    clauses: &mut Vec<Clause>,
+    work: &mut Work,
+) -> Result<(), Failure> {
+    let length = formula.encode_canonical().map_err(|_| LIMIT)?.len();
+    let projection = formula
+        .canonical_implication()
+        .map_err(|_| LIMIT)?
+        .ok_or(INVALID)?;
+    let mut lengths = projection.consequents().map(<[u8]>::len);
+    let mut current = formula.view();
+    let mut current_length = length;
+    let mut antecedents = Vec::new();
+    let mut intermediate_lengths = Vec::new();
+    while let Some((antecedent, consequent)) = current.implication_parts() {
+        work.formula(current_length, 8)?;
+        work.charge(std::mem::size_of::<Formula>() + 64)
+            .map_err(|_| LIMIT)?;
+        antecedents.push(antecedent.to_owned());
+        let next_length = lengths.next().ok_or(INVALID)?;
+        intermediate_lengths.push(next_length);
+        if consequent == goals[&goal].formula {
+            let mut premises = Vec::new();
+            for antecedent in antecedents {
+                let premise = add_goal(antecedent, length, goals, pending, work)?;
+                work.charge(64).map_err(|_| LIMIT)?;
+                premises.push(premise);
+            }
+            work.charge(std::mem::size_of::<Clause>() + 128)
+                .map_err(|_| LIMIT)?;
+            clauses.push(Clause {
+                source,
+                premises,
+                consequence: goal,
+                intermediate_lengths,
+            });
+            return Ok(());
+        }
+        current_length = next_length;
+        current = consequent;
+    }
+    Err(INVALID)
 }
 
 /// Preflight the small existing Q05/Q06 certificates dynamically as well.

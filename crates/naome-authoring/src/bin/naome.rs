@@ -301,6 +301,10 @@ fn error_json(error: &CliError) -> serde_json::Value {
         "message": diagnostic.message(),
         "span": diagnostic.primary_span().map(|span| serde_json::json!({ "start": span.start(), "end": span.end() })),
         "position": diagnostic.primary_position().map(|position| serde_json::json!({ "line": position.line(), "column": position.column() })),
+        "formula_mismatch": diagnostic.formula_mismatch().map(|comparison| serde_json::json!({
+            "expected": comparison.expected(), "actual": comparison.actual(),
+            "path": comparison.path().iter().map(|segment| segment.as_str()).collect::<Vec<_>>(),
+        })),
     })).or_else(|| match error {
         CliError::SourceTooLong { maximum, .. } => Some(serde_json::json!({ "code": DiagnosticCode::SourceTooLong.as_str(), "message": format!("source exceeds the {maximum}-byte limit"), "span": null, "position": null })),
         _ => None,

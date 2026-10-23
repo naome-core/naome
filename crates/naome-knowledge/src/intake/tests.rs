@@ -16,7 +16,8 @@ use std::{
 };
 
 fn source(index: usize) -> String {
-    let a = "all(x, eq(x,x))";
+    let question = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+    let a = question.proved_target().to_source();
     let mut b = "mem(y,y)".to_owned();
     for bit in format!("{index:b}").bytes() {
         b = format!(
@@ -25,7 +26,10 @@ fn source(index: usize) -> String {
         );
     }
     b = format!("all(y,{b})");
-    format!("goal = imp({a},imp({b},{a})) proof: p0 = simp({a},{b}) return p0")
+    let proof = crate::mocks::create_proof(&question).unwrap();
+    let prefix = proof.rsplit_once("return p0").unwrap().0;
+    let steps = prefix.split_once("proof:").unwrap().1;
+    format!("goal = imp({b},{a}) proof:{steps} p1=simp({a},{b}) p2=mp(p0,p1) return p2")
 }
 
 fn fixture(index: usize) -> (Envelope, Metadata) {
@@ -207,13 +211,23 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
             },
         ];
         let mut premise = 0;
-        while steps.len() < count - 1 {
+        while steps.len() < count - 3 {
             steps.push(ProofStep::ModusPonens {
                 premise,
                 implication: 2,
             });
             premise = (steps.len() - 1) as u32;
         }
+        let weakening = steps.len() as u32;
+        steps.push(ProofStep::Simplification {
+            antecedent: Formula::equal(variable, variable).into(),
+            consequent: Formula::member(variable, variable).into(),
+        });
+        steps.push(ProofStep::ModusPonens {
+            premise,
+            implication: weakening,
+        });
+        premise = (steps.len() - 1) as u32;
         steps.push(ProofStep::Generalization { premise, variable });
         let checked = naome_checker::check_normal_form_with_state(
             ProofCertificate::new(steps)
@@ -572,9 +586,10 @@ async fn necessary_helper_outside_question_codec_is_checked_without_own_question
         ));
         previous = format!("r{offset}");
     }
+    steps.push_str(&format!(" last=inst(x0,x0,eq(x0,x0)) opened=mp({previous},last) weakening=simp(eq(x0,x0),mem(x0,x0)) result=mp(opened,weakening) closed=gen(result,x0)"));
     let object = producer
         .author(&format!(
-            "goal = all(x0,eq(x0,x0)) proof: {steps} return {previous}"
+            "goal = all(x0,imp(mem(x0,x0),eq(x0,x0))) proof: {steps} return closed"
         ))
         .unwrap();
     let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());

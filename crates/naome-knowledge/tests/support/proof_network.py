@@ -68,14 +68,17 @@ def content_root(compatibility, ids):
 
 
 def source(index):
-    # Distinct closed schema instances do not settle one another through the
-    # receiver's supported MP or one/two universal-instantiation rules.
-    a = "all(x, eq(x,x))"
+    # Derived schema consequences remain open in the supported finite filter;
+    # the receiver still checks every transmitted certificate and dependency.
+    a = "all(s,ex(r,all(e,iff(mem(e,r),and(mem(e,s),eq(e,e))))))"
     b = "all(y, mem(y,y))"
     for bit in format(index, "b"):
         b = f"not({b})" if bit == "1" else f"all(z,{b})"
-    statement = f"imp({a},imp({b},{a}))"
-    return f'goal = {statement}\nproof:\n    p0 = simp({a},{b})\n    return p0\n'
+    statement = f"imp({b},{a})"
+    return (f'goal = {statement}\nproof:\n'
+            f'    p0 = sep(eq(e,e),e,s,r,parameters=[])\n'
+            f'    p1 = simp({a},{b})\n'
+            f'    p2 = mp(p0,p1)\n    return p2\n')
 
 
 def inventory_source(depth, used):

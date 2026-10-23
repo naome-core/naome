@@ -11,9 +11,9 @@ use std::{
 };
 use tokio::sync::Notify;
 
-const PROOF: &str = "goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
+const PROOF: &str = "goal=all(s,ex(r,all(e,iff(mem(e,r),and(mem(e,s),eq(e,e)))))) proof: p0=sep(eq(e,e),e,s,r,parameters=[]) return p0";
 const QUESTION: &str = "goal = all(x,mem(x,x))";
-const SOLVED: &str = "goal = all(x,eq(x,x))";
+const SOLVED: &str = "goal=all(s,ex(r,all(e,iff(mem(e,r),and(mem(e,s),eq(e,e))))))";
 
 type Managed = LocalQuestions<fn(CompiledQuestion) -> std::future::Ready<Result<bool, String>>>;
 
@@ -674,6 +674,45 @@ fn one_entry_prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() 
     );
 }
 
+#[test]
+fn inconclusive_assessments_are_recomputed_and_admitted_obligations_survive_recovery() {
+    let graph = Graph::default();
+    let mut local = LocalQuestions::new(Some(|_| async { Ok(true) }));
+    let input = question(QUESTION);
+    local.policy.limits.operations = 1;
+    for computation in 1..=2 {
+        let decision = local.assess(&graph, &input);
+        assert!(decision.inconclusive());
+        assert_eq!(decision.outcome.code(), "INCONCLUSIVE");
+        assert_eq!(decision.reason, Some(RejectionReason::ExecutionLimit));
+        assert!(decision.novelty().is_none());
+        assert_eq!(
+            local.computations, computation,
+            "incomplete work is not cached as a completed decision"
+        );
+    }
+    let record = *input.source_hash();
+    local
+        .registry
+        .insert(RegisteredQuestion::new(record, input.core()).unwrap())
+        .unwrap();
+    local.admitted.insert(
+        *input.resolution_id(),
+        AdmittedProvenance {
+            question: input.clone(),
+            record,
+        },
+    );
+    assert_eq!(
+        local.restored_unanswered(&graph).as_slice(),
+        std::slice::from_ref(&input)
+    );
+    local.policy = PrefilterPolicy::default();
+    let reassessed = local.evaluate_record(&graph, &input, true, Some(record));
+    assert!(reassessed.passed());
+    assert_eq!(reassessed.outcome.code(), "PASS");
+}
+
 fn registry_pattern(index: u32) -> naome_foundation::Formula {
     use naome_foundation::{Formula, FreeVariable};
     let x = FreeVariable::new(0);
@@ -1053,8 +1092,11 @@ fn publication_outbox_recovers_each_durable_cut_without_losing_original_source()
     for cut in 0..4 {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
-        let source = "# original orientation\ngoal = not(not(all(x,eq(x,x))))";
-        let question = question(source);
+        let source = format!(
+            "# original orientation\ngoal = not(not({}))",
+            question(SOLVED).core().to_source()
+        );
+        let question = question(&source);
         let mut local = Managed::new(None);
         local.attach_persistence(&directory.0).unwrap();
         let (root, batch) = graph.prepare_generated(PROOF, &[], &question).unwrap();

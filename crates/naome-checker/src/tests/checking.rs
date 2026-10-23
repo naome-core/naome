@@ -269,13 +269,14 @@ fn normalization_reports_reachable_errors_in_normalized_coordinates() {
         },
     ]);
 
-    assert_eq!(
+    assert!(matches!(
         normalize_and_check(proof),
         Err(CheckError::Logic {
             step: 2,
             source: LogicError::ModusPonensMismatch,
+            ..
         })
-    );
+    ));
 
     let element = FreeVariable::new(40);
     let source = FreeVariable::new(50);
@@ -341,13 +342,14 @@ fn checker_localizes_invalid_replacement_and_modus_ponens() {
         },
     ]);
 
-    assert_eq!(
+    assert!(matches!(
         check(&proof),
         Err(CheckError::Logic {
             step: 2,
             source: LogicError::ModusPonensMismatch,
+            ..
         })
-    );
+    ));
 }
 
 #[test]
@@ -360,6 +362,7 @@ fn check_errors_expose_their_step_context_and_sources() {
     let logic = CheckError::Logic {
         step: 1,
         source: LogicError::ModusPonensMismatch,
+        comparison: None,
     };
     let schema = CheckError::Schema {
         step: 2,

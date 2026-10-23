@@ -289,18 +289,17 @@ fn cold_dynamic_mp_requires_both_seeds_and_identical_original_citations() {
     let mut twin = Twin::new();
     let registry = QuestionRegistry::new();
     let policy = PrefilterPolicy::default();
-    let (first, p) = twin.register(equality_steps());
-    let q = Formula::for_all(var(19), p.clone());
+    let (_, p) = twin.register(super::tests::schema_steps(false));
+    let q = crate::normalize_and_check(
+        ProofCertificate::new(super::tests::schema_steps(true)).unwrap(),
+    )
+    .unwrap()
+    .conclusion()
+    .clone();
     let target = Formula::implies(unresolved(), equal());
     let _ = twin.register(lift(&p, &q, fact_steps(&unresolved())));
     assert!(twin.compare(&target, &registry, &policy).passed());
-    let _ = twin.register(vec![
-        ProofStep::ProofReference { proof_id: first },
-        ProofStep::Generalization {
-            premise: 0,
-            variable: var(19),
-        },
-    ]);
+    let _ = twin.register(super::tests::schema_steps(true));
     let result = twin.compare(&target, &registry, &policy);
     assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
     assert_eq!(
@@ -330,6 +329,77 @@ fn cold_dynamic_mp_requires_both_seeds_and_identical_original_citations() {
             &policy
         )
     );
+}
+
+#[test]
+fn target_directed_instantiation_matches_cold_replay_and_certifies_original_sources() {
+    let x = var(0);
+    let y = var(1);
+    let p = Formula::member(x, y);
+    let r = Formula::equal(x, x);
+    let s = Formula::member(y, x);
+    let closure = |a: Formula, b: Formula| {
+        vec![
+            ProofStep::Simplification {
+                antecedent: a.into(),
+                consequent: b.into(),
+            },
+            ProofStep::Generalization {
+                premise: 0,
+                variable: y,
+            },
+            ProofStep::Generalization {
+                premise: 1,
+                variable: x,
+            },
+        ]
+    };
+    let mut twin = Twin::new();
+    let (first, _) = twin.register(closure(r.clone(), p.clone()));
+    let (second, _) = twin.register(closure(Formula::implies(p.clone(), r.clone()), s.clone()));
+    let target = Formula::for_all(
+        x,
+        Formula::for_all(y, Formula::implies(s, Formula::implies(p, r))),
+    );
+    let registry = QuestionRegistry::new();
+    let policy = PrefilterPolicy::default();
+    let result = twin.compare(&target, &registry, &policy);
+    assert_eq!(result.rule, "Q07_CHECKED_INSTANTIATED_CLOSURE");
+    let witness = result.deduction.as_ref().unwrap();
+    let mut expected = vec![first, second];
+    expected.sort();
+    assert_eq!(witness.original_proofs(), expected);
+    let certificate =
+        ProofCertificate::from_canonical_bytes(witness.canonical_certificate()).unwrap();
+    let replay = twin.replay();
+    assert_eq!(
+        normalize_and_check_with_state(certificate.clone(), &replay)
+            .unwrap()
+            .conclusion(),
+        &target
+    );
+    let request = AssessmentQuestion::new(
+        FOUNDATION_ID,
+        &target,
+        b"cold context discriminator",
+        &[],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        assess_question(
+            &request,
+            &KnowledgeSnapshot::new([7; 32], &replay, &registry),
+            &policy
+        ),
+        result
+    );
+    let mut limited = policy;
+    limited.limits.certificate_steps = certificate.steps().len() - 1;
+    let incomplete = twin.compare(&target, &registry, &limited);
+    assert_eq!(incomplete.outcome, PrefilterOutcome::Inconclusive);
+    assert_eq!(incomplete.reason, Some(RejectionReason::ExecutionLimit));
+    assert!(incomplete.deduction.is_none());
 }
 
 #[test]
