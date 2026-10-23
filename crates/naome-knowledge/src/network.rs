@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+mod command;
 mod exchange;
 mod worker;
 use std::sync::{Arc, atomic::Ordering};
@@ -638,13 +639,9 @@ where
             command = commands.recv(), if command_input_open && !stopping => {
                 match command {
                     Some(Ok(command)) => {
-                        let parsed_memory = crate::resources::MemoryLease::acquire(command.bytes.len().saturating_mul(crate::resources::COMMAND_JSON_EXPANSION));
-                        match parsed_memory {
+                        match command.parse() {
                             Err(error) => emit(json!({"event":"command_error","error":error})),
-                            Ok(_parsed_memory) => match serde_json::from_slice(&command.bytes) {
-                            Ok(value) => { if !node.command(value) { break; } },
-                            Err(error) => emit(json!({"event":"command_error", "error":error.to_string()})),
-                        },
+                            Ok((value, _parsed_memory)) => { if !node.command(value) { break; } },
                         }
                     },
                     Some(Err(error)) => emit(json!({"event":"command_error", "error":error})),
