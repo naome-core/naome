@@ -8,24 +8,19 @@
 mod journal;
 mod process;
 mod service;
+mod tracked;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
-pub(crate) use journal::{
-    marker_valid, read as read_checkpoint, research_directory, write as write_checkpoint,
-    write_marker,
-};
+pub(crate) use journal::{marker_valid, research_directory, write_marker};
 pub(crate) use service::Recovery;
 pub(crate) use service::Service;
 
-pub(crate) const COMMAND_CAPACITY: usize = 32;
-pub(crate) const MAX_RECORDS: usize = 96;
-pub(crate) const MAX_ACCOUNTS: usize = 256;
-pub(crate) const MAX_JOURNAL_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const MAX_FRAME_BYTES: usize = 8 * crate::intake::MAX_CLOSURE_BYTES;
-pub(crate) const MAX_HORIZON_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+fn max_frame_bytes() -> usize {
+    8 * crate::resources::limits().closure_bytes
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -37,8 +32,8 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            horizon_ms: 24 * 60 * 60 * 1_000,
-            work_units: 4096,
+            horizon_ms: crate::resources::limits().job_horizon.as_millis() as u64,
+            work_units: crate::resources::limits().job_work_units,
         }
     }
 }
@@ -111,13 +106,24 @@ pub struct Settings {
 impl Settings {
     pub(crate) fn validate(self) -> Result<Self, String> {
         for role in [self.finding, self.solving, self.interest] {
-            if !(10..=MAX_HORIZON_MS).contains(&role.limits.horizon_ms)
-                || !(1..=1_000_000).contains(&role.limits.work_units)
-                || role.mock.step_ms > 60_000
-                || role.mock.cpu_ms > 60_000
-                || role.mock.steps > 1_000_000
-                || role.mock.proof_padding_bytes > crate::MAX_PROOF_BYTES
-                || role.mock.result_delay_ms > 60_000
+            if role.limits.horizon_ms == 0
+                || role.limits.work_units == 0
+                || crate::jobs::wall_ms()?
+                    .checked_add(role.limits.horizon_ms)
+                    .is_none()
+                || [
+                    role.limits.horizon_ms,
+                    role.mock.step_ms,
+                    role.mock.cpu_ms,
+                    role.mock.result_delay_ms,
+                ]
+                .into_iter()
+                .any(|ms| {
+                    std::time::Instant::now()
+                        .checked_add(std::time::Duration::from_millis(ms))
+                        .is_none()
+                })
+                || role.mock.proof_padding_bytes > crate::resources::limits().proof_bytes
             {
                 return Err("research role horizon or workload limit".into());
             }
@@ -261,11 +267,13 @@ impl Output {
                 Ok(())
             }
             (Self::Proof { source, helpers }, Input::Solve { .. })
-                if source.len() <= crate::MAX_PROOF_BYTES
-                    && helpers.len() < crate::intake::MAX_CLOSURE_OBJECTS
-                    && helpers.iter().all(|s| s.len() <= crate::MAX_PROOF_BYTES)
+                if source.len() <= crate::resources::limits().proof_bytes
+                    && helpers.len() < crate::resources::limits().closure_objects
+                    && helpers
+                        .iter()
+                        .all(|s| s.len() <= crate::resources::limits().proof_bytes)
                     && source.len() + helpers.iter().map(String::len).sum::<usize>()
-                        <= crate::intake::MAX_CLOSURE_BYTES =>
+                        <= crate::resources::limits().closure_bytes =>
             {
                 Ok(())
             }
@@ -369,10 +377,20 @@ impl Drop for Ticket {
     }
 }
 
+pub(crate) struct RecoveryPage {
+    pub records: Vec<Record>,
+    pub next: Option<u64>,
+}
+
 enum Command {
     Submit(Input, Binding, oneshot::Sender<Completion>),
     Acknowledge(u64),
     Discard(Input, Binding),
+    Recover {
+        after: u64,
+        before: u64,
+        reply: oneshot::Sender<Result<RecoveryPage, String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -396,6 +414,21 @@ impl Client {
             received: false,
         })
     }
+    pub(crate) fn recover(
+        &self,
+        after: u64,
+        before: u64,
+    ) -> Result<oneshot::Receiver<Result<RecoveryPage, String>>, String> {
+        let (reply, receive) = oneshot::channel();
+        self.sender
+            .try_send(Command::Recover {
+                after,
+                before,
+                reply,
+            })
+            .map_err(|_| "research recovery capacity or stopped service")?;
+        Ok(receive)
+    }
     pub(crate) fn acknowledge(&self, id: u64) -> Result<(), String> {
         self.sender
             .try_send(Command::Acknowledge(id))
@@ -412,6 +445,13 @@ fn identity(value: &impl Serialize) -> String {
     crate::hex(&Sha256::digest(
         serde_json::to_vec(value).expect("finite research value"),
     ))
+}
+
+fn request_key(input: &Input, binding: &Binding, settings: RoleSettings) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"naome:research-request:v1\0");
+    hash.update(serde_json::to_vec(&(input, binding, settings)).expect("finite typed request"));
+    crate::hex(&hash.finalize())
 }
 
 fn wall_ms() -> Result<u64, String> {

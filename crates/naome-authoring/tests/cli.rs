@@ -154,16 +154,6 @@ fn typed_definition_preserves_exact_identity_and_bytes() {
 }
 
 #[test]
-fn typed_compile_rejects_the_wrong_foundation() {
-    assert_diagnostic(
-        "foundation = \"wrong\"",
-        DiagnosticCode::Syntax,
-        Some((1, 1)),
-        "expected goal",
-    );
-}
-
-#[test]
 fn typed_checker_rejects_invalid_modus_ponens() {
     assert_diagnostic(
         &fixture("implication-identity.nao").replace("mp(p1, p2)", "mp(p2, p1)"),
@@ -202,16 +192,6 @@ fn typed_standalone_compilation_cannot_authorize_definition_dependencies() {
     ] {
         assert_diagnostic(&fixture(file), code, Some(position), message);
     }
-}
-
-#[test]
-fn typed_compile_rejects_legacy_source_syntax() {
-    assert_diagnostic(
-        "foundation \"naome:zfc\"; theorem old { statement (forall x (equal x x)); proof { step p0 = (equality-reflexivity x); result p0; } }",
-        DiagnosticCode::Syntax,
-        Some((1, 1)),
-        "expected goal",
-    );
 }
 
 #[test]
@@ -325,7 +305,6 @@ fn typed_questions_reject_free_variables_proofs_and_source_fields() {
         "goal = eq(x,x)",
         "goal = all(x,eq(x,x)) proof: return p",
         "assumptions = [] goal = all(x,eq(x,x))",
-        "foundation = \"other\" goal = all(x,eq(x,x))",
     ] {
         assert!(CompiledQuestion::compile(source).is_err(), "{source}");
     }
@@ -398,7 +377,7 @@ mod developer_cli {
 
     #[test]
     fn developer_compile_failure_is_nonzero_without_partial_identity_output() {
-        let source = TemporarySource::new("foundation = \"wrong\"");
+        let source = TemporarySource::new("invalid");
         let output = run("proof", &source.path);
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
@@ -414,10 +393,8 @@ mod developer_cli {
     #[cfg(unix)]
     #[test]
     fn developer_diagnostic_escapes_path_controls() {
-        let source = TemporarySource::named(
-            "proof\\literal\ninjected\r\u{2028}\u{2029}.nao",
-            "foundation = \"wrong\"",
-        );
+        let source =
+            TemporarySource::named("proof\\literal\ninjected\r\u{2028}\u{2029}.nao", "invalid");
         let output = run("proof", &source.path);
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
@@ -470,23 +447,6 @@ mod developer_cli {
                         .as_bytes()
                 )
             )
-        );
-    }
-
-    #[test]
-    fn developer_legacy_compile_command_has_no_compatibility_alias() {
-        let example =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self-equality.nao");
-        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
-            .args(["proof", "compile"])
-            .arg(example)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap(),
-            "naome-author: usage: naome-author proof <proof.nao> | question <question.nao>\n"
         );
     }
 

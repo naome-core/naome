@@ -12,8 +12,8 @@ mod logic;
 mod zfc;
 
 pub use formula::{
-    FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, Formula, FormulaCodecError,
-    FreeVariable,
+    CanonicalImplication, FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, Formula,
+    FormulaCodecError, FormulaView, FreeVariable,
 };
 pub use logic::{Logic, LogicError};
 pub use zfc::{Replacement, SchemaError, Separation, ZfcAxiom};

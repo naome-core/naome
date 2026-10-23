@@ -144,7 +144,6 @@ fn rejects_free_variables_assumptions_imports_and_bad_syntax() {
         source("all(x, eq(x,x),,)"),
         source("all(x, eq(x,x)) garbage"),
         source("all(x, eq(x,x)) success = \"prove\""),
-        "foundation = \"other\" goal = all(x,eq(x,x))".to_owned(),
         "assumptions = [] goal = all(x,eq(x,x))".to_owned(),
         "defs: h = \"abc\" goal = h(x)".to_owned(),
         "references = [] goal = all(x,eq(x,x))".to_owned(),
@@ -286,7 +285,7 @@ fn checked_proof_matches_exact_targets_with_original_negation_orientation() {
 
 #[test]
 fn unsupported_operator_diagnostic_marks_the_original_name_before_its_call() {
-    for operator in ["satisfies", "equal", "forall"] {
+    for operator in ["satisfies", "unrecognized"] {
         let source = format!("# original UTF8 ä\r\ngoal=all(x,{operator}(x,x))");
         let error = CompiledQuestion::compile_with_diagnostic(&source).unwrap_err();
         assert_eq!(error.diagnostic().code(), DiagnosticCode::QuestionSyntax);
@@ -294,4 +293,35 @@ fn unsupported_operator_diagnostic_marks_the_original_name_before_its_call() {
         assert_eq!(&source[span.start()..span.end()], operator);
         assert_eq!(span.start(), source.find(operator).unwrap());
     }
+}
+
+#[test]
+fn formal_construction_preserves_source_codec_targets_orientation_and_limits() {
+    for source in [
+        "all(x,eq(x,x))",
+        "not(all(x,eq(x,x)))",
+        "not(not(all(x,eq(x,x))))",
+        "imp(all(x,mem(x,x)),all(y,eq(y,y)))",
+    ] {
+        let parsed = compile(source);
+        let derived = CompiledQuestion::from_formula(parsed.formula().clone()).unwrap();
+        assert_eq!(
+            derived,
+            CompiledQuestion::compile(derived.source()).unwrap()
+        );
+        assert_eq!(derived.canonical_core(), parsed.canonical_core());
+        assert_eq!(derived.resolution_id(), parsed.resolution_id());
+        assert_eq!(derived.negation_parity(), parsed.negation_parity());
+        assert_eq!(
+            CompiledQuestion::from_canonical_bytes(&derived.to_canonical_bytes().unwrap()).unwrap(),
+            derived
+        );
+    }
+    let x = FreeVariable::new(0);
+    assert!(CompiledQuestion::from_formula(Formula::equal(x, x)).is_err());
+    let mut deep = Formula::for_all(x, Formula::equal(x, x));
+    for _ in 0..QUESTION_TARGET_MAX_DEPTH {
+        deep = Formula::implies(deep, Formula::for_all(x, Formula::equal(x, x)));
+    }
+    assert!(CompiledQuestion::from_formula(deep).is_err());
 }

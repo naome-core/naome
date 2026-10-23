@@ -83,21 +83,10 @@ impl KnowledgeIndex {
 /// Shared complete structural projections for memory and authenticated disk indexes.
 pub(crate) fn projections(proof: ProofId, formula: &Formula) -> Vec<(BucketKind, StatementId)> {
     let mut result = Vec::new();
-    if let Some((antecedent, mut consequent)) = formula.implication_parts() {
-        let antecedent = statement_id(&antecedent.encode_canonical().expect("checked subformula"));
-        result.push((BucketKind::Outgoing, antecedent));
-        // Every consequent-spine projection is a potential MP goal, not a
-        // checked fact. Its complete leading antecedents must be derived
-        // from checked seeds, and its full DAG must pass the checker.
-        // Intermediate formulas retain the global checked formula limits;
-        // the smaller question-input limit must never omit a bridge here.
-        loop {
-            let bytes = consequent.encode_canonical().expect("checked subformula");
-            result.push((BucketKind::Deductions, statement_id(&bytes)));
-            let Some((_, next)) = consequent.implication_parts() else {
-                break;
-            };
-            consequent = next;
+    if let Some(parts) = formula.canonical_implication().expect("checked subformula") {
+        result.push((BucketKind::Outgoing, statement_id(parts.antecedent())));
+        for consequent in parts.consequents() {
+            result.push((BucketKind::Deductions, statement_id(consequent)));
         }
     }
     for instance in universal_instances(proof, formula) {

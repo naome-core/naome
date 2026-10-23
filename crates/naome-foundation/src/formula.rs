@@ -3,7 +3,10 @@
 mod canonical;
 mod source;
 
-pub use canonical::{FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FormulaCodecError};
+pub use canonical::{
+    CanonicalImplication, FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES,
+    FormulaCodecError,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +39,48 @@ impl FreeVariable {
 /// constructors bind those variables structurally.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Formula(Node);
+
+/// Borrowed structural view. Projection copies no recursive subtrees and
+/// establishes no inference or independent well-formedness for an inner binder.
+#[derive(Clone, Copy)]
+pub struct FormulaView<'a>(&'a Node);
+
+impl<'a> FormulaView<'a> {
+    pub fn implication_parts(self) -> Option<(Self, Self)> {
+        match self.0 {
+            Node::Implies(left, right) => Some((Self(left), Self(right))),
+            _ => None,
+        }
+    }
+    /// Counts primitive nodes and the longest node path without materializing
+    /// projections. Callers still enforce their own codec/work limits.
+    pub fn node_count_and_depth(self) -> (usize, usize) {
+        fn metrics(node: &Node) -> (usize, usize) {
+            match node {
+                Node::Equal(..) | Node::Member(..) => (1, 1),
+                Node::Not(body) | Node::ForAll(body) => {
+                    let (nodes, depth) = metrics(body);
+                    (nodes + 1, depth + 1)
+                }
+                Node::Implies(left, right) => {
+                    let (ln, ld) = metrics(left);
+                    let (rn, rd) = metrics(right);
+                    (ln + rn + 1, ld.max(rd) + 1)
+                }
+            }
+        }
+        metrics(self.0)
+    }
+    pub fn to_owned(self) -> Formula {
+        Formula(self.0.clone())
+    }
+}
+
+impl PartialEq<Formula> for FormulaView<'_> {
+    fn eq(&self, other: &Formula) -> bool {
+        self.0 == &other.0
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Node {
@@ -194,6 +239,11 @@ impl Formula {
         let mut body = body.as_ref().clone();
         open_binder(&mut body, 0, variable);
         Some(Self(body))
+    }
+
+    /// Returns a borrowed structural view without copying a subtree.
+    pub fn view(&self) -> FormulaView<'_> {
+        FormulaView(&self.0)
     }
 
     /// Returns the two structural parts of an outer implication.

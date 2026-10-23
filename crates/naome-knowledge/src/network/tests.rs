@@ -33,7 +33,7 @@ impl Drop for ConfigFile {
 #[test]
 fn full_producer_queue_loads_with_worst_case_json_escaping() {
     let file = ConfigFile::new();
-    let sources = vec!["\u{0001}".repeat(crate::MAX_PROOF_BYTES / 32); 32];
+    let sources = vec!["\u{0001}".repeat(crate::resources::limits().proof_bytes / 32); 32];
     let encoded = serde_json::to_vec_pretty(&json!({
         "directory": "node",
         "listen": "/ip4/127.0.0.1/tcp/0",
@@ -41,8 +41,8 @@ fn full_producer_queue_loads_with_worst_case_json_escaping() {
         "producer_sources": sources
     }))
     .unwrap();
-    assert!(encoded.len() > 6 * crate::MAX_PROOF_BYTES);
-    assert!(encoded.len() < MAX_CONFIG_BYTES);
+    assert!(encoded.len() > 6 * crate::resources::limits().proof_bytes);
+    assert!(encoded.len() < crate::resources::limits().network_config_bytes);
     std::fs::write(file.path(), &encoded).unwrap();
     let loaded = read_config(&file.path()).unwrap();
     assert_eq!(loaded.producer_sources, sources);
@@ -52,7 +52,11 @@ fn full_producer_queue_loads_with_worst_case_json_escaping() {
 #[test]
 fn oversized_configuration_still_rejects_before_decoding() {
     let file = ConfigFile::new();
-    std::fs::write(file.path(), vec![b' '; MAX_CONFIG_BYTES + 1]).unwrap();
+    std::fs::write(
+        file.path(),
+        vec![b' '; crate::resources::limits().network_config_bytes + 1],
+    )
+    .unwrap();
     assert_eq!(read_config(&file.path()).err().unwrap(), "file byte limit");
 }
 
@@ -221,4 +225,316 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
         .query_row("SELECT count(*) FROM proofs", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 0);
+}
+
+fn isolated_transport() -> Swarm<Behaviour> {
+    let key = identity::Keypair::generate_ed25519();
+    let settings = DiscoveryConfig {
+        mdns: false,
+        dht: false,
+        ..Default::default()
+    };
+    let book = discovery::SharedBook::new(discovery::Book::new(
+        key.public().to_peer_id(),
+        true,
+        &settings,
+    ));
+    let discovery = discovery::Behaviour::new(&key, &settings, false, false).unwrap();
+    let gossip = gossipsub::Behaviour::new(
+        gossipsub::MessageAuthenticity::Signed(key.clone()),
+        gossipsub::ConfigBuilder::default().build().unwrap(),
+    )
+    .unwrap();
+    let exchange = exchange::Exchange::new(
+        request_response::Behaviour::with_codec(
+            Codec::default(),
+            [(PROTOCOL, request_response::ProtocolSupport::Full)],
+            request_response::Config::default(),
+        ),
+        book.clone(),
+    );
+    SwarmBuilder::with_existing_identity(key)
+        .with_tokio()
+        .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
+        .unwrap()
+        .with_relay_client(noise::Config::new, yamux_config)
+        .unwrap()
+        .with_behaviour(|_, relay| Behaviour {
+            gate: discovery::Gate(book),
+            allowed: None.into(),
+            discovery,
+            relay,
+            limits: connection_limits::Behaviour::new(
+                connection_limits::ConnectionLimits::default(),
+            ),
+            gossip,
+            exchange,
+        })
+        .unwrap()
+        .build()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revokes_commit() {
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::UnixStream,
+    };
+    let directory = ConfigFile::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    fn pattern(leaves: usize) -> naome_foundation::Formula {
+        let x = naome_foundation::FreeVariable::new(0);
+        if leaves == 1 {
+            return naome_foundation::Formula::equal(x, x);
+        }
+        naome_foundation::Formula::implies(pattern(leaves / 2), pattern(leaves - leaves / 2))
+    }
+    let x = naome_foundation::FreeVariable::new(0);
+    let y = naome_foundation::FreeVariable::new(1);
+    let checked = naome_checker::normalize_and_check(
+        naome_proof::ProofCertificate::new(vec![
+            naome_proof::ProofStep::EqualitySubstitution {
+                from: x,
+                to: y,
+                body: pattern(5000).into(),
+            },
+            naome_proof::ProofStep::Generalization {
+                premise: 0,
+                variable: y,
+            },
+            naome_proof::ProofStep::Generalization {
+                premise: 1,
+                variable: x,
+            },
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let proof_bytes = checked.normal_form().canonical_bytes().len();
+    assert!(
+        proof_bytes > crate::resources::limits().proof_bytes * 3 / 4
+            && proof_bytes <= crate::resources::limits().proof_bytes
+    );
+    let object = crate::object::BinaryProof::from_checked(&checked)
+        .unwrap()
+        .envelope();
+    let control =
+        Arc::new(crate::runtime::Control::bind_test(&directory.0, graph.ownership()).unwrap());
+    let mut server = isolated_transport();
+    let server_peer = *server.local_peer_id();
+    server
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let (shared, mut events, mut transport) = worker::Transport::spawn(server);
+    let address = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = events.recv().await.unwrap().event {
+                break address;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let mut client = isolated_transport();
+    client
+        .dial(
+            libp2p::swarm::dial_opts::DialOpts::peer_id(server_peer)
+                .addresses(vec![address])
+                .build(),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let SwarmEvent::ConnectionEstablished { peer_id, .. } =
+                client.select_next_some().await
+            {
+                assert_eq!(peer_id, server_peer);
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let status = Arc::new(worker::PublishedStatus::default());
+    status.ready.store(true, Ordering::Release);
+    let mut controls = worker::Controls::spawn(Some(control.clone()), status);
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    graph.set_commit_guard(crate::graph::CommitGuard::new(
+        Arc::new(AtomicU64::new(0)),
+        0,
+        Some(control.clone()),
+        Some(control.selection().unwrap()),
+    ));
+    let offered = Metadata {
+        proof_id: object.proof_id.clone(),
+        statement_id: object.statement_id.clone(),
+        question: "goal = all(x,eq(x,x))".into(),
+    };
+    let busy = shared.busy.clone();
+    let owner = std::thread::spawn(move || {
+        Graph::delay_next_write(started, wait);
+        libp2p::futures::executor::block_on(worker::while_polled(busy, async move {
+            let result = graph.ingest(object, Instant::now());
+            (result, graph.accepted_count(), graph.storage_error())
+        }))
+    });
+    tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+    let stalled = Instant::now();
+    let endpoint: Value =
+        serde_json::from_slice(&std::fs::read(directory.0.join("control.json")).unwrap()).unwrap();
+    async fn request(endpoint: &Value, operation: Value) -> Value {
+        let mut stream = UnixStream::connect(endpoint["socket"].as_str().unwrap())
+            .await
+            .unwrap();
+        let mut bytes = serde_json::to_vec(
+            &json!({"version":1,"token":endpoint["token"],"operation":operation}),
+        )
+        .unwrap();
+        bytes.push(b'\n');
+        stream.write_all(&bytes).await.unwrap();
+        let mut response = Vec::new();
+        BufReader::new(stream)
+            .read_until(b'\n', &mut response)
+            .await
+            .unwrap();
+        serde_json::from_slice(&response).unwrap()
+    }
+    let measure = Instant::now();
+    let status = tokio::time::timeout(Duration::from_secs(2), request(&endpoint, json!("status")))
+        .await
+        .unwrap();
+    let status_seconds = measure.elapsed().as_secs_f64();
+    assert_eq!(status["status"]["accepted_proofs"], 0);
+    tokio::time::sleep(crate::resources::limits().transport_busy_grace * 2).await;
+    let measure = Instant::now();
+    let id = client.behaviour_mut().exchange.send_request(
+        &server_peer,
+        Frame::new(Body::Inventory {
+            after: None,
+            limit: 1,
+        }),
+    );
+    tokio::time::timeout(Duration::from_secs(2),async{
+        loop{
+            if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(request_response::Event::Message{message:request_response::Message::Response{request_id,response},..}))=client.select_next_some().await{
+                assert_eq!(request_id,id);
+                assert!(matches!(response.message.body,Body::Error{reason} if reason=="node state owner busy"));break;
+            }
+        }
+    }).await.unwrap();
+    let network_seconds = measure.elapsed().as_secs_f64();
+    // Metadata is retained in the bounded handoff while expensive checking is
+    // stalled. A state-dependent inventory probe above still gets a prompt error.
+    let offer_id = client.behaviour_mut().exchange.send_request(
+        &server_peer,
+        Frame::new(Body::Offer {
+            metadata: offered.clone(),
+        }),
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                _ = client.select_next_some() => {},
+                event = events.recv() => {
+                    if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(request_response::Event::Message {
+                        message: request_response::Message::Request { request, channel, .. }, ..
+                    })) = event.unwrap().event {
+                        assert!(matches!(request.message.body, Body::Offer { metadata } if metadata == offered));
+                        shared.behaviour_mut().exchange.send_response(channel, Frame::new(Body::Receipt { status: "queued".into() })).unwrap();
+                        break;
+                    }
+                }
+            }
+        }
+    }).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                request_response::Event::Message {
+                    message:
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        },
+                    ..
+                },
+            )) = client.select_next_some().await
+            {
+                assert_eq!(request_id, offer_id);
+                assert!(matches!(response.message.body, Body::Receipt { .. }));
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    let measure = Instant::now();
+    let changed = tokio::time::timeout(
+        Duration::from_secs(2),
+        request(&endpoint, json!({"interest":"revoked during slow commit"})),
+    )
+    .await
+    .unwrap();
+    let interest_seconds = measure.elapsed().as_secs_f64();
+    assert_eq!(changed["status"]["interest"], "revoked during slow commit");
+    let measure = Instant::now();
+    let _ = tokio::time::timeout(Duration::from_secs(2), request(&endpoint, json!("stop")))
+        .await
+        .unwrap();
+    let stop_seconds = measure.elapsed().as_secs_f64();
+    assert!(control.stopping());
+    assert!(
+        !owner.is_finished(),
+        "real checked write remains stalled throughout every probe"
+    );
+    let stalled_seconds = stalled.elapsed().as_secs_f64();
+    release.send(()).unwrap();
+    let (result, count, fault) = tokio::task::spawn_blocking(move || owner.join().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(result.unwrap_err(), crate::graph::STALE_COMMIT);
+    assert_eq!(count, 0);
+    assert_eq!(fault, None);
+    controls.shutdown().await.unwrap();
+    transport.shutdown().await.unwrap();
+    drop(control);
+    assert_eq!(Graph::open(&directory.0).unwrap().accepted_count(), 0);
+    println!(
+        "OWNER_LATENCY_METRICS {}",
+        json!({"status_seconds":status_seconds,"network_seconds":network_seconds,"interest_seconds":interest_seconds,"stop_seconds":stop_seconds,"stalled_write_seconds":stalled_seconds,"published_proofs":count,"proof_bytes":proof_bytes})
+    );
+}
+
+#[tokio::test]
+async fn transport_queue_failure_permanently_revokes_publication() {
+    let mut swarm = isolated_transport();
+    swarm
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let (shared, events, mut transport) = worker::Transport::spawn(swarm);
+    let guard = crate::graph::CommitGuard::new(shared.epoch.clone(), 0, None, None);
+    drop(events);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while shared.epoch.load(Ordering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), transport.shutdown())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(guard.check().unwrap_err(), crate::graph::STALE_COMMIT);
+    let terminal = shared.epoch.load(Ordering::Acquire);
+    assert_eq!(terminal, u64::MAX);
+    let later_guard = crate::graph::CommitGuard::new(shared.epoch.clone(), terminal, None, None);
+    assert_eq!(later_guard.check().unwrap_err(), crate::graph::STALE_COMMIT);
 }

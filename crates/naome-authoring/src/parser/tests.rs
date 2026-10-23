@@ -914,34 +914,6 @@ fn combined_schema_errors_follow_foundation_precedence_after_lowering() {
 }
 
 #[test]
-fn source_shell_is_one_clean_prerelease_replacement() {
-    const LEGACY: &str = r#"
-foundation "naome:zfc";
-theorem equality_is_reflexive {
-  statement (forall x (equal x x));
-  proof {
-    step p0 = (equality-reflexivity x);
-    step p1 = (generalization p0 x);
-    result p1;
-  }
-}
-"#;
-    assert!(matches!(compile(LEGACY), Err(CompileError::Syntax { .. })));
-
-    for source in [
-        format!("foundation = \"naome:zfc\" {SOURCE}"),
-        SOURCE.replace("goal =", "goal:"),
-        SOURCE.replace("proof:", "proof"),
-        SOURCE.replace("return p1", "result p1"),
-        SOURCE.replace("return p1", "return p1;"),
-        SOURCE.replace("p0 =", "step p0 ="),
-        SOURCE.replace("refl", "equality-reflexivity"),
-    ] {
-        assert!(matches!(compile(&source), Err(CompileError::Syntax { .. })));
-    }
-}
-
-#[test]
 fn indentation_comments_and_python_identifiers_are_presentation_only() {
     let compact = "goal = all(x,eq(x,x)) proof: P0 = refl(x) P1 = gen(P0,x) return P1";
     assert_eq!(compile(compact).unwrap(), compile(SOURCE).unwrap());

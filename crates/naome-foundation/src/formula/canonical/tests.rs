@@ -249,3 +249,37 @@ fn codec_enforces_derived_node_and_byte_limits() {
         })
     );
 }
+
+#[test]
+fn borrowed_spine_ranges_preserve_every_original_canonical_suffix() {
+    let x = FreeVariable::new(17);
+    let atom = Formula::for_all(x, Formula::equal(x, x));
+    let mut formula = atom.clone();
+    for _ in 0..120 {
+        formula = Formula::implies(atom.clone(), formula);
+    }
+    let encoded = formula.canonical_implication().unwrap().unwrap();
+    let (left, mut right) = formula.implication_parts().unwrap();
+    assert_eq!(encoded.antecedent(), left.encode_canonical().unwrap());
+    let mut expected = Vec::new();
+    loop {
+        expected.push(right.encode_canonical().unwrap());
+        match right.implication_parts() {
+            Some((_, next)) => right = next,
+            None => break,
+        }
+    }
+    assert_eq!(
+        encoded.consequents().collect::<Vec<_>>(),
+        expected.iter().map(Vec::as_slice).collect::<Vec<_>>()
+    );
+    assert!(
+        encoded
+            .consequents()
+            .all(|suffix| suffix.as_ptr() >= encoded.bytes.as_ptr()
+                && suffix.as_ptr_range().end == encoded.bytes.as_ptr_range().end)
+    );
+    let (borrowed, _) = formula.view().implication_parts().unwrap();
+    assert!(borrowed == atom);
+    assert_eq!(borrowed.node_count_and_depth(), (2, 2));
+}

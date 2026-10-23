@@ -12,7 +12,7 @@ pub(crate) struct Manual {
 
 impl Manual {
     pub(crate) fn new() -> Self {
-        let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let (sender, receiver) = mpsc::channel(crate::resources::limits().job_commands);
         Self {
             client: Client { sender },
             receiver,
@@ -35,6 +35,12 @@ impl Manual {
                     .waiting
                     .retain(|_, (i, b, _)| i != &input || b != &binding),
                 Command::Acknowledge(id) => self.acknowledged.push(id),
+                Command::Recover { reply, .. } => {
+                    let _ = reply.send(Ok(super::RecoveryPage {
+                        records: vec![],
+                        next: None,
+                    }));
+                }
             }
         }
         requests
@@ -57,6 +63,7 @@ impl Manual {
     }
     pub(crate) fn recovery(&self) -> Recovery {
         Recovery {
+            archive_end: 0,
             next_cursor: 0,
             records: Vec::new(),
         }
@@ -68,13 +75,18 @@ impl Manual {
 }
 
 #[test]
-fn finite_role_horizons_accept_days_and_reject_unbounded_values() {
+fn role_horizons_have_no_lifetime_ceiling_and_reject_zero_or_overflow() {
     let mut settings = Settings::default();
-    for horizon in [60 * 60 * 1_000, 24 * 60 * 60 * 1_000, MAX_HORIZON_MS] {
+    for horizon in [
+        60 * 60 * 1_000,
+        24 * 60 * 60 * 1_000,
+        30 * 24 * 60 * 60 * 1_000,
+        365 * 24 * 60 * 60 * 1_000,
+    ] {
         settings.solving.limits.horizon_ms = horizon;
         assert!(settings.validate().is_ok());
     }
-    for horizon in [0, MAX_HORIZON_MS + 1, u64::MAX] {
+    for horizon in [0, u64::MAX] {
         settings.solving.limits.horizon_ms = horizon;
         assert!(settings.validate().is_err());
     }

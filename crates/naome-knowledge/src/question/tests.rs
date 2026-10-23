@@ -160,7 +160,7 @@ fn established_question_checkpoint_loss_refuses_fresh_provenance() {
     )
     .unwrap();
     drop(local);
-    std::fs::remove_file(directory.0.join("research/questions.json")).unwrap();
+    std::fs::remove_file(directory.0.join("research/questions.sqlite3")).unwrap();
     assert!(Managed::managed(owner.client, &directory.0, Duration::from_secs(3600)).is_err());
 }
 
@@ -930,7 +930,7 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
         InterestAssessment::TimedOut,
     ] {
         let result = tokio::time::timeout(
-            INTEREST_TIMEOUT + Duration::from_secs(5),
+            crate::resources::limits().interest_timeout + Duration::from_secs(5),
             handle.admit_question(question(QUESTION)),
         )
         .await

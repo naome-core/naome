@@ -1,4 +1,6 @@
+#[cfg(test)]
 use crate::Envelope;
+use crate::object::BinaryProof;
 use naome_proof::ProofId;
 use sha2::{Digest, Sha256};
 use std::{
@@ -65,7 +67,6 @@ impl Store {
             .map_err(|error| error.to_string())?;
         lock.try_lock()
             .map_err(|error| format!("knowledge directory already owned: {error}"))?;
-        reject_legacy_objects(directory)?;
         let database = directory.join(DATABASE_FILE);
         let receipt = directory.join(FORMAT_FILE);
         let has_receipt = catalog_leaf_exists(&receipt)?;
@@ -154,7 +155,7 @@ impl Store {
         &self,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<(u64, Envelope)>, String> {
+    ) -> Result<Vec<(u64, BinaryProof)>, String> {
         self.ensure_database()?;
         let catalog = self
             .catalog
@@ -177,13 +178,23 @@ impl Store {
         catalog.ids_page(after, limit, expected)
     }
 
-    pub(crate) fn get(&self, id: ProofId, expected: Summary) -> Result<Option<Envelope>, String> {
+    pub(crate) fn get_binary(
+        &self,
+        id: ProofId,
+        expected: Summary,
+    ) -> Result<Option<BinaryProof>, String> {
         self.ensure_database()?;
         let catalog = self
             .catalog
             .lock()
             .map_err(|_| "proof catalog lock poisoned")?;
         catalog.get(id, expected)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(&self, id: ProofId, expected: Summary) -> Result<Option<Envelope>, String> {
+        self.get_binary(id, expected)
+            .map(|object| object.map(|object| object.envelope()))
     }
 
     pub(crate) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, String> {
@@ -199,7 +210,7 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn load(&self) -> Result<Vec<Envelope>, String> {
         let summary = self.summary()?;
-        if summary.count > catalog::MAX_BATCH_OBJECTS {
+        if summary.count > crate::resources::limits().batch_objects {
             return Err("test fixture collection limit".into());
         }
         let mut objects = Vec::with_capacity(summary.count);
@@ -211,7 +222,7 @@ impl Store {
             }
             for (ordinal, object) in page {
                 after = ordinal;
-                objects.push(object);
+                objects.push(object.envelope());
             }
         }
         if objects.len() != summary.count {
@@ -235,6 +246,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn persist_checked(
         &self,
         object: &Envelope,
@@ -243,6 +255,7 @@ impl Store {
         let root = ProofId::from_bytes(crate::object::id_bytes(&object.proof_id)?);
         self.persist_batch_checked(root, std::iter::once(object), expected, None)
     }
+    #[cfg(test)]
     pub(crate) fn persist_batch_checked<'a>(
         &self,
         root: ProofId,
@@ -250,10 +263,37 @@ impl Store {
         expected: Summary,
         deadline: Option<Instant>,
     ) -> Result<Summary, String> {
+        let objects = objects
+            .map(|object| object.clone().prepare().map(|c| c.record()))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.persist_records(root, objects.iter(), expected, deadline, None, None)
+    }
+
+    pub(crate) fn persist_binary_batch<'a>(
+        &self,
+        root: ProofId,
+        objects: impl Iterator<Item = &'a BinaryProof>,
+        expected: Summary,
+        deadline: Option<Instant>,
+        next_root: [u8; 32],
+        guard: Option<&crate::graph::CommitGuard>,
+    ) -> Result<Summary, String> {
+        self.persist_records(root, objects, expected, deadline, Some(next_root), guard)
+    }
+
+    fn persist_records<'a>(
+        &self,
+        root: ProofId,
+        objects: impl Iterator<Item = &'a BinaryProof>,
+        expected: Summary,
+        deadline: Option<Instant>,
+        next_root: Option<[u8; 32]>,
+        guard: Option<&crate::graph::CommitGuard>,
+    ) -> Result<Summary, String> {
         self.ensure_database()?;
         let mut batch = Vec::new();
         for object in objects {
-            if batch.len() >= catalog::MAX_BATCH_OBJECTS {
+            if batch.len() >= crate::resources::limits().batch_objects {
                 return Err("catalog batch object count limit".into());
             }
             batch.push(object);
@@ -266,7 +306,17 @@ impl Store {
         let cut = *self.cut.lock().map_err(|_| "test cut lock poisoned")?;
         #[cfg(not(test))]
         let cut = None;
-        catalog.persist(root, &batch, expected, deadline, cut)
+        catalog.persist(
+            root,
+            &batch,
+            catalog::Commit {
+                expected,
+                deadline,
+                cut,
+                next_root,
+                guard,
+            },
+        )
     }
 
     #[cfg(test)]
@@ -303,16 +353,6 @@ impl Store {
         } else {
             Ok(())
         }
-    }
-}
-
-fn reject_legacy_objects(directory: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(directory.join("objects")) {
-        Ok(_) => Err("unsupported legacy proof corpus objects namespace".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "cannot inspect legacy proof corpus namespace: {error}"
-        )),
     }
 }
 

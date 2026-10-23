@@ -11,6 +11,31 @@ use naome_proof::{
 };
 use std::{borrow::Cow, error::Error, fmt};
 
+/// Bounded parsed reads for one operation. This is an allocation policy, not a
+/// language bound or part of mathematical validity/snapshot identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadCacheLimits {
+    pub entries: usize,
+    pub bytes: usize,
+}
+impl ReadCacheLimits {
+    pub const DEFAULT: Self = Self {
+        entries: 64,
+        bytes: 2 * 1024 * 1024,
+    };
+    pub fn new(entries: usize, bytes: usize) -> Result<Self, ContextError> {
+        if entries.checked_mul(512).is_none_or(|n| n > bytes) {
+            return Err(ContextError::Limit);
+        }
+        Ok(Self { entries, bytes })
+    }
+}
+impl Default for ReadCacheLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// A cold context access failed; failure never means authenticated absence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextError {
@@ -53,9 +78,16 @@ pub enum BucketKind {
     Instances,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct FormulaLocation {
+    pub(crate) address: [u8; 32],
+    pub(crate) snapshot: [u8; 32],
+}
+
 /// Authenticated proof metadata, read before reserving and loading its formula.
 #[derive(Clone, Copy)]
 pub struct ProofHeader {
+    pub(crate) location: Option<FormulaLocation>,
     pub(crate) derivation: DerivationId,
     pub(crate) statement: StatementId,
     pub(crate) length: usize,
@@ -75,6 +107,7 @@ impl ProofHeader {
 /// The deterministic minimum concrete proof witness for an accepted statement.
 #[derive(Clone, Copy)]
 pub struct StatementHeader {
+    pub(crate) location: Option<FormulaLocation>,
     pub(crate) proof: ProofId,
     pub(crate) length: usize,
 }
@@ -94,6 +127,9 @@ pub type StatementCursor<'a> = Box<dyn Iterator<Item = Result<StatementId, Conte
 /// Header lengths must be reserved by the caller before formula materialization.
 /// Cache residency must change neither membership nor logical work accounting.
 pub trait ContextView: sealed::Sealed + DefinitionResolver {
+    fn read_cache_limits(&self) -> ReadCacheLimits {
+        ReadCacheLimits::DEFAULT
+    }
     fn snapshot_id(&self) -> [u8; 32];
     fn contains_artifact(&self, id: ArtifactId) -> Result<bool, ContextError>;
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError>;
@@ -103,6 +139,24 @@ pub trait ContextView: sealed::Sealed + DefinitionResolver {
         id: StatementId,
         maximum: usize,
     ) -> Result<Option<Cow<'_, Formula>>, ContextError>;
+    /// Reuse an authenticated header from this exact snapshot without another
+    /// metadata traversal. Logical work must still be reserved by the caller.
+    fn proof_formula(
+        &self,
+        header: ProofHeader,
+        maximum: usize,
+    ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
+        self.statement_formula(header.statement, maximum)
+    }
+    fn statement_formula_from_header(
+        &self,
+        id: StatementId,
+        header: StatementHeader,
+        maximum: usize,
+    ) -> Result<Option<Cow<'_, Formula>>, ContextError> {
+        let _ = header;
+        self.statement_formula(id, maximum)
+    }
     fn bucket(
         &self,
         kind: BucketKind,
@@ -125,7 +179,11 @@ impl ContextView for ArtifactState {
     fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError> {
         Ok(self
             .known_statement(id)
-            .map(|(proof, _, length)| StatementHeader { proof, length }))
+            .map(|(proof, _, length)| StatementHeader {
+                proof,
+                length,
+                location: None,
+            }))
     }
     fn statement_formula(
         &self,
@@ -155,3 +213,8 @@ impl ContextView for ArtifactState {
         ArtifactState::definition_kind(self, id)
     }
 }
+
+pub(crate) mod cache;
+
+pub(crate) mod fingerprint;
+pub use fingerprint::ProofSetFingerprint;

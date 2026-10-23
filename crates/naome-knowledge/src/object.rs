@@ -8,9 +8,6 @@ use std::collections::BTreeSet;
 pub const CODEC_ID: &str = "naome:proof-codec:v0";
 pub const CHECKER_ID: &str = "naome:zfc-checker:v0";
 pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-only:v1";
-pub const MAX_PROOF_BYTES: usize = 65_536;
-pub const MAX_DEPENDENCIES: usize = 32;
-pub const MAX_DEPTH: usize = 64;
 
 /// Untrusted envelope. Neither construction nor deserialization establishes validity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,13 +52,7 @@ fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, String>
     let bytes = formula
         .encode_canonical()
         .map_err(|error| error.to_string())?;
-    let mut hash = Sha256::new();
-    hash.update(b"naome:statement\0");
-    hash.update((FOUNDATION_ID.len() as u32).to_be_bytes());
-    hash.update(FOUNDATION_ID.as_bytes());
-    hash.update((bytes.len() as u32).to_be_bytes());
-    hash.update(bytes);
-    Ok(StatementId::from_bytes(hash.finalize().into()))
+    StatementId::of_canonical_formula(&bytes).ok_or("statement identity width".into())
 }
 
 pub fn compatibility() -> [u8; 32] {
@@ -74,12 +65,126 @@ pub fn compatibility() -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// Canonical binary syntax and typed identities. It grants no mathematical
+/// validity. Hex and JSON belong only to transport and CLI boundaries.
+#[derive(Clone, Debug)]
+pub(crate) struct BinaryProof {
+    pub id: ProofId,
+    pub statement: StatementId,
+    pub bytes: std::sync::Arc<[u8]>,
+    pub dependencies: BTreeSet<ProofId>,
+    pub _memory: Option<std::sync::Arc<crate::resources::MemoryLease>>,
+}
+impl PartialEq for BinaryProof {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.statement == other.statement
+            && self.bytes == other.bytes
+            && self.dependencies == other.dependencies
+    }
+}
+impl Eq for BinaryProof {}
+
 pub(crate) struct Candidate {
-    pub envelope: Envelope,
     pub id: ProofId,
     pub statement: StatementId,
     pub normal: ProofNormalForm,
     pub dependencies: BTreeSet<ProofId>,
+    pub bytes: std::sync::Arc<[u8]>,
+    memory: std::sync::Arc<crate::resources::MemoryLease>,
+}
+
+impl Candidate {
+    pub(crate) fn record(&self) -> BinaryProof {
+        BinaryProof {
+            id: self.id,
+            statement: self.statement,
+            bytes: self.bytes.clone(),
+            dependencies: self.dependencies.clone(),
+            _memory: Some(self.memory.clone()),
+        }
+    }
+}
+
+impl BinaryProof {
+    pub(crate) fn from_checked(proof: &naome_checker::CheckedProof) -> Result<Self, String> {
+        let dependencies = dependencies(proof.proof_id(), proof.normal_form())?;
+        Ok(Self {
+            id: proof.proof_id(),
+            statement: proof.statement_id(),
+            bytes: proof.normal_form().canonical_bytes().into(),
+            dependencies,
+            _memory: Some(crate::resources::MemoryLease::acquire(
+                proof
+                    .normal_form()
+                    .canonical_bytes()
+                    .len()
+                    .checked_mul(4)
+                    .ok_or("proof memory overflow")?,
+            )?),
+        })
+    }
+
+    pub(crate) fn envelope(&self) -> Envelope {
+        Envelope {
+            compatibility: hex(&compatibility()),
+            proof_id: hex(self.id.as_bytes()),
+            statement_id: hex(self.statement.as_bytes()),
+            proof: hex(&self.bytes),
+        }
+    }
+
+    pub(crate) fn prepare(self) -> Result<Candidate, String> {
+        if self.bytes.len() > crate::resources::limits().proof_bytes {
+            return Err("proof byte limit".into());
+        }
+        let memory = crate::resources::MemoryLease::acquire(
+            self.bytes
+                .len()
+                .checked_mul(64)
+                .ok_or("proof memory overflow")?,
+        )?;
+        let certificate = ProofCertificate::from_canonical_bytes(&self.bytes)
+            .map_err(|error| format!("malformed certificate: {error}"))?;
+        let normal = certificate.into_unchecked_normal_form();
+        if normal.canonical_bytes() != self.bytes.as_ref() {
+            return Err("non-normal proof bytes".into());
+        }
+        if content_id(self.statement, &self.bytes) != self.id {
+            return Err("claimed proof ID mismatch".into());
+        }
+        let dependencies = dependencies(self.id, &normal)?;
+        if dependencies != self.dependencies {
+            return Err("proof dependency metadata differs".into());
+        }
+        Ok(Candidate {
+            id: self.id,
+            statement: self.statement,
+            normal,
+            dependencies,
+            bytes: self.bytes,
+            memory,
+        })
+    }
+}
+
+fn dependencies(id: ProofId, normal: &ProofNormalForm) -> Result<BTreeSet<ProofId>, String> {
+    let mut dependencies = BTreeSet::new();
+    for step in normal.certificate().steps() {
+        if !step.definition_references().is_empty() {
+            return Err("definitions unsupported by proof-only graph policy".into());
+        }
+        if let ProofStep::ProofReference { proof_id } = step {
+            dependencies.insert(*proof_id);
+        }
+    }
+    if dependencies.len() > crate::resources::limits().proof_dependencies {
+        return Err("dependency count limit".into());
+    }
+    if dependencies.contains(&id) {
+        return Err("dependency cycle".into());
+    }
+    Ok(dependencies)
 }
 
 impl Envelope {
@@ -98,9 +203,15 @@ impl Envelope {
         }
         let id = ProofId::from_bytes(id_bytes(&self.proof_id)?);
         let statement = StatementId::from_bytes(id_bytes(&self.statement_id)?);
-        if self.proof.len() > 2 * MAX_PROOF_BYTES {
+        if self.proof.len() > 2 * crate::resources::limits().proof_bytes {
             return Err("proof byte limit".into());
         }
+        let memory = crate::resources::MemoryLease::acquire(
+            self.proof
+                .len()
+                .checked_mul(32)
+                .ok_or("proof memory overflow")?,
+        )?;
         let bytes = unhex(&self.proof)?;
         let certificate = ProofCertificate::from_canonical_bytes(&bytes)
             .map_err(|error| format!("malformed certificate: {error}"))?;
@@ -111,27 +222,14 @@ impl Envelope {
         if content_id(statement, &bytes) != id {
             return Err("claimed proof ID mismatch".into());
         }
-        let mut dependencies = BTreeSet::new();
-        for step in normal.certificate().steps() {
-            if !step.definition_references().is_empty() {
-                return Err("definitions unsupported by proof-only graph policy".into());
-            }
-            if let ProofStep::ProofReference { proof_id } = step {
-                dependencies.insert(*proof_id);
-            }
-        }
-        if dependencies.len() > MAX_DEPENDENCIES {
-            return Err("dependency count limit".into());
-        }
-        if dependencies.contains(&id) {
-            return Err("dependency cycle".into());
-        }
+        let dependencies = dependencies(id, &normal)?;
         Ok(Candidate {
-            envelope: self,
             id,
             statement,
             normal,
             dependencies,
+            bytes: bytes.into(),
+            memory,
         })
     }
 }
@@ -139,14 +237,7 @@ impl Envelope {
 // Mirror the existing proof address framing only for early integrity filtering.
 // Admission still compares the IDs reconstructed by the actual checker.
 pub(crate) fn content_id(statement: StatementId, bytes: &[u8]) -> ProofId {
-    let mut hash = Sha256::new();
-    hash.update(b"naome:proof\0");
-    hash.update((FOUNDATION_ID.len() as u32).to_be_bytes());
-    hash.update(FOUNDATION_ID.as_bytes());
-    hash.update(statement.as_bytes());
-    hash.update((bytes.len() as u32).to_be_bytes());
-    hash.update(bytes);
-    ProofId::from_bytes(hash.finalize().into())
+    ProofId::of_canonical_certificate(statement, bytes).expect("bounded proof length fits u32")
 }
 
 pub(crate) fn id_bytes(value: &str) -> Result<[u8; 32], String> {

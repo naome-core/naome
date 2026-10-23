@@ -114,7 +114,8 @@ pub(super) fn derive(
             let proof = header.proof;
             let source_length = header.length;
             work.formula(source_length, 8)?;
-            let mut current = load_formula(artifacts, source, source_length)?.into_owned();
+            let source_formula = load_formula(artifacts, source, source_length)?;
+            let mut current = source_formula.view();
             let mut current_length = source_length;
             let mut antecedents = Vec::new();
             let mut intermediate_lengths = Vec::new();
@@ -124,7 +125,7 @@ pub(super) fn derive(
                 let bytes = consequent.encode_canonical().map_err(|_| LIMIT)?;
                 work.charge(std::mem::size_of::<Formula>() + 64)
                     .map_err(|_| LIMIT)?;
-                antecedents.push(antecedent);
+                antecedents.push(antecedent.to_owned());
                 intermediate_lengths.push(bytes.len());
                 if consequent == goals[&goal_id].formula {
                     let mut premises = Vec::new();

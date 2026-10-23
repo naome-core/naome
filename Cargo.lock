@@ -1651,8 +1651,6 @@ dependencies = [
 [[package]]
 name = "libp2p-mdns"
 version = "0.48.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c66872d0f1ffcded2788683f76931be1c52e27f343edb93bc6d0bcd8887be443"
 dependencies = [
  "futures",
  "hickory-proto",
@@ -1665,6 +1663,7 @@ dependencies = [
  "socket2 0.5.10",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -1,8 +1,6 @@
 //! Long decisions retain only metadata. Every payload grant remains short.
 use super::*;
 
-const MAX_DECISIONS: usize = 4;
-
 pub(super) enum Phase {
     Initial(oneshot::Receiver<QuestionAssessment>),
     Final {
@@ -40,7 +38,7 @@ impl Intake {
         policy: Identity,
         now: Instant,
     ) {
-        if self.declined.len() < crate::network::MAX_FETCHES {
+        if self.declined.len() < crate::resources::limits().fetches {
             self.declined.insert(
                 (
                     description.peer,
@@ -48,7 +46,11 @@ impl Intake {
                     description.statement,
                     *description.question.source_hash(),
                 ),
-                (snapshot, policy, now + crate::PENDING_TTL),
+                (
+                    snapshot,
+                    policy,
+                    now + crate::resources::limits().pending_retry,
+                ),
             );
         }
     }
@@ -75,11 +77,13 @@ impl Intake {
         self.declined.retain(|_, (before, old_policy, until)| {
             *before == snapshot && *old_policy == policy && *until > now
         });
-        if self.waiting.len() < MAX_DECISIONS
+        if self.waiting.len() < crate::resources::limits().interest_decisions
             && questions.available_peer()
             && let Some(description) = self.queue.pop_front()
         {
-            if now.saturating_duration_since(description.created) >= ROOT_TTL {
+            if now.saturating_duration_since(description.created)
+                >= crate::resources::limits().root_timeout
+            {
                 return Progress::Skipped(
                     description.id,
                     "queued metadata expired before research admission".into(),
@@ -159,7 +163,7 @@ impl Intake {
                         }
                         if self.active.is_none() && *ready {
                             if now.saturating_duration_since(waiting.description.created)
-                                >= ROOT_TTL
+                                >= crate::resources::limits().root_timeout
                             {
                                 return Err("refreshed metadata lease expired".into());
                             }
@@ -202,7 +206,9 @@ impl Intake {
         };
         let id = root.description.id;
         let result = (|| -> Result<Option<Vec<ProofId>>, String> {
-            if now.saturating_duration_since(root.description.created) >= ROOT_TTL {
+            if now.saturating_duration_since(root.description.created)
+                >= crate::resources::limits().root_timeout
+            {
                 return Err("short proof grant expired".into());
             }
             let selected = root
@@ -220,18 +226,25 @@ impl Intake {
                 graph.prepare_batch(id, std::mem::take(&mut root.staged), &root.question)?;
             if let Some(assessment) = &root.final_assessment {
                 let delta = questions.prepare_exchange(graph, &root.question, assessment)?;
-                if Instant::now().saturating_duration_since(root.description.created) >= ROOT_TTL {
+                if Instant::now().saturating_duration_since(root.description.created)
+                    >= crate::resources::limits().root_timeout
+                {
                     return Err("short commit grant expired".into());
                 }
-                let admitted =
-                    graph.commit_batch(id, batch, root.description.created + ROOT_TTL)?;
+                let admitted = graph.commit_batch(
+                    id,
+                    batch,
+                    root.description.created + crate::resources::limits().root_timeout,
+                )?;
                 questions.apply_exchange(delta);
                 return Ok(Some(admitted));
             }
             // Checked staging is deliberately dropped while final interest may
             // take days. One later metadata refresh and refetch is necessary.
             drop(batch);
-            if self.waiting.len() >= MAX_DECISIONS || !questions.available_peer() {
+            if self.waiting.len() >= crate::resources::limits().interest_decisions
+                || !questions.available_peer()
+            {
                 return Err("final decision queue capacity".into());
             }
             let until = questions.interest_deadline(Instant::now());

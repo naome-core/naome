@@ -2,6 +2,7 @@ use super::*;
 use crate::{Envelope, hex, object::content_id};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep, StatementId};
+use sha2::Digest;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const SOURCE: &str = "goal = all(x, eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1";
@@ -19,6 +20,11 @@ fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
     let (root, batch) = receiver
         .prepare_generated(&root_source, &[SOURCE.into()], &question)
         .unwrap();
+    assert_eq!(
+        receiver.checker_calls(),
+        (2, 0),
+        "one compiler check per helper/root, no rechecking"
+    );
     assert!(
         receiver.ids().is_empty(),
         "native preparation grants no store effect"
@@ -27,6 +33,11 @@ fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
         .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
         .unwrap();
     assert_eq!(admitted.len(), 2);
+    assert_eq!(
+        receiver.checker_calls(),
+        (2, 0),
+        "commit reuses sealed checked results"
+    );
     assert!(receiver.contains(root).unwrap());
     assert!(
         receiver
@@ -160,7 +171,7 @@ fn dependent_waits_for_exact_immutable_parent_then_union_converges() {
 }
 
 #[test]
-fn waiting_timeout_is_not_a_mathematical_rejection_and_duplicates_do_not_extend_it() {
+fn waiting_proofs_survive_retry_deadlines_without_extending_or_resetting_history() {
     let mut producer = Graph::default();
     let parent = introduce(&mut producer);
     let child = citation(&producer, &parent);
@@ -168,13 +179,20 @@ fn waiting_timeout_is_not_a_mathematical_rejection_and_duplicates_do_not_extend_
     let now = Instant::now();
     graph.ingest(child.clone(), now).unwrap();
     graph
-        .ingest(child.clone(), now + PENDING_TTL - Duration::from_secs(1))
+        .ingest(
+            child.clone(),
+            now + crate::resources::limits().pending_retry - Duration::from_secs(1),
+        )
         .unwrap();
-    assert_eq!(graph.expire(now + PENDING_TTL).len(), 1);
-    graph.ingest(parent, now + PENDING_TTL).unwrap();
+    graph
+        .ingest(parent, now + crate::resources::limits().pending_retry)
+        .unwrap();
     assert_eq!(
-        graph.ingest(child, now + PENDING_TTL).unwrap().status,
-        "accepted"
+        graph
+            .ingest(child, now + crate::resources::limits().pending_retry)
+            .unwrap()
+            .status,
+        "duplicate"
     );
 }
 
@@ -252,7 +270,7 @@ fn malformed_mismatched_open_and_non_normal_bytes_have_no_accepted_effects() {
             .contains("non-normal")
     );
     assert_eq!(graph.content_root(), root);
-    assert!(graph.pending_ids().is_empty());
+    assert!(graph.pending_ids().unwrap().is_empty());
 }
 
 #[test]
@@ -279,10 +297,12 @@ fn durable_restart_rechecks_dependencies_aliases_and_detects_corruption() {
 }
 
 #[test]
-fn pending_capacity_is_bounded_and_does_not_change_accepted_state() {
-    let mut graph = Graph::default();
+fn pending_history_outlives_working_pages_and_restart_without_affecting_accepted_state() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
     let root = graph.content_root();
-    for index in 0..MAX_PENDING {
+    let total = 4 * crate::resources::limits().pending_page;
+    for index in 0..total {
         let mut parent = [0; 32];
         parent[..8].copy_from_slice(&(index as u64).to_be_bytes());
         let bytes = ProofCertificate::new(vec![ProofStep::ProofReference {
@@ -291,60 +311,71 @@ fn pending_capacity_is_bounded_and_does_not_change_accepted_state() {
         .unwrap()
         .to_canonical_bytes();
         let statement = StatementId::from_bytes([0; 32]);
-        graph
-            .ingest(
-                Envelope {
-                    compatibility: hex(&crate::compatibility()),
-                    proof_id: hex(content_id(statement, &bytes).as_bytes()),
-                    statement_id: hex(statement.as_bytes()),
-                    proof: hex(&bytes),
-                },
-                Instant::now(),
-            )
-            .unwrap();
+        assert_eq!(
+            graph
+                .ingest(
+                    Envelope {
+                        compatibility: hex(&crate::compatibility()),
+                        proof_id: hex(content_id(statement, &bytes).as_bytes()),
+                        statement_id: hex(statement.as_bytes()),
+                        proof: hex(&bytes)
+                    },
+                    Instant::now()
+                )
+                .unwrap()
+                .status,
+            "waiting"
+        );
+        assert!(graph.pending.len() <= crate::resources::limits().pending_page);
     }
-    assert_eq!(graph.pending_ids().len(), MAX_PENDING);
-    let bytes = ProofCertificate::new(vec![ProofStep::ProofReference {
-        proof_id: ProofId::from_bytes([255; 32]),
-    }])
-    .unwrap()
-    .to_canonical_bytes();
-    let statement = StatementId::from_bytes([0; 32]);
-    assert!(
-        graph
-            .ingest(
-                Envelope {
-                    compatibility: hex(&crate::compatibility()),
-                    proof_id: hex(content_id(statement, &bytes).as_bytes()),
-                    statement_id: hex(statement.as_bytes()),
-                    proof: hex(&bytes)
-                },
-                Instant::now()
-            )
-            .unwrap_err()
-            .contains("pending capacity")
-    );
+    assert_eq!(graph.pending_count().unwrap(), total);
+    assert_eq!(graph.content_root(), root);
+    drop(graph);
+    let mut graph = Graph::open(&directory.0).unwrap();
+    assert_eq!(graph.pending_count().unwrap(), total);
+    let mut cursor = None;
+    let mut observed = BTreeSet::new();
+    loop {
+        let page = graph.pending_ids_after(cursor, 31).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        cursor = page.last().copied();
+        for id in page {
+            assert!(observed.insert(id));
+            assert!(graph.waiting(id));
+        }
+    }
+    assert_eq!(observed.len(), total);
+    for _ in 0..4 {
+        graph.resolve_pending().unwrap();
+        assert!(graph.pending.len() <= crate::resources::limits().pending_page);
+    }
+    assert_eq!(graph.pending_count().unwrap(), total);
     assert_eq!(graph.content_root(), root);
 }
 
 #[test]
-fn reference_depth_has_an_explicit_policy_boundary() {
-    let mut graph = Graph::default();
+fn dependency_depth_is_a_derived_metric_without_a_lifetime_ceiling() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
     let mut parent = introduce(&mut graph);
-    for _ in 1..MAX_DEPTH {
+    for _ in 1..160 {
         let child = citation(&graph, &parent);
         graph.ingest(child.clone(), Instant::now()).unwrap();
         parent = child;
     }
     let root = graph.content_root();
-    let child = citation(&graph, &parent);
-    assert!(
-        graph
-            .ingest(child, Instant::now())
-            .unwrap_err()
-            .contains("depth limit")
+    let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    assert_eq!(
+        graph.checked_context().proof_dependency_depth(id).unwrap(),
+        Some(160)
     );
+    drop(graph);
+    let mut graph = Graph::open(&directory.0).unwrap();
     assert_eq!(graph.content_root(), root);
+    let child = citation(&graph, &parent);
+    graph.ingest(child, Instant::now()).unwrap();
 }
 
 #[test]
@@ -752,7 +783,7 @@ fn replay_compaction_keeps_ingest_scheduling_and_cold_snapshots() {
     assert!(!old_storage.ptr_eq(&Arc::downgrade(&graph.checked_storage)));
     let ingest_threshold = live
         .saturating_mul(2)
-        .max(live.saturating_add(CHECKED_CACHE_BYTES));
+        .max(live.saturating_add(crate::resources::limits().checked_cache_bytes));
     assert_eq!(graph.next_compaction, ingest_threshold);
     graph.checked_storage.evict_cache();
     assert_eq!(graph.context.snapshot_id(), snapshot);

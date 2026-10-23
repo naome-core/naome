@@ -146,6 +146,13 @@ impl AdmissionPhase<'_> {
         Ok(AdmissionGuards { source, target })
     }
 
+    /// Disposable writes have already committed, while the canonical SQL
+    /// transaction has confirmed rollback for a revoked publication. They are
+    /// unreachable immutable nodes; releasing the phase does not publish roots.
+    pub(in crate::graph) fn discarded(&self, guards: &mut AdmissionGuards<'_>) {
+        self.published(guards);
+    }
+
     pub(in crate::graph) fn published(&self, guards: &mut AdmissionGuards<'_>) {
         // Called only after canonical success and the fixed root/scalar moves.
         // No lock acquisition, SQL operation, allocation or error remains.

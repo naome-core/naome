@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import signal
 import socket
+import sqlite3
+import hashlib
 import subprocess
 import sys
 import time
@@ -16,8 +18,22 @@ from autonomous_lifecycle import (Node,Trial,digest,process_identity,process_gro
 
 
 def journal(node):
-    path=node.directory/'research/jobs.json'
-    return json.loads(path.read_text())['payload'] if path.exists() else None
+    path=node.directory/'research/jobs.sqlite3'
+    if not path.exists(): return None
+    with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1) as connection:
+        connection.execute('BEGIN')
+        state=json.loads(connection.execute('SELECT header FROM checkpoint WHERE singleton=1').fetchone()[0])
+        for kind,name in [('record','records'),('account','accounts')]:
+            state[name]={key:json.loads(payload) for key,payload in connection.execute(
+                'SELECT key,payload FROM entries WHERE kind=? ORDER BY key',(kind,))}
+    state['archived_record_count']=len(state['records'])
+    if 'resident_records' in state:
+        retained=set(map(str,state['resident_records']))
+        state['records']={key:record for key,record in state['records'].items() if key in retained}
+    active={hashlib.sha256(json.dumps(record['input'],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+        for record in state['records'].values() if record['input']['role']!='find'}
+    state['active_account_count']=len(active)
+    return state
 
 
 def lane(record):
@@ -57,11 +73,11 @@ class Probe:
         write_receipt(self.trial.output/'research-processes.json',list(self.identities.values()))
         state=journal(node)
         if state:
-            assert len(state['records'])<=96 and len(state['accounts'])<=256
+            assert len(state['records'])<=96 and state['active_account_count']<=256
             self.peaks['records']=max(self.peaks['records'],len(state['records']))
             self.peaks['accounts']=max(self.peaks['accounts'],len(state['accounts']))
-            size=(node.directory/'research/jobs.json').stat().st_size
-            assert size<=64*1024*1024
+            size=(node.directory/'research/jobs.sqlite3').stat().st_size
+            assert sum(len(json.dumps(record)) for record in state['records'].values())<=64*1024*1024
             self.peaks['journal_bytes']=max(self.peaks['journal_bytes'],size)
         pids={identity['pid'] for identity in self.identities.values()}
         pids.update(n.process['pid'] for n in self.trial.nodes if n.process)
@@ -152,7 +168,7 @@ def roles(trial,probe):
     overlap=trial.wait(overlapping,maximum=15)
     probe.witness_cpu(receiver)
     trial.summary['overlap']={'running_lanes':sorted({lane(r) for r in overlap['records'].values() if r['state']=='running'}),
-        'journal_sha256':digest(receiver.directory/'research/jobs.json')}
+        'journal_sha256':digest(receiver.directory/'research/jobs.sqlite3')}
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
     trial.wait(lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
@@ -232,7 +248,7 @@ def limits(trial,probe):
     expired=trial.wait(lambda:next((r for r in journal(node)['records'].values() if r['state']=='expired'),None),maximum=5)
     assert expired['reserved_units']==2 and expired['checkpoint']==2
     assert not node.ids();probe.observe(node);node.stop();probe.ended()
-    def rejected_start(case,expected):
+    def rejected_start(case,expected,status_must_reject=False):
         # A stopped Node reserves its former listen port. Release our fixture
         # socket so the intended research-state rejection cannot be masked by
         # an earlier transport bind failure.
@@ -243,7 +259,12 @@ def limits(trial,probe):
             failures=[e for e in events if e.get('event')=='fatal_error']
             assert len(failures)==1 and expected in failures[0].get('error',''),(case,failures)
             assert not any(e.get('event') in {'research_started','research_worker','research_descendant'} for e in events)
-            assert not trial.call(node,'status')['running']
+            if status_must_reject:
+                trial.call(node,'status',success=False)
+                assert expected in trial.summary['commands'][-1]['stderr']
+                assert not (node.directory/'control.json').exists()
+            else:
+                assert not trial.call(node,'status')['running']
             trial.summary.setdefault('startup_rejections',[]).append({'case':case,
                 'expected_error':expected,'fatal_error':failures[0]['error'],'research_process_started':False})
         finally:
@@ -262,9 +283,9 @@ def limits(trial,probe):
     def restore_state(action):
         assert not process_group(node.process),'refusing state restoration while the recorded daemon group remains'
         action()
-    path=node.directory/'research/jobs.json';original=path.read_bytes()
+    path=node.directory/'research/jobs.sqlite3';original=path.read_bytes()
     path.write_bytes(b'{corrupt')
-    try:rejected_start('corrupt_journal','research checkpoint corruption:')
+    try:rejected_start('corrupt_journal','transactional checkpoint:')
     finally:restore_state(lambda:path.write_bytes(original))
     saved_journal=node.directory/'saved-journal';path.rename(saved_journal)
     try:rejected_start('missing_journal','research journal is missing; refusing a fresh allowance')
@@ -274,7 +295,7 @@ def limits(trial,probe):
     try:rejected_start('missing_slot','research slot-0 unavailable:')
     finally:restore_state(lambda:saved.rename(slot))
     research=node.directory/'research';backup=node.directory/'saved-research';research.rename(backup)
-    try:rejected_start('missing_research_directory','established research directory is missing; no fresh allowance')
+    try:rejected_start('missing_research_directory','established research directory is missing; no fresh allowance',status_must_reject=True)
     finally:restore_state(lambda:backup.rename(research))
     write_receipt(trial.output/'research-startup-rejection-witness.json',trial.summary['startup_rejections'])
     trial.summary['scenarios']['malformed_failed_wrong_target_budget_and_corrupt_missing_recovery']={'result':'pass'}

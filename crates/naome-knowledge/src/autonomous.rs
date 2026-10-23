@@ -12,12 +12,6 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-pub(crate) const MAX_UNANSWERED: usize = 128;
-const MAX_FINDING_ADMISSIONS: usize = 4;
-const MAX_SOLVING: usize = 2;
-const MAX_PUBLICATIONS: usize = 4;
-const MAX_PUBLICATION_RETRIES: u8 = 8;
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Intervals {
@@ -29,8 +23,8 @@ pub struct Intervals {
 impl Default for Intervals {
     fn default() -> Self {
         Self {
-            question_interval_ms: 5_000,
-            proof_interval_ms: 1_000,
+            question_interval_ms: crate::resources::limits().finding_interval.as_millis() as u64,
+            proof_interval_ms: crate::resources::limits().solving_interval.as_millis() as u64,
             jobs: jobs::Settings::default(),
         }
     }
@@ -40,9 +34,14 @@ impl Intervals {
     pub(crate) fn validate(self) -> Result<Self, String> {
         if [self.question_interval_ms, self.proof_interval_ms]
             .iter()
-            .any(|ms| !(100..=3_600_000).contains(ms))
+            .any(|ms| {
+                *ms == 0
+                    || Instant::now()
+                        .checked_add(Duration::from_millis(*ms))
+                        .is_none()
+            })
         {
-            return Err("runtime intervals must be between 100 and 3600000 milliseconds".into());
+            return Err("runtime intervals must be positive and representable".into());
         }
         self.jobs.validate()?;
         Ok(self)
@@ -67,9 +66,10 @@ struct Publication {
     job: u64,
     source: String,
     helpers: Vec<String>,
+    batch: Option<(ProofId, crate::graph::CheckedBatch)>,
     context: Option<(Identity, Identity)>,
     reply: Option<oneshot::Receiver<question::QuestionAssessment>>,
-    attempts: u8,
+    attempts: u32,
     retry: Instant,
     expires: Instant,
     seen: Option<question::Revision>,
@@ -85,6 +85,9 @@ pub(crate) struct Autonomous {
     unanswered: VecDeque<CompiledQuestion>,
     recovered_finding: VecDeque<jobs::Record>,
     recovered_other: VecDeque<jobs::Record>,
+    archive_after: Option<u64>,
+    archive_end: u64,
+    recovery_reply: Option<oneshot::Receiver<Result<jobs::RecoveryPage, String>>>,
     finding: Option<Finding>,
     admissions: VecDeque<Admission>,
     solving: BTreeMap<Identity, Solving>,
@@ -100,6 +103,7 @@ impl Autonomous {
         unanswered: Vec<CompiledQuestion>,
     ) -> Self {
         let now = Instant::now();
+        let archive_end = recovery.archive_end;
         let (finding, other): (Vec<_>, Vec<_>) = recovery
             .records
             .into_iter()
@@ -110,9 +114,15 @@ impl Autonomous {
             cursor: recovery.next_cursor,
             next_question: now + Duration::from_millis(intervals.question_interval_ms),
             next_proof: now + Duration::from_millis(intervals.proof_interval_ms),
-            unanswered: unanswered.into_iter().take(MAX_UNANSWERED).collect(),
+            unanswered: unanswered
+                .into_iter()
+                .take(crate::resources::limits().question_page)
+                .collect(),
             recovered_finding: finding.into(),
             recovered_other: other.into(),
+            archive_after: (archive_end > 1).then_some(0),
+            archive_end,
+            recovery_reply: None,
             finding: None,
             admissions: VecDeque::new(),
             solving: BTreeMap::new(),
@@ -151,7 +161,7 @@ impl Autonomous {
     }
 
     fn retain(&mut self, question: CompiledQuestion) {
-        if self.unanswered.len() < MAX_UNANSWERED
+        if self.unanswered.len() < crate::resources::limits().question_page
             && !self.unanswered.iter().any(|q| q == &question)
             && !self.solving.contains_key(question.resolution_id())
             && !self.publications.iter().any(|p| p.question == question)
@@ -169,6 +179,32 @@ impl Autonomous {
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
+        if self.recovered_finding.is_empty() && self.recovered_other.is_empty() {
+            if let Some(mut reply) = self.recovery_reply.take() {
+                match reply.try_recv() {
+                    Ok(Ok(page)) => {
+                        self.archive_after = page.next;
+                        for record in page.records {
+                            if matches!(record.input, jobs::Input::Find { .. }) {
+                                self.recovered_finding.push_back(record);
+                            } else {
+                                self.recovered_other.push_back(record);
+                            }
+                        }
+                    }
+                    Ok(Err(error)) => self.error = Some(error),
+                    Err(oneshot::error::TryRecvError::Empty) => self.recovery_reply = Some(reply),
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        self.error = Some("research archive recovery stopped".into())
+                    }
+                }
+            } else if let Some(after) = self.archive_after {
+                // A full command channel defers the page; it never loses history.
+                if let Ok(reply) = self.client.recover(after, self.archive_end) {
+                    self.recovery_reply = Some(reply);
+                }
+            }
+        }
         let now = Instant::now();
         let mut accepted = Vec::new();
         // Reconcile at most one retained non-finding record per driver turn.
@@ -176,7 +212,9 @@ impl Autonomous {
         // outputs remain untrusted and are resumed only for current obligations.
         if let Some(record) = self.recovered_other.pop_front() {
             if let jobs::Input::Solve { question: source } = &record.input {
-                if record.state != jobs::State::InDoubt && self.solving.len() >= MAX_SOLVING {
+                if record.state != jobs::State::InDoubt
+                    && self.solving.len() >= crate::resources::limits().solving_jobs
+                {
                     self.recovered_other.push_front(record);
                 } else if record.state == jobs::State::InDoubt {
                     self.retire(record);
@@ -192,7 +230,8 @@ impl Autonomous {
                     }
                     let fresh = questions.generation_decision(graph, &question);
                     if fresh.passed()
-                        && self.publications.len() + self.solving.len() < MAX_PUBLICATIONS
+                        && self.publications.len() + self.solving.len()
+                            < crate::resources::limits().publications
                     {
                         match self
                             .client
@@ -306,6 +345,7 @@ impl Autonomous {
                     ) =>
                 {
                     self.acknowledge(completion.id);
+                    questions.settle_backlog(&id);
                     emit(
                         json!({"event":"solve_obligation_held_or_expired","resolution_id":crate::hex(&id),
                         "state":format!("{:?}",completion.state)}),
@@ -314,7 +354,7 @@ impl Autonomous {
                 Ok(completion) => match completion.result {
                     Ok(jobs::Output::Proof { source, helpers }) => {
                         match graph.prepare_generated(&source, &helpers, &solving.question) {
-                            Ok((root, _)) => {
+                            Ok((root, batch)) => {
                                 emit(
                                     json!({"event":"proof_generated","id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(&id),"job":completion.id}),
                                 );
@@ -323,6 +363,7 @@ impl Autonomous {
                                     job: completion.id,
                                     source,
                                     helpers,
+                                    batch: Some((root, batch)),
                                     context: None,
                                     reply: None,
                                     attempts: 0,
@@ -383,9 +424,14 @@ impl Autonomous {
                     continue;
                 }
                 if !pending.eligible {
-                    pending.retry =
-                        now + Duration::from_millis(self.intervals.question_interval_ms.max(1_000));
-                    pending.attempts += 1;
+                    pending.retry = now
+                        + Duration::from_millis(
+                            self.intervals
+                                .question_interval_ms
+                                .max(crate::resources::limits().publication_backoff.as_millis()
+                                    as u64),
+                        );
+                    pending.attempts = pending.attempts.saturating_add(1);
                 }
             }
             if let Some(mut reply) = pending.reply.take() {
@@ -399,11 +445,16 @@ impl Autonomous {
                             {
                                 return Err("stale generated proof context".into());
                             }
-                            let (root, batch) = graph.prepare_generated(
-                                &pending.source,
-                                &pending.helpers,
-                                &pending.question,
-                            )?;
+                            let (root, batch) = match pending.batch.take() {
+                                Some((root, batch)) if graph.batch_current(&batch)? => {
+                                    (root, batch)
+                                }
+                                _ => graph.prepare_generated(
+                                    &pending.source,
+                                    &pending.helpers,
+                                    &pending.question,
+                                )?,
+                            };
                             let delta = questions.prepare_exchange(
                                 graph,
                                 &pending.question,
@@ -423,7 +474,12 @@ impl Autonomous {
                                 emit(json!({"event":"proof_candidate_rejected","error":error}));
                                 pending.retry = now
                                     + Duration::from_millis(
-                                        self.intervals.question_interval_ms.max(1_000),
+                                        self.intervals.question_interval_ms.max(
+                                            crate::resources::limits()
+                                                .publication_backoff
+                                                .as_millis()
+                                                as u64,
+                                        ),
                                     );
                             }
                         }
@@ -435,11 +491,16 @@ impl Autonomous {
                     }
                     Err(_) => {
                         pending.retry = now
-                            + Duration::from_millis(self.intervals.question_interval_ms.max(1_000))
+                            + Duration::from_millis(
+                                self.intervals.question_interval_ms.max(
+                                    crate::resources::limits().publication_backoff.as_millis()
+                                        as u64,
+                                ),
+                            )
                     }
                 }
             }
-            if pending.attempts >= MAX_PUBLICATION_RETRIES {
+            if pending.attempts >= crate::resources::limits().publication_retries {
                 self.acknowledge(pending.job);
                 emit(
                     json!({"event":"publication_retry_limit","resolution_id":crate::hex(pending.question.resolution_id())}),
@@ -459,14 +520,28 @@ impl Autonomous {
                 }
                 pending.context = Some(context);
                 pending.reply = Some(reply);
-                pending.attempts += 1;
+                pending.attempts = pending.attempts.saturating_add(1);
             }
             self.publications.push_back(pending);
         }
 
+        // Refill one fair FIFO item per turn. The complete backlog is durable;
+        // the parsed queue is only a bounded working page, never a lifetime cap.
+        if self.unanswered.len() < crate::resources::limits().question_page
+            && let Some(question) = questions.next_backlog()
+            && !self.solving.contains_key(question.resolution_id())
+            && !self
+                .publications
+                .iter()
+                .any(|p| p.question.resolution_id() == question.resolution_id())
+        {
+            self.retain(question);
+        }
+
         if now >= self.next_proof
-            && self.solving.len() < MAX_SOLVING
-            && self.publications.len() + self.solving.len() < MAX_PUBLICATIONS
+            && self.solving.len() < crate::resources::limits().solving_jobs
+            && self.publications.len() + self.solving.len()
+                < crate::resources::limits().publications
         {
             self.next_proof = now + Duration::from_millis(self.intervals.proof_interval_ms);
             if let Some(question) = self.unanswered.pop_front() {
@@ -496,13 +571,15 @@ impl Autonomous {
                     Some(RejectionReason::KnownProof | RejectionReason::KnownRefutation)
                 ) {
                     self.retain(question);
+                } else {
+                    questions.settle_backlog(question.resolution_id());
                 }
             }
         }
         if now >= self.next_question
             && self.finding.is_none()
-            && self.admissions.len() < MAX_FINDING_ADMISSIONS
-            && self.unanswered.len() < MAX_UNANSWERED
+            && self.admissions.len() < crate::resources::limits().finding_admissions
+            && self.unanswered.len() < crate::resources::limits().question_page
             && questions.available_local()
         {
             self.next_question = now + Duration::from_millis(self.intervals.question_interval_ms);

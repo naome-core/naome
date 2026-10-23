@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 use std::{
     fs,
     path::PathBuf,
@@ -208,7 +209,7 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
         );
         drop(receipt);
         // A slow cancelled provider may outlive many short finding jobs.
-        for cursor in 0..=TERMINAL_HISTORY as u64 {
+        for cursor in 0..=crate::resources::limits().terminal_job_page as u64 {
             let (reply, mut receipt) = oneshot::channel();
             owner
                 .submit(
@@ -234,7 +235,10 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
             owner.journal.records.get_mut(&id).unwrap().acknowledged = true;
             owner.save().unwrap();
         }
-        assert_eq!(owner.journal.records.len(), TERMINAL_HISTORY + 1);
+        assert_eq!(
+            owner.journal.records.len(),
+            crate::resources::limits().terminal_job_page + 1
+        );
         owner
             .complete(
                 1,
@@ -246,33 +250,44 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
             .unwrap();
         assert!(owner.running.is_empty());
         assert!(!owner.waiters.contains_key(&1));
-        let bytes = fs::read(directory.0.join("research/jobs.json")).unwrap();
-        let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let saved = owner.disk.saved().unwrap();
         assert_eq!(
             saved["payload"]["records"]["1"]["state"],
             serde_json::to_value(state).unwrap()
         );
         assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], true);
         owner.save().unwrap();
-        assert_eq!(owner.journal.records.len(), TERMINAL_HISTORY);
+        assert_eq!(
+            owner.journal.records.len(),
+            crate::resources::limits().terminal_job_page
+        );
         assert!(!owner.journal.records.contains_key(&1));
-        let account = owner.journal.accounts.values().next().unwrap();
+        assert!(
+            owner.journal.accounts.is_empty(),
+            "completed budgets leave active residency"
+        );
+        let key = Input::Solve {
+            question: crate::mocks::create_question(0),
+        }
+        .account_key();
+        let account = owner.disk.account(&key).unwrap().unwrap();
         assert_eq!(account.reserved_units, 1);
         assert!(account.spent_ms > 0);
         let settings = owner.settings;
         drop(owner);
-        let (_, recovered) = Disk::open(&directory.0, settings, 0).unwrap();
-        assert_eq!(recovered.records.len(), TERMINAL_HISTORY);
+        let (disk, recovered) = Disk::open(&directory.0, settings, 0).unwrap();
         assert_eq!(
-            recovered.accounts.values().next().unwrap().reserved_units,
-            1
+            recovered.records.len(),
+            crate::resources::limits().terminal_job_page
         );
+        assert!(recovered.accounts.is_empty());
+        assert_eq!(disk.account(&key).unwrap().unwrap().reserved_units, 1);
     }
 }
 
 #[tokio::test]
 async fn failed_clock_accounting_still_drains_all_owned_tasks() {
-    let (directory, mut owner) = fixture(4);
+    let (_directory, mut owner) = fixture(4);
     let _receipt = submit(&mut owner, 1);
     owner.journal.records.get_mut(&1).unwrap().state = State::Running;
     let (cancel, _) = oneshot::channel();
@@ -300,15 +315,14 @@ async fn failed_clock_accounting_still_drains_all_owned_tasks() {
     assert!(observed.load(Ordering::SeqCst));
     assert!(owner.tasks.is_empty() && owner.running.is_empty());
     assert_eq!(owner.journal.records[&1].state, State::InDoubt);
-    let bytes = fs::read(directory.0.join("research/jobs.json")).unwrap();
-    let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let saved = owner.disk.saved().unwrap();
     assert_eq!(saved["payload"]["records"]["1"]["state"], "in_doubt");
     assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], false);
 }
 
 #[test]
 fn delivered_cleanup_uncertainty_is_retained_before_clock_failure() {
-    let (directory, mut owner) = fixture(4);
+    let (_directory, mut owner) = fixture(4);
     let _receipt = submit(&mut owner, 1);
     owner.journal.records.get_mut(&1).unwrap().state = State::Running;
     owner.journal.observed_ms = wall_ms().unwrap() + 100_000;
@@ -323,15 +337,14 @@ fn delivered_cleanup_uncertainty_is_retained_before_clock_failure() {
         .unwrap_err();
     assert!(error.contains("reconciliation") && error.contains("clock rollback"));
     assert_eq!(owner.journal.records[&1].state, State::InDoubt);
-    let bytes = fs::read(directory.0.join("research/jobs.json")).unwrap();
-    let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let saved = owner.disk.saved().unwrap();
     assert_eq!(saved["payload"]["records"]["1"]["state"], "in_doubt");
     assert_eq!(saved["payload"]["records"]["1"]["acknowledged"], false);
 }
 
 #[test]
 fn established_state_and_kernel_slot_identity_cannot_be_silently_replaced() {
-    for missing in ["jobs.json", "slot-0.lock", "research"] {
+    for missing in ["jobs.sqlite3", "slot-0.lock", "research"] {
         let (directory, owner) = fixture(4);
         let settings = owner.settings;
         drop(owner);
@@ -370,7 +383,7 @@ fn corrupt_semantic_checkpoint_and_hardlink_are_rejected() {
     let (directory, mut owner) = fixture(4);
     let _receipt = submit(&mut owner, 1);
     owner.journal.records.get_mut(&1).unwrap().checkpoint = 1;
-    owner.disk.save(&owner.journal).unwrap();
+    owner.disk.save(&mut owner.journal).unwrap();
     let settings = owner.settings;
     drop(owner);
     assert!(Disk::open(&directory.0, settings, 0).is_err());
@@ -378,7 +391,7 @@ fn corrupt_semantic_checkpoint_and_hardlink_are_rejected() {
     let settings = owner.settings;
     drop(owner);
     fs::hard_link(
-        directory.0.join("research/jobs.json"),
+        directory.0.join("research/jobs.sqlite3"),
         directory.0.join("alias"),
     )
     .unwrap();
@@ -443,17 +456,24 @@ async fn clean_shutdown_charges_drain_time_and_rejects_late_success() {
 fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_available() {
     let (_directory, mut owner) = fixture(4);
     let mut receipts = Vec::new();
-    for epoch in 1..=8 {
-        receipts.push(submit(&mut owner, epoch));
+    let attempts = crate::resources::limits().active_job_bytes
+        / output_reservation(&Input::Solve {
+            question: crate::mocks::create_question(0),
+        })
+        + 1;
+    for epoch in 1..=attempts {
+        receipts.push(submit(&mut owner, u8::try_from(epoch).unwrap()));
     }
     assert!(
-        owner.journal.records.len() < 8,
+        owner.journal.records.len() < attempts,
         "large future results require capacity before execution"
     );
     assert!(receipts.iter_mut().any(|reply| {
-        reply
-            .try_recv()
-            .is_ok_and(|c| c.id == 0 && c.result.is_err())
+        reply.try_recv().is_ok_and(|c| {
+            c.id == 0
+                && c.result
+                    .is_err_and(|error| error.contains("result byte reservation"))
+        })
     }));
     let (reply, _receipt) = oneshot::channel();
     owner
@@ -481,4 +501,284 @@ fn cleanup_error_is_preserved_alongside_an_earlier_driver_failure() {
     )
     .unwrap_err();
     assert!(error.contains("driver clock failed") && error.contains("termination unconfirmed"));
+}
+
+// Isolated processes make the RSS comparison independent of parallel unit tests.
+// Each child reopens the same durable history; no provider or proof authority is
+// simulated by this accounting test. Process supervision has separate tests.
+#[test]
+fn thousands_of_obligations_keep_only_retained_accounts_across_process_restarts() {
+    const TOTAL: usize = 4096;
+    const INITIAL: usize = 256;
+    const BATCH: usize = 1024;
+    const TEST: &str = "jobs::service::tests::thousands_of_obligations_keep_only_retained_accounts_across_process_restarts";
+    fn input(index: usize) -> Input {
+        Input::Solve {
+            question: crate::checkpoint::tests::question_source(index),
+        }
+    }
+    fn settle(owner: &mut Owner, input: Input, retry: bool) {
+        let before = owner.disk.account(&input.account_key()).unwrap();
+        let (reply, mut receipt) = oneshot::channel();
+        owner
+            .submit(
+                input.clone(),
+                Binding::new([0; 32], [0; 32]).with_selection([u8::from(retry); 32]),
+                reply,
+            )
+            .unwrap();
+        let id = owner.journal.next_id - 1;
+        if let Some(original) = &before {
+            let record = &owner.journal.records[&id];
+            assert_eq!(record.created_ms, original.created_ms);
+            assert_eq!(record.expires_ms, original.expires_ms);
+            assert_eq!(record.spent_ms, original.spent_ms);
+            assert_eq!(record.reserved_units, original.reserved_units);
+        }
+        owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+        owner
+            .clocks
+            .insert(id, Instant::now() - Duration::from_millis(2));
+        owner.reserve(id, 1).unwrap();
+        assert!(owner.disk.last_write_stats().0 <= 4);
+        assert!(owner.disk.last_write_stats().1 < 16 * 1024);
+        owner.journal.records.get_mut(&id).unwrap().checkpoint = 1;
+        owner
+            .complete(
+                id,
+                process::Outcome {
+                    state: State::Complete,
+                    result: Ok(Output::NoCandidate),
+                },
+            )
+            .unwrap();
+        assert_eq!(receipt.try_recv().unwrap().state, State::Complete);
+        owner.journal.records.get_mut(&id).unwrap().acknowledged = true;
+        owner.save().unwrap();
+        let retained = owner
+            .journal
+            .records
+            .values()
+            .filter(|r| !matches!(r.input, Input::Find { .. }))
+            .map(|r| r.input.account_key())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            owner
+                .journal
+                .accounts
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            retained
+        );
+        assert!(owner.journal.records.len() <= crate::resources::limits().terminal_job_page);
+        assert!(owner.journal.accounts.len() <= owner.journal.records.len());
+        let account = owner.disk.account(&input.account_key()).unwrap().unwrap();
+        assert_eq!(account.reserved_units, if retry { 2 } else { 1 });
+        assert!(account.spent_ms >= before.map_or(2, |a| a.spent_ms + 2));
+    }
+    if let Some(directory) = std::env::var_os("NAOME_BUDGET_TEST_DIRECTORY") {
+        let directory = PathBuf::from(directory);
+        let phase: usize = std::env::var("NAOME_BUDGET_TEST_PHASE")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut settings = Settings::default();
+        settings.solving.limits.work_units = 2;
+        let (disk, state) = Disk::open(&directory, settings, 0).unwrap();
+        let mut owner = Owner::new(disk, state, settings);
+        assert!(owner.journal.accounts.len() <= owner.journal.records.len());
+        // Archived history is exhausted, and rejected lookups never become resident.
+        let active = owner.journal.accounts.len();
+        for index in 0..INITIAL {
+            let (reply, mut receipt) = oneshot::channel();
+            owner
+                .submit(input(index), Binding::new([1; 32], [2; 32]), reply)
+                .unwrap();
+            assert_eq!(receipt.try_recv().unwrap().state, State::Expired);
+            assert_eq!(owner.journal.accounts.len(), active);
+            assert_eq!(
+                owner
+                    .disk
+                    .account(&input(index).account_key())
+                    .unwrap()
+                    .unwrap()
+                    .reserved_units,
+                2
+            );
+        }
+        // Re-submit old native rows after a real process restart. Their original
+        // time horizon, spent time and reserved units all survive eviction.
+        if phase > 0 {
+            let index = if phase == 1 {
+                INITIAL
+            } else {
+                (phase - 1) * BATCH
+            };
+            settle(&mut owner, input(index), true);
+            for old in [INITIAL, BATCH, 2 * BATCH].into_iter().take(phase) {
+                let (reply, mut receipt) = oneshot::channel();
+                owner
+                    .submit(input(old), Binding::new([3; 32], [4; 32]), reply)
+                    .unwrap();
+                assert_eq!(receipt.try_recv().unwrap().state, State::Expired);
+                assert_eq!(
+                    owner
+                        .disk
+                        .account(&input(old).account_key())
+                        .unwrap()
+                        .unwrap()
+                        .reserved_units,
+                    2
+                );
+            }
+        }
+        let started = Instant::now();
+        let mut max_bytes = 0;
+        for index in (phase * BATCH).max(INITIAL)..(phase + 1) * BATCH {
+            settle(&mut owner, input(index), false);
+            max_bytes = max_bytes.max(owner.journal.encoded_active_len().unwrap());
+        }
+        assert_eq!(owner.disk.account_count(), (phase + 1) * BATCH);
+        assert!(
+            max_bytes < 256 * 1024,
+            "active accounting bytes: {max_bytes}"
+        );
+        let peak = crate::checkpoint::tests::image_peak_rss_bytes();
+        assert!(peak < 128 * 1024 * 1024, "isolated peak RSS: {peak}");
+        println!(
+            "BUDGET_HISTORY_METRICS {}",
+            serde_json::json!({"phase":phase,"history":owner.disk.account_count(),"active_accounts":owner.journal.accounts.len(),"retained_jobs":owner.journal.records.len(),"max_active_bytes":max_bytes,"peak_rss_bytes":peak,"work_seconds":started.elapsed().as_secs_f64()})
+        );
+        return;
+    }
+    let (directory, mut owner) = fixture(2);
+    let settings = owner.settings;
+    for index in 0..INITIAL {
+        owner.journal.accounts.insert(
+            input(index).account_key(),
+            Account {
+                settings: settings.solving,
+                created_ms: owner.journal.observed_ms,
+                expires_ms: owner.journal.observed_ms + settings.solving.limits.horizon_ms,
+                spent_ms: 2,
+                reserved_units: 2,
+                held: None,
+            },
+        );
+    }
+    owner.journal.retired_jobs = INITIAL as u64;
+    owner.journal.next_id = owner.journal.retired_jobs + 1;
+    owner.journal.total_spent_ms = (2 * INITIAL) as u64;
+    owner.journal.total_reserved_units = (2 * INITIAL) as u64;
+    owner.save().unwrap();
+    drop(owner);
+    let mut first_peak = None;
+    for phase in 0..TOTAL / BATCH {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_BUDGET_TEST_DIRECTORY", &directory.0)
+            .env("NAOME_BUDGET_TEST_PHASE", phase.to_string())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            output.status.success(),
+            "phase {phase}: {}\n{stdout}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let line = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("BUDGET_HISTORY_METRICS "))
+            .unwrap();
+        println!("BUDGET_HISTORY_METRICS {line}");
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        let peak = value["peak_rss_bytes"].as_u64().unwrap();
+        let first = *first_peak.get_or_insert(peak);
+        assert!(
+            peak <= first + 16 * 1024 * 1024,
+            "RSS grows with archived accounts: {line}"
+        );
+    }
+    let (disk, state) = Disk::open(&directory.0, settings, 0).unwrap();
+    assert_eq!(disk.account_count(), TOTAL);
+    assert_eq!(state.accounts.len(), state.records.len());
+    drop(disk);
+    fs::remove_file(directory.0.join("research/jobs.sqlite3")).unwrap();
+    assert!(
+        Disk::open(&directory.0, settings, 0).is_err(),
+        "initialization receipt forbids resetting old allowances"
+    );
+}
+
+#[test]
+fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_work() {
+    fn submit_find(owner: &mut Owner, cursor: u64) -> u64 {
+        let (reply, _receive) = oneshot::channel();
+        // Retain the request receiver until submission has durably accepted it.
+        owner
+            .submit(
+                Input::Find { cursor },
+                Binding::new([0; 32], [0; 32]),
+                reply,
+            )
+            .unwrap();
+        owner.journal.next_id - 1
+    }
+    let (directory, mut owner) = fixture(1);
+    let total = crate::resources::limits().resident_jobs * 2;
+    for index in 0..total {
+        let id = submit_find(&mut owner, index as u64);
+        owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+        owner.reserve(id, 1).unwrap();
+        let record = owner.journal.records.get_mut(&id).unwrap();
+        record.checkpoint = 1;
+        record.state = State::Complete;
+        record.result = Some(Output::Question(crate::mocks::create_question(
+            index as u64,
+        )));
+        owner.save().unwrap();
+        owner.deliver(id);
+    }
+    owner.save().unwrap();
+    assert!(owner.journal.records.len() < total);
+    let end = owner.journal.next_id;
+    let settings = owner.settings;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let skip = journal
+        .records
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut after = 0;
+    let mut recovered = Vec::new();
+    loop {
+        let page = disk.recovery_page(after, end, &skip).unwrap();
+        assert!(page.records.len() <= crate::resources::limits().terminal_job_page);
+        recovered.extend(page.records.into_iter().map(|r| r.id));
+        match page.next {
+            Some(next) => {
+                assert!(next > after);
+                after = next;
+            }
+            None => break,
+        }
+    }
+    let expected = (1..end).filter(|id| !skip.contains(id)).collect::<Vec<_>>();
+    assert_eq!(recovered, expected);
+    assert_eq!(
+        disk.request(
+            &Input::Find { cursor: 0 },
+            &Binding::new([0; 32], [0; 32]),
+            settings.finding
+        )
+        .unwrap()
+        .unwrap()
+        .id,
+        1
+    );
+    let mut owner = Owner::new(disk, journal, settings);
+    let id = submit_find(&mut owner, total as u64);
+    assert!(id >= end);
 }

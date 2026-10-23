@@ -79,6 +79,8 @@ fn rows(storage: &CheckedStorage) -> usize {
         .connection
         .lock()
         .unwrap()
+        .open()
+        .unwrap()
         .query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))
         .unwrap();
     usize::try_from(rows).unwrap()

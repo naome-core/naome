@@ -19,13 +19,17 @@ use std::{
 };
 
 const SETTING: &str = "NAOME_STATUS_REPLAY_GUARD";
-const MAX_ACTIVE_NS: u64 = 1800 * 1_000_000_000;
-const FRESH_NS: u64 = 2 * 1_000_000_000;
+// Fixed grammar: verb, a 256-bit nonce, two u64 clocks and separators.
 const MAX_FRAME: usize = 192;
-// The caller plus its utilities is bounded to64MiB; another64MiB remains
-// reserved. This guard's384MiB plus both reserves preserves the512MiB total.
-const OWN_RSS_BYTES: u64 = 384 * 1024 * 1024;
-const POLL: Duration = Duration::from_millis(10);
+fn active_ns() -> u64 {
+    crate::resources::limits().replay_guard_timeout.as_nanos() as u64
+}
+fn fresh_ns() -> u64 {
+    crate::resources::limits().replay_guard_freshness.as_nanos() as u64
+}
+fn own_rss_bytes() -> u64 {
+    crate::resources::limits().replay_guard_bytes as u64
+}
 
 struct Descriptor {
     nonce: String,
@@ -77,8 +81,10 @@ impl Descriptor {
             return Err("invalid status replay nonce".into());
         }
         let deadline: u64 = deadline.parse().map_err(|_| "invalid replay cutoff")?;
-        if deadline <= current || deadline - current > MAX_ACTIVE_NS {
-            return Err("status replay cutoff is expired or exceeds1800s".into());
+        if deadline <= current || deadline - current > active_ns() {
+            return Err(
+                "status replay cutoff is expired or exceeds its configured allowance".into(),
+            );
         }
         Ok(Self {
             nonce: nonce.to_owned(),
@@ -120,7 +126,7 @@ impl Grants {
                 || sampled == 0
                 || sampled > current
                 || self.sampled.is_some_and(|previous| sampled < previous)
-                || current - sampled > FRESH_NS
+                || current - sampled > fresh_ns()
                 || current >= self.deadline
             {
                 return Err("status replay sequence, freshness or cutoff differs".into());
@@ -135,7 +141,7 @@ impl Grants {
     fn check(&self, current: u64, peak: u64) -> Result<(), String> {
         check_usage(current, peak, self.deadline)?;
         let sampled = self.sampled.unwrap_or(self.opened);
-        if sampled > current || current - sampled > FRESH_NS {
+        if sampled > current || current - sampled > fresh_ns() {
             return Err("status replay grant expired".into());
         }
         Ok(())
@@ -145,8 +151,8 @@ fn check_usage(current: u64, peak: u64, deadline: u64) -> Result<(), String> {
     if current >= deadline {
         return Err("original status replay deadline reached".into());
     }
-    if peak == 0 || peak > OWN_RSS_BYTES {
-        return Err("status replay own RSS exceeds384MiB or is unavailable".into());
+    if peak == 0 || peak > own_rss_bytes() {
+        return Err("status replay own RSS exceeds its configured budget or is unavailable".into());
     }
     Ok(())
 }
@@ -203,7 +209,7 @@ pub(super) fn optional(command: &str) -> Result<Option<Guard>, String> {
     };
     receive
         .recv_timeout(Duration::from_nanos(
-            FRESH_NS.min(deadline.saturating_sub(now()?)),
+            fresh_ns().min(deadline.saturating_sub(now()?)),
         ))
         .map_err(|_| "status replay initial grant unavailable")?;
     Ok(Some(guard))
@@ -236,7 +242,9 @@ fn watch(
                     admitted = true;
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(POLL),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(crate::resources::limits().custody_poll_interval)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(format!("status replay lifeline unreadable: {error}")),
         }
@@ -266,7 +274,7 @@ impl Guard {
     fn check_final(&self) -> Result<(), String> {
         let current = now()?;
         let sampled = self.sampled.load(Ordering::Acquire);
-        if sampled == 0 || sampled > current || current - sampled > FRESH_NS {
+        if sampled == 0 || sampled > current || current - sampled > fresh_ns() {
             return Err("status replay final grant expired".into());
         }
         check_usage(current, own_peak()?, self.deadline)
@@ -289,10 +297,10 @@ mod tests {
     #[test]
     fn descriptor_preserves_original_cutoff_and_rejects_invalid_windows() {
         let nonce = "ab".repeat(32);
-        assert!(Descriptor::parse(&format!("{nonce}:{}", MAX_ACTIVE_NS), 1).is_ok());
+        assert!(Descriptor::parse(&format!("{nonce}:{}", active_ns()), 1).is_ok());
         for value in [
             format!("{nonce}:1"),
-            format!("{nonce}:{}", MAX_ACTIVE_NS + 2),
+            format!("{nonce}:{}", active_ns() + 2),
             format!("{nonce}:invalid"),
             "00:100".into(),
             format!("{}:100", "zz".repeat(32)),
@@ -325,9 +333,9 @@ mod tests {
     #[test]
     fn silence_and_original_expiry_never_renew_admission() {
         let mut state = Grants::new(descriptor(), 1);
-        assert!(state.check(FRESH_NS + 2, 1).is_err());
+        assert!(state.check(fresh_ns() + 2, 1).is_err());
         assert!(state.push(&frame(1, 1), 2).unwrap());
-        assert!(state.check(FRESH_NS + 2, 1).is_err());
+        assert!(state.check(fresh_ns() + 2, 1).is_err());
         assert!(
             state
                 .push(&frame(2, state.deadline), state.deadline)
@@ -336,10 +344,10 @@ mod tests {
     }
     #[test]
     fn final_usage_and_both_reserves_preserve_total_rss_limit() {
-        assert_eq!(OWN_RSS_BYTES + 2 * 64 * 1024 * 1024, 512 * 1024 * 1024);
-        assert!(check_usage(1, OWN_RSS_BYTES, 2).is_ok());
-        assert!(check_usage(1, OWN_RSS_BYTES + 1, 2).is_err());
+        assert_eq!(own_rss_bytes() + 2 * 64 * 1024 * 1024, 512 * 1024 * 1024);
+        assert!(check_usage(1, own_rss_bytes(), 2).is_ok());
+        assert!(check_usage(1, own_rss_bytes() + 1, 2).is_err());
         assert!(check_usage(1, 0, 2).is_err());
-        assert!(check_usage(2, OWN_RSS_BYTES, 2).is_err());
+        assert!(check_usage(2, own_rss_bytes(), 2).is_err());
     }
 }

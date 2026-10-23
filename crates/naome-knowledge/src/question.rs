@@ -25,11 +25,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::Graph;
 
-pub const QUESTION_QUEUE: usize = 8;
-pub const INTEREST_TIMEOUT: Duration = Duration::from_secs(30);
-pub const MAX_REGISTERED_QUESTIONS: usize = 1024;
-pub const MAX_REGISTERED_SOURCE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_QUESTION_CHECKPOINT_BYTES: usize = 32 * 1024 * 1024;
+// Worst-case JSON escaping of one protocol-bounded source plus its receipt.
+const QUESTION_ENTRY_MAX_BYTES: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 2048;
 mod persistence;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +177,7 @@ impl QuestionInbox {
 /// The creator chooses who receives the administrative capability; cloning an
 /// ordinary handle never grants import or policy mutation.
 pub fn channel() -> (QuestionHandle, QuestionAdminHandle, QuestionInbox) {
-    let (sender, receiver) = mpsc::channel(QUESTION_QUEUE);
+    let (sender, receiver) = mpsc::channel(crate::resources::limits().question_commands);
     (
         QuestionHandle {
             sender: sender.clone(),
@@ -312,6 +309,7 @@ struct ProviderResult {
     job: Option<u64>,
 }
 
+#[derive(Clone)]
 struct AdmittedProvenance {
     question: CompiledQuestion,
     record: Identity,
@@ -333,6 +331,7 @@ pub(crate) struct LocalQuestions<F> {
     next_pending: u64,
     finished: Option<u64>,
     persistence: Option<persistence::Persistence>,
+    index_storage: Option<Arc<crate::index_storage::IndexStorage>>,
     storage_error: Option<String>,
     interest_horizon: Duration,
     selection: Option<Identity>,
@@ -353,15 +352,16 @@ where
     pub(crate) fn new(provider: Option<F>) -> Self {
         Self {
             registry: QuestionRegistry::new(),
-            policy: PrefilterPolicy::default(),
+            policy: crate::resources::limits().assessment_policy(),
             provider: provider.map(Arc::new),
             managed: None,
             pending: BTreeMap::new(),
             next_pending: 1,
             finished: None,
             persistence: None,
+            index_storage: None,
             storage_error: None,
-            interest_horizon: INTEREST_TIMEOUT,
+            interest_horizon: crate::resources::limits().interest_timeout,
             selection: Some(
                 crate::object::id_bytes(&crate::jobs::Binding::new([0; 32], [0; 32]).selection)
                     .expect("canonical built-in provider identity"),
@@ -380,37 +380,103 @@ where
         horizon: Duration,
     ) -> Result<Self, String> {
         let mut local = Self::new(None);
-        let (persistence, entries) = persistence::Persistence::open(directory, local.policy)?;
-        for entry in entries {
-            let question = CompiledQuestion::compile(&entry.source).map_err(|e| e.to_string())?;
-            let record = *question.source_hash();
-            local
-                .registry
-                .insert(
-                    RegisteredQuestion::new(record, question.core())
-                        .map_err(|e| format!("recovered question: {e:?}"))?,
-                )
-                .map_err(|e| format!("recovered registry: {e:?}"))?;
-            // Prepared delivery is deliberately uncertain. It remains known
-            // registry input but grants no original-admission exception.
-            if entry.kind == persistence::Kind::Admitted {
-                local.admitted.insert(
-                    *question.resolution_id(),
-                    AdmittedProvenance {
-                        question: question.clone(),
-                        record,
-                    },
-                );
-            } else if entry.kind == persistence::Kind::Prepared {
-                crate::network::emit(serde_json::json!({"event":"question_recovery_hold",
-                    "source_id":crate::hex(&record),"reason":"original admission delivery is uncertain"}));
-            }
-            local.known.insert(record, question);
-        }
+        local.attach_persistence(directory)?;
         local.managed = Some(client);
         local.interest_horizon = horizon;
-        local.persistence = Some(persistence);
         Ok(local)
+    }
+
+    pub(crate) fn attach_persistence(&mut self, directory: &std::path::Path) -> Result<(), String> {
+        if self.persistence.is_some() {
+            return Ok(());
+        }
+        if !self.registry.is_empty() {
+            return Err("cannot replace a populated local registry".into());
+        }
+        let persistence = persistence::Persistence::open(directory, self.policy)?;
+        let storage = crate::index_storage::IndexStorage::open(directory, "questions")?;
+        self.registry = QuestionRegistry::with_storage(storage.clone());
+        persistence.replay(|entry,question|{
+            let record=*question.source_hash();
+            self.registry.insert(RegisteredQuestion::new(record,question.core()).map_err(|e|format!("recovered question: {e:?}"))?).map_err(|e|format!("recovered registry: {e:?}"))?;
+            if entry.kind==persistence::Kind::Prepared {crate::network::emit(serde_json::json!({"event":"question_recovery_hold","source_id":crate::hex(&record),"reason":"original admission delivery is uncertain"}));}
+            self.remember(question,entry.kind==persistence::Kind::Admitted);Ok(())
+        })?;
+        self.persistence = Some(persistence);
+        self.index_storage = Some(storage);
+        Ok(())
+    }
+
+    fn remember(&mut self, question: CompiledQuestion, admitted: bool) {
+        fn bytes(q: &CompiledQuestion) -> usize {
+            q.source()
+                .len()
+                .saturating_add(q.canonical_core().len().saturating_mul(256))
+                .saturating_add(std::mem::size_of::<CompiledQuestion>() + 512)
+        }
+        let needed = bytes(&question);
+        let budget = crate::resources::limits().checked_cache_bytes / 8;
+        let limit = crate::resources::limits().question_page;
+        if needed > budget {
+            return;
+        }
+        while self.known.len() >= limit
+            || self.known.values().map(bytes).sum::<usize>() + needed > budget
+        {
+            if self.known.pop_first().is_none() {
+                break;
+            }
+        }
+        self.known.insert(*question.source_hash(), question.clone());
+        if admitted {
+            while self.admitted.len() >= limit
+                || self
+                    .admitted
+                    .values()
+                    .map(|entry| bytes(&entry.question))
+                    .sum::<usize>()
+                    + needed
+                    > budget
+            {
+                if self.admitted.pop_first().is_none() {
+                    break;
+                }
+            }
+            self.admitted.insert(
+                *question.resolution_id(),
+                AdmittedProvenance {
+                    record: *question.source_hash(),
+                    question,
+                },
+            );
+        }
+    }
+    fn provenance(&self, resolution: &Identity) -> Option<AdmittedProvenance> {
+        if let Some(persistence) = &self.persistence {
+            return persistence
+                .admitted(resolution)
+                .ok()
+                .flatten()
+                .map(|(question, record)| AdmittedProvenance { question, record });
+        }
+        self.admitted.get(resolution).cloned()
+    }
+    pub(crate) fn next_backlog(&mut self) -> Option<CompiledQuestion> {
+        let persistence = self.persistence.as_mut()?;
+        match persistence.next_backlog() {
+            Ok(question) => question,
+            Err(error) => {
+                self.storage_error = Some(error);
+                None
+            }
+        }
+    }
+    pub(crate) fn settle_backlog(&mut self, resolution: &Identity) {
+        if let Some(persistence) = &mut self.persistence
+            && let Err(error) = persistence.settle_backlog(resolution)
+        {
+            self.storage_error = Some(error);
+        }
     }
 
     pub(crate) fn restored_unanswered(&self, graph: &Graph) -> Vec<CompiledQuestion> {
@@ -431,8 +497,19 @@ where
             .collect()
     }
 
-    pub(crate) fn storage_error(&self) -> Option<&str> {
-        self.storage_error.as_deref()
+    pub(crate) fn storage_error(&self) -> Option<String> {
+        self.storage_error
+            .clone()
+            .or_else(|| {
+                self.persistence
+                    .as_ref()
+                    .and_then(persistence::Persistence::error)
+            })
+            .or_else(|| {
+                self.index_storage
+                    .as_ref()
+                    .and_then(|storage| storage.error())
+            })
     }
     pub(crate) fn uses_jobs(&self) -> bool {
         self.managed.is_some()
@@ -470,11 +547,17 @@ where
     }
 
     fn registry_capacity(&self, question: &CompiledQuestion) -> bool {
-        self.known.contains_key(question.source_hash())
-            || self.registry.len() < MAX_REGISTERED_QUESTIONS
-                && self.known.values().map(|q| q.source().len()).sum::<usize>()
+        self.storage_error().is_none()
+            && (self.persistence.is_some()
+                || self.known.contains_key(question.source_hash())
+                || self
+                    .known
+                    .values()
+                    .map(|q| q.source().len() + q.canonical_core().len() * 64)
+                    .sum::<usize>()
                     + question.source().len()
-                    <= MAX_REGISTERED_SOURCE_BYTES
+                    + question.canonical_core().len() * 64
+                    <= crate::resources::limits().checked_cache_bytes)
     }
 
     fn snapshot<'a>(&'a self, graph: &'a Graph) -> KnowledgeSnapshot<'a> {
@@ -553,15 +636,14 @@ where
     }
 
     fn exchange_record(&self, question: &CompiledQuestion) -> Option<Identity> {
-        self.admitted
-            .get(question.resolution_id())
+        self.provenance(question.resolution_id())
             .filter(|entry| entry.question == *question)
             .map(|entry| entry.record)
     }
 
     pub(crate) fn available(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.len() < 8
+            self.pending.len() < 2 * crate::resources::limits().interest_decisions
         } else {
             self.pending.is_empty()
         }
@@ -569,14 +651,16 @@ where
 
     pub(crate) fn available_peer(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.values().filter(|p| p.peer).count() < 4
+            self.pending.values().filter(|p| p.peer).count()
+                < crate::resources::limits().interest_decisions
         } else {
             self.available()
         }
     }
     pub(crate) fn available_local(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.values().filter(|p| !p.peer).count() < 4
+            self.pending.values().filter(|p| !p.peer).count()
+                < crate::resources::limits().interest_decisions
         } else {
             self.available()
         }
@@ -602,8 +686,7 @@ where
         // Family equality is only a lookup. The original source, orientation,
         // record and delivered first-admission evidence remain unchanged.
         let question = self
-            .admitted
-            .get(derived.resolution_id())
+            .provenance(derived.resolution_id())
             .filter(|entry| {
                 entry.question.core() == derived.core()
                     && entry.question.canonical_core() == derived.canonical_core()
@@ -633,8 +716,7 @@ where
         deadline: Instant,
     ) -> (CompiledQuestion, oneshot::Receiver<QuestionAssessment>) {
         let question = self
-            .admitted
-            .get(derived.resolution_id())
+            .provenance(derived.resolution_id())
             .filter(|entry| {
                 entry.question.core() == derived.core()
                     && entry.question.canonical_core() == derived.canonical_core()
@@ -660,7 +742,8 @@ where
         question: &CompiledQuestion,
         assessment: &QuestionAssessment,
     ) -> bool {
-        assessment.prefilter.passed()
+        self.storage_error().is_none()
+            && assessment.prefilter.passed()
             && self.selection.is_some()
             && assessment.selection == self.selection
             && assessment.interest == InterestAssessment::Assessed(true)
@@ -711,7 +794,7 @@ where
             {
                 self.storage_error = Some(error);
             }
-            self.known.insert(*question.source_hash(), question);
+            self.remember(question, false);
         }
         self.cached = None;
     }
@@ -727,7 +810,8 @@ where
         };
         let peer = matches!(reply, Reply::Exchange { root: Some(_), .. });
         let available = if self.managed.is_some() {
-            self.pending.values().filter(|p| p.peer == peer).count() < 4
+            self.pending.values().filter(|p| p.peer == peer).count()
+                < crate::resources::limits().interest_decisions
         } else {
             self.pending.is_empty()
         };
@@ -740,8 +824,8 @@ where
         let remaining = match &reply {
             Reply::Exchange { deadline, .. } => deadline
                 .saturating_duration_since(Instant::now())
-                .min(INTEREST_TIMEOUT),
-            _ => INTEREST_TIMEOUT,
+                .min(crate::resources::limits().interest_timeout),
+            _ => crate::resources::limits().interest_timeout,
         };
         if !prefilter.passed()
             || self.selection.is_none()
@@ -861,7 +945,7 @@ where
             Command::ImportBaseline(question, reply) => {
                 if !reply.is_closed() {
                     let previous = self.registry.clone();
-                    let outcome = if self.registry.contains(question.core()) {
+                    let outcome = if self.registry.contains(question.core()).unwrap_or(true) {
                         Err(RejectionReason::ExactDuplicate)
                     } else if !self.registry_capacity(&question) {
                         Err(RejectionReason::ReceivingLimit)
@@ -879,7 +963,7 @@ where
                         {
                             self.storage_error = Some(error);
                         }
-                        self.known.insert(*question.source_hash(), question);
+                        self.remember(question, false);
                     }
                 }
             }
@@ -1037,10 +1121,7 @@ where
             return;
         }
         if delivered && let Some(provenance) = provenance {
-            self.known
-                .insert(provenance.record, provenance.question.clone());
-            self.admitted
-                .insert(*provenance.question.resolution_id(), provenance);
+            self.remember(provenance.question, true);
         }
         if let (Some(client), Some(job)) = (&self.managed, pending.job)
             && let Err(error) = client.acknowledge(job)

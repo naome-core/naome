@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "vendor/libp2p-dcutr",
+    "vendor/libp2p-mdns",
     "vendor/libp2p-relay",
     "crates/naome-authoring",
     "crates/naome-checker",
@@ -41,5 +42,6 @@ debug-assertions = true
 overflow-checks = true
 
 [patch.crates-io]
+libp2p-mdns = { path = "vendor/libp2p-mdns" }
 libp2p-dcutr = { path = "vendor/libp2p-dcutr" }
 libp2p-relay = { path = "vendor/libp2p-relay" }

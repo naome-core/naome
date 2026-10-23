@@ -1,9 +1,7 @@
 //! Versioned local owner text; directory ownership and call serialization are required.
 use super::*;
 
-pub(super) const MAX_TEXT_BYTES: usize = 1_024;
 // Bound both worst-case JSON escaping and the small recovery metadata.
-const MAX_CONFIG_BYTES: usize = 6 * MAX_TEXT_BYTES + 512;
 const CONFIG: &str = "owner.json";
 const PENDING: &str = ".owner-pending";
 const COMMIT: &str = ".owner-commit";
@@ -73,8 +71,11 @@ impl From<String> for Failure {
 }
 
 pub(super) fn validate(text: &str) -> Result<(), String> {
-    if text.len() > MAX_TEXT_BYTES {
-        return Err("interest exceeds 1024 UTF-8 bytes".into());
+    if text.len() > crate::resources::limits().owner_text_bytes {
+        return Err(format!(
+            "interest exceeds {} UTF-8 bytes",
+            crate::resources::limits().owner_text_bytes
+        ));
     }
     Ok(())
 }
@@ -97,10 +98,10 @@ fn read<T: serde::de::DeserializeOwned>(directory: &Path, name: &str) -> Result<
         return Err("owner configuration must be one owned regular file".into());
     }
     let mut data = Vec::new();
-    file.take(MAX_CONFIG_BYTES as u64 + 1)
+    file.take((6 * crate::resources::limits().owner_text_bytes + 512) as u64 + 1)
         .read_to_end(&mut data)
         .map_err(|error| error.to_string())?;
-    if data.len() > MAX_CONFIG_BYTES {
+    if data.len() > (6 * crate::resources::limits().owner_text_bytes + 512) {
         return Err("owner configuration byte limit".into());
     }
     serde_json::from_slice(&data)

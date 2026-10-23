@@ -6,17 +6,17 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-const LANES: [usize; 4] = [1, 2, 2, 2];
-const QUEUE_PER_LANE: usize = 8;
-const WAITERS_PER_JOB: usize = 4;
-const TERMINAL_HISTORY: usize = 32;
+fn lanes() -> [usize; 4] {
+    crate::resources::limits().workers
+}
 
 #[derive(Clone)]
 pub(crate) struct Recovery {
     pub next_cursor: u64,
+    pub archive_end: u64,
     pub records: Vec<Record>,
 }
 
@@ -37,6 +37,7 @@ impl Service {
         let (disk, journal) = Disk::open(directory, settings, cursor)?;
         let recovery = Recovery {
             next_cursor: journal.next_cursor,
+            archive_end: journal.next_id,
             records: journal
                 .records
                 .values()
@@ -44,7 +45,7 @@ impl Service {
                 .cloned()
                 .collect(),
         };
-        let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let (sender, receiver) = mpsc::channel(crate::resources::limits().job_commands);
         let client = Client { sender };
         let (halt, stop) = oneshot::channel();
         let (receipt, stopped) = oneshot::channel();
@@ -133,14 +134,17 @@ struct Owner {
     running: BTreeMap<u64, Running>,
     tasks: FuturesUnordered<BoxFuture<'static, (u64, process::Outcome)>>,
     next_lane: usize,
+    recovery_skip: std::collections::BTreeSet<u64>,
     flushed: Instant,
 }
 
 impl Owner {
     fn new(disk: Disk, journal: Journal, settings: Settings) -> Self {
+        let recovery_skip = journal.records.keys().copied().collect();
         Self {
             disk,
             journal,
+            recovery_skip,
             settings,
             waiters: BTreeMap::new(),
             clocks: BTreeMap::new(),
@@ -172,15 +176,21 @@ impl Owner {
         mut commands: mpsc::Receiver<Command>,
         mut halt: oneshot::Receiver<()>,
     ) -> Result<(), String> {
-        let (events, mut progress) = mpsc::channel(16);
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let (events, mut progress) = mpsc::channel(crate::resources::limits().provider_events);
+        let mut tick = tokio::time::interval(crate::resources::limits().job_tick_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
                     Some(Command::Submit(input,binding,reply))=>self.submit(input,binding,reply)?,
+                    Some(Command::Recover{after,before,reply})=>{
+                        let page=self.disk.recovery_page(after,before,&self.recovery_skip)?;
+                        let _=reply.send(Ok(page));
+                    },
                     Some(Command::Acknowledge(id))=>{
+                        if id==0{continue;}
+                        if !self.journal.records.contains_key(&id){self.disk.acknowledge(&self.journal,id)?;continue;}
                         if id!=0 {
                             let Some(record)=self.journal.records.get_mut(&id) else {
                                 if id<self.journal.next_id {continue;}
@@ -193,6 +203,8 @@ impl Owner {
                         }
                     },
                     Some(Command::Discard(input,binding))=>{
+                        if let Some(record)=self.disk.request(&input,&binding,self.settings.for_input(&input))?
+                            && !self.journal.records.contains_key(&record.id)&&record.state.terminal(){self.disk.acknowledge(&self.journal,record.id)?;}
                         let ids=self.journal.records.values().filter(|r|r.input==input && r.binding==binding
                             && !r.acknowledged && r.state!=State::InDoubt).map(|r|r.id).collect::<Vec<_>>();
                         for id in ids {
@@ -325,11 +337,12 @@ impl Owner {
             return Err("research clock moved backwards; no fresh allowance".into());
         }
         self.journal.observed_ms = now;
+        self.journal.remember_holds()?;
         if !self.compact_bytes(0)? {
             return Err("research reserved result byte capacity".into());
         }
-        self.journal.validate(self.settings)?;
-        self.disk.save(&self.journal)?;
+        self.journal.validate_delta(self.settings)?;
+        self.disk.save(&mut self.journal)?;
         self.flushed = Instant::now();
         Ok(())
     }
@@ -345,8 +358,9 @@ impl Owner {
                 .max()
                 .unwrap_or(0),
         );
-        self.journal.validate(self.settings)?;
-        self.disk.save(&self.journal)
+        self.journal.remember_holds()?;
+        self.journal.validate_delta(self.settings)?;
+        self.disk.save(&mut self.journal)
     }
 
     fn submit(
@@ -387,7 +401,7 @@ impl Owner {
         {
             let waiters = self.waiters.entry(record.id).or_default();
             waiters.retain(|reply| !reply.is_closed());
-            if waiters.len() >= WAITERS_PER_JOB {
+            if waiters.len() >= crate::resources::limits().waiters_per_job {
                 reject(reply, binding, "research duplicate waiter capacity");
             } else {
                 waiters.push(reply);
@@ -396,6 +410,21 @@ impl Owner {
                     self.deliver(record.id);
                 }
             }
+            return Ok(());
+        }
+        if let Some(record) = self.disk.request(&input, &binding, settings)? {
+            if record.state.terminal() || record.state == State::InDoubt {
+                let completion = completion(&record);
+                let _ = reply.send(completion);
+                return Ok(());
+            }
+            return Err("nonterminal research job is absent from its resident working set".into());
+        }
+        if let Err(error) = crate::resources::require_disk_space(
+            self.disk.directory(),
+            u64::try_from(output_reservation(&input)).map_err(|_| "job disk reservation width")?,
+        ) {
+            reject(reply, binding, &error);
             return Ok(());
         }
         self.compact();
@@ -413,10 +442,13 @@ impl Owner {
             .journal
             .records
             .values()
-            .filter(|r| !r.state.terminal() && r.input.lane() == input.lane())
+            .filter(|r| {
+                matches!(r.state, State::Queued | State::Running | State::Suspended)
+                    && r.input.lane() == input.lane()
+            })
             .count();
-        if self.journal.records.len() >= MAX_RECORDS
-            || queued >= QUEUE_PER_LANE + LANES[input.lane()]
+        if self.journal.records.len() >= crate::resources::limits().resident_jobs
+            || queued >= crate::resources::limits().queued_jobs_per_role + lanes()[input.lane()]
         {
             reject(reply, binding, "research role queue capacity");
             return Ok(());
@@ -432,6 +464,15 @@ impl Owner {
         let mut spent_ms = 0;
         let mut reserved_units = 0;
         let account_key = input.account_key();
+        // Consult durable history without making rejected/expired lookups
+        // resident. Only a successfully queued obligation enters the active map.
+        let original_account = if matches!(input, Input::Find { .. }) {
+            None
+        } else if let Some(account) = self.journal.accounts.get(&account_key) {
+            Some(account.clone())
+        } else {
+            self.disk.account(&account_key)?
+        };
         if let Input::Find { cursor } = input {
             if cursor < self.journal.next_cursor {
                 reject(reply, binding, "research finding cursor already consumed");
@@ -440,7 +481,16 @@ impl Owner {
             self.journal.next_cursor = cursor
                 .checked_add(1)
                 .ok_or("research finding cursor exhausted")?;
-        } else if let Some(account) = self.journal.accounts.get(&account_key) {
+        } else if let Some(account) = original_account {
+            if account.held.is_some() {
+                reject_state(
+                    reply,
+                    binding,
+                    State::InDoubt,
+                    "research original effects require reconciliation",
+                );
+                return Ok(());
+            }
             if account.settings != settings {
                 reject(reply, binding, "research original configuration differs");
                 return Ok(());
@@ -461,11 +511,8 @@ impl Owner {
                 );
                 return Ok(());
             }
+            self.journal.accounts.insert(account_key.clone(), account);
         } else {
-            if self.journal.accounts.len() >= MAX_ACCOUNTS {
-                reject(reply, binding, "research obligation capacity");
-                return Ok(());
-            }
             self.journal.accounts.insert(
                 account_key,
                 Account {
@@ -474,6 +521,7 @@ impl Owner {
                     expires_ms,
                     spent_ms,
                     reserved_units,
+                    held: None,
                 },
             );
         }
@@ -579,14 +627,14 @@ impl Owner {
     }
 
     fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
-        for offset in 0..LANES.len() {
-            let lane = (self.next_lane + offset) % LANES.len();
+        for offset in 0..lanes().len() {
+            let lane = (self.next_lane + offset) % lanes().len();
             let active = self
                 .running
                 .keys()
                 .filter(|id| self.journal.records[id].input.lane() == lane)
                 .count();
-            if active >= LANES[lane] {
+            if active >= lanes()[lane] {
                 continue;
             }
             let ready = self
@@ -602,7 +650,7 @@ impl Owner {
                             .is_some_and(|w| w.iter().any(|w| !w.is_closed()))
                 })
                 .map(|r| r.id)
-                .take(LANES[lane] - active)
+                .take(lanes()[lane] - active)
                 .collect::<Vec<_>>();
             for id in ready {
                 let Some(slot) = self.disk.slot(lane)? else {
@@ -675,7 +723,7 @@ impl Owner {
                 }));
             }
         }
-        self.next_lane = (self.next_lane + 1) % LANES.len();
+        self.next_lane = (self.next_lane + 1) % lanes().len();
         Ok(())
     }
 
@@ -734,7 +782,7 @@ impl Owner {
                 }
             }
         }
-        if changed && self.flushed.elapsed() >= Duration::from_secs(30) {
+        if changed && self.flushed.elapsed() >= crate::resources::limits().job_flush_interval {
             self.save()?;
         }
         Ok(())
@@ -745,17 +793,7 @@ impl Owner {
         if !record.state.terminal() {
             return;
         }
-        let completion = Completion {
-            id,
-            binding: record.binding.clone(),
-            spent_ms: record.spent_ms,
-            reserved_units: record.reserved_units,
-            state: record.state,
-            result: record
-                .result
-                .clone()
-                .ok_or_else(|| format!("research job {:?}", record.state)),
-        };
+        let completion = completion(record);
         crate::network::emit(serde_json::json!({"event":"research_finished","job":id,
             "state":format!("{:?}",completion.state),"spent_ms":completion.spent_ms,
             "reserved_units":completion.reserved_units}));
@@ -771,13 +809,27 @@ impl Owner {
             .journal
             .records
             .values()
-            .filter(|r| r.state.terminal() && r.acknowledged && !self.running.contains_key(&r.id))
+            .filter(|r| {
+                (r.state.terminal() || r.state == State::InDoubt)
+                    && !self.running.contains_key(&r.id)
+            })
             .map(|r| r.id)
             .collect::<Vec<_>>();
-        let remove = terminal.len().saturating_sub(TERMINAL_HISTORY);
-        for id in terminal.into_iter().take(remove) {
+        let remove = terminal
+            .len()
+            .saturating_sub(crate::resources::limits().terminal_job_page);
+        for id in terminal
+            .into_iter()
+            .filter(|id| !self.journal.records.changed(id))
+            .take(remove)
+            .collect::<Vec<_>>()
+        {
             self.journal.records.remove(&id);
-            self.journal.retired_jobs = self.journal.retired_jobs.saturating_add(1);
+            self.journal.retired_jobs = self
+                .journal
+                .retired_jobs
+                .checked_add(1)
+                .expect("bounded monotonic record sequence");
         }
     }
 
@@ -793,12 +845,10 @@ impl Owner {
             })
             .ok_or("research result reservation overflow")?;
         loop {
-            let encoded = serde_json::to_vec(&self.journal)
-                .map_err(|e| e.to_string())?
-                .len();
+            let encoded = self.journal.encoded_active_len()?;
             if encoded
                 .checked_add(future)
-                .is_some_and(|bytes| bytes + 256 <= MAX_JOURNAL_BYTES)
+                .is_some_and(|bytes| bytes + 256 <= crate::resources::limits().active_job_bytes)
             {
                 return Ok(true);
             }
@@ -806,7 +856,11 @@ impl Owner {
                 .journal
                 .records
                 .values()
-                .find(|r| r.state.terminal() && r.acknowledged && !self.running.contains_key(&r.id))
+                .find(|r| {
+                    (r.state.terminal() || r.state == State::InDoubt)
+                        && !self.running.contains_key(&r.id)
+                        && !self.journal.records.changed(&r.id)
+                })
                 .map(|r| r.id);
             let Some(id) = oldest else {
                 return Ok(false);
@@ -928,14 +982,16 @@ fn reject_state(reply: oneshot::Sender<Completion>, binding: Binding, state: Sta
 fn failure_detail(error: &str) -> String {
     error
         .char_indices()
-        .take_while(|(index, ch)| index + ch.len_utf8() <= 512)
+        .take_while(|(index, ch)| {
+            index + ch.len_utf8() <= crate::resources::limits().failure_detail_bytes
+        })
         .map(|(_, ch)| ch)
         .collect()
 }
 
 fn output_reservation(input: &Input) -> usize {
     match input {
-        Input::Solve { .. } => 6 * crate::intake::MAX_CLOSURE_BYTES + 1024,
+        Input::Solve { .. } => 6 * crate::resources::limits().closure_bytes + 1024,
         Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
         Input::Interest { .. } => 64,
     }
@@ -955,6 +1011,20 @@ fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
 fn append_failure(previous: Option<String>, next: &str) -> String {
     previous.map_or_else(|| next.to_owned(), |old| format!("{old}; cleanup: {next}"))
 }
+fn completion(record: &Record) -> Completion {
+    Completion {
+        id: record.id,
+        binding: record.binding.clone(),
+        spent_ms: record.spent_ms,
+        reserved_units: record.reserved_units,
+        state: record.state,
+        result: record
+            .result
+            .clone()
+            .ok_or_else(|| format!("research job {:?}", record.state)),
+    }
+}
+
 fn combine_outcomes(result: Result<(), String>, cleanup: Result<(), String>) -> Result<(), String> {
     match (result, cleanup) {
         (Err(primary), Err(cleanup)) => Err(format!(

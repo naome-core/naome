@@ -14,11 +14,11 @@ fn contact_and_address_caps_expire_hints_without_expiring_pinned_or_live_peers()
         .unwrap();
     let live = peer();
     book.admit(live, now).unwrap().connected = true;
-    for _ in 2..MAX_CONTACTS {
+    for _ in 2..crate::resources::limits().contacts {
         book.admit(peer(), now).unwrap();
     }
     assert!(book.admit(peer(), now).is_err());
-    for port in 1..=MAX_ADDRESSES {
+    for port in 1..=crate::resources::limits().addresses_per_contact {
         book.hint(
             live,
             &format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap(),
@@ -30,8 +30,8 @@ fn contact_and_address_caps_expire_hints_without_expiring_pinned_or_live_peers()
         book.hint(live, &"/ip4/127.0.0.1/tcp/99".parse().unwrap(), now)
             .is_err()
     );
-    let expired = book.expired(now + CONTACT_TTL);
-    assert_eq!(expired.len(), MAX_CONTACTS - 2);
+    let expired = book.expired(now + crate::resources::limits().contact_ttl);
+    assert_eq!(expired.len(), crate::resources::limits().contacts - 2);
     assert!(!expired.contains(&pinned) && !expired.contains(&live));
 }
 
@@ -128,7 +128,7 @@ fn inbound_circuits_bind_configured_infrastructure_and_authenticated_sender() {
     book.contacts.get_mut(&sender).unwrap().enabled = false;
     assert!(book.accepts_inbound(sender, &local, &remote).is_err());
     book.contacts.get_mut(&sender).unwrap().enabled = true;
-    for _ in 2..MAX_CONTACTS {
+    for _ in 2..crate::resources::limits().contacts {
         book.admit(peer(), Instant::now()).unwrap();
     }
     let extra = peer();
@@ -157,11 +157,14 @@ fn provider_store_scopes_keys_caps_entries_and_bounds_addresses_and_expiry() {
         expires: None,
         addresses: vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap()],
     };
-    for _ in 0..MAX_CONTACTS {
+    for _ in 0..crate::resources::limits().contacts {
         store.add_provider(record(peer())).unwrap();
     }
     assert!(store.add_provider(record(peer())).is_err());
-    assert_eq!(store.providers(&provider_key()).len(), MAX_CONTACTS);
+    assert_eq!(
+        store.providers(&provider_key()).len(),
+        crate::resources::limits().contacts
+    );
     assert!(
         store
             .providers(&kad::RecordKey::new(&b"foreign"))
@@ -176,10 +179,13 @@ fn provider_store_scopes_keys_caps_entries_and_bounds_addresses_and_expiry() {
             .is_err()
     );
     assert!(store.records().next().is_none());
-    store.prune(now + PROVIDER_TTL + Duration::from_secs(1));
+    store.prune(now + crate::resources::limits().provider_ttl + Duration::from_secs(1));
     assert_eq!(store.len(), 0);
     let mut invalid = record(peer());
-    invalid.addresses = vec!["/ip4/127.0.0.1/tcp/1234".parse().unwrap(); MAX_ADDRESSES + 1];
+    invalid.addresses = vec![
+        "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+        crate::resources::limits().addresses_per_contact + 1
+    ];
     assert!(store.add_provider(invalid).is_err());
 }
 
@@ -190,15 +196,34 @@ fn repeated_stale_hints_do_not_renew_contacts_and_retirement_has_bounded_backoff
     let mut book = Book::new(peer(), true, &Config::default());
     let address = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
     book.hint(target, &address, now).unwrap();
-    book.hint(target, &address, now + CONTACT_TTL - Duration::from_secs(1))
-        .unwrap();
-    assert_eq!(book.expired(now + CONTACT_TTL), vec![target]);
-    book.retire(target, now + CONTACT_TTL).unwrap();
-    assert!(
-        book.hint(target, &address, now + CONTACT_TTL + Duration::from_secs(1))
-            .is_err()
+    book.hint(
+        target,
+        &address,
+        now + crate::resources::limits().contact_ttl - Duration::from_secs(1),
+    )
+    .unwrap();
+    assert_eq!(
+        book.expired(now + crate::resources::limits().contact_ttl),
+        vec![target]
     );
-    assert!(book.hint(target, &address, now + CONTACT_TTL * 2).is_ok());
+    book.retire(target, now + crate::resources::limits().contact_ttl)
+        .unwrap();
+    assert!(
+        book.hint(
+            target,
+            &address,
+            now + crate::resources::limits().contact_ttl + Duration::from_secs(1)
+        )
+        .is_err()
+    );
+    assert!(
+        book.hint(
+            target,
+            &address,
+            now + crate::resources::limits().contact_ttl * 2
+        )
+        .is_ok()
+    );
 }
 
 #[test]

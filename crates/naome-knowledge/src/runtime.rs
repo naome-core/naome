@@ -3,6 +3,8 @@ use crate::{Graph, autonomous::Intervals, network};
 use libp2p::identity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::time::Duration;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -10,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -26,12 +28,10 @@ mod startup;
 pub(crate) use owner::Profile as OwnerProfile;
 pub(crate) use startup::Startup;
 
-const CONTROL_LIMIT: usize = 6 * owner::MAX_TEXT_BYTES + 512;
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
-const CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
-const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(15);
+fn control_limit() -> usize {
+    6 * crate::resources::limits().owner_text_bytes + 512
+}
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
-const MAX_LOG_BYTES: u64 = 1024 * 1024;
 static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
 
 struct Log {
@@ -56,7 +56,7 @@ impl Log {
     fn write(&mut self, value: &serde_json::Value) -> Result<(), String> {
         let mut bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
-        if bytes.len() as u64 > MAX_LOG_BYTES {
+        if bytes.len() as u64 > crate::resources::limits().log_segment_bytes {
             return Err("runtime event exceeds log capacity".into());
         }
         if self
@@ -65,15 +65,18 @@ impl Log {
             .map_err(|error| error.to_string())?
             .len()
             + bytes.len() as u64
-            > MAX_LOG_BYTES
+            > crate::resources::limits().log_segment_bytes
         {
             cap_log(&self.path)?;
             let previous = self.path.with_file_name("node.log.previous");
             let source = open_log(&self.path)?;
             let mut target = open_log(&previous)?;
             target.set_len(0).map_err(|error| error.to_string())?;
-            std::io::copy(&mut source.take(MAX_LOG_BYTES), &mut target)
-                .map_err(|error| error.to_string())?;
+            std::io::copy(
+                &mut source.take(crate::resources::limits().log_segment_bytes),
+                &mut target,
+            )
+            .map_err(|error| error.to_string())?;
             self.file.set_len(0).map_err(|error| error.to_string())?;
         }
         self.file
@@ -112,14 +115,16 @@ fn cap_log(path: &Path) -> Result<(), String> {
     if !metadata.is_file() {
         return Err("runtime log must be a regular file".into());
     }
-    if metadata.len() <= MAX_LOG_BYTES {
+    if metadata.len() <= crate::resources::limits().log_segment_bytes {
         return Ok(());
     }
-    file.seek(SeekFrom::End(-(MAX_LOG_BYTES as i64)))
-        .map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::End(
+        -(crate::resources::limits().log_segment_bytes as i64),
+    ))
+    .map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
     (&mut file)
-        .take(MAX_LOG_BYTES)
+        .take(crate::resources::limits().log_segment_bytes)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     let retained = bytes
@@ -157,7 +162,10 @@ pub(crate) fn log_error() -> Option<String> {
 
 /// Fatal daemon diagnostics use the same bounded owner as ordinary events.
 pub fn report_error(error: &str) {
-    let bounded = error.chars().take(4096).collect::<String>();
+    let bounded = error
+        .chars()
+        .take(crate::resources::limits().diagnostic_bytes)
+        .collect::<String>();
     if !emit_log(&serde_json::json!({"event":"fatal_error","error":bounded})) {
         eprintln!("naome: {error}");
     }
@@ -169,7 +177,6 @@ pub fn report_error(error: &str) {
 pub struct Status {
     pub running: bool,
     pub accepted_proofs: usize,
-    #[serde(default)]
     pub interest: String,
 }
 
@@ -217,8 +224,9 @@ pub(crate) struct Control {
     directory: PathBuf,
     endpoint: Endpoint,
     stopping: tokio::sync::watch::Sender<bool>,
-    owner: Mutex<OwnerState>,
-    selection_dirty: std::sync::atomic::AtomicBool,
+    owner: std::sync::Arc<Mutex<OwnerState>>,
+    selection_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ownership: Option<std::sync::Arc<crate::store::Store>>,
     startup: Option<Startup>,
 }
 
@@ -242,7 +250,7 @@ fn endpoint(directory: &Path) -> Result<Option<Endpoint>, String> {
         return Ok(None);
     }
     let endpoint: Endpoint =
-        serde_json::from_slice(&crate::store::read_bounded(&path, CONTROL_LIMIT)?)
+        serde_json::from_slice(&crate::store::read_bounded(&path, control_limit())?)
             .map_err(|error| error.to_string())?;
     if endpoint.version != 1
         || endpoint.socket != socket_path(directory)
@@ -269,12 +277,44 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 impl Control {
+    #[cfg(test)]
+    pub(crate) fn bind_test(
+        directory: &Path,
+        ownership: std::sync::Arc<crate::store::Store>,
+    ) -> Result<Self, String> {
+        let mut control = Self::bind_token(directory, "01".repeat(32))?;
+        control.ownership = Some(ownership);
+        Ok(control)
+    }
+
     /// Called only after Graph::open owns and revalidates this directory.
     pub(crate) fn bind(directory: &Path, startup: Option<Startup>) -> Result<Self, String> {
         let token = std::env::var(DAEMON_NONCE).map_err(|_| "missing internal launch nonce")?;
         let mut control = Self::bind_token(directory, token)?;
         control.startup = startup;
         Ok(control)
+    }
+
+    pub(crate) fn bind_owned(
+        directory: &Path,
+        startup: Option<Startup>,
+        ownership: std::sync::Arc<crate::store::Store>,
+    ) -> Result<Self, String> {
+        let mut control = Self::bind(directory, startup)?;
+        control.ownership = Some(ownership);
+        Ok(control)
+    }
+
+    pub(crate) async fn accept(&self) -> Result<UnixStream, String> {
+        self.listener
+            .accept()
+            .await
+            .map(|(stream, _)| stream)
+            .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn stopping(&self) -> bool {
+        *self.stopping.borrow()
     }
 
     pub(crate) fn startup_ready(&self) {
@@ -324,11 +364,12 @@ impl Control {
             directory,
             endpoint,
             stopping: tokio::sync::watch::channel(false).0,
-            owner: Mutex::new(OwnerState {
+            owner: std::sync::Arc::new(Mutex::new(OwnerState {
                 text,
                 recovery_error: None,
-            }),
-            selection_dirty: std::sync::atomic::AtomicBool::new(true),
+            })),
+            selection_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ownership: None,
             startup: None,
         })
     }
@@ -375,10 +416,12 @@ impl Control {
         count: usize,
         ready: bool,
     ) -> Result<bool, String> {
-        let request: Request =
-            tokio::time::timeout(CONTROL_REQUEST_TIMEOUT, read_frame(&mut stream))
-                .await
-                .map_err(|_| "local control request timeout")??;
+        let request: Request = tokio::time::timeout(
+            crate::resources::limits().control_request_timeout,
+            read_frame(&mut stream),
+        )
+        .await
+        .map_err(|_| "local control request timeout")??;
         if request.version != 1 || request.token != self.endpoint.token {
             return Err("local control instance mismatch".into());
         }
@@ -392,42 +435,58 @@ impl Control {
         if stopping {
             self.stopping.send_replace(true);
         }
-        let interest = match request.operation {
-            Operation::Status => self.owner_profile()?.interest,
-            Operation::Stop => self
-                .owner
-                .lock()
-                .map_err(|_| "owner configuration lock poisoned")?
-                .text
-                .clone(),
-            Operation::Interest(text) => {
-                // Serialize transitions even if the consumer serves concurrent
-                // clients. Never retain this guard across the response await.
-                let mut owner = self
-                    .owner
-                    .lock()
-                    .map_err(|_| "owner configuration lock poisoned")?;
-                if let Some(error) = &owner.recovery_error {
-                    return Err(error.clone());
-                }
-                match owner::update(&self.directory, &text) {
-                    Ok(text) => {
-                        self.selection_dirty
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        owner.text = text.clone();
-                        text
+        let directory = self.directory.clone();
+        let state = self.owner.clone();
+        let dirty = self.selection_dirty.clone();
+        let ownership = self.ownership.clone();
+        let interest = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            // Keep the canonical directory locked until any in-flight owner
+            // transition finishes, including after a disconnected control client.
+            let _ownership = ownership;
+            match request.operation {
+                Operation::Status => {
+                    let mut owner = state
+                        .lock()
+                        .map_err(|_| "owner configuration lock poisoned")?;
+                    if let Some(error) = &owner.recovery_error {
+                        return Err(error.clone());
                     }
-                    Err(error) => {
-                        self.selection_dirty
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        if error.recovery_required {
-                            owner.recovery_error = Some(error.message.clone());
+                    let profile = owner::profile(&directory).inspect_err(|_| {
+                        dirty.store(true, std::sync::atomic::Ordering::Release);
+                    })?;
+                    owner.text = profile.interest.clone();
+                    Ok(profile.interest)
+                }
+                Operation::Stop => Ok(state
+                    .lock()
+                    .map_err(|_| "owner configuration lock poisoned")?
+                    .text
+                    .clone()),
+                Operation::Interest(text) => {
+                    dirty.store(true, std::sync::atomic::Ordering::Release);
+                    let mut owner = state
+                        .lock()
+                        .map_err(|_| "owner configuration lock poisoned")?;
+                    if let Some(error) = &owner.recovery_error {
+                        return Err(error.clone());
+                    }
+                    match owner::update(&directory, &text) {
+                        Ok(text) => {
+                            owner.text = text.clone();
+                            Ok(text)
                         }
-                        return Err(error.message);
+                        Err(error) => {
+                            if error.recovery_required {
+                                owner.recovery_error = Some(error.message.clone());
+                            }
+                            Err(error.message)
+                        }
                     }
                 }
             }
-        };
+        })
+        .await
+        .map_err(|error| format!("owner control worker failed: {error}"))??;
         let response = Response {
             token: self.endpoint.token.clone(),
             status: Status {
@@ -438,9 +497,12 @@ impl Control {
         };
         // Leave time for a response timeout to settle before the node's stop
         // drain expires, while provider teardown has already been requested.
-        tokio::time::timeout(CONTROL_REQUEST_TIMEOUT, write_frame(&mut stream, &response))
-            .await
-            .map_err(|_| "local control write timeout")??;
+        tokio::time::timeout(
+            crate::resources::limits().control_request_timeout,
+            write_frame(&mut stream, &response),
+        )
+        .await
+        .map_err(|_| "local control write timeout")??;
         Ok(stopping)
     }
 
@@ -465,18 +527,6 @@ impl Drop for Control {
     }
 }
 
-pub(crate) async fn accept(control: &Option<Control>) -> Result<UnixStream, String> {
-    match control {
-        Some(control) => control
-            .listener
-            .accept()
-            .await
-            .map(|(stream, _)| stream)
-            .map_err(|error| error.to_string()),
-        None => std::future::pending().await,
-    }
-}
-
 pub(crate) async fn requested_stop(watch: &mut Option<tokio::sync::watch::Receiver<bool>>) {
     if let Some(watch) = watch {
         loop {
@@ -493,14 +543,14 @@ pub(crate) async fn requested_stop(watch: &mut Option<tokio::sync::watch::Receiv
 }
 
 async fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result<T, String> {
-    tokio::time::timeout(CONTROL_TIMEOUT, async {
+    tokio::time::timeout(crate::resources::limits().control_timeout, async {
         let mut bytes = Vec::new();
         BufReader::new(stream)
-            .take(CONTROL_LIMIT as u64 + 1)
+            .take(control_limit() as u64 + 1)
             .read_until(b'\n', &mut bytes)
             .await
             .map_err(|error| error.to_string())?;
-        if bytes.len() > CONTROL_LIMIT || bytes.last() != Some(&b'\n') {
+        if bytes.len() > control_limit() || bytes.last() != Some(&b'\n') {
             return Err("local control frame limit or incomplete request".into());
         }
         serde_json::from_slice(&bytes).map_err(|error| error.to_string())
@@ -512,13 +562,16 @@ async fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> 
 async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
-    if bytes.len() > CONTROL_LIMIT {
+    if bytes.len() > control_limit() {
         return Err("local control response limit".into());
     }
-    tokio::time::timeout(CONTROL_TIMEOUT, stream.write_all(&bytes))
-        .await
-        .map_err(|_| "local control write timeout")?
-        .map_err(|error| error.to_string())
+    tokio::time::timeout(
+        crate::resources::limits().control_timeout,
+        stream.write_all(&bytes),
+    )
+    .await
+    .map_err(|_| "local control write timeout")?
+    .map_err(|error| error.to_string())
 }
 
 async fn request(
@@ -532,9 +585,12 @@ async fn request(
     if launch.is_some_and(|nonce| nonce != endpoint.token) {
         return Ok(None);
     }
-    let connected = tokio::time::timeout(CONTROL_TIMEOUT, UnixStream::connect(&endpoint.socket))
-        .await
-        .map_err(|_| "local control connect timeout")?;
+    let connected = tokio::time::timeout(
+        crate::resources::limits().control_timeout,
+        UnixStream::connect(&endpoint.socket),
+    )
+    .await
+    .map_err(|_| "local control connect timeout")?;
     let mut stream = match connected {
         Ok(stream) => stream,
         Err(error)
@@ -593,12 +649,12 @@ async fn operation_lock(directory: &Path) -> Result<File, String> {
         .mode(0o600)
         .open(directory.join("lifecycle.lock"))
         .map_err(|error| error.to_string())?;
-    let deadline = Instant::now() + LIFECYCLE_TIMEOUT;
+    let deadline = Instant::now() + crate::resources::limits().lifecycle_timeout;
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await
+                tokio::time::sleep(crate::resources::limits().lifecycle_poll_interval).await
             }
             Err(error) => return Err(format!("lifecycle operation unavailable: {error}")),
         }
@@ -665,7 +721,7 @@ fn initialize(directory: &Path) -> Result<(), String> {
 fn configuration(directory: &Path) -> Result<(network::Config, Intervals), String> {
     let mut value: serde_json::Value = serde_json::from_slice(&crate::store::read_bounded(
         &directory.join("config.json"),
-        network::MAX_CONFIG_BYTES,
+        crate::resources::limits().network_config_bytes,
     )?)
     .map_err(|error| error.to_string())?;
     let object = value
@@ -744,7 +800,7 @@ async fn start_with_handoff(
 ) -> Result<Status, String> {
     let deadline = match &handoff {
         Some(owner) => owner.deadline()?,
-        None => tokio::time::Instant::now() + startup::TIMEOUT,
+        None => tokio::time::Instant::now() + crate::resources::limits().startup_timeout,
     };
     // Keep startup cancellation alive while the child performs synchronous
     // replay. SIGKILL/parent disappearance instead closes the stdin lifeline.
@@ -786,6 +842,10 @@ async fn start_with_handoff(
         .arg("start")
         .env("NAOME_NODE_DIR", directory)
         .env(DAEMON_NONCE, &nonce)
+        .env(
+            "NAOME_EFFECTIVE_RESOURCES",
+            crate::resources::child_snapshot()?,
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::from(
             log.try_clone().map_err(|error| error.to_string())?,
@@ -896,7 +956,8 @@ async fn abort_owned_handoff(
     if let Err(error) = kill(pid, Signal::SIGSTOP) {
         errors.push(format!("original Child stop: {error}"));
     }
-    let stable_end = deadline.min(Instant::now() + Duration::from_millis(150));
+    let stable_end =
+        deadline.min(Instant::now() + crate::resources::limits().detach_confirm_timeout);
     let mut stopped = false;
     let mut reaped = false;
     let mut authority_lost = false;
@@ -935,7 +996,9 @@ async fn abort_owned_handoff(
             break;
         }
         tokio::time::sleep(
-            Duration::from_millis(5).min(stable_end.saturating_duration_since(Instant::now())),
+            crate::resources::limits()
+                .detach_poll_interval
+                .min(stable_end.saturating_duration_since(Instant::now())),
         )
         .await;
     }
@@ -997,7 +1060,9 @@ async fn abort_owned_handoff(
             break;
         }
         tokio::time::sleep(
-            Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+            crate::resources::limits()
+                .detach_poll_interval
+                .min(deadline.saturating_duration_since(Instant::now())),
         )
         .await;
     }
@@ -1013,8 +1078,8 @@ async fn abort_owned_handoff(
 async fn abort_start(child: &mut Child) -> Result<(), String> {
     // EOF reaches the independent reader even while Graph::open is synchronous.
     drop(child.stdin.take());
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let fallback = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + crate::resources::limits().lifecycle_abort_timeout;
+    let fallback = Instant::now() + crate::resources::limits().supervisor_cleanup_timeout;
     let mut signalled = false;
     loop {
         if child.try_wait().map_err(|e| e.to_string())?.is_some() {
@@ -1041,7 +1106,7 @@ async fn abort_start(child: &mut Child) -> Result<(), String> {
         if Instant::now() >= deadline {
             return Err("owned startup exit and reap remain unconfirmed".into());
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(crate::resources::limits().cleanup_poll_interval).await;
     }
 }
 
@@ -1055,9 +1120,11 @@ async fn stop(directory: &Path) -> Result<Status, String> {
             .map_err(|_| "invalid daemon process identity")?,
     );
     // Stop is nonce-authenticated; this callback only queries group liveness.
-    wait_for_stop(directory, Instant::now() + LIFECYCLE_TIMEOUT, || {
-        nix::sys::signal::killpg(pid, None)
-    })
+    wait_for_stop(
+        directory,
+        Instant::now() + crate::resources::limits().lifecycle_timeout,
+        || nix::sys::signal::killpg(pid, None),
+    )
     .await
 }
 
@@ -1081,18 +1148,29 @@ async fn wait_for_stop(
                     "node directory released but daemon process group exit is unconfirmed".into(),
                 );
             }
-            Ok(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            Ok(_) => tokio::time::sleep(crate::resources::limits().lifecycle_poll_interval).await,
             Err(error) if Instant::now() >= deadline => {
                 return Err(format!("node did not release its directory: {error}"));
             }
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            Err(_) => tokio::time::sleep(crate::resources::limits().lifecycle_poll_interval).await,
         }
     }
 }
 
 /// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
 pub async fn execute() -> Result<(), String> {
+    crate::resources::initialize_from_environment()?;
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments.as_slice() == [std::ffi::OsString::from("resources")]
+        || arguments.as_slice()
+            == [
+                std::ffi::OsString::from("--json"),
+                std::ffi::OsString::from("resources"),
+            ]
+    {
+        println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"limits":crate::resources::limits(),"memory_charge":crate::resources::memory_usage(),"available_parallelism":std::thread::available_parallelism().map_or(1,usize::from)})).map_err(|e|e.to_string())?);
+        return Ok(());
+    }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result;
     }

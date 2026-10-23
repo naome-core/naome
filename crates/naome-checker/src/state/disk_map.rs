@@ -396,20 +396,14 @@ impl Node {
     }
 
     fn fingerprint(&self) -> [u8; 32] {
-        let mut hash = Sha256::new();
         match self {
-            Self::Leaf { key, .. } => {
-                hash.update(b"naome:checked-map:leaf:v1\0");
-                hash.update(key);
-            }
-            Self::Branch { bit, left, right } => {
-                hash.update(b"naome:checked-map:branch:v1\0");
-                hash.update([*bit]);
-                hash.update(left.root.fingerprint);
-                hash.update(right.root.fingerprint);
-            }
+            Self::Leaf { key, .. } => crate::context::fingerprint::leaf(key),
+            Self::Branch { bit, left, right } => crate::context::fingerprint::branch(
+                *bit,
+                left.root.fingerprint,
+                right.root.fingerprint,
+            ),
         }
-        hash.finalize().into()
     }
 
     fn validate(&self) -> Result<(), ContextError> {
