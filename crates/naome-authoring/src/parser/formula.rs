@@ -385,16 +385,22 @@ impl<'source> Parser<'source> {
         let antecedent = self.parsed_formula(depth + 1, context)?;
         self.punctuation(',')?;
         let consequent = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(
-            context,
-            &[1, antecedent.expanded_nodes, consequent.expanded_nodes],
-            offset,
-        )?;
-        let expanded_depth = self.checked_depth_add(
-            offset,
-            antecedent.expanded_depth.max(consequent.expanded_depth),
-            1,
-        )?;
+        let (nodes, height) = syntax::binary_shape(
+            "imp",
+            (
+                antecedent.expanded_nodes as usize,
+                antecedent.expanded_depth as usize,
+            ),
+            (
+                consequent.expanded_nodes as usize,
+                consequent.expanded_depth as usize,
+            ),
+        )
+        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
+        let expanded_nodes =
+            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
+        let expanded_depth =
+            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
         self.check_expanded_depth(offset, depth, expanded_depth)?;
         Ok(ParsedFormula {
             formula: DefinedFormula::implies(antecedent.formula, consequent.formula),
@@ -410,34 +416,23 @@ impl<'source> Parser<'source> {
         context: FormulaContext,
         existential: bool,
     ) -> Result<ParsedFormula, CompileError> {
-        self.skip_trivia();
-        let variables = if self.byte() == Some(b'[') {
-            self.offset += 1;
-            let mut variables = Vec::new();
-            loop {
-                if variables.len() == FORMULA_MAX_DEPTH as usize {
-                    return Err(CompileError::FormulaDepthLimitExceeded {
+        let variables = syntax::binders(self.source, &mut self.offset, &mut self.variables)
+            .map_err(|error| match error {
+                syntax::BinderError::Name(offset) => CompileError::Syntax {
+                    offset,
+                    expected: "a name",
+                },
+                syntax::BinderError::Comma(offset) => CompileError::Syntax {
+                    offset,
+                    expected: "`,`",
+                },
+                syntax::BinderError::Depth | syntax::BinderError::Overflow => {
+                    CompileError::FormulaDepthLimitExceeded {
                         offset,
                         maximum: FORMULA_MAX_DEPTH,
-                    });
+                    }
                 }
-                variables.push(self.variable()?);
-                self.skip_trivia();
-                if self.byte() == Some(b']') {
-                    self.offset += 1;
-                    break;
-                }
-                self.punctuation(',')?;
-                self.skip_trivia();
-                if self.byte() == Some(b']') {
-                    self.offset += 1;
-                    break;
-                }
-            }
-            variables
-        } else {
-            vec![self.variable()?]
-        };
+            })?;
         self.punctuation(',')?;
         let extra = u32::try_from(variables.len()).expect("bounded binder list fits u32")
             * if existential { 3 } else { 1 };
@@ -472,14 +467,16 @@ impl<'source> Parser<'source> {
         let left = self.parsed_formula(depth + 1, context)?;
         self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(
-            context,
-            &[3, left.expanded_nodes, right.expanded_nodes],
-            offset,
-        )?;
-        let left_depth = self.checked_depth_add(offset, left.expanded_depth, 2)?;
-        let right_depth = self.checked_depth_add(offset, right.expanded_depth, 3)?;
-        let expanded_depth = left_depth.max(right_depth);
+        let (nodes, height) = syntax::binary_shape(
+            "and",
+            (left.expanded_nodes as usize, left.expanded_depth as usize),
+            (right.expanded_nodes as usize, right.expanded_depth as usize),
+        )
+        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
+        let expanded_nodes =
+            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
+        let expanded_depth =
+            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
         self.check_derived_expansion(offset, depth, context, expanded_depth, 2)?;
         Ok(ParsedFormula {
             formula: DefinedFormula::conjunction(left.formula, right.formula),
@@ -497,14 +494,16 @@ impl<'source> Parser<'source> {
         let left = self.parsed_formula(depth + 1, context)?;
         self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(
-            context,
-            &[2, left.expanded_nodes, right.expanded_nodes],
-            offset,
-        )?;
-        let left_depth = self.checked_depth_add(offset, left.expanded_depth, 2)?;
-        let right_depth = self.checked_depth_add(offset, right.expanded_depth, 1)?;
-        let expanded_depth = left_depth.max(right_depth);
+        let (nodes, height) = syntax::binary_shape(
+            "or",
+            (left.expanded_nodes as usize, left.expanded_depth as usize),
+            (right.expanded_nodes as usize, right.expanded_depth as usize),
+        )
+        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
+        let expanded_nodes =
+            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
+        let expanded_depth =
+            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
         self.check_derived_expansion(offset, depth, context, expanded_depth, 1)?;
         Ok(ParsedFormula {
             formula: DefinedFormula::disjunction(left.formula, right.formula),
@@ -522,24 +521,21 @@ impl<'source> Parser<'source> {
         let left = self.parsed_formula(depth + 1, context)?;
         self.punctuation(',')?;
         let right = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(
-            context,
-            &[
-                5,
-                left.expanded_nodes,
-                left.expanded_nodes,
-                right.expanded_nodes,
-                right.expanded_nodes,
-            ],
-            offset,
-        )?;
+        let (nodes, height) = syntax::binary_shape(
+            "iff",
+            (left.expanded_nodes as usize, left.expanded_depth as usize),
+            (right.expanded_nodes as usize, right.expanded_depth as usize),
+        )
+        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
+        let expanded_nodes =
+            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
+        let expanded_depth =
+            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
         let additional_nodes = self.checked_node_sum(
             context,
             &[4, left.expanded_nodes, right.expanded_nodes],
             offset,
         )?;
-        let expanded_depth =
-            self.checked_depth_add(offset, left.expanded_depth.max(right.expanded_depth), 4)?;
         self.check_derived_expansion(offset, depth, context, expanded_depth, additional_nodes)?;
         Ok(ParsedFormula {
             formula: DefinedFormula::biconditional(left.formula, right.formula),

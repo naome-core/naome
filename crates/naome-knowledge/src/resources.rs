@@ -315,18 +315,106 @@ pub(crate) fn child_snapshot() -> Result<String, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Refuse new durable work before the emergency reserve is consumed. Final
-/// accounting and reconciliation may still use that reserve to close safely.
-pub(crate) fn require_disk_space(path: &std::path::Path, additional: u64) -> Result<(), String> {
-    let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
-    let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
-    let required = u128::from(limits().disk_reserve_bytes) + u128::from(additional);
-    if available < required {
-        return Err(format!(
-            "disk overload: available {available}, required reserve and work {required}"
-        ));
+#[cfg(test)]
+thread_local! {
+    static TEST_DISK: std::cell::Cell<Option<(u64, u128)>> = const { std::cell::Cell::new(None) };
+    static TEST_MEMORY_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+pub(crate) fn with_disk_available<T>(available: u128, action: impl FnOnce() -> T) -> T {
+    static VOLUME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let volume = VOLUME.fetch_sub(1, Ordering::Relaxed);
+    struct Reset(Option<(u64, u128)>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_DISK.with(|value| value.set(self.0));
+        }
     }
-    Ok(())
+    let _reset = Reset(TEST_DISK.with(|value| value.replace(Some((volume, available)))));
+    action()
+}
+#[cfg(test)]
+pub(crate) fn fail_next_memory_allocation() {
+    TEST_MEMORY_FAILURE.with(|value| value.set(true));
+}
+
+static DISK_RESERVATIONS: std::sync::Mutex<std::collections::BTreeMap<u64, u128>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// Transferable custody for concurrent preparations on the same filesystem.
+/// Closing/recovery writes may consume the separately preserved emergency reserve.
+#[derive(Debug)]
+pub(crate) struct DiskLease {
+    volume: u64,
+    bytes: u128,
+}
+impl DiskLease {
+    pub(crate) fn recheck(&self, path: &std::path::Path) -> Result<(), crate::Error> {
+        let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
+        let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
+        #[cfg(test)]
+        let available = TEST_DISK
+            .with(|value| value.get())
+            .map_or(available, |(_, available)| available);
+        let held = *DISK_RESERVATIONS
+            .lock()
+            .map_err(|_| "disk reservation lock poisoned")?
+            .get(&self.volume)
+            .unwrap_or(&0);
+        let required = u128::from(limits().disk_reserve_bytes) + held;
+        if available < required {
+            return Err(crate::Error::DiskOverload {
+                available,
+                required,
+            });
+        }
+        Ok(())
+    }
+    pub(crate) fn acquire(path: &std::path::Path, additional: u64) -> Result<Self, crate::Error> {
+        use std::os::unix::fs::MetadataExt;
+        let volume = std::fs::metadata(path).map_err(|e| e.to_string())?.dev();
+        let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
+        let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
+        #[cfg(test)]
+        let (volume, available) = TEST_DISK
+            .with(|value| value.get())
+            .unwrap_or((volume, available));
+        let mut reservations = DISK_RESERVATIONS
+            .lock()
+            .map_err(|_| "disk reservation lock poisoned")?;
+        let held = reservations.entry(volume).or_default();
+        let next = held
+            .checked_add(u128::from(additional))
+            .ok_or("disk reservation overflow")?;
+        let required = u128::from(limits().disk_reserve_bytes) + next;
+        if available < required {
+            return Err(crate::Error::DiskOverload {
+                available,
+                required,
+            });
+        }
+        *held = next;
+        Ok(Self {
+            volume,
+            bytes: u128::from(additional),
+        })
+    }
+}
+impl Drop for DiskLease {
+    fn drop(&mut self) {
+        let mut reservations = DISK_RESERVATIONS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(held) = reservations.get_mut(&self.volume) {
+            *held -= self.bytes;
+            if *held == 0 {
+                reservations.remove(&self.volume);
+            }
+        }
+    }
+}
+pub(crate) fn require_disk_space(
+    path: &std::path::Path,
+    additional: u64,
+) -> Result<(), crate::Error> {
+    DiskLease::acquire(path, additional).map(drop)
 }
 
 impl Limits {
@@ -481,18 +569,30 @@ impl Limits {
                     .checked_add(2)
                     .ok_or("retained index count overflow")?,
             )
-            .and_then(|n| n.checked_add(self.registry_index_cache_bytes))
+            .and_then(|n| {
+                n.checked_add(
+                    self.registry_index_cache_bytes
+                        .checked_mul(self.retained_generations + 2)?,
+                )
+            })
             .and_then(|n| n.checked_add(self.catalog_cache_bytes))
             .and_then(|n| n.checked_add(self.checkpoint_cache_bytes.checked_mul(3)?))
             .and_then(|n| n.checked_add(self.checker_cache_bytes))
             .and_then(|n| n.checked_add(self.checked_cache_bytes / 4))
             .ok_or("index cache allocation overflow")?;
+        let queued_commands = self
+            .cli_commands
+            .checked_add(2)
+            .and_then(|n| n.checked_mul(self.command_bytes.checked_mul(2)?.checked_add(2)?))
+            .and_then(|n| n.checked_add(self.command_bytes.checked_mul(64)?))
+            .ok_or("command queue memory overflow")?;
         let charged = self
             .checked_cache_bytes
             .checked_add(self.active_job_bytes)
             .and_then(|n| n.checked_add(self.closure_bytes.checked_mul(64)?))
             .and_then(|n| n.checked_add(provider_frames))
             .and_then(|n| n.checked_add(transport_frames))
+            .and_then(|n| n.checked_add(queued_commands))
             .and_then(|n| n.checked_add(index_caches))
             .and_then(|n| n.checked_add(CHECKER_RESERVE))
             .ok_or("resource allocation overflow")?;
@@ -572,7 +672,7 @@ impl Limits {
             + self.active_job_bytes
             + workers * self.provider_stream_bytes
             + self.checked_index_cache_bytes * (self.retained_generations + 2)
-            + self.registry_index_cache_bytes
+            + self.registry_index_cache_bytes * (self.retained_generations + 2)
             + self.catalog_cache_bytes
             + 3 * self.checkpoint_cache_bytes
             + self.checker_cache_bytes
@@ -597,7 +697,15 @@ pub(crate) struct MemoryLease {
     bytes: usize,
 }
 impl MemoryLease {
-    pub(crate) fn acquire(bytes: usize) -> Result<Arc<Self>, String> {
+    pub(crate) fn acquire(bytes: usize) -> Result<Arc<Self>, crate::Error> {
+        #[cfg(test)]
+        if TEST_MEMORY_FAILURE.with(|value| value.replace(false)) {
+            return Err(crate::Error::MemoryOverload {
+                requested: bytes,
+                charged: 0,
+                budget: 0,
+            });
+        }
         let memory = MEMORY
             .get_or_init(|| {
                 Arc::new(Memory {
@@ -608,17 +716,16 @@ impl MemoryLease {
             .clone();
         Self::allocate(memory, bytes)
     }
-    fn allocate(memory: Arc<Memory>, bytes: usize) -> Result<Arc<Self>, String> {
+    fn allocate(memory: Arc<Memory>, bytes: usize) -> Result<Arc<Self>, crate::Error> {
         memory
             .used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|next| *next <= memory.limit)
             })
-            .map_err(|used| {
-                format!(
-                    "memory overload: requested {bytes}, charged {used}, budget {}",
-                    memory.limit
-                )
+            .map_err(|charged| crate::Error::MemoryOverload {
+                requested: bytes,
+                charged,
+                budget: memory.limit,
             })?;
         Ok(Arc::new(Self { memory, bytes }))
     }

@@ -283,3 +283,30 @@ fn borrowed_spine_ranges_preserve_every_original_canonical_suffix() {
     assert!(borrowed == atom);
     assert_eq!(borrowed.node_count_and_depth(), (2, 2));
 }
+
+#[test]
+fn implication_projection_retains_linear_buffer_capacity_for_growing_spines() {
+    let x = FreeVariable::new(0);
+    for count in [16, 32, 64, 128] {
+        let mut formula = Formula::equal(x, x);
+        for _ in 0..count {
+            formula = Formula::implies(Formula::equal(x, x), formula);
+        }
+        let projection = formula.canonical_implication().unwrap().unwrap();
+        let retained = projection.bytes.capacity()
+            + projection.consequents.capacity() * std::mem::size_of::<usize>();
+        let repeated_bytes: usize = projection.consequents().map(<[u8]>::len).sum();
+        assert_eq!(projection.consequents.len(), count);
+        assert_eq!(projection.bytes.len(), 12 * count + 11);
+        assert!(retained <= 40 * count + 128);
+        assert!(repeated_bytes > projection.bytes.len() * count / 3);
+        for suffix in projection.consequents() {
+            let start = suffix.as_ptr() as usize - projection.bytes.as_ptr() as usize;
+            assert_eq!(suffix, &projection.bytes[start..]);
+        }
+        println!(
+            "spine={count} encoded_bytes={} retained_capacity={retained} prior_suffix_bytes={repeated_bytes}",
+            projection.bytes.len()
+        );
+    }
+}

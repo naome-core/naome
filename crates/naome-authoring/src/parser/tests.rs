@@ -1989,3 +1989,45 @@ fn term_sugar_relationalizes_unary_nested_and_multi_input_calls_exactly_once() {
     );
     assert_eq!(parse("eq(binary(x, identity(y)), y)"), multi_input);
 }
+
+#[test]
+fn primitive_question_and_proof_grammars_share_binding_expansion_and_diagnostics() {
+    let state = ProofState::new();
+    for source in [
+        "all([x,y,],imp(and(eq(x,y),ne(y,x)),or(mem(x,y),eq(y,x))))",
+        "all(x,ex([y,z],iff(eq(x,y),not(mem(y,z)))))",
+        "let: a = all(x,eq(x,x)) b = not(a) goal = imp(a,not(b))",
+        "# original bytes\nall ( [ x , y ] , imp(eq(x,y),eq(y,x)), )",
+    ] {
+        let question_source = if source.starts_with("let:") {
+            source.to_owned()
+        } else {
+            format!("goal = {source}")
+        };
+        let question = crate::CompiledQuestion::compile(&question_source).unwrap();
+        // The proof parser owns richer terms/top levels, but common formulas
+        // must retain exactly the same primitive shape and allocation order.
+        let formula_source = if source.starts_with("let:") {
+            "imp(all(x,eq(x,x)),not(not(all(x,eq(x,x)))))"
+        } else {
+            source
+        };
+        let mut parser = super::Parser::new(formula_source);
+        let parsed = parser
+            .parsed_formula(1, super::FormulaContext::Statement)
+            .unwrap();
+        let formula = parsed
+            .formula
+            .expand_with_node_limit(&state, naome_foundation::FORMULA_MAX_NODES)
+            .unwrap()
+            .0;
+        assert_eq!(&formula, question.formula());
+    }
+    let source = "# retain original positions\ngoal=all([x,$],eq(x,x))";
+    let question = crate::CompiledQuestion::compile_with_diagnostic(source).unwrap_err();
+    let proof = compile(&format!("{source}\nproof: a=refl(x) return a")).unwrap_err();
+    assert_eq!(
+        question.diagnostic().primary_span().unwrap().start(),
+        proof.diagnostic(source).primary_span().unwrap().start()
+    );
+}

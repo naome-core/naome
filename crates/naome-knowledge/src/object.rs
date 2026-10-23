@@ -32,7 +32,7 @@ pub(crate) struct Metadata {
 impl Metadata {
     pub(crate) fn compile(
         &self,
-    ) -> Result<(ProofId, StatementId, naome_authoring::CompiledQuestion), String> {
+    ) -> Result<(ProofId, StatementId, naome_authoring::CompiledQuestion), crate::Error> {
         let id = ProofId::from_bytes(id_bytes(&self.proof_id)?);
         let statement = StatementId::from_bytes(id_bytes(&self.statement_id)?);
         let question = naome_authoring::CompiledQuestion::compile(&self.question)
@@ -48,7 +48,7 @@ impl Metadata {
 
 // Early address binding uses the unchanged checker framing. Only a checked
 // conclusion and classify_checked_proof establish the eventual resolution.
-fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, String> {
+fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::Error> {
     let bytes = formula
         .encode_canonical()
         .map_err(|error| error.to_string())?;
@@ -107,7 +107,7 @@ impl Candidate {
 }
 
 impl BinaryProof {
-    pub(crate) fn from_checked(proof: &naome_checker::CheckedProof) -> Result<Self, String> {
+    pub(crate) fn from_checked(proof: &naome_checker::CheckedProof) -> Result<Self, crate::Error> {
         let dependencies = dependencies(proof.proof_id(), proof.normal_form())?;
         Ok(Self {
             id: proof.proof_id(),
@@ -134,9 +134,26 @@ impl BinaryProof {
         }
     }
 
-    pub(crate) fn prepare(self) -> Result<Candidate, String> {
-        if self.bytes.len() > crate::resources::limits().proof_bytes {
-            return Err("proof byte limit".into());
+    pub(crate) fn prepare(self) -> Result<Candidate, crate::Error> {
+        self.prepare_with_limits(
+            crate::resources::limits().proof_bytes,
+            crate::resources::limits().proof_dependencies,
+        )
+    }
+    /// Replay uses protocol limits. Local intake settings cannot invalidate history.
+    pub(crate) fn prepare_retained(self) -> Result<Candidate, crate::Error> {
+        self.prepare_with_limits(
+            naome_proof::CERTIFICATE_MAX_BYTES,
+            naome_proof::CERTIFICATE_MAX_STEPS,
+        )
+    }
+    fn prepare_with_limits(
+        self,
+        maximum: usize,
+        maximum_dependencies: usize,
+    ) -> Result<Candidate, crate::Error> {
+        if self.bytes.len() > maximum {
+            return Err(crate::Error::InputLimit("proof byte limit"));
         }
         let memory = crate::resources::MemoryLease::acquire(
             self.bytes
@@ -153,7 +170,7 @@ impl BinaryProof {
         if content_id(self.statement, &self.bytes) != self.id {
             return Err("claimed proof ID mismatch".into());
         }
-        let dependencies = dependencies(self.id, &normal)?;
+        let dependencies = dependencies_with_limit(self.id, &normal, maximum_dependencies)?;
         if dependencies != self.dependencies {
             return Err("proof dependency metadata differs".into());
         }
@@ -168,7 +185,14 @@ impl BinaryProof {
     }
 }
 
-fn dependencies(id: ProofId, normal: &ProofNormalForm) -> Result<BTreeSet<ProofId>, String> {
+fn dependencies(id: ProofId, normal: &ProofNormalForm) -> Result<BTreeSet<ProofId>, crate::Error> {
+    dependencies_with_limit(id, normal, crate::resources::limits().proof_dependencies)
+}
+fn dependencies_with_limit(
+    id: ProofId,
+    normal: &ProofNormalForm,
+    maximum: usize,
+) -> Result<BTreeSet<ProofId>, crate::Error> {
     let mut dependencies = BTreeSet::new();
     for step in normal.certificate().steps() {
         if !step.definition_references().is_empty() {
@@ -178,8 +202,8 @@ fn dependencies(id: ProofId, normal: &ProofNormalForm) -> Result<BTreeSet<ProofI
             dependencies.insert(*proof_id);
         }
     }
-    if dependencies.len() > crate::resources::limits().proof_dependencies {
-        return Err("dependency count limit".into());
+    if dependencies.len() > maximum {
+        return Err(crate::Error::InputLimit("dependency count limit"));
     }
     if dependencies.contains(&id) {
         return Err("dependency cycle".into());
@@ -197,14 +221,14 @@ impl Envelope {
         }
     }
 
-    pub(crate) fn prepare(self) -> Result<Candidate, String> {
+    pub(crate) fn prepare(self) -> Result<Candidate, crate::Error> {
         if self.compatibility != hex(&compatibility()) {
             return Err("compatibility mismatch".into());
         }
         let id = ProofId::from_bytes(id_bytes(&self.proof_id)?);
         let statement = StatementId::from_bytes(id_bytes(&self.statement_id)?);
         if self.proof.len() > 2 * crate::resources::limits().proof_bytes {
-            return Err("proof byte limit".into());
+            return Err(crate::Error::InputLimit("proof byte limit"));
         }
         let memory = crate::resources::MemoryLease::acquire(
             self.proof
@@ -240,7 +264,7 @@ pub(crate) fn content_id(statement: StatementId, bytes: &[u8]) -> ProofId {
     ProofId::of_canonical_certificate(statement, bytes).expect("bounded proof length fits u32")
 }
 
-pub(crate) fn id_bytes(value: &str) -> Result<[u8; 32], String> {
+pub(crate) fn id_bytes(value: &str) -> Result<[u8; 32], crate::Error> {
     if value.len() != 64 {
         return Err("identity width".into());
     }
@@ -259,7 +283,7 @@ pub fn hex(bytes: &[u8]) -> String {
     result
 }
 
-pub fn unhex(value: &str) -> Result<Vec<u8>, String> {
+pub fn unhex(value: &str) -> Result<Vec<u8>, crate::Error> {
     if !value.len().is_multiple_of(2) {
         return Err("hex width".into());
     }
@@ -267,7 +291,7 @@ pub fn unhex(value: &str) -> Result<Vec<u8>, String> {
         .as_bytes()
         .chunks_exact(2)
         .map(|pair| {
-            fn digit(value: u8) -> Result<u8, String> {
+            fn digit(value: u8) -> Result<u8, crate::Error> {
                 match value {
                     b'0'..=b'9' => Ok(value - b'0'),
                     b'a'..=b'f' => Ok(value - b'a' + 10),

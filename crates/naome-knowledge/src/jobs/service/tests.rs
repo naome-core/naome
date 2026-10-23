@@ -782,3 +782,29 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
     let id = submit_find(&mut owner, total as u64);
     assert!(id >= end);
 }
+
+#[test]
+fn narrower_new_job_defaults_preserve_original_budget_accounts_and_retry_allowances() {
+    let (directory, mut owner) = fixture(3);
+    let _request = submit(&mut owner, 1);
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    owner.reserve(1, 1).unwrap();
+    let record = owner.journal.records.get_mut(&1).unwrap();
+    record.checkpoint = 1;
+    record.state = State::Failed;
+    record.acknowledged = true;
+    owner.save().unwrap();
+    let original = owner.journal.records[&1].clone();
+    let mut settings = owner.settings;
+    settings.solving.limits.work_units = 1;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings);
+    let _retry = submit(&mut owner, 2);
+    let retry = &owner.journal.records[&2];
+    assert_eq!(retry.settings, original.settings);
+    assert_eq!(retry.created_ms, original.created_ms);
+    assert_eq!(retry.expires_ms, original.expires_ms);
+    assert_eq!(retry.reserved_units, 1);
+    assert_eq!(owner.journal.total_reserved_units, 1);
+}

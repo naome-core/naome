@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/3");
+pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/4");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +22,7 @@ pub(crate) struct Message {
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum Body {
     Inventory {
+        known: Option<[u8; 32]>,
         after: Option<[u8; 32]>,
         limit: usize,
     },
@@ -35,7 +36,11 @@ pub(crate) enum Body {
     Offer {
         metadata: Metadata,
     },
+    InventoryUnchanged {
+        root: [u8; 32],
+    },
     InventoryResult {
+        root: [u8; 32],
         ids: Vec<[u8; 32]>,
         next: Option<[u8; 32]>,
     },
@@ -208,6 +213,7 @@ mod tests {
     fn encoded() -> Vec<u8> {
         let bytes = serde_json::to_vec(
             &Frame::new(Body::Inventory {
+                known: None,
                 after: None,
                 limit: crate::resources::limits().inventory_page,
             })
@@ -232,7 +238,7 @@ mod tests {
                 .is_err()
             );
         }
-        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/3");
+        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/4");
     }
 
     #[tokio::test]

@@ -121,7 +121,7 @@ mod tests {
                 graph
                     .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
                     .unwrap();
-                questions.apply_exchange(delta);
+                questions.apply_exchange(delta).unwrap();
             }
             assert_eq!(graph.accepted_count(), CATALOG.len());
         }

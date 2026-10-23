@@ -437,7 +437,7 @@ impl Autonomous {
             if let Some(mut reply) = pending.reply.take() {
                 match reply.try_recv() {
                     Ok(assessment) => {
-                        let outcome = (|| -> Result<Vec<ProofId>, String> {
+                        let outcome = (|| -> Result<Vec<ProofId>, crate::Error> {
                             let context = pending.context.ok_or("publication context absent")?;
                             if context != questions.context_key(graph)
                                 || assessment.prefilter.snapshot != context.0
@@ -460,9 +460,14 @@ impl Autonomous {
                                 &pending.question,
                                 &assessment,
                             )?;
-                            let admitted = graph.commit_batch(root, batch, pending.expires)?;
-                            questions.apply_exchange(delta);
-                            Ok(admitted)
+                            questions.publish_exchange(
+                                graph,
+                                root,
+                                batch,
+                                delta,
+                                None,
+                                pending.expires,
+                            )
                         })();
                         match outcome {
                             Ok(ids) => {
@@ -472,6 +477,10 @@ impl Autonomous {
                             }
                             Err(error) => {
                                 emit(json!({"event":"proof_candidate_rejected","error":error}));
+                                if let Some(error) = questions.storage_error() {
+                                    self.error = Some(error.to_owned());
+                                    return accepted;
+                                }
                                 pending.retry = now
                                     + Duration::from_millis(
                                         self.intervals.question_interval_ms.max(

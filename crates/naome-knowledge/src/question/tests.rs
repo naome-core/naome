@@ -438,7 +438,9 @@ async fn running_node_checked_proof_ingest_invalidates_pending_interest() {
         .await
         .unwrap();
     producer
-        .send(Ok(serde_json::json!({"command":"produce", "source":PROOF})))
+        .send(Ok(crate::network::QueuedCommand::from_value(
+            serde_json::json!({"command":"produce", "source":PROOF}),
+        )))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1044,4 +1046,195 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     assert_eq!(checked.conclusion(), &r);
     assert_eq!(checked.proof_id(), witness.proof_id());
     assert_eq!(reopened.content_root(), root);
+}
+
+#[test]
+fn publication_outbox_recovers_each_durable_cut_without_losing_original_source() {
+    for cut in 0..4 {
+        let directory = Directory::new();
+        let mut graph = Graph::open(&directory.0).unwrap();
+        let source = "# original orientation\ngoal = not(not(all(x,eq(x,x))))";
+        let question = question(source);
+        let mut local = Managed::new(None);
+        local.attach_persistence(&directory.0).unwrap();
+        let (root, batch) = graph.prepare_generated(PROOF, &[], &question).unwrap();
+        let mut registry = local.registry.clone();
+        registry
+            .insert(RegisteredQuestion::new(*question.source_hash(), question.core()).unwrap())
+            .unwrap();
+        let delta = QuestionDelta {
+            registry,
+            question: Some(question.clone()),
+        };
+        local
+            .persistence
+            .as_mut()
+            .unwrap()
+            .stage_publication(root, &question)
+            .unwrap();
+        if cut >= 1 {
+            graph
+                .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
+                .unwrap();
+        } else {
+            drop(batch);
+        }
+        if cut >= 2 {
+            local.apply_exchange(delta).unwrap();
+        } else {
+            drop(delta);
+        }
+        if cut >= 3 {
+            local
+                .persistence
+                .as_mut()
+                .unwrap()
+                .finish_publication(root)
+                .unwrap();
+        }
+        drop(local);
+        drop(graph);
+        let graph = Graph::open(&directory.0).unwrap();
+        let mut local = Managed::new(None);
+        local.attach_persistence(&directory.0).unwrap();
+        local.recover_publications(&graph).unwrap();
+        assert!(
+            local
+                .persistence
+                .as_ref()
+                .unwrap()
+                .publications()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(local.registry.len(), usize::from(cut >= 1));
+        if cut >= 1 {
+            assert!(
+                local
+                    .registry
+                    .contains_record(question.source_hash())
+                    .unwrap()
+            );
+            assert_eq!(local.known[question.source_hash()].source(), source);
+            assert!(!local.known[question.source_hash()].negation_parity());
+        }
+        local.recover_publications(&graph).unwrap();
+        assert_eq!(local.registry.len(), usize::from(cut >= 1));
+    }
+}
+
+#[test]
+fn question_index_compaction_copies_live_roots_and_mirrors_insertions_with_old_snapshots() {
+    let directory = Directory::new();
+    let mut local = Managed::new(None);
+    local.attach_persistence(&directory.0).unwrap();
+    for index in 0..320 {
+        let question = question(&crate::checkpoint::tests::question_source(index));
+        local
+            .registry
+            .insert(RegisteredQuestion::new(*question.source_hash(), question.core()).unwrap())
+            .unwrap();
+        local
+            .persistence
+            .as_mut()
+            .unwrap()
+            .retain(&question, persistence::Kind::Baseline, None)
+            .unwrap();
+    }
+    let snapshot = local.registry.clone();
+    let identity = snapshot.identity();
+    let source = local.index_storage.clone().unwrap();
+    let allocated = source.allocated_bytes().unwrap();
+    local.next_compaction = 0;
+    local.maintain_registry().unwrap();
+    assert!(local.compaction.is_some());
+    let extra = question(&crate::checkpoint::tests::question_source(321));
+    local
+        .registry
+        .insert(RegisteredQuestion::new(*extra.source_hash(), extra.core()).unwrap())
+        .unwrap();
+    local
+        .persistence
+        .as_mut()
+        .unwrap()
+        .retain(&extra, persistence::Kind::Baseline, None)
+        .unwrap();
+    let complete_identity = local.registry.identity();
+    for _ in 0..1000 {
+        local.maintain_registry().unwrap();
+        if local.compaction.is_none() {
+            break;
+        }
+    }
+    assert!(local.compaction.is_none());
+    let target = local.index_storage.as_ref().unwrap();
+    assert!(!Arc::ptr_eq(&source, target));
+    assert!(target.allocated_bytes().unwrap() < allocated);
+    assert_eq!(local.registry.identity(), complete_identity);
+    assert!(local.registry.contains_record(extra.source_hash()).unwrap());
+    assert_eq!(snapshot.identity(), identity);
+    assert_eq!(snapshot.len(), 320);
+    assert!(!snapshot.contains_record(extra.source_hash()).unwrap());
+    drop(snapshot);
+    drop(source);
+    drop(local);
+    let mut reopened = Managed::new(None);
+    reopened.attach_persistence(&directory.0).unwrap();
+    assert_eq!(reopened.registry.identity(), complete_identity);
+}
+
+#[test]
+fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
+    let directory = Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    let selected = question(SOLVED);
+    let mut local = Managed::new(None);
+    local.attach_persistence(&directory.0).unwrap();
+    let (root, batch) = graph.prepare_generated(PROOF, &[], &selected).unwrap();
+    let mut registry = local.registry.clone();
+    registry
+        .insert(RegisteredQuestion::new(*selected.source_hash(), selected.core()).unwrap())
+        .unwrap();
+    persistence::fail_next_exchange();
+    assert!(
+        local
+            .publish_exchange(
+                &mut graph,
+                root,
+                batch,
+                QuestionDelta {
+                    registry,
+                    question: Some(selected.clone())
+                },
+                None,
+                Instant::now() + Duration::from_secs(5)
+            )
+            .is_err()
+    );
+    assert!(graph.contains(root).unwrap());
+    assert!(local.storage_error().is_some());
+    assert_eq!(local.registry.len(), 0);
+    assert_eq!(
+        local
+            .persistence
+            .as_ref()
+            .unwrap()
+            .publications()
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(local);
+    drop(graph);
+    let graph = Graph::open(&directory.0).unwrap();
+    let mut local = Managed::new(None);
+    local.attach_persistence(&directory.0).unwrap();
+    local.recover_publications(&graph).unwrap();
+    assert_eq!(local.registry.len(), 1);
+    assert!(
+        local
+            .registry
+            .contains_record(selected.source_hash())
+            .unwrap()
+    );
 }

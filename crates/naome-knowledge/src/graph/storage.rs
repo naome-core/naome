@@ -276,9 +276,10 @@ impl CheckedStorage {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(|e| e.to_string())?;
-        connection
-            .busy_timeout(crate::resources::limits().sqlite_busy_timeout)
-            .map_err(|e| e.to_string())?;
+        crate::storage::sqlite_common(
+            &connection,
+            crate::resources::limits().checked_index_cache_bytes,
+        )?;
         if startup {
             // Only the fresh, exclusive startup generation is pruned in place.
             // SQLite requires the pointer map before any table is created.
@@ -297,20 +298,8 @@ impl CheckedStorage {
         connection
             .execute_batch(
                 "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
-             PRAGMA temp_store=FILE; PRAGMA mmap_size=0;
-            PRAGMA trusted_schema=OFF;
             CREATE TABLE nodes(address BLOB PRIMARY KEY CHECK(length(address)=32),
                 payload BLOB NOT NULL) STRICT, WITHOUT ROWID;",
-            )
-            .map_err(|e| e.to_string())?;
-        connection
-            .pragma_update(
-                None,
-                "cache_size",
-                -(i64::try_from(
-                    (crate::resources::limits().checked_index_cache_bytes / 1024).max(1),
-                )
-                .map_err(|_| "SQLite cache width")?),
             )
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {

@@ -9,6 +9,7 @@ pub(crate) struct CheckedBatch {
     storage: Arc<CheckedStorage>,
     copy_epoch: u64,
     context_bytes: usize,
+    _disk: crate::resources::DiskLease,
 }
 
 impl Graph {
@@ -20,7 +21,7 @@ impl Graph {
         source: &str,
         helpers: &[String],
         question: &CompiledQuestion,
-    ) -> Result<(ProofId, CheckedBatch), String> {
+    ) -> Result<(ProofId, CheckedBatch), crate::Error> {
         self.ensure_live()?;
         // Capture before helper preparation can write immutable staged nodes.
         // The shared batch path must never refresh this token after a copy starts.
@@ -35,6 +36,10 @@ impl Graph {
         {
             return Err("generated closure source capacity".into());
         }
+        let disk = self.reserve_publication(
+            source.len() + helpers.iter().map(String::len).sum::<usize>(),
+            helpers.len() + 1,
+        )?;
         let mut context = self.context.clone();
         let mut records = BTreeMap::new();
         let mut entries = Vec::new();
@@ -69,14 +74,14 @@ impl Graph {
             if !self.cold(
                 context
                     .contains_statement(checked.statement_id())
-                    .map_err(|e| e.to_string()),
+                    .map_err(crate::Error::from),
             )? {
                 context_bytes = context_bytes
                     .checked_add(
                         checked
                             .conclusion()
                             .encode_canonical()
-                            .map_err(|e| e.to_string())?
+                            .map_err(crate::Error::from)?
                             .len(),
                     )
                     .ok_or("checked context capacity")?;
@@ -87,12 +92,12 @@ impl Graph {
             if entries.len() == helpers.len() {
                 question
                     .classify_checked_proof(&checked)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(crate::Error::from)?;
             }
             self.cold(
                 context
                     .register_proof_for_replication(checked)
-                    .map_err(|e| e.to_string()),
+                    .map_err(crate::Error::from),
             )?;
             records.insert(id, record.dependencies.clone());
             entries.push((id, record));
@@ -122,11 +127,12 @@ impl Graph {
                 storage: self.checked_storage.clone(),
                 copy_epoch,
                 context_bytes,
+                _disk: disk,
             },
         ))
     }
 
-    pub(crate) fn batch_current(&self, batch: &CheckedBatch) -> Result<bool, String> {
+    pub(crate) fn batch_current(&self, batch: &CheckedBatch) -> Result<bool, crate::Error> {
         self.ensure_live()?;
         Ok(batch.base_snapshot == self.context.snapshot_id()
             && Arc::ptr_eq(&batch.storage, &self.checked_storage)
@@ -141,7 +147,7 @@ impl Graph {
         root: ProofId,
         candidates: BTreeMap<ProofId, Candidate>,
         question: &CompiledQuestion,
-    ) -> Result<CheckedBatch, String> {
+    ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
         let copy_epoch = self.cold(self.checked_storage.copy_epoch())?;
         self.prepare_batch_at_epoch(root, candidates, question, copy_epoch)
@@ -153,7 +159,7 @@ impl Graph {
         mut candidates: BTreeMap<ProofId, Candidate>,
         question: &CompiledQuestion,
         copy_epoch: u64,
-    ) -> Result<CheckedBatch, String> {
+    ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
         if candidates.is_empty() || candidates.len() > crate::resources::limits().closure_objects {
             return Err("checked batch operation capacity".into());
@@ -177,6 +183,10 @@ impl Graph {
         if reachable.len() != candidates.len() {
             return Err("unrequested staged object".into());
         }
+        let disk = self.reserve_publication(
+            candidates.values().map(|c| c.bytes.len()).sum(),
+            candidates.len(),
+        )?;
         let mut context = self.context.clone();
         let mut bytes = self.bytes;
         let mut context_bytes = self.context_bytes;
@@ -189,7 +199,7 @@ impl Graph {
                     if !self.cold(
                         context
                             .contains_proof(*dependency)
-                            .map_err(|e| e.to_string()),
+                            .map_err(crate::Error::from),
                     )? {
                         complete = false;
                         break;
@@ -218,19 +228,19 @@ impl Graph {
                 if id == root {
                     question
                         .classify_checked_proof(&checked)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(crate::Error::from)?;
                 }
                 if !self.cold(
                     context
                         .contains_statement(checked.statement_id())
-                        .map_err(|e| e.to_string()),
+                        .map_err(crate::Error::from),
                 )? {
                     context_bytes = context_bytes
                         .checked_add(
                             checked
                                 .conclusion()
                                 .encode_canonical()
-                                .map_err(|error| error.to_string())?
+                                .map_err(crate::Error::from)?
                                 .len(),
                         )
                         .ok_or("checked context capacity")?;
@@ -238,7 +248,7 @@ impl Graph {
                 self.cold(
                     context
                         .register_proof_for_replication(checked)
-                        .map_err(|error| error.to_string()),
+                        .map_err(crate::Error::from),
                 )?;
                 entries.push((id, record));
             }
@@ -250,19 +260,50 @@ impl Graph {
             storage: self.checked_storage.clone(),
             copy_epoch,
             context_bytes,
+            _disk: disk,
         })
     }
 
     /// Commit a prepared delta against its exact checked base, then publish
     /// only infallible roots/scalars. No caller can apply an uncommitted batch.
+    #[cfg(test)]
     pub(crate) fn commit_batch(
         &mut self,
         root: ProofId,
         batch: CheckedBatch,
         deadline: Instant,
-    ) -> Result<Vec<ProofId>, String> {
+    ) -> Result<Vec<ProofId>, crate::Error> {
+        self.commit_batch_granted(root, batch, deadline, None)
+    }
+
+    pub(crate) fn commit_batch_granted(
+        &mut self,
+        root: ProofId,
+        batch: CheckedBatch,
+        deadline: Instant,
+        peer: Option<PeerGrant>,
+    ) -> Result<Vec<ProofId>, crate::Error> {
         self.ensure_live()?;
         self.publication_current()?;
+        let guard = peer
+            .map(|peer| {
+                self.commit_guard
+                    .clone()
+                    .unwrap_or_else(|| {
+                        CommitGuard::new(
+                            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                            0,
+                            None,
+                            None,
+                        )
+                    })
+                    .with_peer(peer)
+            })
+            .or_else(|| self.commit_guard.clone());
+        if let Some(guard) = &guard {
+            guard.check()?;
+        }
+        batch._disk.recheck(self.store.directory())?;
         if batch.base_snapshot != self.context.snapshot_id() {
             return Err("stale checked batch context".into());
         }
@@ -287,7 +328,7 @@ impl Graph {
                     .ok_or("accepted count overflow")?,
                 batch.context.proof_set_fingerprint(),
             )?,
-            self.commit_guard.as_ref(),
+            guard.as_ref(),
         );
         let summary = match result {
             Err(error) if error == crate::store::COMMIT_DEADLINE_ERROR => return Err(error),
@@ -302,6 +343,10 @@ impl Graph {
             self.pending.remove(id);
         }
         drop(gate);
+        for id in &admitted {
+            let wake = self.backlog()?.accepted(*id);
+            self.cold(wake)?;
+        }
         Ok(admitted)
     }
 }

@@ -72,28 +72,10 @@ impl<'source> Parser<'source> {
     pub(super) fn name(&mut self) -> Result<&'source str, CompileError> {
         self.skip_trivia();
         let start = self.offset;
-        let mut characters = self.source[start..].char_indices();
-        let Some((_, first)) = characters.next() else {
-            return Err(CompileError::Syntax {
-                offset: start,
-                expected: "a name",
-            });
-        };
-        if !first.is_ascii_alphabetic() && first != '_' {
-            return Err(CompileError::Syntax {
-                offset: start,
-                expected: "a name",
-            });
-        }
-        let mut end = start + first.len_utf8();
-        for (relative, character) in characters {
-            if !character.is_ascii_alphanumeric() && character != '_' {
-                break;
-            }
-            end = start + relative + character.len_utf8();
-        }
-        self.offset = end;
-        Ok(&self.source[start..end])
+        syntax::name(self.source, &mut self.offset).ok_or(CompileError::Syntax {
+            offset: start,
+            expected: "a name",
+        })
     }
 
     pub(super) fn string(&mut self, expected: &'static str) -> Result<&'source str, CompileError> {

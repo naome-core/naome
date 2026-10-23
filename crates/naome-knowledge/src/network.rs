@@ -53,7 +53,7 @@ pub fn routing_contract() -> Value {
     json!({
         "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":5,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
-            "protocol":"/naome/knowledge/3", "topic":"naome-knowledge-v3",
+            "protocol":"/naome/knowledge/4", "topic":"naome-knowledge-v4",
             "interest":"Explicit local positive selection before root fetch and before commit",
             "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::limits().queued_metadata,
@@ -106,6 +106,7 @@ struct Wanted {
 enum Flight {
     Inventory {
         peer: PeerId,
+        known: Option<[u8; 32]>,
         after: Option<[u8; 32]>,
         pages: usize,
     },
@@ -128,6 +129,7 @@ struct Bucket {
 }
 #[derive(Clone, Copy, Default)]
 struct InventoryProgress {
+    root: Option<[u8; 32]>,
     after: Option<[u8; 32]>,
     pages: usize,
 }
@@ -147,6 +149,7 @@ struct Node {
     flights: HashMap<request_response::OutboundRequestId, Flight>,
     next_inventory: BTreeMap<PeerId, Instant>,
     inventory_progress: BTreeMap<PeerId, InventoryProgress>,
+    inventory_summaries: BTreeMap<PeerId, ([u8; 32], [u8; 32])>,
     next_automatic_request: BTreeMap<PeerId, Instant>,
     buckets: BTreeMap<PeerId, Bucket>,
     outgoing: BTreeMap<PeerId, Bucket>,
@@ -179,7 +182,7 @@ pub(crate) async fn run_autonomous(
         config,
         false,
         inbox,
-        Some(crate::mocks::assess_interest),
+        None::<fn(naome_authoring::CompiledQuestion) -> std::future::Ready<Result<bool, String>>>,
         commands,
         Some((intervals, startup)),
     )
@@ -276,7 +279,7 @@ pub(crate) async fn run_inner<F, Fut>(
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
     interest: Option<F>,
-    commands: mpsc::Receiver<Result<Value, String>>,
+    commands: mpsc::Receiver<Result<QueuedCommand, String>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
 ) -> Result<(), String>
 where
@@ -325,7 +328,7 @@ pub(crate) async fn run_owner<F, Fut>(
     test_controls: bool,
     mut inbox: crate::question::QuestionInbox,
     interest: Option<F>,
-    mut commands: mpsc::Receiver<Result<Value, String>>,
+    mut commands: mpsc::Receiver<Result<QueuedCommand, String>>,
     autonomy: Option<(crate::autonomous::Intervals, crate::runtime::Startup)>,
     mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String>
@@ -467,7 +470,7 @@ where
         gossip_config,
     )
     .map_err(|error| error.to_string())?;
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v3");
+    let topic = gossipsub::IdentTopic::new("naome-knowledge-v4");
     gossip
         .subscribe(&topic)
         .map_err(|error| error.to_string())?;
@@ -510,7 +513,7 @@ where
         })
         .with_connection_timeout(crate::resources::limits().request_timeout)
         .build();
-    swarm.listen_on(listen).map_err(|error| error.to_string())?;
+    let primary_listener = swarm.listen_on(listen).map_err(|error| error.to_string())?;
     for address in &settings.external_addresses {
         let address: Multiaddr = address
             .parse()
@@ -521,7 +524,7 @@ where
         }
         swarm.add_external_address(address);
     }
-    let (swarm, mut events, mut transport) = worker::Transport::spawn(swarm);
+    let (swarm, mut events, mut transport) = worker::Transport::spawn(swarm, primary_listener);
     let enabled = BTreeSet::new();
     let mut node = Node {
         ready: false,
@@ -539,6 +542,7 @@ where
         flights: HashMap::new(),
         next_inventory: BTreeMap::new(),
         inventory_progress: BTreeMap::new(),
+        inventory_summaries: BTreeMap::new(),
         next_automatic_request: BTreeMap::new(),
         buckets: BTreeMap::new(),
         outgoing: BTreeMap::new(),
@@ -571,6 +575,7 @@ where
         questions.attach_persistence(&directory)?;
         (None, None, questions)
     };
+    questions.recover_publications(&node.graph)?;
     let published = Arc::new(worker::PublishedStatus::default());
     published
         .count
@@ -594,7 +599,7 @@ where
             && (control.selection_changed() || Instant::now()>=next_profile_check) {
                 next_profile_check=Instant::now()+crate::resources::limits().profile_poll_interval;
                 if questions.select(control.selection().ok()) {
-                node.intake.invalidate_interest();
+                node.intake.invalidate_interest(); node.inventory_summaries.clear();
                 }
             }
         node.graph.set_commit_guard(crate::graph::CommitGuard::new(
@@ -624,7 +629,7 @@ where
                 node.graph.set_commit_guard(crate::graph::CommitGuard::new(
                     node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
                 ));
-                node.event(event.event)?;
+                node.event(event.event, event.grant)?;
                 published.ready.store(node.ready, Ordering::Release);
                 if node.ready && let Some(control) = &control {
                     control.startup_ready();
@@ -632,7 +637,16 @@ where
             },
             command = commands.recv(), if command_input_open && !stopping => {
                 match command {
-                    Some(Ok(value)) => { if !node.command(value) { break; } },
+                    Some(Ok(command)) => {
+                        let parsed_memory = crate::resources::MemoryLease::acquire(command.bytes.len().saturating_mul(64));
+                        match parsed_memory {
+                            Err(error) => emit(json!({"event":"command_error","error":error})),
+                            Ok(_parsed_memory) => match serde_json::from_slice(&command.bytes) {
+                            Ok(value) => { if !node.command(value) { break; } },
+                            Err(error) => emit(json!({"event":"command_error", "error":error.to_string()})),
+                        },
+                        }
+                    },
                     Some(Err(error)) => emit(json!({"event":"command_error", "error":error})),
                     None => {
                         command_input_open = false;
@@ -649,7 +663,7 @@ where
             },
             interest = questions.completed(),if !stopping => {
                 if let Some(control)=&control
-                    && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
+                    && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
                 questions.finish(&node.graph, interest);
             },
             _=crate::runtime::requested_stop(&mut stop_watch),if !stopping=>{
@@ -670,11 +684,12 @@ where
         if let Some(control)=&control
             && (control.selection_changed() || node.intake.selection_boundary_ready()
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
-                && questions.select(control.selection().ok()){node.intake.invalidate_interest();}
+                && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
         node.graph.set_commit_guard(crate::graph::CommitGuard::new(
             node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
         ));
         node.graph.maintain_checked_storage()?;
+        questions.maintain_registry()?;
         questions.cancel_closed();
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
@@ -700,6 +715,7 @@ where
             node.publish_admitted(&admitted, "mock_producer");
             if let Some(error)=autonomous.error(){return Err(error.to_owned());}
         }
+        if let Some(error) = questions.storage_error() { return Err(error.to_owned()); }
         node.requests();
         published.count.store(node.graph.accepted_count(), Ordering::Release);
         if let Some(error) = node.graph.storage_error() {
@@ -757,6 +773,7 @@ fn body_kind(body: &Body) -> &'static str {
     match body {
         Body::Inventory { .. } => "inventory",
         Body::InventoryResult { .. } => "inventory_result",
+        Body::InventoryUnchanged { .. } => "inventory_unchanged",
         Body::Get { .. } => "get",
         Body::Describe { .. } => "describe",
         Body::Description { .. } => "description",
@@ -778,6 +795,33 @@ fn body_id(body: &Body) -> Option<String> {
     }
 }
 
+fn inventory_response(
+    graph: &Graph,
+    known: Option<[u8; 32]>,
+    after: Option<[u8; 32]>,
+    limit: usize,
+) -> Result<Body, crate::Error> {
+    let root = graph.content_root();
+    if after.is_none() && known == Some(root) {
+        return Ok(Body::InventoryUnchanged { root });
+    }
+    if limit == 0 {
+        return Err("inventory page limit must be positive".into());
+    }
+    let limit = limit.min(crate::resources::limits().inventory_page);
+    let ids: Vec<_> = graph
+        .ids_page(after.map(ProofId::from_bytes), limit)?
+        .into_iter()
+        .map(|id| *id.as_bytes())
+        .collect();
+    let next = if ids.len() == limit {
+        ids.last().copied()
+    } else {
+        None
+    };
+    Ok(Body::InventoryResult { root, ids, next })
+}
+
 fn body_root(body: &Body) -> Option<String> {
     match body {
         Body::Get { root, .. } | Body::Object { root, .. } => Some(hex(root)),
@@ -785,11 +829,38 @@ fn body_root(body: &Body) -> Option<String> {
     }
 }
 
-fn read_commands(sender: mpsc::Sender<Result<Value, String>>) {
+/// Queues retain bounded source bytes, never expanded JSON trees. The lease
+/// follows the entry through parsing and command execution on the state owner.
+pub(crate) struct QueuedCommand {
+    bytes: Vec<u8>,
+    _memory: std::sync::Arc<crate::resources::MemoryLease>,
+}
+impl QueuedCommand {
+    #[cfg(test)]
+    pub(crate) fn from_value(value: Value) -> Self {
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let memory = crate::resources::MemoryLease::acquire(bytes.len() * 2).unwrap();
+        Self {
+            bytes,
+            _memory: memory,
+        }
+    }
+}
+
+fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
     use std::io::{BufRead, Read};
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     loop {
+        let memory = match crate::resources::MemoryLease::acquire(
+            crate::resources::limits().command_bytes * 2 + 2,
+        ) {
+            Ok(memory) => memory,
+            Err(error) => {
+                let _ = sender.blocking_send(Err(error.to_string()));
+                break;
+            }
+        };
         let mut bytes = Vec::new();
         let read = (&mut input)
             .take(crate::resources::limits().command_bytes as u64 + 1)
@@ -806,9 +877,10 @@ fn read_commands(sender: mpsc::Sender<Result<Value, String>>) {
             }
             Ok(_) => {
                 if sender
-                    .blocking_send(
-                        serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
-                    )
+                    .blocking_send(Ok(QueuedCommand {
+                        bytes,
+                        _memory: memory,
+                    }))
                     .is_err()
                 {
                     break;
@@ -846,10 +918,8 @@ pub(crate) async fn shutdown_signal() -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn retryable_publication(error: &str) -> bool {
-    error == crate::graph::STALE_COMMIT
-        || error.starts_with("memory overload")
-        || error.starts_with("disk overload")
+fn retryable_publication(error: &crate::Error) -> bool {
+    error.retryable()
 }
 
 impl Node {
@@ -895,8 +965,11 @@ impl Node {
         );
     }
 
-    fn ingest(&mut self, object: Envelope, source: &str) -> Result<Value, String> {
+    fn ingest(&mut self, object: Envelope, source: &str) -> Result<Value, crate::Error> {
         let result = self.graph.ingest(object, Instant::now())?;
+        self.ingested(result, source)
+    }
+    fn ingested(&mut self, result: crate::Ingest, source: &str) -> Result<Value, crate::Error> {
         self.wanted.remove(&result.id);
         self.publish_admitted(&result.admitted, source);
         for (id, error) in result.rejected {
@@ -927,28 +1000,29 @@ impl Node {
 
     fn command(&mut self, value: Value) -> bool {
         let request = value.get("request").cloned().unwrap_or(Value::Null);
-        let result: Result<Value, String> = (|| match value
-            .get("command")
-            .and_then(Value::as_str)
-            .ok_or("command missing")?
-        {
-            "status" => {
-                let after = value
-                    .get("after")
-                    .filter(|after| !after.is_null())
-                    .map(|after| {
-                        id_bytes(after.as_str().ok_or("after must be a proof ID")?)
-                            .map(ProofId::from_bytes)
-                    })
-                    .transpose()?;
-                let ids = self
-                    .graph
-                    .ids_page(after, crate::resources::limits().status_page)?;
-                let next_after = (ids.len() == crate::resources::limits().status_page)
-                    .then(|| ids.last().map(|id| hex(id.as_bytes())))
-                    .flatten();
-                Ok(
-                    json!({"ids":ids.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
+        let result: Result<Value, crate::Error> = (|| -> Result<Value, crate::Error> {
+            match value
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or("command missing")?
+            {
+                "status" => {
+                    let after = value
+                        .get("after")
+                        .filter(|after| !after.is_null())
+                        .map(|after| {
+                            id_bytes(after.as_str().ok_or("after must be a proof ID")?)
+                                .map(ProofId::from_bytes)
+                        })
+                        .transpose()?;
+                    let ids = self
+                        .graph
+                        .ids_page(after, crate::resources::limits().status_page)?;
+                    let next_after = (ids.len() == crate::resources::limits().status_page)
+                        .then(|| ids.last().map(|id| hex(id.as_bytes())))
+                        .flatten();
+                    Ok(
+                        json!({"ids":ids.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "next_after":next_after,"accepted_proofs":self.graph.accepted_count(),
                     "root":hex(&self.graph.content_root()), "root_format":crate::CORPUS_ROOT_FORMAT, "pending_count":self.graph.pending_count()?, "pending":self.graph.pending_ids()?.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "connected":self.swarm.connected_peers().map(|peer| peer.to_string()).collect::<Vec<_>>(),
@@ -957,141 +1031,43 @@ impl Node {
                     "provider_records":self.swarm.behaviour_mut().discovery.kad.as_mut().map(|kad|kad.store_mut().len()).unwrap_or(0),
                     "proof_peers":self.enabled.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "connections":self.connections.iter().map(|(id,(peer,relayed))|json!({"id":id.to_string(),"peer":peer.to_string(),"relayed":relayed})).collect::<Vec<_>>() }),
-                )
-            }
-            "produce" => {
-                let source = value
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .ok_or("source missing")?;
-                let object = self.graph.author(source)?;
-                let id = ProofId::from_bytes(id_bytes(&object.proof_id)?);
-                let result = self.ingest(object.clone(), "producer")?;
-                let metadata = self.graph.describe(id);
-                if let Some(error) = self.graph.storage_error() {
-                    return Err(error);
+                    )
                 }
-                Ok(json!({"result":result,"object":object,
+                "produce" => {
+                    let source = value
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .ok_or("source missing")?;
+                    let (object, ingestion) = self.graph.produce(source)?;
+                    let id = ingestion.id;
+                    let result = self.ingested(ingestion, "producer")?;
+                    let metadata = self.graph.describe(id);
+                    if let Some(error) = self.graph.storage_error() {
+                        return Err(error.into());
+                    }
+                    Ok(json!({"result":result,"object":object,
                     "metadata":metadata.as_ref().ok().and_then(Option::as_ref),
                     "metadata_error":metadata.as_ref().err()}))
-            }
-            "ingest" => {
-                let object =
-                    serde_json::from_value(value.get("object").cloned().ok_or("object missing")?)
-                        .map_err(|error| error.to_string())?;
-                self.ingest(object, "local")
-            }
-            "object" => Ok(
-                json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
-            ),
-            "test_compile" => {
-                if !self.test_controls {
-                    return Err("test controls disabled".into());
                 }
-                Ok(
-                    json!({"object":self.graph.author(value.get("source").and_then(Value::as_str).ok_or("source missing")?)?}),
-                )
-            }
-            "test_descriptor" => {
-                if !self.test_controls {
-                    return Err("test controls disabled".into());
+                "ingest" => {
+                    let object = serde_json::from_value(
+                        value.get("object").cloned().ok_or("object missing")?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    self.ingest(object, "local")
                 }
-                let metadata: Metadata = serde_json::from_value(
-                    value.get("metadata").cloned().ok_or("metadata missing")?,
-                )
-                .map_err(|error| error.to_string())?;
-                let (id, _, _) = metadata.compile()?;
-                if self.test_objects.len() >= crate::resources::limits().developer_objects
-                    && !self.test_objects.contains_key(&id)
-                {
-                    return Err("test object capacity".into());
-                }
-                self.test_objects.insert(id, (metadata, None));
-                Ok(json!({"installed":true}))
-            }
-            "describe" => Ok(
-                json!({"metadata":self.graph.describe(ProofId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?))?}),
-            ),
-            "links" => {
-                if self.discovery.book.lock().automatic {
-                    return Err("links requires static discovery mode".into());
-                }
-                let peers: Vec<String> =
-                    serde_json::from_value(value.get("peers").cloned().ok_or("peers missing")?)
-                        .map_err(|error| error.to_string())?;
-                let desired: BTreeSet<PeerId> = peers
-                    .into_iter()
-                    .map(|id| id.parse().map_err(|error| format!("peer: {error}")))
-                    .collect::<Result<_, _>>()?;
-                if !desired.iter().all(|id| self.configured.contains_key(id)) {
-                    return Err("unconfigured peer".into());
-                }
-                for peer in self.configured.keys() {
-                    if desired.contains(peer) {
-                        if let Some(allowed) = self.swarm.behaviour_mut().allowed.as_mut() {
-                            allowed.allow_peer(*peer);
-                        }
-                        if let Some(contact) = self.discovery.book.lock().contacts.get_mut(peer) {
-                            contact.enabled = true;
-                        }
-                    } else {
-                        self.intake.disconnected(*peer);
-                        self.outgoing.remove(peer);
-                        if let Some(allowed) = self.swarm.behaviour_mut().allowed.as_mut() {
-                            allowed.disallow_peer(*peer);
-                        }
-                        if let Some(contact) = self.discovery.book.lock().contacts.get_mut(peer) {
-                            contact.enabled = false;
-                        }
-                        let _ = self.swarm.disconnect_peer_id(*peer);
+                "object" => Ok(
+                    json!({"object":self.graph.get(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?}),
+                ),
+                "test_compile" => {
+                    if !self.test_controls {
+                        return Err("test controls disabled".into());
                     }
+                    Ok(
+                        json!({"object":self.graph.author(value.get("source").and_then(Value::as_str).ok_or("source missing")?)?}),
+                    )
                 }
-                self.enabled = desired;
-                self.next_inventory.clear();
-                Ok(
-                    json!({"enabled":self.enabled.iter().map(ToString::to_string).collect::<Vec<_>>()}),
-                )
-            }
-            "announce" => {
-                let id = ProofId::from_bytes(id_bytes(
-                    value
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .ok_or("id missing")?,
-                )?);
-                if !self.graph.contains(id)? {
-                    return Err("only accepted proofs can be announced".into());
-                }
-                let mut bytes = crate::compatibility().to_vec();
-                bytes.extend_from_slice(id.as_bytes());
-                let _ = self
-                    .swarm
-                    .behaviour_mut()
-                    .gossip
-                    .publish(self.topic.clone(), bytes);
-                Ok(json!({"announced":hex(id.as_bytes())}))
-            }
-            "offer" | "test_offer" => {
-                if self.flights.len() >= crate::resources::limits().flights {
-                    return Err("request capacity".into());
-                }
-                let peer: PeerId = value
-                    .get("peer")
-                    .and_then(Value::as_str)
-                    .ok_or("peer missing")?
-                    .parse()
-                    .map_err(|error| format!("peer: {error}"))?;
-                if !self.enabled.contains(&peer) || !self.swarm.is_connected(&peer) {
-                    return Err("peer not connected and enabled".into());
-                }
-                if self.flight_count(peer) >= crate::resources::limits().flights_per_peer {
-                    return Err("peer request capacity".into());
-                }
-                let now = Instant::now();
-                if !self.outgoing_ready(peer, now) {
-                    return Err("outgoing peer request rate".into());
-                }
-                let metadata = if value["command"] == "test_offer" {
+                "test_descriptor" => {
                     if !self.test_controls {
                         return Err("test controls disabled".into());
                     }
@@ -1099,51 +1075,155 @@ impl Node {
                         value.get("metadata").cloned().ok_or("metadata missing")?,
                     )
                     .map_err(|error| error.to_string())?;
-                    if let Some(object) = value.get("object") {
-                        if self.test_objects.len() >= crate::resources::limits().developer_objects {
-                            return Err("test object capacity".into());
-                        }
-                        let object: Envelope = serde_json::from_value(object.clone())
-                            .map_err(|error| error.to_string())?;
-                        if object.proof.len() > 2 * crate::resources::limits().proof_bytes {
-                            return Err("test proof byte limit".into());
-                        }
-                        self.test_objects.insert(
-                            ProofId::from_bytes(id_bytes(&metadata.proof_id)?),
-                            (metadata.clone(), Some(object)),
-                        );
+                    let (id, _, _) = metadata.compile()?;
+                    if self.test_objects.len() >= crate::resources::limits().developer_objects
+                        && !self.test_objects.contains_key(&id)
+                    {
+                        return Err("test object capacity".into());
                     }
-                    metadata
-                } else {
+                    self.test_objects.insert(id, (metadata, None));
+                    Ok(json!({"installed":true}))
+                }
+                "describe" => Ok(
+                    json!({"metadata":self.graph.describe(ProofId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?))?}),
+                ),
+                "links" => {
+                    if self.discovery.book.lock().automatic {
+                        return Err("links requires static discovery mode".into());
+                    }
+                    let peers: Vec<String> =
+                        serde_json::from_value(value.get("peers").cloned().ok_or("peers missing")?)
+                            .map_err(|error| error.to_string())?;
+                    let desired: BTreeSet<PeerId> = peers
+                        .into_iter()
+                        .map(|id| id.parse().map_err(|error| format!("peer: {error}")))
+                        .collect::<Result<_, _>>()?;
+                    if !desired.iter().all(|id| self.configured.contains_key(id)) {
+                        return Err("unconfigured peer".into());
+                    }
+                    for peer in self.configured.keys() {
+                        if desired.contains(peer) {
+                            if let Some(allowed) = self.swarm.behaviour_mut().allowed.as_mut() {
+                                allowed.allow_peer(*peer);
+                            }
+                            if let Some(contact) = self.discovery.book.lock().contacts.get_mut(peer)
+                            {
+                                contact.enabled = true;
+                            }
+                        } else {
+                            self.intake.disconnected(*peer);
+                            self.outgoing.remove(peer);
+                            if let Some(allowed) = self.swarm.behaviour_mut().allowed.as_mut() {
+                                allowed.disallow_peer(*peer);
+                            }
+                            if let Some(contact) = self.discovery.book.lock().contacts.get_mut(peer)
+                            {
+                                contact.enabled = false;
+                            }
+                            let _ = self.swarm.disconnect_peer_id(*peer);
+                        }
+                    }
+                    self.enabled = desired;
+                    self.next_inventory.clear();
+                    Ok(
+                        json!({"enabled":self.enabled.iter().map(ToString::to_string).collect::<Vec<_>>()}),
+                    )
+                }
+                "announce" => {
                     let id = ProofId::from_bytes(id_bytes(
                         value
                             .get("id")
                             .and_then(Value::as_str)
                             .ok_or("id missing")?,
                     )?);
-                    self.graph
-                        .describe(id)?
-                        .ok_or("object not supported for question exchange")?
-                };
-                let mut frame = Frame::new(Body::Offer { metadata });
-                if let Some(compat) = value.get("test_compatibility") {
-                    if !self.test_controls {
-                        return Err("test controls disabled".into());
+                    if !self.graph.contains(id)? {
+                        return Err("only accepted proofs can be announced".into());
                     }
-                    frame.message.compatibility =
-                        id_bytes(compat.as_str().ok_or("compatibility string")?)?;
+                    let mut bytes = crate::compatibility().to_vec();
+                    bytes.extend_from_slice(id.as_bytes());
+                    let _ = self
+                        .swarm
+                        .behaviour_mut()
+                        .gossip
+                        .publish(self.topic.clone(), bytes);
+                    Ok(json!({"announced":hex(id.as_bytes())}))
                 }
-                let id = self
-                    .swarm
-                    .behaviour_mut()
-                    .exchange
-                    .send_request(&peer, frame);
-                self.flights.insert(id, Flight::Offer { peer });
-                self.charge_outgoing(peer, now);
-                Ok(json!({"sent":true}))
+                "offer" | "test_offer" => {
+                    if self.flights.len() >= crate::resources::limits().flights {
+                        return Err("request capacity".into());
+                    }
+                    let peer: PeerId = value
+                        .get("peer")
+                        .and_then(Value::as_str)
+                        .ok_or("peer missing")?
+                        .parse()
+                        .map_err(|error| format!("peer: {error}"))?;
+                    if !self.enabled.contains(&peer) || !self.swarm.is_connected(&peer) {
+                        return Err("peer not connected and enabled".into());
+                    }
+                    if self.flight_count(peer) >= crate::resources::limits().flights_per_peer {
+                        return Err("peer request capacity".into());
+                    }
+                    let now = Instant::now();
+                    if !self.outgoing_ready(peer, now) {
+                        return Err("outgoing peer request rate".into());
+                    }
+                    let metadata = if value["command"] == "test_offer" {
+                        if !self.test_controls {
+                            return Err("test controls disabled".into());
+                        }
+                        let metadata: Metadata = serde_json::from_value(
+                            value.get("metadata").cloned().ok_or("metadata missing")?,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        if let Some(object) = value.get("object") {
+                            if self.test_objects.len()
+                                >= crate::resources::limits().developer_objects
+                            {
+                                return Err("test object capacity".into());
+                            }
+                            let object: Envelope = serde_json::from_value(object.clone())
+                                .map_err(|error| error.to_string())?;
+                            if object.proof.len() > 2 * crate::resources::limits().proof_bytes {
+                                return Err("test proof byte limit".into());
+                            }
+                            self.test_objects.insert(
+                                ProofId::from_bytes(id_bytes(&metadata.proof_id)?),
+                                (metadata.clone(), Some(object)),
+                            );
+                        }
+                        metadata
+                    } else {
+                        let id = ProofId::from_bytes(id_bytes(
+                            value
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .ok_or("id missing")?,
+                        )?);
+                        self.graph
+                            .describe(id)?
+                            .ok_or("object not supported for question exchange")?
+                    };
+                    let mut frame = Frame::new(Body::Offer { metadata });
+                    if let Some(compat) = value.get("test_compatibility") {
+                        if !self.test_controls {
+                            return Err("test controls disabled".into());
+                        }
+                        frame.message.compatibility =
+                            id_bytes(compat.as_str().ok_or("compatibility string")?)?;
+                    }
+                    let id = self
+                        .swarm
+                        .behaviour_mut()
+                        .exchange
+                        .send_request(&peer, frame);
+                    self.flights.insert(id, Flight::Offer { peer });
+                    self.charge_outgoing(peer, now);
+                    Ok(json!({"sent":true}))
+                }
+                "stop" => Ok(json!({"stopping":true})),
+                _ => Err("unknown command".into()),
             }
-            "stop" => Ok(json!({"stopping":true})),
-            _ => Err("unknown command".into()),
         })();
         match result {
             Ok(result) => emit(json!({"event":"response","request":request,"result":result})),
@@ -1163,8 +1243,8 @@ impl Node {
             self.next_production = now + crate::resources::limits().production_interval;
             let result = self
                 .graph
-                .author(&source)
-                .and_then(|object| self.ingest(object, "deterministic_producer"));
+                .produce(&source)
+                .and_then(|(_, result)| self.ingested(result, "deterministic_producer"));
             match result {
                 Ok(result) => emit(json!({"event":"producer_result", "result":result})),
                 Err(error) if retryable_publication(&error) => {
@@ -1185,10 +1265,14 @@ impl Node {
             }
             Err(error) => emit(json!({"event":"proof_backlog_error","error":error})),
         }
+        let wanted_before = self.wanted.len();
         self.wanted.retain(|_, wanted| {
             now.duration_since(wanted.since) < crate::resources::limits().pending_retry
                 && wanted.attempts < crate::resources::limits().wanted_attempts
         });
+        if self.wanted.len() < wanted_before {
+            self.inventory_summaries.clear();
+        }
     }
 
     fn outgoing_ready(&self, peer: PeerId, now: Instant) -> bool {
@@ -1244,7 +1328,7 @@ impl Node {
             if self.request_ready(peer, now) && self.automatic_request_ready(peer, now) && self.intake.authorizes(peer, root, id)
                 && !self.flights.values().any(|flight| matches!(flight, Flight::Get { root:r, id:i, .. } if *r == root && *i == id))
             {
-                let request = self.swarm.behaviour_mut().exchange.send_request(&peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }));
+                let request = self.swarm.request_granted(peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }), self.swarm.grant(peer, root));
                 self.flights.insert(request, Flight::Get { root, id, peer });
                 self.charge_automatic_request(peer, now);
                 self.charge_outgoing(peer, now);
@@ -1327,15 +1411,30 @@ impl Node {
     }
 
     fn inventory(&mut self, peer: PeerId, after: Option<[u8; 32]>, pages: usize) {
+        let local = self.graph.content_root();
+        let known = after.is_none().then(|| {
+            self.inventory_summaries
+                .get(&peer)
+                .filter(|(_, observed_local)| *observed_local == local)
+                .map_or(local, |(remote, _)| *remote)
+        });
         let id = self.swarm.behaviour_mut().exchange.send_request(
             &peer,
             Frame::new(Body::Inventory {
+                known,
                 after,
                 limit: crate::resources::limits().inventory_page,
             }),
         );
-        self.flights
-            .insert(id, Flight::Inventory { peer, after, pages });
+        self.flights.insert(
+            id,
+            Flight::Inventory {
+                peer,
+                known,
+                after,
+                pages,
+            },
+        );
         self.next_inventory.insert(
             peer,
             Instant::now() + crate::resources::limits().reconcile_interval,
@@ -1359,7 +1458,11 @@ impl Node {
         true
     }
 
-    fn event(&mut self, event: SwarmEvent<BehaviourEvent>) -> Result<(), String> {
+    fn event(
+        &mut self,
+        event: SwarmEvent<BehaviourEvent>,
+        grant: Option<crate::graph::PeerGrant>,
+    ) -> Result<(), String> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.ready = true;
@@ -1546,7 +1649,7 @@ impl Node {
                             reason: "peer rate limit".into(),
                         }
                     } else {
-                        self.request(peer, request.message.body)?
+                        self.request(peer, request.message.body, grant)?
                     };
                     let _ = self
                         .swarm
@@ -1567,7 +1670,7 @@ impl Node {
                         if self.enabled.contains(&peer)
                             && response.message.compatibility == crate::compatibility()
                         {
-                            self.response(peer, flight, response.message.body)?;
+                            self.response(peer, flight, response.message.body, grant)?;
                         } else if let Flight::Get { root, .. } = flight {
                             self.intake.abort(root);
                             emit(
@@ -1598,28 +1701,18 @@ impl Node {
         Ok(())
     }
 
-    fn request(&mut self, peer: PeerId, body: Body) -> Result<Body, String> {
+    fn request(
+        &mut self,
+        peer: PeerId,
+        body: Body,
+        grant: Option<crate::graph::PeerGrant>,
+    ) -> Result<Body, String> {
         let response = match body {
-            Body::Inventory { after, limit } => {
-                if limit == 0 {
-                    return Ok(Body::Error {
-                        reason: "inventory page limit must be positive".into(),
-                    });
-                }
-                let limit = limit.min(crate::resources::limits().inventory_page);
-                let ids: Vec<_> = self
-                    .graph
-                    .ids_page(after.map(ProofId::from_bytes), limit)?
-                    .into_iter()
-                    .map(|id| *id.as_bytes())
-                    .collect();
-                let next = if ids.len() == limit {
-                    ids.last().copied()
-                } else {
-                    None
-                };
-                Body::InventoryResult { ids, next }
-            }
+            Body::Inventory {
+                known,
+                after,
+                limit,
+            } => inventory_response(&self.graph, known, after, limit)?,
             Body::Describe { id } => match if self.test_controls {
                 self.test_objects
                     .get(&ProofId::from_bytes(id))
@@ -1630,7 +1723,9 @@ impl Node {
             } {
                 Ok(Some(metadata)) => Body::Description { metadata },
                 Ok(None) => Body::Missing,
-                Err(reason) => Body::Error { reason },
+                Err(reason) => Body::Error {
+                    reason: reason.to_string(),
+                },
             },
             Body::Get { root, id } => self
                 .graph
@@ -1646,20 +1741,25 @@ impl Node {
                 })
                 .map(|object| Body::Object { root, object })
                 .unwrap_or(Body::Missing),
-            Body::Offer { metadata } => match self.intake.enqueue(peer, metadata, &self.graph) {
-                Ok(status) => Body::Receipt {
-                    status: status.into(),
-                },
-                Err(error) => {
-                    let event = if self.graph.storage_error().is_some() {
-                        "storage_error"
-                    } else {
-                        "rejected"
-                    };
-                    emit(json!({"event":event,"error":error}));
-                    Body::Error { reason: error }
+            Body::Offer { metadata } => {
+                match self
+                    .intake
+                    .enqueue_with_grant(peer, metadata.clone(), &self.graph, grant)
+                {
+                    Ok(status) => Body::Receipt {
+                        status: status.into(),
+                    },
+                    Err(error) => {
+                        let event = if self.graph.storage_error().is_some() {
+                            "storage_error"
+                        } else {
+                            "rejected"
+                        };
+                        emit(json!({"event":event,"error":error}));
+                        Body::Error { reason: error }
+                    }
                 }
-            },
+            }
             _ => Body::Error {
                 reason: "unexpected request kind".into(),
             },
@@ -1670,7 +1770,13 @@ impl Node {
         Ok(response)
     }
 
-    fn response(&mut self, peer: PeerId, flight: Flight, body: Body) -> Result<(), String> {
+    fn response(
+        &mut self,
+        peer: PeerId,
+        flight: Flight,
+        body: Body,
+        grant: Option<crate::graph::PeerGrant>,
+    ) -> Result<(), String> {
         let expected_peer = match &flight {
             Flight::Inventory { peer, .. }
             | Flight::Get { peer, .. }
@@ -1682,7 +1788,36 @@ impl Node {
             return Ok(());
         }
         match (flight, body) {
-            (Flight::Inventory { peer, after, pages }, Body::InventoryResult { ids, next }) => {
+            (
+                Flight::Inventory {
+                    peer, known, after, ..
+                },
+                Body::InventoryUnchanged { root },
+            ) => {
+                if after.is_some() || known != Some(root) {
+                    emit(json!({"event":"rejected","error":"unsolicited inventory summary"}));
+                } else {
+                    self.inventory_progress.remove(&peer);
+                    self.inventory_summaries
+                        .insert(peer, (root, self.graph.content_root()));
+                    emit(
+                        json!({"event":"inventory_unchanged","peer":peer.to_string(),"root":hex(&root)}),
+                    );
+                }
+            }
+            (
+                Flight::Inventory {
+                    peer, after, pages, ..
+                },
+                Body::InventoryResult { root, ids, next },
+            ) => {
+                if after.is_some()
+                    && self.inventory_progress.get(&peer).and_then(|p| p.root) != Some(root)
+                {
+                    self.inventory_progress.remove(&peer);
+                    self.inventory_summaries.remove(&peer);
+                    return Ok(());
+                }
                 if ids.len() > crate::resources::limits().inventory_page
                     || next.is_some_and(|next| Some(&next) != ids.last())
                     || !ids.windows(2).all(|pair| pair[0] < pair[1])
@@ -1705,12 +1840,15 @@ impl Node {
                         self.inventory_progress.insert(
                             peer,
                             InventoryProgress {
+                                root: Some(root),
                                 after: next,
                                 pages: pages.saturating_add(1),
                             },
                         );
                     } else {
                         self.inventory_progress.remove(&peer);
+                        self.inventory_summaries
+                            .insert(peer, (root, self.graph.content_root()));
                     }
                 }
                 emit(json!({"event":"inventory_page", "peer":peer.to_string(),
@@ -1723,7 +1861,10 @@ impl Node {
                     emit(json!({"event":"rejected","error":"description ID mismatch"}));
                     return Ok(());
                 }
-                match self.intake.enqueue(peer, metadata, &self.graph) {
+                match self
+                    .intake
+                    .enqueue_with_grant(peer, metadata.clone(), &self.graph, grant)
+                {
                     Ok("duplicate") => {
                         self.wanted.remove(&id);
                     }

@@ -736,10 +736,10 @@ fn canonical_statement_compatibility_and_dependency_metadata_faults_fail_startup
 trait ErrText {
     fn unwrap_err_string(self) -> String;
 }
-impl ErrText for Result<Graph, String> {
+impl<E: std::fmt::Display> ErrText for Result<Graph, E> {
     fn unwrap_err_string(self) -> String {
         match self {
-            Err(error) => error,
+            Err(error) => error.to_string(),
             Ok(_) => panic!("expected fail-closed startup"),
         }
     }
@@ -1053,4 +1053,18 @@ fn growing_live_commits_never_rescan_the_corpus_set() {
         graph.content_root(),
         crate::corpus::root(65, graph.checked_context().proof_set_fingerprint()).unwrap()
     );
+}
+
+#[test]
+fn generation_bound_membership_and_inventory_do_not_fetch_certificate_payloads() {
+    let mut graph = Graph::default();
+    let (_, result) = graph
+        .produce("goal=all(x,eq(x,x)) proof: a=refl(x) b=gen(a,x) return b")
+        .unwrap();
+    let before = super::catalog::payload_reads();
+    assert!(graph.contains(result.id).unwrap());
+    assert_eq!(graph.ids_page(None, 1).unwrap(), [result.id]);
+    assert_eq!(super::catalog::payload_reads(), before);
+    assert!(graph.object(result.id).unwrap().is_some());
+    assert_eq!(super::catalog::payload_reads(), before + 1);
 }

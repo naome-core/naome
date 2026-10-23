@@ -372,7 +372,18 @@ impl Owner {
         if reply.is_closed() {
             return Ok(());
         }
-        let settings = self.settings.for_input(&input);
+        let account_key = input.account_key();
+        let original_account = if matches!(input, Input::Find { .. }) {
+            None
+        } else if let Some(account) = self.journal.accounts.get(&account_key) {
+            Some(account.clone())
+        } else {
+            self.disk.account(&account_key)?
+        };
+        let settings = original_account.as_ref().map_or_else(
+            || self.settings.for_input(&input),
+            |account| account.settings,
+        );
         if self
             .journal
             .records
@@ -424,7 +435,7 @@ impl Owner {
             self.disk.directory(),
             u64::try_from(output_reservation(&input)).map_err(|_| "job disk reservation width")?,
         ) {
-            reject(reply, binding, &error);
+            reject(reply, binding, &error.to_string());
             return Ok(());
         }
         self.compact();
@@ -463,16 +474,6 @@ impl Owner {
             .ok_or("research horizon overflow")?;
         let mut spent_ms = 0;
         let mut reserved_units = 0;
-        let account_key = input.account_key();
-        // Consult durable history without making rejected/expired lookups
-        // resident. Only a successfully queued obligation enters the active map.
-        let original_account = if matches!(input, Input::Find { .. }) {
-            None
-        } else if let Some(account) = self.journal.accounts.get(&account_key) {
-            Some(account.clone())
-        } else {
-            self.disk.account(&account_key)?
-        };
         if let Input::Find { cursor } = input {
             if cursor < self.journal.next_cursor {
                 reject(reply, binding, "research finding cursor already consumed");
@@ -489,10 +490,6 @@ impl Owner {
                     State::InDoubt,
                     "research original effects require reconciliation",
                 );
-                return Ok(());
-            }
-            if account.settings != settings {
-                reject(reply, binding, "research original configuration differs");
                 return Ok(());
             }
             created_ms = account.created_ms;
@@ -533,7 +530,7 @@ impl Owner {
                 id,
                 input: input.clone(),
                 binding: binding.clone(),
-                provider: "naome-deterministic-mocks-v1".into(),
+                provider: super::provider::DEFAULT_PROVIDER.into(),
                 configuration: identity(&settings),
                 settings,
                 created_ms,
@@ -682,8 +679,7 @@ impl Owner {
                     );
                     units_exhausted |= account.reserved_units >= account.settings.limits.work_units;
                 }
-                let finalizing = record.settings.mock.steps > 0
-                    && record.checkpoint >= record.settings.mock.steps
+                let finalizing = super::provider::complete(record, record.checkpoint)
                     && record.settings.recovery == RecoveryPolicy::DeterministicCheckpoint;
                 if remaining_ms == 0 || units_exhausted && !finalizing {
                     record.state = State::Expired;

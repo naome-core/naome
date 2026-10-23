@@ -20,7 +20,9 @@ with memory unless overridden; per-operation defaults and timers are independent
 
 The 512 MiB default reserves 256 MiB for one checker, plus caches, resident job
 results and provider streams. Shared allocation leases charge retained proofs,
-frames, closures and contacts. The four worker lanes default to `[1,2,2,2]` for
+frames, closures, contacts and queued CLI source bytes. CLI parsing takes a
+separate lease before expanding JSON; queue counts and payload sizes are
+validated together. The four worker lanes default to `[1,2,2,2]` for
 finding, solving, local interest and peer interest. Resident jobs derive from
 these workers, four bounded role queues and a recovery page. Kernel slot locks
 preserve physical worker custody across crashes; reconfiguration requires the
@@ -28,9 +30,31 @@ previous workers to drain. These are conservative defaults, not throughput optim
 
 Histories have no population or lifetime quota: budget accounts, job results,
 original question sources, admission receipts and unresolved work stay on disk.
-RAM holds bounded pages/caches; budget accounts follow retained jobs. Durable
-FIFO cursors rotate work fairly. Retries and restarts retain original allowances.
+RAM holds bounded pages/caches; budget accounts follow retained jobs. A disposable
+reverse dependency index wakes blocked proofs only when their missing dependencies
+arrive; its ready FIFO cursor does not sync on idle ticks. Job/question history
+keeps its durable FIFO cursors. Retries and restarts retain original allowances.
 Missing established stores, corruption and uncertain cleanup fail closed.
+
+Intake limits apply to new work. Existing current-format proofs, source records
+and provider outputs are validated against canonical format limits during replay.
+Changing assessment policy does not rewrite first-admission evidence. Role budget
+defaults apply to new obligations; an existing obligation retains its original
+settings, spent time, reserved units and deadline. Physical worker, memory and disk
+limits still apply to execution. Insufficient replay resources fail explicitly;
+valid history is never replaced with a fresh budget.
+
+Disk preparation leases are shared by filesystem and survive staged batches.
+They cover payload/journal overhead, checked-index writes and compaction mirrors;
+compaction itself reserves its copy space before opening a successor. The separate
+emergency reserve remains available for final accounting and recovery. These are
+conservative admission reservations, not an operating-system disk quota.
+
+A publication outbox precedes proof commit. The shared completion path persists
+the original question before reporting success or acknowledging its job. Recovery
+uses the mathematically replayed graph to finish committed publications and discard
+uncommitted intents. Registry compaction copies only reachable authenticated nodes
+in bounded quanta; old live snapshots retain their generations until release.
 
 The remaining fixed bounds have specific purposes:
 

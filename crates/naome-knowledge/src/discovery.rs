@@ -175,7 +175,7 @@ fn contact_memory() -> Result<std::sync::Arc<crate::resources::MemoryLease>, Str
         .and_then(|n| n.checked_mul(2))
         .and_then(|n| n.checked_add(std::mem::size_of::<Contact>() + 512))
         .ok_or("contact allocation overflow")?;
-    crate::resources::MemoryLease::acquire(bytes)
+    crate::resources::MemoryLease::acquire(bytes).map_err(String::from)
 }
 
 pub(crate) struct Book {
@@ -399,7 +399,7 @@ impl Behaviour {
         let peer = key.public().to_peer_id();
         let identify = identify::Behaviour::new(
             identify::Config::new(protocol_version(relay), key.public())
-                .with_agent_version("naome-knowledge/3".into())
+                .with_agent_version("naome-knowledge/4".into())
                 .with_cache_size(0)
                 .with_interval(crate::resources::limits().provider_announce_interval)
                 .with_push_listen_addr_updates(true)

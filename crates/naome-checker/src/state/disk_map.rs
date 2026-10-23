@@ -2,7 +2,7 @@ use crate::context::{ContextError, ContextStorage};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-pub(super) const MAX_NODE_BYTES: usize = 4096;
+pub(crate) const MAX_NODE_BYTES: usize = 4096;
 const MAX_VALUE_BYTES: usize = 2048;
 const VERSION: u8 = 1;
 const LEAF: u8 = 0;
@@ -97,7 +97,7 @@ impl DiskMap {
         Ok(Self::from_root(storage, self.root))
     }
 
-    pub(super) fn walk(&self) -> Walk {
+    pub(crate) fn walk(&self) -> Walk {
         Walk {
             storage: self.storage(),
             pending: self.root.into_iter().map(Pending::root).collect(),
@@ -212,25 +212,25 @@ impl DiskMap {
 
 /// One authenticated node per step, including branches that yield no entry.
 /// Nested bucket traversal needs at most one additional bounded DFS stack.
-pub(super) struct Walk {
+pub(crate) struct Walk {
     storage: Arc<dyn ContextStorage>,
     pending: Vec<Pending>,
     previous_key: Option<[u8; 32]>,
     failed: bool,
 }
 
-pub(super) struct Visit {
-    pub(super) address: [u8; 32],
-    pub(super) bytes: Vec<u8>,
-    pub(super) entry: Option<([u8; 32], Vec<u8>)>,
+pub(crate) struct Visit {
+    pub(crate) address: [u8; 32],
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) entry: Option<([u8; 32], Vec<u8>)>,
 }
 
 impl Walk {
-    pub(super) fn complete(&self) -> bool {
+    pub(crate) fn complete(&self) -> bool {
         !self.failed && self.pending.is_empty()
     }
 
-    pub(super) fn step(&mut self) -> Result<Option<Visit>, ContextError> {
+    pub(crate) fn step(&mut self) -> Result<Option<Visit>, ContextError> {
         if self.failed {
             return Err(ContextError::Corrupt);
         }

@@ -10,6 +10,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(test)]
+thread_local! { static FAIL_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+pub(crate) fn fail_next_commit() {
+    FAIL_COMMIT.with(|value| value.set(true));
+}
+
 const APPLICATION_ID: i64 = 0x4e414f4a;
 pub(crate) const MAX_ROW: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_HEADER: usize = 1024 * 1024;
@@ -67,6 +74,14 @@ pub(crate) struct Checkpoint {
 
 impl Checkpoint {
     pub(crate) fn open(path: &Path, domain: &'static str) -> Result<Self, String> {
+        let checkpoint = Self::open_for_replay(path, domain)?;
+        checkpoint.scan_all(|_, _, _| Ok(()))?;
+        Ok(checkpoint)
+    }
+
+    /// Domain replay must consume every primary row and validate its indexed
+    /// relationships/cardinality. Avoid a preceding duplicate payload scan.
+    pub(crate) fn open_for_replay(path: &Path, domain: &'static str) -> Result<Self, String> {
         let identity = owned(path)?;
         let connection = connect(path)?;
         let application: i64 = connection
@@ -110,12 +125,11 @@ impl Checkpoint {
             last_write: (0, 0),
         };
         let (_, expected) = checkpoint.raw_header()?;
-        let mut observed = 0u64;
-        checkpoint.scan_all(|_, _, _| {
-            observed = observed.checked_add(1).ok_or("checkpoint count overflow")?;
-            Ok(())
-        })?;
-        if observed != expected {
+        let observed: i64 = checkpoint
+            .connection
+            .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
+            .map_err(sql)?;
+        if u64::try_from(observed).ok() != Some(expected) {
             return Err("transactional checkpoint row count differs".into());
         }
         Ok(checkpoint)
@@ -284,7 +298,7 @@ impl Checkpoint {
         after: Option<&str>,
         records: usize,
         bytes: usize,
-    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+    ) -> Result<Vec<(String, Vec<u8>)>, crate::Error> {
         self.ensure_generation()?;
         if records == 0 || bytes == 0 {
             return Err("checkpoint page budget must be positive".into());
@@ -355,48 +369,18 @@ impl Checkpoint {
         })
         .transpose()
     }
-    /// Disk-backed transitive traversal. SQLite's UNION deduplication and
-    /// temp_store=FILE bound resident state; the caller owns the operation lease.
-    pub(crate) fn has_path(
+    /// Generation-checked access for domain-owned indexed queries. Generic
+    /// storage deliberately has no knowledge of proof identities or edges.
+    pub(crate) fn query<T>(
         &self,
-        starts: &[String],
-        target: &str,
-        timeout: std::time::Duration,
-    ) -> Result<bool, String> {
-        self.ensure_generation()?;
-        let deadline = std::time::Instant::now()
-            .checked_add(timeout)
-            .ok_or("cycle traversal deadline overflow")?;
-        self.connection
-            .progress_handler(1000, Some(move || std::time::Instant::now() >= deadline))
-            .map_err(sql)?;
-        let result = (|| {
-            for start in starts {
-                if std::time::Instant::now() >= deadline {
-                    return Err("cycle traversal time budget exhausted".into());
-                }
-                let found:Result<bool,rusqlite::Error>=self.connection.query_row(
-                    "WITH RECURSIVE reach(id) AS (VALUES(?1) UNION SELECT substr(e.key,65,64) FROM reach r JOIN entries e ON e.kind='edge' AND e.key >= r.id || ?3 AND e.key <= r.id || ?4) SELECT EXISTS(SELECT 1 FROM reach WHERE id=?2)",
-                    params![start,target,"0".repeat(64),"f".repeat(64)],|r|r.get(0));
-                match found {
-                    Ok(true) => return Ok(true),
-                    Ok(false) => {}
-                    Err(error)
-                        if error.sqlite_error_code()
-                            == Some(rusqlite::ErrorCode::OperationInterrupted) =>
-                    {
-                        return Err("cycle traversal time budget exhausted".into());
-                    }
-                    Err(error) => return Err(sql(error)),
-                }
-            }
-            self.ensure_generation()?;
-            Ok(false)
-        })();
-        self.connection
-            .progress_handler(0, None::<fn() -> bool>)
-            .map_err(sql)?;
-        result
+        read: impl FnOnce(&Connection) -> Result<T, crate::Error>,
+    ) -> Result<T, crate::Error> {
+        self.ensure_generation()
+            .map_err(crate::Error::CorruptStorage)?;
+        let result = read(&self.connection)?;
+        self.ensure_generation()
+            .map_err(crate::Error::CorruptStorage)?;
+        Ok(result)
     }
 
     fn scan_all(
@@ -435,6 +419,10 @@ impl Checkpoint {
         header: &impl Serialize,
         updates: Vec<Update>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if FAIL_COMMIT.with(|value| value.replace(false)) {
+            return Err("injected checkpoint write failure".into());
+        }
         self.ensure_generation()?;
         let payload = encode(header)?;
         if payload.len() > MAX_HEADER {
@@ -570,18 +558,13 @@ fn connect(path: &Path) -> Result<Connection, String> {
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(sql)?;
+    crate::storage::sqlite_common(
+        &connection,
+        crate::resources::limits().checkpoint_cache_bytes,
+    )?;
     connection
-        .busy_timeout(crate::resources::limits().sqlite_busy_timeout)
+        .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA;")
         .map_err(sql)?;
-    connection.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA trusted_schema=OFF;  PRAGMA temp_store=FILE; PRAGMA mmap_size=0;").map_err(sql)?;
-    connection
-        .pragma_update(
-            None,
-            "cache_size",
-            -(i64::try_from((crate::resources::limits().checkpoint_cache_bytes / 1024).max(1))
-                .map_err(|_| "SQLite cache width")?),
-        )
-        .map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     connection
         .pragma_update(None, "fullfsync", true)
@@ -589,14 +572,7 @@ fn connect(path: &Path) -> Result<Connection, String> {
     Ok(connection)
 }
 fn owned(path: &Path) -> Result<fs::Metadata, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-    {
-        return Err("checkpoint must be one owned regular file".into());
-    }
-    Ok(metadata)
+    crate::storage::owned_file(path)
 }
 fn version_of(connection: &Connection) -> Result<i64, String> {
     connection
