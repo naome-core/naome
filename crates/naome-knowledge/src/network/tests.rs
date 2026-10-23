@@ -511,7 +511,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
 }
 
 #[tokio::test]
-async fn transport_queue_failure_revokes_an_inflight_commit_guard() {
+async fn transport_queue_failure_permanently_revokes_publication() {
     let mut swarm = isolated_transport();
     swarm
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -533,4 +533,8 @@ async fn transport_queue_failure_revokes_an_inflight_commit_guard() {
             .is_err()
     );
     assert_eq!(guard.check().unwrap_err(), crate::graph::STALE_COMMIT);
+    let terminal = shared.epoch.load(Ordering::Acquire);
+    assert_eq!(terminal, u64::MAX);
+    let later_guard = crate::graph::CommitGuard::new(shared.epoch.clone(), terminal, None, None);
+    assert_eq!(later_guard.check().unwrap_err(), crate::graph::STALE_COMMIT);
 }

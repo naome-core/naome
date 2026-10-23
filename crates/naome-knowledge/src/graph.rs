@@ -57,7 +57,7 @@ impl CommitGuard {
     }
     pub(crate) fn check(&self) -> Result<(), String> {
         use std::sync::atomic::Ordering;
-        if self.epoch.load(Ordering::Acquire) != self.expected {
+        if self.expected == u64::MAX || self.epoch.load(Ordering::Acquire) != self.expected {
             return Err(STALE_COMMIT.into());
         }
         if let Some(control) = &self.control

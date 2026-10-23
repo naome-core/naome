@@ -189,7 +189,7 @@ impl Transport {
                     driver
                         .epoch
                         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
-                            epoch.checked_add(1)
+                            epoch.checked_add(1).filter(|next| *next != u64::MAX)
                         })
                         .map_err(|_| "transport epoch exhausted")?;
                 }
@@ -282,11 +282,8 @@ pub(super) async fn while_polled<T>(
 struct TransportLifetime(Arc<AtomicU64>);
 impl Drop for TransportLifetime {
     fn drop(&mut self) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
-                Some(epoch.saturating_add(1))
-            });
+        // MAX is terminal and can never authorize a subsequently built guard.
+        self.0.store(u64::MAX, Ordering::Release);
     }
 }
 
