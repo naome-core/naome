@@ -14,7 +14,9 @@ mod disk;
 pub(crate) mod disk_map;
 pub(crate) mod persistent_map;
 mod registration;
-pub use disk::{DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, DiskCopyProgress};
+pub use disk::{
+    DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, DiskCopyProgress, ProgramRegistration,
+};
 
 use persistent_map::{Key256, PersistentMap};
 

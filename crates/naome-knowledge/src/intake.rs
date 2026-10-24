@@ -19,6 +19,7 @@ use std::{
 use tokio::sync::oneshot;
 
 mod managed;
+mod program;
 #[cfg(test)]
 mod tests;
 
@@ -47,6 +48,7 @@ struct ApprovedRoot {
     phase: Phase,
     needed: BTreeSet<ProofId>,
     staged: BTreeMap<ProofId, Candidate>,
+    helpers: program::Helpers,
     bytes: usize,
     steps: usize,
     checker_work: usize,
@@ -63,6 +65,7 @@ pub(crate) struct Intake {
     declined: BTreeMap<DeclinedDescriptionKey, DeclineContext>,
     waiting: VecDeque<managed::Waiting>,
     managed_context: Option<((Identity, Identity), crate::question::Revision)>,
+    programs: program::Programs,
 }
 
 pub(crate) enum Progress {
@@ -75,8 +78,12 @@ impl Intake {
     pub(crate) fn invalidate_interest(&mut self) {
         self.declined.clear();
         self.managed_context = None;
+        self.programs.invalidate_interest();
     }
     pub(crate) fn selection_boundary_ready(&self) -> bool {
+        if self.programs.selection_boundary_ready() {
+            return true;
+        }
         self.active
             .as_ref()
             .is_some_and(|root| root.needed.is_empty())
@@ -88,9 +95,14 @@ impl Intake {
             })
     }
     pub(crate) fn description_capacity(&self) -> usize {
-        crate::resources::limits().queued_metadata - self.queue.len()
+        crate::resources::limits()
+            .queued_metadata
+            .saturating_sub(self.queue.len() + self.programs.queued())
     }
     pub(crate) fn contains(&self, id: ProofId) -> bool {
+        if self.programs.contains(id) {
+            return true;
+        }
         self.active
             .as_ref()
             .is_some_and(|root| root.description.id == id)
@@ -120,6 +132,18 @@ impl Intake {
         let (id, statement, question) = metadata.compile()?;
         if graph.contains(id)? {
             return Ok("duplicate");
+        }
+        if let Some(root) = &mut self.active
+            && root.description.id == id
+            && !root.helpers.is_empty()
+        {
+            if root.description.statement != statement || root.description.question != question {
+                return Err("refreshed parent metadata differs".into());
+            }
+            root.description.peer = peer;
+            root.description.grant = grant;
+            root.description.created = Instant::now();
+            return Ok("metadata_refreshed");
         }
         if let Some(waiting) = self
             .waiting
@@ -184,6 +208,7 @@ impl Intake {
             .map(|root| {
                 root.needed
                     .iter()
+                    .filter(|id| !root.helpers.contains(**id))
                     .map(|id| (root.description.peer, root.description.id, *id))
                     .collect()
             })
@@ -286,6 +311,7 @@ impl Intake {
     }
 
     pub(crate) fn disconnected(&mut self, peer: PeerId) {
+        self.programs.failed(peer, None);
         self.waiting.retain(|w| w.description.peer != peer);
         self.queue.retain(|description| description.peer != peer);
         if self
@@ -306,6 +332,18 @@ impl Intake {
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
+        if let Err(error) = self.advance_program_helpers(graph, questions) {
+            if !error.retryable() {
+                graph.program_failure(&error);
+                if let Some(root) = self.active.take() {
+                    return Progress::Skipped(root.description.id, error.to_string());
+                }
+            }
+        }
+        match self.programs.advance(graph, questions) {
+            Progress::Waiting => {}
+            progress => return progress,
+        }
         if questions.uses_jobs() {
             return self.advance_managed(graph, questions);
         }
@@ -335,6 +373,7 @@ impl Intake {
                 phase: Phase::Initial(receiver),
                 needed: BTreeSet::new(),
                 staged: BTreeMap::new(),
+                helpers: program::Helpers::default(),
                 bytes: 0,
                 steps: 0,
                 checker_work: 0,
@@ -349,7 +388,11 @@ impl Intake {
             if now.duration_since(root.description.created)
                 >= crate::resources::limits().root_timeout
             {
-                return Err("root intake deadline".into());
+                if root.helpers.is_empty() {
+                    return Err("root intake deadline".into());
+                } else {
+                    return Ok(None);
+                }
             }
             if matches!(root.phase, Phase::Fetch)
                 && root.initial.as_ref().is_some_and(|assessment| {
@@ -376,10 +419,14 @@ impl Intake {
                     Err(_) => return Err("question assessment cancelled".into()),
                 },
                 Phase::Fetch if root.needed.is_empty() => {
-                    let batch = graph.prepare_batch(
+                    if !root.helpers.ready() {
+                        return Ok(None);
+                    }
+                    let batch = graph.prepare_batch_after(
                         id,
                         std::mem::take(&mut root.staged),
                         &root.question,
+                        root.helpers.take_prefix(),
                     )?;
                     if questions.available() {
                         if Instant::now().duration_since(root.description.created)

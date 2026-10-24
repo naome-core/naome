@@ -1,4 +1,5 @@
 use super::*;
+use naome_foundation::Formula;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct Directory(PathBuf);
@@ -53,6 +54,65 @@ fn identity(work: &mut Work) {
 }
 
 #[test]
+fn closed_generalization_does_not_repeat_the_whole_growing_transformation() {
+    let directory = Directory::new();
+    let mut work = Work::open(&directory.path()).unwrap();
+    work.append(&Command::Reflexivity { variable: 0 }).unwrap();
+    work.append(&Command::Generalization {
+        premise: 0,
+        variable: 0,
+    })
+    .unwrap();
+    for position in 2..2048 {
+        work.append(&Command::Generalization {
+            premise: position - 1,
+            variable: 1,
+        })
+        .unwrap();
+    }
+    work.append(&Command::Seal { proof: 1 }).unwrap();
+    let status = finish(&mut work);
+    assert!(status.fully_checked && status.formula_nodes >= 2048);
+    assert!(
+        status.transformation_equations <= 2 * status.commands,
+        "closed input must not create quadratic transformation history"
+    );
+    drop(work);
+    let mut work = Work::open(&directory.path()).unwrap();
+    assert!(!work.status().unwrap().fully_checked);
+    assert!(finish(&mut work).fully_checked);
+}
+
+#[test]
+fn native_disk_pressure_preserves_the_retryable_outcome_and_committed_prefix() {
+    let directory = Directory::new();
+    let mut work = Work::open(&directory.path()).unwrap();
+    work.append(&Command::Reflexivity { variable: 0 }).unwrap();
+    crate::resources::with_disk_available(0, || {
+        assert!(matches!(
+            work.append(&Command::Generalization {
+                premise: 0,
+                variable: 0
+            }),
+            Err(crate::Error::DiskOverload { .. })
+        ));
+        assert!(matches!(
+            work.advance(&budget()),
+            Err(crate::Error::DiskOverload { .. })
+        ));
+        assert_eq!(work.status().unwrap().commands, 1);
+        assert_eq!(work.status().unwrap().committed_commands, 0);
+    });
+    work.append(&Command::Generalization {
+        premise: 0,
+        variable: 0,
+    })
+    .unwrap();
+    work.append(&Command::Seal { proof: 1 }).unwrap();
+    assert!(finish(&mut work).fully_checked);
+}
+
+#[test]
 fn committed_prefix_is_rechecked_after_reopen_without_trusting_proved_flags() {
     let directory = Directory::new();
     let mut work = Work::open(&directory.path()).unwrap();
@@ -99,13 +159,15 @@ fn repeated_generalization_of_closed_subgraphs_adds_only_linear_work_and_replays
         );
         // The first binder captures the free variable. All later binders are
         // vacuous and must preserve the exact existing bound-variable graph.
-        let mut expected = work
-            .intern(Node::Equal(Variable::Bound(0), Variable::Bound(0)))
-            .unwrap();
+        let variable = naome_foundation::FreeVariable::new(0);
+        let mut expected = Formula::equal(variable, variable);
         for _ in 0..binders {
-            expected = work.intern(Node::ForAll(expected)).unwrap();
+            expected = Formula::for_all(variable, expected);
         }
-        assert_eq!(work.accepted, Some(expected));
+        assert_eq!(
+            status.conclusion,
+            Some(crate::hex(&naome_proof::program::formula_hash(&expected)))
+        );
         drop(work);
         let mut work = Work::open(&directory.path()).unwrap();
         assert!(!work.status().unwrap().fully_checked);
@@ -314,11 +376,8 @@ fn modus_ponens_crosses_committed_module_boundaries_and_checks_exact_antecedents
             naome_foundation::FreeVariable::new(0),
         ),
     );
-    let expected = expected.fold_graph(|n| work.intern(n)).unwrap();
-    assert_eq!(
-        status.conclusion,
-        Some(crate::hex(&work.load(expected).unwrap().1))
-    );
+    let expected = naome_proof::program::formula_hash(&expected);
+    assert_eq!(status.conclusion, Some(crate::hex(&expected)));
 }
 
 #[test]
@@ -454,13 +513,10 @@ fn every_logical_recipe_and_both_schemas_match_foundation_tree_semantics() {
         work.append(&Command::Equal { left: 1, right: 0 }).unwrap();
         work.append(&command).unwrap();
         finish(&mut work);
-        let node = expected.fold_graph(|n| work.intern(n)).unwrap();
+        let expected = naome_proof::program::formula_hash(&expected);
         assert_eq!(
-            checker::Context::previous(&work, 3).unwrap(),
-            Value {
-                formula: node,
-                proved: true
-            },
+            work.engine.result_digest(3).unwrap(),
+            (expected, true),
             "{command:?}"
         );
     }

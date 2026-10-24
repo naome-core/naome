@@ -343,6 +343,13 @@ impl Transport {
                                     .ok()
                                     .map(|id| driver.fresh_grant(*peer, ProofId::from_bytes(id)))
                             }
+                            Body::ProgramDescription {
+                                root: None,
+                                metadata,
+                            }
+                            | Body::ProgramOffer { metadata } => {
+                                Some(driver.fresh_grant(*peer, metadata.manifest.proof_id()))
+                            }
                             _ => None,
                         }
                     }

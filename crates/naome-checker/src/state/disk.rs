@@ -16,7 +16,9 @@ use sha2::{Digest, Sha256};
 use std::{borrow::Cow, sync::Arc};
 
 mod copy;
+mod program;
 pub use copy::{DiskArtifactCopy, DiskCopyBudget, DiskCopyProgress};
+pub use program::ProgramRegistration;
 
 /// Complete proof-only checked context with authenticated cold records.
 /// Construction is empty; only mathematical registration can create roots.
@@ -32,6 +34,7 @@ pub struct DiskArtifactState {
     outgoing: DiskMap,
     deductions: DiskMap,
     instances: DiskMap,
+    program_nodes: DiskMap,
     read_cache: crate::ReadCacheLimits,
 }
 
@@ -51,7 +54,8 @@ impl DiskArtifactState {
             witnesses: DiskMap::new(storage.clone()),
             outgoing: DiskMap::new(storage.clone()),
             deductions: DiskMap::new(storage.clone()),
-            instances: DiskMap::new(storage),
+            instances: DiskMap::new(storage.clone()),
+            program_nodes: DiskMap::new(storage),
             read_cache: crate::ReadCacheLimits::DEFAULT,
         }
     }
@@ -114,11 +118,15 @@ impl DiskArtifactState {
                 outgoing: self.outgoing.copy_to(storage.clone())?,
                 deductions: self.deductions.copy_to(storage.clone())?,
                 instances: self.instances.copy_to(storage.clone())?,
+                program_nodes: self.program_nodes.copy_to(storage.clone())?,
             };
             for entry in self.statements.entries() {
                 let (id, record) = entry?;
                 let id = StatementId::from_bytes(id);
                 let (address, length) = decode_statement_record(&record)?;
+                if length == 0 {
+                    continue;
+                }
                 let bytes = self.statements.storage().read(address, length)?;
                 if bytes.len() != length
                     || formula_address(&bytes) != address
@@ -178,59 +186,14 @@ impl DiskArtifactState {
             .map_err(ArtifactStateError::Context)?;
         let mut statement_record = address.to_vec();
         statement_record.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-        next.statements
-            .insert(*proof.statement_id.as_bytes(), &statement_record)
-            .map_err(ArtifactStateError::Context)?;
-        next.derivations
-            .insert(
-                *proof.derivation_id.as_bytes(),
-                proof.statement_id.as_bytes(),
-            )
-            .map_err(ArtifactStateError::Context)?;
-        let mut proof_record = proof.derivation_id.as_bytes().to_vec();
-        proof_record.extend_from_slice(&(depth as u64).to_be_bytes());
-        next.proofs
-            .insert(*proof.proof_id.as_bytes(), &proof_record)
-            .map_err(ArtifactStateError::Context)?;
-        next.artifacts
-            .insert(*ArtifactId::from_proof_id(proof.proof_id).as_bytes(), &[])
-            .map_err(ArtifactStateError::Context)?;
-        let previous = next
-            .witnesses
-            .get(proof.statement_id.as_bytes())
-            .map_err(ArtifactStateError::Context)?;
-        match previous {
-            Some(previous) => {
-                if proof.proof_id.as_bytes()
-                    < &fixed(&previous).map_err(ArtifactStateError::Context)?
-                {
-                    next.witnesses
-                        .set(*proof.statement_id.as_bytes(), proof.proof_id.as_bytes())
-                        .map_err(ArtifactStateError::Context)?;
-                }
-            }
-            None => {
-                next.witnesses
-                    .insert(*proof.statement_id.as_bytes(), proof.proof_id.as_bytes())
-                    .map_err(ArtifactStateError::Context)?;
-                for (kind, target) in projections(proof.proof_id, &proof.conclusion) {
-                    let index = next.index_mut(kind);
-                    let root = index
-                        .get(target.as_bytes())
-                        .map_err(ArtifactStateError::Context)?;
-                    let mut bucket = DiskMap::from_root(
-                        index.storage(),
-                        decode_root(root.as_deref()).map_err(ArtifactStateError::Context)?,
-                    );
-                    bucket
-                        .insert(*proof.statement_id.as_bytes(), &[])
-                        .map_err(ArtifactStateError::Context)?;
-                    index
-                        .set(*target.as_bytes(), &encode_root(bucket.root()))
-                        .map_err(ArtifactStateError::Context)?;
-                }
-            }
-        }
+        next.register_fact(
+            proof.proof_id,
+            proof.derivation_id,
+            proof.statement_id,
+            depth,
+            &statement_record,
+            Some(&proof.conclusion),
+        )?;
         *self = next;
         Ok(proof.normal_form.into_canonical_bytes())
     }
@@ -264,7 +227,7 @@ impl DiskArtifactState {
             if location.snapshot != self.snapshot_id() {
                 return Err(ContextError::Corrupt);
             }
-            if length > maximum {
+            if length == usize::MAX || length > maximum {
                 return Err(ContextError::Limit);
             }
             let bytes = self.statements.storage().read(location.address, length)?;
@@ -286,7 +249,14 @@ impl DiskArtifactState {
             let Some(record) = self.statements.get(id.as_bytes())? else {
                 return Ok(None);
             };
-            decode_statement_record(&record).map(Some)
+            let (address, length) = decode_statement_record(&record)?;
+            if length == 0
+                && (naome_proof::program::graph_statement_id(address) != id
+                    || !self.program_nodes.contains_key(&address)?)
+            {
+                return Err(ContextError::Corrupt);
+            }
+            Ok(Some((address, length)))
         })())
     }
 }
@@ -341,7 +311,7 @@ impl ContextView for DiskArtifactState {
                 }),
                 derivation,
                 statement,
-                length,
+                length: if length == 0 { usize::MAX } else { length },
             }))
         })())
     }
@@ -360,7 +330,7 @@ impl ContextView for DiskArtifactState {
                     snapshot: self.snapshot_id(),
                 }),
                 proof: ProofId::from_bytes(fixed(&proof)?),
-                length,
+                length: if length == 0 { usize::MAX } else { length },
             }))
         })())
     }
@@ -373,7 +343,7 @@ impl ContextView for DiskArtifactState {
             let Some((address, length)) = self.statement_record(id)? else {
                 return Ok(None);
             };
-            if length > maximum {
+            if length == 0 || length > maximum {
                 return Err(ContextError::Limit);
             }
             let bytes = self.statements.storage().read(address, length)?;
@@ -452,7 +422,7 @@ fn decode_statement_record(record: &[u8]) -> Result<([u8; 32], usize), ContextEr
         record[32..].try_into().map_err(|_| ContextError::Corrupt)?,
     ))
     .map_err(|_| ContextError::Limit)?;
-    if length == 0 || length > CHECKER_MAX_FORMULA_WORK_BYTES {
+    if length > CHECKER_MAX_FORMULA_WORK_BYTES {
         return Err(ContextError::Corrupt);
     }
     Ok((fixed(&record[..32])?, length))

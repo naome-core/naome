@@ -65,7 +65,7 @@ class Trial:
             command.append(text)
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, env={**os.environ, "NAOME_NODE_DIR": str(node.directory)},
-                                timeout=5 if cleanup else self.remaining())
+                                timeout=getattr(self,"cleanup_timeout",5) if cleanup else self.remaining())
         self.summary["commands"].append({"node": node.index, "command": command,
             "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
         if not success:

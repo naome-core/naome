@@ -222,9 +222,23 @@ impl CompiledQuestion {
         &self,
         proof: &CheckedProof,
     ) -> Result<QuestionOutcome, QuestionError> {
-        if proof.conclusion() == self.proved_target() {
+        self.classify_conclusion(proof.conclusion())
+    }
+
+    pub fn classify_checked_program(
+        &self,
+        proof: &naome_checker::program::CheckedProgram,
+    ) -> Result<QuestionOutcome, QuestionError> {
+        let conclusion = proof.conclusion().ok_or(QuestionError::Invalid(
+            "program conclusion exceeds this question representation",
+        ))?;
+        self.classify_conclusion(conclusion)
+    }
+
+    fn classify_conclusion(&self, conclusion: &Formula) -> Result<QuestionOutcome, QuestionError> {
+        if conclusion == self.proved_target() {
             Ok(QuestionOutcome::Proved)
-        } else if proof.conclusion() == self.refuted_target() {
+        } else if conclusion == self.refuted_target() {
             Ok(QuestionOutcome::Refuted)
         } else {
             Err(QuestionError::Invalid(
