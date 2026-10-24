@@ -134,7 +134,9 @@ def main():
     args=parser.parse_args()
     assert 8<args.units<4096
     trial=Trial(args.binary,args.output,args.timeout,args.profile,'program-replication')
-    trial.cleanup_timeout=20
+    # The donor's first stopped-state replay creates its canonical work file
+    # independently of the provider candidate, including durable input import.
+    trial.cleanup_timeout=60
     try:
         run(trial,args.units,args.memory_mib)
     except BaseException as error:
