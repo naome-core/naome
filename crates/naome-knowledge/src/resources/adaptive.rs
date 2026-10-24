@@ -133,12 +133,12 @@ impl Snapshot {
             .custom
             .as_ref()
             .map_or(slots, |c| c.concurrency.min(slots));
-        let cache = (memory / if heavy { 8 } else { 16 }).max(4096).min(
-            selection
-                .custom
-                .as_ref()
-                .map_or(u64::MAX, |c| c.cache_bytes),
-        );
+        let cache = selection
+            .custom
+            .as_ref()
+            .map_or(memory / if heavy { 8 } else { 16 }, |c| c.cache_bytes)
+            .min(memory / 4)
+            .max(4096);
         let batch = if light {
             16
         } else if heavy {
@@ -146,23 +146,21 @@ impl Snapshot {
         } else {
             64
         };
-        let batch = batch.min(
-            selection
-                .custom
-                .as_ref()
-                .map_or(usize::MAX, |c| c.batch_steps),
-        );
+        let batch = selection
+            .custom
+            .as_ref()
+            .map_or(batch, |c| c.batch_steps)
+            .min((memory as usize / 8192).max(1));
         let network = if light {
             1
         } else {
             concurrency.saturating_mul(if heavy { 4 } else { 2 })
-        }
-        .min(
-            selection
-                .custom
-                .as_ref()
-                .map_or(usize::MAX, |c| c.network_requests),
-        );
+        };
+        let network = selection
+            .custom
+            .as_ref()
+            .map_or(network, |c| c.network_requests)
+            .min(super::limits().flights);
         let paused = if memory < 8 * MIB || observed.process_rss > memory {
             Some("memory pressure".into())
         } else if observed.disk_available
