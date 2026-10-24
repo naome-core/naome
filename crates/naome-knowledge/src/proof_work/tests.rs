@@ -113,6 +113,74 @@ fn native_disk_pressure_preserves_the_retryable_outcome_and_committed_prefix() {
 }
 
 #[test]
+fn live_pause_rejects_a_stale_quantum_and_resumes_without_losing_input() {
+    const TEST: &str =
+        "proof_work::tests::live_pause_rejects_a_stale_quantum_and_resumes_without_losing_input";
+    if std::env::var_os("NAOME_PROGRAM_LIVE_PAUSE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_PROGRAM_LIVE_PAUSE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use crate::resources::adaptive::{self, Custom, Observed, Profile, Selection};
+    let directory = Directory::new();
+    let mut work = Work::open(&directory.path()).unwrap();
+    identity(&mut work);
+    let observation = |rss| Observed {
+        memory_total: 8 * 1024 * 1024 * 1024,
+        memory_available: 4 * 1024 * 1024 * 1024,
+        memory_limit: 8 * 1024 * 1024 * 1024,
+        process_rss: rss,
+        peak_rss: rss,
+        process_cpu_ms: 1,
+        cpu_millis: 4000,
+        load_millis: 0,
+        disk_available: 8 * 1024 * 1024 * 1024,
+    };
+    let selection = |memory_bytes| Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes,
+            concurrency: 1,
+            cache_bytes: 4096,
+            batch_steps: 37,
+            network_requests: 1,
+        }),
+    };
+    adaptive::publish(
+        Snapshot::derive(
+            selection(8 * 1024 * 1024),
+            observation(40 * 1024 * 1024),
+            512 * 1024 * 1024,
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        work.advance(&budget()),
+        Err(crate::Error::ExecutionLimit)
+    ));
+    assert_eq!(work.status().unwrap().commands, 3);
+    assert_eq!(work.status().unwrap().checked_commands, 0);
+    adaptive::publish(
+        Snapshot::derive(
+            selection(64 * 1024 * 1024),
+            observation(16 * 1024 * 1024),
+            512 * 1024 * 1024,
+        )
+        .unwrap(),
+    );
+    assert!(finish(&mut work).fully_checked);
+}
+
+#[test]
 fn committed_prefix_is_rechecked_after_reopen_without_trusting_proved_flags() {
     let directory = Directory::new();
     let mut work = Work::open(&directory.path()).unwrap();

@@ -30,6 +30,18 @@ class AutonomousNode(Node):
         self.peer=event['peer_id']
         return result
 
+    def stop(self,cleanup=False):
+        if not getattr(self,'large_screen',False):return super().stop(cleanup=cleanup)
+        # The ordinary matrix separately covers repeated stop/status. A large
+        # screen performs one full stopped-state replay per requested stop.
+        status=self.trial.call(self,'stop',cleanup=cleanup)
+        assert not status['running'] and not process_group(self.process)
+        if self.process is not None:
+            assert sum(event.get('event')=='stopped' for event in self.logs()[self.event_offset:])==1
+        assert status['accepted_proofs']==len(self.ids())
+        self.reserve_port()
+        return status
+
 
 def program_rows(node):
     path=node.directory/'proof-corpus.sqlite3'
@@ -45,12 +57,19 @@ def resources(trial,node):
         env={**os.environ,'NAOME_NODE_DIR':str(node.directory)},timeout=trial.remaining())
     assert result.returncode==0,result.stderr
     value=json.loads(result.stdout)
-    assert value['configured']['profile']=='dynamic'
+    assert value['configured']['profile']==getattr(node,'expected_profile','dynamic')
     return value
 
 
-def run(trial,units):
+def run(trial,units,memory_mib=None):
     donor,receiver=AutonomousNode(trial,0),AutonomousNode(trial,1)
+    if memory_mib is not None:
+        assert 8<=memory_mib<=512
+        trial.command_timeout=300;trial.cleanup_timeout=300
+        for node in (donor,receiver):
+            node.large_screen=True;node.expected_profile='custom'
+            write_receipt(node.directory/'resource-profile.json',{'profile':'custom','custom':{
+                'memory_bytes':memory_mib*1024*1024,'concurrency':1,'cache_bytes':32768,'batch_steps':512,'network_requests':1}})
     donor.config['runtime']['jobs']={'solving':{'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
         'mock':{'program_units':units}}}
     for node in (donor,receiver):node.write_config();node.start();node.stop()
@@ -92,6 +111,8 @@ def run(trial,units):
         commands,committed,sealed=connection.execute('SELECT commands,committed,sealed FROM state WHERE id=1').fetchone()
         assert commands==committed==manifest['commands'] and sealed
         assert connection.execute('SELECT count(*) FROM node').fetchone()[0]>256
+    if memory_mib is not None:
+        assert work.stat().st_size>snapshot['active']['budget']['memory_bytes'],"screen must exceed its configured working-memory target"
     receiver.start()
     assert receiver.ids()==before and identity in before
     assert trial.call(receiver,'status')['accepted_proofs']==len(before)
@@ -108,13 +129,14 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--units',type=int,default=64)
     parser.add_argument('--timeout',type=float,default=240)
+    parser.add_argument('--memory-mib',type=int)
     parser.add_argument('--profile',default='test')
     args=parser.parse_args()
     assert 8<args.units<4096
     trial=Trial(args.binary,args.output,args.timeout,args.profile,'program-replication')
     trial.cleanup_timeout=20
     try:
-        run(trial,args.units)
+        run(trial,args.units,args.memory_mib)
     except BaseException as error:
         trial.summary.update(result='fail',error=f'{type(error).__name__}: {error}')
         raise
