@@ -16,6 +16,8 @@ pub const CONTRACT: &str = "naome:decision:categorical:v1";
 pub const MAX_STATE_BYTES: usize = 32 * 1024;
 pub const MAX_INSTRUCTION_BYTES: usize = 512;
 pub const MAX_OPTIONS: usize = 8;
+/// Bounded native response metadata and its callers' result reservation.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

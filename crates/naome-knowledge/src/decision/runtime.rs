@@ -628,7 +628,7 @@ fn supervise() -> Result<(), String> {
                     // A bounded ready/answer fits the parent pipe even if its
                     // consumer is cancelled. Bulk output must never block the
                     // independent custody loop on stdout backpressure.
-                    if bytes.len() > 4096 {
+                    if bytes.len() > super::MAX_RESPONSE_BYTES {
                         return Err("decision response metadata capacity".into());
                     }
                     let mut frame: Frame = serde_json::from_slice(&bytes)

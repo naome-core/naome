@@ -284,7 +284,7 @@ impl Disk {
         let mut spent = 0u64;
         checkpoint.scan("account", 8192, |key, bytes| {
             let account: Account = crate::checkpoint::decode(bytes)?;
-            validate_account(key, &account, settings)?;
+            validate_account(key, &account)?;
             units = units
                 .checked_add(u64::from(account.reserved_units))
                 .ok_or("research archive unit overflow")?;
@@ -754,7 +754,7 @@ impl Journal {
         }
         for (key, account) in &self.accounts {
             if full || self.accounts.changed(key) {
-                validate_account(key, account, settings)?;
+                validate_account(key, account)?;
             }
         }
         Ok(())
@@ -772,7 +772,7 @@ fn validate_record(
 ) -> Result<(), String> {
     r.input.validate()?;
     r.binding.validate()?;
-    r.settings.validate_history()?;
+    r.settings.validate_format()?;
     if id != r.id
         || id >= next_id
         || r.provider != super::provider::for_input(&r.input, settings)
@@ -829,15 +829,13 @@ fn validate_record(
     Ok(())
 }
 
-fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result<(), String> {
+fn validate_account(key: &str, account: &Account) -> Result<(), String> {
     crate::object::id_bytes(key)?;
-    account.settings.validate_history()?;
-    if account.settings.limits.horizon_ms == 0
-        || account.settings.limits.work_units == 0
-        || account
-            .created_ms
-            .checked_add(account.settings.limits.horizon_ms)
-            != Some(account.expires_ms)
+    account.settings.validate_format()?;
+    if account
+        .created_ms
+        .checked_add(account.settings.limits.horizon_ms)
+        != Some(account.expires_ms)
         || account.held == Some(0)
         || account.reserved_units > account.settings.limits.work_units
     {

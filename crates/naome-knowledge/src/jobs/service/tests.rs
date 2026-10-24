@@ -125,6 +125,13 @@ fn decision_checkpoint_and_result_commit_together_and_keep_the_original_allowanc
     let record = &owner.journal.records[&1];
     assert_eq!(record.checkpoint, 1);
     assert!(matches!(record.result, Some(Output::Decision(_))));
+    let retained_bytes = serde_json::to_vec(record.result.as_ref().unwrap())
+        .unwrap()
+        .len();
+    assert!(
+        output_reservation(&input) >= retained_bytes,
+        "reserve the complete model distribution before inference"
+    );
     let mut changed = input.clone();
     let Input::Interest { assessment, .. } = &mut changed else {
         unreachable!()

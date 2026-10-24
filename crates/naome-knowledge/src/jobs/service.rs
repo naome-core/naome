@@ -1138,7 +1138,7 @@ fn output_reservation(input: &Input) -> usize {
     match input {
         Input::Solve { .. } => 6 * crate::resources::limits().closure_bytes + 1024,
         Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
-        Input::Interest { .. } => 64,
+        Input::Interest { .. } => crate::decision::MAX_RESPONSE_BYTES,
     }
 }
 fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {

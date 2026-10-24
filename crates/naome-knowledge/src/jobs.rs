@@ -119,9 +119,9 @@ pub enum InterestProvider {
 }
 
 impl RoleSettings {
-    /// Historical allowances are validated against the current value format,
-    /// never against defaults for newly admitted obligations.
-    fn validate_history(self) -> Result<(), String> {
+    /// New and retained allowances share value-format checks. Current resource
+    /// limits apply separately when admitting a new obligation.
+    fn validate_format(self) -> Result<(), String> {
         if self.limits.horizon_ms == 0
             || self.limits.work_units == 0
             || self.mock.proof_padding_bytes > naome_authoring::AUTHORING_SOURCE_MAX_BYTES
@@ -138,7 +138,7 @@ impl RoleSettings {
                     .is_none()
             })
         {
-            return Err("research historical role value exceeds its format".into());
+            return Err("research role value exceeds its format".into());
         }
         Ok(())
     }
@@ -154,23 +154,10 @@ impl Settings {
             );
         }
         for role in [self.finding, self.solving, self.interest] {
-            if role.limits.horizon_ms == 0
-                || role.limits.work_units == 0
-                || crate::jobs::wall_ms()?
-                    .checked_add(role.limits.horizon_ms)
-                    .is_none()
-                || [
-                    role.limits.horizon_ms,
-                    role.mock.step_ms,
-                    role.mock.cpu_ms,
-                    role.mock.result_delay_ms,
-                ]
-                .into_iter()
-                .any(|ms| {
-                    std::time::Instant::now()
-                        .checked_add(std::time::Duration::from_millis(ms))
-                        .is_none()
-                })
+            role.validate_format()?;
+            if crate::jobs::wall_ms()?
+                .checked_add(role.limits.horizon_ms)
+                .is_none()
                 || role.mock.proof_padding_bytes > crate::resources::limits().proof_bytes
             {
                 return Err("research role horizon or workload limit".into());
