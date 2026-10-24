@@ -426,20 +426,23 @@ fn cold_mutual_implications_and_finite_universal_instances_match_exactly() {
         Some(RejectionReason::ProvenEquivalent)
     );
     let mut universal = Twin::new();
-    let _ = universal.register(vec![
-        ProofStep::EqualityReflexivity { variable: var(0) },
-        ProofStep::Generalization {
-            premise: 0,
-            variable: var(0),
-        },
-        ProofStep::Generalization {
-            premise: 1,
-            variable: var(19),
-        },
-    ]);
+    let mut steps = super::tests::schema_steps(false);
+    let target = crate::normalize_and_check(ProofCertificate::new(steps.clone()).unwrap())
+        .unwrap()
+        .conclusion()
+        .clone();
+    steps.push(ProofStep::Generalization {
+        premise: 0,
+        variable: var(19),
+    });
+    steps.push(ProofStep::Generalization {
+        premise: 1,
+        variable: var(20),
+    });
+    let _ = universal.register(steps);
     assert_eq!(
         universal
-            .compare(&equal(), &QuestionRegistry::new(), &policy)
+            .compare(&target, &QuestionRegistry::new(), &policy)
             .reason,
         Some(RejectionReason::KnownLemmaInstance)
     );
@@ -448,7 +451,7 @@ fn cold_mutual_implications_and_finite_universal_instances_match_exactly() {
 #[test]
 fn cold_large_mp_intermediate_is_never_truncated_by_the_question_limit() {
     let mut twin = Twin::new();
-    let (_, p) = twin.register(equality_steps());
+    let (_, p) = twin.register(super::tests::schema_steps(false));
     let mut large = unresolved();
     for _ in 0..9 {
         large = Formula::implies(large.clone(), large);
@@ -469,9 +472,9 @@ fn cold_large_mp_intermediate_is_never_truncated_by_the_question_limit() {
         .is_err()
     );
     let target = Formula::for_all(var(19), p);
-    let mut steps = equality_steps();
+    let mut steps = super::tests::schema_steps(false);
     steps.push(ProofStep::Generalization {
-        premise: 1,
+        premise: 0,
         variable: var(19),
     });
     steps.push(ProofStep::Simplification {
@@ -479,8 +482,8 @@ fn cold_large_mp_intermediate_is_never_truncated_by_the_question_limit() {
         consequent: intermediate.into(),
     });
     steps.push(ProofStep::ModusPonens {
-        premise: 2,
-        implication: 3,
+        premise: 1,
+        implication: 2,
     });
     let _ = twin.register(steps);
     assert_eq!(
