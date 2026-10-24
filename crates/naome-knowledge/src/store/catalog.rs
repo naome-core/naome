@@ -6,6 +6,7 @@ use rusqlite::{
 };
 use sha2::{Digest, Sha256};
 use std::{cell::Cell, collections::BTreeMap, fs, path::Path, time::Instant};
+pub(super) mod program;
 
 #[cfg(test)]
 std::thread_local! { static SET_SCANS: Cell<usize> = const { Cell::new(0) }; static PAYLOAD_READS: Cell<usize> = const { Cell::new(0) }; }
@@ -19,11 +20,27 @@ pub(super) fn set_scan_count() -> usize {
 }
 
 const APPLICATION_ID: i64 = 0x4e414f31;
-const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 const IDS_PAGE_QUERY: &str = "SELECT substr(id,1,33) FROM proofs
     WHERE id > ?1 ORDER BY id LIMIT ?2";
 
-const TABLES: [(&str, &str); 5] = [
+const TABLES: [(&str, &str); 7] = [
+    ("programs", "CREATE TABLE programs (
+        id BLOB PRIMARY KEY CHECK(length(id)=32),
+        manifest BLOB NOT NULL CHECK(length(manifest) BETWEEN 1 AND 2048),
+        received INTEGER NOT NULL CHECK(received>=0),
+        input_bytes INTEGER NOT NULL CHECK(input_bytes>=0),
+        hash BLOB NOT NULL CHECK(length(hash)=32),
+        remaining BLOB NOT NULL CHECK(length(remaining)=32)
+    ) STRICT, WITHOUT ROWID"),
+    ("program_input", "CREATE TABLE program_input (
+        id BLOB NOT NULL CHECK(length(id)=32),
+        position INTEGER NOT NULL CHECK(position>=0),
+        command BLOB NOT NULL CHECK(length(command) BETWEEN 1 AND 4096),
+        hash BLOB NOT NULL CHECK(length(hash)=32),
+        suffix BLOB NOT NULL CHECK(length(suffix)=32),
+        PRIMARY KEY(id,position), FOREIGN KEY(id) REFERENCES programs(id)
+    ) STRICT, WITHOUT ROWID"),
     (
         "meta",
         "CREATE TABLE meta (
@@ -387,6 +404,11 @@ impl Catalog {
         // checked and advanced. Only this serialized connection may extend the
         // fully validated catalog; external changes require a fresh Graph replay.
         self.require_validated_version(&transaction)?;
+        for object in objects {
+            if let Some(manifest) = object.program()? {
+                program::require_complete(&transaction, &manifest)?;
+            }
+        }
         let inserted = insert_commit(&transaction, commit, root, &prepared, meta.count, cut)?;
         let summary = if inserted {
             verify_commit(&transaction, commit, root, &prepared)?;
@@ -405,6 +427,7 @@ impl Catalog {
             transaction.rollback().map_err(sql_error)?;
             return Err(error);
         }
+
         transaction
             .commit()
             .map_err(|e| crate::Error::UncertainDurability(e.to_string()))?;
@@ -788,6 +811,7 @@ fn validate_catalog(
     verify_schema(connection)?;
     let meta = read_meta(connection, Some(database_id))?;
     let summary = verify_summary(connection, &meta)?;
+    program::validate_staging(connection)?;
     let mut statement = connection
         .prepare("SELECT substr(id,1,33), replay_order FROM proofs ORDER BY replay_order")
         .map_err(sql_error)?;
@@ -907,8 +931,11 @@ fn read_record(
         return Err("catalog payload length or digest differs".into());
     }
     if compatibility != crate::compatibility()
-        || crate::object::content_id(naome_proof::StatementId::from_bytes(statement), &payload)
-            .as_bytes()
+        || crate::object::record_content_id(
+            naome_proof::StatementId::from_bytes(statement),
+            &payload,
+        )?
+        .as_bytes()
             != &id
     {
         return Err("catalog canonical proof identity differs".into());
@@ -925,6 +952,9 @@ fn read_record(
             .map(ProofId::from_bytes)
             .collect(),
     };
+    if let Some(manifest) = object.program()? {
+        program::require_complete(connection, &manifest)?;
+    }
     let member_origin: Option<Vec<u8>> = {
         let mut statement = connection
             .prepare_cached("SELECT substr(commit_id,1,33) FROM members WHERE proof_id = ?1")
@@ -1300,7 +1330,11 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
         for member in members {
             let record = read_record(connection, member, ReadAdmission::Work)?
                 .ok_or("missing catalog commit proof")?;
-            record.object.clone().prepare_retained()?;
+            if let Some(manifest) = record.object.program()? {
+                program::require_complete(connection, &manifest)?;
+            } else {
+                record.object.clone().prepare_retained()?;
+            }
             if record.origin != id {
                 return Err("catalog proof belongs to a different originating commit".into());
             }

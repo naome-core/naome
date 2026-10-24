@@ -4,8 +4,9 @@
 //! Foundation rules, enforces deterministic formula-processing limits, and
 //! accepts only a closed final formula. External proof references resolve only
 //! through an explicitly supplied, already checked [`ArtifactState`]. The crate
-//! owns authenticated checked-context queries but has no filesystem backend,
-//! blocks, networking, or source parsing.
+//! owns authenticated checked-context queries and incremental checking against
+//! an owner-provided SQL connection. It opens no filesystem backend and owns
+//! no networking or source parsing.
 //! The normalizing and normal-form checking entry points return a
 //! [`CheckedProof`] that keeps the accepted normal form, reconstructed
 //! conclusion, and content identities coupled together and can project only
@@ -35,7 +36,7 @@ use sha2::{Digest, Sha256};
 pub use context::{ContextError, ContextStorage, ContextView, ReadCacheLimits};
 pub use state::{
     ArtifactState, ArtifactStateError, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget,
-    DiskCopyProgress,
+    DiskCopyProgress, ProgramRegistration,
 };
 
 const DERIVATION_NODE_ID_DOMAIN: &[u8] = b"naome:derivation-node\0";

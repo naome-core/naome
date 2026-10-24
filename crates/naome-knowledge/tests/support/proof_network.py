@@ -41,6 +41,34 @@ def proof_id(statement, proof):
     ).hexdigest()
 
 
+def program_id(manifest):
+    framed=b"naome:program-proof:v1\0"+b"naome:zfc"
+    framed+=manifest['commands'].to_bytes(8,'big')+manifest['input_bytes'].to_bytes(8,'big')
+    for field in ['program_hash','stream_root','conclusion','statement']:
+        framed+=bytes(manifest[field])
+    return hashlib.sha256(framed).hexdigest()
+
+
+def verify_program_input(catalog,manifest):
+    identity=bytes.fromhex(program_id(manifest))
+    saved=catalog.execute('SELECT manifest,received,input_bytes,hash,remaining FROM programs WHERE id=?',(identity,)).fetchone()
+    assert saved is not None and json.loads(saved[0])==manifest
+    assert saved[1:]==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']),bytes(32))
+    previous=bytes(32);count=0;size=0
+    for position,command,chain in catalog.execute('SELECT position,command,hash FROM program_input WHERE id=? ORDER BY position',(identity,)):
+        assert position==count and 0<len(command)<=4096
+        assert json.dumps(json.loads(command),separators=(',',':')).encode()==command
+        previous=hashlib.sha256(b'naome:proof-program:v1'+previous+len(command).to_bytes(8,'big')+command).digest()
+        assert chain==previous
+        count+=1;size+=len(command)
+    assert (count,size,previous)==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']))
+    remaining=bytes(32)
+    for command,suffix in catalog.execute('SELECT command,suffix FROM program_input WHERE id=? ORDER BY position DESC',(identity,)):
+        remaining=hashlib.sha256(b'naome:program-stream:v1\0'+len(command).to_bytes(8,'big')+command+remaining).digest()
+        assert suffix==remaining
+    assert remaining==bytes(manifest['stream_root'])
+
+
 def content_root(compatibility, ids):
     def leaf(key):
         return hashlib.sha256(b"naome:checked-map:leaf:v1\0" + key).digest()
@@ -98,16 +126,16 @@ def stored_objects(node):
         return []
     assert receipt.is_file(), "catalog lineage receipt required"
     format_bytes = receipt.read_bytes()
-    assert len(format_bytes) == 72 and format_bytes[:8] == b"NAOCORP3"
+    assert len(format_bytes) == 72 and format_bytes[:8] == b"NAOCORP4"
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as catalog:
         catalog.execute("BEGIN")
         assert catalog.execute("PRAGMA application_id").fetchone()[0] == 0x4e414f31
-        assert catalog.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert catalog.execute("PRAGMA user_version").fetchone()[0] == 6
         assert catalog.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
         assert catalog.execute("PRAGMA foreign_key_check").fetchall() == []
         assert [row[0] for row in catalog.execute(
             "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-        )] == ["commits", "dependencies", "members", "meta", "proofs"], "current catalog schema required"
+        )] == ["commits", "dependencies", "members", "meta", "program_input", "programs", "proofs"], "current catalog schema required"
         assert catalog.execute(
             "SELECT name,tbl_name FROM sqlite_schema WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ).fetchall() == [
@@ -134,7 +162,13 @@ def stored_objects(node):
             assert 1 <= len(payload) == length <= 65536 and hashlib.sha256(payload).digest() == checksum
             object = {"proof_id": id.hex(), "statement_id": statement.hex(),
                 "compatibility": compatibility.hex(), "proof": payload.hex()}
-            assert proof_id(object["statement_id"], object["proof"]) == object["proof_id"]
+            if payload.startswith(b'\xffNAOP1\0'):
+                manifest=json.loads(payload[7:])
+                assert program_id(manifest)==object['proof_id'] and bytes(manifest['statement'])==statement
+                verify_program_input(catalog,manifest)
+                object['program_manifest']=manifest
+            else:
+                assert proof_id(object["statement_id"], object["proof"]) == object["proof_id"]
             objects.append(object)
             by_id[id] = (statement, compatibility, length, checksum, commit)
             payload_bytes += length

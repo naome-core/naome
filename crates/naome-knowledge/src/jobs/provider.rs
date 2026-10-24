@@ -36,6 +36,13 @@ impl From<&str> for Failure {
     }
 }
 pub(super) trait Supervisor {
+    fn program(
+        &mut self,
+        _unit: u32,
+        _records: Vec<naome_proof::program::Command>,
+    ) -> Result<(), String> {
+        Err("provider does not support streamed candidates".into())
+    }
     fn reserve(&mut self, next: u32) -> Result<(), String>;
     fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String>;
     fn probe(&mut self, probe: Probe) -> Result<(), String>;
@@ -75,7 +82,11 @@ pub(super) struct Contract {
 pub(super) fn contract(record: &Record) -> Option<Contract> {
     match record.provider.as_str() {
         DEFAULT_PROVIDER => Some(Contract {
-            units: record.settings.mock.steps,
+            units: if streams(&record.input, record.settings.mock) {
+                record.settings.mock.program_units
+            } else {
+                record.settings.mock.steps
+            },
             resumable: true,
         }),
         DECISION_PROVIDER if matches!(record.input, Input::Interest { .. }) => Some(Contract {
@@ -114,6 +125,15 @@ struct Mock {
     input: Input,
     work: MockWork,
 }
+fn streams(input: &Input, work: MockWork) -> bool {
+    work.program_units > 0
+        && matches!(input,Input::Solve{question} if naome_authoring::CompiledQuestion::compile(question).ok()==naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(0)).ok())
+}
+impl Mock {
+    fn streams(&self) -> bool {
+        streams(&self.input, self.work)
+    }
+}
 impl Provider for Mock {
     fn start(&mut self, supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
         if self.work.descendant {
@@ -122,7 +142,12 @@ impl Provider for Mock {
         Ok(())
     }
     fn next(&self, checkpoint: u32) -> Result<Option<u32>, Failure> {
-        if self.work.steps != 0 && checkpoint >= self.work.steps {
+        let units = if self.streams() {
+            self.work.program_units
+        } else {
+            self.work.steps
+        };
+        if units != 0 && checkpoint >= units {
             return Ok(None);
         }
         checkpoint
@@ -131,6 +156,13 @@ impl Provider for Mock {
             .ok_or_else(|| Failure::Failed("provider checkpoint overflow".into()))
     }
     fn execute(&mut self, next: u32, supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
+        if self.streams() {
+            supervisor.program(
+                next,
+                super::program::mock_group(next, self.work.program_units, self.work.outcome)?,
+            )?;
+        }
+
         if self.work.step_ms > 0 {
             std::thread::sleep(Duration::from_millis(self.work.step_ms));
         }
@@ -158,6 +190,11 @@ impl Provider for Mock {
         if self.work.result_delay_ms > 0 {
             supervisor.probe(Probe::ResultReady)?;
             std::thread::sleep(Duration::from_millis(self.work.result_delay_ms));
+        }
+        if self.streams() {
+            return Ok(Output::Program {
+                units: self.work.program_units,
+            });
         }
         let output = match &self.input {
             Input::Find { cursor } => {

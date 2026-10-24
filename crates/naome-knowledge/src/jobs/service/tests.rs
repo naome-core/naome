@@ -146,6 +146,87 @@ fn a_restarted_model_cannot_escape_its_fixed_undrained_physical_slot() {
     drop(lease);
     assert!(disk.decision_slot().unwrap().is_some());
 }
+
+#[cfg(feature = "developer-tools")]
+#[test]
+fn streamed_candidate_groups_keep_original_reservations_and_survive_restart() {
+    use naome_proof::program::Command;
+    let directory = Directory::new();
+    let mut settings = Settings::default();
+    settings.solving.mock.program_units = 3;
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let mut owner = Owner::new(disk, journal, settings, unconfigured());
+    let _ticket = submit(&mut owner, 1);
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    owner.reserve(1, 1).unwrap();
+    let group = vec![Command::Reflexivity { variable: 0 }];
+    assert!(
+        owner
+            .disk
+            .save_program_group(&owner.journal, 1, 2, group.clone())
+            .is_err()
+    );
+    owner
+        .disk
+        .save_program_group(&owner.journal, 1, 1, group.clone())
+        .unwrap();
+    assert!(
+        owner
+            .disk
+            .save_program_group(
+                &owner.journal,
+                1,
+                1,
+                vec![Command::Equal { left: 0, right: 0 }]
+            )
+            .is_err()
+    );
+    owner.journal.records.get_mut(&1).unwrap().checkpoint = 1;
+    owner.save().unwrap();
+    let original = owner.journal.records[&1].clone();
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    assert_eq!(disk.program_group(1, 1).unwrap(), group);
+    assert_eq!(journal.records[&1].checkpoint, 1);
+    assert_eq!(journal.records[&1].reserved_units, original.reserved_units);
+    assert_eq!(journal.records[&1].expires_ms, original.expires_ms);
+    assert_eq!(journal.records[&1].state, State::Suspended);
+}
+
+#[test]
+fn candidate_stream_backpressure_retries_the_same_reserved_unit_after_disk_pressure() {
+    use naome_proof::program::Command;
+    let (_directory, mut owner) = fixture(2);
+    let _ticket = submit(&mut owner, 1);
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    owner.reserve(1, 1).unwrap();
+    let reserved = owner.journal.records[&1].reserved_units;
+    let (reply, mut receipt) = oneshot::channel();
+    owner.programs.insert(
+        1,
+        PendingProgram {
+            unit: 1,
+            records: vec![Command::Reflexivity { variable: 0 }],
+            reply,
+        },
+    );
+    crate::resources::with_disk_available(0, || owner.persist_programs().unwrap());
+    assert!(matches!(
+        receipt.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    assert_eq!(owner.programs.len(), 1);
+    assert_eq!(owner.journal.records[&1].reserved_units, reserved);
+    assert_eq!(owner.journal.records[&1].checkpoint, 0);
+    owner.persist_programs().unwrap();
+    assert!(receipt.try_recv().unwrap().is_ok());
+    assert_eq!(owner.journal.records[&1].reserved_units, reserved);
+    assert_eq!(
+        owner.disk.program_group(1, 1).unwrap(),
+        vec![Command::Reflexivity { variable: 0 }]
+    );
+    assert!(owner.programs.is_empty());
+}
 fn submit(owner: &mut Owner, epoch: u8) -> oneshot::Receiver<Completion> {
     let (reply, receipt) = oneshot::channel();
     owner

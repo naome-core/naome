@@ -31,6 +31,9 @@ impl Manual {
         let mut requests = Vec::new();
         while let Ok(command) = self.receiver.try_recv() {
             match command {
+                Command::Program { reply, .. } => {
+                    let _ = reply.send(Err("manual provider has no retained program".into()));
+                }
                 Command::Submit(input, binding, reply) => {
                     let id = self.next;
                     self.next += 1;

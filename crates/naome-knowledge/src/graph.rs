@@ -16,6 +16,7 @@ use std::{
 
 mod batch;
 mod pending;
+pub(crate) mod program;
 mod storage;
 pub(crate) use batch::CheckedBatch;
 use storage::CheckedStorage;
@@ -203,6 +204,11 @@ impl Graph {
             None => Ok(()),
         }
     }
+    pub(crate) fn program_failure(&self, error: &crate::Error) {
+        if error.fatal() {
+            *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+        }
+    }
     fn cold<T, E: Into<crate::Error>>(&self, result: Result<T, E>) -> Result<T, crate::Error> {
         result.map_err(|error| {
             let error = error.into().storage();
@@ -299,6 +305,19 @@ impl Graph {
             for (ordinal, record) in page {
                 if ordinal != after.checked_add(1).ok_or("replay ordinal overflow")? {
                     return Err("durable replay order is incomplete".into());
+                }
+                if let Some(manifest) = record.program()? {
+                    graph.replay_program(&manifest)?;
+                    graph.bytes = graph
+                        .bytes
+                        .checked_add(record.bytes.len())
+                        .ok_or("replayed payload byte overflow")?;
+                    graph.count = graph
+                        .count
+                        .checked_add(1)
+                        .ok_or("accepted count overflow")?;
+                    after = ordinal;
+                    continue;
                 }
                 let candidate = record.prepare_retained()?;
                 graph.bytes = graph

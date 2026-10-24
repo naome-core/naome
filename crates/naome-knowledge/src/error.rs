@@ -87,9 +87,39 @@ impl fmt::Display for Error {
     }
 }
 impl StdError for Error {}
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        use std::io::ErrorKind;
+        if matches!(
+            error.kind(),
+            ErrorKind::WouldBlock
+                | ErrorKind::Interrupted
+                | ErrorKind::OutOfMemory
+                | ErrorKind::StorageFull
+                | ErrorKind::QuotaExceeded
+        ) {
+            Self::ExecutionLimit
+        } else {
+            Self::InvalidInput(error.to_string())
+        }
+    }
+}
 impl From<String> for Error {
     fn from(message: String) -> Self {
         Self::InvalidInput(message)
+    }
+}
+impl From<naome_checker::program::Error> for Error {
+    fn from(error: naome_checker::program::Error) -> Self {
+        if error.resource_shortage() {
+            return Self::ExecutionLimit;
+        }
+        match error {
+            naome_checker::program::Error::Invalid(message) => Self::InvalidInput(message),
+            naome_checker::program::Error::Storage(error) => {
+                Self::CorruptStorage(error.to_string())
+            }
+        }
     }
 }
 impl From<&str> for Error {

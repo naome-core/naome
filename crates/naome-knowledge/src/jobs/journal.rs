@@ -158,7 +158,36 @@ impl Disk {
                 vec![],
             )?
         };
-        checkpoint.require_kinds(&["record", "account", "request", "history"])?;
+        checkpoint.require_kinds(&["record", "account", "request", "history", "program"])?;
+        checkpoint.scan(
+            "program",
+            naome_proof::program::CHUNK_BYTES,
+            |key, bytes| {
+                let (id, unit) = key.split_once(':').ok_or("invalid provider program key")?;
+                let id = id
+                    .parse::<u64>()
+                    .map_err(|_| "invalid provider program job")?;
+                let unit = unit
+                    .parse::<u32>()
+                    .map_err(|_| "invalid provider program unit")?;
+                if key != format!("{id}:{unit}") || unit == 0 {
+                    return Err("noncanonical provider program key".into());
+                }
+                let record = checkpoint
+                    .get::<Record>(
+                        "record",
+                        &id.to_string(),
+                        crate::resources::limits().active_job_bytes,
+                    )?
+                    .ok_or("provider program job missing")?;
+                if unit > record.reserved_units || !matches!(record.input, Input::Solve { .. }) {
+                    return Err("provider program reservation missing".into());
+                }
+                let commands: Vec<naome_proof::program::Command> =
+                    serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+                super::program::validate_group(&commands)
+            },
+        )?;
         let header: Header = checkpoint.header()?;
         if header.version != 4
             || header.compatibility != crate::hex(&crate::compatibility())
@@ -513,6 +542,64 @@ impl Disk {
         }
         self.checkpoint.commit(&journal.header(), updates)
     }
+    pub(super) fn program_group(
+        &self,
+        id: u64,
+        unit: u32,
+    ) -> Result<Vec<naome_proof::program::Command>, String> {
+        let records = self
+            .checkpoint
+            .get::<Vec<naome_proof::program::Command>>(
+                "program",
+                &format!("{id}:{unit}"),
+                naome_proof::program::CHUNK_BYTES,
+            )?
+            .ok_or("provider program group missing")?;
+        super::program::validate_group(&records)?;
+        Ok(records)
+    }
+    pub(super) fn save_program_group(
+        &mut self,
+        journal: &Journal,
+        id: u64,
+        unit: u32,
+        records: Vec<naome_proof::program::Command>,
+    ) -> Result<(), crate::Error> {
+        super::program::validate_group(&records)?;
+        let record = journal
+            .records
+            .get(&id)
+            .ok_or("provider program original job missing")?;
+        if unit == 0
+            || unit > record.reserved_units
+            || unit > record.checkpoint.saturating_add(1)
+            || !matches!(record.input, Input::Solve { .. })
+        {
+            return Err("provider program original reservation missing".into());
+        }
+        let key = format!("{id}:{unit}");
+        if let Some(previous) = self.checkpoint.get::<Vec<naome_proof::program::Command>>(
+            "program",
+            &key,
+            naome_proof::program::CHUNK_BYTES,
+        )? {
+            return if previous == records {
+                Ok(())
+            } else {
+                Err("resumed provider program group differs".into())
+            };
+        }
+        let _disk = crate::resources::DiskLease::acquire(
+            self.directory(),
+            (naome_proof::program::CHUNK_BYTES as u64) * 4,
+        )?;
+        self.checkpoint
+            .commit(
+                &journal.header(),
+                vec![crate::checkpoint::Update::put("program", key, &records)?],
+            )
+            .map_err(crate::Error::UncertainDurability)
+    }
     pub(super) fn directory(&self) -> &Path {
         self.path.parent().expect("canonical research parent")
     }
@@ -716,6 +803,11 @@ fn validate_record(
             && !matches!(output, Output::Decision(_))
         {
             return Err("decision provider result is not model evidence".into());
+        }
+        if let Output::Program { units } = output
+            && *units != r.checkpoint
+        {
+            return Err("retained program differs from original checkpoints".into());
         }
     }
     if !matches!(r.input, Input::Find { .. }) {

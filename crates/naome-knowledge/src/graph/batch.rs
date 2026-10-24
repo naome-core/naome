@@ -3,13 +3,53 @@ use naome_authoring::CompiledQuestion;
 
 /// A complete checked delta, prepared without publishing staged knowledge.
 pub(crate) struct CheckedBatch {
-    context: DiskArtifactState,
-    entries: Vec<(ProofId, crate::object::BinaryProof)>,
-    base_snapshot: [u8; 32],
-    storage: Arc<CheckedStorage>,
-    copy_epoch: u64,
-    context_bytes: usize,
-    _disk: crate::resources::DiskLease,
+    pub(super) context: DiskArtifactState,
+    pub(super) entries: Vec<(ProofId, crate::object::BinaryProof)>,
+    pub(super) base_snapshot: [u8; 32],
+    pub(super) storage: Arc<CheckedStorage>,
+    pub(super) copy_epoch: u64,
+    pub(super) context_bytes: usize,
+    pub(super) _disk: crate::resources::DiskLease,
+}
+
+impl CheckedBatch {
+    pub(super) fn from_program(
+        graph: &Graph,
+        context: DiskArtifactState,
+        record: crate::object::BinaryProof,
+        copy_epoch: u64,
+        growth: usize,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<Self, crate::Error> {
+        let prior_bytes = prefix.as_ref().map_or(0, |prefix| {
+            prefix
+                .entries
+                .iter()
+                .map(|(_, entry)| entry.bytes.len())
+                .sum::<usize>()
+        });
+        let count = prefix.as_ref().map_or(1, |prefix| prefix.entries.len() + 1);
+        let disk = graph.reserve_publication(record.bytes.len() + prior_bytes, count)?;
+        let context_bytes = prefix
+            .as_ref()
+            .map_or(graph.context_bytes, |prefix| prefix.context_bytes)
+            .checked_add(growth)
+            .ok_or("checked program context width")?;
+        let mut entries = prefix.map_or_else(Vec::new, |prefix| prefix.entries);
+        if entries.iter().any(|(id, _)| *id == record.id) {
+            return Err("duplicate staged program".into());
+        }
+        entries.push((record.id, record));
+        Ok(Self {
+            context,
+            entries,
+            base_snapshot: graph.context.snapshot_id(),
+            storage: graph.checked_storage.clone(),
+            copy_epoch,
+            context_bytes,
+            _disk: disk,
+        })
+    }
 }
 
 impl Graph {
@@ -143,6 +183,7 @@ impl Graph {
     pub(crate) fn test_batch_cut(&self, cut: crate::store::BatchCut) {
         self.store.set_cut(cut);
     }
+    #[cfg(test)]
     pub(crate) fn prepare_batch(
         &self,
         root: ProofId,
@@ -152,7 +193,23 @@ impl Graph {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
         let copy_epoch = self.cold(self.checked_storage.copy_epoch())?;
-        self.prepare_batch_at_epoch(root, candidates, question, copy_epoch)
+        self.prepare_batch_at_epoch(root, candidates, question, copy_epoch, None)
+    }
+
+    pub(crate) fn prepare_batch_after(
+        &self,
+        root: ProofId,
+        candidates: BTreeMap<ProofId, Candidate>,
+        question: &CompiledQuestion,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<CheckedBatch, crate::Error> {
+        if let Some(prefix) = &prefix
+            && !self.batch_current(prefix)?
+        {
+            return Err(STALE_COMMIT);
+        }
+        let epoch = self.cold(self.checked_storage.copy_epoch())?;
+        self.prepare_batch_at_epoch(root, candidates, question, epoch, prefix)
     }
 
     fn prepare_batch_at_epoch(
@@ -161,6 +218,7 @@ impl Graph {
         mut candidates: BTreeMap<ProofId, Candidate>,
         question: &CompiledQuestion,
         copy_epoch: u64,
+        prefix: Option<CheckedBatch>,
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
         if candidates.is_empty() || candidates.len() > crate::resources::limits().closure_objects {
@@ -169,30 +227,59 @@ impl Graph {
         if !candidates.contains_key(&root) {
             return Err("missing staged root".into());
         }
+        let prefix_records = prefix
+            .as_ref()
+            .map(|prefix| {
+                prefix
+                    .entries
+                    .iter()
+                    .map(|(id, record)| (*id, record))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
         let mut reachable = BTreeSet::new();
         let mut queue = vec![root];
         while let Some(id) = queue.pop() {
             if !reachable.insert(id) {
                 continue;
             }
-            let candidate = candidates.get(&id).ok_or("missing committed dependency")?;
-            for dependency in &candidate.dependencies {
+            let dependencies = if let Some(candidate) = candidates.get(&id) {
+                &candidate.dependencies
+            } else {
+                &prefix_records
+                    .get(&id)
+                    .ok_or("missing committed dependency")?
+                    .dependencies
+            };
+            for dependency in dependencies {
                 if !self.contains(*dependency)? {
                     queue.push(*dependency);
                 }
             }
         }
-        if reachable.len() != candidates.len() {
+        if reachable.len() != candidates.len() + prefix_records.len() {
             return Err("unrequested staged object".into());
         }
+        let prefix_count = prefix.as_ref().map_or(0, |prefix| prefix.entries.len());
+        if candidates.len() + prefix_count > crate::resources::limits().closure_objects {
+            return Err("checked closure operation capacity".into());
+        }
+        let prefix_bytes = prefix.as_ref().map_or(0, |prefix| {
+            prefix
+                .entries
+                .iter()
+                .map(|(_, entry)| entry.bytes.len())
+                .sum::<usize>()
+        });
         let disk = self.reserve_publication(
-            candidates.values().map(|c| c.bytes.len()).sum(),
-            candidates.len(),
+            candidates.values().map(|c| c.bytes.len()).sum::<usize>() + prefix_bytes,
+            candidates.len() + prefix_count,
         )?;
-        let mut context = self.context.clone();
+        let (mut context, mut context_bytes, mut entries) = prefix.map_or_else(
+            || (self.context.clone(), self.context_bytes, Vec::new()),
+            |prefix| (prefix.context, prefix.context_bytes, prefix.entries),
+        );
         let mut bytes = self.bytes;
-        let mut context_bytes = self.context_bytes;
-        let mut entries = Vec::new();
         while !candidates.is_empty() {
             let mut ready = Vec::new();
             for (id, candidate) in &candidates {

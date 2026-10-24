@@ -27,18 +27,58 @@ struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 enum Frame {
-    Ready { id: u64, binding: String, pid: u32 },
-    Descendant { id: u64, pid: u32 },
-    CpuActive { id: u64, next: u32 },
-    CpuDone { id: u64, next: u32 },
-    ResultReady { id: u64 },
-    Reserve { id: u64, next: u32 },
-    Progress { id: u64, checkpoint: u32 },
-    Result { id: u64, output: Output },
-    Failed { id: u64, error: String },
-    Uncertain { id: u64, error: String },
-    CleanupComplete { id: u64 },
-    CleanupFailed { id: u64, error: String },
+    Ready {
+        id: u64,
+        binding: String,
+        pid: u32,
+    },
+    Descendant {
+        id: u64,
+        pid: u32,
+    },
+    CpuActive {
+        id: u64,
+        next: u32,
+    },
+    CpuDone {
+        id: u64,
+        next: u32,
+    },
+    ResultReady {
+        id: u64,
+    },
+    Reserve {
+        id: u64,
+        next: u32,
+    },
+    Program {
+        id: u64,
+        unit: u32,
+        records: Vec<naome_proof::program::Command>,
+    },
+    Progress {
+        id: u64,
+        checkpoint: u32,
+    },
+    Result {
+        id: u64,
+        output: Output,
+    },
+    Failed {
+        id: u64,
+        error: String,
+    },
+    Uncertain {
+        id: u64,
+        error: String,
+    },
+    CleanupComplete {
+        id: u64,
+    },
+    CleanupFailed {
+        id: u64,
+        error: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,6 +89,12 @@ struct Grant {
 }
 
 pub(super) enum Event {
+    Program {
+        id: u64,
+        unit: u32,
+        records: Vec<naome_proof::program::Command>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Reserve {
         id: u64,
         next: u32,
@@ -232,6 +278,31 @@ async fn run_owned(
                     input.write_all(&bytes).await.map_err(|e| e.to_string())?;
                     outstanding = Some(next);
                 }
+                Frame::Program { id, unit, records }
+                    if ready
+                        && id == record.id
+                        && outstanding == Some(unit)
+                        && matches!(record.input, Input::Solve { .. }) =>
+                {
+                    super::program::validate_group(&records)?;
+                    let (reply, receipt) = oneshot::channel();
+                    events
+                        .send(Event::Program {
+                            id,
+                            unit,
+                            records,
+                            reply,
+                        })
+                        .await
+                        .map_err(|_| "research owner stopped")?;
+                    receipt
+                        .await
+                        .map_err(|_| "research candidate owner stopped")??;
+                    let mut bytes =
+                        serde_json::to_vec(&Grant { id, next: unit }).map_err(|e| e.to_string())?;
+                    bytes.push(b'\n');
+                    input.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                }
                 Frame::Progress {
                     id,
                     checkpoint: next,
@@ -271,6 +342,13 @@ async fn run_owned(
                         && super::provider::complete(&record, checkpoint) =>
                 {
                     output.validate(&record.input)?;
+                    if let Output::Program { units } = &output
+                        && *units != checkpoint
+                    {
+                        return Err(
+                            "provider program length differs from its durable checkpoints".into(),
+                        );
+                    }
                     return Ok(output);
                 }
                 Frame::Uncertain { id, error } if ready && id == record.id => {
@@ -424,9 +502,13 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
             self.partial.extend_from_slice(&buffer[..end]);
             self.reader.consume(end);
             if complete {
+                let program = matches!(
+                    serde_json::from_slice::<Frame>(&self.partial),
+                    Ok(Frame::Program { .. })
+                );
                 self.total = self
                     .total
-                    .checked_add(self.partial.len())
+                    .checked_add(if program { 0 } else { self.partial.len() })
                     .ok_or("provider stream overflow")?;
                 if self.total > crate::resources::limits().provider_stream_bytes {
                     return Err("provider stream capacity".into());
@@ -596,7 +678,11 @@ fn supervise() -> Result<(), String> {
         let mut reader = std::io::BufReader::new(output);
         let mut total = 0usize;
         while let Ok(bytes) = line(&mut reader, max_frame_bytes()) {
-            total = total.saturating_add(bytes.len());
+            let program = matches!(
+                serde_json::from_slice::<Frame>(&bytes),
+                Ok(Frame::Program { .. })
+            );
+            total = total.saturating_add(if program { 0 } else { bytes.len() });
             if total > crate::resources::limits().provider_stream_bytes
                 || sender.send(Message::Provider(bytes)).is_err()
             {
@@ -738,6 +824,19 @@ impl WorkerControl {
     }
 }
 impl super::provider::Supervisor for WorkerControl {
+    fn program(
+        &mut self,
+        unit: u32,
+        records: Vec<naome_proof::program::Command>,
+    ) -> Result<(), String> {
+        super::program::validate_group(&records)?;
+        emit(&Frame::Program {
+            id: self.id,
+            unit,
+            records,
+        })?;
+        self.grant(unit)
+    }
     fn reserve(&mut self, next: u32) -> Result<(), String> {
         emit(&Frame::Reserve { id: self.id, next })?;
         self.grant(next)

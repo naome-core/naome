@@ -8,6 +8,7 @@
 mod journal;
 mod model;
 mod process;
+mod program;
 mod provider;
 mod service;
 mod tracked;
@@ -53,6 +54,8 @@ pub struct MockWork {
     /// Bounded source padding forces genuine pipe output backpressure in tests.
     pub proof_padding_bytes: usize,
     pub result_delay_ms: u64,
+    /// Developer-only streamed candidate workload; zero uses the ordinary catalog.
+    pub program_units: u32,
 }
 
 impl Default for MockWork {
@@ -65,6 +68,7 @@ impl Default for MockWork {
             descendant: false,
             proof_padding_bytes: 0,
             result_delay_ms: 0,
+            program_units: 0,
         }
     }
 }
@@ -318,6 +322,9 @@ pub(crate) enum Output {
         source: String,
         helpers: Vec<String>,
     },
+    Program {
+        units: u32,
+    },
     #[cfg(any(test, feature = "developer-tools"))]
     Interest(bool),
     Decision(crate::decision::Distribution),
@@ -374,6 +381,7 @@ impl Output {
                     .map_err(|e| e.to_string())?;
                 distribution.validate(&assessment.request(&question), &assessment.model)
             }
+            (Self::Program { units }, Input::Solve { .. }) if *units > 0 => Ok(()),
             (Self::NoCandidate, Input::Solve { .. }) => Ok(()),
             #[cfg(any(test, feature = "developer-tools"))]
             (Self::Interest(_), Input::Interest { .. }) => Ok(()),
@@ -481,6 +489,11 @@ pub(crate) struct RecoveryPage {
 }
 
 enum Command {
+    Program {
+        id: u64,
+        unit: u32,
+        reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, String>>,
+    },
     Submit(Input, Binding, oneshot::Sender<Completion>),
     Acknowledge(u64),
     Discard(Input, Binding),
@@ -497,6 +510,17 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    pub(crate) fn program(
+        &self,
+        id: u64,
+        unit: u32,
+    ) -> Result<oneshot::Receiver<Result<Vec<naome_proof::program::Command>, String>>, String> {
+        let (reply, receive) = oneshot::channel();
+        self.sender
+            .try_send(Command::Program { id, unit, reply })
+            .map_err(|_| "research candidate capacity or stopped service")?;
+        Ok(receive)
+    }
     pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
         input.validate()?;
         binding.validate()?;

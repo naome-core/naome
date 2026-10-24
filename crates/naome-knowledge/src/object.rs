@@ -10,7 +10,48 @@ mod tests;
 
 pub const CODEC_ID: &str = "naome:proof-codec:v0";
 pub const CHECKER_ID: &str = "naome:zfc-checker:v0";
-pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-only:v1";
+pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program:v2";
+const PROGRAM_MAGIC: &[u8] = b"\xffNAOP1\0";
+
+pub(crate) fn program_manifest(
+    bytes: &[u8],
+) -> Result<Option<naome_proof::program::Manifest>, crate::Error> {
+    if bytes.first() != Some(&0xff) {
+        return Ok(None);
+    }
+    let body = bytes
+        .strip_prefix(PROGRAM_MAGIC)
+        .ok_or("unknown program payload format")?;
+    if body.len() > 2048 {
+        return Err("program manifest width".into());
+    }
+    let manifest: naome_proof::program::Manifest =
+        serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    if manifest.commands == 0
+        || manifest.input_bytes == 0
+        || manifest.commands > i64::MAX as u64
+        || manifest.input_bytes > i64::MAX as u64
+        || serde_json::to_vec(&manifest).map_err(|e| e.to_string())? != body
+    {
+        return Err("invalid canonical program manifest".into());
+    }
+    Ok(Some(manifest))
+}
+
+pub(crate) fn record_content_id(
+    statement: StatementId,
+    bytes: &[u8],
+) -> Result<ProofId, crate::Error> {
+    match program_manifest(bytes)? {
+        Some(manifest) => {
+            if manifest.statement_id() != statement {
+                return Err("program statement binding differs".into());
+            }
+            Ok(manifest.proof_id())
+        }
+        None => Ok(content_id(statement, bytes)),
+    }
+}
 
 /// Untrusted envelope. Neither construction nor deserialization establishes validity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +71,31 @@ pub(crate) struct Metadata {
     pub proof_id: String,
     pub statement_id: String,
     pub question: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProgramMetadata {
+    pub manifest: naome_proof::program::Manifest,
+    pub question: Option<String>,
+}
+impl ProgramMetadata {
+    pub(crate) fn question(
+        &self,
+    ) -> Result<Option<naome_authoring::CompiledQuestion>, crate::Error> {
+        self.question
+            .as_ref()
+            .map(|question| {
+                Metadata {
+                    proof_id: hex(self.manifest.proof_id().as_bytes()),
+                    statement_id: hex(self.manifest.statement_id().as_bytes()),
+                    question: question.clone(),
+                }
+                .compile()
+                .map(|(_, _, question)| question)
+            })
+            .transpose()
+    }
 }
 
 impl Metadata {
@@ -110,6 +176,31 @@ impl Candidate {
 }
 
 impl BinaryProof {
+    pub(crate) fn from_program(
+        proof: &naome_checker::program::CheckedProgram,
+    ) -> Result<Self, crate::Error> {
+        let manifest = proof.manifest();
+        let mut bytes = PROGRAM_MAGIC.to_vec();
+        bytes.extend(serde_json::to_vec(manifest).map_err(|e| e.to_string())?);
+        Ok(Self {
+            id: manifest.proof_id(),
+            statement: manifest.statement_id(),
+            bytes: bytes.into(),
+            dependencies: BTreeSet::new(),
+            _memory: None,
+        })
+    }
+    pub(crate) fn program(&self) -> Result<Option<naome_proof::program::Manifest>, crate::Error> {
+        let manifest = program_manifest(&self.bytes)?;
+        if let Some(manifest) = &manifest
+            && (manifest.proof_id() != self.id
+                || manifest.statement_id() != self.statement
+                || !self.dependencies.is_empty())
+        {
+            return Err("canonical program identity differs".into());
+        }
+        Ok(manifest)
+    }
     pub(crate) fn from_checked(proof: &naome_checker::CheckedProof) -> Result<Self, crate::Error> {
         let dependencies = dependencies(proof.proof_id(), proof.normal_form())?;
         Ok(Self {

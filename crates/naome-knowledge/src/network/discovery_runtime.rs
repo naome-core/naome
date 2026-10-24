@@ -31,6 +31,7 @@ impl Node {
         self.intake.disconnected(peer);
         self.flights.retain(|_, flight| match flight {
             Flight::Inventory { peer: owner, .. }
+            | Flight::Program { peer: owner, .. }
             | Flight::Get { peer: owner, .. }
             | Flight::Describe { peer: owner, .. }
             | Flight::Offer { peer: owner } => *owner != peer,

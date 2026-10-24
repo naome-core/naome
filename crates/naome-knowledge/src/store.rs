@@ -12,13 +12,16 @@ use std::{
 };
 
 mod catalog;
+mod program;
 use catalog::Catalog;
+pub(crate) use catalog::SCHEMA_VERSION as CATALOG_SCHEMA_VERSION;
 pub(crate) use catalog::Summary;
+pub(crate) use catalog::program::Progress as ProgramProgress;
 
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
 pub(crate) const COMMIT_DEADLINE_ERROR: crate::Error = crate::Error::Deadline;
 const FORMAT_FILE: &str = "proof-corpus.format";
-const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP3";
+const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP4";
 const INITIAL_DATABASE: &str = ".proof-corpus-initializing.sqlite3";
 #[cfg(test)]
 std::thread_local! { static FORMAT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
