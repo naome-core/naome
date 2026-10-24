@@ -1210,17 +1210,6 @@ pub async fn execute() -> Result<(), String> {
     if plain.first().is_some_and(|a| a == "resources") {
         return resources_command(&plain[1..]).await;
     }
-    if plain.first().is_some_and(|a| a == "proof") {
-        let policy_directory = directory()?;
-        let proof_args = if arguments.first().is_some_and(|a| a == "--json") {
-            let mut args = vec![std::ffi::OsString::from("--json")];
-            args.extend_from_slice(&plain[1..]);
-            args
-        } else {
-            plain[1..].to_vec()
-        };
-        return crate::proof_work::cli::execute(&proof_args, &policy_directory).await;
-    }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result;
     }
@@ -1274,7 +1263,7 @@ pub async fn execute() -> Result<(), String> {
 }
 
 async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), String> {
-    use crate::resources::adaptive::{self, Profile, Selection, Snapshot};
+    use crate::resources::adaptive::{self, Snapshot};
     let directory = directory()?;
     if arguments.first().is_some_and(|v| v == "history") {
         if arguments.len() > 2 {
@@ -1298,46 +1287,9 @@ async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), Strin
         return Ok(());
     }
     if !arguments.is_empty() {
-        let profile = match arguments[0].to_str() {
-            Some("dynamic") => Profile::Dynamic,
-            Some("heavy") => Profile::Heavy,
-            Some("light") => Profile::Light,
-            Some("custom") => Profile::Custom,
-            _ => return Err(
-                "usage: naome resources [dynamic|heavy|light|custom <limits.json>|history [after]]"
-                    .into(),
-            ),
-        };
-        let custom = if profile == Profile::Custom {
-            let [_, path] = arguments else {
-                return Err("custom requires a limits.json file".into());
-            };
-            let mut bytes = Vec::new();
-            File::open(path)
-                .and_then(|f| f.take(4097).read_to_end(&mut bytes))
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > 4096 {
-                return Err("custom resource settings capacity".into());
-            }
-            Some(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?)
-        } else {
-            if arguments.len() != 1 {
-                return Err("resource profile takes no extra arguments".into());
-            }
-            None
-        };
-        let selection = Selection { profile, custom };
-        selection.validate()?;
-        if selection
-            .custom
-            .as_ref()
-            .is_some_and(|c| c.memory_bytes > crate::resources::limits().memory_bytes as u64)
-        {
-            return Err("custom memory exceeds the installed process capacity; configure NAOME_RESOURCE_CONFIG before launch".into());
-        }
-        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        let _lock = operation_lock(&directory).await?;
-        adaptive::save(&directory, &selection)?;
+        return Err(
+            "usage: naome resources [history [after]]; resource budgets adapt automatically".into(),
+        );
     }
     let configured = adaptive::load(&directory)?;
     let active = if directory.exists() {

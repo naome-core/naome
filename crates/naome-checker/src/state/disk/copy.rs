@@ -72,10 +72,10 @@ impl DiskArtifactState {
 
 impl DiskArtifactCopy {
     pub fn complete(&self) -> bool {
-        !self.failed && self.phase == 12 && self.nested.is_none() && self.formula.is_none()
+        !self.failed && self.phase == 13 && self.nested.is_none() && self.formula.is_none()
     }
 
-    /// Yield after a bounded number of actual reads, including all eight maps,
+    /// Yield after a bounded number of actual reads, including all nine maps,
     /// statement formulas and all three nested bucket families. A too-small
     /// fresh budget fails rather than silently skipping an oversized record.
     pub fn advance(&mut self, budget: DiskCopyBudget) -> Result<DiskCopyProgress, ContextError> {
@@ -128,7 +128,7 @@ impl DiskArtifactCopy {
                 work.node(visit.bytes.len());
                 continue;
             }
-            if self.phase == 12 {
+            if self.phase == 13 {
                 break;
             }
             if self.walk.is_none() {
@@ -144,15 +144,23 @@ impl DiskArtifactCopy {
                 break;
             }
             let visit = walk.step()?.ok_or(ContextError::Corrupt)?;
-            if self.phase < 8 {
+            if self.phase < 9 {
                 self.target.write(visit.address, &visit.bytes)?;
             }
             work.node(visit.bytes.len());
             if let Some((key, record)) = visit.entry {
-                if self.phase == 8 {
+                if self.phase == 9 {
                     let (address, length) = decode_statement_record(&record)?;
-                    self.formula = Some((StatementId::from_bytes(key), address, length));
-                } else if self.phase > 8 {
+                    if length == 0 {
+                        if naome_proof::program::graph_statement_id(address).as_bytes() != &key
+                            || !self.source.program_nodes.contains_key(&address)?
+                        {
+                            return Err(ContextError::Corrupt);
+                        }
+                    } else {
+                        self.formula = Some((StatementId::from_bytes(key), address, length));
+                    }
+                } else if self.phase > 9 {
                     let root = decode_root(Some(&record))?;
                     self.nested = Some(DiskMap::from_root(self.phase_map().storage(), root).walk());
                 }
@@ -164,11 +172,11 @@ impl DiskArtifactCopy {
 
     fn phase_map(&self) -> &DiskMap {
         match self.phase {
-            0..=7 => maps(&self.source)[self.phase],
-            8 => &self.source.statements,
-            9 => &self.source.outgoing,
-            10 => &self.source.deductions,
-            11 => &self.source.instances,
+            0..=8 => maps(&self.source)[self.phase],
+            9 => &self.source.statements,
+            10 => &self.source.outgoing,
+            11 => &self.source.deductions,
+            12 => &self.source.instances,
             _ => unreachable!("completed copy has no next map"),
         }
     }
@@ -198,6 +206,7 @@ impl DiskArtifactCopy {
                 outgoing,
                 deductions,
                 instances,
+                program_nodes,
             ] = maps(current).map(|map| DiskMap::from_root(self.target.clone(), map.root()));
             Ok(DiskArtifactState {
                 read_cache: current.read_cache,
@@ -209,13 +218,14 @@ impl DiskArtifactCopy {
                 outgoing,
                 deductions,
                 instances,
+                program_nodes,
             })
         })();
         self.source.report(result)
     }
 }
 
-fn maps(state: &DiskArtifactState) -> [&DiskMap; 8] {
+fn maps(state: &DiskArtifactState) -> [&DiskMap; 9] {
     [
         &state.proofs,
         &state.derivations,
@@ -225,6 +235,7 @@ fn maps(state: &DiskArtifactState) -> [&DiskMap; 8] {
         &state.outgoing,
         &state.deductions,
         &state.instances,
+        &state.program_nodes,
     ]
 }
 
@@ -250,7 +261,7 @@ mod tests {
         )
         .unwrap();
         state.register_proof_for_replication(implication).unwrap();
-        assert!(maps(&state).iter().all(|map| map.root().is_some()));
+        assert!(maps(&state)[..8].iter().all(|map| map.root().is_some()));
         (state, storage)
     }
 

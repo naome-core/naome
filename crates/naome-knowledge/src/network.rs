@@ -52,9 +52,9 @@ pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 /// change the mathematical compatibility fingerprint or proof admission.
 pub fn routing_contract() -> Value {
     json!({
-        "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":5,"incompatible":"Rejected without conversion or reset"},
+        "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":crate::store::CATALOG_SCHEMA_VERSION,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
-            "protocol":"/naome/knowledge/4", "topic":"naome-knowledge-v4",
+            "protocol":"/naome/knowledge/5", "topic":"naome-knowledge-v5",
             "interest":"Explicit local positive selection before root fetch and before commit",
             "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::limits().queued_metadata,
@@ -121,6 +121,12 @@ enum Flight {
         peer: PeerId,
     },
     Offer {
+        peer: PeerId,
+    },
+    Program {
+        root: ProofId,
+        id: ProofId,
+        start: u64,
         peer: PeerId,
     },
 }
@@ -471,7 +477,7 @@ where
         gossip_config,
     )
     .map_err(|error| error.to_string())?;
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v4");
+    let topic = gossipsub::IdentTopic::new("naome-knowledge-v5");
     gossip
         .subscribe(&topic)
         .map_err(|error| error.to_string())?;
@@ -621,6 +627,7 @@ where
             .min()
             .copied();
         tokio::select! {
+            _=tokio::time::sleep(Duration::from_millis(crate::resources::adaptive::current().map_or(5,|snapshot|if snapshot.budget.paused.is_some(){250}else{snapshot.budget.yield_ms.max(1)}))),if (node.intake.program_busy()||autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::program_busy))&&!stopping=>{},
             _ = &mut cancel => break,
             _ = async {
                 if let Some(until) = automatic_wake {
@@ -784,11 +791,26 @@ fn body_kind(body: &Body) -> &'static str {
         Body::Receipt { .. } => "receipt",
         Body::Missing => "missing",
         Body::Error { .. } => "error",
+        Body::ProgramDescription { .. } => "program_description",
+        Body::ProgramOffer { .. } => "program_offer",
+        Body::ProgramGet { .. } => "program_get",
+        Body::ProgramData { .. } => "program_data",
+    }
+}
+fn body_position(body: &Body) -> Option<u64> {
+    match body {
+        Body::ProgramGet { start, .. } => Some(*start),
+        Body::ProgramData { chunk, .. } => Some(chunk.start),
+        _ => None,
     }
 }
 fn body_id(body: &Body) -> Option<String> {
     match body {
         Body::Get { id, .. } | Body::Describe { id } => Some(hex(id)),
+        Body::ProgramGet { id, .. } | Body::ProgramData { id, .. } => Some(hex(id)),
+        Body::ProgramDescription { metadata, .. } | Body::ProgramOffer { metadata } => {
+            Some(hex(metadata.manifest.proof_id().as_bytes()))
+        }
         Body::Object { object, .. } => Some(object.proof_id.clone()),
         Body::Offer { metadata } | Body::Description { metadata } => {
             Some(metadata.proof_id.clone())
@@ -827,6 +849,10 @@ fn inventory_response(
 fn body_root(body: &Body) -> Option<String> {
     match body {
         Body::Get { root, .. } | Body::Object { root, .. } => Some(hex(root)),
+        Body::ProgramGet { root, .. } | Body::ProgramData { root, .. } => Some(hex(root)),
+        Body::ProgramDescription {
+            root: Some(root), ..
+        } => Some(hex(root)),
         _ => None,
     }
 }
@@ -932,6 +958,7 @@ impl Node {
                 Flight::Inventory { peer, .. }
                 | Flight::Get { peer, .. }
                 | Flight::Describe { peer, .. }
+                | Flight::Program { peer, .. }
                 | Flight::Offer { peer } => *peer == target,
             })
             .count()
@@ -1313,6 +1340,64 @@ impl Node {
 
     fn requests(&mut self) {
         let now = Instant::now();
+        for (preferred, id) in self.intake.program_refresh_needed() {
+            let peer = std::iter::once(preferred)
+                .chain(
+                    self.enabled
+                        .iter()
+                        .copied()
+                        .filter(|peer| *peer != preferred),
+                )
+                .find(|peer| {
+                    self.request_ready(*peer, now) && self.automatic_request_ready(*peer, now)
+                });
+            if let Some(peer) = peer
+                && !self.flights.values().any(
+                    |flight| matches!(flight,Flight::Describe{id:requested,..}if *requested==id),
+                )
+            {
+                let request = self
+                    .swarm
+                    .behaviour_mut()
+                    .exchange
+                    .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
+                self.flights.insert(request, Flight::Describe { id, peer });
+                self.charge_automatic_request(peer, now);
+                self.charge_outgoing(peer, now);
+            }
+        }
+        match self.intake.program_request(&self.graph) {
+            Ok(Some((peer, root, id, start, limit)))
+                if self.request_ready(peer, now)
+                    && self.automatic_request_ready(peer, now)
+                    && !self.flights.values().any(
+                        |flight| matches!(flight,Flight::Program{id:requested,..}if *requested==id),
+                    ) =>
+            {
+                let frame = Frame::new(Body::ProgramGet {
+                    root: *root.as_bytes(),
+                    id: *id.as_bytes(),
+                    start,
+                    limit,
+                });
+                let request = self
+                    .swarm
+                    .request_granted(peer, frame, self.swarm.grant(peer, root));
+                self.flights.insert(
+                    request,
+                    Flight::Program {
+                        root,
+                        id,
+                        start,
+                        peer,
+                    },
+                );
+                self.charge_automatic_request(peer, now);
+                self.charge_outgoing(peer, now);
+            }
+            Err(error) => self.graph.program_failure(&error),
+            _ => {}
+        }
         for (peer, id) in self.intake.refresh_needed() {
             if self.request_ready(peer, now)
                 && self.automatic_request_ready(peer, now)
@@ -1642,7 +1727,7 @@ impl Node {
                     emit(
                         json!({"event":"exchange_request", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
                         "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&request.message.body),
-                        "object_id":body_id(&request.message.body),"root_id":body_root(&request.message.body)}),
+                        "object_id":body_id(&request.message.body),"root_id":body_root(&request.message.body),"position":body_position(&request.message.body)}),
                     );
                     let body = if !self.enabled.contains(&peer) {
                         Body::Error {
@@ -1672,7 +1757,7 @@ impl Node {
                     emit(
                         json!({"event":"exchange_response", "peer":peer.to_string(), "connection_id":connection_id.to_string(),
                         "relayed":self.connections.get(&connection_id).map(|(_, relayed)|*relayed), "kind":body_kind(&response.message.body),
-                        "object_id":body_id(&response.message.body),"root_id":body_root(&response.message.body)}),
+                        "object_id":body_id(&response.message.body),"root_id":body_root(&response.message.body),"position":body_position(&response.message.body)}),
                     );
                     if let Some(flight) = self.flights.remove(&request_id) {
                         if self.enabled.contains(&peer)
@@ -1693,6 +1778,9 @@ impl Node {
                     request_id, error, ..
                 },
             )) => {
+                if let Some(Flight::Program { id, peer, .. }) = self.flights.get(&request_id) {
+                    self.intake.program_failed(*peer, *id);
+                }
                 if let Some(Flight::Get { root, .. }) = self.flights.remove(&request_id) {
                     self.intake.abort(root);
                     emit(
@@ -1721,6 +1809,23 @@ impl Node {
                 after,
                 limit,
             } => inventory_response(&self.graph, known, after, limit)?,
+            Body::Describe { id }
+                if self
+                    .graph
+                    .program_manifest(ProofId::from_bytes(id))?
+                    .is_some() =>
+            {
+                match self.graph.program_description(ProofId::from_bytes(id)) {
+                    Ok(Some(metadata)) => Body::ProgramDescription {
+                        root: None,
+                        metadata,
+                    },
+                    Ok(None) => Body::Missing,
+                    Err(error) => Body::Error {
+                        reason: error.to_string(),
+                    },
+                }
+            }
             Body::Describe { id } => match if self.test_controls {
                 self.test_objects
                     .get(&ProofId::from_bytes(id))
@@ -1735,6 +1840,63 @@ impl Node {
                     reason: reason.to_string(),
                 },
             },
+            Body::Get { root, id }
+                if self
+                    .graph
+                    .program_manifest(ProofId::from_bytes(id))?
+                    .is_some() =>
+            {
+                match self.graph.program_description(ProofId::from_bytes(id)) {
+                    Ok(Some(metadata)) => Body::ProgramDescription {
+                        root: Some(root),
+                        metadata,
+                    },
+                    Ok(None) => Body::Missing,
+                    Err(error) => Body::Error {
+                        reason: error.to_string(),
+                    },
+                }
+            }
+            Body::ProgramGet {
+                root,
+                id,
+                start,
+                limit,
+            } => {
+                if crate::resources::adaptive::network(1) == 0
+                    || crate::resources::adaptive::batch(1) == 0
+                {
+                    Body::Error {
+                        reason: "program resources paused".into(),
+                    }
+                } else {
+                    let maximum = (crate::resources::limits().proof_bytes / 2)
+                        .clamp(256, naome_proof::program::CHUNK_BYTES);
+                    match self
+                        .graph
+                        .program_chunk(ProofId::from_bytes(id), start, limit, maximum)
+                    {
+                        Ok(Some(chunk)) => Body::ProgramData { root, id, chunk },
+                        Ok(None) => Body::Missing,
+                        Err(error) => Body::Error {
+                            reason: error.to_string(),
+                        },
+                    }
+                }
+            }
+            Body::ProgramOffer { metadata } => {
+                match self
+                    .intake
+                    .enqueue_program(peer, metadata, &self.graph, grant)
+                {
+                    Ok(status) => Body::Receipt {
+                        status: status.into(),
+                    },
+                    Err(error) => Body::Error {
+                        reason: error.to_string(),
+                    },
+                }
+            }
             Body::Get { root, id } => self
                 .graph
                 .object(ProofId::from_bytes(id))?
@@ -1789,6 +1951,7 @@ impl Node {
             Flight::Inventory { peer, .. }
             | Flight::Get { peer, .. }
             | Flight::Describe { peer, .. }
+            | Flight::Program { peer, .. }
             | Flight::Offer { peer } => *peer,
         };
         if peer != expected_peer {
@@ -1796,6 +1959,98 @@ impl Node {
             return Ok(());
         }
         match (flight, body) {
+            (
+                Flight::Describe { id, .. },
+                Body::ProgramDescription {
+                    root: None,
+                    metadata,
+                },
+            ) => {
+                if metadata.manifest.proof_id() != id {
+                    emit(json!({"event":"rejected","error":"program description ID mismatch"}));
+                } else {
+                    match self
+                        .intake
+                        .enqueue_program(peer, metadata, &self.graph, grant)
+                    {
+                        Ok("duplicate") => {
+                            self.wanted.remove(&id);
+                        }
+                        Ok(_) => {}
+                        Err(error) => emit(json!({"event":"rejected","error":error.to_string()})),
+                    }
+                }
+            }
+            (
+                Flight::Get {
+                    root: expected_root,
+                    id,
+                    ..
+                },
+                Body::ProgramDescription {
+                    root: Some(root),
+                    metadata,
+                },
+            ) => {
+                let result = if root != *expected_root.as_bytes()
+                    || metadata.manifest.proof_id() != id
+                {
+                    Err(crate::Error::InvalidInput(
+                        "cited program description scope mismatch".into(),
+                    ))
+                } else {
+                    self.intake
+                        .enqueue_program_helper(peer, expected_root, metadata, &self.graph)
+                };
+                if let Err(error) = result {
+                    self.graph.program_failure(&error);
+                    emit(json!({"event":"rejected","error":error.to_string()}));
+                }
+            }
+            (
+                Flight::Program {
+                    root: expected_root,
+                    id: expected_id,
+                    start,
+                    ..
+                },
+                Body::ProgramData { root, id, chunk },
+            ) => {
+                let result = if root != *expected_root.as_bytes()
+                    || id != *expected_id.as_bytes()
+                    || chunk.start != start
+                {
+                    Err(crate::Error::InvalidInput(
+                        "program response scope mismatch".into(),
+                    ))
+                } else {
+                    self.intake.program_payload(
+                        peer,
+                        expected_root,
+                        expected_id,
+                        chunk,
+                        &self.graph,
+                    )
+                };
+                if let Err(error) = result {
+                    self.graph.program_failure(&error);
+                    self.intake.program_failed(peer, expected_id);
+                    emit(
+                        json!({"event":"program_chunk_rejected","id":hex(expected_id.as_bytes()),"error":error.to_string()}),
+                    );
+                }
+            }
+            (Flight::Program { id, .. }, body) => {
+                self.intake.program_failed(peer, id);
+                let error = match body {
+                    Body::Error { reason } => reason,
+                    Body::Missing => "program input unavailable".into(),
+                    _ => "unexpected program response".into(),
+                };
+                emit(
+                    json!({"event":"program_transfer_deferred","id":hex(id.as_bytes()),"error":error}),
+                );
+            }
             (
                 Flight::Inventory {
                     peer, known, after, ..

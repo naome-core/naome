@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/4");
+pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/5");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +50,24 @@ pub(crate) enum Body {
     Object {
         root: [u8; 32],
         object: Envelope,
+    },
+    ProgramDescription {
+        root: Option<[u8; 32]>,
+        metadata: crate::object::ProgramMetadata,
+    },
+    ProgramOffer {
+        metadata: crate::object::ProgramMetadata,
+    },
+    ProgramGet {
+        root: [u8; 32],
+        id: [u8; 32],
+        start: u64,
+        limit: usize,
+    },
+    ProgramData {
+        root: [u8; 32],
+        id: [u8; 32],
+        chunk: naome_proof::program::Chunk,
     },
     Missing,
     Receipt {
@@ -238,7 +256,7 @@ mod tests {
                 .is_err()
             );
         }
-        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/4");
+        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/5");
     }
 
     #[tokio::test]

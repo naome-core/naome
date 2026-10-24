@@ -46,6 +46,15 @@ impl Transform {
     }
 }
 impl<I: Copy> Node<I> {
+    pub fn map<J>(self, mut map: impl FnMut(I) -> J) -> Node<J> {
+        match self {
+            Self::Equal(a, b) => Node::Equal(a, b),
+            Self::Member(a, b) => Node::Member(a, b),
+            Self::Not(a) => Node::Not(map(a)),
+            Self::Implies(a, b) => Node::Implies(map(a), map(b)),
+            Self::ForAll(a) => Node::ForAll(map(a)),
+        }
+    }
     pub fn children(self) -> [Option<I>; 2] {
         match self {
             Self::Not(a) | Self::ForAll(a) => [Some(a), None],

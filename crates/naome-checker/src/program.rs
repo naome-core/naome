@@ -7,6 +7,11 @@ use naome_foundation::{
 };
 use naome_proof::program::Command;
 
+mod engine;
+mod error;
+pub use engine::{APPLICATION_ID, CheckedProgram, Engine, Status};
+pub use error::Error;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Value<F> {
     pub formula: F,

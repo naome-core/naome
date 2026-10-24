@@ -61,12 +61,35 @@ struct Solving {
     ticket: jobs::Ticket,
     seen: question::Revision,
 }
+mod program;
+enum Candidate {
+    Certificate {
+        source: String,
+        helpers: Vec<String>,
+    },
+    Program(Box<program::Generated>),
+}
+impl Candidate {
+    fn prepare(
+        &mut self,
+        graph: &Graph,
+        client: &jobs::Client,
+        question: &CompiledQuestion,
+    ) -> Result<Option<(ProofId, crate::graph::CheckedBatch)>, crate::Error> {
+        match self {
+            Self::Certificate { source, helpers } => {
+                graph.prepare_generated(source, helpers, question).map(Some)
+            }
+            Self::Program(program) => program.prepare(graph, client, question),
+        }
+    }
+}
 struct Publication {
     question: CompiledQuestion,
     job: u64,
-    source: String,
-    helpers: Vec<String>,
+    candidate: Candidate,
     batch: Option<(ProofId, crate::graph::CheckedBatch)>,
+    announced: bool,
     context: Option<(Identity, Identity)>,
     reply: Option<oneshot::Receiver<question::QuestionAssessment>>,
     attempts: u32,
@@ -145,6 +168,14 @@ impl Autonomous {
         }
     }
 
+    pub(crate) fn program_busy(&self) -> bool {
+        self.publications.iter().any(|publication| {
+            matches!(publication.candidate, Candidate::Program(_))
+                && publication.batch.is_none()
+                && publication.reply.is_none()
+                && Instant::now() >= publication.retry
+        })
+    }
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
@@ -401,15 +432,12 @@ impl Autonomous {
                     Ok(jobs::Output::Proof { source, helpers }) => {
                         match graph.prepare_generated(&source, &helpers, &solving.question) {
                             Ok((root, batch)) => {
-                                emit(
-                                    json!({"event":"proof_generated","id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(&id),"job":completion.id}),
-                                );
                                 self.publications.push_back(Publication {
                                     question: solving.question,
                                     job: completion.id,
-                                    source,
-                                    helpers,
+                                    candidate: Candidate::Certificate { source, helpers },
                                     batch: Some((root, batch)),
+                                    announced: false,
                                     context: None,
                                     reply: None,
                                     attempts: 0,
@@ -428,6 +456,28 @@ impl Autonomous {
                                 self.retain(solving.question);
                             }
                         }
+                    }
+                    Ok(jobs::Output::Program { units }) => {
+                        self.publications.push_back(Publication {
+                            question: solving.question,
+                            job: completion.id,
+                            candidate: Candidate::Program(Box::new(program::Generated::new(
+                                completion.id,
+                                units,
+                            ))),
+                            batch: None,
+                            announced: false,
+                            context: None,
+                            reply: None,
+                            attempts: 0,
+                            retry: now,
+                            expires: now
+                                + Duration::from_millis(
+                                    self.intervals.jobs.interest.limits.horizon_ms,
+                                ),
+                            seen: None,
+                            eligible: false,
+                        });
                     }
                     Ok(jobs::Output::NoCandidate) => {
                         self.acknowledge(completion.id);
@@ -450,6 +500,71 @@ impl Autonomous {
                 .publications
                 .pop_front()
                 .expect("bounded publication queue");
+            if let Candidate::Program(program) = &mut pending.candidate {
+                match program.restrict_cache(graph) {
+                    Ok(()) => {}
+                    Err(error) if error.retryable() => {
+                        self.publications.push_back(pending);
+                        continue;
+                    }
+                    Err(error) => {
+                        graph.program_failure(&error);
+                        self.acknowledge(pending.job);
+                        continue;
+                    }
+                }
+            }
+            if pending.batch.is_none() && pending.reply.is_none() {
+                if now < pending.retry {
+                    self.publications.push_back(pending);
+                    continue;
+                }
+
+                pending.expires =
+                    now + Duration::from_millis(self.intervals.jobs.interest.limits.horizon_ms);
+                let decision = questions.generation_decision(graph, &pending.question);
+                if decision.inconclusive() {
+                    pending.retry = now + crate::resources::limits().pending_retry;
+                    self.publications.push_back(pending);
+                    continue;
+                }
+                if !decision.passed() {
+                    self.acknowledge(pending.job);
+                    continue;
+                }
+                match pending
+                    .candidate
+                    .prepare(graph, &self.client, &pending.question)
+                {
+                    Ok(Some(batch)) => {
+                        pending.batch = Some(batch);
+                    }
+                    Ok(None) => {
+                        self.publications.push_back(pending);
+                        continue;
+                    }
+                    Err(error) if error.retryable() => {
+                        self.publications.push_back(pending);
+                        continue;
+                    }
+                    Err(error) => {
+                        emit(
+                            json!({"event":"proof_candidate_rejected","job":pending.job,"error":error.to_string()}),
+                        );
+                        self.acknowledge(pending.job);
+                        self.retain(pending.question);
+                        continue;
+                    }
+                }
+            }
+            if let Some((root, _)) = &pending.batch
+                && !pending.announced
+            {
+                emit(
+                    json!({"event":"proof_generated","id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(pending.question.resolution_id()),"job":pending.job}),
+                );
+                pending.announced = true;
+            }
             if now >= pending.expires {
                 self.acknowledge(pending.job);
                 emit(
@@ -488,16 +603,11 @@ impl Autonomous {
                             {
                                 return Err("stale generated proof context".into());
                             }
-                            let (root, batch) = match pending.batch.take() {
-                                Some((root, batch)) if graph.batch_current(&batch)? => {
-                                    (root, batch)
-                                }
-                                _ => graph.prepare_generated(
-                                    &pending.source,
-                                    &pending.helpers,
-                                    &pending.question,
-                                )?,
-                            };
+                            let (root, batch) =
+                                pending.batch.take().ok_or("prepared candidate absent")?;
+                            if !graph.batch_current(&batch)? {
+                                return Err(crate::Error::StaleAuthority);
+                            }
                             let delta = questions.prepare_exchange(
                                 graph,
                                 &pending.question,
@@ -519,6 +629,7 @@ impl Autonomous {
                                 continue;
                             }
                             Err(error) => {
+                                pending.batch = None;
                                 emit(json!({"event":"proof_candidate_rejected","error":error}));
                                 if let Some(error) = questions.storage_error() {
                                     self.error = Some(error.to_owned());

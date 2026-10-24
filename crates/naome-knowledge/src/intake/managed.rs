@@ -24,10 +24,25 @@ pub(super) struct Waiting {
 
 impl Intake {
     pub(crate) fn refresh_needed(&self) -> Vec<(PeerId, ProofId)> {
-        self.waiting
+        self.active
             .iter()
-            .filter(|w| matches!(w.phase, Phase::Refresh { ready: false, .. }))
-            .map(|w| (w.description.peer, w.description.id))
+            .filter(|root| {
+                !root.helpers.is_empty()
+                    && (Instant::now().duration_since(root.description.created)
+                        >= crate::resources::limits().root_timeout / 2
+                        || root
+                            .description
+                            .grant
+                            .as_ref()
+                            .is_some_and(|grant| grant.check().is_err()))
+            })
+            .map(|root| (root.description.peer, root.description.id))
+            .chain(
+                self.waiting
+                    .iter()
+                    .filter(|w| matches!(w.phase, Phase::Refresh { ready: false, .. }))
+                    .map(|w| (w.description.peer, w.description.id)),
+            )
             .collect()
     }
 
@@ -174,6 +189,7 @@ impl Intake {
                                 phase: super::Phase::Fetch,
                                 needed: [id].into(),
                                 staged: BTreeMap::new(),
+                                helpers: program::Helpers::default(),
                                 bytes: 0,
                                 steps: 0,
                                 checker_work: 0,
@@ -209,7 +225,11 @@ impl Intake {
             if now.saturating_duration_since(root.description.created)
                 >= crate::resources::limits().root_timeout
             {
-                return Err("short proof grant expired".into());
+                if root.helpers.is_empty() {
+                    return Err("short proof grant expired".into());
+                } else {
+                    return Ok(None);
+                }
             }
             let selected = root
                 .final_assessment
@@ -222,8 +242,15 @@ impl Intake {
             if !root.needed.is_empty() {
                 return Ok(None);
             }
-            let batch =
-                graph.prepare_batch(id, std::mem::take(&mut root.staged), &root.question)?;
+            if !root.helpers.ready() {
+                return Ok(None);
+            }
+            let batch = graph.prepare_batch_after(
+                id,
+                std::mem::take(&mut root.staged),
+                &root.question,
+                root.helpers.take_prefix(),
+            )?;
             if let Some(assessment) = &root.final_assessment {
                 let delta = questions.prepare_exchange(graph, &root.question, assessment)?;
                 if Instant::now().saturating_duration_since(root.description.created)

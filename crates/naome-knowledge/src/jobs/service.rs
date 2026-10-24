@@ -129,6 +129,11 @@ struct Running {
     clock: Instant,
 }
 
+struct PendingProgram {
+    unit: u32,
+    records: Vec<naome_proof::program::Command>,
+    reply: oneshot::Sender<Result<(), String>>,
+}
 struct Owner {
     disk: Disk,
     journal: Journal,
@@ -136,6 +141,7 @@ struct Owner {
     waiters: BTreeMap<u64, Vec<oneshot::Sender<Completion>>>,
     clocks: BTreeMap<u64, Instant>,
     running: BTreeMap<u64, Running>,
+    programs: BTreeMap<u64, PendingProgram>,
     tasks: FuturesUnordered<BoxFuture<'static, (u64, process::Outcome)>>,
     next_lane: usize,
     recovery_skip: std::collections::BTreeSet<u64>,
@@ -159,6 +165,7 @@ impl Owner {
             waiters: BTreeMap::new(),
             clocks: BTreeMap::new(),
             running: BTreeMap::new(),
+            programs: BTreeMap::new(),
             tasks: FuturesUnordered::new(),
             next_lane: 0,
             flushed: Instant::now(),
@@ -196,6 +203,7 @@ impl Owner {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
+                    Some(Command::Program{id,unit,reply})=>{let _=reply.send(self.disk.program_group(id,unit));},
                     Some(Command::Submit(input,binding,reply))=>self.submit(input,binding,reply)?,
                     Some(Command::Recover{after,before,reply})=>{
                         let page=self.disk.recovery_page(after,before,&self.recovery_skip)?;
@@ -237,6 +245,11 @@ impl Owner {
                 },
                 event=progress.recv()=>if let Some(event)=event {
                     match event {
+                        process::Event::Program{id,unit,records,reply}=>{
+                            if let std::collections::btree_map::Entry::Vacant(entry)=self.programs.entry(id) {
+                                entry.insert(PendingProgram{unit,records,reply});
+                            } else {let _=reply.send(Err("duplicate outstanding program group".into()));}
+                        },
                         process::Event::Reserve{id,next,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
                                 let _=reply.send(Err("research job cancelled or expired".into()));continue;
@@ -272,7 +285,55 @@ impl Owner {
                 },
                 _=tick.tick()=>self.reconcile()?,
             }
+            self.persist_programs()?;
             self.schedule(&events)?;
+        }
+        Ok(())
+    }
+
+    fn persist_programs(&mut self) -> Result<(), String> {
+        for id in self.programs.keys().copied().collect::<Vec<_>>() {
+            let pending = self.programs.remove(&id).expect("owned candidate group");
+            if pending.reply.is_closed() {
+                continue;
+            }
+            let result = (|| -> Result<(), crate::Error> {
+                let record = self.journal.records.get(&id).ok_or("unknown program job")?;
+                if record.state != State::Running
+                    || pending.unit != record.checkpoint + 1
+                    || pending.unit > record.reserved_units
+                    || !matches!(record.input, Input::Solve { .. })
+                {
+                    return Err("program group lacks its original reservation".into());
+                }
+                let _disk = crate::resources::DiskLease::acquire(
+                    self.disk.directory(),
+                    (naome_proof::program::CHUNK_BYTES as u64) * 8,
+                )?;
+                self.charge(id)?;
+                self.save()?;
+                self.disk.save_program_group(
+                    &self.journal,
+                    id,
+                    pending.unit,
+                    pending.records.clone(),
+                )
+            })();
+            match result {
+                Err(error) if error.retryable() => {
+                    self.programs.insert(id, pending);
+                }
+                Err(error) if error.fatal() => {
+                    let message = error.to_string();
+                    let _ = pending.reply.send(Err(message.clone()));
+                    return Err(message);
+                }
+                result => {
+                    let _ = pending
+                        .reply
+                        .send(result.map_err(|error| error.to_string()));
+                }
+            }
         }
         Ok(())
     }
