@@ -121,11 +121,14 @@ impl Snapshot {
         let slots = if light {
             1
         } else if heavy {
-            cpus
+            // Providers also wait for I/O. Allow bounded oversubscription and
+            // one lane per role; installed worker and OS CPU ceilings remain.
+            cpus.saturating_mul(2)
+                .max(super::limits().workers.len())
+                .min((memory / (16 * MIB)).max(1) as usize)
         } else {
-            (idle / 2000).max(1) as usize
-        }
-        .min(cpus);
+            ((idle / 2000).max(1) as usize).min(cpus)
+        };
         let concurrency = selection
             .custom
             .as_ref()
@@ -215,16 +218,26 @@ pub(crate) fn publish(snapshot: Snapshot) {
         .expect("budget owner") = Some(snapshot);
 }
 pub(crate) fn slots(capacity: usize) -> usize {
-    current().map_or(capacity, |s| s.budget.concurrency.min(capacity))
+    live_limit(capacity, |b| b.concurrency)
 }
 pub(crate) fn network(capacity: usize) -> usize {
-    current().map_or(capacity, |s| s.budget.network_requests.min(capacity))
+    live_limit(capacity, |b| b.network_requests)
 }
 pub(crate) fn cache(capacity: usize) -> usize {
-    current().map_or(capacity, |s| (s.budget.cache_bytes as usize).min(capacity))
+    live_limit(capacity, |b| b.cache_bytes as usize)
 }
 pub(crate) fn batch(capacity: usize) -> usize {
-    current().map_or(capacity, |s| s.budget.batch_steps.min(capacity))
+    live_limit(capacity, |b| b.batch_steps)
+}
+fn live_limit(capacity: usize, limit: impl FnOnce(&Budget) -> usize) -> usize {
+    let Some(live) = LIVE.get() else {
+        return capacity;
+    };
+    let Ok(live) = live.read() else {
+        return 0;
+    };
+    live.as_ref()
+        .map_or(capacity, |s| limit(&s.budget).min(capacity))
 }
 
 pub fn load(directory: &Path) -> Result<Selection, String> {

@@ -862,6 +862,11 @@ class Node:
         return events
 
     def start(self, strict_startup=False):
+        # These lifecycle fixtures assert fixed provider/peer latency. Select
+        # throughput explicitly; dynamic may throttle on a busy shared host.
+        profile=self.directory/'resource-profile.json'
+        if not profile.exists():
+            write_receipt(profile,{'profile':'heavy','custom':None})
         self.event_offset = len(self.logs())
         self.release_port()
         result = self.trial.start(self, strict_startup=strict_startup)
