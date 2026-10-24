@@ -6,6 +6,7 @@ Only lifecycle/status operations drive them. The deterministic provider uses
 the same supervised candidate stream and mathematical checker as other providers.
 """
 import argparse
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -46,7 +47,7 @@ class AutonomousNode(Node):
 def program_rows(node):
     path=node.directory/'proof-corpus.sqlite3'
     if not path.exists():return []
-    with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1) as connection:
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1)) as connection:
         return [{'id':identity.hex(),'manifest':json.loads(manifest),'received':received,
             'published':bool(published)} for identity,manifest,received,published in connection.execute(
             'SELECT id,manifest,received,EXISTS(SELECT 1 FROM proofs WHERE proofs.id=programs.id) FROM programs ORDER BY id')]
@@ -110,7 +111,7 @@ def run(trial,units,memory_mib=None):
     snapshot=resources(trial,receiver)
     receiver.stop();before=set(receiver.ids())
     work=(receiver.directory/'.program-work'/f'{identity}.sqlite3').resolve()
-    with sqlite3.connect(work.as_uri()+'?mode=ro&immutable=1',uri=True) as connection:
+    with closing(sqlite3.connect(work.as_uri()+'?mode=ro&immutable=1',uri=True)) as connection:
         commands,committed,sealed=connection.execute('SELECT commands,committed,sealed FROM state WHERE id=1').fetchone()
         assert commands==committed==manifest['commands'] and sealed
         assert connection.execute('SELECT count(*) FROM node').fetchone()[0]>256
