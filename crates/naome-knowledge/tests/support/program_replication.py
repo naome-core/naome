@@ -90,6 +90,9 @@ def run(trial,units,memory_mib=None):
     assert process_identity(receiver.process['pid'])==receiver.process
     os.kill(receiver.process['pid'],signal.SIGKILL)
     trial.wait(lambda:not process_group(receiver.process),maximum=10)
+    # The ordinary node must recover crash-left WAL state before an external
+    # read-only observer can inspect it. Do not recover or copy it in Python.
+    assert not trial.call(receiver,'status')['running']
     after=next(row for row in program_rows(receiver) if row['id']==identity)
     assert prefix['received']<=after['received']<manifest['commands'] and not after['published']
     assert (donor.directory/'proof-corpus.sqlite3').stat().st_ino!=(receiver.directory/'proof-corpus.sqlite3').stat().st_ino
