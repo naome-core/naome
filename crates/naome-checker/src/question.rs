@@ -523,20 +523,7 @@ pub fn assess_question(
         questions: snapshot.questions,
     };
     let snapshot = &cached_snapshot;
-    let mut decision = PrefilterDecision {
-        outcome: PrefilterOutcome::Pass,
-        reason: None,
-        rule: "Q00_SUPPORTED_PREFILTER",
-        question: Some(question.question),
-        input: question.input,
-        snapshot: snapshot.identity,
-        policy: policy.identity(),
-        witness: None,
-        supporting_witness: None,
-        related_record: None,
-        deduction: None,
-        novelty: None,
-    };
+    let mut decision = bound_decision(question, snapshot, policy);
     if !policy.valid() {
         return decision.reject(RejectionReason::UnsupportedPolicy, "Q09_POLICY");
     }
@@ -561,6 +548,38 @@ pub fn assess_question(
         Ok(()) => {}
     }
     decision
+}
+
+fn bound_decision(
+    question: &AssessmentQuestion<'_>,
+    snapshot: &KnowledgeSnapshot<'_>,
+    policy: &PrefilterPolicy,
+) -> PrefilterDecision {
+    PrefilterDecision {
+        outcome: PrefilterOutcome::Pass,
+        reason: None,
+        rule: "Q00_SUPPORTED_PREFILTER",
+        question: Some(question.question),
+        input: question.input,
+        snapshot: snapshot.identity,
+        policy: policy.identity(),
+        witness: None,
+        supporting_witness: None,
+        related_record: None,
+        deduction: None,
+        novelty: None,
+    }
+}
+
+/// Bind a receiver's resource deferral to the same complete inputs without
+/// performing formal search. This inconclusive outcome grants no authority.
+pub fn defer_question(
+    question: &AssessmentQuestion<'_>,
+    snapshot: &KnowledgeSnapshot<'_>,
+    policy: &PrefilterPolicy,
+) -> PrefilterDecision {
+    bound_decision(question, snapshot, policy)
+        .reject(RejectionReason::ReceivingLimit, "Q08_RECEIVING_LIMIT")
 }
 
 fn evaluate(

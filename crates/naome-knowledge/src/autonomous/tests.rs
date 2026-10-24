@@ -111,6 +111,12 @@ async fn inconclusive_recovery_does_not_starve_later_records_or_archive_pages() 
     assert!(autonomous.recovered_other.is_empty());
     assert!(autonomous.archive_after.is_none() && autonomous.recovery_reply.is_none());
     assert!(!owner.discarded().contains(&limited));
+    assert!(
+        !owner
+            .acknowledgements()
+            .iter()
+            .any(|id| matches!(id, 1 | 3))
+    );
     assert_eq!(autonomous.deferred_recovery.len(), 1);
     assert_eq!(
         serde_json::to_vec(autonomous.deferred_recovery.front().unwrap()).unwrap(),

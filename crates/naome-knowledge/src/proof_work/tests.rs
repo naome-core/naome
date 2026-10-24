@@ -88,6 +88,10 @@ fn repeated_generalization_of_closed_subgraphs_adds_only_linear_work_and_replays
         work.append_group(&commands).unwrap();
         let status = finish(&mut work);
         assert!(status.fully_checked);
+        println!(
+            "generalizations={binders} nodes={} equations={}",
+            status.formula_nodes, status.transformation_equations
+        );
         assert!(
             status.transformation_equations <= 2 * binders,
             "{binders} generalizations require only linear transformation evidence, got {}",

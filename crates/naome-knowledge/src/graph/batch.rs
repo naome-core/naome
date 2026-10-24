@@ -23,6 +23,7 @@ impl Graph {
         question: &CompiledQuestion,
     ) -> Result<(ProofId, CheckedBatch), crate::Error> {
         self.ensure_live()?;
+        crate::resources::require_work_admission()?;
         // Capture before helper preparation can write immutable staged nodes.
         // The shared batch path must never refresh this token after a copy starts.
         let copy_epoch = self.cold(self.checked_storage.copy_epoch())?;
@@ -149,6 +150,7 @@ impl Graph {
         question: &CompiledQuestion,
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
+        crate::resources::require_work_admission()?;
         let copy_epoch = self.cold(self.checked_storage.copy_epoch())?;
         self.prepare_batch_at_epoch(root, candidates, question, copy_epoch)
     }

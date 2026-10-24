@@ -266,8 +266,8 @@ impl Catalog {
         }
         let mut objects = Vec::with_capacity(keys.len());
         for (ordinal, id) in keys {
-            let record =
-                read_record(&transaction, id)?.ok_or("catalog replay proof disappeared")?;
+            let record = read_record(&transaction, id, ReadAdmission::Work)?
+                .ok_or("catalog replay proof disappeared")?;
             if record.replay_order != ordinal {
                 return Err("catalog replay proof order differs".into());
             }
@@ -320,7 +320,7 @@ impl Catalog {
         let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
-        let record = read_record(&transaction, *id.as_bytes())?;
+        let record = read_record(&transaction, *id.as_bytes(), ReadAdmission::Work)?;
         transaction.commit().map_err(sql_error)?;
         Ok(record.map(|record| record.object))
     }
@@ -834,7 +834,16 @@ fn check_expected_summary(meta: &Meta, expected: Summary) -> Result<(), crate::E
     Ok(())
 }
 
-fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, crate::Error> {
+enum ReadAdmission {
+    Work,
+    CommitReadback,
+}
+
+fn read_record(
+    connection: &Connection,
+    id: [u8; 32],
+    admission: ReadAdmission,
+) -> Result<Option<Record>, crate::Error> {
     // Reserve from bounded authenticated metadata before fetching any payload.
     let length: Option<i64> = connection
         .query_row(
@@ -851,9 +860,11 @@ fn read_record(connection: &Connection, id: [u8; 32]) -> Result<Option<Record>, 
     if length == 0 || length > naome_proof::CERTIFICATE_MAX_BYTES {
         return Err("catalog payload length differs".into());
     }
-    let memory = crate::resources::MemoryLease::acquire(
-        length.checked_mul(4).ok_or("proof memory overflow")?,
-    )?;
+    let bytes = length.checked_mul(4).ok_or("proof memory overflow")?;
+    let memory = match admission {
+        ReadAdmission::Work => crate::resources::MemoryLease::acquire(bytes),
+        ReadAdmission::CommitReadback => crate::resources::MemoryLease::acquire_drain(bytes),
+    }?;
     #[cfg(test)]
     PAYLOAD_READS.with(|reads| reads.set(reads.get() + 1));
     type Stored = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>, i64);
@@ -1213,8 +1224,12 @@ fn verify_proof(
     expected: &Prepared,
     commit: [u8; 32],
 ) -> Result<(), crate::Error> {
-    let record =
-        read_record(connection, expected.member.id)?.ok_or("catalog commit proof missing")?;
+    let record = read_record(
+        connection,
+        expected.member.id,
+        ReadAdmission::CommitReadback,
+    )?
+    .ok_or("catalog commit proof missing")?;
     if record.member != expected.member
         || record.object.bytes.as_ref() != expected.payload.as_slice()
         || record.origin != commit
@@ -1283,7 +1298,8 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
         }
         let mut bound = Vec::with_capacity(members.len());
         for member in members {
-            let record = read_record(connection, member)?.ok_or("missing catalog commit proof")?;
+            let record = read_record(connection, member, ReadAdmission::Work)?
+                .ok_or("missing catalog commit proof")?;
             record.object.clone().prepare_retained()?;
             if record.origin != id {
                 return Err("catalog proof belongs to a different originating commit".into());

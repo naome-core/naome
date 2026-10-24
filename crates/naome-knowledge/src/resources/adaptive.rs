@@ -1,5 +1,12 @@
 //! Live admission budgets below the immutable process capacity. Reductions
 //! drain existing work; they never revoke leases or erase durable input.
+//!
+//! The memory target includes sampled process RSS. New tracked reservations
+//! use the sampled headroom plus the charges already represented by that RSS,
+//! always below the immutable allocation ceiling. Local control ingress and
+//! bounded readback inside an existing publication may drain at that ceiling.
+//! A target reduction pauses new mathematical work while retained work drains;
+//! it does not require the operating system's RSS to fall synchronously.
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -209,15 +216,59 @@ fn now_ms() -> Result<u64, String> {
     )
     .map_err(|e| e.to_string())
 }
-static LIVE: OnceLock<RwLock<Option<Snapshot>>> = OnceLock::new();
+struct Live {
+    snapshot: Snapshot,
+    // Observed RSS already includes existing charged allocations. Retain this
+    // baseline so the live headroom does not charge those bytes a second time.
+    charged: usize,
+}
+static LIVE: OnceLock<RwLock<Option<Live>>> = OnceLock::new();
 pub fn current() -> Option<Snapshot> {
-    LIVE.get().and_then(|s| s.read().ok()?.clone())
+    let live = LIVE.get()?.read().ok()?;
+    live.as_ref().map(|live| live.snapshot.clone())
 }
 pub(crate) fn publish(snapshot: Snapshot) {
-    *LIVE
+    let mut live = LIVE
         .get_or_init(|| RwLock::new(None))
         .write()
-        .expect("budget owner") = Some(snapshot);
+        .expect("budget owner");
+    *live = Some(Live {
+        snapshot,
+        charged: super::memory_usage().0,
+    });
+}
+pub(crate) fn work_available() -> bool {
+    live_limit(1, |budget| {
+        usize::from(budget.paused.is_none() && budget.batch_steps > 0 && budget.concurrency > 0)
+    }) > 0
+}
+/// Hold the live read boundary through the atomic reservation. A reduction
+/// cannot race past admission; already admitted leases remain valid and drain.
+pub(crate) fn reserve_memory<R>(capacity: usize, reserve: impl FnOnce(usize) -> R) -> R {
+    let Some(live) = LIVE.get() else {
+        return reserve(capacity);
+    };
+    let Ok(live) = live.read() else {
+        return reserve(0);
+    };
+    let limit = live.as_ref().map_or(capacity, |live| {
+        let snapshot = &live.snapshot;
+        if snapshot.budget.paused.is_some() {
+            return 0;
+        }
+        let target = usize::try_from(snapshot.budget.memory_bytes).unwrap_or(usize::MAX);
+        let headroom = usize::try_from(
+            snapshot
+                .budget
+                .memory_bytes
+                .saturating_sub(snapshot.observed.process_rss),
+        )
+        .unwrap_or(usize::MAX);
+        capacity
+            .min(target)
+            .min(live.charged.saturating_add(headroom))
+    });
+    reserve(limit)
 }
 pub(crate) fn slots(capacity: usize) -> usize {
     live_limit(capacity, |b| b.concurrency)
@@ -239,7 +290,7 @@ fn live_limit(capacity: usize, limit: impl FnOnce(&Budget) -> usize) -> usize {
         return 0;
     };
     live.as_ref()
-        .map_or(capacity, |s| limit(&s.budget).min(capacity))
+        .map_or(capacity, |s| limit(&s.snapshot.budget).min(capacity))
 }
 
 pub fn load(directory: &Path) -> Result<Selection, String> {

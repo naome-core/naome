@@ -176,6 +176,28 @@ fn elementary_answers_survive_dense_implication_contexts() {
 }
 
 #[test]
+fn receiver_resource_deferral_binds_inputs_without_issuing_authority() {
+    let state = ArtifactState::new();
+    let registry = QuestionRegistry::new();
+    let policy = PrefilterPolicy::default();
+    let target = unresolved();
+    let request =
+        AssessmentQuestion::new(FOUNDATION_ID, &target, b"deferred input", &[], None).unwrap();
+    let snapshot = KnowledgeSnapshot::new([9; 32], &state, &registry);
+    let mut deferred = defer_question(&request, &snapshot, &policy);
+    assert!(deferred.inconclusive());
+    assert_eq!(deferred.reason, Some(RejectionReason::ReceivingLimit));
+    assert!(deferred.matches_inputs(&request, &snapshot, &policy));
+    assert!(deferred.novelty().is_none());
+    assert!(!deferred.has_answer());
+    deferred.outcome = PrefilterOutcome::Pass;
+    deferred.reason = None;
+    deferred.rule = "Q00_SUPPORTED_PREFILTER";
+    assert!(deferred.novelty().is_none());
+    assert!(assess_question(&request, &snapshot, &policy).passed());
+}
+
+#[test]
 fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
     let state = ArtifactState::new();
     let registry = QuestionRegistry::new();

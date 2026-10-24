@@ -367,6 +367,9 @@ impl Graph {
         if self.context.read_cache_limits() != cache_limits {
             self.context = self.context.clone().with_read_cache_limits(cache_limits)?;
         }
+        if !crate::resources::adaptive::work_available() {
+            return Ok(());
+        }
         match self.maintain_checked_storage_at(self.next_compaction) {
             Err(error) if error.retryable() => Ok(()),
             result => result.map(|_| ()),
@@ -537,6 +540,7 @@ impl Graph {
     /// Compile and publish local source while retaining its sealed checker result.
     /// Local owner ingestion has its own authority; peer selection stays separate.
     pub(crate) fn produce(&mut self, source: &str) -> Result<(Envelope, Ingest), crate::Error> {
+        crate::resources::require_work_admission()?;
         self.maintain_checked_storage()?;
         if source.len() > crate::resources::limits().proof_bytes {
             return Err("producer source byte limit".into());
@@ -581,6 +585,7 @@ impl Graph {
     }
 
     pub fn ingest(&mut self, envelope: Envelope, now: Instant) -> Result<Ingest, crate::Error> {
+        crate::resources::require_work_admission()?;
         self.maintain_checked_storage()?;
         let candidate = envelope.prepare()?;
         let id = candidate.id;
@@ -647,6 +652,9 @@ impl Graph {
     pub(crate) fn resolve_pending(&mut self) -> Result<PendingResolution, crate::Error> {
         self.ensure_live()?;
         self.pending.clear();
+        if !crate::resources::adaptive::work_available() {
+            return Ok((Vec::new(), Vec::new()));
+        }
         let scheduled = self.backlog()?.schedule(&self.context);
         self.cold(scheduled)?;
         let page = self.backlog()?.next_page();
@@ -662,6 +670,9 @@ impl Graph {
         let mut admitted = Vec::new();
         let mut rejected = Vec::new();
         for record in page {
+            if !crate::resources::adaptive::work_available() {
+                break;
+            }
             let id = record.id;
             if self.contains(id)? {
                 let removed = self.backlog()?.remove(id);
@@ -717,11 +728,12 @@ impl Graph {
         source: &str,
         context: &DiskArtifactState,
     ) -> Result<naome_authoring::CompiledProof, crate::Error> {
+        self.ensure_live()?;
+        crate::resources::require_work_admission()?;
         #[cfg(test)]
         {
             self.checks[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        self.ensure_live()?;
         naome_authoring::compile_against_proof_context(source, context).map_err(|error| {
             if let naome_authoring::CompileError::Check { source, .. } = &error
                 && let naome_checker::CheckError::ContextAccess { source, .. } = source.as_ref()

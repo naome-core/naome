@@ -717,26 +717,55 @@ impl MemoryLease {
                 budget: 0,
             });
         }
-        let memory = MEMORY
+        let memory = Self::pool();
+        if bytes == 0 {
+            return Self::allocate(memory, 0);
+        }
+        adaptive::reserve_memory(memory.limit, |budget| {
+            Self::allocate_with_limit(memory, bytes, budget)
+        })
+    }
+    /// Bounded local command ingress and parsing must remain available during
+    /// a live work pause. These bytes still obey the immutable shared capacity;
+    /// the command's actual work requires separate owner-side admission.
+    pub(crate) fn acquire_control(bytes: usize) -> Result<Arc<Self>, crate::Error> {
+        Self::allocate(Self::pool(), bytes)
+    }
+    /// A bounded readback needed to finish an already checked publication may
+    /// drain under a reduced target. It still shares the immutable capacity;
+    /// this does not admit a new checker operation or external work request.
+    pub(crate) fn acquire_drain(bytes: usize) -> Result<Arc<Self>, crate::Error> {
+        Self::allocate(Self::pool(), bytes)
+    }
+    fn pool() -> Arc<Memory> {
+        MEMORY
             .get_or_init(|| {
                 Arc::new(Memory {
                     limit: limits().allocation_budget(),
                     used: AtomicUsize::new(0),
                 })
             })
-            .clone();
-        Self::allocate(memory, bytes)
+            .clone()
     }
     fn allocate(memory: Arc<Memory>, bytes: usize) -> Result<Arc<Self>, crate::Error> {
+        let limit = memory.limit;
+        Self::allocate_with_limit(memory, bytes, limit)
+    }
+    fn allocate_with_limit(
+        memory: Arc<Memory>,
+        bytes: usize,
+        limit: usize,
+    ) -> Result<Arc<Self>, crate::Error> {
+        let limit = limit.min(memory.limit);
         memory
             .used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes).filter(|next| *next <= memory.limit)
+                used.checked_add(bytes).filter(|next| *next <= limit)
             })
             .map_err(|charged| crate::Error::MemoryOverload {
                 requested: bytes,
                 charged,
-                budget: memory.limit,
+                budget: limit,
             })?;
         Ok(Arc::new(Self { memory, bytes }))
     }
@@ -744,6 +773,14 @@ impl MemoryLease {
 impl Drop for MemoryLease {
     fn drop(&mut self) {
         self.memory.used.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+pub(crate) fn require_work_admission() -> Result<(), crate::Error> {
+    if adaptive::work_available() {
+        Ok(())
+    } else {
+        Err(crate::Error::ExecutionLimit)
     }
 }
 

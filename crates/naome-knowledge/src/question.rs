@@ -426,6 +426,9 @@ where
     }
 
     pub(crate) fn maintain_registry(&mut self) -> Result<(), crate::Error> {
+        if !crate::resources::adaptive::work_available() {
+            return Ok(());
+        }
         let Some(storage) = self.index_storage.clone() else {
             return Ok(());
         };
@@ -696,6 +699,9 @@ where
             record,
         )
         .expect("bounded parser-validated question input");
+        if !crate::resources::adaptive::work_available() {
+            return naome_checker::question::defer_question(&request, &snapshot, &self.policy);
+        }
         if reuse
             && let Some(cached) = &self.cached
             && cached.matches_inputs(&request, &snapshot, &self.policy)

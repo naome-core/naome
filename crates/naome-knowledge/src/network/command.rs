@@ -14,7 +14,7 @@ impl QueuedCommand {
             .ok_or(Error::InputLimit("CLI JSON allocation budget overflow"))?;
         let bytes = {
             // The streaming pass retains only serde_json's string scratch space.
-            let _scratch = MemoryLease::acquire(
+            let _scratch = MemoryLease::acquire_control(
                 self.bytes
                     .len()
                     .saturating_mul(2)
@@ -22,7 +22,7 @@ impl QueuedCommand {
             )?;
             allocation_bound(&self.bytes, budget)?
         };
-        let memory = MemoryLease::acquire(bytes)?;
+        let memory = MemoryLease::acquire_control(bytes)?;
         let value = serde_json::from_slice(&self.bytes)
             .map_err(|error| Error::InvalidInput(error.to_string()))?;
         Ok((value, memory))
