@@ -62,8 +62,8 @@ pub async fn run(directory: &Path, cases: &Path, output: &Path) -> Result<(), St
                 "expected":case.expected,"selection":selection,"state":format!("{:?}",completion.state),"error":error,
                 "question_source":crate::hex(question.source_hash()),"question_resolution":crate::hex(question.resolution_id()),
                 "owner_revision":input.owner_revision,"owner_digest":input.owner_digest,"policy":POLICY,"selection_epoch":epoch,
-                "model_repository":crate::decision::liquid::MODEL,"model_revision":crate::decision::liquid::REVISION,
-                "adapter":crate::decision::liquid::ADAPTER,"configuration":installed.configuration,
+                "model_repository":crate::decision::liquid::model().repository,"model_revision":crate::decision::liquid::model().revision,
+                "adapter":crate::decision::liquid::ADAPTER,"configuration":installed.configuration(),
                 "request":request,"distribution":distribution,"wall_ms":wall_ms,
                 "spent_ms":completion.spent_ms,"reserved_units":completion.reserved_units});
             writeln!(output, "{value}").and_then(|_| output.flush()).map_err(|e| e.to_string())?;

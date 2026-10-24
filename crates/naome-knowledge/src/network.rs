@@ -566,6 +566,9 @@ where
             client.clone(),
             &directory,
             Duration::from_millis(intervals.jobs.interest.limits.horizon_ms),
+            control
+                .as_ref()
+                .and_then(|control| control.interest_context().ok()),
         )?;
         let unanswered = questions.restored_unanswered(&node.graph);
         let autonomous =

@@ -171,8 +171,9 @@ impl Access {
         }
         let backend = model
             .backend
-            .clone()
+            .as_ref()
             .ok_or("decision model is not configured")?;
+        let identity = backend.identity.clone();
         if backend.identity != model_id {
             return Err("decision model context differs; restart required".into());
         }
@@ -207,7 +208,6 @@ impl Access {
                 u64::try_from(duration.as_nanos()).map_err(|_| "decision horizon overflow")?,
             )
             .ok_or("decision horizon overflow")?;
-        let identity = backend.identity;
         let execution = async { session.evaluate(&request, &identity, deadline_ns).await };
         let result = tokio::select! {
             result = execution => result,
@@ -250,22 +250,8 @@ impl Session {
             backend,
             slot_fd: slot.as_raw_fd(),
         };
-        let (spawned, restored) = {
-            let _spawn = crate::process_custody::SPAWN
-                .lock()
-                .map_err(|_| "process spawn lock poisoned")?;
-            nix::fcntl::fcntl(
-                &slot,
-                nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
-            )
-            .map_err(|e| e.to_string())?;
-            let spawned = command.spawn();
-            let restored = nix::fcntl::fcntl(
-                &slot,
-                nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
-            );
-            (spawned, restored)
-        };
+        let (spawned, restored) =
+            crate::process_custody::spawn_with_slot(&slot, || command.spawn())?;
         let mut child = spawned.map_err(|e| format!("decision supervisor spawn: {e}"))?;
         let input = child.stdin.take().ok_or("decision lifeline absent")?;
         let output = child.stdout.take().ok_or("decision output absent")?;

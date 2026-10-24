@@ -1,15 +1,15 @@
 //! Local, pinned Liquid adapter configuration. No interest policy.
+use crate::storage::FileGeneration;
 use serde::{Deserialize, Serialize};
 use std::{
-    os::unix::fs::MetadataExt,
+    collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
-pub(crate) const MODEL: &str = "LiquidAI/d1-3B-GGUF";
-pub(crate) const REVISION: &str = "bb1e436ea78eb96a3f1acb6da865f70c2fbeb563";
 pub(crate) const ADAPTER: &str = "naome:liquid-d1-3b-q8-llamacpp:v1";
 pub(crate) const SCRIPT: &str = include_str!("liquid_worker.py");
-pub(crate) const ASSETS: &str = include_str!("liquid_assets.json");
+const ASSETS: &str = include_str!("liquid_assets.json");
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -23,18 +23,66 @@ pub(crate) struct Configuration {
     pub memory_bytes: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Installed {
-    pub configuration: Configuration,
-    files: Vec<(String, u64, u64, i64, i64, i64, i64)>,
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct Snapshot {
+    configuration: Configuration,
+    files: Vec<(String, FileGeneration)>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Installed {
+    snapshot: Snapshot,
+    identity: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    model: Model,
+    runtime: Runtime,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Model {
+    pub repository: String,
+    pub revision: String,
+    files: Vec<Asset>,
+    provenance: Vec<Asset>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Runtime {
+    repository: String,
+    release: String,
+    source: String,
+    platforms: BTreeMap<String, Platform>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Platform {
+    archive: String,
+    sha256: String,
+    files: Vec<Asset>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Asset {
     file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     link: Option<String>,
+}
+
+fn manifest() -> &'static Manifest {
+    // Immutable bundled metadata, not a model/resource singleton.
+    static MANIFEST: OnceLock<Manifest> = OnceLock::new();
+    MANIFEST.get_or_init(|| serde_json::from_str(ASSETS).expect("pinned asset manifest"))
+}
+pub(crate) fn model() -> &'static Model {
+    &manifest().model
 }
 
 fn platform() -> Result<&'static str, String> {
@@ -45,8 +93,8 @@ fn platform() -> Result<&'static str, String> {
     }
 }
 
-impl Installed {
-    pub(crate) fn load(directory: &Path) -> Result<Option<Self>, String> {
+impl Snapshot {
+    fn read(directory: &Path) -> Result<Option<Self>, String> {
         let path = directory.join("decision.json");
         if !path.try_exists().map_err(|e| e.to_string())? {
             return Ok(None);
@@ -61,23 +109,20 @@ impl Installed {
         if !python.is_file() {
             return Err("decision interpreter is not a file".into());
         }
-        let mut files = vec![stamp("interpreter".into(), &python)];
-        let manifest: serde_json::Value = serde_json::from_str(ASSETS).expect("pinned manifest");
+        let mut files = vec![("interpreter".into(), FileGeneration::of(&python))];
         for (scope, directory, assets) in [
             (
                 "model",
                 &configuration.model_directory,
-                &manifest["model"]["files"],
+                &manifest().model.files,
             ),
             (
                 "runtime",
                 &configuration.runtime_directory,
-                &manifest["runtime"]["platforms"][platform()?]["files"],
+                &manifest().runtime.platforms[platform()?].files,
             ),
         ] {
-            for asset in
-                serde_json::from_value::<Vec<Asset>>(assets.clone()).expect("pinned assets")
-            {
+            for asset in assets {
                 let path = directory.join(&asset.file);
                 let metadata = std::fs::symlink_metadata(&path)
                     .map_err(|e| format!("decision asset {}: {e}", asset.file))?;
@@ -90,7 +135,10 @@ impl Installed {
                 } else if !metadata.is_file() || Some(metadata.len()) != asset.bytes {
                     return Err("decision asset size or type differs".into());
                 }
-                files.push(stamp(format!("{scope}/{}", asset.file), &metadata));
+                files.push((
+                    format!("{scope}/{}", asset.file),
+                    FileGeneration::of(&metadata),
+                ));
             }
         }
         Ok(Some(Self {
@@ -98,21 +146,40 @@ impl Installed {
             files,
         }))
     }
+}
 
+impl Installed {
+    pub(crate) fn load(directory: &Path) -> Result<Option<Self>, String> {
+        Ok(Snapshot::read(directory)?.map(|snapshot| {
+            let identity = super::digest(&(
+                super::CONTRACT,
+                ADAPTER,
+                &model().repository,
+                &model().revision,
+                SCRIPT,
+                ASSETS,
+                &snapshot,
+            ));
+            Self { snapshot, identity }
+        }))
+    }
+    /// Observe mutable installation state without recomputing the pinned model
+    /// identity or rebuilding a backend on each admission/commit boundary.
+    pub(crate) fn matches_current(
+        directory: &Path,
+        expected: Option<&Self>,
+    ) -> Result<bool, String> {
+        Ok(Snapshot::read(directory)?.as_ref() == expected.map(|model| &model.snapshot))
+    }
     pub(crate) fn identity(&self) -> String {
-        super::digest(&(
-            super::CONTRACT,
-            ADAPTER,
-            MODEL,
-            REVISION,
-            SCRIPT,
-            ASSETS,
-            self,
-        ))
+        self.identity.clone()
+    }
+    pub(crate) fn configuration(&self) -> &Configuration {
+        &self.snapshot.configuration
     }
 
     pub(crate) fn backend(&self) -> super::runtime::Backend {
-        let configuration = &self.configuration;
+        let configuration = self.configuration();
         super::runtime::Backend {
             identity: self.identity(),
             executable: configuration.python.clone(),
@@ -127,24 +194,12 @@ impl Installed {
             .into_iter()
             .map(|(key, value)| (key.into(), value))
             .collect(),
-            initialization: serde_json::json!({"configuration":configuration, "model":self.identity(), "platform":platform().expect("installed platform"),
-                "assets":serde_json::from_str::<serde_json::Value>(ASSETS).expect("asset manifest")}),
+            initialization: serde_json::json!({"configuration":configuration, "model":self.identity(),
+                "platform":platform().expect("installed platform"), "assets":manifest()}),
             memory_bytes: configuration.memory_bytes,
             threads: configuration.threads,
         }
     }
-}
-
-fn stamp(name: String, metadata: &std::fs::Metadata) -> (String, u64, u64, i64, i64, i64, i64) {
-    (
-        name,
-        metadata.dev(),
-        metadata.ino(),
-        metadata.mtime(),
-        metadata.mtime_nsec(),
-        metadata.ctime(),
-        metadata.ctime_nsec(),
-    )
 }
 
 impl Configuration {
@@ -165,7 +220,9 @@ impl Configuration {
         Ok(())
     }
 }
-
 pub(crate) fn unconfigured_identity() -> String {
     super::digest(&(super::CONTRACT, "unconfigured"))
 }
+
+#[cfg(test)]
+mod tests;

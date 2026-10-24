@@ -72,7 +72,7 @@ pub async fn run(directory: &Path, cases: &Path, output: &Path) -> Result<(), St
             if tokio::time::Instant::now() >= until {
                 return Err("decision screen original deadline".into());
             }
-            if liquid::Installed::load(directory)?.as_ref() != Some(&installed) {
+            if !liquid::Installed::matches_current(directory, Some(&installed))? {
                 return Err("decision screen model context changed".into());
             }
             let slot = if access.has_session() {
@@ -108,8 +108,8 @@ pub async fn run(directory: &Path, cases: &Path, output: &Path) -> Result<(), St
             };
             let value = serde_json::json!({"id":case.id,"request":case.request,
                 "distribution":distribution,"error":error,"wall_ms":began.elapsed().as_millis(),
-                "model_repository":liquid::MODEL,"model_revision":liquid::REVISION,
-                "adapter":liquid::ADAPTER,"configuration":installed.configuration,
+                "model_repository":liquid::model().repository,"model_revision":liquid::model().revision,
+                "adapter":liquid::ADAPTER,"configuration":installed.configuration(),
                 "model":identity,"evidence":"development model measurement; no admission"});
             writeln!(output, "{value}")
                 .and_then(|_| output.flush())

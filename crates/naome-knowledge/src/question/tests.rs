@@ -61,6 +61,30 @@ fn distribution(
 }
 
 #[tokio::test]
+async fn managed_admission_waits_for_the_authoritative_interest_context() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let mut owner = crate::jobs::tests::Manual::new();
+    let mut local = Managed::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(5),
+        None,
+    )
+    .unwrap();
+    let (reply, receipt) = oneshot::channel();
+    local.process(Command::Admit(question(QUESTION), reply), &graph);
+    let response = receipt.await.unwrap();
+    assert_eq!(
+        response.assessment.interest,
+        InterestAssessment::ProviderFailed
+    );
+    assert_eq!(response.outcome, AdmissionOutcome::NotInserted);
+    assert!(owner.requests().is_empty());
+    assert!(local.registry.is_empty());
+}
+
+#[tokio::test]
 async fn managed_model_scores_do_not_bypass_formal_check_or_final_admission() {
     for (probabilities, expected, inserted) in [
         ([0.9, 0.05, 0.05], InterestAssessment::Assessed(true), true),
@@ -75,9 +99,13 @@ async fn managed_model_scores_do_not_bypass_formal_check_or_final_admission() {
         let directory = Directory::new();
         let graph = Graph::default();
         let mut owner = crate::jobs::tests::Manual::new();
-        let mut local =
-            Managed::managed(owner.client.clone(), &directory.0, Duration::from_secs(5)).unwrap();
-        local.select_context(Some(model_context(1, "I study set membership.")));
+        let mut local = Managed::managed(
+            owner.client.clone(),
+            &directory.0,
+            Duration::from_secs(5),
+            Some(model_context(1, "I study set membership.")),
+        )
+        .unwrap();
         let (reply, receipt) = oneshot::channel();
         local.process(Command::Admit(question(QUESTION), reply), &graph);
         let (job, input) = owner.requests().pop().unwrap();
@@ -102,12 +130,11 @@ async fn managed_model_scores_do_not_bypass_formal_check_or_final_admission() {
             matches!(response.outcome, AdmissionOutcome::Admitted(_)),
             inserted
         );
-        if let Some(evidence) = response.assessment.decision {
-            assert_eq!(evidence.owner_revision, 1);
-            assert_eq!(evidence.selection_epoch, crate::hex(&[1; 32]));
-        } else {
-            assert_eq!(expected, InterestAssessment::ProviderFailed);
-        }
+        assert_eq!(response.assessment.selection, Some([1; 32]));
+        let crate::jobs::Input::Interest { assessment, .. } = input else {
+            unreachable!()
+        };
+        assert_eq!(assessment.owner_revision, 1);
     }
 }
 
@@ -116,9 +143,13 @@ async fn changed_interests_revoke_a_running_model_result_without_refilling_admis
     let directory = Directory::new();
     let graph = Graph::default();
     let mut owner = crate::jobs::tests::Manual::new();
-    let mut local =
-        Managed::managed(owner.client.clone(), &directory.0, Duration::from_secs(5)).unwrap();
-    local.select_context(Some(model_context(1, "Set membership interests me.")));
+    let mut local = Managed::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(5),
+        Some(model_context(1, "Set membership interests me.")),
+    )
+    .unwrap();
     let (reply, receipt) = oneshot::channel();
     local.process(Command::Admit(question(QUESTION), reply), &graph);
     let (job, input) = owner.requests().pop().unwrap();
@@ -166,6 +197,7 @@ async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        Some(model_context(1, "Set membership interests me.")),
     )
     .unwrap();
     let mut receivers = Vec::new();
@@ -241,6 +273,7 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
             owner.client.clone(),
             &directory.0,
             Duration::from_secs(3600),
+            Some(model_context(1, "Set membership interests me.")),
         )
         .unwrap();
         let original = question("goal = not(all(x,mem(x,x)))");
@@ -267,6 +300,7 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
             owner.client.clone(),
             &directory.0,
             Duration::from_secs(3600),
+            Some(model_context(1, "Set membership interests me.")),
         )
         .unwrap();
         assert_eq!(
@@ -297,11 +331,20 @@ fn established_question_checkpoint_loss_refuses_fresh_provenance() {
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        Some(model_context(1, "Set membership interests me.")),
     )
     .unwrap();
     drop(local);
     std::fs::remove_file(directory.0.join("research/questions.sqlite3")).unwrap();
-    assert!(Managed::managed(owner.client, &directory.0, Duration::from_secs(3600)).is_err());
+    assert!(
+        Managed::managed(
+            owner.client,
+            &directory.0,
+            Duration::from_secs(3600),
+            Some(model_context(1, "Set membership interests me."))
+        )
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -313,6 +356,7 @@ async fn changed_epoch_retires_a_result_already_received_before_finish() {
         owner.client.clone(),
         &directory.0,
         Duration::from_secs(3600),
+        Some(model_context(1, "Set membership interests me.")),
     )
     .unwrap();
     let (reply, receiver) = oneshot::channel();

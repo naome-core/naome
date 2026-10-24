@@ -17,7 +17,10 @@ pub use error::Error;
 mod graph;
 mod index_storage;
 mod intake;
+#[cfg(feature = "developer-tools")]
 pub mod interest;
+#[cfg(not(feature = "developer-tools"))]
+mod interest;
 #[cfg(unix)]
 mod jobs;
 pub mod mocks;

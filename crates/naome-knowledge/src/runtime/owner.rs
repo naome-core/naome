@@ -198,9 +198,9 @@ fn load_state(directory: &Path) -> Result<Configuration, String> {
     Ok(pending.previous)
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Validated owner view; the digest binds the complete versioned configuration.
+#[derive(Debug, Clone)]
 pub(crate) struct Profile {
-    pub(crate) version: u8,
     pub(crate) revision: u64,
     pub(crate) interest: String,
     pub(crate) digest: String,
@@ -210,7 +210,6 @@ pub(super) fn profile(directory: &Path) -> Result<Profile, String> {
     let config = load_state(directory)?;
     let receipt = config.receipt()?;
     Ok(Profile {
-        version: config.version,
         revision: config.revision,
         interest: config.interest,
         digest: receipt.digest,

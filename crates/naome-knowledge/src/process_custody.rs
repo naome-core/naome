@@ -1,10 +1,31 @@
 //! Native process-group custody shared by bounded providers and decision inference.
 use std::{
+    fs::File,
     process::Child,
     time::{Duration, Instant},
 };
 
-pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize the deliberate inheritance of a physical worker lease. The
+/// caller retains child custody and must reconcile a failed flag restoration.
+pub(crate) fn spawn_with_slot<T>(
+    slot: &File,
+    spawn: impl FnOnce() -> T,
+) -> Result<(T, nix::Result<()>), String> {
+    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+    let _spawn = SPAWN.lock().map_err(|_| "process spawn lock poisoned")?;
+    let original =
+        FdFlag::from_bits_retain(fcntl(slot, FcntlArg::F_GETFD).map_err(|e| e.to_string())?);
+    fcntl(
+        slot,
+        FcntlArg::F_SETFD(original.difference(FdFlag::FD_CLOEXEC)),
+    )
+    .map_err(|e| e.to_string())?;
+    let spawned = spawn();
+    let restored = fcntl(slot, FcntlArg::F_SETFD(original)).map(|_| ());
+    Ok((spawned, restored))
+}
 
 pub(crate) fn stop_worker(child: &mut Child) -> Result<(), String> {
     // Hold the live unreaped Child while signalling its separate provider group.
@@ -81,3 +102,6 @@ pub(crate) fn monotonic_ns() -> Result<u64, String> {
         .and_then(|s| s.checked_add(u64::try_from(now.tv_nsec()).ok()?))
         .ok_or_else(|| "invalid native startup clock".into())
 }
+
+#[cfg(test)]
+mod tests;

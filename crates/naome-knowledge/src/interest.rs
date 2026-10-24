@@ -7,7 +7,7 @@ const THRESHOLD: f64 = 0.8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum Selection {
+pub(crate) enum Selection {
     Accept,
     Reject,
     Inconclusive,
@@ -33,18 +33,6 @@ pub(crate) struct Input {
     pub owner_digest: String,
     pub model: String,
     pub policy: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Evidence {
-    pub question_source: String,
-    pub question_resolution: String,
-    pub owner_revision: u64,
-    pub owner_digest: String,
-    pub policy: String,
-    pub selection_epoch: String,
-    pub distribution: Distribution,
 }
 
 impl Input {
@@ -99,23 +87,6 @@ impl Input {
         } else {
             Selection::Inconclusive
         })
-    }
-
-    pub(crate) fn evidence(
-        &self,
-        question: &naome_authoring::CompiledQuestion,
-        epoch: &[u8; 32],
-        distribution: Distribution,
-    ) -> Evidence {
-        Evidence {
-            question_source: crate::hex(question.source_hash()),
-            question_resolution: crate::hex(question.resolution_id()),
-            owner_revision: self.owner_revision,
-            owner_digest: self.owner_digest.clone(),
-            policy: self.policy.clone(),
-            selection_epoch: crate::hex(epoch),
-            distribution,
-        }
     }
 }
 

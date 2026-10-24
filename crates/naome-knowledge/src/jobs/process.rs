@@ -13,7 +13,7 @@ const INTERNAL: &str = "NAOME_INTERNAL_RESEARCH_PROVIDER";
 const SUPERVISOR: &str = "--research-supervisor-v1";
 const WORKER: &str = "--research-worker-v1";
 const DESCENDANT: &str = "--research-descendant-v1";
-use crate::process_custody::{SPAWN, stop_worker};
+use crate::process_custody::stop_worker;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,20 +125,7 @@ async fn run_owned(
     })
     .map_err(|e| e.to_string())?;
     start.push(b'\n');
-    let (spawned, restored) = {
-        let _spawn = SPAWN.lock().map_err(|_| "provider spawn owner poisoned")?;
-        nix::fcntl::fcntl(
-            &slot,
-            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
-        )
-        .map_err(|e| e.to_string())?;
-        let spawned = command.spawn();
-        let restored = nix::fcntl::fcntl(
-            &slot,
-            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
-        );
-        (spawned, restored)
-    };
+    let (spawned, restored) = crate::process_custody::spawn_with_slot(&slot, || command.spawn())?;
     let mut child = spawned.map_err(|e| format!("provider supervisor spawn: {e}"))?;
     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
     if let Err(error) = restored {

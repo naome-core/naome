@@ -426,7 +426,10 @@ async fn interest_respects_graph_ownership_and_instance_bound_control() {
     assert!(!served.unwrap());
     assert_eq!(response.unwrap().interest, "\u{0001}".repeat(1024));
     let snapshot = control.owner_profile().unwrap();
-    assert_eq!(snapshot.version, 1);
+    let owner_bytes = fs::read(directory.0.join("owner.json")).unwrap();
+    let owner: serde_json::Value = serde_json::from_slice(&owner_bytes).unwrap();
+    assert_eq!(owner["version"], 1);
+    assert_eq!(snapshot.digest, crate::hex(&Sha256::digest(&owner_bytes)));
     assert_eq!(snapshot.revision, 1);
     assert_eq!(snapshot.interest, "\u{0001}".repeat(1024));
     assert_eq!(snapshot.digest.len(), 64);

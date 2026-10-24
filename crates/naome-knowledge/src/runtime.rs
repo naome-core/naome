@@ -419,8 +419,13 @@ impl Control {
 
     pub(crate) fn interest_context(&self) -> Result<crate::interest::Context, String> {
         let profile = self.owner_profile()?;
-        let current = crate::decision::liquid::Installed::load(&self.directory);
-        if current != self.decision {
+        if let Ok(installed) = &self.decision
+            && !crate::decision::liquid::Installed::matches_current(
+                &self.directory,
+                installed.as_ref(),
+            )
+            .unwrap_or(false)
+        {
             self.decision_invalid
                 .store(true, std::sync::atomic::Ordering::Release);
         }
@@ -443,10 +448,7 @@ impl Control {
             crate::interest::POLICY,
             &model,
             &self.endpoint.token,
-            profile.version,
-            profile.revision,
             &profile.digest,
-            crate::hex(&Sha256::digest(profile.interest.as_bytes())),
         ))
         .map_err(|e| e.to_string())?;
         Ok(crate::interest::Context {
@@ -572,10 +574,6 @@ impl Control {
     pub(crate) fn stop_watch(&self) -> tokio::sync::watch::Receiver<bool> {
         self.stopping.subscribe()
     }
-}
-
-pub(crate) fn owner_profile_at(directory: &Path) -> Result<OwnerProfile, String> {
-    owner::profile(directory)
 }
 
 #[cfg(test)]
