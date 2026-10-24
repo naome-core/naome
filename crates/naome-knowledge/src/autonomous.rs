@@ -459,31 +459,25 @@ impl Autonomous {
                         }
                     }
                     Ok(jobs::Output::Program { units }) => {
-                        match program::Generated::open(graph, completion.id, units) {
-                            Ok(program) => self.publications.push_back(Publication {
-                                question: solving.question,
-                                job: completion.id,
-                                candidate: Candidate::Program(Box::new(program)),
-                                batch: None,
-                                context: None,
-                                reply: None,
-                                attempts: 0,
-                                retry: now,
-                                expires: now
-                                    + Duration::from_millis(
-                                        self.intervals.jobs.interest.limits.horizon_ms,
-                                    ),
-                                seen: None,
-                                eligible: false,
-                            }),
-                            Err(error) => {
-                                emit(
-                                    json!({"event":"proof_candidate_rejected","job":completion.id,"error":error.to_string()}),
-                                );
-                                self.acknowledge(completion.id);
-                                self.retain(solving.question);
-                            }
-                        }
+                        self.publications.push_back(Publication {
+                            question: solving.question,
+                            job: completion.id,
+                            candidate: Candidate::Program(Box::new(program::Generated::new(
+                                completion.id,
+                                units,
+                            ))),
+                            batch: None,
+                            context: None,
+                            reply: None,
+                            attempts: 0,
+                            retry: now,
+                            expires: now
+                                + Duration::from_millis(
+                                    self.intervals.jobs.interest.limits.horizon_ms,
+                                ),
+                            seen: None,
+                            eligible: false,
+                        });
                     }
                     Ok(jobs::Output::NoCandidate) => {
                         self.acknowledge(completion.id);

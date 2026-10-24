@@ -9,6 +9,26 @@ use std::{
     },
 };
 
+// These cases sample actual process RSS. A separate harness process keeps
+// unrelated concurrent library tests out of the node's resource observation.
+fn isolated(case: &str) -> bool {
+    if std::env::var("NAOME_PROGRAM_INTAKE_CASE").as_deref() == Ok(case) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", case, "--nocapture"])
+        .env("NAOME_PROGRAM_INTAKE_CASE", case)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
 fn question_source() -> String {
     crate::mocks::create_question(0)
 }
@@ -89,6 +109,11 @@ fn publish(graph: &mut Graph, proof: &CheckedWork) {
 
 #[test]
 fn published_program_survives_catalog_validation_and_fresh_mathematical_replay() {
+    if isolated(
+        "intake::program::tests::published_program_survives_catalog_validation_and_fresh_mathematical_replay",
+    ) {
+        return;
+    }
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let directory = std::env::temp_dir().join(format!(
         "naome-durable-program-{}-{}",
@@ -118,6 +143,11 @@ fn published_program_survives_catalog_validation_and_fresh_mathematical_replay()
 #[tokio::test]
 async fn each_chunk_authenticates_before_persistence_and_complete_transfer_is_independently_checked()
  {
+    if isolated(
+        "intake::program::tests::each_chunk_authenticates_before_persistence_and_complete_transfer_is_independently_checked",
+    ) {
+        return;
+    }
     let producer = Graph::default();
     let source = source(&producer);
     let metadata = metadata(&source);
@@ -194,6 +224,11 @@ async fn each_chunk_authenticates_before_persistence_and_complete_transfer_is_in
 
 #[tokio::test]
 async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph() {
+    if isolated(
+        "intake::program::tests::authenticated_but_mathematically_invalid_input_never_enters_the_graph",
+    ) {
+        return;
+    }
     let commands = [
         Command::Equal { left: 0, right: 0 },
         Command::Seal { proof: 0 },
@@ -273,6 +308,11 @@ async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph()
 
 #[tokio::test]
 async fn cited_program_and_parent_commit_together_and_final_decline_publishes_neither() {
+    if isolated(
+        "intake::program::tests::cited_program_and_parent_commit_together_and_final_decline_publishes_neither",
+    ) {
+        return;
+    }
     for decline in [false, true] {
         let mut producer = Graph::default();
         let proof = source(&producer);

@@ -19,26 +19,19 @@ pub(super) struct Generated {
     budget: ProgramBudget,
 }
 impl Generated {
-    pub(super) fn open(graph: &Graph, job: u64, units: u32) -> Result<Self, crate::Error> {
-        let directory = graph.ownership().directory().join(".program-work");
-        if let Ok(metadata) = std::fs::symlink_metadata(&directory)
-            && (!metadata.is_dir() || metadata.file_type().is_symlink())
-        {
-            return Err("program work directory must be a real directory".into());
-        }
-        let work = Work::open(&directory.join(format!("candidate-{job}.sqlite3")))?;
-        Ok(Self {
+    pub(super) fn new(job: u64, units: u32) -> Self {
+        Self {
             job,
             units,
             unit: 1,
             imported: 0,
             hash: [0; 32],
             pending: None,
-            work: Some(work),
+            work: None,
             checked: None,
             admission: None,
             budget: ProgramBudget::default(),
-        })
+        }
     }
     pub(super) fn restrict_cache(&mut self, graph: &Graph) -> Result<(), crate::Error> {
         let cache = self
@@ -63,6 +56,17 @@ impl Generated {
         let snapshot = self.budget.refresh(graph.ownership().directory())?.clone();
         if snapshot.budget.paused.is_some() {
             return Ok(None);
+        }
+        if self.work.is_none() && self.checked.is_none() {
+            let directory = graph.ownership().directory().join(".program-work");
+            if let Ok(metadata) = std::fs::symlink_metadata(&directory)
+                && (!metadata.is_dir() || metadata.file_type().is_symlink())
+            {
+                return Err("program work directory must be a real directory".into());
+            }
+            self.work = Some(Work::open(
+                &directory.join(format!("candidate-{}.sqlite3", self.job)),
+            )?);
         }
         if let Some(work) = self.work.as_mut() {
             work.record_budget(&snapshot)?;
@@ -166,5 +170,55 @@ impl Generated {
             }
             Err(error) => Err(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn disk_pressure_at_work_creation_retains_the_completed_provider_candidate() {
+        const CASE: &str = "autonomous::program::tests::disk_pressure_at_work_creation_retains_the_completed_provider_candidate";
+        if std::env::var_os("NAOME_PROGRAM_CREATION_CASE").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CASE, "--nocapture"])
+                .env("NAOME_PROGRAM_CREATION_CASE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let graph = Graph::default();
+        let owner = jobs::tests::Manual::new();
+        let question = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+        let mut generated = Generated::new(17, 1);
+        let path = graph
+            .ownership()
+            .directory()
+            .join(".program-work/candidate-17.sqlite3");
+        crate::resources::with_disk_available(0, || {
+            let error = generated
+                .prepare(&graph, &owner.client, &question)
+                .err()
+                .expect("work creation must defer");
+            assert!(error.retryable());
+            assert!(!path.exists());
+        });
+        assert_eq!((generated.job, generated.unit), (17, 1));
+        assert!(
+            generated
+                .prepare(&graph, &owner.client, &question)
+                .unwrap()
+                .is_none()
+        );
+        assert!(path.exists() && generated.pending.is_some());
+        assert_eq!((generated.job, generated.unit), (17, 1));
     }
 }

@@ -66,6 +66,10 @@ impl Work {
         let path = fs::canonicalize(parent)
             .map_err(crate::Error::from)?
             .join(path.file_name().ok_or("proof work filename missing")?);
+        let _disk = crate::resources::DiskLease::acquire(
+            path.parent().expect("proof work parent"),
+            128 * 1024,
+        )?;
         let lock_path = path.with_extension("proof-work.lock");
         let lock = OpenOptions::new()
             .create(true)
