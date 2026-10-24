@@ -6,7 +6,7 @@ use naome_proof::ProofId;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     time::{Duration, Instant},
 };
@@ -76,6 +76,11 @@ struct Publication {
     eligible: bool,
 }
 
+struct RecoveryRetry {
+    seen: question::Revision,
+    retry: Instant,
+}
+
 pub(crate) struct Autonomous {
     intervals: Intervals,
     client: jobs::Client,
@@ -85,6 +90,11 @@ pub(crate) struct Autonomous {
     unanswered: VecDeque<CompiledQuestion>,
     recovered_finding: VecDeque<jobs::Record>,
     recovered_other: VecDeque<jobs::Record>,
+    // The service skips its bounded initial resident page during archive scans.
+    // Only that page needs local retention; other deferred rows stay on disk.
+    initial_recovery: BTreeSet<u64>,
+    deferred_recovery: VecDeque<jobs::Record>,
+    recovery_retry: Option<RecoveryRetry>,
     archive_after: Option<u64>,
     archive_end: u64,
     recovery_reply: Option<oneshot::Receiver<Result<jobs::RecoveryPage, String>>>,
@@ -104,6 +114,7 @@ impl Autonomous {
     ) -> Self {
         let now = Instant::now();
         let archive_end = recovery.archive_end;
+        let initial_recovery = recovery.records.iter().map(|record| record.id).collect();
         let (finding, other): (Vec<_>, Vec<_>) = recovery
             .records
             .into_iter()
@@ -120,6 +131,9 @@ impl Autonomous {
                 .collect(),
             recovered_finding: finding.into(),
             recovered_other: other.into(),
+            initial_recovery,
+            deferred_recovery: VecDeque::new(),
+            recovery_retry: None,
             archive_after: (archive_end > 1).then_some(0),
             archive_end,
             recovery_reply: None,
@@ -170,6 +184,19 @@ impl Autonomous {
         }
     }
 
+    fn defer_recovery(&mut self, record: jobs::Record, seen: question::Revision, now: Instant) {
+        self.recovery_retry.get_or_insert(RecoveryRetry {
+            seen,
+            retry: now + crate::resources::limits().pending_retry,
+        });
+        if self.initial_recovery.contains(&record.id) {
+            self.deferred_recovery.push_back(record);
+        }
+        // Archived rows remain unacknowledged in the original durable journal.
+        // Rescan the fixed startup horizon after this pass, never accumulate
+        // an unbounded in-memory retry list or block the next archive page.
+    }
+
     pub(crate) fn advance<F, Fut>(
         &mut self,
         graph: &mut Graph,
@@ -179,6 +206,21 @@ impl Autonomous {
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
+        let now = Instant::now();
+        let revision = questions.revision(graph);
+        if self.recovered_finding.is_empty()
+            && self.recovered_other.is_empty()
+            && self.recovery_reply.is_none()
+            && self.archive_after.is_none()
+            && self
+                .recovery_retry
+                .as_ref()
+                .is_some_and(|retry| retry.seen != revision || now >= retry.retry)
+        {
+            self.recovery_retry = None;
+            self.recovered_other.append(&mut self.deferred_recovery);
+            self.archive_after = (self.archive_end > 1).then_some(0);
+        }
         if self.recovered_finding.is_empty() && self.recovered_other.is_empty() {
             if let Some(mut reply) = self.recovery_reply.take() {
                 match reply.try_recv() {
@@ -205,7 +247,6 @@ impl Autonomous {
                 }
             }
         }
-        let now = Instant::now();
         let mut accepted = Vec::new();
         // Reconcile at most one retained non-finding record per driver turn.
         // Interest is reacquired from current metadata/owner policy; solve
@@ -213,9 +254,11 @@ impl Autonomous {
         if let Some(record) = self.recovered_other.pop_front() {
             if let jobs::Input::Solve { question: source } = &record.input {
                 if record.state != jobs::State::InDoubt
-                    && self.solving.len() >= crate::resources::limits().solving_jobs
+                    && (self.solving.len() >= crate::resources::limits().solving_jobs
+                        || self.publications.len() + self.solving.len()
+                            >= crate::resources::limits().publications)
                 {
-                    self.recovered_other.push_front(record);
+                    self.recovered_other.push_back(record);
                 } else if record.state == jobs::State::InDoubt {
                     self.retire(record);
                 } else if let Ok(question) = CompiledQuestion::compile(source) {
@@ -249,10 +292,10 @@ impl Autonomous {
                                     },
                                 );
                             }
-                            Err(_) => self.recovered_other.push_front(record),
+                            Err(_) => self.defer_recovery(record, revision, now),
                         }
                     } else if fresh.inconclusive() {
-                        self.recovered_other.push_front(record);
+                        self.defer_recovery(record, revision, now);
                     } else {
                         self.retire(record);
                     }

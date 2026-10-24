@@ -73,6 +73,53 @@ fn committed_prefix_is_rechecked_after_reopen_without_trusting_proved_flags() {
 }
 
 #[test]
+fn repeated_generalization_of_closed_subgraphs_adds_only_linear_work_and_replays() {
+    for binders in [32_u64, 64, 128, 256] {
+        let directory = Directory::new();
+        let mut work = Work::open(&directory.path()).unwrap();
+        let mut commands = vec![Command::Reflexivity { variable: 0 }];
+        for premise in 0..binders {
+            commands.push(Command::Generalization {
+                premise,
+                variable: 0,
+            });
+        }
+        commands.push(Command::Seal { proof: binders });
+        work.append_group(&commands).unwrap();
+        let status = finish(&mut work);
+        assert!(status.fully_checked);
+        println!(
+            "generalizations={binders} nodes={} equations={}",
+            status.formula_nodes, status.transformation_equations
+        );
+        assert!(
+            status.transformation_equations <= 2 * binders,
+            "{binders} generalizations require only linear transformation evidence, got {}",
+            status.transformation_equations,
+        );
+        // The first binder captures the free variable. All later binders are
+        // vacuous and must preserve the exact existing bound-variable graph.
+        let mut expected = work
+            .intern(Node::Equal(Variable::Bound(0), Variable::Bound(0)))
+            .unwrap();
+        for _ in 0..binders {
+            expected = work.intern(Node::ForAll(expected)).unwrap();
+        }
+        assert_eq!(work.accepted, Some(expected));
+        drop(work);
+        let mut work = Work::open(&directory.path()).unwrap();
+        assert!(!work.status().unwrap().fully_checked);
+        let replay = finish(&mut work);
+        assert!(replay.fully_checked);
+        assert_eq!(replay.conclusion, status.conclusion);
+        assert_eq!(
+            replay.transformation_equations,
+            status.transformation_equations
+        );
+    }
+}
+
+#[test]
 fn pressure_pauses_mid_transformation_and_resumes_every_mathematical_step() {
     let directory = Directory::new();
     let mut work = Work::open(&directory.path()).unwrap();

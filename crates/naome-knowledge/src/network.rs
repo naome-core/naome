@@ -841,7 +841,7 @@ impl QueuedCommand {
     #[cfg(test)]
     pub(crate) fn from_value(value: Value) -> Self {
         let bytes = serde_json::to_vec(&value).unwrap();
-        let memory = crate::resources::MemoryLease::acquire(bytes.len() * 2).unwrap();
+        let memory = crate::resources::MemoryLease::acquire_control(bytes.len() * 2).unwrap();
         Self {
             bytes,
             _memory: memory,
@@ -854,7 +854,7 @@ fn read_commands(sender: mpsc::Sender<Result<QueuedCommand, String>>) {
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     loop {
-        let memory = match crate::resources::MemoryLease::acquire(
+        let memory = match crate::resources::MemoryLease::acquire_control(
             crate::resources::limits().command_bytes * 2 + 2,
         ) {
             Ok(memory) => memory,
@@ -1132,6 +1132,7 @@ impl Node {
                     )
                 }
                 "announce" => {
+                    crate::resources::require_work_admission()?;
                     let id = ProofId::from_bytes(id_bytes(
                         value
                             .get("id")
@@ -1151,7 +1152,10 @@ impl Node {
                     Ok(json!({"announced":hex(id.as_bytes())}))
                 }
                 "offer" | "test_offer" => {
-                    if self.flights.len() >= crate::resources::limits().flights {
+                    crate::resources::require_work_admission()?;
+                    if self.flights.len()
+                        >= crate::resources::adaptive::network(crate::resources::limits().flights)
+                    {
                         return Err("request capacity".into());
                     }
                     let peer: PeerId = value

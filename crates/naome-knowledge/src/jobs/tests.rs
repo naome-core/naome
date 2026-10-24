@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Unit-level role coordination control; native process tests exercise Service.
 pub(crate) struct Manual {
@@ -8,6 +8,9 @@ pub(crate) struct Manual {
     next: u64,
     waiting: BTreeMap<u64, (Input, Binding, oneshot::Sender<Completion>)>,
     acknowledged: Vec<u64>,
+    recovery_pages: VecDeque<RecoveryPage>,
+    recovery_requests: Vec<(u64, u64)>,
+    discarded: Vec<Input>,
 }
 
 impl Manual {
@@ -19,6 +22,9 @@ impl Manual {
             next: 1,
             waiting: BTreeMap::new(),
             acknowledged: Vec::new(),
+            recovery_pages: VecDeque::new(),
+            recovery_requests: Vec::new(),
+            discarded: Vec::new(),
         }
     }
     pub(crate) fn requests(&mut self) -> Vec<(u64, Input)> {
@@ -31,15 +37,24 @@ impl Manual {
                     requests.push((id, input.clone()));
                     self.waiting.insert(id, (input, binding, reply));
                 }
-                Command::Discard(input, binding) => self
-                    .waiting
-                    .retain(|_, (i, b, _)| i != &input || b != &binding),
+                Command::Discard(input, binding) => {
+                    self.waiting
+                        .retain(|_, (i, b, _)| i != &input || b != &binding);
+                    self.discarded.push(input);
+                }
                 Command::Acknowledge(id) => self.acknowledged.push(id),
-                Command::Recover { reply, .. } => {
-                    let _ = reply.send(Ok(super::RecoveryPage {
-                        records: vec![],
-                        next: None,
-                    }));
+                Command::Recover {
+                    after,
+                    before,
+                    reply,
+                } => {
+                    self.recovery_requests.push((after, before));
+                    let _ = reply.send(Ok(self.recovery_pages.pop_front().unwrap_or(
+                        super::RecoveryPage {
+                            records: vec![],
+                            next: None,
+                        },
+                    )));
                 }
             }
         }
@@ -71,6 +86,16 @@ impl Manual {
     pub(crate) fn acknowledgements(&mut self) -> Vec<u64> {
         self.requests();
         std::mem::take(&mut self.acknowledged)
+    }
+    pub(crate) fn queue_recovery(&mut self, records: Vec<Record>, next: Option<u64>) {
+        self.recovery_pages
+            .push_back(RecoveryPage { records, next });
+    }
+    pub(crate) fn recovery_requests(&self) -> &[(u64, u64)] {
+        &self.recovery_requests
+    }
+    pub(crate) fn discarded(&self) -> &[Input] {
+        &self.discarded
     }
 }
 

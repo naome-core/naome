@@ -12,6 +12,222 @@ fn hardware() -> Observed {
         disk_available: 1024 * MIB,
     }
 }
+
+#[test]
+fn live_memory_targets_reject_new_over_budget_leases_without_revoking_existing_work() {
+    const TEST: &str = "resources::adaptive::tests::live_memory_targets_reject_new_over_budget_leases_without_revoking_existing_work";
+    if std::env::var_os("NAOME_LIVE_MEMORY_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_LIVE_MEMORY_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let selection = |memory_bytes| Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes,
+            concurrency: 1,
+            cache_bytes: 4096,
+            batch_steps: 1,
+            network_requests: 1,
+        }),
+    };
+    let capacity = super::super::memory_usage().1;
+    let existing = super::super::MemoryLease::acquire(20 * MIB as usize).unwrap();
+    let alias = existing.clone();
+    publish(Snapshot::derive(selection(32 * MIB), hardware(), capacity as u64).unwrap());
+    assert!(super::super::MemoryLease::acquire(40 * MIB as usize).is_err());
+    assert_eq!(super::super::memory_usage().0, 20 * MIB as usize);
+    let extra = super::super::MemoryLease::acquire(12 * MIB as usize).unwrap();
+    assert!(super::super::MemoryLease::acquire(1).is_err());
+    let mut observed = hardware();
+    observed.process_rss = 40 * MIB;
+    publish(Snapshot::derive(selection(8 * MIB), observed, capacity as u64).unwrap());
+    assert!(super::super::MemoryLease::acquire(1).is_err());
+    drop(existing);
+    assert_eq!(super::super::memory_usage().0, 32 * MIB as usize);
+    drop(alias);
+    drop(extra);
+    assert_eq!(super::super::memory_usage().0, 0);
+    assert!(super::super::MemoryLease::acquire(1).is_err());
+    let control = super::super::MemoryLease::acquire_control(1024).unwrap();
+    assert_eq!(super::super::memory_usage().0, 1024);
+    drop(control);
+    let mut tight = hardware();
+    tight.process_rss = 30 * MIB;
+    publish(Snapshot::derive(selection(32 * MIB), tight, capacity as u64).unwrap());
+    let remaining = super::super::MemoryLease::acquire(2 * MIB as usize).unwrap();
+    assert!(super::super::MemoryLease::acquire(1).is_err());
+    drop(remaining);
+    publish(Snapshot::derive(selection(64 * MIB), hardware(), capacity as u64).unwrap());
+    assert!(super::super::MemoryLease::acquire(40 * MIB as usize).is_ok());
+    assert_eq!(super::super::memory_usage().1, capacity);
+}
+
+#[tokio::test]
+async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_and_control() {
+    const TEST: &str = "resources::adaptive::tests::live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_and_control";
+    if std::env::var_os("NAOME_LIVE_WORK_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_LIVE_WORK_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use crate::{Graph, question::LocalQuestions, runtime::Control};
+    use naome_authoring::CompiledQuestion;
+    use serde_json::{Value, json};
+    use std::time::{Duration, Instant};
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::UnixStream,
+    };
+    const SOURCE: &str = "goal=all(x,eq(x,x)) proof: p0=refl(x) p1=gen(p0,x) return p1";
+    let mut producer = Graph::default();
+    let parent = producer.author(SOURCE).unwrap();
+    producer.ingest(parent.clone(), Instant::now()).unwrap();
+    let child = producer
+        .author(&format!(
+            "goal=all(x,eq(x,x)) proof: p0=cite(\"{}\") return p0",
+            parent.proof_id
+        ))
+        .unwrap();
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::open(&directory.0).unwrap();
+    assert_eq!(
+        graph.ingest(child, Instant::now()).unwrap().status,
+        "waiting"
+    );
+    let target = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let (id, batch) = graph.prepare_generated(SOURCE, &[], &target).unwrap();
+    graph
+        .commit_batch(id, batch, Instant::now() + Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(graph.pending_count().unwrap(), 1);
+    let target = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
+    let source = crate::mocks::create_proof(&target).unwrap();
+    let (prepared, batch) = graph.prepare_generated(&source, &[], &target).unwrap();
+    let mut questions = LocalQuestions::new(Some(crate::mocks::assess_interest as fn(_) -> _));
+    let unanswered = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
+    assert!(questions.generation_decision(&graph, &unanswered).passed());
+    let computations = questions.computation_count();
+    let checks = graph.checker_calls();
+    let control = Control::bind_test(&directory.0, graph.ownership()).unwrap();
+    let endpoint: Value =
+        serde_json::from_slice(&fs::read(directory.0.join("control.json")).unwrap()).unwrap();
+    let selection = |memory_bytes| Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes,
+            concurrency: 1,
+            cache_bytes: 4096,
+            batch_steps: 1,
+            network_requests: 1,
+        }),
+    };
+    let mut observed = hardware();
+    observed.process_rss = 40 * MIB;
+    publish(Snapshot::derive(selection(8 * MIB), observed.clone(), 512 * MIB).unwrap());
+    for _ in 0..10 {
+        assert_eq!(graph.resolve_pending().unwrap(), (vec![], vec![]));
+        assert!(
+            questions
+                .generation_decision(&graph, &unanswered)
+                .inconclusive()
+        );
+    }
+    assert_eq!(graph.checker_calls(), checks);
+    assert_eq!(questions.computation_count(), computations);
+    assert_eq!(graph.pending_count().unwrap(), 1);
+    assert!(graph.storage_error().is_none());
+    assert!(matches!(
+        graph.author(SOURCE),
+        Err(crate::Error::ExecutionLimit)
+    ));
+    assert!(matches!(
+        graph.produce(SOURCE),
+        Err(crate::Error::ExecutionLimit)
+    ));
+    assert!(matches!(
+        graph.prepare_generated(&source, &[], &target),
+        Err(crate::Error::ExecutionLimit)
+    ));
+    // Finishing a previously checked, reserved batch is drain, not new work.
+    graph
+        .commit_batch(prepared, batch, Instant::now() + Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(graph.accepted_count(), 2);
+    async fn exchange(
+        control: &Control,
+        endpoint: &Value,
+        operation: Value,
+        count: usize,
+    ) -> Value {
+        let client = async {
+            let mut stream = UnixStream::connect(endpoint["socket"].as_str().unwrap())
+                .await
+                .unwrap();
+            let mut bytes = serde_json::to_vec(
+                &json!({"version":1,"token":endpoint["token"],"operation":operation}),
+            )
+            .unwrap();
+            bytes.push(b'\n');
+            stream.write_all(&bytes).await.unwrap();
+            let mut response = Vec::new();
+            BufReader::new(stream)
+                .read_until(b'\n', &mut response)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&response).unwrap()
+        };
+        let server = async {
+            control
+                .respond(control.accept().await.unwrap(), count, true)
+                .await
+                .unwrap()
+        };
+        let (_, response) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(server, client)
+        })
+        .await
+        .unwrap();
+        response
+    }
+    assert_eq!(
+        exchange(&control, &endpoint, json!("status"), 2).await["report"]["status"]["accepted_proofs"],
+        2
+    );
+    assert!(
+        exchange(&control, &endpoint, json!("resources"), 2).await["report"]["snapshot"]["budget"]
+            ["paused"]
+            .is_string()
+    );
+    publish(Snapshot::derive(selection(128 * MIB), hardware(), 512 * MIB).unwrap());
+    assert_eq!(graph.resolve_pending().unwrap().0.len(), 1);
+    assert_eq!(graph.pending_count().unwrap(), 0);
+    assert!(questions.generation_decision(&graph, &unanswered).passed());
+    publish(Snapshot::derive(selection(8 * MIB), observed, 512 * MIB).unwrap());
+    assert_eq!(
+        exchange(&control, &endpoint, json!("stop"), 3).await["report"]["status"]["running"],
+        false
+    );
+    assert!(control.stopping());
+}
 #[test]
 fn profiles_have_distinct_semantics_and_never_exceed_safe_hardware_capacity() {
     let derive = |profile| {
