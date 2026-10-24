@@ -28,6 +28,9 @@ pub struct ResourceProfile {
     pub version: u8,
     /// Charged working memory for one process, including conservative overhead.
     pub memory_bytes: usize,
+    /// Separate installed capacity for the one shared local model process.
+    /// Zero disables model execution; ordinary node allocations are unchanged.
+    pub decision_memory_bytes: u64,
     /// Physical provider slots: finding, solving, local interest, peer interest.
     pub workers: [usize; 4],
     pub tuning: Tuning,
@@ -37,6 +40,7 @@ impl Default for ResourceProfile {
         Self {
             version: PROFILE_VERSION,
             memory_bytes: 512 * MIB,
+            decision_memory_bytes: 0,
             workers: [1, 2, 2, 2],
             tuning: Tuning::default(),
         }
@@ -60,6 +64,7 @@ macro_rules! resource_policy {
         #[serde(deny_unknown_fields)]
         pub struct Limits {
             pub memory_bytes: usize,
+            pub decision_memory_bytes: u64,
             pub workers: [usize;4],
             pub resident_jobs: usize,
             $(pub $scaled: $sty,)*
@@ -68,7 +73,7 @@ macro_rules! resource_policy {
         }
         /// Reference defaults; all active allocations use limits().
         pub const DEFAULT: Limits = Limits {
-            memory_bytes:512*MIB,workers:[1,2,2,2],resident_jobs:7+4*8+32,
+            memory_bytes:512*MIB,decision_memory_bytes:0,workers:[1,2,2,2],resident_jobs:7+4*8+32,
             $($scaled:$svalue,)* $($fixed:$fvalue,)* $($timer:$tvalue,)*
         };
         impl ResourceProfile {
@@ -77,7 +82,7 @@ macro_rules! resource_policy {
                 if self.memory_bytes==0||self.memory_bytes>isize::MAX as usize{return Err("invalid process memory budget".into());}
                 let scale=|value:usize|value.checked_mul(self.memory_bytes).and_then(|n|n.checked_div(DEFAULT.memory_bytes)).map(|n|n.max(1)).ok_or("resource scaling overflow");
                 let mut limits=Limits{
-                    memory_bytes:self.memory_bytes,workers:self.workers,resident_jobs:0,
+                    memory_bytes:self.memory_bytes,decision_memory_bytes:self.decision_memory_bytes,workers:self.workers,resident_jobs:0,
                     $($scaled:self.tuning.$scaled.unwrap_or(<$sty>::try_from(scale(DEFAULT.$scaled as usize)?).map_err(|_|concat!(stringify!($scaled)," width"))?),)*
                     $($fixed:self.tuning.$fixed.unwrap_or(DEFAULT.$fixed),)*
                     $($timer:self.tuning.$milliseconds.map(Duration::from_millis).unwrap_or(DEFAULT.$timer),)*
@@ -428,6 +433,9 @@ impl Limits {
         self.validate_positive()?;
         if self.memory_bytes == 0 || self.memory_bytes > isize::MAX as usize {
             return Err("invalid process memory budget".into());
+        }
+        if self.decision_memory_bytes > isize::MAX as u64 {
+            return Err("invalid decision memory capacity".into());
         }
         // These external custody ceilings can only be narrowed. The caller
         // retains two 64 MiB reserves and the original 30 minute window.

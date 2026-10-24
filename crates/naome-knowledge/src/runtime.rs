@@ -20,7 +20,9 @@ use tokio::{
 };
 
 pub use crate::autonomous::Intervals as RuntimeIntervals;
-pub use crate::jobs::{Limits as JobLimits, RecoveryPolicy, RoleSettings, Settings as RuntimeJobs};
+pub use crate::jobs::{
+    InterestProvider, Limits as JobLimits, RecoveryPolicy, RoleSettings, Settings as RuntimeJobs,
+};
 mod cli;
 mod owner;
 mod replay_guard;
@@ -242,6 +244,8 @@ pub(crate) struct Control {
     selection_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ownership: Option<std::sync::Arc<crate::store::Store>>,
     startup: Option<Startup>,
+    decision: Result<Option<crate::decision::liquid::Installed>, String>,
+    decision_invalid: std::sync::atomic::AtomicBool,
 }
 
 struct OwnerState {
@@ -373,6 +377,7 @@ impl Control {
         File::open(&directory)
             .and_then(|file| file.sync_all())
             .map_err(|error| error.to_string())?;
+        let decision = crate::decision::liquid::Installed::load(&directory);
         Ok(Self {
             listener,
             directory,
@@ -385,6 +390,8 @@ impl Control {
             selection_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             ownership: None,
             startup: None,
+            decision,
+            decision_invalid: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -407,16 +414,48 @@ impl Control {
     }
 
     pub(crate) fn selection(&self) -> Result<[u8; 32], String> {
+        Ok(self.interest_context()?.epoch)
+    }
+
+    pub(crate) fn interest_context(&self) -> Result<crate::interest::Context, String> {
         let profile = self.owner_profile()?;
+        let current = crate::decision::liquid::Installed::load(&self.directory);
+        if current != self.decision {
+            self.decision_invalid
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        if self
+            .decision_invalid
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("decision model context changed; restart required".into());
+        }
+        let model = self
+            .decision
+            .as_ref()
+            .map_err(Clone::clone)?
+            .as_ref()
+            .map_or_else(
+                crate::decision::liquid::unconfigured_identity,
+                |installed| installed.identity(),
+            );
         let bytes = serde_json::to_vec(&(
-            "naome-deterministic-mocks-v1",
+            crate::interest::POLICY,
+            &model,
+            &self.endpoint.token,
             profile.version,
             profile.revision,
-            profile.digest,
+            &profile.digest,
             crate::hex(&Sha256::digest(profile.interest.as_bytes())),
         ))
         .map_err(|e| e.to_string())?;
-        Ok(Sha256::digest(bytes).into())
+        Ok(crate::interest::Context {
+            epoch: Sha256::digest(bytes).into(),
+            interest: profile.interest,
+            revision: profile.revision,
+            digest: profile.digest,
+            model,
+        })
     }
 
     pub(crate) fn selection_changed(&self) -> bool {
@@ -533,6 +572,10 @@ impl Control {
     pub(crate) fn stop_watch(&self) -> tokio::sync::watch::Receiver<bool> {
         self.stopping.subscribe()
     }
+}
+
+pub(crate) fn owner_profile_at(directory: &Path) -> Result<OwnerProfile, String> {
+    owner::profile(directory)
 }
 
 #[cfg(test)]
@@ -1222,6 +1265,9 @@ pub async fn execute() -> Result<(), String> {
         return crate::proof_work::cli::execute(&proof_args, &policy_directory).await;
     }
     if let Some(result) = crate::jobs::internal(&arguments) {
+        return result;
+    }
+    if let Some(result) = crate::decision::runtime::internal(&arguments) {
         return result;
     }
     let cli::Arguments {

@@ -550,6 +550,23 @@ async fn selection_epoch_binds_owner_revision_text_and_recovery_errors() {
         .unwrap();
 }
 
+#[tokio::test]
+async fn model_configuration_changes_latch_stale_until_a_fresh_node_instance() {
+    let directory = Directory::new();
+    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
+    let before = control.selection().unwrap();
+    fs::write(directory.0.join("decision.json"), b"{invalid").unwrap();
+    assert!(control.selection().is_err());
+    fs::remove_file(directory.0.join("decision.json")).unwrap();
+    assert!(
+        control.selection().is_err(),
+        "restoring bytes must not resurrect old work"
+    );
+    drop(control);
+    let restarted = Control::bind_token(&directory.0, "cd".repeat(32)).unwrap();
+    assert_ne!(restarted.selection().unwrap(), before);
+}
+
 // Real process boundaries for the maintained abort owner. These source tests
 // are not native qualification of installed CLI/Guardian/resource behavior.
 #[test]

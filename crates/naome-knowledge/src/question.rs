@@ -33,6 +33,7 @@ mod persistence;
 pub enum InterestAssessment {
     NotRun,
     Assessed(bool),
+    Inconclusive,
     ProviderFailed,
     TimedOut,
     Stale,
@@ -49,6 +50,7 @@ pub struct QuestionAssessment {
     pub submitted_negation_parity: bool,
     /// Exact provider and owner-selection epoch; absent after owner recovery error.
     pub selection: Option<Identity>,
+    pub decision: Option<crate::interest::Evidence>,
 }
 
 impl QuestionAssessment {
@@ -74,9 +76,20 @@ pub struct AdmissionReceipt {
     registry_before: Identity,
     registry_after: Identity,
     novelty: NodeLocalNovelty,
+    selection: Identity,
+    interest_job: Option<u64>,
 }
 
 impl AdmissionReceipt {
+    /// Exact owner/policy/model epoch used by this first admission.
+    pub const fn selection_epoch(&self) -> Identity {
+        self.selection
+    }
+    /// Durable research history entry containing the input and model evidence.
+    /// Explicit cooperative embeddings have no managed job identifier.
+    pub const fn interest_job(&self) -> Option<u64> {
+        self.interest_job
+    }
     pub const fn record(&self) -> Identity {
         self.record
     }
@@ -302,11 +315,13 @@ struct Pending {
     job: Option<u64>,
     peer: bool,
     selection: Option<Identity>,
+    evidence: Option<crate::interest::Evidence>,
 }
 
 struct ProviderResult {
     assessment: InterestAssessment,
     job: Option<u64>,
+    evidence: Option<crate::interest::Evidence>,
 }
 
 #[derive(Clone)]
@@ -339,6 +354,7 @@ pub(crate) struct LocalQuestions<F> {
     policy: PrefilterPolicy,
     provider: Option<Arc<F>>,
     managed: Option<crate::jobs::Client>,
+    interest_context: Option<crate::interest::Context>,
     pending: BTreeMap<u64, Pending>,
     next_pending: u64,
     finished: Option<u64>,
@@ -370,6 +386,7 @@ where
             policy: crate::resources::limits().assessment_policy(),
             provider: provider.map(Arc::new),
             managed: None,
+            interest_context: None,
             pending: BTreeMap::new(),
             next_pending: 1,
             finished: None,
@@ -401,6 +418,22 @@ where
         local.attach_persistence(directory)?;
         local.managed = Some(client);
         local.interest_horizon = horizon;
+        let profile = crate::runtime::owner_profile_at(directory)?;
+        match crate::decision::liquid::Installed::load(directory) {
+            Ok(installed) => {
+                local.interest_context = Some(crate::interest::Context {
+                    epoch: local.selection.expect("initial embedding epoch"),
+                    interest: profile.interest,
+                    revision: profile.revision,
+                    digest: profile.digest,
+                    model: installed
+                        .map_or_else(crate::decision::liquid::unconfigured_identity, |model| {
+                            model.identity()
+                        }),
+                })
+            }
+            Err(_) => local.selection = None,
+        }
         Ok(local)
     }
 
@@ -628,12 +661,19 @@ where
                     interest: InterestAssessment::Stale,
                     submitted_negation_parity: pending.question.negation_parity(),
                     selection: pending.selection,
+                    decision: pending.evidence,
                 },
                 AdmissionOutcome::NotInserted,
             );
         }
         self.finished = None;
         true
+    }
+
+    pub(crate) fn select_context(&mut self, context: Option<crate::interest::Context>) -> bool {
+        let epoch = context.as_ref().map(|context| context.epoch);
+        self.interest_context = context;
+        self.select(epoch)
     }
 
     fn registry_capacity(&self, question: &CompiledQuestion) -> bool {
@@ -1028,6 +1068,7 @@ where
                     prefilter,
                     submitted_negation_parity: question.negation_parity(),
                     selection: self.selection,
+                    decision: None,
                 },
                 AdmissionOutcome::NotInserted,
             );
@@ -1047,39 +1088,78 @@ where
                 .with_selection(self.selection.expect("available selection epoch"));
             let request = crate::jobs::Input::Interest {
                 question: question.source().to_owned(),
+                assessment: crate::interest::Input::from_context(
+                    self.interest_context
+                        .as_ref()
+                        .expect("managed selection context"),
+                ),
                 purpose,
                 root,
             };
+            let crate::jobs::Input::Interest { assessment, .. } = &request else {
+                unreachable!()
+            };
+            let assessment = assessment.clone();
+            let compiled = question.clone();
+            let epoch = self.selection.expect("managed selection epoch");
             let ticket = client.submit(request, binding.clone());
             Box::pin(async move {
                 let Ok(mut ticket) = ticket else {
                     return ProviderResult {
                         assessment: InterestAssessment::ProviderFailed,
                         job: None,
+                        evidence: None,
                     };
                 };
                 match ticket.completed().await {
                     Ok(completion) => {
+                        let mut evidence = None;
                         let interest = if completion.binding != binding {
                             InterestAssessment::Stale
                         } else if completion.state == crate::jobs::State::Expired {
                             InterestAssessment::TimedOut
                         } else {
                             match completion.result {
+                                #[cfg(any(test, feature = "developer-tools"))]
                                 Ok(crate::jobs::Output::Interest(value)) => {
                                     InterestAssessment::Assessed(value)
                                 }
+                                Ok(crate::jobs::Output::Decision(distribution)) => match assessment
+                                    .assess(&assessment.request(&compiled), &distribution)
+                                {
+                                    Ok(selection) => {
+                                        evidence = Some(assessment.evidence(
+                                            &compiled,
+                                            &epoch,
+                                            distribution,
+                                        ));
+                                        match selection {
+                                            crate::interest::Selection::Accept => {
+                                                InterestAssessment::Assessed(true)
+                                            }
+                                            crate::interest::Selection::Reject => {
+                                                InterestAssessment::Assessed(false)
+                                            }
+                                            crate::interest::Selection::Inconclusive => {
+                                                InterestAssessment::Inconclusive
+                                            }
+                                        }
+                                    }
+                                    Err(_) => InterestAssessment::ProviderFailed,
+                                },
                                 _ => InterestAssessment::ProviderFailed,
                             }
                         };
                         ProviderResult {
                             assessment: interest,
                             job: (completion.id != 0).then_some(completion.id),
+                            evidence,
                         }
                     }
                     Err(_) => ProviderResult {
                         assessment: InterestAssessment::ProviderFailed,
                         job: None,
+                        evidence: None,
                     },
                 }
             })
@@ -1098,6 +1178,7 @@ where
                 ProviderResult {
                     assessment,
                     job: None,
+                    evidence: None,
                 }
             })
         };
@@ -1117,6 +1198,7 @@ where
                 job: None,
                 peer,
                 selection: self.selection,
+                evidence: None,
             },
         );
     }
@@ -1192,6 +1274,7 @@ where
             .0;
         if let Some(pending) = self.pending.get_mut(&id) {
             pending.job = result.job;
+            pending.evidence = result.evidence;
         }
         self.finished = Some(id);
         result.assessment
@@ -1258,6 +1341,8 @@ where
                         registry_before,
                         registry_after: self.registry.identity(),
                         novelty,
+                        selection: pending.selection.expect("positive current selection"),
+                        interest_job: pending.job,
                     };
                     if let Some(persistence) = &mut self.persistence {
                         if let Err(error) = persistence.retain(
@@ -1290,6 +1375,7 @@ where
                 interest,
                 submitted_negation_parity: pending.question.negation_parity(),
                 selection: pending.selection,
+                decision: pending.evidence,
             },
             outcome,
         );

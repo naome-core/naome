@@ -604,7 +604,7 @@ where
         if let Some(control)=&control
             && (control.selection_changed() || Instant::now()>=next_profile_check) {
                 next_profile_check=Instant::now()+crate::resources::limits().profile_poll_interval;
-                if questions.select(control.selection().ok()) {
+                if questions.select_context(control.interest_context().ok()) {
                 node.intake.invalidate_interest(); node.inventory_summaries.clear();
                 }
             }
@@ -665,7 +665,7 @@ where
             },
             interest = questions.completed(),if !stopping => {
                 if let Some(control)=&control
-                    && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
+                    && questions.select_context(control.interest_context().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
                 questions.finish(&node.graph, interest);
             },
             _=crate::runtime::requested_stop(&mut stop_watch),if !stopping=>{
@@ -686,7 +686,7 @@ where
         if let Some(control)=&control
             && (control.selection_changed() || node.intake.selection_boundary_ready()
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
-                && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
+                && questions.select_context(control.interest_context().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
         node.graph.set_commit_guard(crate::graph::CommitGuard::new(
             node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
         ));

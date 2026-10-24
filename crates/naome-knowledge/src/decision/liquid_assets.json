@@ -1,0 +1,401 @@
+{
+  "model": {
+    "repository": "LiquidAI/d1-3B-GGUF",
+    "revision": "bb1e436ea78eb96a3f1acb6da865f70c2fbeb563",
+    "files": [
+      {
+        "file": "d1-3B-Q8_0.gguf",
+        "bytes": 2874781280,
+        "sha256": "2f0942d5a5f64cf69c3356d2be439b71644b1f0eb3a580912a5a0179eeaba77d"
+      }
+    ],
+    "provenance": [
+      {
+        "file": "LICENSE",
+        "bytes": 10574,
+        "sha256": "4d28ca14dedc0b3d0fcc2b3339f0e79931faa33874f3d24f522183a8fc70068c"
+      },
+      {
+        "file": "README.md",
+        "bytes": 2875,
+        "sha256": "f9778e5b65c650618b23f24839708d395660af6da5c29c7da1efac71123e3f3b"
+      }
+    ]
+  },
+  "runtime": {
+    "repository": "ggml-org/llama.cpp",
+    "release": "b11846",
+    "source": "1a24df163920a4744a95373d178d790b72a9bb2f",
+    "platforms": {
+      "darwin-arm64": {
+        "archive": "llama-b11846-bin-macos-arm64.tar.gz",
+        "sha256": "b145e8065883ef6b124d47fa2ff5fc8a046bafe415a7e1db1efb00b0809a2ee1",
+        "files": [
+          {
+            "file": "libggml-base.0.27.0.dylib",
+            "bytes": 751768,
+            "sha256": "efb380d2f5c9e661843622e244e81147c3867ac7839cb4f430ebc796b2fe6e00"
+          },
+          {
+            "file": "libggml-base.0.dylib",
+            "link": "libggml-base.0.27.0.dylib"
+          },
+          {
+            "file": "libggml-base.dylib",
+            "link": "libggml-base.0.dylib"
+          },
+          {
+            "file": "libggml-blas.0.27.0.dylib",
+            "bytes": 58776,
+            "sha256": "12aefdc8dd4873d69554dc85a0dd09fffef9828e1fc9ecf6b48913ef2106b33a"
+          },
+          {
+            "file": "libggml-blas.0.dylib",
+            "link": "libggml-blas.0.27.0.dylib"
+          },
+          {
+            "file": "libggml-blas.dylib",
+            "link": "libggml-blas.0.dylib"
+          },
+          {
+            "file": "libggml-cpu.0.27.0.dylib",
+            "bytes": 941088,
+            "sha256": "8c56078c8a77fb466a28f01e6de8b641525ab815014d3097c1e15d7e980682b3"
+          },
+          {
+            "file": "libggml-cpu.0.dylib",
+            "link": "libggml-cpu.0.27.0.dylib"
+          },
+          {
+            "file": "libggml-cpu.dylib",
+            "link": "libggml-cpu.0.dylib"
+          },
+          {
+            "file": "libggml-metal.0.27.0.dylib",
+            "bytes": 5604440,
+            "sha256": "1a54f0b7e2a374461f7efe98327c176d49b51213d427f1734bcecf63d3da2fd0"
+          },
+          {
+            "file": "libggml-metal.0.dylib",
+            "link": "libggml-metal.0.27.0.dylib"
+          },
+          {
+            "file": "libggml-metal.dylib",
+            "link": "libggml-metal.0.dylib"
+          },
+          {
+            "file": "libggml-rpc.0.27.0.dylib",
+            "bytes": 242800,
+            "sha256": "0721927b159bb86b6be6c88bffdac6ee566d31fee6d15f89d31996e4d25ef558"
+          },
+          {
+            "file": "libggml-rpc.0.dylib",
+            "link": "libggml-rpc.0.27.0.dylib"
+          },
+          {
+            "file": "libggml-rpc.dylib",
+            "link": "libggml-rpc.0.dylib"
+          },
+          {
+            "file": "libggml.0.27.0.dylib",
+            "bytes": 60016,
+            "sha256": "a97bc40525aea78834fdf28197b5b21f149b6d5ac2d3b615b95b86f775a69477"
+          },
+          {
+            "file": "libggml.0.dylib",
+            "link": "libggml.0.27.0.dylib"
+          },
+          {
+            "file": "libggml.dylib",
+            "link": "libggml.0.dylib"
+          },
+          {
+            "file": "libllama-batched-bench-impl.dylib",
+            "bytes": 56576,
+            "sha256": "c744b854dc54b7309e691330729346aedcf5158c8d7e72204958cf2991ccc733"
+          },
+          {
+            "file": "libllama-bench-impl.dylib",
+            "bytes": 323016,
+            "sha256": "29d28dec19ac4cadff020c8f29d545fa51fcb538226ba92173b350b2254c8cce"
+          },
+          {
+            "file": "libllama-cli-impl.dylib",
+            "bytes": 255144,
+            "sha256": "f4e4a1582ab4f418a59235bb5e338babca9287fdc04dcdf06db0756674137db6"
+          },
+          {
+            "file": "libllama-common.0.7.0.dylib",
+            "bytes": 7937832,
+            "sha256": "024a4ff73326152749559b1efc0bea5120254601217efabea7940422670db3a4"
+          },
+          {
+            "file": "libllama-common.0.dylib",
+            "link": "libllama-common.0.7.0.dylib"
+          },
+          {
+            "file": "libllama-common.dylib",
+            "link": "libllama-common.0.dylib"
+          },
+          {
+            "file": "libllama-completion-impl.dylib",
+            "bytes": 121744,
+            "sha256": "4612a28f5ad5bc41167f8f5a877aff25963d4c1aba471b12d0261b369d351066"
+          },
+          {
+            "file": "libllama-fit-params-impl.dylib",
+            "bytes": 55264,
+            "sha256": "0414b02a71930f61e93ed78ceacdb3b76b6b2403e464adea927d4655bd2751df"
+          },
+          {
+            "file": "libllama-perplexity-impl.dylib",
+            "bytes": 156384,
+            "sha256": "208ef689572ac925d4b83a9f8cf9482da29ee7f213517fb9712f713ee49e5596"
+          },
+          {
+            "file": "libllama-quantize-impl.dylib",
+            "bytes": 96496,
+            "sha256": "582dadbf515289d7a5dd5aa27be5fdcbe58cad0a2eb4eaa72a15087ad9d26864"
+          },
+          {
+            "file": "libllama-server-impl.dylib",
+            "bytes": 9535240,
+            "sha256": "572cf327dcd3baea2ebb691257e3929f27d94f00b44d2f6d56bcb31408bc24bd"
+          },
+          {
+            "file": "libllama.0.7.0.dylib",
+            "bytes": 3568656,
+            "sha256": "17bd10079cd65514c63ddd57483307618edbdb71e06c5d89ea1b63fed248a95d"
+          },
+          {
+            "file": "libllama.0.dylib",
+            "link": "libllama.0.7.0.dylib"
+          },
+          {
+            "file": "libllama.dylib",
+            "link": "libllama.0.dylib"
+          },
+          {
+            "file": "libmtmd.0.7.0.dylib",
+            "bytes": 1481872,
+            "sha256": "0802711fcae1a6432794b127824686100048d7b6a40792a5a03b327ee556bfc0"
+          },
+          {
+            "file": "libmtmd.0.dylib",
+            "link": "libmtmd.0.7.0.dylib"
+          },
+          {
+            "file": "libmtmd.dylib",
+            "link": "libmtmd.0.dylib"
+          },
+          {
+            "file": "llama-server",
+            "bytes": 49984,
+            "sha256": "981b460a278e9a0c880cef32d6fab42785a119084456b16845304cf38c32cf69"
+          },
+          {
+            "file": "LICENSE",
+            "bytes": 1078,
+            "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+          }
+        ]
+      },
+      "linux-x86_64": {
+        "archive": "llama-b11846-bin-ubuntu-x64.tar.gz",
+        "sha256": "eb26d338963f04eda3f70f23ef4a8575d44bc643f58d26c2f51925a58fbd43ff",
+        "files": [
+          {
+            "file": "libggml-base.so",
+            "link": "libggml-base.so.0"
+          },
+          {
+            "file": "libggml-base.so.0",
+            "link": "libggml-base.so.0.27.0"
+          },
+          {
+            "file": "libggml-base.so.0.27.0",
+            "bytes": 906024,
+            "sha256": "09a94b848844aaab4da9fe328b76e538e8ac61e8be1c0f6d10cb34273d4dc6d5"
+          },
+          {
+            "file": "libggml-cpu-alderlake.so",
+            "bytes": 1416480,
+            "sha256": "1e360d22f49352e9b1f06349553fe15f99cc3f63cd5f540fefe848ef5023ce18"
+          },
+          {
+            "file": "libggml-cpu-cannonlake.so",
+            "bytes": 1565856,
+            "sha256": "dafcef5611e8f2a20bf51db92bb82464e59495318bb277713361d9cb4866e3b6"
+          },
+          {
+            "file": "libggml-cpu-cascadelake.so",
+            "bytes": 1581944,
+            "sha256": "9aa2e2e6c074f4de8537be36c8fd03f57f6be8bd5833de01596476eae9a4a288"
+          },
+          {
+            "file": "libggml-cpu-cooperlake.so",
+            "bytes": 1577920,
+            "sha256": "960b36b9e4259aa09f75b4818ca74c11b0d91c260591805820283d6a0cba6bcf"
+          },
+          {
+            "file": "libggml-cpu-haswell.so",
+            "bytes": 1420576,
+            "sha256": "78c292358908876c992f4f959d9b4004cad3692c06243e5018e43e89f0c18dc0"
+          },
+          {
+            "file": "libggml-cpu-icelake.so",
+            "bytes": 1581944,
+            "sha256": "c593b713f442843bca52c57c958feeb20309902d0cf551454314bd89d3bb0fea"
+          },
+          {
+            "file": "libggml-cpu-ivybridge.so",
+            "bytes": 1356192,
+            "sha256": "ab972fb813fb6123a71c69e9e3dc252d29c6500a369afb728a6d63df365bfcd7"
+          },
+          {
+            "file": "libggml-cpu-piledriver.so",
+            "bytes": 1352096,
+            "sha256": "e751695f8c53e7baad2f3549408b7cc71ad28794b60e6fb6fa7f57f2a3ddc041"
+          },
+          {
+            "file": "libggml-cpu-sandybridge.so",
+            "bytes": 1351048,
+            "sha256": "3d37d612c2d17f7029ecf1b48c08e307c34ad02879ce291a67a27511aded80e7"
+          },
+          {
+            "file": "libggml-cpu-sapphirerapids.so",
+            "bytes": 1848344,
+            "sha256": "435b8b508f26ea8786af5dfdbf346004812e32ef229b2d197af65982a46affed"
+          },
+          {
+            "file": "libggml-cpu-skylakex.so",
+            "bytes": 1565856,
+            "sha256": "be6aa62e7b3ab46fff54fc65f6ede6a69ddc6e972399bbb7b03ac988196ee47d"
+          },
+          {
+            "file": "libggml-cpu-sse42.so",
+            "bytes": 958688,
+            "sha256": "841441a48c4f087e19e1b92d20fb1fa1879d37d37ea36c3c07f1aaf04ff4e989"
+          },
+          {
+            "file": "libggml-cpu-x64.so",
+            "bytes": 954768,
+            "sha256": "2f0c50055d74144782aef520ee2cdc4316f46451be9c8a2661d377df8a0778f2"
+          },
+          {
+            "file": "libggml-cpu-zen4.so",
+            "bytes": 1577920,
+            "sha256": "8aca7ded568b1543720783505c93933d70e7bbe550b4e25062ce0bb96bedaac0"
+          },
+          {
+            "file": "libggml-rpc.so",
+            "bytes": 319776,
+            "sha256": "4b6be3e1f065e93a1641ab8d80c6b01cc4e614a273141144b0271442199f338d"
+          },
+          {
+            "file": "libggml.so",
+            "link": "libggml.so.0"
+          },
+          {
+            "file": "libggml.so.0",
+            "link": "libggml.so.0.27.0"
+          },
+          {
+            "file": "libggml.so.0.27.0",
+            "bytes": 51040,
+            "sha256": "8643a58bb37af6fb153e2ea98b48efa227855725ee51c05f4ca76b9867956463"
+          },
+          {
+            "file": "libllama-batched-bench-impl.so",
+            "bytes": 49064,
+            "sha256": "a69a1abbca090c7ab3fa286adcb9fa51b710730c7950c02796a9a84197ef00c7"
+          },
+          {
+            "file": "libllama-bench-impl.so",
+            "bytes": 490560,
+            "sha256": "e4ca59722bb4c5567fde2d5e07deb2116211e88d6d1afc43deabc5278a575ddb"
+          },
+          {
+            "file": "libllama-cli-impl.so",
+            "bytes": 277120,
+            "sha256": "085ffb43408aac8202d35dcd24e0fb3800e1d952925f862c0de3d6fd2f13bb82"
+          },
+          {
+            "file": "libllama-common.so",
+            "link": "libllama-common.so.0"
+          },
+          {
+            "file": "libllama-common.so.0",
+            "link": "libllama-common.so.0.7.0"
+          },
+          {
+            "file": "libllama-common.so.0.7.0",
+            "bytes": 6659992,
+            "sha256": "a403bcba609f93f7b7558267c804663ae0f862ffd652b1aae6225657523116c7"
+          },
+          {
+            "file": "libllama-completion-impl.so",
+            "bytes": 145168,
+            "sha256": "0d3d7ae4cdeafbce5d765f9027371506f5205eeb3203553e463035bc4babae23"
+          },
+          {
+            "file": "libllama-fit-params-impl.so",
+            "bytes": 39920,
+            "sha256": "397ce456786d0c161b14dd0ee225378d1f1ff875cbc428d32fda7dcaf15e306b"
+          },
+          {
+            "file": "libllama-perplexity-impl.so",
+            "bytes": 171912,
+            "sha256": "357dc3ef0ebe6fe69b35c965db701452f44cc08a01f77a22c609b4aa96afbca9"
+          },
+          {
+            "file": "libllama-quantize-impl.so",
+            "bytes": 81840,
+            "sha256": "8dd43c1fb15f2e6096237a5cc3aa52694b04978c176f10db28c27d15d6c1adcc"
+          },
+          {
+            "file": "libllama-server-impl.so",
+            "bytes": 7910472,
+            "sha256": "1f1673f874423c906711b8fb710e25d23e74bf2059251bc70f6463ef9f3e65d7"
+          },
+          {
+            "file": "libllama.so",
+            "link": "libllama.so.0"
+          },
+          {
+            "file": "libllama.so.0",
+            "link": "libllama.so.0.7.0"
+          },
+          {
+            "file": "libllama.so.0.7.0",
+            "bytes": 5185152,
+            "sha256": "af679523baa5dd12df67306070e98fdda1566f8b1710d886cc43919b54c33245"
+          },
+          {
+            "file": "libmtmd.so",
+            "link": "libmtmd.so.0"
+          },
+          {
+            "file": "libmtmd.so.0",
+            "link": "libmtmd.so.0.7.0"
+          },
+          {
+            "file": "libmtmd.so.0.7.0",
+            "bytes": 2007320,
+            "sha256": "02dab07950baaee2fa71a68bf88ba7c523a8da0efa90ac83a2c1396e3178877f"
+          },
+          {
+            "file": "llama-server",
+            "bytes": 17864,
+            "sha256": "dd44cf103f044e1cd2acd91f3ad3a52468bcabec87f137147f0c7deaca92a30a"
+          },
+          {
+            "file": "LICENSE",
+            "bytes": 1078,
+            "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+          }
+        ]
+      }
+    }
+  }
+}

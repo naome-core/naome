@@ -6,6 +6,7 @@
 //! records may be compacted, but obligation budgets and sequence IDs survive.
 
 mod journal;
+mod model;
 mod process;
 mod provider;
 mod service;
@@ -101,6 +102,16 @@ pub struct Settings {
     pub finding: RoleSettings,
     pub solving: RoleSettings,
     pub interest: RoleSettings,
+    pub interest_provider: InterestProvider,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterestProvider {
+    #[default]
+    Decision,
+    #[cfg(any(test, feature = "developer-tools"))]
+    Deterministic,
 }
 
 impl RoleSettings {
@@ -131,6 +142,13 @@ impl RoleSettings {
 
 impl Settings {
     pub(crate) fn validate(self) -> Result<Self, String> {
+        if self.interest_provider == InterestProvider::Decision
+            && self.interest.mock != MockWork::default()
+        {
+            return Err(
+                "mock interest workload requires the explicit deterministic test provider".into(),
+            );
+        }
         for role in [self.finding, self.solving, self.interest] {
             if role.limits.horizon_ms == 0
                 || role.limits.work_units == 0
@@ -231,6 +249,7 @@ pub(crate) enum Input {
     },
     Interest {
         question: String,
+        assessment: crate::interest::Input,
         purpose: Purpose,
         root: Option<String>,
     },
@@ -240,8 +259,18 @@ impl Input {
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Find { .. } => {}
-            Self::Solve { question } | Self::Interest { question, .. } => {
+            Self::Solve { question } => {
                 naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+            }
+            Self::Interest {
+                question,
+                assessment,
+                ..
+            } => {
+                let compiled = naome_authoring::CompiledQuestion::compile(question)
+                    .map_err(|e| e.to_string())?;
+                assessment.validate()?;
+                assessment.request(&compiled).validate()?;
             }
         }
         if let Self::Interest {
@@ -263,7 +292,16 @@ impl Input {
     }
 
     fn account_key(&self) -> String {
-        identity(self)
+        match self {
+            // A changed selection context cannot refill the original obligation.
+            Self::Interest {
+                question,
+                purpose,
+                root,
+                ..
+            } => identity(&("interest", question, purpose, root)),
+            _ => identity(self),
+        }
     }
 }
 
@@ -280,7 +318,9 @@ pub(crate) enum Output {
         source: String,
         helpers: Vec<String>,
     },
+    #[cfg(any(test, feature = "developer-tools"))]
     Interest(bool),
+    Decision(crate::decision::Distribution),
     NoCandidate,
 }
 
@@ -322,8 +362,21 @@ impl Output {
             {
                 Ok(())
             }
-            (Self::NoCandidate, Input::Solve { .. })
-            | (Self::Interest(_), Input::Interest { .. }) => Ok(()),
+            (
+                Self::Decision(distribution),
+                Input::Interest {
+                    question,
+                    assessment,
+                    ..
+                },
+            ) => {
+                let question = naome_authoring::CompiledQuestion::compile(question)
+                    .map_err(|e| e.to_string())?;
+                distribution.validate(&assessment.request(&question), &assessment.model)
+            }
+            (Self::NoCandidate, Input::Solve { .. }) => Ok(()),
+            #[cfg(any(test, feature = "developer-tools"))]
+            (Self::Interest(_), Input::Interest { .. }) => Ok(()),
             _ => Err("provider result type or capacity differs".into()),
         }
     }

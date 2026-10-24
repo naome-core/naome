@@ -19,15 +19,7 @@ pub(super) const HANDOFF_ACTIVE: &str = "NAOME_STARTUP_HANDOFF_ACTIVE_NS";
 pub(super) const HANDOFF_CLEANUP: &str = "NAOME_STARTUP_HANDOFF_CLEANUP_NS";
 pub(super) const CUSTODY_ACTIVE: &str = "NAOME_STARTUP_CUSTODY_ACTIVE_NS";
 
-pub(super) fn native_ns() -> Result<u64, String> {
-    let now =
-        nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_err(|e| e.to_string())?;
-    u64::try_from(now.tv_sec())
-        .ok()
-        .and_then(|s| s.checked_mul(1_000_000_000))
-        .and_then(|s| s.checked_add(u64::try_from(now.tv_nsec()).ok()?))
-        .ok_or_else(|| "invalid native startup clock".into())
-}
+pub(super) use crate::process_custody::monotonic_ns as native_ns;
 
 fn nonblocking(input: &std::io::Stdin) -> Result<(), String> {
     let flags =

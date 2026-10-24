@@ -21,7 +21,20 @@ async fn main() {
 
 async fn execute() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "--decision-supervisor-v1" | "--decision-worker-v1"
+        )
+    }) {
+        return naome_knowledge::runtime::execute().await;
+    }
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["decision-screen", directory, cases, output] => naome_knowledge::decision::screen::run(Path::new(directory), Path::new(cases), Path::new(output)).await,
+        ["decision-probe", directory, python] => {
+            tokio::time::timeout(std::time::Duration::from_secs(40), naome_knowledge::decision::probe::run(Path::new(directory),Path::new(python))).await.map_err(|_|"decision protocol probe deadline")?
+        },
+        ["interest-screen", directory, cases, output] => naome_knowledge::interest::screen::run(Path::new(directory), Path::new(cases), Path::new(output)).await,
         ["init", directory] => {
             let directory = Path::new(directory);
             fs::create_dir_all(directory).map_err(|error|error.to_string())?;

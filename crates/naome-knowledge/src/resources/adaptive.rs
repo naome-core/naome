@@ -100,7 +100,7 @@ impl Snapshot {
         }
         let heavy = selection.profile == Profile::Heavy;
         let light = selection.profile == Profile::Light;
-        let reserve = (observed.memory_limit / if heavy { 20 } else { 8 }).max(64 * MIB);
+        let reserve = memory_reserve(selection.profile, observed.memory_limit);
         let safe = observed.memory_limit.saturating_sub(reserve).min(
             observed
                 .process_rss
@@ -241,6 +241,27 @@ pub(crate) fn work_available() -> bool {
     live_limit(1, |budget| {
         usize::from(budget.paused.is_none() && budget.batch_steps > 0 && budget.concurrency > 0)
     }) > 0
+}
+
+fn memory_reserve(profile: Profile, limit: u64) -> u64 {
+    (limit / if profile == Profile::Heavy { 20 } else { 8 }).max(64 * MIB)
+}
+
+/// The model is a separately installed process allocation. Its initial full
+/// allowance must fit without consuming the existing hardware safety reserve.
+pub(crate) fn model_memory_available(bytes: u64) -> bool {
+    current().is_none_or(|live| {
+        live.budget.paused.is_none()
+            && live.budget.concurrency > 0
+            && bytes
+                <= live
+                    .observed
+                    .memory_available
+                    .saturating_sub(memory_reserve(
+                        live.selection.profile,
+                        live.observed.memory_limit,
+                    ))
+    })
 }
 /// Hold the live read boundary through the atomic reservation. A reduction
 /// cannot race past admission; already admitted leases remain valid and drain.

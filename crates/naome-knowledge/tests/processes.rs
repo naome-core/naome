@@ -4,6 +4,45 @@ static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(all(unix, feature = "developer-tools"))]
 #[test]
+fn shared_decision_protocol_preserves_reuse_limits_cancellation_and_native_custody() {
+    let _active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "naome-decision-protocol-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let resources = root.join("resources.json");
+    std::fs::write(&resources, br#"{"decision_memory_bytes":67108864}"#).unwrap();
+    let python = Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(python.status.success());
+    let python = String::from_utf8(python.stdout).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_naome-knowledge-dev"))
+        .arg("decision-probe")
+        .arg(root.join("probe"))
+        .arg(python.trim())
+        .env("NAOME_RESOURCE_CONFIG", &resources)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "native decision probe at {}\n{}\n{}",
+        root.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("decision_protocol_verified"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
 #[ignore = "Bounded public produce/compaction mechanism screen"]
 fn public_produce_observes_compaction_handoff_with_4096_large_proofs() {
     assert!(
@@ -103,6 +142,7 @@ fn ordinary_long_jobs_preserve_responsive_peer_control_and_crash_budgets() {
                 .as_nanos()
         ));
         let output = Command::new("python3")
+            .env("NAOME_TEST_INTEREST_PROVIDER", "deterministic")
             .arg(root.join("crates/naome-knowledge/tests/support/long_jobs.py"))
             .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
             .arg(&directory)
@@ -184,6 +224,14 @@ fn run_autonomous(mode: &str) {
             .as_nanos()
     ));
     let mut command = python_driver(&root, mode);
+    command.env(
+        "NAOME_TEST_INTEREST_PROVIDER",
+        if cfg!(feature = "developer-tools") {
+            "deterministic"
+        } else {
+            "decision"
+        },
+    );
     command
         .arg(root.join(match mode {
             "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",

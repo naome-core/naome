@@ -29,6 +29,8 @@ struct FirstAdmission {
     snapshot_after: String,
     registry_before: String,
     registry_after: String,
+    selection: String,
+    interest_job: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -67,7 +69,7 @@ impl Persistence {
         let root = crate::storage::research_directory(directory)?;
         let path = root.join("questions.sqlite3");
         let marker = directory.join("question-registry.initialized");
-        let established = crate::storage::marker_valid(&marker, b"naome-question-registry-v2\n")?;
+        let established = crate::storage::marker_valid(&marker, b"naome-question-registry-v3\n")?;
         let checkpoint = if path.exists() {
             crate::checkpoint::Checkpoint::open_for_replay(&path, "naome:questions:v1")?
         } else {
@@ -78,7 +80,7 @@ impl Persistence {
                 );
             }
             let header = Header {
-                version: 2,
+                version: 3,
                 compatibility: crate::hex(&crate::compatibility()),
                 policy: crate::hex(&policy.identity()),
                 backlog_sequence: 0,
@@ -88,7 +90,7 @@ impl Persistence {
         };
         checkpoint.require_kinds(&["question", "admitted", "backlog", "queued", "publication"])?;
         let header: Header = checkpoint.header()?;
-        if header.version != 2
+        if header.version != 3
             || header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.policy).is_err()
         {
@@ -102,7 +104,7 @@ impl Persistence {
             fault: std::sync::Mutex::new(None),
         };
         if !established {
-            crate::storage::write_marker(&marker, b"naome-question-registry-v2\n")?;
+            crate::storage::write_marker(&marker, b"naome-question-registry-v3\n")?;
         }
         Ok(persistence)
     }
@@ -386,6 +388,8 @@ impl Persistence {
             snapshot_after: crate::hex(&r.snapshot_after()),
             registry_before: crate::hex(&r.registry_before()),
             registry_after: crate::hex(&r.registry_after()),
+            selection: crate::hex(&r.selection_epoch()),
+            interest_job: r.interest_job(),
         });
         let key = crate::hex(question.source_hash());
         let original = self
@@ -478,10 +482,11 @@ fn validate_entry(key: &str, entry: &Entry) -> Result<CompiledQuestion, String> 
             &first.snapshot_after,
             &first.registry_before,
             &first.registry_after,
+            &first.selection,
         ] {
             crate::object::id_bytes(value)?;
         }
-        if first.record != key {
+        if first.record != key || first.interest_job == Some(0) {
             return Err("question admission original record differs".into());
         }
     }
@@ -510,6 +515,8 @@ mod tests {
                 snapshot_after: "03".repeat(32),
                 registry_before: "04".repeat(32),
                 registry_after: "05".repeat(32),
+                selection: "06".repeat(32),
+                interest_job: Some(1),
             }),
         };
         let expected = crate::checkpoint::encode(entry.first.as_ref().unwrap()).unwrap();
@@ -593,6 +600,8 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
                     snapshot_after: "03".repeat(32),
                     registry_before: "04".repeat(32),
                     registry_after: "05".repeat(32),
+                    selection: "06".repeat(32),
+                    interest_job: None,
                 };
                 let entry = Entry {
                     source: question.source().to_owned(),

@@ -172,19 +172,27 @@ def run(trial):
     first.config["runtime"]["question_interval_ms"] = 100
     first.write_config()
     first.start()
-    accepted = trial.wait(lambda: first.ids() if len(first.ids()) == 3 else None, maximum=10)
+    fixture = os.environ.get("NAOME_TEST_INTEREST_PROVIDER", "decision") == "deterministic"
+    if fixture:
+        accepted = trial.wait(lambda: first.ids() if len(first.ids()) == 3 else None, maximum=10)
+    else:
+        trial.wait(lambda: any(event.get("event") == "research_finished"
+            and "not configured" in (event.get("error") or "") for event in first.logs()), maximum=10)
+        accepted = first.ids()
+        assert not accepted, "ordinary product silently accepted without a decision model"
+    accepted_count = len(accepted)
     first.stop()
     first.config["runtime"]["question_interval_ms"] = 3600000
     first.write_config()
     identities = {object["proof_id"]: object for object in stored_objects(first)}
     identity = digest(first.directory / "identity.key")
     first.start()
-    assert trial.call(first, "status") == {"running": True, "accepted_proofs": 3, "interest": initial}
+    assert trial.call(first, "status") == {"running": True, "accepted_proofs": accepted_count, "interest": initial}
     old_process = dict(first.process)
     assert process_identity(old_process["pid"]) == old_process
     os.killpg(old_process["group"], signal.SIGKILL)
     trial.wait(lambda: not process_group(old_process), maximum=5)
-    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": initial}
+    assert trial.call(first, "status") == {"running": False, "accepted_proofs": accepted_count, "interest": initial}
     first.start()
     assert digest(first.directory / "identity.key") == identity
     assert first.ids() == accepted
@@ -209,7 +217,7 @@ def run(trial):
         assert not stop.result()["running"]
         assert update.result()["interest"] == "race stop"
     assert not process_group(first.process)
-    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": "race stop"}
+    assert trial.call(first, "status") == {"running": False, "accepted_proofs": accepted_count, "interest": "race stop"}
     assert first.ids() == accepted
     trial.summary["scenarios"]["start_stop_update_races_preserve_owner_text_and_checked_ids"] = {"result": "pass"}
     trial.summary["accepted_ids"] = sorted(accepted)

@@ -26,12 +26,125 @@ impl Drop for Directory {
     }
 }
 
+fn unconfigured() -> crate::decision::runtime::Access {
+    crate::decision::runtime::Access::new(None)
+}
+
 fn fixture(units: u32) -> (Directory, Owner) {
     let directory = Directory::new();
     let mut settings = Settings::default();
     settings.solving.limits.work_units = units;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    (directory, Owner::new(disk, journal, settings))
+    (
+        directory,
+        Owner::new(disk, journal, settings, unconfigured()),
+    )
+}
+
+fn interest_input() -> Input {
+    Input::Interest {
+        question: "goal=all(x,mem(x,x))".into(),
+        purpose: Purpose::Admission,
+        root: None,
+        assessment: crate::interest::Input {
+            interest: "Set membership".into(),
+            owner_revision: 1,
+            owner_digest: crate::hex(&[1; 32]),
+            model: crate::decision::liquid::unconfigured_identity(),
+            policy: crate::interest::POLICY.into(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn default_interest_provider_fails_explicitly_without_a_model_and_never_uses_the_mock() {
+    let directory = Directory::new();
+    let (mut service, client, _) = Service::open(&directory.0, Settings::default(), 0).unwrap();
+    let mut ticket = client
+        .submit(interest_input(), Binding::new([0; 32], [0; 32]))
+        .unwrap();
+    let completion = tokio::time::timeout(Duration::from_secs(5), ticket.completed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completion.state, State::Failed);
+    assert!(completion.result.unwrap_err().contains("not configured"));
+    assert_eq!(completion.reserved_units, 1);
+    client.acknowledge(completion.id).unwrap();
+    service.shutdown().await.unwrap();
+}
+
+#[test]
+fn decision_checkpoint_and_result_commit_together_and_keep_the_original_allowance() {
+    let (_directory, mut owner) = fixture(2);
+    let input = interest_input();
+    let (reply, _receipt) = oneshot::channel();
+    owner
+        .submit(input.clone(), Binding::new([0; 32], [0; 32]), reply)
+        .unwrap();
+    owner.journal.records.get_mut(&1).unwrap().state = State::Running;
+    assert_eq!(owner.reserve(1, 1).unwrap(), Reservation::Granted);
+    assert_eq!(owner.journal.records[&1].checkpoint, 0);
+    let Input::Interest {
+        question,
+        assessment,
+        ..
+    } = &input
+    else {
+        unreachable!()
+    };
+    let request =
+        assessment.request(&naome_authoring::CompiledQuestion::compile(question).unwrap());
+    let distribution = crate::decision::Distribution {
+        request: request.identity(),
+        model: assessment.model.clone(),
+        probabilities: request
+            .alternatives
+            .iter()
+            .zip([0.9, 0.05, 0.05])
+            .map(|(option, probability)| crate::decision::Probability {
+                option: option.id.clone(),
+                probability,
+            })
+            .collect(),
+        input_tokens: 100,
+        elapsed_ms: 1,
+        peak_rss_bytes: 1,
+        accelerator_bytes: 0,
+        truncated: false,
+    };
+    owner
+        .complete(
+            1,
+            process::Outcome {
+                state: State::Complete,
+                result: Ok(Output::Decision(distribution)),
+            },
+        )
+        .unwrap();
+    let record = &owner.journal.records[&1];
+    assert_eq!(record.checkpoint, 1);
+    assert!(matches!(record.result, Some(Output::Decision(_))));
+    let mut changed = input.clone();
+    let Input::Interest { assessment, .. } = &mut changed else {
+        unreachable!()
+    };
+    assessment.interest = "Other interests".into();
+    assessment.owner_revision += 1;
+    assert_eq!(input.account_key(), changed.account_key());
+}
+
+#[test]
+fn a_restarted_model_cannot_escape_its_fixed_undrained_physical_slot() {
+    let (directory, owner) = fixture(2);
+    let lease = owner.disk.decision_slot().unwrap().unwrap();
+    drop(owner);
+    let (disk, _) = Disk::open(&directory.0, Settings::default(), 0).unwrap();
+    assert!(disk.decision_slot().unwrap().is_none());
+    // Other research capacity can remain available, but is not model authority.
+    assert!(disk.slot(2).unwrap().is_some());
+    drop(lease);
+    assert!(disk.decision_slot().unwrap().is_some());
 }
 fn submit(owner: &mut Owner, epoch: u8) -> oneshot::Receiver<Completion> {
     let (reply, receipt) = oneshot::channel();
@@ -210,7 +323,7 @@ fn uncertain_running_recovery_is_held_even_after_its_original_horizon() {
     let mut settings = Settings::default();
     settings.solving.recovery = RecoveryPolicy::HoldInFlight;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings, unconfigured());
     let _receipt = submit(&mut owner, 1);
     let record = owner.journal.records.get_mut(&1).unwrap();
     record.state = State::Running;
@@ -665,7 +778,7 @@ fn thousands_of_obligations_keep_only_retained_accounts_across_process_restarts(
         let mut settings = Settings::default();
         settings.solving.limits.work_units = 2;
         let (disk, state) = Disk::open(&directory, settings, 0).unwrap();
-        let mut owner = Owner::new(disk, state, settings);
+        let mut owner = Owner::new(disk, state, settings, unconfigured());
         assert!(owner.journal.accounts.len() <= owner.journal.records.len());
         // Archived history is exhausted, and rejected lookups never become resident.
         let active = owner.journal.accounts.len();
@@ -857,7 +970,7 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
         .id,
         1
     );
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings, unconfigured());
     let id = submit_find(&mut owner, total as u64);
     assert!(id >= end);
 }
@@ -878,7 +991,7 @@ fn narrower_new_job_defaults_preserve_original_budget_accounts_and_retry_allowan
     settings.solving.limits.work_units = 1;
     drop(owner);
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings, unconfigured());
     let _retry = submit(&mut owner, 2);
     let retry = &owner.journal.records[&2];
     assert_eq!(retry.settings, original.settings);

@@ -86,6 +86,13 @@ async fn inconclusive_recovery_does_not_starve_later_records_or_archive_pages() 
         vec![recovered(
             4,
             jobs::Input::Interest {
+                assessment: crate::interest::Input {
+                    interest: String::new(),
+                    owner_revision: 0,
+                    owner_digest: crate::hex(&[0; 32]),
+                    model: crate::decision::liquid::unconfigured_identity(),
+                    policy: crate::interest::POLICY.into(),
+                },
                 question: "goal=all(x,mem(x,x))".into(),
                 purpose: jobs::Purpose::Admission,
                 root: None,

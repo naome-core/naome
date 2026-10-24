@@ -48,6 +48,7 @@ pub fn create_proof(question: &CompiledQuestion) -> Option<String> {
 }
 
 /// Placeholder interest selection, called only after the real formal prefilter.
+#[cfg(any(test, feature = "developer-tools"))]
 pub fn assess_interest(_: CompiledQuestion) -> std::future::Ready<Result<bool, String>> {
     std::future::ready(Ok(true))
 }

@@ -10,17 +10,21 @@ mod autonomous;
 #[cfg(unix)]
 mod checkpoint;
 mod corpus;
+pub mod decision;
 mod discovery;
 mod error;
 pub use error::Error;
 mod graph;
 mod index_storage;
 mod intake;
+pub mod interest;
 #[cfg(unix)]
 mod jobs;
 pub mod mocks;
 pub mod network;
 mod object;
+#[cfg(unix)]
+mod process_custody;
 #[cfg(unix)]
 pub mod proof_work;
 pub mod question;

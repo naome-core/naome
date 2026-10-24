@@ -826,7 +826,8 @@ class Node:
             "directory": str(self.directory),
             "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "peers": [],
             "producer_sources": [], "discovery": {"mdns": False, "dht": False},
-            "runtime": {"question_interval_ms": 3600000, "proof_interval_ms": 100},
+            "runtime": {"question_interval_ms": 3600000, "proof_interval_ms": 100,
+                "jobs": {"interest_provider": os.environ.get("NAOME_TEST_INTEREST_PROVIDER", "decision")}},
         }
         self.write_config()
         trial.nodes.append(self)
@@ -935,7 +936,7 @@ def guardian_fixture_worker():
         node = Node(trial, 0)
         write_receipt(trial.output / "research-processes.json", [])
         node.config["runtime"]["question_interval_ms"] = 100
-        node.config["runtime"]["jobs"] = {"finding": {"mock": {
+        node.config["runtime"]["jobs"] = {"interest_provider": "deterministic", "finding": {"mock": {
             "steps": 0, "cpu_ms": 20000, "descendant": True}}}
         node.write_config()
         node.start()
@@ -1172,6 +1173,27 @@ def main():
             for event in sender.logs()[sender.event_offset:]))
         assert sum(event.get("event") == "starting" for event in sender.logs()[sender.event_offset:]) == 1, "concurrent start created more than one runtime owner"
         trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
+        if os.environ.get("NAOME_TEST_INTEREST_PROVIDER", "decision") == "decision":
+            # The ordinary product must not acquire a deterministic interest
+            # provider merely to satisfy a lifecycle fixture without weights.
+            failed = trial.wait(lambda: next((event for event in sender.logs()
+                if event.get("event") == "research_finished" and event.get("state") == "Failed"
+                and "not configured" in (event.get("error") or "")), None), maximum=15)
+            trial.wait(lambda: any(event.get("event") == "identified" and event.get("proof_peer")
+                for event in receiver.logs()), maximum=20)
+            for node in trial.nodes:
+                assert trial.call(node, "status")["accepted_proofs"] == 0
+                assert not node.ids()
+                identity = digest(node.directory / "identity.key")
+                node.stop()
+                node.start()
+                assert digest(node.directory / "identity.key") == identity
+                assert trial.call(node, "status")["accepted_proofs"] == 0
+                node.stop()
+            trial.summary["claim"] = "Ordinary lifecycle, peer negotiation and restart with the real decision provider unconfigured; no automatic admission and no deterministic interest fallback."
+            trial.summary["scenarios"]["unconfigured_model_does_not_admit_questions"] = {"result":"pass", "failure":failed}
+            trial.summary["result"] = "pass"
+            return 0
         def converged():
             own, remote = sender.ids(), receiver.ids()
             if len(own) != 3 or own != remote or any(node.ids() != own for node in trial.nodes):
