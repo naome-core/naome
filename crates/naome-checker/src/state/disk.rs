@@ -125,6 +125,11 @@ impl DiskArtifactState {
                 let id = StatementId::from_bytes(id);
                 let (address, length) = decode_statement_record(&record)?;
                 if length == 0 {
+                    if naome_proof::program::graph_statement_id(address) != id
+                        || !self.program_nodes.contains_key(&address)?
+                    {
+                        return Err(ContextError::Corrupt);
+                    }
                     continue;
                 }
                 let bytes = self.statements.storage().read(address, length)?;

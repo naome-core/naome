@@ -246,8 +246,9 @@ impl Owner {
                 event=progress.recv()=>if let Some(event)=event {
                     match event {
                         process::Event::Program{id,unit,records,reply}=>{
-                            if self.programs.contains_key(&id) {let _=reply.send(Err("duplicate outstanding program group".into()));}
-                            else {self.programs.insert(id,PendingProgram{unit,records,reply});}
+                            if let std::collections::btree_map::Entry::Vacant(entry)=self.programs.entry(id) {
+                                entry.insert(PendingProgram{unit,records,reply});
+                            } else {let _=reply.send(Err("duplicate outstanding program group".into()));}
                         },
                         process::Event::Reserve{id,next,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {

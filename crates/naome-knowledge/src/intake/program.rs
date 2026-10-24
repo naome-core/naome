@@ -13,6 +13,8 @@ use crate::{
 pub(super) use helpers::Helpers;
 use naome_proof::program::{CHUNK_RECORDS, Chunk};
 
+type ProgramRequest = (PeerId, ProofId, ProofId, u64, usize);
+
 #[derive(Default)]
 pub(super) struct Programs {
     queue: VecDeque<Offer>,
@@ -402,7 +404,7 @@ impl Programs {
                         }
                         Ok(false) => {}
                         Err(crate::Error::StaleAuthority) => {
-                            *admission = Box::new(graph.begin_program_admission(proof)?)
+                            **admission = graph.begin_program_admission(proof)?
                         }
                         Err(error) => return Err(error),
                     }
@@ -506,7 +508,7 @@ impl Intake {
     pub(crate) fn program_request(
         &self,
         graph: &Graph,
-    ) -> Result<Option<(PeerId, ProofId, ProofId, u64, usize)>, crate::Error> {
+    ) -> Result<Option<ProgramRequest>, crate::Error> {
         if let Some(root) = &self.active
             && !root.helpers.is_empty()
             && root
@@ -516,16 +518,15 @@ impl Intake {
                 .is_none_or(|grant| grant.check().is_ok())
             && Instant::now().duration_since(root.description.created)
                 < crate::resources::limits().root_timeout
+            && let Some((id, start, records)) = root.helpers.request(graph)?
         {
-            if let Some((id, start, records)) = root.helpers.request(graph)? {
-                return Ok(Some((
-                    root.description.peer,
-                    root.description.id,
-                    id,
-                    start,
-                    records,
-                )));
-            }
+            return Ok(Some((
+                root.description.peer,
+                root.description.id,
+                id,
+                start,
+                records,
+            )));
         }
         self.programs
             .request(graph)

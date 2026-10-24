@@ -75,7 +75,7 @@ impl DiskArtifactCopy {
         !self.failed && self.phase == 13 && self.nested.is_none() && self.formula.is_none()
     }
 
-    /// Yield after a bounded number of actual reads, including all eight maps,
+    /// Yield after a bounded number of actual reads, including all nine maps,
     /// statement formulas and all three nested bucket families. A too-small
     /// fresh budget fails rather than silently skipping an oversized record.
     pub fn advance(&mut self, budget: DiskCopyBudget) -> Result<DiskCopyProgress, ContextError> {

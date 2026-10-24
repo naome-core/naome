@@ -332,12 +332,12 @@ impl Intake {
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
-        if let Err(error) = self.advance_program_helpers(graph, questions) {
-            if !error.retryable() {
-                graph.program_failure(&error);
-                if let Some(root) = self.active.take() {
-                    return Progress::Skipped(root.description.id, error.to_string());
-                }
+        if let Err(error) = self.advance_program_helpers(graph, questions)
+            && !error.retryable()
+        {
+            graph.program_failure(&error);
+            if let Some(root) = self.active.take() {
+                return Progress::Skipped(root.description.id, error.to_string());
             }
         }
         match self.programs.advance(graph, questions) {

@@ -160,7 +160,7 @@ impl ProgramAdmission {
         let source = self.storage.clone();
         let phase = source
             .admission_phase()
-            .map_err(|e| crate::Error::CorruptStorage(e))?;
+            .map_err(crate::Error::CorruptStorage)?;
         let result = self
             .cursor
             .advance(proof.proof()?, records)
@@ -177,16 +177,7 @@ impl ProgramAdmission {
     ) -> Result<CheckedBatch, crate::Error> {
         self.current(graph)?;
         let checked = proof.proof()?;
-        let growth = match checked.conclusion() {
-            Some(formula) => formula
-                .encode_canonical()
-                .map_err(crate::Error::from)?
-                .len(),
-            None => usize::try_from(checked.node_count()?)
-                .ok()
-                .and_then(|n| n.checked_mul(128))
-                .ok_or("program formula graph width")?,
-        };
+        let growth = program_context_bytes(checked)?;
         let context = self.cursor.finish().map_err(crate::Error::from)?;
         CheckedBatch::from_program(
             graph,
@@ -297,6 +288,25 @@ impl Graph {
                 .map_err(crate::Error::from)?;
         }
         self.context = cursor.finish().map_err(crate::Error::from)?;
+        self.context_bytes = self
+            .context_bytes
+            .checked_add(program_context_bytes(proof.proof()?)?)
+            .ok_or("checked context byte overflow")?;
         Ok(())
+    }
+}
+
+fn program_context_bytes(
+    proof: &naome_checker::program::CheckedProgram,
+) -> Result<usize, crate::Error> {
+    match proof.conclusion() {
+        Some(formula) => Ok(formula
+            .encode_canonical()
+            .map_err(crate::Error::from)?
+            .len()),
+        None => usize::try_from(proof.node_count()?)
+            .ok()
+            .and_then(|n| n.checked_mul(128))
+            .ok_or_else(|| "program formula graph width".into()),
     }
 }
