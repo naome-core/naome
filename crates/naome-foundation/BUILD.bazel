@@ -1,0 +1,24 @@
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+extract_cargo_lints(
+    name = "cargo_lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+rust_library(
+    name = "naome_foundation",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    lint_config = ":cargo_lints",
+)
+
+rust_test(
+    name = "unit_tests",
+    size = "small",
+    crate = ":naome_foundation",
+    lint_config = ":cargo_lints",
+)

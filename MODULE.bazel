@@ -1,0 +1,43 @@
+module(name = "naome")
+
+bazel_dep(name = "rules_rust", version = "0.74.0")
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    # Stripping proc-macro dylibs can corrupt LINKEDIT on current macOS SDKs.
+    # Keep build tools loadable (rust-lang/rust#157750).
+    extra_exec_rustc_flags_triples = {"aarch64-apple-darwin": ["-Cstrip=none"]},
+    extra_target_triples = [],
+    rustfmt_version = "1.97.1",
+    # Checked against rust-toolchain.toml by tools/ci/test_configuration.py.
+    versions = ["1.97.1"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+
+# Cargo patches are workspace members, so connect their native Bazel targets.
+crate.annotation(
+    crate = "libp2p",
+    deps = [
+        "@@//vendor/libp2p-dcutr:libp2p_dcutr",
+        "@@//vendor/libp2p-mdns:libp2p_mdns",
+        "@@//vendor/libp2p-relay:libp2p_relay",
+    ],
+)
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    # Reuse Cargo's local registry cache instead of discarding resolver downloads.
+    isolated = False,
+    manifests = ["//:Cargo.toml"],
+    skip_cargo_lockfile_overwrite = True,
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "crates")

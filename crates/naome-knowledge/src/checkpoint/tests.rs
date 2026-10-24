@@ -23,6 +23,7 @@ impl Drop for Directory {
 // Linux getrusage preserves pre-exec statistics from the launcher. VmHWM is
 // scoped to the current memory image, so parallel parent tests cannot inflate
 // the isolated history comparison. Missing measurements fail the test.
+#[cfg(any(target_os = "linux", feature = "system-tests"))]
 pub(crate) fn image_peak_rss_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {

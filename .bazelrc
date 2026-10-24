@@ -1,0 +1,11 @@
+# All execution and caching stay on the local machine or standard CI runner.
+common --enable_bzlmod
+build --jobs=4
+build --disk_cache=~/.cache/naome-bazel/disk
+build --repository_cache=~/.cache/naome-bazel/repository
+build --verbose_failures
+test --test_output=errors
+test --test_summary=detailed
+
+build:ci --keep_going
+test:ci --flaky_test_attempts=1

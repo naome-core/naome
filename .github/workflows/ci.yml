@@ -13,13 +13,18 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      full_cargo:
+        description: Also run the complete Cargo matrix
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.run_id || '' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -44,6 +49,9 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
+      - name: Check CI contracts
+        run: python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -56,26 +64,21 @@ jobs:
         run: cargo test --workspace --doc --all-features --locked
 
   linux_tests:
-    name: Rust tests (Linux x86_64, ${{ matrix.profile }})
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [test, release]
-    uses: ./.github/workflows/rust-tests.yml
+    name: Bazel (Linux x86_64)
+    uses: ./.github/workflows/bazel-tests.yml
     with:
       runner: ubuntu-24.04
-      profile: ${{ matrix.profile }}
 
   macos_tests:
-    name: Rust tests (macOS ARM64, ${{ matrix.profile }})
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [test, release]
-    uses: ./.github/workflows/rust-tests.yml
+    name: Bazel (macOS ARM64)
+    uses: ./.github/workflows/bazel-tests.yml
     with:
       runner: macos-15
-      profile: ${{ matrix.profile }}
+
+  manual_full_cargo:
+    name: Manual full Cargo matrix
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_cargo }}
+    uses: ./.github/workflows/full-cargo.yml
 
   linux:
     name: Rust platform (Linux x86_64)
@@ -85,12 +88,12 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Verify both Linux profiles
+      - name: Verify Linux Bazel checks
         env:
           PLATFORM_RESULT: ${{ needs.linux_tests.result }}
         run: |
           if [ "$PLATFORM_RESULT" != "success" ]; then
-            echo "Linux profiles result: $PLATFORM_RESULT"
+            echo "Linux Bazel result: $PLATFORM_RESULT"
             exit 1
           fi
       - name: Reject workflow cancellation
@@ -105,12 +108,12 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Verify both macOS profiles
+      - name: Verify macOS Bazel checks
         env:
           PLATFORM_RESULT: ${{ needs.macos_tests.result }}
         run: |
           if [ "$PLATFORM_RESULT" != "success" ]; then
-            echo "macOS profiles result: $PLATFORM_RESULT"
+            echo "macOS Bazel result: $PLATFORM_RESULT"
             exit 1
           fi
       - name: Reject workflow cancellation
@@ -123,20 +126,15 @@ jobs:
     needs: [quality, linux, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
     steps:
+      - name: Check out gate implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Verify required jobs
         env:
-          QUALITY_RESULT: ${{ needs.quality.result }}
-          LINUX_RESULT: ${{ needs.linux.result }}
-          MACOS_RESULT: ${{ needs.macos.result }}
-        run: |
-          if [ "$QUALITY_RESULT" != "success" ] || [ "$LINUX_RESULT" != "success" ] || \
-             [ "$MACOS_RESULT" != "success" ]; then
-            echo "Required CI jobs did not all succeed."
-            echo "quality=$QUALITY_RESULT linux=$LINUX_RESULT macos=$MACOS_RESULT"
-            exit 1
-          fi
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/check_results.py quality linux macos
       - name: Reject workflow cancellation
         if: ${{ always() && cancelled() }}
         run: exit 1

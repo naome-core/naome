@@ -584,6 +584,7 @@ fn cleanup_error_is_preserved_alongside_an_earlier_driver_failure() {
 // Isolated processes make the RSS comparison independent of parallel unit tests.
 // Each child reopens the same durable history; no provider or proof authority is
 // simulated by this accounting test. Process supervision has separate tests.
+#[cfg(feature = "system-tests")]
 #[test]
 fn thousands_of_obligations_keep_only_retained_accounts_across_process_restarts() {
     const TOTAL: usize = 4096;
