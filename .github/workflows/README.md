@@ -38,8 +38,8 @@ Full Cargo checks are not part of the MR gate. A failed run is a main regression
 not a passed full qualification. Main runs are not cancelled by later pushes.
 
 The full workflow can be dispatched directly. To exercise both paths on a branch
-before merge, dispatch the existing `CI` workflow with `full_cargo=true` (the
-manual default). All four complete Cargo jobs must succeed in that run.
+before merge, dispatch the existing `CI` workflow with `full_cargo=true` (an
+explicit opt-in). All four complete Cargo jobs must succeed in that run.
 
 ## Local commands
 
