@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -56,6 +56,7 @@ struct Owner {
 /// Every generation shares one byte-accounted cache and canonical directory
 /// lease. Old question/batch clones keep their generation's bytes available.
 pub(super) struct CheckedStorage {
+    live_cache_budget: AtomicUsize,
     connection: Mutex<IndexConnection>,
     write_gate: Mutex<WriteRoute>,
     write_ready: Condvar,
@@ -136,6 +137,10 @@ impl WriteRoute {
 
 impl CheckedStorage {
     pub(super) fn adapt_cache(&self) -> Result<(), String> {
+        let budget = crate::resources::adaptive::cache(usize::MAX);
+        if self.live_cache_budget.load(Ordering::Acquire) == budget {
+            return Ok(());
+        }
         self.cache
             .lock()
             .map_err(|_| "checked cache lock poisoned")?
@@ -159,7 +164,9 @@ impl CheckedStorage {
                 )
                 .map_err(|e| e.to_string())?,
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.live_cache_budget.store(budget, Ordering::Release);
+        Ok(())
     }
     #[cfg(test)]
     pub(super) fn delay_next_write(
@@ -330,6 +337,7 @@ impl CheckedStorage {
             )
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
+            live_cache_budget: AtomicUsize::new(usize::MAX),
             connection: Mutex::new(IndexConnection(Some(connection), None)),
             write_gate: Mutex::new(WriteRoute::default()),
             write_ready: Condvar::new(),
