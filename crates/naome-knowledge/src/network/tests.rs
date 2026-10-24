@@ -31,6 +31,69 @@ impl Drop for ConfigFile {
     }
 }
 
+fn suppliers() -> [PeerId; 3] {
+    [
+        "12D3KooWKbDekbeDkPxZCzqd8wFXxCYocro6mba7FBqJ89fDMujR",
+        "12D3KooWNaGsF3B8EzRMdDjsrVd5mAdyM7exb2eRtawS6Ztxu8eQ",
+        "12D3KooWN85tWa9uREnea7nhmAXr8a1Do4MipuBHWw5X9tdYno7E",
+    ]
+    .map(|peer| peer.parse().unwrap())
+}
+
+#[test]
+fn description_rotation_waits_for_the_next_suppliers_pacing_window() {
+    let [bad, good, _] = suppliers();
+    let peers = [bad, good];
+    let now = Instant::now();
+    let available_at = now + crate::resources::limits().automatic_request_interval;
+    let select_at = |time| {
+        description_supplier(
+            &peers,
+            1,
+            |_| true,
+            |peer| peer != good || time >= available_at,
+        )
+    };
+    // The bad description was declined. An inventory request has just used
+    // Good's window; repeating Bad must not consume Good's next turn.
+    assert_eq!(select_at(now), None);
+    assert_eq!(select_at(available_at), Some(good));
+}
+
+#[test]
+fn description_rotation_keeps_alternating_when_inventory_and_retry_clocks_align() {
+    let [first, second, _] = suppliers();
+    let peers = [first, second];
+    for (attempt, expected) in [first, second, first, second].into_iter().enumerate() {
+        // At every retry deadline the next supplier has just sent inventory.
+        // Its short cooldown must defer the request, not select its neighbour.
+        assert_eq!(
+            description_supplier(&peers, attempt, |_| true, |peer| peer != expected),
+            None
+        );
+        assert_eq!(
+            description_supplier(&peers, attempt, |_| true, |_| true),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn description_rotation_skips_unavailable_transports_and_respects_pacing() {
+    let [first, unavailable, third] = suppliers();
+    let peers = [first, unavailable, third];
+    assert_eq!(
+        description_supplier(&peers, 1, |peer| peer != unavailable, |_| true),
+        Some(third)
+    );
+    assert_eq!(
+        description_supplier(&peers, 1, |peer| peer != unavailable, |peer| peer != third),
+        None
+    );
+    assert_eq!(description_supplier(&peers, 1, |_| false, |_| true), None);
+    assert_eq!(description_supplier(&[], 1, |_| true, |_| true), None);
+}
+
 #[test]
 fn full_producer_queue_loads_with_worst_case_json_escaping() {
     let file = ConfigFile::new();

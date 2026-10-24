@@ -104,6 +104,25 @@ struct Wanted {
     retry: Instant,
     attempts: usize,
 }
+
+fn description_supplier(
+    peers: &[PeerId],
+    attempts: usize,
+    mut request_ready: impl FnMut(PeerId) -> bool,
+    mut automatic_ready: impl FnMut(PeerId) -> bool,
+) -> Option<PeerId> {
+    let peer = peers
+        .iter()
+        .cycle()
+        .skip(attempts % peers.len().max(1))
+        .take(peers.len())
+        .find(|peer| request_ready(**peer))
+        .copied()?;
+    // Inventory may have just used this supplier's automatic-read window.
+    // Wait for it without consuming the turn or retrying the previous supplier.
+    automatic_ready(peer).then_some(peer)
+}
+
 enum Flight {
     Inventory {
         peer: PeerId,
@@ -1476,16 +1495,12 @@ impl Node {
                 break;
             }
             let attempts = self.wanted[&id].attempts;
-            let Some(peer) = enabled
-                .iter()
-                .cycle()
-                .skip(attempts % enabled.len().max(1))
-                .take(enabled.len())
-                .find(|peer| {
-                    self.request_ready(**peer, now) && self.automatic_request_ready(**peer, now)
-                })
-                .copied()
-            else {
+            let Some(peer) = description_supplier(
+                &enabled,
+                attempts,
+                |peer| self.request_ready(peer, now),
+                |peer| self.automatic_request_ready(peer, now),
+            ) else {
                 continue;
             };
             let wanted = self.wanted.get_mut(&id).expect("queued description");
