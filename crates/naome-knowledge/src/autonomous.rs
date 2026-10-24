@@ -89,6 +89,7 @@ struct Publication {
     job: u64,
     candidate: Candidate,
     batch: Option<(ProofId, crate::graph::CheckedBatch)>,
+    announced: bool,
     context: Option<(Identity, Identity)>,
     reply: Option<oneshot::Receiver<question::QuestionAssessment>>,
     attempts: u32,
@@ -431,14 +432,12 @@ impl Autonomous {
                     Ok(jobs::Output::Proof { source, helpers }) => {
                         match graph.prepare_generated(&source, &helpers, &solving.question) {
                             Ok((root, batch)) => {
-                                emit(
-                                    json!({"event":"proof_generated","id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(&id),"job":completion.id}),
-                                );
                                 self.publications.push_back(Publication {
                                     question: solving.question,
                                     job: completion.id,
                                     candidate: Candidate::Certificate { source, helpers },
                                     batch: Some((root, batch)),
+                                    announced: false,
                                     context: None,
                                     reply: None,
                                     attempts: 0,
@@ -467,6 +466,7 @@ impl Autonomous {
                                 units,
                             ))),
                             batch: None,
+                            announced: false,
                             context: None,
                             reply: None,
                             attempts: 0,
@@ -537,9 +537,6 @@ impl Autonomous {
                     .prepare(graph, &self.client, &pending.question)
                 {
                     Ok(Some(batch)) => {
-                        emit(
-                            json!({"event":"proof_generated","id":crate::hex(batch.0.as_bytes()),"resolution_id":crate::hex(pending.question.resolution_id()),"job":pending.job}),
-                        );
                         pending.batch = Some(batch);
                     }
                     Ok(None) => {
@@ -559,6 +556,14 @@ impl Autonomous {
                         continue;
                     }
                 }
+            }
+            if let Some((root, _)) = &pending.batch
+                && !pending.announced
+            {
+                emit(
+                    json!({"event":"proof_generated","id":crate::hex(root.as_bytes()),"resolution_id":crate::hex(pending.question.resolution_id()),"job":pending.job}),
+                );
+                pending.announced = true;
             }
             if now >= pending.expires {
                 self.acknowledge(pending.job);
