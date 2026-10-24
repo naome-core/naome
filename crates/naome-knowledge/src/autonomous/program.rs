@@ -76,33 +76,36 @@ impl Generated {
                         Ok(result) => {
                             let records = result?;
                             let before = self.imported;
+                            let mut imported = before;
+                            let mut hash = self.hash;
                             for command in &records {
-                                self.hash = command_hash(
-                                    self.hash,
+                                hash = command_hash(
+                                    hash,
                                     &serde_json::to_vec(command).map_err(|e| e.to_string())?,
                                 );
-                                self.imported = self
-                                    .imported
+                                imported = imported
                                     .checked_add(1)
                                     .ok_or("program command address exhausted")?;
                             }
                             let status = work.status()?;
                             if status.commands == before {
                                 work.append_group(&records)?;
-                            } else if status.commands < self.imported {
+                            } else if status.commands < imported {
                                 return Err(
                                     "candidate checkpoint ends inside a provider group".into()
                                 );
                             }
                             let status = work.status()?;
-                            if status.commands == self.imported
-                                && status.program_hash != crate::hex(&self.hash)
+                            if status.commands == imported
+                                && status.program_hash != crate::hex(&hash)
                             {
                                 return Err(
                                     "candidate input differs from its retained provider stream"
                                         .into(),
                                 );
                             }
+                            self.imported = imported;
+                            self.hash = hash;
                             self.unit = self
                                 .unit
                                 .checked_add(1)
@@ -177,8 +180,8 @@ impl Generated {
 mod tests {
     use super::*;
     #[test]
-    fn disk_pressure_at_work_creation_retains_the_completed_provider_candidate() {
-        const CASE: &str = "autonomous::program::tests::disk_pressure_at_work_creation_retains_the_completed_provider_candidate";
+    fn disk_pressure_at_work_creation_and_append_retains_the_completed_provider_candidate() {
+        const CASE: &str = "autonomous::program::tests::disk_pressure_at_work_creation_and_append_retains_the_completed_provider_candidate";
         if std::env::var_os("NAOME_PROGRAM_CREATION_CASE").is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", CASE, "--nocapture"])
@@ -220,5 +223,40 @@ mod tests {
         );
         assert!(path.exists() && generated.pending.is_some());
         assert_eq!((generated.job, generated.unit), (17, 1));
+
+        let records = vec![Command::Equal { left: 0, right: 0 }];
+        let respond = || {
+            let (send, receive) = oneshot::channel();
+            send.send(Ok(records.clone())).unwrap();
+            receive
+        };
+        generated.pending = Some(respond());
+        crate::resources::with_disk_available(0, || {
+            let error = generated
+                .prepare(&graph, &owner.client, &question)
+                .err()
+                .expect("import must defer before advancing its in-memory cursor");
+            assert!(error.retryable());
+        });
+        assert_eq!(
+            (generated.unit, generated.imported, generated.hash),
+            (1, 0, [0; 32])
+        );
+        assert_eq!(
+            generated.work.as_ref().unwrap().status().unwrap().commands,
+            0
+        );
+        generated.pending = Some(respond());
+        assert!(
+            generated
+                .prepare(&graph, &owner.client, &question)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!((generated.unit, generated.imported), (2, 1));
+        assert_eq!(
+            generated.work.as_ref().unwrap().status().unwrap().commands,
+            1
+        );
     }
 }
