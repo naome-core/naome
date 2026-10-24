@@ -3,6 +3,16 @@ use super::*;
 use std::time::{Duration, Instant};
 
 pub(super) const DEFAULT_PROVIDER: &str = "naome-deterministic-mocks-v1";
+pub(super) const DECISION_PROVIDER: &str = "naome-decision-interest-v1";
+pub(super) fn for_input(input: &Input, settings: Settings) -> &'static str {
+    if matches!(input, Input::Interest { .. })
+        && settings.interest_provider == InterestProvider::Decision
+    {
+        DECISION_PROVIDER
+    } else {
+        DEFAULT_PROVIDER
+    }
+}
 #[derive(Clone, Copy)]
 pub(super) enum Probe {
     Descendant,
@@ -79,6 +89,10 @@ pub(super) fn contract(record: &Record) -> Option<Contract> {
             },
             resumable: true,
         }),
+        DECISION_PROVIDER if matches!(record.input, Input::Interest { .. }) => Some(Contract {
+            units: 1,
+            resumable: true,
+        }),
         _ => None,
     }
 }
@@ -88,6 +102,9 @@ pub(super) fn complete(record: &Record, checkpoint: u32) -> bool {
 pub(super) fn valid_checkpoint(record: &Record) -> bool {
     contract(record).is_some_and(|c| {
         record.checkpoint <= c.units
+            && (record.provider != DECISION_PROVIDER
+                || record.checkpoint == 0
+                || record.state == State::Complete)
             && (record.state != State::Complete || complete(record, record.checkpoint))
     })
 }
@@ -224,12 +241,21 @@ impl Provider for Mock {
                     })
                     .unwrap_or(Output::NoCandidate)
             }
-            Input::Interest { question, .. } => {
-                let compiled = naome_authoring::CompiledQuestion::compile(question)
-                    .map_err(|e| e.to_string())?;
-                let yes =
-                    libp2p::futures::executor::block_on(crate::mocks::assess_interest(compiled))?;
-                Output::Interest(yes && self.work.outcome != MockOutcome::Malformed)
+            Input::Interest { .. } => {
+                #[cfg(not(any(test, feature = "developer-tools")))]
+                return Err("deterministic interest selection requires developer-tools".into());
+                #[cfg(any(test, feature = "developer-tools"))]
+                {
+                    let Input::Interest { question, .. } = &self.input else {
+                        unreachable!()
+                    };
+                    let compiled = naome_authoring::CompiledQuestion::compile(question)
+                        .map_err(|e| e.to_string())?;
+                    let yes = libp2p::futures::executor::block_on(crate::mocks::assess_interest(
+                        compiled,
+                    ))?;
+                    Output::Interest(yes && self.work.outcome != MockOutcome::Malformed)
+                }
             }
         };
         Ok(output)

@@ -53,8 +53,19 @@ async fn stale_managed_interest_does_not_decline_the_new_graph_context() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
-    let mut questions =
-        Questions::managed(owner.client.clone(), &directory.0, Duration::from_secs(60)).unwrap();
+    let mut questions = Questions::managed(
+        owner.client.clone(),
+        &directory.0,
+        Duration::from_secs(60),
+        Some(crate::interest::Context {
+            epoch: [1; 32],
+            interest: String::new(),
+            revision: 0,
+            digest: hex(&[0; 32]),
+            model: crate::decision::liquid::unconfigured_identity(),
+        }),
+    )
+    .unwrap();
     let peer = PeerId::random();
     let mut intake = Intake::default();
     let metadata = fixture(41).1;

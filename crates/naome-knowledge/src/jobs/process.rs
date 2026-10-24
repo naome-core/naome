@@ -13,7 +13,7 @@ const INTERNAL: &str = "NAOME_INTERNAL_RESEARCH_PROVIDER";
 const SUPERVISOR: &str = "--research-supervisor-v1";
 const WORKER: &str = "--research-worker-v1";
 const DESCENDANT: &str = "--research-descendant-v1";
-static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use crate::process_custody::stop_worker;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,20 +171,7 @@ async fn run_owned(
     })
     .map_err(|e| e.to_string())?;
     start.push(b'\n');
-    let (spawned, restored) = {
-        let _spawn = SPAWN.lock().map_err(|_| "provider spawn owner poisoned")?;
-        nix::fcntl::fcntl(
-            &slot,
-            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
-        )
-        .map_err(|e| e.to_string())?;
-        let spawned = command.spawn();
-        let restored = nix::fcntl::fcntl(
-            &slot,
-            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
-        );
-        (spawned, restored)
-    };
+    let (spawned, restored) = crate::process_custody::spawn_with_slot(&slot, || command.spawn())?;
     let mut child = spawned.map_err(|e| format!("provider supervisor spawn: {e}"))?;
     *disposition.lock().expect("provider disposition owner") = Some(State::InDoubt);
     if let Err(error) = restored {
@@ -757,72 +744,6 @@ fn supervise() -> Result<(), String> {
             .map_err(|e| e.to_string())
     } else {
         Err("provider stopped or failed".into())
-    }
-}
-
-fn stop_worker(child: &mut Child) -> Result<(), String> {
-    // Hold the live unreaped Child while signalling its separate provider group.
-    // A pre-start cancellation may precede setsid; direct Child.kill covers it.
-    let group =
-        nix::unistd::Pid::from_raw(i32::try_from(child.id()).map_err(|_| "provider PID overflow")?);
-    let mut signal_errors = Vec::new();
-    match nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGTERM) {
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        // Darwin skips zombies when signalling a group and can return EPERM
-        // for a zombie-only group. Retain the denial until actual absence is
-        // observed after reaping; a denial alone never confirms cleanup.
-        Err(error) => signal_errors.push(format!("provider TERM group: {error}")),
-    }
-    // Rust's portable Child API reaps on try_wait. Keep the leader unreaped
-    // through both signals instead, including when it exits during this grace.
-    std::thread::sleep(Duration::from_millis(300));
-    // Stop the original leader before the last group signal. This also covers
-    // early cancellation while the worker is still creating its own group.
-    if let Err(error) = child.kill() {
-        signal_errors.push(format!("provider direct Child kill: {error}"));
-    }
-    // Retain the unreaped leader through the final group signal. Its PID
-    // cannot be recycled while we own this Child, even after its exit.
-    match nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL) {
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        Err(error) => signal_errors.push(format!("provider KILL group: {error}")),
-    }
-    // All signals are finished before any reaping can release the leader PID.
-    let until = Instant::now() + Duration::from_secs(1);
-    loop {
-        if child
-            .try_wait()
-            .map_err(|e| format!("provider wait: {e}"))?
-            .is_some()
-        {
-            break;
-        }
-        if Instant::now() >= until {
-            return Err(format!(
-                "provider Child reaping deadline; {}",
-                signal_errors.join("; ")
-            ));
-        }
-        std::thread::sleep(crate::resources::limits().cleanup_poll_interval);
-    }
-    let until = Instant::now() + Duration::from_secs(1);
-    loop {
-        match nix::sys::signal::killpg(group, None) {
-            Err(nix::errno::Errno::ESRCH) => return Ok(()),
-            Ok(()) | Err(nix::errno::Errno::EPERM) if Instant::now() < until => {
-                std::thread::sleep(crate::resources::limits().cleanup_poll_interval)
-            }
-            _ => {
-                return Err(format!(
-                    "provider group termination is unconfirmed{}",
-                    if signal_errors.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", signal_errors.join("; "))
-                    }
-                ));
-            }
-        }
     }
 }
 

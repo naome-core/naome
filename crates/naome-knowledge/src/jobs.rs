@@ -6,6 +6,7 @@
 //! records may be compacted, but obligation budgets and sequence IDs survive.
 
 mod journal;
+mod model;
 mod process;
 mod program;
 mod provider;
@@ -105,12 +106,22 @@ pub struct Settings {
     pub finding: RoleSettings,
     pub solving: RoleSettings,
     pub interest: RoleSettings,
+    pub interest_provider: InterestProvider,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterestProvider {
+    #[default]
+    Decision,
+    #[cfg(any(test, feature = "developer-tools"))]
+    Deterministic,
 }
 
 impl RoleSettings {
-    /// Historical allowances are validated against the current value format,
-    /// never against defaults for newly admitted obligations.
-    fn validate_history(self) -> Result<(), String> {
+    /// New and retained allowances share value-format checks. Current resource
+    /// limits apply separately when admitting a new obligation.
+    fn validate_format(self) -> Result<(), String> {
         if self.limits.horizon_ms == 0
             || self.limits.work_units == 0
             || self.mock.proof_padding_bytes > naome_authoring::AUTHORING_SOURCE_MAX_BYTES
@@ -127,7 +138,7 @@ impl RoleSettings {
                     .is_none()
             })
         {
-            return Err("research historical role value exceeds its format".into());
+            return Err("research role value exceeds its format".into());
         }
         Ok(())
     }
@@ -135,24 +146,18 @@ impl RoleSettings {
 
 impl Settings {
     pub(crate) fn validate(self) -> Result<Self, String> {
+        if self.interest_provider == InterestProvider::Decision
+            && self.interest.mock != MockWork::default()
+        {
+            return Err(
+                "mock interest workload requires the explicit deterministic test provider".into(),
+            );
+        }
         for role in [self.finding, self.solving, self.interest] {
-            if role.limits.horizon_ms == 0
-                || role.limits.work_units == 0
-                || crate::jobs::wall_ms()?
-                    .checked_add(role.limits.horizon_ms)
-                    .is_none()
-                || [
-                    role.limits.horizon_ms,
-                    role.mock.step_ms,
-                    role.mock.cpu_ms,
-                    role.mock.result_delay_ms,
-                ]
-                .into_iter()
-                .any(|ms| {
-                    std::time::Instant::now()
-                        .checked_add(std::time::Duration::from_millis(ms))
-                        .is_none()
-                })
+            role.validate_format()?;
+            if crate::jobs::wall_ms()?
+                .checked_add(role.limits.horizon_ms)
+                .is_none()
                 || role.mock.proof_padding_bytes > crate::resources::limits().proof_bytes
             {
                 return Err("research role horizon or workload limit".into());
@@ -235,6 +240,7 @@ pub(crate) enum Input {
     },
     Interest {
         question: String,
+        assessment: crate::interest::Input,
         purpose: Purpose,
         root: Option<String>,
     },
@@ -244,8 +250,18 @@ impl Input {
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Find { .. } => {}
-            Self::Solve { question } | Self::Interest { question, .. } => {
+            Self::Solve { question } => {
                 naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+            }
+            Self::Interest {
+                question,
+                assessment,
+                ..
+            } => {
+                let compiled = naome_authoring::CompiledQuestion::compile(question)
+                    .map_err(|e| e.to_string())?;
+                assessment.validate()?;
+                assessment.request(&compiled).validate()?;
             }
         }
         if let Self::Interest {
@@ -267,7 +283,16 @@ impl Input {
     }
 
     fn account_key(&self) -> String {
-        identity(self)
+        match self {
+            // A changed selection context cannot refill the original obligation.
+            Self::Interest {
+                question,
+                purpose,
+                root,
+                ..
+            } => identity(&("interest", question, purpose, root)),
+            _ => identity(self),
+        }
     }
 }
 
@@ -287,7 +312,9 @@ pub(crate) enum Output {
     Program {
         units: u32,
     },
+    #[cfg(any(test, feature = "developer-tools"))]
     Interest(bool),
+    Decision(crate::decision::Distribution),
     NoCandidate,
 }
 
@@ -329,9 +356,22 @@ impl Output {
             {
                 Ok(())
             }
+            (
+                Self::Decision(distribution),
+                Input::Interest {
+                    question,
+                    assessment,
+                    ..
+                },
+            ) => {
+                let question = naome_authoring::CompiledQuestion::compile(question)
+                    .map_err(|e| e.to_string())?;
+                distribution.validate(&assessment.request(&question), &assessment.model)
+            }
             (Self::Program { units }, Input::Solve { .. }) if *units > 0 => Ok(()),
-            (Self::NoCandidate, Input::Solve { .. })
-            | (Self::Interest(_), Input::Interest { .. }) => Ok(()),
+            (Self::NoCandidate, Input::Solve { .. }) => Ok(()),
+            #[cfg(any(test, feature = "developer-tools"))]
+            (Self::Interest(_), Input::Interest { .. }) => Ok(()),
             _ => Err("provider result type or capacity differs".into()),
         }
     }

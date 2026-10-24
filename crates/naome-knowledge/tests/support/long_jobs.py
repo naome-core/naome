@@ -42,7 +42,7 @@ def lane(record):
 
 
 def job_settings(**roles):
-    result={}
+    result={'interest_provider':'deterministic'}
     for name,values in roles.items():
         result[name]={'limits':{'horizon_ms':values.pop('horizon_ms',60000),
             'work_units':values.pop('work_units',64)},'mock':values}

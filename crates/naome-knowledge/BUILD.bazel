@@ -17,6 +17,8 @@ rust_library(
     compile_data = glob(
         [
             "src/**/*.hex",
+            "src/**/*.json",
+            "src/**/*.py",
             "tests/fixtures/**",
         ],
         allow_empty = True,

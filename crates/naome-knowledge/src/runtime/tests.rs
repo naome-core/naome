@@ -426,7 +426,10 @@ async fn interest_respects_graph_ownership_and_instance_bound_control() {
     assert!(!served.unwrap());
     assert_eq!(response.unwrap().interest, "\u{0001}".repeat(1024));
     let snapshot = control.owner_profile().unwrap();
-    assert_eq!(snapshot.version, 1);
+    let owner_bytes = fs::read(directory.0.join("owner.json")).unwrap();
+    let owner: serde_json::Value = serde_json::from_slice(&owner_bytes).unwrap();
+    assert_eq!(owner["version"], 1);
+    assert_eq!(snapshot.digest, crate::hex(&Sha256::digest(&owner_bytes)));
     assert_eq!(snapshot.revision, 1);
     assert_eq!(snapshot.interest, "\u{0001}".repeat(1024));
     assert_eq!(snapshot.digest.len(), 64);
@@ -548,6 +551,23 @@ async fn selection_epoch_binds_owner_revision_text_and_recovery_errors() {
     tokio::time::timeout(Duration::from_secs(1), requested_stop(&mut watch))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn model_configuration_changes_latch_stale_until_a_fresh_node_instance() {
+    let directory = Directory::new();
+    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
+    let before = control.selection().unwrap();
+    fs::write(directory.0.join("decision.json"), b"{invalid").unwrap();
+    assert!(control.selection().is_err());
+    fs::remove_file(directory.0.join("decision.json")).unwrap();
+    assert!(
+        control.selection().is_err(),
+        "restoring bytes must not resurrect old work"
+    );
+    drop(control);
+    let restarted = Control::bind_token(&directory.0, "cd".repeat(32)).unwrap();
+    assert_ne!(restarted.selection().unwrap(), before);
 }
 
 // Real process boundaries for the maintained abort owner. These source tests

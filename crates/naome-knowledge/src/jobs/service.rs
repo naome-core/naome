@@ -51,6 +51,16 @@ impl Service {
         let (receipt, stopped) = oneshot::channel();
         let error = Arc::new(Mutex::new(None));
         let report = error.clone();
+        let decision = crate::decision::runtime::Access::new(
+            crate::decision::liquid::Installed::load(directory)
+                .unwrap_or_else(|error| {
+                    crate::network::emit(
+                        serde_json::json!({"event":"decision_unavailable", "error":error}),
+                    );
+                    None
+                })
+                .map(|installed| installed.backend()),
+        );
         let thread = std::thread::Builder::new()
             .name("naome-research-jobs".into())
             .spawn(move || {
@@ -62,7 +72,8 @@ impl Service {
                     let (events, progress) =
                         mpsc::channel(crate::resources::limits().provider_events);
                     runtime.block_on(
-                        Owner::new(disk, journal, settings).run(receiver, stop, events, progress),
+                        Owner::new(disk, journal, settings, decision)
+                            .run(receiver, stop, events, progress),
                     )
                 })();
                 if let Err(failure) = &result {
@@ -146,6 +157,7 @@ struct Owner {
     next_lane: usize,
     recovery_skip: std::collections::BTreeSet<u64>,
     flushed: Instant,
+    decision: crate::decision::runtime::Access,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,7 +167,12 @@ enum Reservation {
 }
 
 impl Owner {
-    fn new(disk: Disk, journal: Journal, settings: Settings) -> Self {
+    fn new(
+        disk: Disk,
+        journal: Journal,
+        settings: Settings,
+        decision: crate::decision::runtime::Access,
+    ) -> Self {
         let recovery_skip = journal.records.keys().copied().collect();
         Self {
             disk,
@@ -169,6 +186,7 @@ impl Owner {
             tasks: FuturesUnordered::new(),
             next_lane: 0,
             flushed: Instant::now(),
+            decision,
         }
     }
 
@@ -186,8 +204,9 @@ impl Owner {
                 Err("research driver panicked; pending effects require reconciliation".into())
             });
         let cleanup = self.stop_all().await;
+        let model_cleanup = self.decision.shutdown().await;
 
-        combine_outcomes(result, cleanup)
+        combine_outcomes(combine_outcomes(result, cleanup), model_cleanup)
     }
 
     async fn drive(
@@ -286,6 +305,14 @@ impl Owner {
                 _=tick.tick()=>self.reconcile()?,
             }
             self.persist_programs()?;
+            if !crate::resources::adaptive::work_available()
+                && !self.running.keys().any(|id| {
+                    self.journal.records[id].provider == super::provider::DECISION_PROVIDER
+                })
+                && self.decision.has_session()
+            {
+                self.decision.shutdown().await?;
+            }
             self.schedule(&events)?;
         }
         Ok(())
@@ -380,7 +407,9 @@ impl Owner {
                 outcome.state
             };
             match outcome.result {
-                Ok(output) if !expired => record.result = Some(output),
+                Ok(output) if !expired => {
+                    retain_result(record, output)?;
+                }
                 Ok(_) => record.result = None,
                 Err(error) => record.failure = Some(failure_detail(&error)),
             }
@@ -605,7 +634,7 @@ impl Owner {
                 id,
                 input: input.clone(),
                 binding: binding.clone(),
-                provider: super::provider::DEFAULT_PROVIDER.into(),
+                provider: super::provider::for_input(&input, self.settings).into(),
                 configuration: identity(&settings),
                 settings,
                 created_ms,
@@ -728,8 +757,27 @@ impl Owner {
                 .take((lanes()[lane] - active).min(available))
                 .collect::<Vec<_>>();
             for id in ready {
-                let Some(slot) = self.disk.slot(lane)? else {
-                    continue;
+                let is_decision =
+                    self.journal.records[&id].provider == super::provider::DECISION_PROVIDER;
+                let slot = if is_decision {
+                    if self.running.keys().any(|id| {
+                        self.journal.records[id].provider == super::provider::DECISION_PROVIDER
+                    }) {
+                        continue;
+                    }
+                    if self.decision.has_session() {
+                        None
+                    } else {
+                        let Some(slot) = self.disk.decision_slot()? else {
+                            continue;
+                        };
+                        Some(slot)
+                    }
+                } else {
+                    let Some(slot) = self.disk.slot(lane)? else {
+                        continue;
+                    };
+                    Some(slot)
                 };
                 self.charge(id)?;
                 let now = wall_ms()?;
@@ -770,6 +818,7 @@ impl Owner {
                 self.save()?;
                 let (cancel, receiver) = oneshot::channel();
                 let events = events.clone();
+                let decision = self.decision.clone();
                 self.running.insert(
                     id,
                     Running {
@@ -778,21 +827,37 @@ impl Owner {
                     },
                 );
                 self.tasks.push(Box::pin(async move {
-                    let outcome = std::panic::AssertUnwindSafe(process::run(
-                        source,
-                        remaining_ms,
-                        events,
-                        receiver,
-                        slot,
-                    ))
-                    .catch_unwind()
-                    .await
-                    .unwrap_or_else(|_| process::Outcome {
-                        state: State::InDoubt,
-                        result: Err(
-                            "provider task panicked; cleanup requires reconciliation".into()
-                        ),
-                    });
+                    let work = async move {
+                        if is_decision {
+                            super::model::run(
+                                source,
+                                remaining_ms,
+                                events,
+                                receiver,
+                                decision,
+                                slot,
+                            )
+                            .await
+                        } else {
+                            process::run(
+                                source,
+                                remaining_ms,
+                                events,
+                                receiver,
+                                slot.expect("owned provider lease"),
+                            )
+                            .await
+                        }
+                    };
+                    let outcome = std::panic::AssertUnwindSafe(work)
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| process::Outcome {
+                            state: State::InDoubt,
+                            result: Err(
+                                "provider task panicked; cleanup requires reconciliation".into()
+                            ),
+                        });
                     (id, outcome)
                 }));
             }
@@ -870,7 +935,7 @@ impl Owner {
         let completion = completion(record);
         crate::network::emit(serde_json::json!({"event":"research_finished","job":id,
             "state":format!("{:?}",completion.state),"spent_ms":completion.spent_ms,
-            "reserved_units":completion.reserved_units}));
+            "reserved_units":completion.reserved_units,"error":completion.result.as_ref().err()}));
         if let Some(waiters) = self.waiters.remove(&id) {
             for waiter in waiters {
                 let _ = waiter.send(completion.clone());
@@ -1016,7 +1081,13 @@ impl Owner {
                     } else {
                         State::Complete
                     };
-                    record.result = (!exhausted).then_some(output);
+                    if exhausted {
+                        record.result = None;
+                    } else if let Err(error) = retain_result(record, output) {
+                        record.state = State::Failed;
+                        record.failure = Some(failure_detail(&error));
+                        failure = Some(append_failure(failure.take(), &error));
+                    }
                 }
             }
             self.clocks.remove(&id);
@@ -1067,7 +1138,7 @@ fn output_reservation(input: &Input) -> usize {
     match input {
         Input::Solve { .. } => 6 * crate::resources::limits().closure_bytes + 1024,
         Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
-        Input::Interest { .. } => 64,
+        Input::Interest { .. } => crate::decision::MAX_RESPONSE_BYTES,
     }
 }
 fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
@@ -1085,6 +1156,20 @@ fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
 fn append_failure(previous: Option<String>, next: &str) -> String {
     previous.map_or_else(|| next.to_owned(), |old| format!("{old}; cleanup: {next}"))
 }
+
+fn retain_result(record: &mut Record, output: Output) -> Result<(), String> {
+    output.validate(&record.input)?;
+    if record.provider == super::provider::DECISION_PROVIDER {
+        // The single inference unit and evidence commit together, including
+        // when a completed candidate races orderly shutdown.
+        if !matches!(output, Output::Decision(_)) || record.reserved_units == 0 {
+            return Err("decision completion has no reserved model evidence".into());
+        }
+        record.checkpoint = 1;
+    }
+    record.result = Some(output);
+    Ok(())
+}
 fn completion(record: &Record) -> Completion {
     Completion {
         id: record.id,
@@ -1092,10 +1177,12 @@ fn completion(record: &Record) -> Completion {
         spent_ms: record.spent_ms,
         reserved_units: record.reserved_units,
         state: record.state,
-        result: record
-            .result
-            .clone()
-            .ok_or_else(|| format!("research job {:?}", record.state)),
+        result: record.result.clone().ok_or_else(|| {
+            record
+                .failure
+                .clone()
+                .unwrap_or_else(|| format!("research job {:?}", record.state))
+        }),
     }
 }
 

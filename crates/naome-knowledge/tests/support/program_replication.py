@@ -71,9 +71,11 @@ def run(trial,units,memory_mib=None):
             node.large_screen=True;node.expected_profile='custom'
             write_receipt(node.directory/'resource-profile.json',{'profile':'custom','custom':{
                 'memory_bytes':memory_mib*1024*1024,'concurrency':1,'cache_bytes':32768,'batch_steps':512,'network_requests':1}})
-    donor.config['runtime']['jobs']={'solving':{'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
-        'mock':{'program_units':units}}}
-    for node in (donor,receiver):node.write_config();node.start();node.stop()
+    donor.config['runtime']['jobs']['solving']={'limits':{'horizon_ms':max(120000,units*1000),'work_units':units+16},
+        'mock':{'program_units':units}}
+    for node in (donor,receiver):
+        node.config['runtime']['jobs']['interest_provider']='deterministic'
+        node.write_config();node.start();node.stop()
     assert donor.peer!=receiver.peer and donor.port!=receiver.port
     assert donor.directory.resolve()!=receiver.directory.resolve()
     for node,other in ((donor,receiver),(receiver,donor)):

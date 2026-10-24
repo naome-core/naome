@@ -55,7 +55,7 @@ struct Header {
 impl Journal {
     fn header(&self) -> Header {
         Header {
-            version: 3,
+            version: 4,
             compatibility: self.compatibility.clone(),
             configuration: self.configuration.clone(),
             next_id: self.next_id,
@@ -71,7 +71,7 @@ impl Journal {
     }
     fn from_header(header: Header) -> Self {
         Self {
-            version: 3,
+            version: 4,
             compatibility: header.compatibility,
             configuration: header.configuration,
             next_id: header.next_id,
@@ -137,7 +137,7 @@ impl Disk {
                 return Err("research journal is missing; refusing a fresh allowance".into());
             }
             let journal = Journal {
-                version: 3,
+                version: 4,
                 compatibility: crate::hex(&crate::compatibility()),
                 configuration: identity(&settings),
                 next_id: 1,
@@ -189,7 +189,7 @@ impl Disk {
             },
         )?;
         let header: Header = checkpoint.header()?;
-        if header.version != 3
+        if header.version != 4
             || header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.configuration).is_err()
         {
@@ -284,7 +284,7 @@ impl Disk {
         let mut spent = 0u64;
         checkpoint.scan("account", 8192, |key, bytes| {
             let account: Account = crate::checkpoint::decode(bytes)?;
-            validate_account(key, &account, settings)?;
+            validate_account(key, &account)?;
             units = units
                 .checked_add(u64::from(account.reserved_units))
                 .ok_or("research archive unit overflow")?;
@@ -663,6 +663,17 @@ impl Disk {
         let count = *self.workers.get(lane).ok_or("research slot lane differs")?;
         let first = self.workers[..lane].iter().sum::<usize>();
         let range = first..first + count;
+        self.slot_range(range)
+    }
+
+    /// One fixed existing interest slot owns the shared model across crashes.
+    /// A restart cannot escape an undrained model by taking a different slot.
+    pub(super) fn decision_slot(&self) -> Result<Option<File>, String> {
+        let first = self.workers[..2].iter().sum::<usize>();
+        self.slot_range(first..first + 1)
+    }
+
+    fn slot_range(&self, range: std::ops::Range<usize>) -> Result<Option<File>, String> {
         let root = self.path.parent().ok_or("research slot parent absent")?;
         for index in range {
             let file = slot_file(root, index, false)?;
@@ -696,7 +707,7 @@ impl Journal {
     }
 
     fn validate_changes(&self, settings: Settings, full: bool) -> Result<(), String> {
-        if self.version != 3
+        if self.version != 4
             || self.compatibility != crate::hex(&crate::compatibility())
             || self.configuration != identity(&settings)
             || self.next_id == 0
@@ -743,7 +754,7 @@ impl Journal {
         }
         for (key, account) in &self.accounts {
             if full || self.accounts.changed(key) {
-                validate_account(key, account, settings)?;
+                validate_account(key, account)?;
             }
         }
         Ok(())
@@ -753,7 +764,7 @@ impl Journal {
 fn validate_record(
     id: u64,
     r: &Record,
-    _settings: Settings,
+    settings: Settings,
     observed_ms: u64,
     next_id: u64,
     next_cursor: u64,
@@ -761,9 +772,10 @@ fn validate_record(
 ) -> Result<(), String> {
     r.input.validate()?;
     r.binding.validate()?;
-    r.settings.validate_history()?;
+    r.settings.validate_format()?;
     if id != r.id
         || id >= next_id
+        || r.provider != super::provider::for_input(&r.input, settings)
         || !super::provider::valid_checkpoint(r)
         || r.configuration != identity(&r.settings)
         || r.created_ms > r.accounted_ms
@@ -787,6 +799,11 @@ fn validate_record(
     }
     if let Some(output) = &r.result {
         output.validate_retained(&r.input)?;
+        if r.provider == super::provider::DECISION_PROVIDER
+            && !matches!(output, Output::Decision(_))
+        {
+            return Err("decision provider result is not model evidence".into());
+        }
         if let Output::Program { units } = output
             && *units != r.checkpoint
         {
@@ -812,15 +829,13 @@ fn validate_record(
     Ok(())
 }
 
-fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result<(), String> {
+fn validate_account(key: &str, account: &Account) -> Result<(), String> {
     crate::object::id_bytes(key)?;
-    account.settings.validate_history()?;
-    if account.settings.limits.horizon_ms == 0
-        || account.settings.limits.work_units == 0
-        || account
-            .created_ms
-            .checked_add(account.settings.limits.horizon_ms)
-            != Some(account.expires_ms)
+    account.settings.validate_format()?;
+    if account
+        .created_ms
+        .checked_add(account.settings.limits.horizon_ms)
+        != Some(account.expires_ms)
         || account.held == Some(0)
         || account.reserved_units > account.settings.limits.work_units
     {

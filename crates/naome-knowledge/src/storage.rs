@@ -108,7 +108,7 @@ pub(crate) fn sqlite_common(
 }
 
 /// The exact inode and physical write generation owned by a serialized store.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct FileGeneration {
     device: u64,
     inode: u64,

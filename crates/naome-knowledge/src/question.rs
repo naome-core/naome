@@ -33,6 +33,7 @@ mod persistence;
 pub enum InterestAssessment {
     NotRun,
     Assessed(bool),
+    Inconclusive,
     ProviderFailed,
     TimedOut,
     Stale,
@@ -74,9 +75,20 @@ pub struct AdmissionReceipt {
     registry_before: Identity,
     registry_after: Identity,
     novelty: NodeLocalNovelty,
+    selection: Identity,
+    interest_job: Option<u64>,
 }
 
 impl AdmissionReceipt {
+    /// Exact owner/policy/model epoch used by this first admission.
+    pub const fn selection_epoch(&self) -> Identity {
+        self.selection
+    }
+    /// Durable research history entry containing the input and model evidence.
+    /// Explicit cooperative embeddings have no managed job identifier.
+    pub const fn interest_job(&self) -> Option<u64> {
+        self.interest_job
+    }
     pub const fn record(&self) -> Identity {
         self.record
     }
@@ -339,6 +351,7 @@ pub(crate) struct LocalQuestions<F> {
     policy: PrefilterPolicy,
     provider: Option<Arc<F>>,
     managed: Option<crate::jobs::Client>,
+    interest_context: Option<crate::interest::Context>,
     pending: BTreeMap<u64, Pending>,
     next_pending: u64,
     finished: Option<u64>,
@@ -370,6 +383,7 @@ where
             policy: crate::resources::limits().assessment_policy(),
             provider: provider.map(Arc::new),
             managed: None,
+            interest_context: None,
             pending: BTreeMap::new(),
             next_pending: 1,
             finished: None,
@@ -396,11 +410,13 @@ where
         client: crate::jobs::Client,
         directory: &std::path::Path,
         horizon: Duration,
+        context: Option<crate::interest::Context>,
     ) -> Result<Self, String> {
         let mut local = Self::new(None);
         local.attach_persistence(directory)?;
         local.managed = Some(client);
         local.interest_horizon = horizon;
+        local.select_context(context);
         Ok(local)
     }
 
@@ -634,6 +650,12 @@ where
         }
         self.finished = None;
         true
+    }
+
+    pub(crate) fn select_context(&mut self, context: Option<crate::interest::Context>) -> bool {
+        let epoch = context.as_ref().map(|context| context.epoch);
+        self.interest_context = context;
+        self.select(epoch)
     }
 
     fn registry_capacity(&self, question: &CompiledQuestion) -> bool {
@@ -1047,9 +1069,19 @@ where
                 .with_selection(self.selection.expect("available selection epoch"));
             let request = crate::jobs::Input::Interest {
                 question: question.source().to_owned(),
+                assessment: crate::interest::Input::from_context(
+                    self.interest_context
+                        .as_ref()
+                        .expect("managed selection context"),
+                ),
                 purpose,
                 root,
             };
+            let crate::jobs::Input::Interest { assessment, .. } = &request else {
+                unreachable!()
+            };
+            let assessment = assessment.clone();
+            let decision_request = assessment.request(&question);
             let ticket = client.submit(request, binding.clone());
             Box::pin(async move {
                 let Ok(mut ticket) = ticket else {
@@ -1066,8 +1098,25 @@ where
                             InterestAssessment::TimedOut
                         } else {
                             match completion.result {
+                                #[cfg(any(test, feature = "developer-tools"))]
                                 Ok(crate::jobs::Output::Interest(value)) => {
                                     InterestAssessment::Assessed(value)
+                                }
+                                Ok(crate::jobs::Output::Decision(distribution)) => {
+                                    match assessment.assess(&decision_request, &distribution) {
+                                        Ok(selection) => match selection {
+                                            crate::interest::Selection::Accept => {
+                                                InterestAssessment::Assessed(true)
+                                            }
+                                            crate::interest::Selection::Reject => {
+                                                InterestAssessment::Assessed(false)
+                                            }
+                                            crate::interest::Selection::Inconclusive => {
+                                                InterestAssessment::Inconclusive
+                                            }
+                                        },
+                                        Err(_) => InterestAssessment::ProviderFailed,
+                                    }
                                 }
                                 _ => InterestAssessment::ProviderFailed,
                             }
@@ -1258,6 +1307,8 @@ where
                         registry_before,
                         registry_after: self.registry.identity(),
                         novelty,
+                        selection: pending.selection.expect("positive current selection"),
+                        interest_job: pending.job,
                     };
                     if let Some(persistence) = &mut self.persistence {
                         if let Err(error) = persistence.retain(
