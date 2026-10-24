@@ -1,0 +1,67 @@
+name: Bazel checks
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    name: Native build and fast tests
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Bazel
+        run: bash tools/ci/install-bazel.sh
+
+      - name: Configure local Cargo resolver cache
+        run: echo "CARGO_HOME=$HOME/.cache/naome-bazel/cargo" >> "$GITHUB_ENV"
+
+      - name: Restore local Bazel cache
+        continue-on-error: true
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/naome-bazel
+          key: bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', '**/Cargo.toml', '**/BUILD.bazel', 'tools/bazel/**', 'rust-toolchain.toml', '.github/workflows/*.yml') }}
+
+      - name: Build product and test targets
+        run: bazel build --config=ci //:mr_build
+
+      - name: Run fast regression tests
+        run: bazel test --config=ci //:mr_tests
+
+      - name: Run Clippy on product and test targets
+        run: >-
+          bazel build --config=ci
+          --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+          --output_groups=+clippy_checks
+          --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+          //crates/... //vendor/...
+
+      - name: Verify tracked sources are unchanged
+        run: git diff --exit-code HEAD
+
+      - name: Save local Bazel cache from main
+        if: >-
+          ${{ success() && github.event_name == 'push' &&
+              github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/naome-bazel
+          key: ${{ steps.cache.outputs.cache-primary-key }}

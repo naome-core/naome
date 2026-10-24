@@ -18,12 +18,8 @@ mod hex_encode;
 const SIMPLE: &str = "goal=all(x,eq(x,x))\nproof: a=refl(x) b=gen(a,x) return b";
 
 fn fixture(name: &str) -> String {
-    fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name),
-    )
-    .unwrap()
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("test manifest directory");
+    fs::read_to_string(Path::new(&manifest).join("tests/fixtures").join(name)).unwrap()
 }
 
 fn register(state: &mut ArtifactState, artifact: &CompiledArtifact) {

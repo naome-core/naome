@@ -9,6 +9,8 @@ publish.workspace = true
 default-run = "naome"
 
 [features]
+# Full CI enables load and large-history regressions; MR checks stay bounded.
+system-tests = []
 developer-tools = ["dep:socket2"]
 
 [[bin]]

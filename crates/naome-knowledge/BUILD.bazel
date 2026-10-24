@@ -1,0 +1,64 @@
+load("@crates//:crates.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+extract_cargo_lints(
+    name = "cargo_lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+rust_library(
+    name = "naome_knowledge",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    compile_data = glob(
+        [
+            "src/**/*.hex",
+            "tests/fixtures/**",
+        ],
+        allow_empty = True,
+    ),
+    edition = "2024",
+    lint_config = ":cargo_lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [
+        "//crates/naome-authoring:naome_authoring",
+        "//crates/naome-checker:naome_checker",
+        "//crates/naome-foundation:naome_foundation",
+        "//crates/naome-proof:naome_proof",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "unit_tests",
+    size = "medium",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":naome_knowledge",
+    lint_config = ":cargo_lints",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_binary(
+    name = "naome",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "naome",
+    crate_root = "src/main.rs",
+    edition = "2024",
+    lint_config = ":cargo_lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [
+        ":naome_knowledge",
+        "//crates/naome-authoring:naome_authoring",
+        "//crates/naome-checker:naome_checker",
+        "//crates/naome-foundation:naome_foundation",
+        "//crates/naome-proof:naome_proof",
+    ] + all_crate_deps(normal = True),
+)

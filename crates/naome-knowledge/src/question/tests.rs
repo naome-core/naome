@@ -713,6 +713,7 @@ fn inconclusive_assessments_are_recomputed_and_admitted_obligations_survive_reco
     assert_eq!(reassessed.outcome.code(), "PASS");
 }
 
+#[cfg(feature = "system-tests")]
 fn registry_pattern(index: u32) -> naome_foundation::Formula {
     use naome_foundation::{Formula, FreeVariable};
     let x = FreeVariable::new(0);
@@ -731,6 +732,7 @@ fn registry_pattern(index: u32) -> naome_foundation::Formula {
     Formula::for_all(x, body)
 }
 
+#[cfg(feature = "system-tests")]
 #[tokio::test]
 async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
     use naome_foundation::Formula;

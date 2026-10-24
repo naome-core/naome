@@ -25,12 +25,8 @@ const SELF_EQUAL_ARTIFACT_ID: &str =
 const SELF_EQUAL_DEFINITION_BYTES: &str = "00000000010000000b0000000000000000000000";
 
 fn fixture(file: &str) -> String {
-    fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(file),
-    )
-    .unwrap()
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("test manifest directory");
+    fs::read_to_string(Path::new(&manifest).join("tests/fixtures").join(file)).unwrap()
 }
 
 fn diagnostic(source: &str) -> CompileDiagnostic {

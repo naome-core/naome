@@ -520,7 +520,7 @@ impl Disk {
         self.checkpoint.get("account", key, 8192)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "system-tests"))]
     pub(super) fn account_count(&self) -> usize {
         let mut count = 0;
         self.checkpoint
@@ -532,7 +532,7 @@ impl Disk {
         count
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "system-tests"))]
     pub(super) fn last_write_stats(&self) -> (usize, usize) {
         self.checkpoint.last_write
     }

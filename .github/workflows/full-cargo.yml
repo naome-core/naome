@@ -1,0 +1,56 @@
+name: Full Cargo CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-cargo-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  linux_tests:
+    name: Cargo (Linux x86_64, ${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [test, release]
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      runner: ubuntu-24.04
+      profile: ${{ matrix.profile }}
+
+  macos_tests:
+    name: Cargo (macOS ARM64, ${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [test, release]
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      runner: macos-15
+      profile: ${{ matrix.profile }}
+
+  result:
+    name: Full Cargo results
+    if: ${{ always() }}
+    needs: [linux_tests, macos_tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out gate implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require both complete platform matrices
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/check_results.py linux_tests macos_tests
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1

@@ -1,0 +1,39 @@
+exports_files([
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+])
+
+filegroup(
+    name = "mr_build",
+    srcs = [
+        "//crates/naome-authoring:naome_authoring",
+        "//crates/naome-checker:naome_checker",
+        "//crates/naome-foundation:naome_foundation",
+        "//crates/naome-knowledge:naome",
+        "//crates/naome-knowledge:naome_knowledge",
+        "//crates/naome-proof:naome_proof",
+        "//vendor/libp2p-dcutr:libp2p_dcutr",
+        "//vendor/libp2p-mdns:libp2p_mdns",
+        "//vendor/libp2p-relay:libp2p_relay",
+    ],
+)
+
+test_suite(
+    name = "mr_tests",
+    tests = [
+        "//crates/naome-authoring:cli",
+        "//crates/naome-authoring:proof_context",
+        "//crates/naome-authoring:single_language",
+        "//crates/naome-authoring:state_workflow_fixtures",
+        "//crates/naome-authoring:unit_tests",
+        "//crates/naome-checker:semantic_oracle",
+        "//crates/naome-checker:unit_tests",
+        "//crates/naome-foundation:unit_tests",
+        "//crates/naome-knowledge:unit_tests",
+        "//crates/naome-proof:unit_tests",
+        "//vendor/libp2p-dcutr:unit_tests",
+        "//vendor/libp2p-mdns:unit_tests",
+        "//vendor/libp2p-relay:unit_tests",
+    ],
+)

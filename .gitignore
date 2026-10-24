@@ -10,3 +10,6 @@ __pycache__/
 
 # Local proof-network state, private configuration, and generated test evidence
 .local/
+
+# Bazel output symlinks
+/bazel-*

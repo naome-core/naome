@@ -560,6 +560,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(feature = "system-tests")]
 #[test]
 fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_cursor() {
     const TEST: &str = "question::persistence::thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_cursor";

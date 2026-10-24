@@ -185,7 +185,7 @@ impl Graph {
     pub(crate) fn checked_context(&self) -> &DiskArtifactState {
         &self.context
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "system-tests"))]
     pub(crate) fn context_bytes(&self) -> usize {
         self.context_bytes
     }
