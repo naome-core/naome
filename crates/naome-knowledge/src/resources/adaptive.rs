@@ -126,6 +126,10 @@ impl Snapshot {
             cpus.saturating_mul(2)
                 .max(super::limits().workers.len())
                 .min((memory / (16 * MIB)).max(1) as usize)
+        } else if selection.profile == Profile::Custom {
+            ((idle / 1000).max(1) as usize)
+                .min(cpus)
+                .min((memory / (16 * MIB)).max(1) as usize)
         } else {
             ((idle / 2000).max(1) as usize).min(cpus)
         };
