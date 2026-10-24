@@ -52,7 +52,7 @@ pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 /// change the mathematical compatibility fingerprint or proof admission.
 pub fn routing_contract() -> Value {
     json!({
-        "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":5,"incompatible":"Rejected without conversion or reset"},
+        "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":crate::store::CATALOG_SCHEMA_VERSION,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
             "protocol":"/naome/knowledge/5", "topic":"naome-knowledge-v5",
             "interest":"Explicit local positive selection before root fetch and before commit",

@@ -14,6 +14,7 @@ use std::{
 mod catalog;
 mod program;
 use catalog::Catalog;
+pub(crate) use catalog::SCHEMA_VERSION as CATALOG_SCHEMA_VERSION;
 pub(crate) use catalog::Summary;
 pub(crate) use catalog::program::Progress as ProgramProgress;
 

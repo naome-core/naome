@@ -20,7 +20,7 @@ pub(super) fn set_scan_count() -> usize {
 }
 
 const APPLICATION_ID: i64 = 0x4e414f31;
-const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 const IDS_PAGE_QUERY: &str = "SELECT substr(id,1,33) FROM proofs
     WHERE id > ?1 ORDER BY id LIMIT ?2";
 
