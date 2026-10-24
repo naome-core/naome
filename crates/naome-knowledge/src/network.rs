@@ -1824,54 +1824,28 @@ impl Node {
                 after,
                 limit,
             } => inventory_response(&self.graph, known, after, limit)?,
-            Body::Describe { id }
-                if self
-                    .graph
-                    .program_manifest(ProofId::from_bytes(id))?
-                    .is_some() =>
-            {
-                match self.graph.program_description(ProofId::from_bytes(id)) {
-                    Ok(Some(metadata)) => Body::ProgramDescription {
+            Body::Describe { id } => match self.graph.description(ProofId::from_bytes(id)) {
+                Ok(Some(crate::object::ProofDescription::Program(metadata))) => {
+                    Body::ProgramDescription {
                         root: None,
                         metadata,
-                    },
-                    Ok(None) => Body::Missing,
-                    Err(error) => Body::Error {
-                        reason: error.to_string(),
-                    },
+                    }
                 }
-            }
-            Body::Describe { id } => match if self.test_controls {
-                self.test_objects
-                    .get(&ProofId::from_bytes(id))
-                    .map(|(metadata, _)| Ok(Some(metadata.clone())))
-                    .unwrap_or_else(|| self.graph.describe(ProofId::from_bytes(id)))
-            } else {
-                self.graph.describe(ProofId::from_bytes(id))
-            } {
-                Ok(Some(metadata)) => Body::Description { metadata },
-                Ok(None) => Body::Missing,
-                Err(reason) => Body::Error {
-                    reason: reason.to_string(),
+                Ok(Some(crate::object::ProofDescription::Certificate(metadata))) => {
+                    Body::Description { metadata }
+                }
+                Ok(None) => self
+                    .test_controls
+                    .then(|| self.test_objects.get(&ProofId::from_bytes(id)))
+                    .flatten()
+                    .map(|(metadata, _)| Body::Description {
+                        metadata: metadata.clone(),
+                    })
+                    .unwrap_or(Body::Missing),
+                Err(error) => Body::Error {
+                    reason: error.to_string(),
                 },
             },
-            Body::Get { root, id }
-                if self
-                    .graph
-                    .program_manifest(ProofId::from_bytes(id))?
-                    .is_some() =>
-            {
-                match self.graph.program_description(ProofId::from_bytes(id)) {
-                    Ok(Some(metadata)) => Body::ProgramDescription {
-                        root: Some(root),
-                        metadata,
-                    },
-                    Ok(None) => Body::Missing,
-                    Err(error) => Body::Error {
-                        reason: error.to_string(),
-                    },
-                }
-            }
             Body::ProgramGet {
                 root,
                 id,
@@ -1912,20 +1886,25 @@ impl Node {
                     },
                 }
             }
-            Body::Get { root, id } => self
-                .graph
-                .object(ProofId::from_bytes(id))?
-                .or_else(|| {
-                    self.test_controls
-                        .then(|| {
-                            self.test_objects
-                                .get(&ProofId::from_bytes(id))
-                                .and_then(|(_, object)| object.clone())
-                        })
-                        .flatten()
-                })
-                .map(|object| Body::Object { root, object })
-                .unwrap_or(Body::Missing),
+            Body::Get { root, id } => match self.graph.transfer(ProofId::from_bytes(id))? {
+                Some(crate::object::ProofTransfer::Program(metadata)) => Body::ProgramDescription {
+                    root: Some(root),
+                    metadata,
+                },
+                Some(crate::object::ProofTransfer::Certificate(object)) => {
+                    Body::Object { root, object }
+                }
+                None => self
+                    .test_controls
+                    .then(|| {
+                        self.test_objects
+                            .get(&ProofId::from_bytes(id))
+                            .and_then(|(_, object)| object.clone())
+                    })
+                    .flatten()
+                    .map(|object| Body::Object { root, object })
+                    .unwrap_or(Body::Missing),
+            },
             Body::Offer { metadata } => {
                 match self
                     .intake

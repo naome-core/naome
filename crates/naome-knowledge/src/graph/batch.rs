@@ -1,5 +1,11 @@
 use super::*;
 use naome_authoring::CompiledQuestion;
+#[cfg(test)]
+thread_local! { static DEPENDENCY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(super) fn dependency_visits() -> usize {
+    DEPENDENCY_VISITS.with(std::cell::Cell::get)
+}
 
 /// A complete checked delta, prepared without publishing staged knowledge.
 pub(crate) struct CheckedBatch {
@@ -280,67 +286,84 @@ impl Graph {
             |prefix| (prefix.context, prefix.context_bytes, prefix.entries),
         );
         let mut bytes = self.bytes;
-        while !candidates.is_empty() {
-            let mut ready = Vec::new();
-            for (id, candidate) in &candidates {
-                let mut complete = true;
-                for dependency in &candidate.dependencies {
-                    if !self.cold(
+        // Resolve internal edges once. Only dependencies outside this batch
+        // need an authenticated lookup in the fixed predecessor context.
+        let mut waiting = BTreeMap::new();
+        let mut dependents: BTreeMap<ProofId, Vec<ProofId>> = BTreeMap::new();
+        let mut external = BTreeSet::new();
+        let mut ready = BTreeSet::new();
+        for (id, candidate) in &candidates {
+            let mut count = 0usize;
+            for dependency in &candidate.dependencies {
+                #[cfg(test)]
+                DEPENDENCY_VISITS.with(|count| count.set(count.get() + 1));
+                if candidates.contains_key(dependency) {
+                    count += 1;
+                    dependents.entry(*dependency).or_default().push(*id);
+                } else if external.insert(*dependency)
+                    && !self.cold(
                         context
                             .contains_proof(*dependency)
                             .map_err(crate::Error::from),
-                    )? {
-                        complete = false;
-                        break;
-                    }
-                }
-                if complete {
-                    ready.push(*id);
+                    )?
+                {
+                    return Err("missing or cyclic committed dependency closure".into());
                 }
             }
-            if ready.is_empty() {
-                return Err("missing or cyclic committed dependency closure".into());
+            waiting.insert(*id, count);
+            if count == 0 {
+                ready.insert(*id);
             }
-            for id in ready {
-                let candidate = candidates.remove(&id).expect("selected staged object");
-                if self.contains(id)? {
-                    return Err("stale staged object already stored".into());
-                }
-                bytes = bytes
-                    .checked_add(candidate.bytes.len())
-                    .ok_or("accepted byte overflow")?;
-                let record = candidate.record();
-                let checked = self.check_normal(candidate.normal, &context)?;
-                if checked.proof_id() != id || checked.statement_id() != candidate.statement {
-                    return Err("checked identity mismatch".into());
-                }
-                if id == root {
-                    question
-                        .classify_checked_proof(&checked)
-                        .map_err(crate::Error::from)?;
-                }
-                if !self.cold(
-                    context
-                        .contains_statement(checked.statement_id())
-                        .map_err(crate::Error::from),
-                )? {
-                    context_bytes = context_bytes
-                        .checked_add(
-                            checked
-                                .conclusion()
-                                .encode_canonical()
-                                .map_err(crate::Error::from)?
-                                .len(),
-                        )
-                        .ok_or("checked context capacity")?;
-                }
-                self.cold(
-                    context
-                        .register_proof_for_replication(checked)
-                        .map_err(crate::Error::from),
-                )?;
-                entries.push((id, record));
+        }
+        while let Some(id) = ready.pop_first() {
+            let candidate = candidates.remove(&id).expect("selected staged object");
+            if self.contains(id)? {
+                return Err("stale staged object already stored".into());
             }
+            bytes = bytes
+                .checked_add(candidate.bytes.len())
+                .ok_or("accepted byte overflow")?;
+            let record = candidate.record();
+            let checked = self.check_normal(candidate.normal, &context)?;
+            if checked.proof_id() != id || checked.statement_id() != candidate.statement {
+                return Err("checked identity mismatch".into());
+            }
+            if id == root {
+                question
+                    .classify_checked_proof(&checked)
+                    .map_err(crate::Error::from)?;
+            }
+            if !self.cold(
+                context
+                    .contains_statement(checked.statement_id())
+                    .map_err(crate::Error::from),
+            )? {
+                context_bytes = context_bytes
+                    .checked_add(
+                        checked
+                            .conclusion()
+                            .encode_canonical()
+                            .map_err(crate::Error::from)?
+                            .len(),
+                    )
+                    .ok_or("checked context capacity")?;
+            }
+            self.cold(
+                context
+                    .register_proof_for_replication(checked)
+                    .map_err(crate::Error::from),
+            )?;
+            entries.push((id, record));
+            for dependent in dependents.remove(&id).unwrap_or_default() {
+                let remaining = waiting.get_mut(&dependent).expect("batch dependency");
+                *remaining -= 1;
+                if *remaining == 0 {
+                    ready.insert(dependent);
+                }
+            }
+        }
+        if !candidates.is_empty() {
+            return Err("missing or cyclic committed dependency closure".into());
         }
         Ok(CheckedBatch {
             context,

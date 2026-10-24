@@ -79,6 +79,16 @@ pub(crate) struct ProgramMetadata {
     pub manifest: naome_proof::program::Manifest,
     pub question: Option<String>,
 }
+/// Typed graph projections; these carry no independent mathematical authority.
+pub(crate) enum ProofDescription {
+    Certificate(Metadata),
+    Program(ProgramMetadata),
+}
+pub(crate) enum ProofTransfer {
+    Certificate(Envelope),
+    Program(ProgramMetadata),
+}
+
 impl ProgramMetadata {
     pub(crate) fn question(
         &self,

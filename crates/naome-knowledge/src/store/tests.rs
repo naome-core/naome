@@ -1,4 +1,5 @@
 use super::*;
+mod replay_validation;
 use crate::Graph;
 use naome_proof::{ProofCertificate, ProofStep, StatementId};
 use std::{

@@ -5,6 +5,13 @@ use naome_proof::program::{
     CHUNK_BYTES, CHUNK_RECORDS, Chunk, Command, Manifest, RECORD_BYTES, command_hash,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+thread_local! { static MANIFEST_READS: Cell<usize> = const { Cell::new(0) }; }
+#[cfg(test)]
+pub(crate) fn manifest_reads() -> usize {
+    MANIFEST_READS.with(Cell::get)
+}
+
 fn sql_error(error: rusqlite::Error) -> crate::Error {
     naome_checker::program::Error::Storage(error).into()
 }
@@ -77,6 +84,7 @@ impl Catalog {
         &self,
         manifest: &Manifest,
     ) -> Result<Progress, crate::Error> {
+        self.replay_summary.set(None);
         let bytes = manifest_bytes(manifest)?;
         let transaction = begin(&self.connection, TransactionBehavior::Immediate)?;
         self.require_validated_version(&transaction)?;
@@ -100,6 +108,8 @@ impl Catalog {
         &self,
         id: ProofId,
     ) -> Result<Option<Manifest>, crate::Error> {
+        #[cfg(test)]
+        MANIFEST_READS.with(|count| count.set(count.get() + 1));
         self.require_validated_version(&self.connection)?;
         let bytes: Option<Vec<u8>> = self
             .connection
@@ -132,6 +142,7 @@ impl Catalog {
         manifest: &Manifest,
         chunk: &Chunk,
     ) -> Result<Progress, crate::Error> {
+        self.replay_summary.set(None);
         if chunk.records.is_empty() || chunk.records.len() > CHUNK_RECORDS {
             return Err("program chunk record capacity".into());
         }

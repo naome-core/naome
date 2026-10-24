@@ -191,13 +191,47 @@ impl ProgramAdmission {
 }
 
 impl Graph {
-    pub(crate) fn program_description(
+    pub(crate) fn description(
         &self,
         id: ProofId,
-    ) -> Result<Option<crate::object::ProgramMetadata>, crate::Error> {
-        let Some(manifest) = self.program_manifest(id)? else {
+    ) -> Result<Option<crate::object::ProofDescription>, crate::Error> {
+        if !self.contains(id)? {
+            return Ok(None);
+        }
+        match self.cold(self.store.program_manifest(id))? {
+            Some(manifest) => self
+                .describe_program(id, manifest)
+                .map(crate::object::ProofDescription::Program)
+                .map(Some),
+            None => self
+                .describe(id)
+                .map(|metadata| metadata.map(crate::object::ProofDescription::Certificate)),
+        }
+    }
+
+    pub(crate) fn transfer(
+        &self,
+        id: ProofId,
+    ) -> Result<Option<crate::object::ProofTransfer>, crate::Error> {
+        let Some(record) = self.binary_object(id)? else {
             return Ok(None);
         };
+        match record.program()? {
+            Some(manifest) => self
+                .describe_program(id, manifest)
+                .map(crate::object::ProofTransfer::Program)
+                .map(Some),
+            None => Ok(Some(crate::object::ProofTransfer::Certificate(
+                record.envelope(),
+            ))),
+        }
+    }
+
+    fn describe_program(
+        &self,
+        id: ProofId,
+        manifest: Manifest,
+    ) -> Result<crate::object::ProgramMetadata, crate::Error> {
         let question = if self
             .context
             .proof_header(id)
@@ -212,7 +246,7 @@ impl Graph {
         } else {
             None
         };
-        Ok(Some(crate::object::ProgramMetadata { manifest, question }))
+        Ok(crate::object::ProgramMetadata { manifest, question })
     }
     pub(crate) fn program_manifest(&self, id: ProofId) -> Result<Option<Manifest>, crate::Error> {
         if !self.contains(id)? {

@@ -1,4 +1,5 @@
 use super::*;
+mod batch_order;
 use crate::{Envelope, hex, object::content_id};
 use naome_foundation::FreeVariable;
 use naome_proof::{ProofCertificate, ProofStep, StatementId};
