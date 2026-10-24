@@ -7,10 +7,12 @@
 //! definitions. Its canonical formula codec supports the separate proof
 //! protocol and does not change the abstract Foundation identity.
 
+pub mod construction;
 mod formula;
 mod logic;
 mod zfc;
 
+pub use formula::graph;
 pub use formula::{
     CanonicalImplication, FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, Formula,
     FormulaCodecError, FormulaView, FreeVariable,

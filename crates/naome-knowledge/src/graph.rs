@@ -355,6 +355,18 @@ impl Graph {
     /// nodes only at completed handoff. Retained snapshots keep their storage;
     /// all generations share the single bounded cache.
     pub(crate) fn maintain_checked_storage(&mut self) -> Result<(), crate::Error> {
+        self.checked_storage.adapt_cache()?;
+        let bytes =
+            crate::resources::adaptive::cache(crate::resources::limits().checker_cache_bytes);
+        let cache_limits = naome_checker::ReadCacheLimits::new(
+            crate::resources::limits()
+                .checker_cache_entries
+                .min(bytes / 512),
+            bytes,
+        )?;
+        if self.context.read_cache_limits() != cache_limits {
+            self.context = self.context.clone().with_read_cache_limits(cache_limits)?;
+        }
         match self.maintain_checked_storage_at(self.next_compaction) {
             Err(error) if error.retryable() => Ok(()),
             result => result.map(|_| ()),

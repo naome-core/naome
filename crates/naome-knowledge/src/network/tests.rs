@@ -409,7 +409,8 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         .await
         .unwrap();
     let status_seconds = measure.elapsed().as_secs_f64();
-    assert_eq!(status["status"]["accepted_proofs"], 0);
+    assert_eq!(status["report"]["kind"], "status");
+    assert_eq!(status["report"]["status"]["accepted_proofs"], 0);
     tokio::time::sleep(crate::resources::limits().transport_busy_grace * 2).await;
     let measure = Instant::now();
     let id = client.behaviour_mut().exchange.send_request(
@@ -483,7 +484,11 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     .await
     .unwrap();
     let interest_seconds = measure.elapsed().as_secs_f64();
-    assert_eq!(changed["status"]["interest"], "revoked during slow commit");
+    assert_eq!(changed["report"]["kind"], "status");
+    assert_eq!(
+        changed["report"]["status"]["interest"],
+        "revoked during slow commit"
+    );
     let measure = Instant::now();
     let _ = tokio::time::timeout(Duration::from_secs(2), request(&endpoint, json!("stop")))
         .await

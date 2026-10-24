@@ -13,34 +13,19 @@ impl Logic {
     /// Instantiates `A → (B → A)`.
     #[must_use]
     pub fn simplification(antecedent: Formula, consequent: Formula) -> Formula {
-        Formula::implies(antecedent.clone(), Formula::implies(consequent, antecedent))
+        crate::construction::simplification(antecedent, consequent).evaluate()
     }
 
     /// Instantiates the Frege implication schema.
     #[must_use]
     pub fn frege(first: Formula, second: Formula, third: Formula) -> Formula {
-        Formula::implies(
-            Formula::implies(
-                first.clone(),
-                Formula::implies(second.clone(), third.clone()),
-            ),
-            Formula::implies(
-                Formula::implies(first.clone(), second),
-                Formula::implies(first, third),
-            ),
-        )
+        crate::construction::frege(first, second, third).evaluate()
     }
 
     /// Instantiates the classical contraposition schema.
     #[must_use]
     pub fn classical_contraposition(antecedent: Formula, consequent: Formula) -> Formula {
-        Formula::implies(
-            Formula::implies(
-                Formula::negate(consequent.clone()),
-                Formula::negate(antecedent.clone()),
-            ),
-            Formula::implies(antecedent, consequent),
-        )
+        crate::construction::contraposition(antecedent, consequent).evaluate()
     }
 
     /// Instantiates universal distribution.
@@ -50,22 +35,13 @@ impl Logic {
         antecedent: Formula,
         consequent: Formula,
     ) -> Formula {
-        Formula::implies(
-            Formula::for_all(
-                variable,
-                Formula::implies(antecedent.clone(), consequent.clone()),
-            ),
-            Formula::implies(
-                Formula::for_all(variable, antecedent),
-                Formula::for_all(variable, consequent),
-            ),
-        )
+        crate::construction::distribution(variable, antecedent, consequent).evaluate()
     }
 
     /// Instantiates `A → ∀x A` with a fresh nameless binder.
     #[must_use]
     pub fn vacuous_universal(formula: Formula) -> Formula {
-        Formula::implies(formula.clone(), Formula::vacuous_for_all(formula))
+        crate::construction::vacuous(formula).evaluate()
     }
 
     /// Instantiates `∀x A → A[x := y]`.
@@ -75,10 +51,7 @@ impl Logic {
         replacement: FreeVariable,
         body: Formula,
     ) -> Formula {
-        Formula::implies(
-            Formula::for_all(variable, body.clone()),
-            body.substitute_free(variable, replacement),
-        )
+        crate::construction::instantiation(variable, replacement, body).evaluate()
     }
 
     /// Instantiates equality reflexivity.
@@ -90,10 +63,7 @@ impl Logic {
     /// Instantiates substitutivity of equality in an arbitrary formula.
     #[must_use]
     pub fn equality_substitution(from: FreeVariable, to: FreeVariable, body: Formula) -> Formula {
-        Formula::implies(
-            Formula::equal(from, to),
-            Formula::implies(body.clone(), body.substitute_free(from, to)),
-        )
+        crate::construction::substitution(from, to, body).evaluate()
     }
 
     /// Derives `B` from `A` and `A → B`.

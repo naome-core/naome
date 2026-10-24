@@ -67,12 +67,13 @@ impl Separation {
             &self.parameters,
         )?;
 
-        let membership = member(self.element, self.result);
-        let selected =
-            Formula::conjunction(member(self.element, self.source), self.predicate.clone());
-        let body = Formula::for_all(self.element, Formula::biconditional(membership, selected));
-        let body = Formula::exists(self.result, body);
-        let body = Formula::for_all(self.source, body);
+        let body = crate::construction::separation(
+            self.predicate.clone(),
+            self.element,
+            self.source,
+            self.result,
+        )
+        .evaluate();
         Ok(close_parameters(&self.parameters, body))
     }
 }
@@ -113,39 +114,15 @@ impl Replacement {
             &self.parameters,
         )?;
 
-        let alternate_predicate = self
-            .predicate
-            .clone()
-            .substitute_free(self.output, self.uniqueness_witness);
-        let uniqueness = Formula::for_all(
+        let body = crate::construction::replacement(
+            self.predicate.clone(),
+            self.input,
+            self.output,
             self.uniqueness_witness,
-            Formula::implies(
-                alternate_predicate,
-                Formula::equal(self.uniqueness_witness, self.output),
-            ),
-        );
-        let unique_output = Formula::exists(
-            self.output,
-            Formula::conjunction(self.predicate.clone(), uniqueness),
-        );
-        let total_on_source = Formula::for_all(
-            self.input,
-            Formula::implies(member(self.input, self.source), unique_output),
-        );
-
-        let has_preimage = Formula::exists(
-            self.input,
-            Formula::conjunction(member(self.input, self.source), self.predicate.clone()),
-        );
-        let image = Formula::for_all(
-            self.output,
-            Formula::biconditional(member(self.output, self.result), has_preimage),
-        );
-        let result_exists = Formula::exists(self.result, image);
-        let body = Formula::for_all(
             self.source,
-            Formula::implies(total_on_source, result_exists),
-        );
+            self.result,
+        )
+        .evaluate();
         Ok(close_parameters(&self.parameters, body))
     }
 }

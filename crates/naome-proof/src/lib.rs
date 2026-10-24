@@ -12,6 +12,7 @@ mod defined_formula;
 mod definition;
 mod identity;
 mod normal_form;
+pub mod program;
 mod proof_formula;
 mod question;
 

@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -56,6 +56,7 @@ struct Owner {
 /// Every generation shares one byte-accounted cache and canonical directory
 /// lease. Old question/batch clones keep their generation's bytes available.
 pub(super) struct CheckedStorage {
+    live_cache_budget: AtomicUsize,
     connection: Mutex<IndexConnection>,
     write_gate: Mutex<WriteRoute>,
     write_ready: Condvar,
@@ -135,6 +136,38 @@ impl WriteRoute {
 }
 
 impl CheckedStorage {
+    pub(super) fn adapt_cache(&self) -> Result<(), String> {
+        let budget = crate::resources::adaptive::cache(usize::MAX);
+        if self.live_cache_budget.load(Ordering::Acquire) == budget {
+            return Ok(());
+        }
+        self.cache
+            .lock()
+            .map_err(|_| "checked cache lock poisoned")?
+            .trim(crate::resources::adaptive::cache(
+                crate::resources::limits().checked_cache_bytes,
+            ));
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "checked index lock poisoned")?;
+        connection
+            .open()?
+            .pragma_update(
+                None,
+                "cache_size",
+                -i64::try_from(
+                    (crate::resources::adaptive::cache(
+                        crate::resources::limits().checked_index_cache_bytes,
+                    ) / 1024)
+                        .max(1),
+                )
+                .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        self.live_cache_budget.store(budget, Ordering::Release);
+        Ok(())
+    }
     #[cfg(test)]
     pub(super) fn delay_next_write(
         started: std::sync::mpsc::Sender<()>,
@@ -304,6 +337,7 @@ impl CheckedStorage {
             )
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
+            live_cache_budget: AtomicUsize::new(usize::MAX),
             connection: Mutex::new(IndexConnection(Some(connection), None)),
             write_gate: Mutex::new(WriteRoute::default()),
             write_ready: Condvar::new(),
@@ -654,6 +688,16 @@ impl ContextStorage for StartupMarker {
     }
 }
 impl Cache {
+    fn trim(&mut self, limit: usize) {
+        while self.charged > limit {
+            let Some((_, key)) = self.recency.pop_first() else {
+                break;
+            };
+            if let Some(old) = self.entries.remove(&key) {
+                self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
+            }
+        }
+    }
     fn touch(&mut self, address: [u8; 32]) {
         if self.clock == u64::MAX {
             let Some(entry) = self.entries.remove(&address) else {
@@ -685,17 +729,13 @@ impl Cache {
             self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
         }
         let charge = bytes.capacity().saturating_add(CACHE_ENTRY_BYTES);
-        if charge > crate::resources::limits().checked_cache_bytes {
+        let limit =
+            crate::resources::adaptive::cache(crate::resources::limits().checked_cache_bytes);
+        self.trim(limit);
+        if charge > limit {
             return;
         }
-        while self.charged > crate::resources::limits().checked_cache_bytes - charge {
-            let Some((_, key)) = self.recency.pop_first() else {
-                break;
-            };
-            if let Some(old) = self.entries.remove(&key) {
-                self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
-            }
-        }
+        self.trim(limit - charge);
         if self.clock == u64::MAX {
             self.entries.clear();
             self.recency.clear();
