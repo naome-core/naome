@@ -15,7 +15,7 @@ mod zfc;
 pub use formula::graph;
 pub use formula::{
     CanonicalImplication, FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, Formula,
-    FormulaCodecError, FormulaView, FreeVariable,
+    FormulaCodecError, FormulaMismatch, FormulaPathSegment, FormulaView, FreeVariable,
 };
 pub use logic::{Logic, LogicError};
 pub use zfc::{Replacement, SchemaError, Separation, ZfcAxiom};

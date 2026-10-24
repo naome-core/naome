@@ -1,5 +1,5 @@
 use super::{Formula, Node, Variable};
-use std::fmt::Write;
+use std::fmt::{self, Write};
 
 impl Formula {
     /// Renders primitive `.nao` formula syntax without changing logical shape.
@@ -11,75 +11,83 @@ impl Formula {
     #[must_use]
     pub fn to_source(&self) -> String {
         let mut output = String::new();
-        render(&self.0, 0, &mut output);
+        render(&self.0, 0, &mut output).expect("writing a string cannot fail");
         output
+    }
+
+    /// Renders a bounded diagnostic preview, adding `...` when truncated.
+    /// This preview is presentation data, never a formula serialization.
+    #[must_use]
+    pub fn to_source_with_limit(&self, maximum_bytes: usize) -> String {
+        let mut output = LimitedSource {
+            text: String::new(),
+            maximum: maximum_bytes,
+        };
+        if render(&self.0, 0, &mut output).is_err() {
+            let end = output.text.len().min(maximum_bytes.saturating_sub(3));
+            output.text.truncate(end);
+            output.text.push_str(&"..."[..maximum_bytes.min(3)]);
+        }
+        output.text
     }
 }
 
-fn variable(value: Variable, depth: u32, out: &mut String) {
+struct LimitedSource {
+    text: String,
+    maximum: usize,
+}
+impl Write for LimitedSource {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let available = self.maximum.saturating_sub(self.text.len());
+        if value.len() > available {
+            // Primitive source rendering emits ASCII only.
+            self.text.push_str(&value[..available]);
+            return Err(fmt::Error);
+        }
+        self.text.push_str(value);
+        Ok(())
+    }
+}
+
+fn variable(value: Variable, depth: u32, out: &mut impl Write) -> fmt::Result {
     match value {
         Variable::Free(value) => write!(out, "f{}", value.identifier()),
         Variable::Bound(index) => write!(out, "b{}", depth - 1 - index),
     }
-    .expect("writing a string cannot fail");
 }
-fn render(node: &Node, depth: u32, out: &mut String) {
+fn render(node: &Node, depth: u32, out: &mut impl Write) -> fmt::Result {
     match node {
         Node::Equal(left, right) | Node::Member(left, right) => {
-            out.push_str(if matches!(node, Node::Equal(..)) {
+            out.write_str(if matches!(node, Node::Equal(..)) {
                 "eq("
             } else {
                 "mem("
-            });
-            variable(*left, depth, out);
-            out.push_str(", ");
-            variable(*right, depth, out);
-            out.push(')');
+            })?;
+            variable(*left, depth, out)?;
+            out.write_str(", ")?;
+            variable(*right, depth, out)?;
+            out.write_char(')')?;
         }
         Node::Not(body) => {
-            out.push_str("not(");
-            render(body, depth, out);
-            out.push(')');
+            out.write_str("not(")?;
+            render(body, depth, out)?;
+            out.write_char(')')?;
         }
         Node::Implies(left, right) => {
-            out.push_str("imp(");
-            render(left, depth, out);
-            out.push_str(", ");
-            render(right, depth, out);
-            out.push(')');
+            out.write_str("imp(")?;
+            render(left, depth, out)?;
+            out.write_str(", ")?;
+            render(right, depth, out)?;
+            out.write_char(')')?;
         }
         Node::ForAll(body) => {
-            write!(out, "all(b{depth}, ").expect("string write");
-            render(body, depth + 1, out);
-            out.push(')');
+            write!(out, "all(b{depth}, ")?;
+            render(body, depth + 1, out)?;
+            out.write_char(')')?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::FreeVariable;
-    #[test]
-    fn source_keeps_nested_binders_vacuous_quantifiers_and_free_ids_distinct() {
-        let x = FreeVariable::new(0);
-        let y = FreeVariable::new(1);
-        let free = FreeVariable::new(u32::MAX);
-        let formula = Formula::for_all(
-            x,
-            Formula::for_all(
-                y,
-                Formula::implies(
-                    Formula::member(x, y),
-                    Formula::negate(Formula::equal(x, free)),
-                ),
-            ),
-        );
-        assert_eq!(
-            formula.to_source(),
-            "all(b0, all(b1, imp(mem(b0, b1), not(eq(b0, f4294967295)))))"
-        );
-        let vacuous = Formula::for_all(y, Formula::for_all(x, Formula::equal(x, x)));
-        assert_eq!(vacuous.to_source(), "all(b0, all(b1, eq(b1, b1)))");
-    }
-}
+mod tests;

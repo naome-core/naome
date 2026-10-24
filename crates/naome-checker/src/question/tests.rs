@@ -1,7 +1,27 @@
 use super::*;
 use crate::{ArtifactState, normalize_and_check, normalize_and_check_with_state};
 use naome_foundation::{FreeVariable, ZfcAxiom};
-use naome_proof::{DefinitionId, ProofCertificate};
+use naome_proof::{DefinitionId, ProofCertificate, ProofSeparation};
+
+pub(super) fn schema_steps(negative: bool) -> Vec<ProofStep> {
+    let predicate = Formula::equal(var(0), var(0));
+    vec![ProofStep::Separation(ProofSeparation {
+        predicate: if negative {
+            Formula::negate(predicate)
+        } else {
+            predicate
+        }
+        .into(),
+        element: var(0),
+        source: var(1),
+        result: var(2),
+        parameters: Vec::new(),
+    })]
+}
+
+fn schema_fact(state: &mut ArtifactState, negative: bool) -> (ProofId, Formula) {
+    register(state, schema_steps(negative))
+}
 
 fn var(id: u32) -> FreeVariable {
     FreeVariable::new(id)
@@ -70,10 +90,13 @@ fn decision(
 fn snapshot_dependent_exact_answers_are_read_only_and_reproducible() {
     let policy = PrefilterPolicy::default();
     let mut state = ArtifactState::new();
-    let question = equal();
+    let question = normalize_and_check(ProofCertificate::new(schema_steps(false)).unwrap())
+        .unwrap()
+        .conclusion()
+        .clone();
     let before = decision(&question, &state, &[], &policy);
     assert!(before.passed());
-    let (witness, _) = equality(&mut state);
+    let (witness, _) = schema_fact(&mut state, false);
     let registered: Vec<_> = state.proof_conclusions().map(|(id, _, _, _)| id).collect();
     let after = decision(&question, &state, &[], &policy);
     assert_eq!(after.reason, Some(RejectionReason::KnownProof));
@@ -101,7 +124,10 @@ fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
     let state = ArtifactState::new();
     let registry = QuestionRegistry::new();
     let policy = PrefilterPolicy::default();
-    let target = equal();
+    let target = normalize_and_check(ProofCertificate::new(schema_steps(false)).unwrap())
+        .unwrap()
+        .conclusion()
+        .clone();
     let input = AssessmentQuestion::new(FOUNDATION_ID, &target, b"source A", &[], None).unwrap();
     let snapshot = KnowledgeSnapshot::new([9; 32], &state, &registry);
     let result = assess_question(&input, &snapshot, &policy);
@@ -112,7 +138,7 @@ fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
     assert_eq!(novelty.input_id(), result.input);
     assert_eq!(novelty.snapshot_id(), result.snapshot);
     assert_eq!(novelty.policy_id(), result.policy);
-    assert_eq!(novelty.rule_set(), 2);
+    assert_eq!(novelty.rule_set(), 3);
 
     let changed_source =
         AssessmentQuestion::new(FOUNDATION_ID, &target, b"source B", &[], None).unwrap();
@@ -130,7 +156,7 @@ fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
     assert!(rejected.novelty().is_none());
 
     let mut other_world = state.clone();
-    let _ = equality(&mut other_world);
+    let _ = schema_fact(&mut other_world, false);
     let checked_snapshot = KnowledgeSnapshot::new([9; 32], &other_world, &registry);
     assert!(!novelty.matches_inputs(&input, &checked_snapshot, &policy));
     let known = assess_question(&input, &checked_snapshot, &policy);
@@ -242,8 +268,8 @@ fn public_decision_mutation_cannot_mint_or_rebind_novelty() {
 
 #[test]
 fn canonical_duplicates_and_self_record_exemption_cannot_hide_other_records() {
-    let first = equal();
-    let renamed = Formula::for_all(var(42), Formula::equal(var(42), var(42)));
+    let first = unresolved();
+    let renamed = Formula::for_all(var(42), Formula::member(var(42), var(42)));
     assert_eq!(first, renamed);
     let state = ArtifactState::new();
     let registry = [
@@ -337,7 +363,10 @@ fn unanswered_equivalence_requires_both_actual_checked_implications() {
 
 #[test]
 fn checked_implication_transfer_requires_its_proven_premise() {
-    let a = equal();
+    let a = normalize_and_check(ProofCertificate::new(schema_steps(false)).unwrap())
+        .unwrap()
+        .conclusion()
+        .clone();
     let b = Formula::implies(unresolved(), a.clone());
     let mut state = ArtifactState::new();
     let _ = register(
@@ -349,7 +378,7 @@ fn checked_implication_transfer_requires_its_proven_premise() {
     );
     let policy = PrefilterPolicy::default();
     assert!(decision(&b, &state, &[], &policy).passed());
-    let _ = equality(&mut state);
+    let _ = schema_fact(&mut state, false);
     let result = decision(&b, &state, &[], &policy);
     assert_eq!(result.reason, Some(RejectionReason::KnownProof));
     assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
@@ -401,12 +430,15 @@ fn general_identity(state: &mut ArtifactState) -> Formula {
 }
 
 #[test]
-fn checked_general_result_settles_diagonal_only_through_finite_checker_rules() {
+fn elementary_and_stored_general_results_settle_diagonal_through_checked_certificates() {
     let mut state = ArtifactState::new();
     let atom = Formula::member(var(10), var(10));
     let diagonal = Formula::for_all(var(10), Formula::implies(atom.clone(), atom));
     let policy = PrefilterPolicy::default();
-    assert!(decision(&diagonal, &state, &[], &policy).passed());
+    let elementary = decision(&diagonal, &state, &[], &policy);
+    assert_eq!(elementary.reason, Some(RejectionReason::KnownProof));
+    assert_eq!(elementary.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    let _ = verify_deduction(&elementary, &state, &diagonal);
     let general = general_identity(&mut state);
     assert_ne!(
         general, diagonal,
@@ -1130,8 +1162,10 @@ fn verify_deduction(
 #[test]
 fn dynamic_mp_bridge_requires_both_seeds_and_rechecks_all_original_citations() {
     let mut state = ArtifactState::new();
-    let (first, p) = equality(&mut state);
-    let q = Formula::for_all(var(19), p.clone());
+    let (first, p) = schema_fact(&mut state, false);
+    let second_proof =
+        normalize_and_check(ProofCertificate::new(schema_steps(true)).unwrap()).unwrap();
+    let q = second_proof.conclusion().clone();
     let r = Formula::implies(unresolved(), equal());
     let (bridge, _) = lift_two_premises(&mut state, &p, &q, fact_steps(&unresolved()));
     let policy = PrefilterPolicy::default();
@@ -1139,18 +1173,6 @@ fn dynamic_mp_bridge_requires_both_seeds_and_rechecks_all_original_citations() {
         decision(&r, &state, &[], &policy).passed(),
         "a projected consequence is not a checked fact or a seed"
     );
-    let second_proof = normalize_and_check_with_state(
-        ProofCertificate::new(vec![
-            ProofStep::ProofReference { proof_id: first },
-            ProofStep::Generalization {
-                premise: 0,
-                variable: var(19),
-            },
-        ])
-        .unwrap(),
-        &state,
-    )
-    .unwrap();
     let second = second_proof.proof_id();
     state.register_proof(second_proof).unwrap();
     let before = state.snapshot_id();

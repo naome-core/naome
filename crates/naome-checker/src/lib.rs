@@ -21,8 +21,8 @@ use std::error::Error;
 use std::fmt;
 
 use naome_foundation::{
-    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError, FreeVariable,
-    Logic, LogicError, Replacement, SchemaError, Separation,
+    FORMULA_MAX_DEPTH, FORMULA_MAX_NODES, FOUNDATION_ID, Formula, FormulaCodecError,
+    FormulaMismatch, FreeVariable, Logic, LogicError, Replacement, SchemaError, Separation,
 };
 use naome_proof::{
     ArtifactId, CERTIFICATE_MAX_BYTES, DefinedFormula, DefinedFormulaCodecError,
@@ -658,8 +658,21 @@ fn derive_step(
                 .checked_add(implication.canonical_length)
                 .expect("two formula lengths fit usize");
             charge_formula_work(step, referenced_work, remaining_work)?;
-            Logic::modus_ponens(&premise.formula, &implication.formula)
-                .map_err(|source| CheckError::Logic { step, source })?
+            Logic::modus_ponens(&premise.formula, &implication.formula).map_err(|source| {
+                let comparison = implication
+                    .formula
+                    .view()
+                    .implication_parts()
+                    .and_then(|(antecedent, _)| {
+                        FormulaMismatch::between(&antecedent.to_owned(), &premise.formula)
+                    })
+                    .map(Box::new);
+                CheckError::Logic {
+                    step,
+                    source,
+                    comparison,
+                }
+            })?
         }
         ProofStep::Generalization { premise, variable } => {
             let premise_index = *premise as usize;
@@ -787,7 +800,11 @@ pub enum CheckError {
         source: DefinitionExpansionError,
     },
     /// A primitive logical inference rule failed.
-    Logic { step: u32, source: LogicError },
+    Logic {
+        step: u32,
+        source: LogicError,
+        comparison: Option<Box<FormulaMismatch>>,
+    },
     /// A ZFC axiom-schema side condition failed.
     Schema { step: u32, source: SchemaError },
     /// A reconstructed formula exceeded the canonical Formula limits.
@@ -806,6 +823,14 @@ pub enum CheckError {
 }
 
 impl CheckError {
+    /// Bounded expected/actual previews for a mismatched inference operand.
+    pub fn formula_mismatch(&self) -> Option<&FormulaMismatch> {
+        match self {
+            Self::Logic { comparison, .. } => comparison.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Returns the zero-based normal-form step that caused this failure.
     pub const fn step(&self) -> u32 {
         match self {
@@ -837,11 +862,19 @@ impl fmt::Display for CheckError {
                     "proof step {step} cannot expand definitions: {source}"
                 )
             }
-            Self::Logic { step, source } => {
+            Self::Logic {
+                step,
+                source,
+                comparison,
+            } => {
                 write!(
                     formatter,
                     "proof step {step} violates Foundation logic: {source}"
-                )
+                )?;
+                if let Some(comparison) = comparison {
+                    write!(formatter, "; {comparison}")?;
+                }
+                Ok(())
             }
             Self::Schema { step, source } => {
                 write!(

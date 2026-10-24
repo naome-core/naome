@@ -1,7 +1,7 @@
 //! Independent finite role coordination through untrusted durable job results.
 use crate::{Graph, jobs, network::emit, question};
 use naome_authoring::CompiledQuestion;
-use naome_checker::question::{Identity, RejectionReason};
+use naome_checker::question::Identity;
 use naome_proof::ProofId;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -251,6 +251,8 @@ impl Autonomous {
                             }
                             Err(_) => self.recovered_other.push_front(record),
                         }
+                    } else if fresh.inconclusive() {
+                        self.recovered_other.push_front(record);
                     } else {
                         self.retire(record);
                     }
@@ -270,7 +272,11 @@ impl Autonomous {
                 Ok(result) => {
                     emit(
                         json!({"event":"question_assessed","resolution_id":crate::hex(pending.question.resolution_id()),
-                        "formal_pass":result.assessment.prefilter.passed(),"interest":format!("{:?}",result.assessment.interest)}),
+                        "formal_pass":result.assessment.prefilter.passed(),
+                        "formal_outcome":result.assessment.prefilter.outcome.code(),
+                        "formal_reason":result.assessment.prefilter.reason.map(|reason| reason.code()),
+                        "formal_rule":result.assessment.prefilter.rule,
+                        "interest":format!("{:?}",result.assessment.interest)}),
                     );
                     if matches!(result.outcome, question::AdmissionOutcome::Admitted(_)) {
                         self.retain(pending.question);
@@ -327,10 +333,7 @@ impl Autonomous {
             if solving.seen != revision {
                 solving.seen = revision;
                 let fresh = questions.generation_decision(graph, &solving.question);
-                if matches!(
-                    fresh.reason,
-                    Some(RejectionReason::KnownProof | RejectionReason::KnownRefutation)
-                ) {
+                if fresh.has_answer() {
                     emit(
                         json!({"event":"solve_cancelled_by_answer","resolution_id":crate::hex(&id)}),
                     );
@@ -416,10 +419,7 @@ impl Autonomous {
                 pending.seen = Some(revision);
                 let fresh = questions.generation_decision(graph, &pending.question);
                 pending.eligible = fresh.passed();
-                if matches!(
-                    fresh.reason,
-                    Some(RejectionReason::KnownProof | RejectionReason::KnownRefutation)
-                ) {
+                if fresh.has_answer() {
                     self.acknowledge(pending.job);
                     continue;
                 }
@@ -575,10 +575,7 @@ impl Autonomous {
                         }
                         Err(_) => self.retain(question),
                     }
-                } else if !matches!(
-                    decision.reason,
-                    Some(RejectionReason::KnownProof | RejectionReason::KnownRefutation)
-                ) {
+                } else if !decision.has_answer() {
                     self.retain(question);
                 } else {
                     questions.settle_backlog(question.resolution_id());

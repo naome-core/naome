@@ -83,6 +83,14 @@ pub(super) fn encode_step(
     encode_step_with_formula_budget(step, output, &mut remaining_formula_nodes)
 }
 
+pub(super) fn step_encoded_length(step: &ProofStep) -> Result<usize, ProofCertificateError> {
+    let mut output = LengthSink::default();
+    let mut nodes = CERTIFICATE_MAX_FORMULA_NODES;
+    encode_step_with_formula_budget(step, &mut output, &mut nodes)?;
+    ensure_within_byte_limit(output.len())?;
+    Ok(output.len())
+}
+
 fn encode_step_with_formula_budget(
     step: &ProofStep,
     output: &mut impl ByteSink,

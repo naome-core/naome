@@ -1,4 +1,5 @@
 use super::*;
+use naome_authoring::CompiledQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct ConfigFile(PathBuf);
@@ -119,7 +120,12 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
     };
     let mut sender_graph = Graph::open(&sender_dir).unwrap();
     let object = sender_graph
-        .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
+        .author(
+            &crate::mocks::create_proof(
+                &CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap(),
+            )
+            .unwrap(),
+        )
         .unwrap();
     let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
     sender_graph.ingest(object, Instant::now()).unwrap();

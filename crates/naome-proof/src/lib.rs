@@ -369,6 +369,12 @@ pub enum ProofStep {
 }
 
 impl ProofStep {
+    /// Measures canonical step bytes without allocating an encoding. Formula
+    /// limits are checked; local reference ordering belongs to the certificate.
+    pub fn encoded_length(&self) -> Result<usize, ProofCertificateError> {
+        codec::step_encoded_length(self)
+    }
+
     /// Returns this step's one-byte canonical wire tag.
     #[must_use]
     pub const fn canonical_tag(&self) -> u8 {

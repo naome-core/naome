@@ -18,7 +18,9 @@ use crate::{CheckError, ContextError, ContextView, statement_id};
 pub type Identity = [u8; 32];
 
 mod deduction;
+mod elementary;
 pub(crate) mod index;
+mod instantiation;
 mod registry;
 pub use registry::{QuestionRegistry, QuestionRegistryCopy};
 
@@ -56,8 +58,8 @@ impl AssessmentLimits {
     }
 }
 
-/// Rule set 2 adds complete finite MP closure, including derived implications.
-/// Q05 still requires both stored checked implications; Q06 remains finite.
+/// Rule set 3 adds elementary certificates and target-directed universal
+/// specialization to finite MP closure. Q05 requires both checked implications.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrefilterPolicy {
     pub revision: u64,
@@ -68,8 +70,8 @@ pub struct PrefilterPolicy {
 impl Default for PrefilterPolicy {
     fn default() -> Self {
         Self {
-            revision: 3,
-            rule_set: 2,
+            revision: 4,
+            rule_set: 3,
             limits: AssessmentLimits::MAXIMUM,
         }
     }
@@ -78,7 +80,7 @@ impl Default for PrefilterPolicy {
 impl PrefilterPolicy {
     pub fn identity(self) -> Identity {
         let mut digest = Sha256::new();
-        digest.update(b"naome:local-question-policy:v3\0");
+        digest.update(b"naome:local-question-policy:v4\0");
         digest.update(self.revision.to_le_bytes());
         digest.update(self.rule_set.to_le_bytes());
         for value in self.limits.values() {
@@ -89,7 +91,7 @@ impl PrefilterPolicy {
 
     fn valid(self) -> bool {
         self.revision != 0
-            && self.rule_set == 2
+            && self.rule_set == 3
             && self
                 .limits
                 .values()
@@ -254,6 +256,18 @@ impl RejectionReason {
 pub enum PrefilterOutcome {
     Pass,
     Reject,
+    /// The assessment could not complete; this is no mathematical rejection.
+    Inconclusive,
+}
+
+impl PrefilterOutcome {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Reject => "REJECT",
+            Self::Inconclusive => "INCONCLUSIVE",
+        }
+    }
 }
 
 /// Completed first-discovery checks within one exact local world and finite rule set.
@@ -363,6 +377,22 @@ impl DeductionWitness {
 }
 
 impl PrefilterDecision {
+    /// Classifies an answered obligation; this grants no registration authority.
+    pub fn has_answer(&self) -> bool {
+        matches!(
+            self.reason,
+            Some(
+                RejectionReason::KnownProof
+                    | RejectionReason::KnownRefutation
+                    | RejectionReason::KnownLemmaInstance
+            )
+        )
+    }
+
+    pub fn inconclusive(&self) -> bool {
+        self.outcome == PrefilterOutcome::Inconclusive
+    }
+
     pub fn passed(&self) -> bool {
         self.outcome == PrefilterOutcome::Pass
     }
@@ -400,7 +430,18 @@ impl PrefilterDecision {
     }
 
     pub fn reject(mut self, reason: RejectionReason, rule: &'static str) -> Self {
-        self.outcome = PrefilterOutcome::Reject;
+        self.outcome = if matches!(
+            reason,
+            RejectionReason::ExecutionLimit
+                | RejectionReason::ReceivingLimit
+                | RejectionReason::StaleContext
+                | RejectionReason::UnsupportedPolicy
+                | RejectionReason::InvalidEvidence
+        ) {
+            PrefilterOutcome::Inconclusive
+        } else {
+            PrefilterOutcome::Reject
+        };
         self.reason = Some(reason);
         self.rule = rule;
         self.novelty = None;
@@ -464,7 +505,11 @@ impl Work {
 /// is checker-revalidated with original proof citations. Q05 requires
 /// both checked implications. Q06 permits one or two outer universal
 /// instantiations to one fresh variable, optionally followed by one universal
-/// closure. Each matching inference is rechecked as a bounded certificate.
+/// closure. Q07 also recognizes elementary logical/equality/ZFC certificates,
+/// and composes target-directed specializations of up to 32 outer binders with
+/// MP. Unmatched universal parameters use one deterministic default variable. Each
+/// successful answer is rechecked as a bounded certificate. Resource or context
+/// failures are inconclusive and never issue novelty or admission authority.
 pub fn assess_question(
     question: &AssessmentQuestion<'_>,
     snapshot: &KnowledgeSnapshot<'_>,
@@ -713,6 +758,20 @@ fn evaluate(
             }
         }
     }
+    for (_, target, reason) in targets {
+        if let Some(plan) = elementary::plan(target, work)? {
+            decision.deduction = Some(plan.finish(target, snapshot.artifacts, work)?);
+            return Err((reason, "Q07_ELEMENTARY_CERTIFICATE"));
+        }
+    }
+    for (_, target, reason) in targets {
+        if let Some(witness) = deduction::derive_instantiated(target, snapshot.artifacts, work)? {
+            decision.witness = witness.original_proofs().first().copied();
+            decision.supporting_witness = witness.original_proofs().get(1).copied();
+            decision.deduction = Some(witness);
+            return Err((reason, "Q07_CHECKED_INSTANTIATED_CLOSURE"));
+        }
+    }
     Ok(())
 }
 
@@ -805,5 +864,7 @@ fn checker_reason(error: &CheckError) -> RejectionReason {
 
 #[cfg(test)]
 mod disk_tests;
+#[cfg(test)]
+mod improvements;
 #[cfg(test)]
 mod tests;

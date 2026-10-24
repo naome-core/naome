@@ -144,6 +144,7 @@ pub struct CompileDiagnostic {
     message: Box<str>,
     primary_span: Option<SourceSpan>,
     primary_position: Option<SourcePosition>,
+    formula_mismatch: Option<Box<naome_foundation::FormulaMismatch>>,
 }
 
 impl CompileDiagnostic {
@@ -159,6 +160,7 @@ impl CompileDiagnostic {
             message: message.into_boxed_str(),
             primary_span,
             primary_position: primary_span.and_then(|span| source_position(source, span.start())),
+            formula_mismatch: None,
         }
     }
 
@@ -179,6 +181,11 @@ impl CompileDiagnostic {
     /// Returns the source-oriented diagnostic message.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Bounded formula previews and the exact first differing structural path.
+    pub fn formula_mismatch(&self) -> Option<&naome_foundation::FormulaMismatch> {
+        self.formula_mismatch.as_deref()
     }
 
     /// Returns the primary UTF-8 byte span, when the error is source-local.
@@ -231,7 +238,10 @@ pub enum CompileError {
         source: Box<CheckError>,
     },
     /// The checked conclusion differs from the source statement.
-    StatementMismatch { span: SourceSpan },
+    StatementMismatch {
+        span: SourceSpan,
+        comparison: Box<naome_foundation::FormulaMismatch>,
+    },
     /// A source-only formula binding was declared more than once.
     DuplicateFormulaBinding { offset: usize, name: String },
     /// A formula position names a binding that has not already been declared.
@@ -336,7 +346,7 @@ impl CompileError {
             | Self::DefinitionFormula { offset, .. } => Some(*offset),
             Self::DefinitionExpansion { offset, .. } => Some(*offset),
             Self::Check { span, .. }
-            | Self::StatementMismatch { span }
+            | Self::StatementMismatch { span, .. }
             | Self::DefinitionCheck { span, .. } => Some(span.start()),
         }
     }
@@ -354,6 +364,11 @@ impl CompileError {
             message: self.diagnostic_message(source).into_boxed_str(),
             primary_span,
             primary_position,
+            formula_mismatch: match self {
+                Self::Check { source, .. } => source.formula_mismatch().cloned().map(Box::new),
+                Self::StatementMismatch { comparison, .. } => Some(comparison.clone()),
+                _ => None,
+            },
         }
     }
 
@@ -381,7 +396,7 @@ impl CompileError {
             | Self::DefinitionFormula { offset, .. } => source_token_span(source, *offset)?,
             Self::DefinitionExpansion { offset, .. } => source_token_span(source, *offset)?,
             Self::Check { span, .. }
-            | Self::StatementMismatch { span }
+            | Self::StatementMismatch { span, .. }
             | Self::DefinitionCheck { span, .. } => *span,
         };
         valid_source_span(source, span).then_some(span)
@@ -417,8 +432,8 @@ impl CompileError {
                     .unwrap_or("<proof>");
                 check_diagnostic_message(step_name, source)
             }
-            Self::StatementMismatch { .. } => {
-                "declared statement differs from the checked conclusion".to_owned()
+            Self::StatementMismatch { comparison, .. } => {
+                format!("declared statement differs from the checked conclusion; {comparison}")
             }
             Self::DuplicateFormulaBinding { name, .. } => {
                 format!("duplicate formula binding {}", diagnostic_name(name))
@@ -507,8 +522,11 @@ impl fmt::Display for CompileError {
                 write!(formatter, "invalid proof structure: {source}")
             }
             Self::Check { source, .. } => write!(formatter, "proof checking failed: {source}"),
-            Self::StatementMismatch { .. } => {
-                formatter.write_str("declared statement differs from the checked conclusion")
+            Self::StatementMismatch { comparison, .. } => {
+                write!(
+                    formatter,
+                    "declared statement differs from the checked conclusion; {comparison}"
+                )
             }
             Self::DuplicateFormulaBinding { offset, name } => {
                 write!(
@@ -594,7 +612,11 @@ fn check_diagnostic_message(step_name: &str, error: &CheckError) -> String {
             format!("step {step_name} references an unknown proof")
         }
         CheckError::Logic { source, .. } => {
-            format!("step {step_name} violates Foundation logic: {source}")
+            let mut message = format!("step {step_name} violates Foundation logic: {source}");
+            if let Some(comparison) = error.formula_mismatch() {
+                write!(&mut message, "; {comparison}").expect("string write");
+            }
+            message
         }
         CheckError::Schema { source, .. } => {
             format!("step {step_name} violates a ZFC schema: {source}")

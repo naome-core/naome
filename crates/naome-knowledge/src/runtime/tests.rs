@@ -93,7 +93,10 @@ fn closure() -> (Envelope, Envelope, CompiledQuestion) {
         )
         .unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
-    let a = "all(x,eq(x,x))";
+    let a = CompiledQuestion::compile(&crate::mocks::create_question(0))
+        .unwrap()
+        .proved_target()
+        .to_source();
     let b = "all(y,mem(y,y))";
     let root=producer.author(&format!("goal = imp({b},{a}) proof: p0 = cite(\"{}\") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2",helper.proof_id)).unwrap();
     let question = CompiledQuestion::compile(&format!("goal = imp({b},{a})")).unwrap();
@@ -102,27 +105,21 @@ fn closure() -> (Envelope, Envelope, CompiledQuestion) {
 
 #[tokio::test]
 async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_storage() {
-    let sources = [
-        (
-            "goal=all(x,eq(x,x))",
-            "goal=all(x,eq(x,x)) proof: p0=refl(x) p1=gen(p0,x) return p1",
-        ),
-        (
-            "let: A=mem(x,x) goal=all(x,imp(A,A))",
-            "let: A=mem(x,x) B=imp(A,A) goal=all(x,B) proof: p0=simp(A,A) p1=simp(A,B) p2=frege(A,B,A) p3=mp(p1,p2) p4=mp(p0,p3) p5=gen(p4,x) return p5",
-        ),
-        (
-            "goal=all([x,y,set],imp(eq(x,y),imp(mem(x,set),mem(y,set))))",
-            "goal=all([x,y,set],imp(eq(x,y),imp(mem(x,set),mem(y,set)))) proof: p0=subst(x,y,mem(x,set)) p1=gen(p0,set) p2=gen(p1,y) p3=gen(p2,x) return p3",
-        ),
-    ];
-    for (cursor, (source, proof)) in sources.into_iter().enumerate() {
+    for cursor in 0..3 {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
         let catalog_question =
             CompiledQuestion::compile(&crate::mocks::create_question(cursor as u64)).unwrap();
         let original_bytes = catalog_question.to_canonical_bytes().unwrap();
-        let question = CompiledQuestion::compile(source).unwrap();
+        let source = format!(
+            "# Alternate source presentation\n{}\n",
+            catalog_question.source()
+        );
+        let proof = format!(
+            "# Alternate proof presentation\n{}\n",
+            crate::mocks::create_proof(&catalog_question).unwrap()
+        );
+        let question = CompiledQuestion::compile(&source).unwrap();
         assert_eq!(question.proved_target(), catalog_question.proved_target());
         assert_eq!(question.refuted_target(), catalog_question.refuted_target());
         assert_eq!(question.resolution_id(), catalog_question.resolution_id());
@@ -130,7 +127,7 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
         let before = graph
             .author(&crate::mocks::create_proof(&catalog_question).unwrap())
             .unwrap();
-        let envelope = graph.author(proof).unwrap();
+        let envelope = graph.author(&proof).unwrap();
         assert_eq!(envelope, before);
         let mut questions =
             crate::question::LocalQuestions::new(Some(crate::mocks::assess_interest as fn(_) -> _));

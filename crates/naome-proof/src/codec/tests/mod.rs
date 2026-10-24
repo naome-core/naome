@@ -53,6 +53,7 @@ fn raw_certificate(steps: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn assert_step_bytes(step: &ProofStep, expected: Vec<u8>) {
+    assert_eq!(step.encoded_length().unwrap(), expected.len());
     let mut actual = Vec::new();
     encode_step(step, &mut actual).unwrap();
     assert_eq!(actual, expected);
