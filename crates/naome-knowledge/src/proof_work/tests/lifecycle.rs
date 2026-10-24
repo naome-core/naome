@@ -2,6 +2,22 @@ use super::*;
 
 #[test]
 fn interrupted_or_paused_finalization_reopens_unchecked_and_reproduces_the_manifest() {
+    const CASE: &str = "proof_work::tests::lifecycle::interrupted_or_paused_finalization_reopens_unchecked_and_reproduces_the_manifest";
+    if std::env::var_os("NAOME_FINALIZATION_RECOVERY_CASE").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env("NAOME_FINALIZATION_RECOVERY_CASE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let mut expected = None;
     for interrupted_after in [0, 1, 4, 7, 12] {
         let directory = Directory::new();

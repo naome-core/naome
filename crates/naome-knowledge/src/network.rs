@@ -1832,7 +1832,13 @@ impl Node {
                     }
                 }
                 Ok(Some(crate::object::ProofDescription::Certificate(metadata))) => {
-                    Body::Description { metadata }
+                    Body::Description {
+                        metadata: self
+                            .test_objects
+                            .get(&ProofId::from_bytes(id))
+                            .filter(|_| self.test_controls)
+                            .map_or(metadata, |(metadata, _)| metadata.clone()),
+                    }
                 }
                 Ok(None) => self
                     .test_controls
