@@ -91,6 +91,25 @@ fn actual_supported_host_observations_include_memory_cpu_load_and_disk() {
 }
 
 #[test]
+fn validated_custom_budgets_above_dynamic_defaults_are_honored() {
+    let selection = Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes: 128 * MIB,
+            concurrency: 2,
+            cache_bytes: 16 * MIB,
+            batch_steps: 512,
+            network_requests: 8,
+        }),
+    };
+    let snapshot = Snapshot::derive(selection, hardware(), 512 * MIB).unwrap();
+    assert_eq!(snapshot.budget.memory_bytes, 128 * MIB);
+    assert_eq!(snapshot.budget.cache_bytes, 16 * MIB);
+    assert_eq!(snapshot.budget.batch_steps, 512);
+    assert_eq!(snapshot.budget.network_requests, 8);
+}
+
+#[test]
 fn container_ancestors_and_v1_cpu_quotas_reduce_effective_hardware() {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
