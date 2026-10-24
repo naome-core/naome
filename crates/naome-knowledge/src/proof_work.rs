@@ -183,6 +183,7 @@ impl Work {
         crate::storage::sqlite_common(&connection, 1024 * 1024).map_err(|e| e.to_string())?;
         sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
             CREATE TEMP TABLE checked(position INTEGER PRIMARY KEY, node INTEGER NOT NULL, proved INTEGER NOT NULL);
+            CREATE TEMP TABLE authenticated_node(id INTEGER PRIMARY KEY, hash BLOB NOT NULL, free INTEGER NOT NULL, required INTEGER NOT NULL);
             CREATE TEMP TABLE verified(source INTEGER NOT NULL, depth INTEGER NOT NULL, result INTEGER NOT NULL, PRIMARY KEY(source,depth)) WITHOUT ROWID;
             CREATE TEMP TABLE stack(sequence INTEGER PRIMARY KEY, source INTEGER NOT NULL, depth INTEGER NOT NULL);"))?;
         File::open(path.parent().expect("proof parent"))
@@ -544,7 +545,14 @@ impl Work {
         depth: u64,
         transform: Transform,
     ) -> Result<Option<Node<u64>>, String> {
-        let (node, _, _) = self.load(source)?;
+        let (node, _, properties) = self.load(source)?;
+        // `load` derives properties from nodes authenticated by this owner's
+        // replay, rather than trusting persisted flags. These transforms only
+        // replace free variables, so a free-variable-free subgraph is unchanged
+        // at every binder depth and needs no recursive transformation evidence.
+        if !properties.has_free_variables {
+            return Ok(Some(node));
+        }
         let nested = node
             .nested_depth(depth)
             .ok_or("physical binder address exhausted")?;
@@ -696,6 +704,9 @@ impl Work {
         for (i, child) in node.children().into_iter().enumerate() {
             if let Some(child) = child {
                 let (_, hash, p) = self.raw(child)?;
+                if self.authenticated(child)? != Some((hash, p)) {
+                    return Err("formula child has not passed current-owner authentication".into());
+                }
                 bytes.extend_from_slice(&hash);
                 properties[i] = Some(p);
             }
@@ -733,7 +744,49 @@ impl Work {
         if self.representation(node)? != (hash, p) {
             return Err("formula graph content authentication failed".into());
         }
+        self.remember_authenticated(id, hash, p)?;
         Ok((node, hash, p))
+    }
+    fn authenticated(&self, id: u64) -> Result<Option<([u8; 32], Properties)>, String> {
+        let row: Option<(Vec<u8>, bool, u64)> = sql(self
+            .connection
+            .query_row(
+                "SELECT hash,free,required FROM authenticated_node WHERE id=?1",
+                [number(id)?],
+                |row| Ok((row.get(0)?, row.get(1)?, unsigned(row, 2)?)),
+            )
+            .optional())?;
+        row.map(|(hash, has_free_variables, required_binders)| {
+            Ok((
+                hash.try_into()
+                    .map_err(|_| "authenticated formula digest corruption")?,
+                Properties {
+                    has_free_variables,
+                    required_binders,
+                },
+            ))
+        })
+        .transpose()
+    }
+    fn remember_authenticated(
+        &self,
+        id: u64,
+        hash: [u8; 32],
+        properties: Properties,
+    ) -> Result<(), String> {
+        sql(self.connection.execute(
+            "INSERT OR IGNORE INTO authenticated_node VALUES(?1,?2,?3,?4)",
+            params![
+                number(id)?,
+                hash.as_slice(),
+                properties.has_free_variables,
+                number(properties.required_binders)?
+            ],
+        ))?;
+        if self.authenticated(id)? != Some((hash, properties)) {
+            return Err("authenticated formula changed within its owner".into());
+        }
+        Ok(())
     }
     fn intern(&mut self, node: Node<u64>) -> Result<u64, String> {
         let (hash, properties) = self.representation(node)?;
@@ -788,7 +841,9 @@ impl Work {
                 number(properties.required_binders)?
             ],
         ))?;
-        u64::try_from(self.connection.last_insert_rowid()).map_err(|e| e.to_string())
+        let id = u64::try_from(self.connection.last_insert_rowid()).map_err(|e| e.to_string())?;
+        self.remember_authenticated(id, hash, properties)?;
+        Ok(id)
     }
     pub fn status(&self) -> Result<Status, String> {
         self.live()?;

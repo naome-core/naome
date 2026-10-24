@@ -12,6 +12,56 @@ fn hardware() -> Observed {
         disk_available: 1024 * MIB,
     }
 }
+
+#[test]
+fn live_memory_targets_reject_new_over_budget_leases_without_revoking_existing_work() {
+    const TEST: &str = "resources::adaptive::tests::live_memory_targets_reject_new_over_budget_leases_without_revoking_existing_work";
+    if std::env::var_os("NAOME_LIVE_MEMORY_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_LIVE_MEMORY_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let selection = |memory_bytes| Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes,
+            concurrency: 1,
+            cache_bytes: 4096,
+            batch_steps: 1,
+            network_requests: 1,
+        }),
+    };
+    let capacity = super::super::memory_usage().1;
+    let existing = super::super::MemoryLease::acquire(20 * MIB as usize).unwrap();
+    let alias = existing.clone();
+    publish(Snapshot::derive(selection(32 * MIB), hardware(), capacity as u64).unwrap());
+    assert!(super::super::MemoryLease::acquire(40 * MIB as usize).is_err());
+    assert_eq!(super::super::memory_usage().0, 20 * MIB as usize);
+    let extra = super::super::MemoryLease::acquire(12 * MIB as usize).unwrap();
+    assert!(super::super::MemoryLease::acquire(1).is_err());
+    let mut observed = hardware();
+    observed.process_rss = 40 * MIB;
+    publish(Snapshot::derive(selection(8 * MIB), observed, capacity as u64).unwrap());
+    assert!(super::super::MemoryLease::acquire(1).is_err());
+    drop(existing);
+    assert_eq!(super::super::memory_usage().0, 32 * MIB as usize);
+    drop(alias);
+    drop(extra);
+    assert_eq!(super::super::memory_usage().0, 0);
+    assert!(super::super::MemoryLease::acquire(1).is_err());
+    publish(Snapshot::derive(selection(64 * MIB), hardware(), capacity as u64).unwrap());
+    assert!(super::super::MemoryLease::acquire(40 * MIB as usize).is_ok());
+    assert_eq!(super::super::memory_usage().1, capacity);
+}
 #[test]
 fn profiles_have_distinct_semantics_and_never_exceed_safe_hardware_capacity() {
     let derive = |profile| {

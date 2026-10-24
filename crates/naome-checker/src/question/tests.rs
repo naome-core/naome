@@ -23,6 +23,22 @@ fn schema_fact(state: &mut ArtifactState, negative: bool) -> (ProofId, Formula) 
     register(state, schema_steps(negative))
 }
 
+fn generalized_schema(state: &mut ArtifactState, binders: u32) -> Formula {
+    let mut steps = schema_steps(false);
+    let target = normalize_and_check(ProofCertificate::new(steps.clone()).unwrap())
+        .unwrap()
+        .conclusion()
+        .clone();
+    for binder in 0..binders {
+        steps.push(ProofStep::Generalization {
+            premise: steps.len() as u32 - 1,
+            variable: var(40 + binder),
+        });
+    }
+    let _ = register(state, steps);
+    target
+}
+
 fn var(id: u32) -> FreeVariable {
     FreeVariable::new(id)
 }
@@ -117,6 +133,46 @@ fn snapshot_dependent_exact_answers_are_read_only_and_reproducible() {
     let refuted = Formula::decode_canonical(&bytes[1..]).unwrap();
     let rejected = decision(&refuted, &state, &[], &policy);
     assert_eq!(rejected.reason, Some(RejectionReason::KnownRefutation));
+}
+
+#[test]
+fn elementary_answers_survive_dense_implication_contexts() {
+    let target = equal();
+    let policy = PrefilterPolicy::default();
+    let mut state = ArtifactState::new();
+    let empty = decision(&target, &state, &[], &policy);
+    assert_eq!(empty.rule, "Q07_ELEMENTARY_CERTIFICATE");
+
+    for index in 1..=512 {
+        let mut pattern = unresolved();
+        for digit in format!("{index:b}").bytes() {
+            pattern = if digit == b'1' {
+                Formula::negate(pattern)
+            } else {
+                Formula::for_all(var(0), pattern)
+            };
+        }
+        let _ = register(
+            &mut state,
+            vec![ProofStep::Simplification {
+                antecedent: target.clone().into(),
+                consequent: pattern.into(),
+            }],
+        );
+    }
+    assert_eq!(state.proof_conclusions().count(), 512);
+    let result = decision(&target, &state, &[], &policy);
+    assert_eq!(result.reason, Some(RejectionReason::KnownProof));
+    assert_eq!(result.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    let _ = verify_deduction(&result, &state, &target);
+
+    let infinity = ZfcAxiom::Infinity.formula().encode_canonical().unwrap();
+    assert_eq!(infinity[0], 0x02);
+    let refuted = Formula::decode_canonical(&infinity[1..]).unwrap();
+    let result = decision(&refuted, &state, &[], &policy);
+    assert_eq!(result.reason, Some(RejectionReason::KnownRefutation));
+    let _ = verify_deduction(&result, &state, &Formula::negate(refuted));
+    assert!(!decision(&unresolved(), &state, &[], &policy).has_answer());
 }
 
 #[test]
@@ -430,7 +486,7 @@ fn general_identity(state: &mut ArtifactState) -> Formula {
 }
 
 #[test]
-fn elementary_and_stored_general_results_settle_diagonal_through_checked_certificates() {
+fn elementary_priority_preserves_checked_answers_with_stored_general_results() {
     let mut state = ArtifactState::new();
     let atom = Formula::member(var(10), var(10));
     let diagonal = Formula::for_all(var(10), Formula::implies(atom.clone(), atom));
@@ -445,8 +501,9 @@ fn elementary_and_stored_general_results_settle_diagonal_through_checked_certifi
         "diagonal is a proper narrowing of two quantified variables"
     );
     let result = decision(&diagonal, &state, &[], &policy);
-    assert_eq!(result.reason, Some(RejectionReason::KnownLemmaInstance));
-    assert_eq!(result.rule, "Q06_CHECKED_UNIVERSAL_INSTANCE");
+    assert_eq!(result.reason, Some(RejectionReason::KnownProof));
+    assert_eq!(result.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    let _ = verify_deduction(&result, &state, &diagonal);
     let changed_assumption = Formula::for_all(
         var(0),
         Formula::for_all(
@@ -886,11 +943,9 @@ fn complete_large_checked_context_approves_irrelevant_data_and_finds_late_witnes
     assert_eq!(result.related_record, Some([255; 32]));
 
     let mut specialized = state.clone();
-    general_identity(&mut specialized);
-    let atom = Formula::member(var(10), var(10));
-    let diagonal = Formula::for_all(var(10), Formula::implies(atom.clone(), atom));
+    let target = generalized_schema(&mut specialized, 2);
     assert_eq!(
-        indexed_decision(&diagonal, &specialized, &registry, &policy).reason,
+        indexed_decision(&target, &specialized, &registry, &policy).reason,
         Some(RejectionReason::KnownLemmaInstance)
     );
 
@@ -940,7 +995,7 @@ fn relevant_bucket_exhaustion_rejects_instead_of_approving_a_partial_query() {
 }
 
 #[test]
-fn indexed_universal_witnesses_include_negative_and_vacuous_one_two_step_instances() {
+fn elementary_refutations_and_indexed_vacuous_instances_preserve_checked_polarity() {
     let mut state = ArtifactState::new();
     let axiom = normalize_and_check(
         ProofCertificate::new(vec![ProofStep::ZfcAxiom(ZfcAxiom::Infinity)]).unwrap(),
@@ -961,7 +1016,7 @@ fn indexed_universal_witnesses_include_negative_and_vacuous_one_two_step_instanc
     let policy = PrefilterPolicy::default();
     assert_eq!(
         decision(&target, &state, &[], &policy).reason,
-        Some(RejectionReason::KnownLemmaInstance)
+        Some(RejectionReason::KnownRefutation)
     );
 
     let mut twice = ArtifactState::new();
@@ -981,8 +1036,16 @@ fn indexed_universal_witnesses_include_negative_and_vacuous_one_two_step_instanc
     );
     assert_eq!(
         decision(&target, &twice, &[], &policy).reason,
-        Some(RejectionReason::KnownLemmaInstance)
+        Some(RejectionReason::KnownRefutation)
     );
+    for binders in [1, 2] {
+        let mut state = ArtifactState::new();
+        let target = generalized_schema(&mut state, binders);
+        let result = decision(&target, &state, &[], &policy);
+        assert_eq!(result.reason, Some(RejectionReason::KnownLemmaInstance));
+        assert_eq!(result.rule, "Q06_CHECKED_UNIVERSAL_INSTANCE");
+        let _ = verify_deduction(&result, &state, &target);
+    }
     let intermediate = Formula::for_all(var(4), target);
     let refuted_intermediate = Formula::negate(intermediate);
     // Negative polarity uses the exact structurally projected conclusion,
@@ -1126,6 +1189,14 @@ fn verify_deduction(
         .deduction
         .as_ref()
         .expect("actual certified deduction receipt");
+    verify_witness(witness, state, target)
+}
+
+fn verify_witness(
+    witness: &DeductionWitness,
+    state: &ArtifactState,
+    target: &Formula,
+) -> ProofCertificate {
     let certificate =
         ProofCertificate::from_canonical_bytes(witness.canonical_certificate()).unwrap();
     let checked = normalize_and_check_with_state(certificate.clone(), state).unwrap();
@@ -1213,7 +1284,7 @@ fn dynamic_mp_bridge_requires_both_seeds_and_rechecks_all_original_citations() {
 }
 
 #[test]
-fn dynamic_mp_refutation_preserves_the_negative_target_and_certified_dag() {
+fn elementary_refutation_priority_preserves_the_negative_mp_certificate() {
     let mut state = ArtifactState::new();
     let (_, p) = equality(&mut state);
     let (_, q) = register(
@@ -1243,8 +1314,19 @@ fn dynamic_mp_refutation_preserves_the_negative_target_and_certified_dag() {
     let target = Formula::decode_canonical(&bytes[1..]).unwrap();
     let result = decision(&target, &state, &[], &PrefilterPolicy::default());
     assert_eq!(result.reason, Some(RejectionReason::KnownRefutation));
-    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
-    let certificate = verify_deduction(&result, &state, &negative);
+    assert_eq!(result.rule, "Q07_ELEMENTARY_CERTIFICATE");
+    let _ = verify_deduction(&result, &state, &negative);
+    let limits = AssessmentLimits::MAXIMUM;
+    let mut work = Work {
+        operations: limits.operations,
+        bytes: limits.formula_work_bytes,
+        certificate_steps: limits.certificate_steps,
+        certificate_bytes: limits.certificate_bytes,
+    };
+    let witness = deduction::derive(statement_id(&bytes), &negative, &state, &mut work)
+        .unwrap()
+        .expect("the context closure still derives the negative theorem");
+    let certificate = verify_witness(&witness, &state, &negative);
     assert_eq!(
         certificate
             .steps()

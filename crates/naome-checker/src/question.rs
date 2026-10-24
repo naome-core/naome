@@ -59,7 +59,8 @@ impl AssessmentLimits {
 }
 
 /// Rule set 3 adds elementary certificates and target-directed universal
-/// specialization to finite MP closure. Q05 requires both checked implications.
+/// specialization to finite MP closure. Elementary certificates precede context
+/// search; Q05 requires both checked implications.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrefilterPolicy {
     pub revision: u64,
@@ -70,7 +71,7 @@ pub struct PrefilterPolicy {
 impl Default for PrefilterPolicy {
     fn default() -> Self {
         Self {
-            revision: 4,
+            revision: 5,
             rule_set: 3,
             limits: AssessmentLimits::MAXIMUM,
         }
@@ -80,7 +81,7 @@ impl Default for PrefilterPolicy {
 impl PrefilterPolicy {
     pub fn identity(self) -> Identity {
         let mut digest = Sha256::new();
-        digest.update(b"naome:local-question-policy:v4\0");
+        digest.update(b"naome:local-question-policy:v5\0");
         digest.update(self.revision.to_le_bytes());
         digest.update(self.rule_set.to_le_bytes());
         for value in self.limits.values() {
@@ -655,6 +656,15 @@ fn evaluate(
             return Err((reason, "Q04_EXACT_ANSWER"));
         }
     }
+    // Registry/dependency validation and exact-answer authentication still run
+    // first. Context search cannot consume the work needed for an independent
+    // elementary certificate, which is always checked before issuing an answer.
+    for (_, target, reason) in targets {
+        if let Some(plan) = elementary::plan(target, work)? {
+            decision.deduction = Some(plan.finish(target, snapshot.artifacts, work)?);
+            return Err((reason, "Q07_ELEMENTARY_CERTIFICATE"));
+        }
+    }
     for (target_id, target, reason) in targets {
         if let Some(witness) = deduction::derive(target_id, target, snapshot.artifacts, work)? {
             decision.witness = witness.original_proofs().first().copied();
@@ -756,12 +766,6 @@ fn evaluate(
                     "Q05_CHECKED_MUTUAL_IMPLICATIONS",
                 ));
             }
-        }
-    }
-    for (_, target, reason) in targets {
-        if let Some(plan) = elementary::plan(target, work)? {
-            decision.deduction = Some(plan.finish(target, snapshot.artifacts, work)?);
-            return Err((reason, "Q07_ELEMENTARY_CERTIFICATE"));
         }
     }
     for (_, target, reason) in targets {
