@@ -49,12 +49,13 @@ def smoke(binary, version):
             return subprocess.check_output([str(binary.resolve()), *arguments], env=environment, text=True, timeout=30).strip()
         if run("--version") != f"naome {version}" or "naome start" not in run("--help"):
             raise ValueError("packaged executable has incorrect version/help")
-        expected = {"running": False, "accepted_proofs": 0, "interest": ""}
+        expected = {"running": False, "computation": "stopped", "accepted_proofs": 0, "interest": ""}
         if json.loads(run("--json", "status")) != expected or node.exists():
             raise ValueError("packaged status must not create state or start a node")
-        rejected = subprocess.run([str(binary.resolve()), "publish"], env=environment, capture_output=True, timeout=30)
-        if rejected.returncode == 0 or node.exists():
-            raise ValueError("packaged product unexpectedly accepts developer commands")
+        for command in ("publish", "pause", "resume"):
+            rejected = subprocess.run([str(binary.resolve()), command], env=environment, capture_output=True, timeout=30)
+            if rejected.returncode == 0 or node.exists():
+                raise ValueError("packaged product accepts an invalid command or creates state for a stopped node")
 
 
 def build_package(target, version, output, notices, sbom, system_licenses):

@@ -62,6 +62,8 @@ naome --help
 naome start
 naome status
 naome interest 'Your exact interest text'
+naome pause
+naome resume
 naome stop
 ```
 

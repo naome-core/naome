@@ -181,7 +181,7 @@ class PackageTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def payload(self, target):
-        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"accepted_proofs":0,"interest":""}}\';;\n*) exit 1;;\nesac\n'.encode()
+        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","accepted_proofs":0,"interest":""}}\';;\n*) exit 1;;\nesac\n'.encode()
         lockfile = (ROOT / "Cargo.lock").read_bytes()
         build = {"schema": 1, "repository": "naome-core/naome", "commit": SHA, "target": target, "profile": "release",
                  "features": [], "version": VERSION, "tag": f"v{VERSION}", "prerelease": "-" in VERSION,
