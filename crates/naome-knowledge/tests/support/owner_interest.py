@@ -81,6 +81,26 @@ def human(trial, node, verb, text=None, terminal=False, no_color=False, json_mod
     return output
 
 
+def assert_owner_status(value, *, running, interest, accepted_proofs=None):
+    assert set(value) == {
+        "running", "accepted_proofs", "interest", "proof_verification",
+        "computation", "computation_reason",
+    }, value
+    assert value["running"] is running, value
+    assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value
+    if accepted_proofs is not None:
+        assert value["accepted_proofs"] == accepted_proofs, value
+    assert value["interest"] == interest, value
+    assert value["proof_verification"] == ("checked" if running else "not_run"), value
+    if not running:
+        assert value["computation"] == "stopped" and value["computation_reason"] is None, value
+    elif value["computation"] == "running":
+        assert value["computation_reason"] is None, value
+    else:
+        assert value["computation"] in {"pausing", "paused"}, value
+        assert isinstance(value["computation_reason"], str) and value["computation_reason"], value
+
+
 def run(trial):
     first, other, before_start = Node(trial, 0), Node(trial, 1), Node(trial, 2)
     trial.summary["node_count"] = 3
@@ -144,11 +164,19 @@ def run(trial):
                 assert "🦀" * 256 in plain
             result = trial.call(first, "interest", text=text)
             assert human(trial, first, "status", terminal=True, json_mode=True) == result
-            assert result == {"running": running, "accepted_proofs": 0, "interest": text, "proof_verification": ("checked" if running else "not_run"), "computation": ("running" if running else "stopped"), "computation_reason": None}
-            assert trial.call(first, "status") == result
+            assert_owner_status(result, running=running, interest=text, accepted_proofs=0)
+            assert_owner_status(
+                trial.call(first, "status"), running=running, interest=text, accepted_proofs=0
+            )
             for oversized in ["x" * 1025, "🦀" * 256 + "x"]:
+                owner_before = (first.directory / "owner.json").read_bytes()
                 trial.call(first, "interest", text=oversized, success=False)
-                assert trial.call(first, "status") == result
+                after_rejection = trial.call(first, "status")
+                # Status also reports autonomous computation, which may be
+                # paused by live resource pressure between owner commands.
+                # The rejected mutation must preserve the profile bytes.
+                assert_owner_status(after_rejection, running=running, interest=text)
+                assert (first.directory / "owner.json").read_bytes() == owner_before
             assert trial.call(other, "status")["interest"] == ""
         with ThreadPoolExecutor(max_workers=4) as pool:
             updates = list(pool.map(lambda i: trial.call(first, "interest", text=f"update-{i}"), range(8)))
@@ -180,7 +208,9 @@ def run(trial):
     identities = {object["proof_id"]: object for object in stored_objects(first)}
     identity = digest(first.directory / "identity.key")
     first.start()
-    assert trial.call(first, "status") == {"running": True, "accepted_proofs": 3, "interest": initial, "proof_verification": "checked", "computation": "running", "computation_reason": None}
+    assert_owner_status(
+        trial.call(first, "status"), running=True, interest=initial, accepted_proofs=3
+    )
     old_process = dict(first.process)
     assert process_identity(old_process["pid"]) == old_process
     os.killpg(old_process["group"], signal.SIGKILL)
