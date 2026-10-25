@@ -100,12 +100,14 @@ fn modus_ponens_rejects_invalid_inputs() {
     let non_implication = Formula::member(x, y);
     let mismatched_implication = Formula::implies(Formula::equal(y, y), Formula::member(x, y));
 
-    for invalid in [&non_implication, &mismatched_implication] {
-        assert_eq!(
-            Logic::modus_ponens(&premise, invalid),
-            Err(LogicError::ModusPonensMismatch)
-        );
-    }
+    assert_eq!(
+        Logic::modus_ponens(&premise, &non_implication),
+        Err(LogicError::ExpectedImplication)
+    );
+    assert_eq!(
+        Logic::modus_ponens(&premise, &mismatched_implication),
+        Err(LogicError::AntecedentMismatch)
+    );
 }
 
 #[test]

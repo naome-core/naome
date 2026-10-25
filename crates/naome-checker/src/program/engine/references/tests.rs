@@ -265,7 +265,7 @@ fn saved_proved_results_cannot_restore_citation_authority_after_reopen() {
     let mut reopened = Engine::open(Connection::open(&path).unwrap()).unwrap();
     assert!(!reopened.status().unwrap().fully_checked);
     assert!(
-        matches!(reopened.advance(97, 32768, &ArtifactState::new()), Err(Error::Invalid(message)) if message.contains("unknown checked proof"))
+        matches!(reopened.advance(97, 32768, &ArtifactState::new()), Err(Error::Check(diagnostic)) if matches!(diagnostic.failure, crate::diagnostics::Failure::MissingProof { proof_id } if proof_id.0 == *parent.manifest().proof_id().as_bytes()))
     );
     assert!(!reopened.status().unwrap().fully_checked);
     let replayed = finish(reopened, &state);

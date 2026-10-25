@@ -460,10 +460,15 @@ fn hash_consistent_invalid_proofs_cannot_bypass_mathematical_restart_replay() {
     // production Graph admission never calls persistence before checking it.
     store.persist(&object).unwrap();
     drop(store);
-    assert!(
-        Graph::open(&directory.0)
-            .unwrap_err_string()
-            .contains("mathematically invalid")
+    let error = Graph::open(&directory.0)
+        .err()
+        .expect("invalid stored mathematics");
+    assert!(error.fatal());
+    assert_eq!(
+        error.diagnostic().unwrap().failure,
+        naome_checker::diagnostics::Failure::ExpectedImplication {
+            operand: naome_checker::diagnostics::OperandRole::Implication
+        }
     );
 }
 

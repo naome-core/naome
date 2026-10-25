@@ -283,15 +283,6 @@ impl Formula {
         Self(Node::ForAll(Box::new(body.0)))
     }
 
-    pub(crate) fn implication_consequent_for(&self, premise: &Self) -> Option<Self> {
-        match &self.0 {
-            Node::Implies(antecedent, consequent) if antecedent.as_ref() == &premise.0 => {
-                Some(Self(consequent.as_ref().clone()))
-            }
-            _ => None,
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn primitive_structure(&self) -> String {
         let mut output = String::new();

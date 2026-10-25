@@ -170,7 +170,7 @@ impl Intake {
             let until = questions.interest_deadline(now);
             let mut selection = Selection::new(id, description.question.clone());
             if let Err(error) = selection.begin(SelectionStage::Initial, graph, questions, until) {
-                return Progress::Skipped(id, error.to_string());
+                return Progress::Skipped(id, error);
             }
             self.waiting.push_back(Waiting {
                 description,
@@ -192,7 +192,7 @@ impl Intake {
                 Ok(WaitingStep::Activate) => {
                     let mut closure = Closure::new(id, Some(waiting.description.statement));
                     if let Err(error) = closure.require_root(graph) {
-                        return Progress::Skipped(id, error.to_string());
+                        return Progress::Skipped(id, error);
                     }
                     self.active = Some(ApprovedRoot {
                         closure,
@@ -205,7 +205,7 @@ impl Intake {
                 Err(error) => {
                     graph.program_failure(&error);
                     self.decline(&waiting.description, waiting.context, now);
-                    return Progress::Skipped(id, error.to_string());
+                    return Progress::Skipped(id, error);
                 }
             }
         }
@@ -285,7 +285,7 @@ impl Intake {
                     .map(QuestionAssessment::formal_context)
                     .unwrap_or(context);
                 self.decline(&root.description, context, now);
-                Progress::Skipped(id, error.to_string())
+                Progress::Skipped(id, error)
             }
         }
     }

@@ -247,7 +247,7 @@ fn comments_literals_and_original_source_diagnostics_are_not_rewritten() {
     let source = SIMPLE.replace("refl(x)", "cite(\"refl#~eq\")");
     assert!(compile(&source).is_err());
     let source = "# ä\r\ngoal=all(x,eq(x,x))\rproof: good=refl(x) bad=gen(missing,x) return bad";
-    let error = compile(source).unwrap_err().diagnostic(source);
+    let error = compile(source).unwrap_err().into_diagnostic();
     assert_eq!(error.code(), DiagnosticCode::UnknownStep);
     let span = error.primary_span().unwrap();
     assert_eq!(&source[span.start()..span.end()], "missing");
@@ -273,8 +273,8 @@ fn comments_literals_and_original_source_diagnostics_are_not_rewritten() {
 #[test]
 fn raw_expanded_and_retained_formula_budgets_precede_allocation() {
     assert!(matches!(
-        compile(&" ".repeat(AUTHORING_SOURCE_MAX_BYTES + 1)),
-        Err(CompileError::SourceTooLong { .. })
+        compile(&" ".repeat(AUTHORING_SOURCE_MAX_BYTES + 1)).map_err(CompileError::into_kind),
+        Err(naome_authoring::CompileErrorKind::SourceTooLong { .. })
     ));
     assert_eq!(
         CompiledQuestion::compile_with_diagnostic(&" ".repeat(QUESTION_SOURCE_MAX_BYTES + 1))
@@ -336,8 +336,8 @@ fn function_term_preflight_preserves_boundary_and_rejects_hostile_recursion() {
         .stack_size(1024 * 1024)
         .spawn(move || {
             assert!(matches!(
-                compile_against_proof_context(&source, &state),
-                Err(CompileError::FormulaDepthLimitExceeded { .. })
+                compile_against_proof_context(&source, &state).map_err(CompileError::into_kind),
+                Err(naome_authoring::CompileErrorKind::FormulaDepthLimitExceeded { .. })
             ));
         })
         .unwrap()
@@ -364,7 +364,7 @@ fn checker_valid_wrong_target_is_rejected_and_exact_question_orientation_matches
     assert!(unrelated.classify_checked_proof(&checked).is_err());
     let wrong = SIMPLE.replace("all(x,eq(x,x))", "all(x,imp(eq(x,x),eq(x,x)))");
     assert!(matches!(
-        compile(&wrong),
-        Err(CompileError::StatementMismatch { .. })
+        compile(&wrong).map_err(CompileError::into_kind),
+        Err(naome_authoring::CompileErrorKind::StatementMismatch { .. })
     ));
 }

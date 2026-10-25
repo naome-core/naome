@@ -1,6 +1,10 @@
 //! Stable diagnostics and source positions.
 
 use super::*;
+use naome_checker::diagnostics::{Digest, ProofDiagnostic};
+use serde::Serialize;
+mod details;
+pub use details::{CompileDetails, DefinitionFailure, FormatFailure};
 
 /// A stable machine-readable class for one source compilation diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,7 +83,7 @@ impl fmt::Display for DiagnosticCode {
 }
 
 /// A half-open UTF-8 byte range in one complete `.nao` source value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct SourceSpan {
     start: u32,
     end: u32,
@@ -118,7 +122,7 @@ impl SourceSpan {
 }
 
 /// A one-based source position derived from a UTF-8 byte offset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct SourcePosition {
     line: u32,
     column: u32,
@@ -145,9 +149,69 @@ pub struct CompileDiagnostic {
     primary_span: Option<SourceSpan>,
     primary_position: Option<SourcePosition>,
     formula_mismatch: Option<Box<naome_foundation::FormulaMismatch>>,
+    source_digest: Digest,
+    proof: Option<std::sync::Arc<ProofDiagnostic>>,
+    details: Option<CompileDetails>,
+}
+
+impl Serialize for CompileDiagnostic {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("CompileDiagnostic", 10)?;
+        value.serialize_field("schema_version", &1)?;
+        value.serialize_field("code", self.code.as_str())?;
+        value.serialize_field("message", &self.message)?;
+        value.serialize_field("source_digest", &self.source_digest)?;
+        value.serialize_field("span", &self.primary_span)?;
+        value.serialize_field("operand_span", &self.operand_span())?;
+        value.serialize_field("position", &self.primary_position)?;
+        value.serialize_field("details", &self.details)?;
+        value.serialize_field("proof", &self.proof.as_deref())?;
+        #[derive(Serialize)]
+        struct Comparison<'a> {
+            expected: &'a str,
+            actual: &'a str,
+            path: Vec<&'static str>,
+        }
+        let comparison = self.formula_mismatch().map(|c| Comparison {
+            expected: c.expected(),
+            actual: c.actual(),
+            path: c.path().iter().map(|p| p.as_str()).collect(),
+        });
+        value.serialize_field("formula_mismatch", &comparison)?;
+        value.end()
+    }
 }
 
 impl CompileDiagnostic {
+    /// Exact mathematical evidence, shared with incremental proof programs.
+    pub fn proof(&self) -> Option<&ProofDiagnostic> {
+        self.proof.as_deref()
+    }
+    pub fn source_digest(&self) -> Digest {
+        self.source_digest
+    }
+    pub fn details(&self) -> Option<&CompileDetails> {
+        self.details.as_ref()
+    }
+    /// The smallest source argument singled out by the failed condition.
+    pub fn operand_span(&self) -> Option<SourceSpan> {
+        let proof = self.proof()?;
+        let role = proof.failure.operand()?;
+        let origin = proof.location.origins.first()?;
+        let index = match proof.failure {
+            naome_checker::diagnostics::Failure::DuplicateParameter { second, .. } => Some(second),
+            naome_checker::diagnostics::Failure::ParameterRoleCollision { parameter, .. } => {
+                Some(parameter)
+            }
+            _ => None,
+        };
+        let argument = origin.arguments.iter().find(|argument| {
+            argument.role == role && (index.is_none() || argument.index == index)
+        })?;
+        SourceSpan::try_new(argument.range.start as usize, argument.range.end as usize)
+    }
+
     pub(crate) fn at(
         code: DiagnosticCode,
         message: String,
@@ -161,6 +225,9 @@ impl CompileDiagnostic {
             primary_span,
             primary_position: primary_span.and_then(|span| source_position(source, span.start())),
             formula_mismatch: None,
+            source_digest: Digest::of(source.as_bytes()),
+            proof: None,
+            details: None,
         }
     }
 
@@ -199,10 +266,57 @@ impl CompileDiagnostic {
     }
 }
 
+/// An original-source-bound compilation failure. JSON serialization emits the
+/// complete diagnostic; callers never need to reattach source text to an error.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CompileError {
+    kind: CompileErrorKind,
+    diagnostic: Box<CompileDiagnostic>,
+}
+impl CompileError {
+    pub(crate) fn at_source(kind: CompileErrorKind, source: &str) -> Self {
+        let diagnostic = Box::new(kind.diagnostic(source));
+        Self { kind, diagnostic }
+    }
+    pub fn kind(&self) -> &CompileErrorKind {
+        &self.kind
+    }
+    pub fn into_kind(self) -> CompileErrorKind {
+        self.kind
+    }
+    pub fn diagnostic(&self) -> &CompileDiagnostic {
+        &self.diagnostic
+    }
+    pub fn into_diagnostic(self) -> CompileDiagnostic {
+        *self.diagnostic
+    }
+    pub fn diagnostic_code(&self) -> DiagnosticCode {
+        self.diagnostic.code()
+    }
+    pub fn source_offset(&self) -> Option<usize> {
+        self.kind.source_offset()
+    }
+}
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+impl Error for CompileError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.kind)
+    }
+}
+impl Serialize for CompileError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.diagnostic.serialize(serializer)
+    }
+}
+
 /// A deterministic `.nao` source compilation failure.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum CompileError {
+pub enum CompileErrorKind {
     /// The complete source exceeds its byte budget.
     SourceTooLong { actual: usize, maximum: usize },
     /// A source-only typed proof reference duplicates a declared name.
@@ -241,6 +355,7 @@ pub enum CompileError {
     StatementMismatch {
         span: SourceSpan,
         comparison: Box<naome_foundation::FormulaMismatch>,
+        diagnostic: std::sync::Arc<ProofDiagnostic>,
     },
     /// A source-only formula binding was declared more than once.
     DuplicateFormulaBinding { offset: usize, name: String },
@@ -288,7 +403,7 @@ pub enum CompileError {
     },
 }
 
-impl CompileError {
+impl CompileErrorKind {
     /// Returns the stable diagnostic class for this failure.
     pub const fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
@@ -356,7 +471,7 @@ impl CompileError {
     /// Positions are one-based. Columns count Unicode scalar values; LF, CRLF,
     /// and bare CR each form one line boundary. The original byte span remains
     /// available for deterministic machine repair.
-    pub fn diagnostic(&self, source: &str) -> CompileDiagnostic {
+    pub(crate) fn diagnostic(&self, source: &str) -> CompileDiagnostic {
         let primary_span = self.primary_span(source);
         let primary_position = primary_span.and_then(|span| source_position(source, span.start()));
         CompileDiagnostic {
@@ -364,6 +479,13 @@ impl CompileError {
             message: self.diagnostic_message(source).into_boxed_str(),
             primary_span,
             primary_position,
+            source_digest: Digest::of(source.as_bytes()),
+            proof: match self {
+                Self::Check { source, .. } => Some(source.shared_diagnostic()),
+                Self::StatementMismatch { diagnostic, .. } => Some(diagnostic.clone()),
+                _ => None,
+            },
+            details: details::from_error(self),
             formula_mismatch: match self {
                 Self::Check { source, .. } => source.formula_mismatch().cloned().map(Box::new),
                 Self::StatementMismatch { comparison, .. } => Some(comparison.clone()),
@@ -478,7 +600,7 @@ impl CompileError {
     }
 }
 
-impl fmt::Display for CompileError {
+impl fmt::Display for CompileErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SourceTooLong { actual, maximum } => {
@@ -590,7 +712,7 @@ impl fmt::Display for CompileError {
     }
 }
 
-impl Error for CompileError {
+impl Error for CompileErrorKind {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Statement { source, .. } => Some(source),
@@ -607,29 +729,29 @@ impl Error for CompileError {
 
 fn check_diagnostic_message(step_name: &str, error: &CheckError) -> String {
     let step_name = diagnostic_name(step_name);
-    match error {
-        CheckError::UnknownProofReference { .. } => {
+    match error.kind() {
+        naome_checker::CheckErrorKind::UnknownProofReference { .. } => {
             format!("step {step_name} references an unknown proof")
         }
-        CheckError::Logic { source, .. } => {
+        naome_checker::CheckErrorKind::Logic { source, .. } => {
             let mut message = format!("step {step_name} violates Foundation logic: {source}");
             if let Some(comparison) = error.formula_mismatch() {
                 write!(&mut message, "; {comparison}").expect("string write");
             }
             message
         }
-        CheckError::Schema { source, .. } => {
+        naome_checker::CheckErrorKind::Schema { source, .. } => {
             format!("step {step_name} violates a ZFC schema: {source}")
         }
-        CheckError::DerivedFormula { source, .. } => {
+        naome_checker::CheckErrorKind::DerivedFormula { source, .. } => {
             format!("step {step_name} derives a formula outside Formula limits: {source}")
         }
-        CheckError::FormulaWorkLimitExceeded {
+        naome_checker::CheckErrorKind::FormulaWorkLimitExceeded {
             actual, maximum, ..
         } => format!(
             "step {step_name} raises formula work to {actual} bytes; the Checker limit is {maximum}"
         ),
-        CheckError::OpenConclusion { .. } => {
+        naome_checker::CheckErrorKind::OpenConclusion { .. } => {
             format!("proof conclusion at step {step_name} is not closed")
         }
         _ => format!("step {step_name} failed proof checking: {error}"),

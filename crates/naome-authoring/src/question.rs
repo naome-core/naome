@@ -18,12 +18,45 @@ pub const QUESTION_SOURCE_MAX_BYTES: usize = 16 * 1024;
 use naome_proof::QuestionTarget;
 pub use naome_proof::{QUESTION_TARGET_MAX_DEPTH, QUESTION_TARGET_MAX_NODES, QuestionError};
 
+/// A checked proof failed the original question's two exact resolution targets.
+/// Formula/codec failures of question compilation remain `QuestionError`.
+#[derive(Debug)]
+pub enum ResolutionError {
+    Target(Box<naome_checker::diagnostics::ProofDiagnostic>),
+    Program(naome_checker::program::Error),
+}
+impl ResolutionError {
+    pub fn diagnostic(&self) -> Option<&naome_checker::diagnostics::ProofDiagnostic> {
+        match self {
+            Self::Target(diagnostic) => Some(diagnostic),
+            Self::Program(error) => error.diagnostic(),
+        }
+    }
+}
+impl fmt::Display for ResolutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Target(_) => f.write_str("proof conclusion does not match a question target"),
+            Self::Program(error) => error.fmt(f),
+        }
+    }
+}
+impl Error for ResolutionError {}
+impl serde::Serialize for ResolutionError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Target(diagnostic) => diagnostic.serialize(serializer),
+            Self::Program(error) => error.serialize(serializer),
+        }
+    }
+}
+
 /// A question source failure with an original-source machine-readable diagnostic.
 /// Codec failures continue to use [`QuestionError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestionCompileError {
     error: QuestionError,
-    diagnostic: CompileDiagnostic,
+    diagnostic: Box<CompileDiagnostic>,
 }
 
 impl QuestionCompileError {
@@ -52,7 +85,12 @@ impl QuestionCompileError {
     }
 
     fn at(error: QuestionError, source: &str, span: Option<SourceSpan>) -> Self {
-        let diagnostic = CompileDiagnostic::at(Self::code(&error), error.to_string(), source, span);
+        let diagnostic = Box::new(CompileDiagnostic::at(
+            Self::code(&error),
+            error.to_string(),
+            source,
+            span,
+        ));
         Self { error, diagnostic }
     }
 }
@@ -96,12 +134,12 @@ impl CompiledQuestion {
         if source.len() > QUESTION_SOURCE_MAX_BYTES {
             let error = QuestionError::Limit("question source bytes");
             return Err(QuestionCompileError {
-                diagnostic: CompileDiagnostic::at(
+                diagnostic: Box::new(CompileDiagnostic::at(
                     DiagnosticCode::SourceTooLong,
                     error.to_string(),
                     source,
                     None,
-                ),
+                )),
                 error,
             });
         }
@@ -142,12 +180,12 @@ impl CompiledQuestion {
             Ok(parsed)
         })()
         .map_err(|error| QuestionCompileError {
-            diagnostic: CompileDiagnostic::token(
+            diagnostic: Box::new(CompileDiagnostic::token(
                 QuestionCompileError::code(&error),
                 error.to_string(),
                 source,
                 parser.token_offset,
-            ),
+            )),
             error,
         })?;
         let failure = |error| QuestionCompileError::at(error, source, Some(statement_span));
@@ -221,18 +259,51 @@ impl CompiledQuestion {
     pub fn classify_checked_proof(
         &self,
         proof: &CheckedProof,
-    ) -> Result<QuestionOutcome, QuestionError> {
-        self.classify_conclusion(proof.conclusion())
+    ) -> Result<QuestionOutcome, ResolutionError> {
+        self.classify_conclusion(proof.conclusion()).map_err(|_| {
+            let mut diagnostic = naome_checker::diagnostics::target_mismatch_at_snapshot(
+                proof.normal_form().certificate(),
+                proof.context_snapshot(),
+                self.proved_target(),
+                proof.conclusion(),
+            )
+            .expect("question targets and checked conclusions obey formula limits");
+            let mut alternative = diagnostic.clone();
+            diagnostic.target_source_digest =
+                Some(naome_checker::diagnostics::Digest(*self.source_hash()));
+            alternative
+                .bind_target(self.refuted_target())
+                .expect("question targets obey formula limits");
+            diagnostic.alternative_targets.extend(alternative.target);
+            ResolutionError::Target(Box::new(diagnostic))
+        })
     }
 
     pub fn classify_checked_program(
         &self,
         proof: &naome_checker::program::CheckedProgram,
-    ) -> Result<QuestionOutcome, QuestionError> {
-        let conclusion = proof.conclusion().ok_or(QuestionError::Invalid(
-            "program conclusion exceeds this question representation",
-        ))?;
-        self.classify_conclusion(conclusion)
+    ) -> Result<QuestionOutcome, ResolutionError> {
+        if proof.manifest().conclusion == naome_proof::program::formula_hash(self.proved_target()) {
+            return Ok(QuestionOutcome::Proved);
+        }
+        if proof.manifest().conclusion == naome_proof::program::formula_hash(self.refuted_target())
+        {
+            return Ok(QuestionOutcome::Refuted);
+        }
+        match proof.check_target(self.proved_target()) {
+            Err(naome_checker::program::Error::Check(mut diagnostic)) => {
+                diagnostic.target_source_digest =
+                    Some(naome_checker::diagnostics::Digest(*self.source_hash()));
+                let mut alternative = diagnostic.clone();
+                alternative
+                    .bind_target(self.refuted_target())
+                    .expect("question targets obey formula limits");
+                diagnostic.alternative_targets.extend(alternative.target);
+                Err(ResolutionError::Target(diagnostic))
+            }
+            Err(error) => Err(ResolutionError::Program(error)),
+            Ok(()) => Ok(QuestionOutcome::Proved),
+        }
     }
 
     fn classify_conclusion(&self, conclusion: &Formula) -> Result<QuestionOutcome, QuestionError> {

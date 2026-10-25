@@ -58,6 +58,67 @@ fn identity(work: &mut Work) {
 }
 
 #[test]
+fn native_program_errors_and_bounded_inspection_survive_json_without_admission() {
+    use naome_checker::diagnostics::{Failure, FormulaQuery, OperandRole};
+    let directory = Directory::new();
+    let mut work = Work::open(&directory.path()).unwrap();
+    work.append(&Command::Reflexivity { variable: 0 }).unwrap();
+    work.append(&Command::ModusPonens {
+        premise: 0,
+        implication: 0,
+    })
+    .unwrap();
+    let context = naome_checker::ArtifactState::new();
+    let error = work.advance(&budget(), &context).unwrap_err();
+    assert_eq!(
+        error.diagnostic().unwrap().failure,
+        Failure::ExpectedImplication {
+            operand: OperandRole::Implication
+        }
+    );
+    let report = error.diagnostic().unwrap();
+    let json = serde_json::to_value(&error).unwrap();
+    assert_eq!(
+        json["diagnostic"]["failure"]["code"],
+        "mp.expected_implication"
+    );
+    let query = FormulaQuery {
+        operand: OperandRole::Implication,
+        root: report
+            .operand(OperandRole::Implication)
+            .unwrap()
+            .formula
+            .as_ref()
+            .unwrap()
+            .root,
+        start: None,
+        path: vec![],
+        maximum_nodes: 1,
+    };
+    let inspected = work
+        .advance_with_inspection(&budget(), &context, &query)
+        .unwrap_err();
+    assert!(
+        inspected
+            .diagnostic()
+            .unwrap()
+            .inspection
+            .as_ref()
+            .unwrap()
+            .complete
+    );
+    assert!(!work.status().unwrap().fully_checked);
+    let mut invalid = query;
+    invalid.maximum_nodes = usize::MAX;
+    assert!(matches!(
+        work.advance_with_inspection(&budget(), &context, &invalid),
+        Err(crate::Error::DiagnosticInspection(
+            naome_checker::diagnostics::InspectionError::InvalidQuery
+        ))
+    ));
+}
+
+#[test]
 fn closed_generalization_does_not_repeat_the_whole_growing_transformation() {
     let directory = Directory::new();
     let mut work = Work::open(&directory.path()).unwrap();
@@ -393,7 +454,13 @@ fn schema_freshness_is_checked_across_disk_traversals() {
     for _ in 0..100 {
         match work.advance(&budget(), &naome_checker::ArtifactState::new()) {
             Err(e) => {
-                assert!(e.contains("freshness"));
+                assert_eq!(
+                    e.diagnostic().unwrap().failure,
+                    naome_checker::diagnostics::Failure::ForbiddenPredicateVariable {
+                        variable: 2,
+                        role: naome_checker::diagnostics::OperandRole::Result,
+                    }
+                );
                 rejected = true;
                 break;
             }
