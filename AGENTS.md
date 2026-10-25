@@ -32,11 +32,25 @@ remain binding. A completed review or PR does not authorize a successor scope.
 ## Pre-release compatibility
 
 NAOME is pre-release software. Implement and test the current formats and APIs.
-Do not add migrations, compatibility fallbacks, legacy adapters, deprecated APIs,
-or tests dedicated to obsolete formats or behavior unless the user explicitly
-requests migration or legacy support for the task. Remove obsolete paths within
-the requested scope; do not preserve them speculatively. Keep current-format
-validation, corruption detection, and crash-recovery guarantees.
+Replace a changed internal format, schema or protocol contract in place, as if
+the superseded layout had never existed. Do not introduce or increment format
+generations such as v2/v3, schema revision counters, magic suffixes or protocol
+numbers merely to distinguish successive pre-release implementations. Where an
+identifier is needed, keep one canonical current identifier and contract.
+
+Do not add migrations, conversion or compatibility fallbacks, legacy adapters,
+deprecated APIs, historical format branches, or rejection paths whose purpose
+is to recognize a superseded layout. Do not add or retain tests dedicated to
+accepting, rejecting or migrating obsolete formats or behavior. Such support
+requires an explicit user request for the task. Remove obsolete paths within
+the requested scope; do not preserve them speculatively.
+
+Keep validation of the current contract, including required fields, types,
+canonical encodings, ownership and identity bindings, corruption detection and
+crash recovery. Test these current invariants directly without fixtures or
+expectations about a predecessor format. Package/release versions and names
+required by upstream protocols are separate from internal format history; do
+not rewrite them as part of this policy.
 
 ## Authorized pull-request delivery and squash merging
 

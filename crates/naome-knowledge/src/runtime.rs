@@ -220,7 +220,7 @@ fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, String>
         .map(|bytes| {
             let receipt: IdentityReceipt =
                 serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-            if receipt.version != 2 {
+            if receipt.version != 1 {
                 return Err("unsupported node identity receipt version".into());
             }
             Ok(receipt)
@@ -788,7 +788,7 @@ fn initialize(directory: &Path) -> Result<(), String> {
         write_new(
             &incoming,
             &serde_json::to_vec(&IdentityReceipt {
-                version: 2,
+                version: 1,
                 peer_id,
                 wallet_address: wallet.address,
             })
