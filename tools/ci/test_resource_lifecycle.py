@@ -8,6 +8,7 @@ SUPPORT = pathlib.Path(__file__).resolve().parents[2] / "crates/naome-knowledge/
 sys.path.insert(0, str(SUPPORT))
 from autonomous_lifecycle import Trial
 from automatic_computation import memory_recovery
+from owner_interest import assert_owner_status
 from proof_network_discovery import contact_retired
 
 
@@ -65,6 +66,33 @@ class ResourceLifecycleTests(unittest.TestCase):
                                 ({"admission": True}, "paused node published")):
             with self.subTest(change=change), self.assertRaisesRegex(AssertionError, message):
                 self.recover("sustained external CPU pressure", 70, **change)
+
+
+class OwnerStatusTests(unittest.TestCase):
+    def status(self, **changes):
+        return {"running": True, "accepted_proofs": 0, "interest": "exact owner text",
+                "proof_verification": "checked", "computation": "running",
+                "computation_reason": None, **changes}
+
+    def check(self, value):
+        assert_owner_status(value, running=True, interest="exact owner text", accepted_proofs=0)
+
+    def test_pressure_transitions_preserve_the_owner_contract(self):
+        for computation in ("running", "pausing", "paused"):
+            self.check(self.status(computation=computation,
+                computation_reason=None if computation == "running" else "sustained external CPU pressure"))
+
+    def test_pressure_cannot_excuse_an_owner_or_proof_state_change(self):
+        for change in ({"interest": "changed"}, {"running": False}, {"accepted_proofs": 1},
+                       {"proof_verification": "not_run"}, {"unknown": 1}):
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                self.check(self.status(computation="paused", computation_reason="memory pressure", **change))
+
+    def test_computation_state_and_reason_remain_validated(self):
+        for computation, reason in (("paused", None), ("pausing", ""), ("running", "memory pressure"),
+                                    ("stopped", None), ("unknown", "memory pressure")):
+            with self.subTest(computation=computation, reason=reason), self.assertRaises(AssertionError):
+                self.check(self.status(computation=computation, computation_reason=reason))
 
 
 class ContactRetirementTests(unittest.TestCase):

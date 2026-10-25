@@ -163,7 +163,10 @@ def run(trial):
             if text == "🦀" * 256:
                 assert "🦀" * 256 in plain
             result = trial.call(first, "interest", text=text)
-            assert human(trial, first, "status", terminal=True, json_mode=True) == result
+            assert_owner_status(
+                human(trial, first, "status", terminal=True, json_mode=True),
+                running=running, interest=text, accepted_proofs=0,
+            )
             assert_owner_status(result, running=running, interest=text, accepted_proofs=0)
             assert_owner_status(
                 trial.call(first, "status"), running=running, interest=text, accepted_proofs=0
