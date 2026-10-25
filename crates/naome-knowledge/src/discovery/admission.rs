@@ -91,7 +91,14 @@ impl Book {
                 .filter(|(other, origin, _)| *other != peer && *origin == group)
                 .map(|(other, _, _)| *other)
                 .collect();
-            if peers.len() >= (crate::resources::limits().contacts / 4).max(1) {
+            // Calibrated aggregate capacity may grow, but must not expand the
+            // fixed default ceiling for identities from one network origin.
+            let group_limit = (crate::resources::limits()
+                .contacts
+                .min(crate::resources::DEFAULT.contacts)
+                / 4)
+            .max(1);
+            if peers.len() >= group_limit {
                 return Err("network group peer limit".into());
             }
             let inbound: BTreeSet<_> = self
