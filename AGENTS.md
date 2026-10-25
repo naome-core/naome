@@ -72,11 +72,39 @@ it when a required check fails, cancels, times out, is skipped or disappears,
 or when supervision must pause. Do not leave auto-merge armed when the task
 pauses or ends; report immediately if disarming cannot be confirmed.
 
-After merge, verify the merged head, successful required checks, reachability
+After merge, verify the merged head, successful required PR checks, reachability
 of the merge commit from `origin/main`, and equivalence of the merged feature
-patch. Observe the full post-merge Cargo matrix and report it separately from
-MR checks and local validation. A failed post-merge run is a main regression,
-not a successful full qualification. A merge does not authorize another scope.
+patch. Record the post-merge `CI` and `Full Cargo CI` run links and current status,
+separately from MR checks and local validation. Ordinary PR delivery tasks must
+not wait for the complete main pipeline or full Cargo matrix to finish before
+completing. Report pending or unavailable post-merge results as unverified;
+successful MR checks do not establish full Cargo qualification. A failed
+post-merge run remains a main regression. A merge does not authorize another scope.
+
+### Scheduled main-pipeline repair
+
+The separately authorized scheduled monitor checks `main` hourly and owns
+post-merge pipeline follow-up. It autonomously diagnoses actionable `CI` and
+`Full Cargo CI` failures, implements focused fixes, publishes repair PRs, and
+squash-merges them only after the same live gate above passes. This recurring
+repair scope is explicitly authorized; ordinary delivery tasks retain their
+bounded scope.
+
+Resume existing repairs and respect active ownership instead of creating
+duplicate PRs. Preserve unrelated work and use a clean isolated worktree when
+needed. Fix causes without weakening assertions, coverage, required checks,
+repository protections, or existing resource limits. Retry an unchanged commit
+only with evidence of a transient failure; a passing retry is not a code fix.
+
+For each repair, verify merge reachability and patch equivalence, then follow
+the merged main commit through successful `CI` and the complete `Full Cargo CI`
+matrix on both supported platforms in both profiles. The monitor continues this
+verification across scheduled runs; the ordinary-task completion rule above
+does not waive its recovery checks. If `main` advances, distinguish the repair
+commit's results from the latest head's results. Report meaningful failures,
+repairs, verified recovery, or actionable blockers; remain quiet while the
+observed state is unchanged or healthy. Missing access, required human approval,
+or unavailable resources must be reported as blockers without bypassing the gate.
 
 ## Rust validation and CI
 
