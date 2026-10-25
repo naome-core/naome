@@ -3,6 +3,8 @@ use crate::resources::adaptive::{Budget, Snapshot};
 use naome_checker::program::{CheckedProgram, Engine};
 use naome_proof::program::{Command, RECORD_BYTES};
 use rusqlite::Connection;
+mod lifecycle;
+pub(crate) use lifecycle::retire_candidate;
 use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},

@@ -17,6 +17,10 @@ use catalog::Catalog;
 pub(crate) use catalog::SCHEMA_VERSION as CATALOG_SCHEMA_VERSION;
 pub(crate) use catalog::Summary;
 pub(crate) use catalog::program::Progress as ProgramProgress;
+#[cfg(test)]
+pub(crate) use catalog::program::manifest_reads;
+#[cfg(test)]
+pub(crate) use catalog::{payload_reads, set_scan_count};
 
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
 pub(crate) const COMMIT_DEADLINE_ERROR: crate::Error = crate::Error::Deadline;

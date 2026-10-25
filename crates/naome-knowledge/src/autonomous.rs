@@ -625,7 +625,11 @@ impl Autonomous {
                         match outcome {
                             Ok(ids) => {
                                 accepted.extend(ids);
-                                self.acknowledge(pending.job);
+                                let job = pending.job;
+                                // Release native candidate custody before the
+                                // journal owner durably acknowledges and retires its cache.
+                                drop(pending);
+                                self.acknowledge(job);
                                 continue;
                             }
                             Err(error) => {

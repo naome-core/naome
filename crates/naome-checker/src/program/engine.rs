@@ -29,6 +29,8 @@ fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     })
 }
 use format::command_hash;
+mod materialization;
+use materialization::{Finalization, Shape};
 
 #[derive(Debug, Serialize)]
 pub struct Status {
@@ -54,6 +56,7 @@ pub struct Engine {
     accepted: Option<u64>,
     cache_budget: u64,
     export: Option<Export>,
+    finalization: Option<Finalization>,
 }
 #[derive(Clone, Copy)]
 struct Export {
@@ -88,9 +91,17 @@ impl CheckedProgram {
     ) -> Result<format::Chunk, Error> {
         self.engine.input_chunk(start, records, maximum)
     }
+    /// Number of unique nodes reachable from this checked conclusion.
     pub fn node_count(&self) -> Result<u64, Error> {
-        Ok(self.engine.status()?.formula_nodes)
+        self.engine.live()?;
+        Ok(self
+            .engine
+            .finalization
+            .as_ref()
+            .ok_or("program export incomplete")?
+            .reachable)
     }
+    /// Ascending replay-authenticated nodes of the conclusion's reachable DAG.
     pub fn nodes_after(
         &self,
         start: u64,
@@ -103,7 +114,7 @@ impl CheckedProgram {
                     .engine
                     .connection
                     .query_row(
-                        "SELECT id FROM node WHERE id>?1 ORDER BY id LIMIT 1",
+                        "SELECT id FROM export_node WHERE id>?1 ORDER BY id LIMIT 1",
                         [number(after)?],
                         |row| unsigned(row, 0),
                     )
@@ -258,12 +269,16 @@ impl Engine {
         }
         Ok(chunk)
     }
-    /// Build the export commitment in bounded quanta after mathematical replay.
-    /// The private in-memory cursor never restores trust from a stored digest.
+    /// Build the export commitment, reachable-node index and bounded conclusion
+    /// projection in quanta after mathematical replay. All derived state belongs
+    /// to this evaluator; stored digests or flags never restore mathematical trust.
     pub fn prepare_export(&mut self, steps: usize) -> Result<bool, Error> {
         self.live()?;
         if !self.status()?.fully_checked {
             return Err("program has not been completely checked".into());
+        }
+        if self.export.is_some_and(|export| export.before == 0) {
+            return self.prepare_conclusion(steps);
         }
         if self.export.is_none() {
             self.export = Some(Export {
@@ -309,9 +324,9 @@ impl Engine {
             return Err(error);
         }
         self.export = Some(cursor);
-        Ok(cursor.before == 0)
+        Ok(false)
     }
-    pub fn checked(self) -> Result<CheckedProgram, Error> {
+    pub fn checked(mut self) -> Result<CheckedProgram, Error> {
         self.live()?;
         let root = self
             .accepted
@@ -320,9 +335,11 @@ impl Engine {
         if !status.fully_checked {
             return Err("program has not been completely checked".into());
         }
-        let canonical = format::bounded_formula(root, |id| {
-            self.load(id).map(|value| value.0).map_err(String::from)
-        })?;
+        let canonical = self
+            .finalization
+            .as_mut()
+            .and_then(|state| state.canonical.take())
+            .ok_or("program conclusion export is incomplete")?;
         let conclusion = self.load(root)?.1;
         let statement = match &canonical {
             Some(formula) => naome_proof::StatementId::of_canonical_formula(
@@ -383,10 +400,10 @@ impl Engine {
         }
         sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
             CREATE TEMP TABLE checked(position INTEGER PRIMARY KEY, node INTEGER NOT NULL, proved INTEGER NOT NULL);
-            CREATE TEMP TABLE authenticated_node(id INTEGER PRIMARY KEY, hash BLOB NOT NULL, free INTEGER NOT NULL, required INTEGER NOT NULL);
+            CREATE TEMP TABLE authenticated_node(id INTEGER PRIMARY KEY, hash BLOB NOT NULL, free INTEGER NOT NULL, required INTEGER NOT NULL, nodes INTEGER NOT NULL, bytes INTEGER NOT NULL, depth INTEGER NOT NULL);
             CREATE TEMP TABLE verified(source INTEGER NOT NULL, depth INTEGER NOT NULL, result INTEGER NOT NULL, PRIMARY KEY(source,depth)) WITHOUT ROWID;
             CREATE TEMP TABLE stack(sequence INTEGER PRIMARY KEY, source INTEGER NOT NULL, depth INTEGER NOT NULL);"))?;
-        sql(connection.execute_batch("CREATE TEMP TABLE stream(position INTEGER PRIMARY KEY,suffix BLOB NOT NULL CHECK(length(suffix)=32));"))?;
+        sql(connection.execute_batch("CREATE TEMP TABLE stream(position INTEGER PRIMARY KEY,suffix BLOB NOT NULL CHECK(length(suffix)=32)); CREATE TEMP TABLE export_pending(id INTEGER PRIMARY KEY); CREATE TEMP TABLE export_node(id INTEGER PRIMARY KEY);"))?;
         let data_version = sql(connection.pragma_query_value(None, "data_version", |r| r.get(0)))?;
         Ok(Self {
             connection,
@@ -397,6 +414,7 @@ impl Engine {
             accepted: None,
             cache_budget: 0,
             export: None,
+            finalization: None,
         })
     }
     fn live(&self) -> Result<(), Error> {
@@ -428,6 +446,8 @@ impl Engine {
             let _ = self.connection.execute_batch("ROLLBACK");
         } else {
             self.accepted = None;
+            self.finalization = None;
+            self.export = None;
         }
         outcome
     }
@@ -481,12 +501,22 @@ impl Engine {
         // Trimming must still run while admission is paused, otherwise a live
         // profile reduction could keep its old cache resident indefinitely.
         if self.cache_budget != cache_bytes {
-            let kib = -i64::try_from((cache_bytes / 2048).max(1)).map_err(|e| e.to_string())?;
+            // Main/temp SQLite caches and the bounded projection cache share
+            // one effective byte budget, including live downward adjustments.
+            let sqlite_bytes = cache_bytes - materialization::Tree::cache_bytes(cache_bytes);
+            let kib = -i64::try_from((sqlite_bytes / 2048).max(1)).map_err(|e| e.to_string())?;
             sql(self.connection.pragma_update(None, "cache_size", kib))?;
             sql(self
                 .connection
                 .pragma_update(Some("temp"), "cache_size", kib))?;
             sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
+            if let Some(tree) = self
+                .finalization
+                .as_mut()
+                .and_then(|state| state.tree.as_mut())
+            {
+                tree.restrict_cache(cache_bytes);
+            }
             self.cache_budget = cache_bytes;
         }
         if steps == 0 {
@@ -813,15 +843,18 @@ impl Engine {
             },
         ))
     }
-    fn representation(&self, node: Node<u64>) -> Result<([u8; 32], Properties), Error> {
+    fn representation(&self, node: Node<u64>) -> Result<([u8; 32], Properties, Shape), Error> {
         let mut properties = [None, None];
+        let mut shapes = [None, None];
         let mut hashes = [None, None];
         for (i, child) in node.children().into_iter().enumerate() {
             if let Some(child) = child {
                 let (_, hash, p) = self.raw(child)?;
-                if self.authenticated(child)? != Some((hash, p)) {
-                    return Err("formula child has not passed current-owner authentication".into());
-                }
+                let authenticated = self
+                    .authenticated(child)?
+                    .filter(|(expected, properties, _)| *expected == hash && *properties == p)
+                    .ok_or("formula child has not passed current-owner authentication")?;
+                shapes[i] = Some(authenticated.2);
                 hashes[i] = Some(hash);
                 properties[i] = Some(p);
             }
@@ -829,41 +862,59 @@ impl Engine {
         let p = node
             .properties(properties)
             .ok_or("formula graph property overflow")?;
+        let shape = Shape::of(node, shapes);
         let mut i = 0;
         let node = node.map(|_| {
             let hash = hashes[i].expect("graph child");
             i += 1;
             hash
         });
-        Ok((format::graph_node_hash(node, p), p))
+        Ok((format::graph_node_hash(node, p), p, shape))
     }
     fn load(&self, id: u64) -> Result<(Node<u64>, [u8; 32], Properties), Error> {
         let (node, hash, p) = self.raw(id)?;
-        if self.representation(node)? != (hash, p) {
+        let (expected, properties, shape) = self.representation(node)?;
+        if (expected, properties) != (hash, p) {
             return Err("formula graph content authentication failed".into());
         }
-        self.remember_authenticated(id, hash, p)?;
+        self.remember_authenticated(id, hash, p, shape)?;
         Ok((node, hash, p))
     }
-    fn authenticated(&self, id: u64) -> Result<Option<([u8; 32], Properties)>, Error> {
-        let row: Option<(Vec<u8>, bool, u64)> = sql(self
+    fn authenticated(&self, id: u64) -> Result<Option<([u8; 32], Properties, Shape)>, Error> {
+        let row: Option<(Vec<u8>, bool, u64, u64, u64, u64)> = sql(self
             .connection
             .query_row(
-                "SELECT hash,free,required FROM authenticated_node WHERE id=?1",
+                "SELECT hash,free,required,nodes,bytes,depth FROM authenticated_node WHERE id=?1",
                 [number(id)?],
-                |row| Ok((row.get(0)?, row.get(1)?, unsigned(row, 2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        unsigned(row, 2)?,
+                        unsigned(row, 3)?,
+                        unsigned(row, 4)?,
+                        unsigned(row, 5)?,
+                    ))
+                },
             )
             .optional())?;
-        row.map(|(hash, has_free_variables, required_binders)| {
-            Ok((
-                hash.try_into()
-                    .map_err(|_| "authenticated formula digest corruption")?,
-                Properties {
-                    has_free_variables,
-                    required_binders,
-                },
-            ))
-        })
+        row.map(
+            |(hash, has_free_variables, required_binders, nodes, bytes, depth)| {
+                Ok((
+                    hash.try_into()
+                        .map_err(|_| "authenticated formula digest corruption")?,
+                    Properties {
+                        has_free_variables,
+                        required_binders,
+                    },
+                    Shape {
+                        nodes,
+                        bytes,
+                        depth,
+                    },
+                ))
+            },
+        )
         .transpose()
     }
     fn remember_authenticated(
@@ -871,23 +922,27 @@ impl Engine {
         id: u64,
         hash: [u8; 32],
         properties: Properties,
+        shape: Shape,
     ) -> Result<(), Error> {
         sql(self.connection.execute(
-            "INSERT OR IGNORE INTO authenticated_node VALUES(?1,?2,?3,?4)",
+            "INSERT OR IGNORE INTO authenticated_node VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![
                 number(id)?,
                 hash.as_slice(),
                 properties.has_free_variables,
-                number(properties.required_binders)?
+                number(properties.required_binders)?,
+                number(shape.nodes)?,
+                number(shape.bytes)?,
+                number(shape.depth)?
             ],
         ))?;
-        if self.authenticated(id)? != Some((hash, properties)) {
+        if self.authenticated(id)? != Some((hash, properties, shape)) {
             return Err("authenticated formula changed within its owner".into());
         }
         Ok(())
     }
     fn intern(&mut self, node: Node<u64>) -> Result<u64, Error> {
-        let (hash, properties) = self.representation(node)?;
+        let (hash, properties, shape) = self.representation(node)?;
         let previous: Option<u64> = sql(self
             .connection
             .query_row(
@@ -941,7 +996,7 @@ impl Engine {
         ))?;
         let id = u64::try_from(self.connection.last_insert_rowid())
             .map_err(|e| Error::from(e.to_string()))?;
-        self.remember_authenticated(id, hash, properties)?;
+        self.remember_authenticated(id, hash, properties, shape)?;
         Ok(id)
     }
     pub fn status(&self) -> Result<Status, Error> {

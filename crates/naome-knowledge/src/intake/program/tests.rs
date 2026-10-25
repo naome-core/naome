@@ -108,6 +108,69 @@ fn publish(graph: &mut Graph, proof: &CheckedWork) {
 }
 
 #[test]
+fn typed_program_description_and_transfer_preserve_manifest_and_avoid_duplicate_lookup() {
+    if isolated(
+        "intake::program::tests::typed_program_description_and_transfer_preserve_manifest_and_avoid_duplicate_lookup",
+    ) {
+        return;
+    }
+    let mut graph = Graph::default();
+    let proof = source(&graph);
+    publish(&mut graph, &proof);
+    let manifest = proof.proof().unwrap().manifest().clone();
+    let before = crate::store::manifest_reads();
+    let Some(crate::object::ProofDescription::Program(description)) =
+        graph.description(manifest.proof_id()).unwrap()
+    else {
+        panic!("program description missing")
+    };
+    assert_eq!(crate::store::manifest_reads() - before, 1);
+    assert_eq!(description.manifest, manifest);
+    assert!(description.question().unwrap().is_some());
+    let before = crate::store::manifest_reads();
+    let Some(crate::object::ProofTransfer::Program(transfer)) =
+        graph.transfer(manifest.proof_id()).unwrap()
+    else {
+        panic!("program transfer missing")
+    };
+    assert_eq!(crate::store::manifest_reads(), before);
+    assert_eq!(transfer, description);
+    assert!(
+        graph
+            .description(ProofId::from_bytes([0; 32]))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+#[ignore = "Manual matched architecture measurement"]
+fn measure_program_description() {
+    use sha2::{Digest, Sha256};
+    let mut graph = Graph::default();
+    let proof = source(&graph);
+    publish(&mut graph, &proof);
+    let id = proof.proof().unwrap().manifest().proof_id();
+    let before = crate::store::manifest_reads();
+    let start = Instant::now();
+    let mut digest = [0; 32];
+    for _ in 0..100 {
+        let Some(crate::object::ProofDescription::Program(description)) =
+            graph.description(id).unwrap()
+        else {
+            panic!("program absent")
+        };
+        digest = Sha256::digest(serde_json::to_vec(&description).unwrap()).into();
+    }
+    println!(
+        "architecture_description requests=100 manifest_reads={} elapsed_ms={:.3} payload_hash={}",
+        crate::store::manifest_reads() - before,
+        start.elapsed().as_secs_f64() * 1000.0,
+        crate::hex(&digest)
+    );
+}
+
+#[test]
 fn published_program_survives_catalog_validation_and_fresh_mathematical_replay() {
     if isolated(
         "intake::program::tests::published_program_survives_catalog_validation_and_fresh_mathematical_replay",

@@ -373,11 +373,65 @@ impl Disk {
             checkpoint,
         };
         disk.save(&mut journal)?;
+        disk.retire_acknowledged_candidates()?;
         drop(reconfiguration_locks);
         if !established {
             write_marker(&marker, b"naome-research-jobs-v3\n")?;
         }
         Ok((disk, journal))
+    }
+
+    fn node_directory(&self) -> &Path {
+        self.path
+            .parent()
+            .and_then(Path::parent)
+            .expect("job journal node directory")
+    }
+    fn retire_candidate_cache(&self, id: u64) {
+        if let Err(error) = crate::proof_work::retire_candidate(self.node_directory(), id) {
+            // Retirement cannot revoke a durable acknowledgement or classify
+            // temporary cleanup pressure as corruption of canonical history.
+            crate::network::emit(
+                serde_json::json!({"event":"candidate_cache_retirement_deferred","job":id,"error":error}),
+            );
+        }
+    }
+    fn retire_acknowledged_candidates(&self) -> Result<(), String> {
+        let root = self.node_directory().join(".program-work");
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            let Some(job) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix("candidate-"))
+                .and_then(|name| {
+                    name.strip_suffix(".sqlite3")
+                        .or_else(|| name.strip_suffix(".proof-work.lock"))
+                })
+            else {
+                continue;
+            };
+            let Ok(id) = job.parse::<u64>() else { continue };
+            if id == 0 || job != id.to_string() {
+                continue;
+            }
+            let record = self.checkpoint.get::<Record>(
+                "record",
+                job,
+                crate::resources::limits().active_job_bytes,
+            )?;
+            if record.is_some_and(|record| {
+                record.id == id && record.acknowledged && record.state.terminal()
+            }) {
+                self.retire_candidate_cache(id);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn save(&mut self, journal: &mut Journal) -> Result<(), String> {
@@ -418,6 +472,11 @@ impl Disk {
         }
 
         self.checkpoint.commit(&journal.header(), updates)?;
+        for (id, record) in &journal.records {
+            if journal.records.changed(id) && record.acknowledged && record.state.terminal() {
+                self.retire_candidate_cache(*id);
+            }
+        }
         journal.records.clean();
         journal.accounts.clean();
         let retained = journal
@@ -540,7 +599,9 @@ impl Disk {
                 key,
             });
         }
-        self.checkpoint.commit(&journal.header(), updates)
+        self.checkpoint.commit(&journal.header(), updates)?;
+        self.retire_candidate_cache(id);
+        Ok(())
     }
     pub(super) fn program_group(
         &self,

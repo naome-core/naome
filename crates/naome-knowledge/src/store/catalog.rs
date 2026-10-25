@@ -11,11 +11,11 @@ pub(super) mod program;
 #[cfg(test)]
 std::thread_local! { static SET_SCANS: Cell<usize> = const { Cell::new(0) }; static PAYLOAD_READS: Cell<usize> = const { Cell::new(0) }; }
 #[cfg(test)]
-pub(super) fn payload_reads() -> usize {
+pub(crate) fn payload_reads() -> usize {
     PAYLOAD_READS.with(Cell::get)
 }
 #[cfg(test)]
-pub(super) fn set_scan_count() -> usize {
+pub(crate) fn set_scan_count() -> usize {
     SET_SCANS.with(Cell::get)
 }
 
@@ -133,6 +133,7 @@ pub(super) struct Catalog {
     connection: Connection,
     database_id: [u8; 32],
     validated_data_version: Cell<Option<i64>>,
+    replay_summary: Cell<Option<Summary>>,
 }
 
 impl Catalog {
@@ -150,6 +151,7 @@ impl Catalog {
             connection,
             database_id,
             validated_data_version: Cell::new(None),
+            replay_summary: Cell::new(None),
         })
     }
 
@@ -205,6 +207,7 @@ impl Catalog {
             connection,
             database_id,
             validated_data_version: Cell::new(None),
+            replay_summary: Cell::new(None),
         })
     }
 
@@ -238,6 +241,7 @@ impl Catalog {
         let version = self.check_data_version(&transaction)?;
         transaction.commit().map_err(sql_error)?;
         self.validated_data_version.set(Some(version));
+        self.replay_summary.set(Some(summary));
         Ok(summary)
     }
 
@@ -362,8 +366,22 @@ impl Catalog {
     /// The enclosing Graph calls this only after complete mathematical replay.
     pub(super) fn activate(&self, root: [u8; 32]) -> Result<(), crate::Error> {
         let transaction = begin(&self.connection, TransactionBehavior::Immediate)?;
-        let summary = validate_catalog(&transaction, self.database_id)?;
+        // Replay reads the same exclusively owned canonical generation. Reuse
+        // its complete integrity result, never a persisted checked-state flag.
         let version = self.check_data_version(&transaction)?;
+        let summary = match self.replay_summary.get() {
+            Some(summary) => {
+                let meta = read_meta(&transaction, Some(self.database_id))?;
+                if meta.count != summary.count
+                    || meta.bytes != summary.bytes
+                    || meta.active && meta.corpus_root != Some(summary.root)
+                {
+                    return Err("catalog changed during mathematical replay".into());
+                }
+                summary
+            }
+            None => validate_catalog(&transaction, self.database_id)?,
+        };
         if summary.root != root {
             return Err("replayed corpus root differs from catalog".into());
         }
@@ -377,6 +395,7 @@ impl Catalog {
         }
         transaction.commit().map_err(sql_error)?;
         self.validated_data_version.set(Some(version));
+        self.replay_summary.set(None);
         Ok(())
     }
 
@@ -393,6 +412,7 @@ impl Catalog {
             next_root,
             guard,
         } = commit;
+        self.replay_summary.set(None);
         let prepared = prepare(objects.iter().copied())?;
         let root = *root.as_bytes();
         let commit = commit_digest(root, prepared.values().map(|object| &object.member))?;
