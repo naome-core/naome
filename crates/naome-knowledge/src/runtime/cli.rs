@@ -18,6 +18,13 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              naome wallet address\n  naome wallet challenge <audience>\n  \
              naome wallet prove <challenge.json>\n  \
              naome wallet verify <address> <challenge.json> <proof.json>\n  \
+             naome wallet connect <ledger-dir> <wallet-address>\n  \
+             naome wallet connection\n  naome wallet disconnect\n  \
+             naome wallet test-coins init <ledger-dir> <units>\n  \
+             naome wallet test-coins balance <ledger-dir> [address]\n  \
+             naome wallet test-coins send|prepare <ledger-dir> <recipient> <units>\n  \
+             naome wallet test-coins submit <ledger-dir> <transaction.json>\n  \
+             naome wallet test-coins authorize|revoke <ledger-dir> <node-wallet-address>\n  \
              naome --version\n\n\
              Place --json before a command for machine output.\n\
              NAOME_NODE_DIR selects the local node directory.\n\

@@ -145,18 +145,25 @@ fn initialize_at(
     Ok(identity)
 }
 
-pub(crate) fn prove(
-    directory: &Path,
-    challenge: OwnershipChallenge,
-) -> Result<OwnershipProof, String> {
+/// Loads an existing, receipt-bound private key without creating or rotating it.
+pub(crate) fn key(directory: &Path) -> Result<WalletKey, String> {
     let identity = identity(directory)?.ok_or("wallet is not initialized; start the node first")?;
     let key = read_key(directory, KEY)?
         .ok_or("existing wallet private key is missing; restore its backup")?;
     if key.address() != identity.address {
         return Err("wallet private key does not match its address receipt".into());
     }
-    key.prove(challenge)
+    Ok(key)
 }
+
+pub(crate) fn prove(
+    directory: &Path,
+    challenge: OwnershipChallenge,
+) -> Result<OwnershipProof, String> {
+    key(directory)?.prove(challenge)
+}
+
+pub(crate) mod connection;
 
 #[cfg(test)]
 mod tests;

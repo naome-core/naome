@@ -1314,7 +1314,7 @@ pub async fn execute() -> Result<(), String> {
             return Err("invalid internal wallet invocation".into());
         }
         let _replay_guard = replay_guard::optional("wallet")?;
-        return wallet::execute(&plain[1..], json);
+        return wallet::execute(&plain[1..], json).await;
     }
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()

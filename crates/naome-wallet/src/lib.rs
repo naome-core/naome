@@ -20,6 +20,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{fmt, str::FromStr};
 use zeroize::Zeroizing;
 
+mod test_ledger;
+pub use test_ledger::TestLedgerSignature;
+
 const DOMAIN: &[u8] = b"naome:wallet-key-ownership:v1\0";
 const AUDIENCE_MAX_BYTES: usize = 256;
 
@@ -61,6 +64,14 @@ impl WalletKey {
         Zeroizing::new(self.key.to_keypair_bytes())
     }
 
+    /// Signs a canonical test-ledger transaction digest in its own domain.
+    ///
+    /// Callers must show and authorize the transaction before asking for its
+    /// signature. This cannot authorize production currency or key-control proofs.
+    pub fn sign_test_ledger(&self, digest: &[u8; 32]) -> TestLedgerSignature {
+        test_ledger::sign(&self.key, digest)
+    }
+
     /// Returns the public receiving address for this key.
     pub fn address(&self) -> Address {
         self.address
@@ -77,6 +88,11 @@ impl WalletKey {
 pub struct Address([u8; 32]);
 
 impl Address {
+    /// Returns the canonical Ed25519 public-key bytes, without private material.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     fn from_key(key: VerifyingKey) -> Result<Self, String> {
         if key.is_weak() {
             return Err("weak wallet public key".into());

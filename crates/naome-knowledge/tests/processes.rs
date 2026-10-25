@@ -142,6 +142,12 @@ fn ordinary_wallet_proves_key_control_and_preserves_custody_across_restart() {
     run_autonomous("wallet");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_coins_use_existing_wallets_with_shared_node_spending_and_revocation() {
+    run_autonomous("test-coins");
+}
+
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
 #[test]
 fn automatic_resource_pause_preserves_provider_budgets_and_control() {
@@ -206,6 +212,7 @@ fn run_autonomous(mode: &str) {
         .arg(root.join(match mode {
             "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
             "wallet" => "crates/naome-knowledge/tests/support/wallet.py",
+            "test-coins" => "crates/naome-knowledge/tests/support/test_coins.py",
             "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
             "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",

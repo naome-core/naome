@@ -82,6 +82,11 @@ not consume a challenge. Never use a challenge copied from the submitted proof
 as the expected challenge. These proofs demonstrate key control, not an
 authenticated person, unique node operator, coin balance, or payment.
 
-This foundation does not issue coins or settle transfers. Persistent spendable
-balances, transaction validation, and network-wide prevention of double spending
-require a separately specified and implemented shared ledger and consensus.
+The explicit [`naome-ledger` test-coin workflow](../naome-ledger/README.md)
+uses these existing wallets for local payments and revocable spending access
+from several nodes. `wallet connect`, `wallet connection`, and
+`wallet disconnect` manage the public node association; `wallet test-coins`
+provides initialization, balance, payment, and authorization commands. The
+normal node does not create test coins or reward work automatically. This is
+local test bookkeeping; network-wide settlement still requires a separately
+specified and implemented shared ledger ordering and consensus.
