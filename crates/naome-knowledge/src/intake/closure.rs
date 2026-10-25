@@ -1,8 +1,16 @@
 //! Necessary certificate and program helpers remain a private checked prefix
 //! of the selected parent's atomic batch. Canonical program commands own every
 //! citation; scans, checking and registration advance in bounded quanta.
+use super::program::transfer_records;
 use super::*;
-use naome_proof::program::{CHUNK_BYTES, Command, Manifest};
+use crate::{
+    graph::program::{ProgramAdmission, ProgramCheck},
+    object::{ProgramMetadata, id_bytes},
+    proof_work::CheckedWork,
+    resources::adaptive::Observer,
+};
+use naome_proof::program::CHUNK_RECORDS;
+use naome_proof::program::{CHUNK_BYTES, Chunk, Command, Manifest};
 
 struct Helper {
     manifest: Manifest,
@@ -12,19 +20,72 @@ struct Helper {
     checking: Option<ProgramCheck>,
     checked: Option<CheckedWork>,
 }
-#[derive(Default)]
-pub(in crate::intake) struct Helpers {
+pub(in crate::intake) struct Closure {
+    root: ProofId,
+    statement: Option<StatementId>,
     items: BTreeMap<ProofId, Helper>,
     certificates: BTreeMap<ProofId, crate::object::BinaryProof>,
     needed: BTreeSet<ProofId>,
-    certificate_bytes: usize,
-    certificate_steps: usize,
+    usage: certificate::Usage,
     prefix: Option<CheckedBatch>,
     registration: Option<(ProofId, ProgramAdmission)>,
     registered: BTreeSet<ProofId>,
     budget: Observer,
 }
-impl Helpers {
+impl Closure {
+    pub(in crate::intake) fn new(root: ProofId, statement: Option<StatementId>) -> Self {
+        Self {
+            root,
+            statement,
+            items: BTreeMap::new(),
+            certificates: BTreeMap::new(),
+            needed: BTreeSet::new(),
+            usage: certificate::Usage::default(),
+            prefix: None,
+            registration: None,
+            registered: BTreeSet::new(),
+            budget: Observer::default(),
+        }
+    }
+    pub(in crate::intake) fn require_root(&mut self, graph: &Graph) -> Result<(), crate::Error> {
+        if !graph.contains(self.root)? && !self.contains(self.root) {
+            self.needed.insert(self.root);
+        }
+        Ok(())
+    }
+    pub(in crate::intake) fn has_programs(&self) -> bool {
+        !self.items.is_empty()
+    }
+    pub(in crate::intake) fn certificate_ready(&self) -> bool {
+        self.needed.is_empty()
+            && self.registration.is_none()
+            && self.items.keys().all(|id| self.registered.contains(id))
+    }
+    pub(in crate::intake) fn prepare_certificates(
+        &mut self,
+        graph: &Graph,
+        question: &CompiledQuestion,
+    ) -> Result<CheckedBatch, crate::Error> {
+        let candidates = self
+            .certificates
+            .iter()
+            .filter(|(id, _)| !self.registered.contains(id))
+            .map(|(id, record)| record.clone().prepare().map(|candidate| (*id, candidate)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let result = graph.prepare_batch_after(self.root, candidates, question, self.prefix.take());
+        if result.is_err() {
+            self.invalidate_prefix();
+        }
+        result
+    }
+    #[cfg(test)]
+    pub(in crate::intake) fn certificate_steps(&self) -> usize {
+        self.usage.steps()
+    }
+    #[cfg(test)]
+    pub(in crate::intake) fn certificate_count(&self) -> usize {
+        self.certificates.len()
+    }
     pub(in crate::intake) fn busy(&self) -> bool {
         self.items.values().any(|helper| {
             helper.checking.is_some()
@@ -51,7 +112,10 @@ impl Helpers {
             .chain(self.needed())
     }
     pub(in crate::intake) fn member_count(&self) -> usize {
-        self.items.len() + self.certificates.len() + self.needed.len()
+        self.items.len()
+            + self.certificates.len()
+            + self.needed.len()
+            + usize::from(!self.contains(self.root) && !self.needed.contains(&self.root))
     }
     pub(in crate::intake) fn cache_share(&self, bytes: u64) -> Result<u64, crate::Error> {
         let share = bytes / (self.items.len() as u64 + 1);
@@ -60,12 +124,13 @@ impl Helpers {
         }
         Ok(share)
     }
-    pub(in crate::intake) fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.certificates.is_empty() && self.needed.is_empty()
-    }
     pub(in crate::intake) fn ready(&self) -> bool {
         self.needed.is_empty()
-            && self.registered.len() == self.items.len() + self.certificates.len()
+            && self
+                .items
+                .keys()
+                .chain(self.certificates.keys())
+                .all(|id| *id == self.root || self.registered.contains(id))
             && self.registration.is_none()
     }
     pub(in crate::intake) fn context<'a>(
@@ -84,20 +149,14 @@ impl Helpers {
         self.registration = None;
         self.registered.clear();
     }
-    pub(in crate::intake) fn certificate_usage(&self) -> (usize, usize, usize) {
-        (
-            self.certificates.len(),
-            self.certificate_bytes,
-            self.certificate_steps,
-        )
-    }
     fn require(&mut self, id: ProofId, graph: &Graph) -> Result<(), crate::Error> {
+        if id == self.root {
+            return Err("cited closure has cyclic dependencies".into());
+        }
         if graph.contains(id)? || self.contains(id) || self.needed.contains(&id) {
             return Ok(());
         }
-        if self.items.len() + self.certificates.len() + self.needed.len()
-            >= crate::resources::limits().closure_objects
-        {
+        if self.member_count() >= crate::resources::limits().closure_objects {
             return Err(crate::Error::InputLimit("cited closure operation capacity"));
         }
         self.needed.insert(id);
@@ -150,6 +209,9 @@ impl Helpers {
             }
             return Ok(());
         }
+        if self.certificates.contains_key(&id) {
+            return Err("closure member representation differs".into());
+        }
         self.require(id, graph)?;
         let progress = graph.ownership().start_program(&metadata.manifest)?;
         let received = progress.commands == metadata.manifest.commands;
@@ -172,28 +234,49 @@ impl Helpers {
         id: ProofId,
         object: Envelope,
         graph: &Graph,
+        transfer: &TransferGrant,
     ) -> Result<(), crate::Error> {
+        transfer.check(Instant::now())?;
         if !self.needed.contains(&id) || id_bytes(&object.proof_id)? != *id.as_bytes() {
-            return Err("unrequested cited certificate payload".into());
+            return Err("unrequested or mismatched proof payload".into());
         }
-        let (bytes, steps) = crate::intake::certificate::resources(&object)?;
-        if self.certificate_bytes + bytes > crate::resources::limits().closure_bytes
-            || self.certificate_steps + steps > crate::resources::limits().closure_steps
-            || (self.certificates.len() + 1) * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
-                > crate::resources::limits().closure_work_bytes
+        // The same cumulative charge covers root certificates and every helper,
+        // before decoding allocates their trees. Rejected payloads change nothing.
+        let usage = self.usage.add(&object)?;
+        let candidate = object.prepare()?;
+        transfer.check(Instant::now())?;
+        if id == self.root
+            && self
+                .statement
+                .is_some_and(|statement| statement != candidate.statement)
+        {
+            return Err("root statement differs from approved metadata".into());
+        }
+        let mut missing = Vec::new();
+        for dependency in &candidate.dependencies {
+            if !self.contains(*dependency)
+                && !self.needed.contains(dependency)
+                && !graph.contains(*dependency)?
+            {
+                if *dependency == self.root {
+                    return Err("cited closure has cyclic dependencies".into());
+                }
+                missing.push(*dependency);
+            }
+        }
+        if self
+            .member_count()
+            .checked_add(missing.len())
+            .is_none_or(|count| count > crate::resources::limits().closure_objects)
         {
             return Err(crate::Error::InputLimit(
-                "cited certificate resource capacity",
+                "staged closure dependency capacity",
             ));
         }
-        let candidate = object.prepare()?;
-        for dependency in &candidate.dependencies {
-            self.require(*dependency, graph)?;
-        }
         self.needed.remove(&id);
+        self.needed.extend(missing);
         self.certificates.insert(id, candidate.record());
-        self.certificate_bytes += bytes;
-        self.certificate_steps += steps;
+        self.usage = usage;
         Ok(())
     }
     pub(in crate::intake) fn request(
@@ -317,7 +400,8 @@ impl Helpers {
         }
         let mut next_certificate = None;
         for (id, proof) in &self.certificates {
-            if !self.registered.contains(id)
+            if *id != self.root
+                && !self.registered.contains(id)
                 && self.dependencies_ready(&proof.dependencies, graph)?
             {
                 next_certificate = Some(*id);
@@ -394,60 +478,5 @@ impl Helpers {
     }
 }
 
-impl Intake {
-    pub(crate) fn enqueue_program_helper(
-        &mut self,
-        peer: PeerId,
-        root: ProofId,
-        metadata: ProgramMetadata,
-        graph: &Graph,
-    ) -> Result<(), crate::Error> {
-        let id = metadata.manifest.proof_id();
-        if self.programs.authorizes(peer, root, id) {
-            return self.programs.insert_helper(peer, root, metadata, graph);
-        }
-        if !self.authorizes(peer, root, id) {
-            return Err("unrequested cited program description".into());
-        }
-        self.programs.remove(id);
-        self.active
-            .as_mut()
-            .expect("approved parent")
-            .helpers
-            .insert(metadata, graph)
-    }
-    pub(in crate::intake) fn advance_program_helpers<F, Fut>(
-        &mut self,
-        graph: &Graph,
-        questions: &mut LocalQuestions<F>,
-    ) -> Result<(), crate::Error>
-    where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
-    {
-        let Some(root) = &mut self.active else {
-            return Ok(());
-        };
-        if root.helpers.is_empty() {
-            return Ok(());
-        }
-        let assessment = root
-            .final_assessment
-            .as_ref()
-            .or(root.initial.as_ref())
-            .ok_or("cited program has no parent assessment")?;
-        questions.prepare_exchange(graph, &root.question, assessment)?;
-        if !root.description.transfer.live(Instant::now()) {
-            return Ok(());
-        }
-        for id in root.helpers.advance(graph)? {
-            root.needed.remove(&id);
-        }
-        if root.member_count() > crate::resources::limits().closure_objects {
-            return Err(crate::Error::InputLimit(
-                "cited closure dependency capacity",
-            ));
-        }
-        Ok(())
-    }
-}
+#[cfg(test)]
+mod tests;

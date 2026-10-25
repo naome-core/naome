@@ -1,6 +1,8 @@
 use super::super::tests::{MemoryStorage, register_axiom};
 use super::*;
-use crate::{CHECKER_MAX_FORMULA_WORK_BYTES, ContextView};
+use crate::{
+    CHECKER_MAX_FORMULA_WORK_BYTES, ContextView, state::disk_map::MAX_NODE_BYTES, statement_id,
+};
 use naome_foundation::ZfcAxiom;
 use naome_proof::{ProofCertificate, ProofStep};
 
@@ -188,7 +190,7 @@ fn partial_failed_and_unrelated_copies_cannot_supply_roots() {
             _ => {
                 // Damage a nested row only after the top-level maps were
                 // authenticated, so this specifically tests bucket work.
-                while matches!(cursor.phase, Phase::Map(_)) {
+                while matches!(cursor.copy.plan().phase, Phase::Map(_)) {
                     cursor.advance(budget).unwrap();
                 }
                 let (_, record) = state.outgoing.entries().next().unwrap().unwrap();
@@ -284,4 +286,24 @@ fn graph_statement_membership_reads_are_part_of_each_copy_quantum() {
             .contains_proof(program.manifest().proof_id())
             .unwrap()
     );
+}
+
+#[test]
+fn insufficient_copy_budget_does_not_poison_the_live_source() {
+    let (state, source) = populated();
+    let snapshot = state.snapshot_id();
+    let mut copy = state.begin_copy(Arc::new(MemoryStorage::default()));
+    assert_eq!(
+        copy.advance(DiskCopyBudget {
+            records: 0,
+            bytes: MAX_NODE_BYTES
+        }),
+        Err(ContextError::Limit)
+    );
+    assert!(!copy.complete());
+    assert!(source.failures.lock().unwrap().is_empty());
+    drop(copy);
+    let copied = state.copy_to(Arc::new(MemoryStorage::default())).unwrap();
+    assert_eq!(copied.snapshot_id(), snapshot);
+    assert!(source.failures.lock().unwrap().is_empty());
 }

@@ -12,11 +12,11 @@ impl Programs {
     pub(in crate::intake) fn helper_contains(&self, id: ProofId) -> bool {
         self.active
             .as_ref()
-            .is_some_and(|root| root.helpers.contains(id))
+            .is_some_and(|root| root.closure.contains(id))
     }
     pub(in crate::intake) fn authorizes(&self, peer: PeerId, root: ProofId, id: ProofId) -> bool {
         self.helper_root(peer, root)
-            .is_some_and(|root| root.helpers.needs(id) || root.helpers.contains(id))
+            .is_some_and(|root| root.closure.needs(id) || root.closure.contains(id))
     }
     pub(in crate::intake) fn needed(&self) -> Vec<(PeerId, ProofId, ProofId)> {
         let Some(root) = &self.active else {
@@ -26,7 +26,7 @@ impl Programs {
         if self.helper_root(root.offer.transfer.peer(), id).is_none() {
             return Vec::new();
         }
-        root.helpers
+        root.closure
             .needed()
             .map(|helper| (root.offer.transfer.peer(), id, helper))
             .collect()
@@ -44,7 +44,7 @@ impl Programs {
         self.active
             .as_mut()
             .expect("selected program parent")
-            .helpers
+            .closure
             .insert(metadata, graph)
     }
     pub(in crate::intake) fn helper_payload(
@@ -61,7 +61,7 @@ impl Programs {
         self.active
             .as_mut()
             .expect("selected program parent")
-            .helpers
+            .closure
             .payload(id, chunk, graph)
     }
     pub(in crate::intake) fn certificate_payload(
@@ -75,10 +75,60 @@ impl Programs {
         if !self.authorizes(peer, root, id) {
             return Err("unrequested program dependency certificate".into());
         }
+        let active = self.active.as_mut().expect("selected program parent");
+        active
+            .closure
+            .certificate_payload(id, object, graph, &active.offer.transfer)
+    }
+}
+
+impl Intake {
+    pub(crate) fn enqueue_program_helper(
+        &mut self,
+        peer: PeerId,
+        root: ProofId,
+        metadata: ProgramMetadata,
+        graph: &Graph,
+    ) -> Result<(), crate::Error> {
+        let id = metadata.manifest.proof_id();
+        if self.programs.authorizes(peer, root, id) {
+            return self.programs.insert_helper(peer, root, metadata, graph);
+        }
+        if !self.authorizes(peer, root, id) {
+            return Err("unrequested cited program description".into());
+        }
+        self.programs.remove(id);
         self.active
             .as_mut()
-            .expect("selected program parent")
-            .helpers
-            .certificate_payload(id, object, graph)
+            .expect("approved parent")
+            .closure
+            .insert(metadata, graph)
+    }
+    pub(in crate::intake) fn advance_program_helpers<F, Fut>(
+        &mut self,
+        graph: &Graph,
+        questions: &mut LocalQuestions<F>,
+    ) -> Result<(), crate::Error>
+    where
+        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<bool, String>> + Send + 'static,
+    {
+        let Some(root) = &mut self.active else {
+            return Ok(());
+        };
+        if !root.fetching() || !root.closure.has_programs() {
+            return Ok(());
+        }
+        root.selection.prepare(graph, questions)?;
+        if !root.description.transfer.live(Instant::now()) {
+            return Ok(());
+        }
+        root.closure.advance(graph)?;
+        if root.closure.member_count() > crate::resources::limits().closure_objects {
+            return Err(crate::Error::InputLimit(
+                "cited closure dependency capacity",
+            ));
+        }
+        Ok(())
     }
 }
