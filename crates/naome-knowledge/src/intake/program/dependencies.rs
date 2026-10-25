@@ -5,20 +5,10 @@ use super::*;
 impl Programs {
     fn helper_root(&self, peer: PeerId, root: ProofId) -> Option<&Root> {
         self.active.as_ref().filter(|active| {
-            active.offer.peer == peer
-                && active.offer.metadata.manifest.proof_id() == root
-                && active.allowed
-                && !active.refresh
-                && matches!(active.stage, Stage::Fetch)
-                && Instant::now().duration_since(active.described)
-                    < crate::resources::limits().root_timeout
-                && active
-                    .offer
-                    .grant
-                    .as_ref()
-                    .is_none_or(|grant| grant.check().is_ok())
+            active.fetching() && active.offer.transfer.authorizes(peer, root, Instant::now())
         })
     }
+
     pub(in crate::intake) fn helper_contains(&self, id: ProofId) -> bool {
         self.active
             .as_ref()
@@ -33,12 +23,12 @@ impl Programs {
             return Vec::new();
         };
         let id = root.offer.metadata.manifest.proof_id();
-        if self.helper_root(root.offer.peer, id).is_none() {
+        if self.helper_root(root.offer.transfer.peer(), id).is_none() {
             return Vec::new();
         }
         root.helpers
             .needed()
-            .map(|helper| (root.offer.peer, id, helper))
+            .map(|helper| (root.offer.transfer.peer(), id, helper))
             .collect()
     }
     pub(in crate::intake) fn insert_helper(

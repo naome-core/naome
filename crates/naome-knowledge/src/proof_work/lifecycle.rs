@@ -26,21 +26,12 @@ pub(crate) fn retire_candidate(directory: &Path, job: u64) -> Result<bool, Strin
         Ok(_) => crate::storage::owned_file(&path)?,
     };
     let identity = (metadata.dev(), metadata.ino());
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(&lock_path)
-        .map_err(|e| e.to_string())?;
-    let lock_identity = lock.metadata().map_err(|e| e.to_string())?;
-    let lock_path_identity = crate::storage::owned_file(&lock_path)?;
-    if (lock_identity.dev(), lock_identity.ino())
-        != (lock_path_identity.dev(), lock_path_identity.ino())
-    {
-        return Err("candidate lock changed before retirement".into());
-    }
-    if lock.try_lock().is_err() {
-        return Ok(false);
+    let lock = crate::storage::LockFile::existing(&lock_path).map_err(|e| e.to_string())?;
+    let lock_identity = lock.file().metadata().map_err(|e| e.to_string())?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+        Err(error) => return Err(error.to_string()),
     }
     let mut file = OpenOptions::new()
         .read(true)
@@ -92,20 +83,17 @@ pub(crate) fn retire_candidate(directory: &Path, job: u64) -> Result<bool, Strin
 // A crash can occur after unlinking the disposable database but before its
 // empty lock leaf. The caller has already checked the durable job acknowledgement.
 fn retire_orphan_lock(path: &Path) -> Result<bool, String> {
-    let lock = match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(path)
-    {
+    let lock = match crate::storage::LockFile::existing(path) {
         Ok(lock) => lock,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
         Err(error) => return Err(error.to_string()),
     };
-    if lock.try_lock().is_err() {
-        return Ok(false);
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+        Err(error) => return Err(error.to_string()),
     }
-    let opened = lock.metadata().map_err(|e| e.to_string())?;
+    let opened = lock.file().metadata().map_err(|e| e.to_string())?;
     let current = crate::storage::owned_file(path)?;
     if opened.len() != 0 || (opened.dev(), opened.ino()) != (current.dev(), current.ino()) {
         return Err("candidate lock changed before orphan retirement".into());
