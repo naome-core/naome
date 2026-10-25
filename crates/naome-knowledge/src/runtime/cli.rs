@@ -25,7 +25,7 @@ impl<'a> Arguments<'a> {
             _ => (false, arguments),
         };
         let (command, text) = match arguments {
-            [command] if matches!(command.to_str(), Some("start" | "stop" | "status")) => {
+            [command] if matches!(command.to_str(), Some("start" | "stop" | "status" | "pause" | "resume")) => {
                 (command.to_str().expect("matched UTF-8 command"), None)
             }
             [command, text] if command == "interest" => {
@@ -33,7 +33,7 @@ impl<'a> Arguments<'a> {
                 owner::validate(text)?;
                 ("interest", Some(text))
             }
-            _ => return Err("usage: naome [--json] start | stop | status | interest <text>\nplace --json before the command for machine output".into()),
+            _ => return Err("usage: naome [--json] start | stop | status | pause | resume | interest <text>\nplace --json before the command for machine output".into()),
         };
         if startup_handoff && command != "start" {
             return Err("startup handoff is only valid for --json start".into());
@@ -73,6 +73,8 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     let action = match command {
         "start" => format!("{green}✓{reset} Start complete"),
         "stop" => format!("{green}✓{reset} Stop complete"),
+        "pause" => format!("{green}✓{reset} Computation pause requested"),
+        "resume" => format!("{green}✓{reset} Computation resumed"),
         "interest" => format!("{green}✓{reset} Interest saved"),
         _ => "Node status".into(),
     };
@@ -81,8 +83,14 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     } else {
         format!("{red}○ Stopped{reset}")
     };
+    let computation = match status.computation {
+        crate::resources::ComputationState::Stopped => "Stopped",
+        crate::resources::ComputationState::Running => "Running",
+        crate::resources::ComputationState::Pausing => "Pausing (finishing current work)",
+        crate::resources::ComputationState::Paused => "Paused (network remains available)",
+    };
     let mut output = format!(
-        "\n  NAOME  {action}\n\n  State            {state}\n  Accepted proofs  {}\n\n  Interest\n",
+        "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted proofs  {}\n\n  Interest\n",
         status.accepted_proofs,
     );
     if status.interest.is_empty() {
@@ -107,6 +115,9 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     output.push('\n');
     output
 }
+
+#[cfg(test)]
+mod computation_tests;
 
 #[cfg(test)]
 mod tests {
@@ -152,6 +163,7 @@ mod tests {
     fn untrusted_interest_cannot_style_or_rewrite_operator_rows() {
         let status = Status {
             running: false,
+            computation: crate::resources::ComputationState::Stopped,
             accepted_proofs: 3,
             interest: "λ 🦀\n\r\t\x1b[32m\x1b]8;;link\x07\u{009b}2J\u{202e}x\n".into(),
         };

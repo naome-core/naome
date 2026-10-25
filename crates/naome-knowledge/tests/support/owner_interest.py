@@ -97,7 +97,7 @@ def run(trial):
     assert b"valid UTF-8" in invalid.stderr
     assert not fresh.directory.exists(), "invalid input mutated an absent node directory"
     initial = "  Mathematical logic\n\tλ and 🦀  "
-    expected = {"running": False, "accepted_proofs": 0, "interest": initial}
+    expected = {"running": False, "computation": "stopped", "accepted_proofs": 0, "interest": initial}
     assert trial.call(fresh, "interest", text=initial) == expected
     assert trial.call(fresh, "status") == expected
     assert not (fresh.directory / "identity.key").exists(), "interest implicitly initialized identity"
@@ -143,7 +143,7 @@ def run(trial):
                 assert "🦀" * 256 in plain
             result = trial.call(first, "interest", text=text)
             assert human(trial, first, "status", terminal=True, json_mode=True) == result
-            assert result == {"running": running, "accepted_proofs": 0, "interest": text}
+            assert result == {"running": running, "computation": "running" if running else "stopped", "accepted_proofs": 0, "interest": text}
             assert trial.call(first, "status") == result
             for oversized in ["x" * 1025, "🦀" * 256 + "x"]:
                 trial.call(first, "interest", text=oversized, success=False)
@@ -179,12 +179,12 @@ def run(trial):
     identities = {object["proof_id"]: object for object in stored_objects(first)}
     identity = digest(first.directory / "identity.key")
     first.start()
-    assert trial.call(first, "status") == {"running": True, "accepted_proofs": 3, "interest": initial}
+    assert trial.call(first, "status") == {"running": True, "computation": "running", "accepted_proofs": 3, "interest": initial}
     old_process = dict(first.process)
     assert process_identity(old_process["pid"]) == old_process
     os.killpg(old_process["group"], signal.SIGKILL)
     trial.wait(lambda: not process_group(old_process), maximum=5)
-    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": initial}
+    assert trial.call(first, "status") == {"running": False, "computation": "stopped", "accepted_proofs": 3, "interest": initial}
     first.start()
     assert digest(first.directory / "identity.key") == identity
     assert first.ids() == accepted
@@ -209,7 +209,7 @@ def run(trial):
         assert not stop.result()["running"]
         assert update.result()["interest"] == "race stop"
     assert not process_group(first.process)
-    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": "race stop"}
+    assert trial.call(first, "status") == {"running": False, "computation": "stopped", "accepted_proofs": 3, "interest": "race stop"}
     assert first.ids() == accepted
     trial.summary["scenarios"]["start_stop_update_races_preserve_owner_text_and_checked_ids"] = {"result": "pass"}
     trial.summary["accepted_ids"] = sorted(accepted)

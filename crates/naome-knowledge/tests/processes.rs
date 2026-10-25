@@ -136,6 +136,12 @@ fn ordinary_owner_interest_is_exact_durable_and_serialized() {
     run_autonomous("interest");
 }
 
+#[cfg(all(unix, feature = "developer-tools"))]
+#[test]
+fn ordinary_computation_pause_preserves_gossip_peering_and_checked_delivery() {
+    run_autonomous("pause");
+}
+
 #[cfg(unix)]
 #[test]
 fn ordinary_lifecycle_generates_exchanges_and_recovers_checked_proofs() {
@@ -187,6 +193,7 @@ fn run_autonomous(mode: &str) {
     command
         .arg(root.join(match mode {
             "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
+            "pause" => "crates/naome-knowledge/tests/support/computation_pause.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
             _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))
