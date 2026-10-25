@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.83.0"
+rust-version = "1.88.0"
 name = "libp2p-relay"
-version = "0.21.1"
+version = "0.22.0"
 authors = [
     "Parity Technologies <admin@parity.io>",
     "Max Inden <mail@max-inden.de>",
@@ -68,13 +68,13 @@ version = "0.2.4"
 version = "3"
 
 [dependencies.libp2p-core]
-version = "0.43.2"
+version = "0.44.0"
 
 [dependencies.libp2p-identity]
-version = "0.2.13"
+version = "0.3.0"
 
 [dependencies.libp2p-swarm]
-version = "0.47.1"
+version = "0.48.0"
 
 [dependencies.quick-protobuf]
 version = "0.8"
@@ -98,27 +98,27 @@ version = "0.1.41"
 version = "1.1.0"
 
 [dev-dependencies.libp2p-identity]
-version = "0.2.13"
+version = "0.3.0"
 features = ["rand"]
 
 [dev-dependencies.libp2p-ping]
-version = "0.47.0"
+version = "0.48.0"
 
 [dev-dependencies.libp2p-plaintext]
-version = "0.43.0"
+version = "0.44.0"
 
 [dev-dependencies.libp2p-swarm]
-version = "0.47.1"
+version = "0.48.0"
 features = [
     "macros",
     "tokio",
 ]
 
 [dev-dependencies.libp2p-swarm-test]
-version = "0.6.0"
+version = "0.7.0"
 
 [dev-dependencies.libp2p-yamux]
-version = "0.47.0"
+version = "0.48.0"
 
 # Upstream's unpublished quickcheck-ext only reexports the API used by these tests.
 [dev-dependencies.quickcheck]

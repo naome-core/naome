@@ -116,6 +116,20 @@ impl Drop for BehaviourGuard<'_> {
     }
 }
 impl SharedSwarm {
+    pub(super) fn revoke_on_identify(&self, peer: PeerId, info: &libp2p::identify::Info) {
+        let proof_peer = {
+            let swarm = self.swarm.lock().expect("transport lock");
+            let book = swarm.behaviour().gate.0.lock();
+            discovery::identified_kind(peer, info, false, &book.relays, book.internet)
+                .is_some_and(|(proof, _)| proof)
+        };
+        if !proof_peer {
+            self.grants
+                .lock()
+                .expect("peer grant lock")
+                .revoke_peer(peer);
+        }
+    }
     pub(super) fn grant(&self, peer: PeerId, root: ProofId) -> crate::publication::PeerGrant {
         let mut grants = self.grants.lock().expect("peer grant lock");
         grants.roots.retain(|_, lease| lease.strong_count() > 0);
@@ -262,7 +276,7 @@ impl Transport {
                         _ => {}
                     }
                 }
-                let incompatible = if let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
+                if let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
                     discovery::BehaviourEvent::Identify(libp2p::identify::Event::Received {
                         peer_id,
                         info,
@@ -270,25 +284,33 @@ impl Transport {
                     }),
                 )) = &event
                 {
-                    let swarm = driver.swarm.lock().expect("transport lock");
-                    let book = swarm.behaviour().gate.0.lock();
-                    discovery::identified_kind(*peer_id, info, false, &book.relays).is_none()
-                } else {
-                    false
-                };
-                if incompatible
-                    && let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
-                        discovery::BehaviourEvent::Identify(libp2p::identify::Event::Received {
-                            peer_id,
-                            ..
-                        }),
-                    )) = &event
+                    driver.revoke_on_identify(*peer_id, info);
+                }
+                // Provider addresses live in the active Kademlia query. Start
+                // a normal dial while that query is still alive, before the
+                // state owner's bounded handoff can outlive those addresses.
+                // Native behaviours supply addresses; the final TCP filter and
+                // Noise admission apply exactly as for every other connection.
+                if let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
+                    discovery::BehaviourEvent::Kad(libp2p::kad::Event::OutboundQueryProgressed {
+                        result:
+                            libp2p::kad::QueryResult::GetProviders(Ok(
+                                libp2p::kad::GetProvidersOk::FoundProviders { key, providers },
+                            )),
+                        ..
+                    }),
+                )) = &event
+                    && *key == discovery::provider_key()
                 {
-                    driver
-                        .grants
-                        .lock()
-                        .expect("peer grant lock")
-                        .revoke_peer(*peer_id);
+                    driver.with(|swarm| {
+                        if swarm.behaviour().gate.0.lock().internet {
+                            for peer in providers.iter().take(crate::resources::limits().contacts) {
+                                let _ = swarm.dial(
+                                    libp2p::swarm::dial_opts::DialOpts::peer_id(*peer).build(),
+                                );
+                            }
+                        }
+                    });
                 }
                 if revokes {
                     driver
@@ -356,12 +378,46 @@ impl Transport {
                     _ => None,
                 };
                 let epoch = driver.epoch.load(Ordering::Acquire);
-                send.try_send(TransportEvent {
+                let handoff = TransportEvent {
                     event,
                     epoch,
                     grant,
-                })
-                .map_err(|_| "bounded transport event queue exhausted")?;
+                };
+                match send.try_send(handoff) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        return Err("transport state owner unavailable".into());
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(handoff)) => {
+                        match handoff {
+                            TransportEvent {
+                                event:
+                                    SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                                        request_response::Event::Message {
+                                            message:
+                                                request_response::Message::Request { channel, .. },
+                                            ..
+                                        },
+                                    )),
+                                ..
+                            } => {
+                                let _ = driver.behaviour_mut().exchange.send_response(
+                                    channel,
+                                    Frame::new(Body::Error {
+                                        reason: "node state owner busy".into(),
+                                    }),
+                                );
+                            }
+                            // Retain one bounded critical event. Backpressure
+                            // preserves response/disconnect ordering and grants;
+                            // remote event pressure must not terminate the node.
+                            handoff => tokio::select! {
+                                result = send.send(handoff) => result.map_err(|_| "transport state owner unavailable")?,
+                                _ = &mut halted => return Ok(()),
+                            },
+                        }
+                    }
+                }
             }
         });
         (

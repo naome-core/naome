@@ -35,7 +35,7 @@ async fn execute() -> Result<(), String> {
                 .and_then(|_|file.sync_all()).map_err(|error|error.to_string())?;
             println!("{}",json!({"peer_id":key.public().to_peer_id().to_string(),
                 "config":{"directory":fs::canonicalize(directory).map_err(|error|error.to_string())?, "listen":"/ip4/0.0.0.0/tcp/0", "peers":[],
-                "discovery":{"mdns":true,"dht":false,"bootstrap":[],"relays":[],"hole_punch":true,"relay_only":false,"external_addresses":[]},"producer_sources":[]}}));
+                "discovery":network::DiscoveryConfig::default(),"producer_sources":[]}}));
             Ok(())
         },
         ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,

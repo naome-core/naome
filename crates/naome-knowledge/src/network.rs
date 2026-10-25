@@ -14,7 +14,7 @@ use libp2p::{
     futures::StreamExt,
     gossipsub, identity, noise, relay, request_response,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
-    tcp, yamux,
+    yamux,
 };
 use naome_proof::ProofId;
 use serde::Deserialize;
@@ -69,8 +69,12 @@ pub fn routing_contract() -> Value {
                 "root_lifetime_seconds":crate::resources::limits().root_timeout.as_secs(),"outgoing_request_burst_per_peer":crate::resources::limits().request_burst,"outgoing_request_refill_ms":crate::resources::limits().request_rate_window.as_millis()}
         },
         "identify_protocol":discovery::protocol_version(false),
-        "dht_protocol":format!("/naome/knowledge/kad/{}/1", hex(&crate::compatibility())),
+        "dht_protocol":discovery::internet::dht_protocol(true),
+        "public_bootstrap":discovery::internet::bootstrap(),
         "participation_key":hex(discovery::provider_key().as_ref()),
+        "privacy":{"proof_graph":"Public to compatible peers", "owner_interest":"Local only; never a wire field",
+            "discovery":"Public IP/peer identity/participation metadata; mDNS is unencrypted LAN discovery",
+            "transport":"Noise authenticated encryption, including relay circuits"},
         "defaults":DiscoveryConfig::default(),
         "limits":{
             "contacts":crate::resources::limits().contacts,"addresses_per_contact":crate::resources::limits().addresses_per_contact,
@@ -96,13 +100,14 @@ pub fn routing_contract() -> Value {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    gate: discovery::Gate,
+    limits: connection_limits::Behaviour,
     allowed: Toggle<allow_block_list::Behaviour<allow_block_list::AllowedPeers>>,
     discovery: discovery::Behaviour,
     relay: relay::client::Behaviour,
-    limits: connection_limits::Behaviour,
     gossip: gossipsub::Behaviour,
     exchange: exchange::Exchange,
+    // Admission records are committed only after every other behaviour accepts.
+    gate: discovery::Gate,
 }
 
 struct Wanted {
@@ -168,6 +173,7 @@ struct InventoryProgress {
 }
 struct Node {
     computation: Arc<crate::resources::Computation>,
+    primary_listener: libp2p::core::transport::ListenerId,
     ready: bool,
     graph: Graph,
     swarm: worker::SharedSwarm,
@@ -424,10 +430,15 @@ where
         .as_ref()
         .is_some_and(|settings| settings.mdns || settings.dht || !settings.relays.is_empty())
         || config.discovery.is_none() && config.peers.is_empty();
-    let settings = config.discovery.unwrap_or_else(|| discovery::Config {
+    let mut settings = config.discovery.unwrap_or_else(|| discovery::Config {
         mdns: config.peers.is_empty(),
+        dht: config.peers.is_empty(),
+        internet: config.peers.is_empty(),
         ..Default::default()
     });
+    if automatic && settings.internet && settings.dht && settings.bootstrap.is_empty() {
+        settings.bootstrap = discovery::internet::bootstrap();
+    }
     if settings.bootstrap.len() > crate::resources::limits().bootstrap_peers
         || settings.relays.len() > crate::resources::limits().relay_peers
         || settings.external_addresses.len() > crate::resources::limits().addresses_per_contact
@@ -526,15 +537,10 @@ where
         ),
         book.clone(),
     );
+    let tcp_book = book.clone();
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
-        .with_tcp(
-            tcp::Config::default().nodelay(true),
-            noise::Config::new,
-            yamux_config,
-        )
-        .map_err(|error| error.to_string())?
-        .with_dns()
+        .with_other_transport(move |key| transport::tcp(key, tcp_book))
         .map_err(|error| error.to_string())?
         .with_relay_client(noise::Config::new, yamux_config)
         .map_err(|error| error.to_string())?
@@ -572,6 +578,7 @@ where
         computation: control
             .as_ref()
             .map_or_else(Arc::default, |control| control.computation.clone()),
+        primary_listener,
         ready: false,
         graph,
         swarm,
@@ -1602,17 +1609,15 @@ impl Node {
                     .iter()
                     .find_map(|(peer, id)| (*id == listener_id).then_some(*peer))
                 {
-                    self.relay_listeners.remove(&peer);
-                    self.next_relay_attempt.insert(
-                        peer,
-                        Instant::now() + crate::resources::limits().reconcile_interval,
-                    );
+                    self.relay_failed(peer);
                     self.swarm.remove_listener(listener_id);
                     emit(
                         json!({"event":"relay_listen_failed", "peer":peer.to_string(), "error":error.to_string()}),
                     );
-                } else {
+                } else if listener_id == self.primary_listener {
                     return Err(format!("listener: {error}"));
+                } else {
+                    emit(json!({"event":"retired_listener_error", "error":error.to_string()}));
                 }
             }
             SwarmEvent::ListenerClosed { listener_id, .. } => {
@@ -1621,12 +1626,8 @@ impl Node {
                     .iter()
                     .find_map(|(peer, id)| (*id == listener_id).then_some(*peer))
                 {
-                    self.relay_listeners.remove(&peer);
-                    self.next_relay_attempt.insert(
-                        peer,
-                        Instant::now() + crate::resources::limits().reconcile_interval,
-                    );
-                } else {
+                    self.relay_failed(peer);
+                } else if listener_id == self.primary_listener {
                     return Err("proof listener closed".into());
                 }
             }
@@ -1639,7 +1640,7 @@ impl Node {
             } => {
                 let relayed = endpoint.is_relayed();
                 self.connections.insert(connection_id, (peer_id, relayed));
-                if let Ok(contact) = self.discovery.book.lock().admit(peer_id, Instant::now()) {
+                if let Some(contact) = self.discovery.book.lock().contacts.get_mut(&peer_id) {
                     contact.connected = true;
                     contact.connected_at.get_or_insert(Instant::now());
                 }
@@ -1694,6 +1695,14 @@ impl Node {
                 // Identify observations are DCUtR candidates, not evidence of
                 // public reachability and not automatically confirmed addresses.
                 emit(json!({"event":"external_candidate", "address":address.to_string()}));
+            }
+            SwarmEvent::ExternalAddrConfirmed { address } => {
+                self.discovery.addresses_changed();
+                emit(json!({"event":"external_confirmed", "address":address.to_string()}));
+            }
+            SwarmEvent::ExternalAddrExpired { address } => {
+                self.discovery.addresses_changed();
+                emit(json!({"event":"external_expired", "address":address.to_string()}));
             }
             SwarmEvent::Behaviour(BehaviourEvent::Discovery(event)) => {
                 let upgrade = match &event {
@@ -2224,6 +2233,7 @@ pub fn read_config(path: &Path) -> Result<Config, String> {
 }
 
 mod discovery_runtime;
+pub(crate) mod transport;
 
 #[cfg(test)]
 mod tests;

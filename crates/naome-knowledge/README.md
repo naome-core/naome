@@ -1,5 +1,8 @@
 # Node lifecycle and computation
 
+See [networking and security](NETWORKING.md) for automatic Internet discovery,
+encrypted transport, public graph visibility and trust boundaries.
+
 `naome start` starts the node. The resource governor automatically pauses
 productive computation when resources or operating-system policy require it,
 and resumes it after a stable recovery window. `naome stop` ends the node.

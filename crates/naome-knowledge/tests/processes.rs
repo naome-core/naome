@@ -324,6 +324,11 @@ mod developer_transport {
     }
 
     #[test]
+    fn hostile_identities_cannot_fill_contact_slots_or_block_trusted_exchange() {
+        run_discovery("hostile");
+    }
+
+    #[test]
     fn direct_exchange_selects_questions_before_payloads_and_commits_parent_helpers() {
         run_question_exchange("direct");
     }

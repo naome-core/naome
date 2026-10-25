@@ -29,6 +29,10 @@ pub struct Peer {
 pub struct Config {
     pub mdns: bool,
     pub dht: bool,
+    /// Use the public Amino DHT as a client for participation/address discovery.
+    pub internet: bool,
+    /// Explicit isolated-network policy. Public Internet operation leaves this off.
+    pub allow_private_addresses: bool,
     pub bootstrap: Vec<Peer>,
     pub relays: Vec<Peer>,
     pub hole_punch: bool,
@@ -42,7 +46,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             mdns: true,
-            dht: false,
+            dht: true,
+            internet: true,
+            allow_private_addresses: false,
             bootstrap: Vec::new(),
             relays: Vec::new(),
             hole_punch: true,
@@ -67,6 +73,7 @@ pub(crate) fn identified_kind(
     info: &identify::Info,
     relay_mode: bool,
     relays: &BTreeSet<PeerId>,
+    internet: bool,
 ) -> Option<(bool, bool)> {
     let proof = info.protocol_version == protocol_version(false)
         && info
@@ -74,6 +81,11 @@ pub(crate) fn identified_kind(
             .iter()
             .any(|protocol| protocol.as_ref() == crate::wire::PROTOCOL.as_ref());
     let relay = info.protocol_version == protocol_version(true) && relays.contains(&peer_id);
+    let router = internet
+        && info
+            .protocols
+            .iter()
+            .any(|protocol| matches!(protocol.as_ref(), internet::PROTOCOL | internet::RELAY_HOP));
     let valid = info.public_key.to_peer_id() == peer_id
         && info.listen_addrs.len() <= crate::resources::limits().identify_addresses
         && info.protocols.len() <= crate::resources::limits().identify_protocols
@@ -81,14 +93,15 @@ pub(crate) fn identified_kind(
             protocol.as_ref().len() <= crate::resources::limits().identify_protocol_bytes
         })
         && info.agent_version.len() <= crate::resources::limits().diagnostic_bytes
-        && (proof || relay || relay_mode && info.protocol_version == protocol_version(false));
-    valid.then_some((proof, relay))
+        && (proof
+            || relay
+            || router
+            || relay_mode && info.protocol_version == protocol_version(false));
+    valid.then_some((proof, relay || router && !proof))
 }
 
 pub(crate) fn provider_key() -> kad::RecordKey {
-    let mut bytes = b"naome:knowledge:participants:v1\0".to_vec();
-    bytes.extend_from_slice(&crate::compatibility());
-    kad::RecordKey::new(&bytes)
+    internet::participation_key()
 }
 
 /// One direct TCP endpoint, optionally followed by its authenticated target,
@@ -151,9 +164,11 @@ pub(crate) fn is_relayed(address: &Multiaddr) -> bool {
 pub(crate) struct Contact {
     _memory: std::sync::Arc<crate::resources::MemoryLease>,
     pub addresses: BTreeSet<Multiaddr>,
+    pub local_addresses: BTreeSet<Multiaddr>,
     pub pinned: bool,
     pub compatible: bool,
     pub infrastructure: bool,
+    pub relay_service: bool,
     pub dht: bool,
     pub enabled: bool,
     pub connected: bool,
@@ -181,11 +196,15 @@ fn contact_memory() -> Result<std::sync::Arc<crate::resources::MemoryLease>, Str
 pub(crate) struct Book {
     pub own: PeerId,
     pub automatic: bool,
+    pub internet: bool,
+    pub allow_private_addresses: bool,
     pub relay_only: bool,
     pub hole_punch: bool,
     pub relays: BTreeSet<PeerId>,
     pub contacts: BTreeMap<PeerId, Contact>,
     retired: BTreeMap<PeerId, Instant>,
+    admission: admission::Admission,
+    pub(crate) removed: VecDeque<PeerId>,
 }
 
 impl Book {
@@ -193,11 +212,15 @@ impl Book {
         Self {
             own,
             automatic,
+            internet: config.internet,
+            allow_private_addresses: config.allow_private_addresses,
             relay_only: config.relay_only,
             hole_punch: config.hole_punch,
             relays: BTreeSet::new(),
             contacts: BTreeMap::new(),
             retired: BTreeMap::new(),
+            admission: admission::Admission::default(),
+            removed: VecDeque::new(),
         }
     }
 
@@ -218,9 +241,11 @@ impl Book {
                 Contact {
                     _memory: contact_memory()?,
                     addresses: BTreeSet::new(),
+                    local_addresses: BTreeSet::new(),
                     pinned: false,
                     compatible: false,
                     infrastructure: false,
+                    relay_service: false,
                     dht: false,
                     enabled: true,
                     connected: false,
@@ -243,7 +268,16 @@ impl Book {
         address: &Multiaddr,
         now: Instant,
     ) -> Result<bool, String> {
-        let address = routing_address(address, peer, &self.relays)?;
+        let address = self.route(address, peer)?;
+        if !self.allow_private_addresses
+            && !address::public_address(&address)
+            && !self.contacts.get(&peer).is_some_and(|contact| {
+                contact.local_addresses.contains(&address)
+                    || contact.pinned && contact.addresses.contains(&address)
+            })
+        {
+            return Err("untrusted private routing address".into());
+        }
         // A peer's direct addresses must not undermine a relay-only dial policy.
         if self.relay_only && !self.relays.contains(&peer) && !is_relayed(&address) {
             return Err("direct proof address disabled".into());
@@ -279,9 +313,11 @@ impl Book {
             entry.insert(Contact {
                 _memory: contact_memory()?,
                 addresses: BTreeSet::new(),
+                local_addresses: BTreeSet::new(),
                 pinned: true,
                 compatible: false,
                 infrastructure,
+                relay_service: infrastructure,
                 dht: false,
                 enabled: true,
                 connected: false,
@@ -305,7 +341,7 @@ impl Book {
     pub fn accepts_endpoint(&mut self, peer: PeerId, address: &Multiaddr) -> Result<(), String> {
         // Noise supplies the target identity. The inbound remote endpoint may
         // be an ephemeral TCP address, while the outbound endpoint is dialed.
-        routing_address(address, peer, &self.relays)?;
+        self.route(address, peer)?;
         if self.relay_only
             && !self.hole_punch
             && !self.relays.contains(&peer)
@@ -313,7 +349,9 @@ impl Book {
         {
             return Err("direct proof connection disabled".into());
         }
-        self.admit(peer, Instant::now())?;
+        if !self.internet || !self.automatic || self.contacts.contains_key(&peer) {
+            self.admit(peer, Instant::now())?;
+        }
         Ok(())
     }
 
@@ -340,6 +378,9 @@ impl Book {
 
     pub fn retire(&mut self, peer: PeerId, now: Instant) -> Option<Contact> {
         let contact = self.contacts.remove(&peer)?;
+        if !contact.pinned {
+            self.relays.remove(&peer);
+        }
         self.retired.retain(|_, until| *until > now);
         if self.retired.len() >= crate::resources::limits().contacts
             && let Some(oldest) = self
@@ -360,9 +401,15 @@ impl Book {
             .iter()
             .filter_map(|(peer, contact)| {
                 (!contact.pinned
-                    && !contact.connected
-                    && now.duration_since(contact.seen) >= crate::resources::limits().contact_ttl)
-                    .then_some(*peer)
+                    && ((!contact.connected
+                        && now.duration_since(contact.seen)
+                            >= crate::resources::limits().contact_ttl)
+                        || (!self.relays.contains(peer)
+                            && contact.connected_at.is_some_and(|since| {
+                                now.duration_since(since)
+                                    >= crate::resources::limits().contact_ttl * 4
+                            }))))
+                .then_some(*peer)
             })
             .collect()
     }
@@ -403,7 +450,7 @@ impl Behaviour {
                 .with_cache_size(0)
                 .with_interval(crate::resources::limits().provider_announce_interval)
                 .with_push_listen_addr_updates(true)
-                .with_hide_listen_addrs(config.relay_only),
+                .with_hide_listen_addrs(config.relay_only || config.internet),
         );
         let mdns = if config.mdns && automatic && !relay {
             Some(
@@ -428,11 +475,8 @@ impl Behaviour {
             None
         };
         let kad = if config.dht {
-            let protocol = StreamProtocol::try_from_owned(format!(
-                "/naome/knowledge/kad/{}/1",
-                crate::hex(&crate::compatibility())
-            ))
-            .map_err(|error| error.to_string())?;
+            let protocol = StreamProtocol::try_from_owned(internet::dht_protocol(config.internet))
+                .map_err(|error| error.to_string())?;
             let mut settings = kad::Config::new(protocol);
             settings
                 .set_query_timeout(crate::resources::limits().query_timeout)
@@ -458,9 +502,15 @@ impl Behaviour {
                 .set_provider_record_ttl(Some(crate::resources::limits().provider_ttl))
                 .set_substreams_timeout(crate::resources::limits().query_timeout)
                 .set_max_packet_size(crate::resources::limits().dht_packet_bytes);
-            let mut kad = kad::Behaviour::with_config(peer, Providers::new(peer), settings);
+            let mut store = Providers::new(peer);
+            store.internet = config.internet;
+            let mut kad = kad::Behaviour::with_config(peer, store, settings);
             // Explicitly opted-in DHT participants serve bounded routing hints.
-            kad.set_mode(Some(kad::Mode::Server));
+            kad.set_mode(Some(if config.internet {
+                kad::Mode::Client
+            } else {
+                kad::Mode::Server
+            }));
             Some(kad)
         } else {
             None
@@ -482,6 +532,7 @@ pub(crate) struct Providers {
     own: PeerId,
     entries: BTreeMap<PeerId, kad::ProviderRecord>,
     relays: BTreeSet<PeerId>,
+    internet: bool,
 }
 impl Providers {
     fn new(own: PeerId) -> Self {
@@ -489,6 +540,7 @@ impl Providers {
             own,
             entries: BTreeMap::new(),
             relays: BTreeSet::new(),
+            internet: false,
         }
     }
     pub fn set_relays(&mut self, relays: BTreeSet<PeerId>) {
@@ -528,7 +580,14 @@ impl kad::store::RecordStore for Providers {
             return Err(kad::store::Error::MaxProvidedKeys);
         }
         for address in &mut record.addresses {
-            *address = routing_address(address, record.provider, &self.relays)
+            let mut relays = self.relays.clone();
+            if self.internet
+                && public_address(address)
+                && let Some(Protocol::P2p(relay)) = address.iter().nth(2)
+            {
+                relays.insert(relay);
+            }
+            *address = routing_address(address, record.provider, &relays)
                 .map_err(|_| kad::store::Error::ValueTooLarge)?;
         }
         record.expires = Some(
@@ -583,6 +642,9 @@ pub(crate) struct State {
 }
 
 impl State {
+    pub(crate) fn addresses_changed(&mut self) {
+        self.next_provide = Instant::now();
+    }
     pub fn new(book: SharedBook, config: Config, relay: bool) -> Self {
         Self {
             book,
@@ -607,17 +669,32 @@ impl State {
         }
         if !self.relay && now >= self.next_provide {
             let _ = kad.start_providing(provider_key());
-            self.next_provide = now + crate::resources::limits().provider_announce_interval;
+            self.next_provide = now
+                + if self.config.internet {
+                    std::time::Duration::from_secs(300)
+                } else {
+                    crate::resources::limits().provider_announce_interval
+                };
         } else if let Some(peer) = self.resolve.pop_front() {
             kad.get_closest_peers(peer);
         } else if !self.relay && now >= self.next_query {
             kad.get_providers(provider_key());
-            self.next_query = now + crate::resources::limits().discovery_interval;
+            self.next_query = now
+                + if self.config.internet {
+                    std::time::Duration::from_secs(30)
+                } else {
+                    crate::resources::limits().discovery_interval
+                };
         }
     }
 
     fn hint(&self, peer: PeerId, address: &Multiaddr, source: &str) -> Option<Action> {
-        match self.book.lock().hint(peer, address, Instant::now()) {
+        let accepted = if source == "mdns" {
+            self.book.lock().local_hint(peer, address, Instant::now())
+        } else {
+            self.book.lock().hint(peer, address, Instant::now())
+        };
+        match accepted {
             Ok(new) => {
                 if new {
                     crate::network::emit(serde_json::json!({"event":"discovered", "source":source,
@@ -637,6 +714,26 @@ impl State {
 
     pub fn event(&mut self, event: BehaviourEvent, behaviour: &mut Behaviour) -> Vec<Action> {
         let mut actions = Vec::new();
+        if self.config.internet
+            && let BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
+                result,
+                step,
+                stats,
+                ..
+            }) = &event
+            && step.last
+        {
+            let (kind, success) = match result {
+                kad::QueryResult::GetProviders(result) => ("participants", result.is_ok()),
+                kad::QueryResult::StartProviding(result) => ("announce", result.is_ok()),
+                kad::QueryResult::GetClosestPeers(result) => ("addresses", result.is_ok()),
+                _ => ("routing", true),
+            };
+            crate::network::emit(
+                serde_json::json!({"event":"dht_query", "kind":kind, "success":success,
+                "requests":stats.num_requests(), "responses":stats.num_successes(), "failures":stats.num_failures()}),
+            );
+        }
         match event {
             BehaviourEvent::Mdns(mdns::Event::Discovered(peers)) => {
                 for (peer, address) in peers {
@@ -655,16 +752,74 @@ impl State {
                 }
             }
             BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. }) => {
-                let kind = identified_kind(peer_id, &info, self.relay, &self.book.lock().relays);
+                let kind = identified_kind(
+                    peer_id,
+                    &info,
+                    self.relay,
+                    &self.book.lock().relays,
+                    self.config.internet,
+                );
                 if let Some((proof, relay)) = kind {
-                    if let Ok(contact) = self.book.lock().admit(peer_id, Instant::now()) {
+                    let transient = {
+                        let mut book = self.book.lock();
+                        let full =
+                            book.contacts.len() >= (crate::resources::limits().contacts / 2).max(1);
+                        let mut transient = self.config.internet
+                            && !proof
+                            && !book.contacts.contains_key(&peer_id)
+                            && full;
+                        if transient
+                            && book.relays.len() < crate::resources::limits().relay_peers
+                            && info
+                                .protocols
+                                .iter()
+                                .any(|protocol| protocol.as_ref() == internet::RELAY_HOP)
+                        {
+                            let victim = book
+                                .contacts
+                                .iter()
+                                .filter(|(peer, contact)| {
+                                    !contact.pinned
+                                        && contact.infrastructure
+                                        && !book.relays.contains(peer)
+                                })
+                                .min_by_key(|(_, contact)| contact.seen)
+                                .map(|(peer, _)| *peer);
+                            if let Some(victim) = victim {
+                                book.contacts.remove(&victim);
+                                if let Some(kad) = behaviour.kad.as_mut() {
+                                    kad.remove_peer(&victim);
+                                }
+                                transient = false;
+                            }
+                        }
+                        transient
+                    };
+                    if transient {
+                        crate::network::emit(
+                            serde_json::json!({"event":"identified", "peer":peer_id.to_string(),
+                            "proof_peer":false, "relay":false, "transient_router":true}),
+                        );
+                        return actions;
+                    }
+                    let retained = self
+                        .book
+                        .lock()
+                        .retain_authenticated(peer_id, Instant::now())
+                        .is_ok();
+                    if !retained {
+                        return vec![Action::Reject(peer_id)];
+                    }
+                    if let Some(contact) = self.book.lock().contacts.get_mut(&peer_id) {
                         contact.compatible = true;
+                        contact.infrastructure = relay && !proof;
+                        contact.relay_service = info
+                            .protocols
+                            .iter()
+                            .any(|protocol| protocol.as_ref() == internet::RELAY_HOP)
+                            || relay && !self.config.internet;
                         contact.dht = info.protocols.iter().any(|protocol| {
-                            protocol.as_ref()
-                                == format!(
-                                    "/naome/knowledge/kad/{}/1",
-                                    crate::hex(&crate::compatibility())
-                                )
+                            protocol.as_ref() == internet::dht_protocol(self.config.internet)
                         });
                         contact.seen = Instant::now();
                     }
@@ -701,6 +856,9 @@ impl State {
             }
             BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed { result, .. }) => match result
             {
+                kad::QueryResult::StartProviding(Err(_)) if self.config.internet => {
+                    self.next_provide = Instant::now() + std::time::Duration::from_secs(30);
+                }
                 kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
                     key,
                     providers,
@@ -710,14 +868,16 @@ impl State {
                             && self.resolve.len() < crate::resources::limits().contacts
                             && !self.resolve.contains(&peer)
                         {
-                            self.resolve.push_back(peer);
+                            if !self.config.internet {
+                                self.resolve.push_back(peer);
+                            }
                             crate::network::emit(
                                 serde_json::json!({"event":"dht_participant", "peer":peer.to_string()}),
                             );
                         }
                     }
                 }
-                kad::QueryResult::GetClosestPeers(result) => {
+                kad::QueryResult::GetClosestPeers(result) if !self.config.internet => {
                     let peers = match result {
                         Ok(result) => result.peers,
                         Err(kad::GetClosestPeersError::Timeout { peers, .. }) => peers,
@@ -769,6 +929,10 @@ impl State {
 
 mod gate;
 pub(crate) use gate::Gate;
+mod address;
+pub(crate) use address::public_address;
+mod admission;
+pub(crate) mod internet;
 
 #[cfg(test)]
 mod tests;

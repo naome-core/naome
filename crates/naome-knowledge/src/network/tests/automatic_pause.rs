@@ -191,6 +191,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
         discovery: Some(DiscoveryConfig {
             mdns: false,
             dht: false,
+            internet: false,
             ..Default::default()
         }),
         producer_sources: Vec::new(),

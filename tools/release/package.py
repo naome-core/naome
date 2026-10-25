@@ -44,7 +44,7 @@ def archive(path, name, files, epoch):
 def lifecycle(run, directory):
     directory.mkdir(mode=0o700)
     write_json(directory / "config.json", {"directory": str(directory), "listen": "/ip4/127.0.0.1/tcp/0", "peers": [],
-                                          "producer_sources": [], "discovery": {"mdns": False, "dht": False}})
+                                          "producer_sources": [], "discovery": {"mdns": False, "dht": False, "internet": False}})
     def command(name, *arguments):
         return json.loads(run("--json", name, *arguments))
     try:

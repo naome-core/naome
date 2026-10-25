@@ -23,8 +23,7 @@ path = "src/bin/naome-knowledge-dev.rs"
 required-features = ["developer-tools"]
 
 [dependencies]
-async-trait = "0.1.91"
-libp2p = { version = "0.56.0", default-features = false, features = ["dcutr", "dns", "ed25519", "gossipsub", "identify", "kad", "macros", "mdns", "noise", "relay", "request-response", "tcp", "tokio", "yamux"] }
+libp2p = { version = "0.57.1", default-features = false, features = ["dcutr", "ed25519", "rsa", "ecdsa", "secp256k1", "gossipsub", "identify", "kad", "macros", "mdns", "noise", "relay", "request-response", "tcp", "tokio", "yamux"] }
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 naome-authoring = { path = "../naome-authoring" }
 naome-checker = { path = "../naome-checker" }
@@ -34,7 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "=0.40.2", features = ["bundled", "hooks"] }
 sha2.workspace = true
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "signal", "io-util", "net", "process"] }
+tokio = { version = "1.54.1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "signal", "io-util", "net", "process"] }
 socket2 = { version = "=0.6.5", optional = true }
 sysinfo = { version = "=0.39.6", default-features = false, features = ["system"] }
 
