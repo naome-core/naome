@@ -27,6 +27,7 @@ mod cli;
 mod owner;
 mod replay_guard;
 mod startup;
+mod wallet;
 pub(crate) use owner::Profile as OwnerProfile;
 pub(crate) use startup::Startup;
 
@@ -845,6 +846,7 @@ fn initialize(directory: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?,
         )?;
     }
+    crate::wallet::store::initialize(directory)?;
     File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())?;
@@ -1302,6 +1304,17 @@ pub async fn execute() -> Result<(), String> {
     if let Some(output) = cli::information(&arguments) {
         println!("{output}");
         return Ok(());
+    }
+    let (json, plain) = match arguments.split_first() {
+        Some((option, rest)) if option == "--json" => (true, rest),
+        _ => (false, arguments.as_slice()),
+    };
+    if plain.first().is_some_and(|argument| argument == "wallet") {
+        if std::env::var_os(DAEMON_NONCE).is_some() {
+            return Err("invalid internal wallet invocation".into());
+        }
+        let _replay_guard = replay_guard::optional("wallet")?;
+        return wallet::execute(&plain[1..], json);
     }
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
