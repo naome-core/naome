@@ -14,7 +14,7 @@ import signal
 import sqlite3
 import subprocess
 import time
-from autonomous_lifecycle import Node, Trial, process_group, process_identity, write_receipt
+from autonomous_lifecycle import Node, Trial, process_group, process_identity, retain_evidence, write_receipt
 from proof_network import stored_objects
 
 
@@ -149,6 +149,7 @@ def main():
     finally:
         trial.close()
         write_receipt(trial.output/'result.json',trial.summary)
+        retain_evidence(trial.output,trial.summary,'program-replication',args.profile)
     assert trial.summary['result']=='pass',trial.summary
 
 
