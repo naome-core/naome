@@ -57,10 +57,14 @@ impl Governor {
             let cpu_available = available.div_ceil(1000).max(1) as usize;
             if next.selection.profile != Profile::Custom && next.selection.profile != Profile::Light
             {
-                let demand =
-                    statistics.queued_jobs > 0 || statistics.check.units > previous.check.units;
+                let demand = statistics.queued_jobs > 0
+                    || statistics.running_jobs > 0
+                    || statistics.check.units > previous.check.units;
                 let target = if demand {
-                    cpu_available
+                    statistics
+                        .providers
+                        .cpu_slots(available, quantum)
+                        .unwrap_or(cpu_available)
                 } else {
                     before.budget.concurrency.max(1).min(cpu_available)
                 };
@@ -74,7 +78,8 @@ impl Governor {
                         / next.observed.cpu_millis.max(1)
                         + quota_delay;
                 }
-                let per_job = statistics.descendant_rss / statistics.running_jobs.max(1);
+                let per_job = (statistics.descendant_rss / statistics.running_jobs.max(1))
+                    .max(statistics.providers.peak_worker_bytes());
                 if let Some(slots) = next
                     .budget
                     .memory_bytes

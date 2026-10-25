@@ -142,6 +142,12 @@ fn automatic_resource_pause_preserves_provider_budgets_and_control() {
     run_autonomous("pause");
 }
 
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
+#[test]
+fn native_provider_feedback_reaches_owner_without_changing_job_allowances() {
+    run_autonomous("provider-feedback");
+}
+
 #[cfg(unix)]
 #[test]
 fn ordinary_lifecycle_generates_exchanges_and_recovers_checked_proofs() {
@@ -194,6 +200,7 @@ fn run_autonomous(mode: &str) {
         .arg(root.join(match mode {
             "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
             "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
+            "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
             _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))

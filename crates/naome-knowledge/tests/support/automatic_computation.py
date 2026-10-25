@@ -6,6 +6,7 @@ from pathlib import Path
 
 from autonomous_lifecycle import Node, Trial, process_identity, retain_evidence, write_receipt
 from long_jobs import Probe, job_settings, journal
+from provider_feedback import feedback
 
 
 def state(trial, node, expected):
@@ -44,6 +45,10 @@ def run(trial):
     for node in trial.nodes:
         node.write_config()
     donor.start()
+    # Lifecycle readiness can correctly precede compute admission. Honor the
+    # existing 30-second pressure recovery before the work-progress oracle;
+    # the whole-driver deadline and the controlled pause checks are unchanged.
+    trial.wait(lambda: state(trial, donor, "running"), maximum=40)
     trial.wait(lambda: next((record for record in journal(donor)["records"].values()
         if record["state"] == "running" and record["input"]["role"] == "find"
         and record["checkpoint"] > 0), None), maximum=15)
@@ -92,6 +97,8 @@ def run(trial):
     assert resumed["reserved_units"] >= retained["reserved_units"]
     assert resumed["spent_ms"] >= retained["spent_ms"]
     assert resumed["settings"] == retained["settings"]
+    finding_feedback = feedback(trial, donor)["finding"]
+    assert finding_feedback["admission_wait_nanos"] >= 20_000_000_000, finding_feedback
     pressure(donor, True)
     trial.wait(lambda: state(trial, donor, "paused"), maximum=5)
     probe.observe(donor)
@@ -99,12 +106,14 @@ def run(trial):
     donor.config["runtime"]["question_interval_ms"] = 3600000
     donor.write_config()
     pressure(donor, False)
-    assert donor.start()["computation"] == "running"
+    donor.start()
+    trial.wait(lambda: state(trial, donor, "running"), maximum=40)
     assert donor.peer == original_peer
     assert process_identity(donor.process["pid"]) == donor.process
     trial.summary.update(result="pass", fixture="automatic_resource_computation_pause",
         paused_checkpoints=frozen,
         resumed_job=resumed["id"],
+        finding_feedback=finding_feedback,
         claim="native automatic memory-target pause; real provider checkpoint retention, live authenticated control and resume with original budgets; CPU-only transport service is qualified separately")
 
 

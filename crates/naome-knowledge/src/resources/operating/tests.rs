@@ -118,3 +118,43 @@ fn small_compute_batches_preserve_bounded_inventory_admission() {
     assert!(work.fetches <= budget.memory_bytes as usize / 512);
     assert!(work.id_page <= budget.memory_bytes as usize / 32);
 }
+
+#[test]
+fn provider_cadence_uses_its_own_complete_cost_and_installed_role_lanes() {
+    let capacity = crate::resources::ResourceProfile::default()
+        .resolve()
+        .unwrap();
+    let budget = Budget {
+        memory_bytes: capacity.memory_bytes as u64,
+        concurrency: capacity.workers.iter().sum(),
+        cache_bytes: 64 * 1024,
+        batch_steps: 4,
+        network_requests: 1,
+        yield_ms: 0,
+        paused: None,
+    };
+    let mut statistics = super::super::feedback::Statistics::default();
+    statistics.providers.finding.completed = 1;
+    statistics.providers.finding.service_nanos = 800_000_000;
+    let finding = derive_with_statistics(&capacity, &budget, statistics);
+    assert_eq!(
+        finding.finding_interval,
+        Duration::from_millis(800 / capacity.workers[0] as u64)
+    );
+    assert_eq!(finding.solving_interval, capacity.solving_interval);
+    statistics.providers.solving.completed = 1;
+    statistics.providers.solving.service_nanos = 2_000_000_000;
+    let mixed = derive_with_statistics(&capacity, &budget, statistics);
+    assert_eq!(mixed.finding_interval, finding.finding_interval);
+    assert_eq!(
+        mixed.solving_interval,
+        Duration::from_millis(2000 / capacity.workers[1] as u64)
+    );
+    statistics.empty_finding_streak = 2;
+    let backoff = derive_with_statistics(&capacity, &budget, statistics);
+    assert_eq!(
+        backoff.finding_interval,
+        (finding.finding_interval * 4).min(capacity.finding_interval)
+    );
+    assert_eq!(backoff.solving_interval, mixed.solving_interval);
+}

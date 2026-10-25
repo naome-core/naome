@@ -1,5 +1,6 @@
 //! Provider semantics are independent of process custody and durable budgets.
 use super::*;
+use crate::resources::feedback::{Meter, Phase, Sample};
 use std::time::{Duration, Instant};
 
 pub(super) const DEFAULT_PROVIDER: &str = "naome-deterministic-mocks-v1";
@@ -36,6 +37,8 @@ pub(super) trait Supervisor {
     fn reserve(&mut self, next: u32) -> Result<(), String>;
     fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String>;
     fn probe(&mut self, probe: Probe) -> Result<(), String>;
+    fn blocked_nanos(&self) -> u64;
+    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String>;
 }
 pub(super) trait Provider {
     fn start(&mut self, _supervisor: &mut dyn Supervisor) -> Result<(), Failure> {
@@ -50,7 +53,7 @@ pub(super) fn drive(
     supervisor: &mut dyn Supervisor,
     mut checkpoint: u32,
 ) -> Result<Output, Failure> {
-    provider.start(supervisor)?;
+    measured(supervisor, Phase::Setup, |owner| provider.start(owner))?;
     while let Some(next) = provider.next(checkpoint)? {
         if checkpoint.checked_add(1) != Some(next) {
             return Err(Failure::Uncertain(
@@ -58,11 +61,30 @@ pub(super) fn drive(
             ));
         }
         supervisor.reserve(next)?;
-        provider.execute(next, supervisor)?;
+        measured(supervisor, Phase::Unit { unit: next }, |owner| {
+            provider.execute(next, owner)
+        })?;
         supervisor.checkpoint(next)?;
         checkpoint = next;
     }
-    provider.result(supervisor)
+    measured(supervisor, Phase::Finalization, |owner| {
+        provider.result(owner)
+    })
+}
+fn measured<T>(
+    supervisor: &mut dyn Supervisor,
+    phase: Phase,
+    operation: impl FnOnce(&mut dyn Supervisor) -> Result<T, Failure>,
+) -> Result<T, Failure> {
+    let blocked = supervisor.blocked_nanos();
+    let meter = Meter::start();
+    let result = operation(supervisor);
+    let sample = meter.finish(
+        supervisor.blocked_nanos().saturating_sub(blocked),
+        result.is_ok(),
+    );
+    supervisor.observe(phase, sample)?;
+    result
 }
 #[derive(Clone, Copy)]
 pub(super) struct Contract {

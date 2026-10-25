@@ -27,7 +27,7 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
         panic!("owner status report expected");
     };
     assert_eq!(status.interest, interest);
-    let snapshot = crate::resources::adaptive::Snapshot::derive(
+    let mut snapshot = crate::resources::adaptive::Snapshot::derive(
         crate::resources::adaptive::Selection::default(),
         crate::resources::adaptive::Observed {
             memory_total: 8 * 1024 * 1024 * 1024,
@@ -43,19 +43,43 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
         512 * 1024 * 1024,
     )
     .unwrap();
+    // Exercise the entire existing snapshot envelope, alongside maximum-width
+    // scalar statistics, even on profiles with the smallest owner-text limit.
+    let snapshot_bytes = serde_json::to_vec(&snapshot).unwrap().len();
+    snapshot.budget.paused = Some("x".repeat(4096 - snapshot_bytes + 2));
+    assert_eq!(serde_json::to_vec(&snapshot).unwrap().len(), 4096);
+    fn maximize(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Null => *value = u64::MAX.into(),
+            serde_json::Value::Number(number) => *number = u64::MAX.into(),
+            serde_json::Value::Object(fields) => fields.values_mut().for_each(maximize),
+            serde_json::Value::Array(items) => items.iter_mut().for_each(maximize),
+            _ => {}
+        }
+    }
+    let mut maximum =
+        serde_json::to_value(crate::resources::feedback::Statistics::default()).unwrap();
+    maximize(&mut maximum);
+    let feedback = serde_json::from_value(maximum).unwrap();
     let resource = Response {
         token: "a".repeat(64),
         report: Report::Resources {
             snapshot: Some(Box::new(snapshot.clone())),
             capacity_bytes: crate::resources::limits().memory_bytes,
             workers: crate::resources::limits().workers,
-            feedback: crate::resources::feedback::Statistics::default(),
+            feedback: Box::new(feedback),
         },
     };
+    assert!(
+        serde_json::to_vec(&resource).unwrap().len() < RESOURCE_RESPONSE_LIMIT,
+        "resource report requires {} bytes, limit is {}",
+        serde_json::to_vec(&resource).unwrap().len() + 1,
+        RESOURCE_RESPONSE_LIMIT
+    );
     let (mut sender, mut receiver) = UnixStream::pair().unwrap();
     let (written, read) = tokio::join!(
-        write_frame(&mut sender, &resource),
-        read_frame::<Response>(&mut receiver)
+        write_frame_bounded(&mut sender, &resource, RESOURCE_RESPONSE_LIMIT),
+        read_frame_bounded::<Response>(&mut receiver, RESOURCE_RESPONSE_LIMIT)
     );
     written.unwrap();
     let Report::Resources {
@@ -66,6 +90,10 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
         panic!("resource report expected");
     };
     assert_eq!(*read, snapshot);
+    // The richer diagnostic response cannot enlarge ordinary request ingress.
+    let oversized = serde_json::json!({"padding": "x".repeat(control_limit())});
+    let (mut sender, _receiver) = UnixStream::pair().unwrap();
+    assert!(write_frame(&mut sender, &oversized).await.is_err());
 }
 use crate::{Envelope, object::id_bytes};
 use naome_authoring::CompiledQuestion;
