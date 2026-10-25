@@ -65,7 +65,7 @@ impl QuestionAuthority {
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
         let authority = self;
-        let (snapshot, policy) = questions.context_key(graph);
+        let context = questions.formal_context(graph);
         if authority
             .assessment
             .as_ref()
@@ -114,7 +114,7 @@ impl QuestionAuthority {
             }
         }
         if let Some(assessment) = &authority.assessment
-            && (assessment.prefilter.snapshot != snapshot || assessment.prefilter.policy != policy)
+            && assessment.formal_context() != context
         {
             authority.assessment =
                 Some(questions.refresh_exchange(graph, &authority.question, assessment)?);

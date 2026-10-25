@@ -126,3 +126,48 @@ fn receiver_rejects_missing_duplicate_and_rebound_inventory_pages() {
     ));
     assert!(!valid_page(Some(after), snapshot, &ids[1..], Some(after)));
 }
+
+#[test]
+fn receiver_accepts_smaller_peer_pages_without_relaxing_progress_or_local_limits() {
+    let mut graph = Graph::default();
+    let original: Vec<_> = (1..=5).map(|depth| add(&mut graph, depth)).collect();
+    let mut after = None;
+    let mut observed = Vec::new();
+    loop {
+        // A peer may have a smaller installed page ceiling than this receiver.
+        let Body::InventoryResult {
+            snapshot,
+            ids,
+            next,
+        } = response(&graph, None, after, 2).unwrap()
+        else {
+            panic!("inventory page");
+        };
+        assert!(valid_page(after, snapshot, &ids, next));
+        if after.is_none() {
+            assert!(!valid_page(
+                None,
+                snapshot,
+                &[],
+                Some(InventoryCursor { snapshot, after: 0 })
+            ));
+            let mut oversized = Vec::new();
+            for index in 0..=crate::resources::limits().inventory_page {
+                let mut id = [0; 32];
+                id[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                oversized.push(id);
+            }
+            let large = InventorySnapshot {
+                count: oversized.len() as u64,
+                ..snapshot
+            };
+            assert!(!valid_page(None, large, &oversized, None));
+        }
+        observed.extend(ids.into_iter().map(ProofId::from_bytes));
+        if next.is_none() {
+            break;
+        }
+        after = next;
+    }
+    assert_eq!(observed, original);
+}

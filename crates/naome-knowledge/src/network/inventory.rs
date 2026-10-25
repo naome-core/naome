@@ -38,8 +38,9 @@ fn valid_page(
     if snapshot.count > i64::MAX as u64
         || after.is_some_and(|cursor| cursor.snapshot != snapshot)
         || position > snapshot.count
-        || ids.len() as u64
-            != (snapshot.count - position).min(crate::resources::limits().inventory_page as u64)
+        || ids.len() > crate::resources::limits().inventory_page
+        || ids.len() as u64 > snapshot.count - position
+        || ids.is_empty() && position < snapshot.count
         || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
     {
         return false;

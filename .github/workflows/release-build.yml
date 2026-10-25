@@ -1,0 +1,118 @@
+name: Build release package
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        required: true
+      target:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+    outputs:
+      artifact-id:
+        value: ${{ jobs.build.outputs.artifact-id }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Package (${{ inputs.target }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    env:
+      RELEASE_TARGET: ${{ inputs.target }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_STRIP: debuginfo
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - name: Check out exact workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate native target and source
+        run: |
+          case "$RUNNER_OS:$RUNNER_ARCH:$RELEASE_TARGET" in
+            Linux:X64:x86_64-unknown-linux-musl|macOS:ARM64:aarch64-apple-darwin) ;;
+            *) echo "Unsupported native release configuration"; exit 1 ;;
+          esac
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=--remap-path-prefix=$GITHUB_WORKSPACE=." >> "$GITHUB_ENV"
+          rustup show active-toolchain
+          rustc --version --verbose
+          rustup target add "$RELEASE_TARGET"
+
+      - name: Install native static linker
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y musl-tools
+
+      - name: Build only the ordinary node from the lockfile
+        run: cargo build --package naome-knowledge --bin naome --profile release --target "$RELEASE_TARGET" --no-default-features --locked
+
+      - name: Require static Linux linkage
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          binary="target/$RELEASE_TARGET/release/naome"
+          file "$binary"
+          readelf -h "$binary"
+          readelf -l "$binary" > "$RUNNER_TEMP/program-headers.txt"
+          readelf -d "$binary" > "$RUNNER_TEMP/dynamic-section.txt"
+          if grep -q INTERP "$RUNNER_TEMP/program-headers.txt" || grep -q NEEDED "$RUNNER_TEMP/dynamic-section.txt"; then
+            echo "Linux distribution must not require a dynamic loader or shared libraries"
+            exit 1
+          fi
+          cp /usr/share/doc/musl/copyright "$RUNNER_TEMP/system-licenses.txt"
+
+      - name: Verify Apple architecture and ad-hoc signature
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          binary="target/$RELEASE_TARGET/release/naome"
+          test "$(lipo -archs "$binary")" = arm64
+          codesign --force --sign - --timestamp=none "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          vtool -show-build "$binary"
+          echo "Links to macOS system libraries supplied by the operating system. No Apple system libraries are redistributed. The executable has an ad-hoc signature, not Developer ID signing or notarization." > "$RUNNER_TEMP/system-licenses.txt"
+
+      - name: Install pinned inventory and license tools
+        run: |
+          about_version=$(python3 -c 'import tomllib; print(tomllib.load(open("tools/release/toolchain.toml", "rb"))["cargo-about"])')
+          sbom_version=$(python3 -c 'import tomllib; print(tomllib.load(open("tools/release/toolchain.toml", "rb"))["cargo-cyclonedx"])')
+          cargo install cargo-about --version "$about_version" --locked --features cli --root "$RUNNER_TEMP/release-tools"
+          cargo install cargo-cyclonedx --version "$sbom_version" --locked --root "$RUNNER_TEMP/release-tools"
+          echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Generate dependency inventory and license notices
+        run: |
+          cargo cyclonedx --manifest-path crates/naome-knowledge/Cargo.toml --target "$RELEASE_TARGET" --no-default-features --format json --spec-version 1.5 --override-filename release-sbom
+          cargo about generate --manifest-path crates/naome-knowledge/Cargo.toml --target "$RELEASE_TARGET" --no-default-features --locked --fail --config tools/release/about.toml tools/release/licenses.hbs --output-file "$RUNNER_TEMP/third-party-licenses.html"
+          git diff --exit-code HEAD
+
+      - name: Package, extract and smoke-test the final archive
+        run: |
+          python3 tools/release/release.py package --target "$RELEASE_TARGET" --version "$RELEASE_VERSION" --directory .local/release-package --notices "$RUNNER_TEMP/third-party-licenses.html" --sbom crates/naome-knowledge/release-sbom.json --system-licenses "$RUNNER_TEMP/system-licenses.txt"
+
+      - name: Retain the exact package for this run
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ inputs.target }}
+          path: .local/release-package/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true

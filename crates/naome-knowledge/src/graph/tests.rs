@@ -1107,7 +1107,7 @@ fn a_backlog_write_failure_halts_storage_instead_of_becoming_an_input_rejection(
     let parent = introduce(&mut producer);
     let child = citation(&producer, &parent);
     let mut graph = Graph::default();
-    crate::checkpoint::fail_next_commit();
+    crate::checkpoint::fail_after_commit();
     assert!(matches!(
         graph.ingest(child, Instant::now()),
         Err(crate::Error::UncertainDurability(_))
