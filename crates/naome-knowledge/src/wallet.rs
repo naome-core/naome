@@ -32,6 +32,11 @@ pub(crate) fn identity(directory: &Path) -> Result<Option<Identity>, String> {
             if identity.version != 1 {
                 return Err("unsupported wallet identity version".into());
             }
+            if crate::runtime::wallet_anchor(directory)?
+                .is_some_and(|address| address != identity.address)
+            {
+                return Err("wallet identity does not match the initialized node receipt".into());
+            }
             Ok(identity)
         })
         .transpose()
@@ -96,7 +101,11 @@ fn initialize_at(
     directory: &Path,
     mut checkpoint: impl FnMut(u8) -> Result<(), String>,
 ) -> Result<Identity, String> {
+    let expected = crate::runtime::wallet_anchor(directory)?;
     if let Some(identity) = identity(directory)? {
+        if expected.is_some_and(|address| address != identity.address) {
+            return Err("wallet identity does not match the initialized node receipt".into());
+        }
         let key = read_key(directory, KEY)?
             .ok_or("existing wallet private key is missing; restore its backup")?;
         if key.address() != identity.address {
@@ -108,6 +117,9 @@ fn initialize_at(
         // Recover a first initialization interrupted before the public receipt.
         key
     } else {
+        if expected.is_some() {
+            return Err("existing wallet private key is missing; refusing to replace it".into());
+        }
         let key = if let Some(key) = read_key(directory, PENDING_KEY)? {
             key
         } else {
@@ -125,6 +137,9 @@ fn initialize_at(
         sync(directory)?;
         key
     };
+    if expected.is_some_and(|address| address != key.address()) {
+        return Err("wallet private key does not match the initialized node receipt".into());
+    }
     checkpoint(2)?;
     let identity = Identity {
         version: 1,
@@ -156,9 +171,14 @@ pub(crate) fn key(directory: &Path) -> Result<WalletKey, String> {
     Ok(key)
 }
 mod connection;
+mod payment;
+mod session;
+pub use session::WalletLedger;
 mod service;
 pub(crate) use service::observe;
-pub use service::{NodeWallet, WalletConnection, WalletFunds, WalletStatus};
+pub use service::{
+    NodeWallet, PaymentStatus, WalletConnection, WalletError, WalletFunds, WalletStatus,
+};
 
 #[cfg(test)]
 mod tests;

@@ -504,7 +504,9 @@ impl Disk {
             }
         }
 
-        self.checkpoint.commit(&journal.header(), updates)?;
+        self.checkpoint
+            .commit(&journal.header(), updates)
+            .map_err(crate::Error::from)?;
         for (id, record) in &journal.records {
             if journal.records.changed(id) && record.acknowledged && record.state.terminal() {
                 self.retire_candidate_cache(*id);
@@ -622,7 +624,9 @@ impl Disk {
                 key,
             });
         }
-        self.checkpoint.commit(&journal.header(), updates)?;
+        self.checkpoint
+            .commit(&journal.header(), updates)
+            .map_err(crate::Error::from)?;
         self.retire_candidate_cache(id);
         Ok(())
     }
