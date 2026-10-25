@@ -402,7 +402,7 @@ fn cursor_seeks_authenticated_ranges_and_copy_retains_every_reachable_node() {
             Err(error) => break error,
         }
     };
-    assert_eq!(error, ContextError::Corrupt);
+    assert_eq!(error, ContextError::Storage("missing node".into()));
     assert!(!walk.complete());
     assert_eq!(copied.get(&first).unwrap(), Some(b"first".to_vec()));
 }
