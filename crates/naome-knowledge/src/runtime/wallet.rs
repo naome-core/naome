@@ -1,5 +1,6 @@
 //! Local wallet presentation; verification never needs a node or private key.
-use crate::wallet::{Address, OwnershipChallenge, OwnershipProof, store};
+use crate::wallet as store;
+use naome_wallet::{Address, OwnershipChallenge, OwnershipProof};
 use serde::Serialize;
 use std::{ffi::OsString, fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt, path::Path};
 

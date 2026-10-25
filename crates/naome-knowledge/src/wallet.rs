@@ -1,197 +1,161 @@
-//! Pseudonymous wallet identities and challenge-bound proofs of key control.
-//!
-//! An ownership proof establishes control of a key, never a coin balance,
-//! payment, unique operator, or right to issue currency. Verifiers must supply
-//! their expected address and a fresh challenge that they do not reuse.
-use bech32::{Bech32m, Hrp, primitives::decode::CheckedHrpstring};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use std::{fmt, str::FromStr};
+//! Local wallet custody. The caller serializes initialization with the node's
+//! lifecycle lock. Existing private keys are immutable and never regenerated.
+use naome_wallet::{Address, OwnershipChallenge, OwnershipProof, WalletKey};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::Path,
+};
+use zeroize::Zeroizing;
 
-#[cfg(unix)]
-pub(crate) mod store;
+const KEY: &str = "wallet.key";
+const PENDING_KEY: &str = ".wallet-key-incoming";
+const IDENTITY: &str = "wallet.json";
+const PENDING_IDENTITY: &str = ".wallet-identity-incoming";
+const MAGIC: &[u8] = b"naome:wallet-key:v1\0";
 
-const DOMAIN: &[u8] = b"naome:wallet-key-ownership:v1\0";
-const AUDIENCE_MAX_BYTES: usize = 256;
-
-/// An Ed25519 public key encoded as a canonical `nao` Bech32m address.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Address([u8; 32]);
-
-impl Address {
-    fn from_key(key: VerifyingKey) -> Result<Self, String> {
-        if key.is_weak() {
-            return Err("weak wallet public key".into());
-        }
-        Ok(Self(key.to_bytes()))
-    }
-
-    fn key(&self) -> Result<VerifyingKey, String> {
-        VerifyingKey::from_bytes(&self.0).map_err(|_| "invalid wallet public key".into())
-    }
-}
-
-impl fmt::Display for Address {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let encoded = bech32::encode::<Bech32m>(Hrp::parse("nao").expect("fixed HRP"), &self.0)
-            .expect("fixed-size wallet address");
-        f.write_str(&encoded)
-    }
-}
-
-impl fmt::Debug for Address {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl FromStr for Address {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        if text.len() > 90 {
-            return Err("wallet address length".into());
-        }
-        let decoded = CheckedHrpstring::new::<Bech32m>(text)
-            .map_err(|_| "invalid wallet address checksum or encoding")?;
-        if decoded.hrp() != Hrp::parse("nao").expect("fixed HRP") {
-            return Err("wallet address prefix".into());
-        }
-        let bytes: [u8; 32] = decoded
-            .byte_iter()
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| "wallet address public-key length")?;
-        let key = VerifyingKey::from_bytes(&bytes).map_err(|_| "invalid wallet public key")?;
-        let address = Self::from_key(key)?;
-        if address.to_string() != text {
-            return Err("wallet address must use canonical lower-case Bech32m".into());
-        }
-        Ok(address)
-    }
-}
-
-impl Serialize for Address {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for Address {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(de::Error::custom)
-    }
-}
-
-/// A verifier-issued, single-use challenge for a particular audience.
-///
-/// The audience identifies the verifier and purpose. It is included in the
-/// signed bytes, but does not independently authenticate the verifier.
+/// A public address receipt, retained independently of the private key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OwnershipChallenge {
-    pub version: u8,
-    pub audience: String,
-    pub nonce: String,
+pub(crate) struct Identity {
+    pub(crate) version: u8,
+    pub(crate) address: Address,
 }
 
-impl OwnershipChallenge {
-    /// Creates a challenge from operating-system randomness, without a wallet.
-    pub fn new(audience: String) -> Result<Self, String> {
-        let mut nonce = [0u8; 32];
-        getrandom::fill(&mut nonce).map_err(|_| "wallet challenge randomness unavailable")?;
-        let challenge = Self {
-            version: 1,
-            audience,
-            nonce: crate::hex(&nonce),
-        };
-        challenge.validate()?;
-        Ok(challenge)
-    }
-
-    fn validate(&self) -> Result<[u8; 32], String> {
-        if self.version != 1 {
-            return Err("unsupported wallet challenge version".into());
-        }
-        if self.audience.is_empty() || self.audience.len() > AUDIENCE_MAX_BYTES {
-            return Err("wallet challenge audience must be 1..=256 UTF-8 bytes".into());
-        }
-        if self.nonce.len() != 64 {
-            return Err("wallet challenge nonce must be 32 bytes of lower-case hex".into());
-        }
-        let nonce = crate::unhex(&self.nonce)?;
-        if crate::hex(&nonce) != self.nonce {
-            return Err("wallet challenge nonce must use lower-case hex".into());
-        }
-        nonce
-            .try_into()
-            .map_err(|_| "wallet challenge nonce length".into())
-    }
-
-    fn message(&self, address: Address) -> Result<Vec<u8>, String> {
-        let nonce = self.validate()?;
-        let mut message = Vec::with_capacity(DOMAIN.len() + 2 + self.audience.len() + 64);
-        message.extend_from_slice(DOMAIN);
-        message.extend_from_slice(&(self.audience.len() as u16).to_be_bytes());
-        message.extend_from_slice(self.audience.as_bytes());
-        message.extend_from_slice(&nonce);
-        message.extend_from_slice(&address.0);
-        Ok(message)
-    }
-}
-
-/// A domain-separated signature proving control of one wallet key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OwnershipProof {
-    pub version: u8,
-    pub address: Address,
-    pub challenge: OwnershipChallenge,
-    pub signature: String,
-}
-
-impl OwnershipProof {
-    fn sign(key: &SigningKey, challenge: OwnershipChallenge) -> Result<Self, String> {
-        let address = Address::from_key(key.verifying_key())?;
-        let signature = key.sign(&challenge.message(address)?);
-        Ok(Self {
-            version: 1,
-            address,
-            challenge,
-            signature: crate::hex(&signature.to_bytes()),
+pub(crate) fn identity(directory: &Path) -> Result<Option<Identity>, String> {
+    crate::storage::read_owned(&directory.join(IDENTITY), 256)?
+        .map(|bytes| {
+            let identity: Identity =
+                serde_json::from_slice(&bytes).map_err(|_| "invalid wallet identity receipt")?;
+            if identity.version != 1 {
+                return Err("unsupported wallet identity version".into());
+            }
+            Ok(identity)
         })
-    }
+        .transpose()
+}
 
-    /// Checks key control against the verifier's address and original challenge.
-    ///
-    /// This does not consume the challenge. The verifier owns single-use
-    /// tracking and must not take the expected challenge from the proof itself.
-    pub fn verify(
-        &self,
-        expected_address: Address,
-        expected_challenge: &OwnershipChallenge,
-    ) -> Result<(), String> {
-        if self.version != 1 {
-            return Err("unsupported wallet ownership proof version".into());
-        }
-        if self.address != expected_address || self.challenge != *expected_challenge {
-            return Err("wallet ownership proof address or challenge mismatch".into());
-        }
-        if self.signature.len() != 128 {
-            return Err("wallet ownership signature length".into());
-        }
-        let bytes = crate::unhex(&self.signature)?;
-        if crate::hex(&bytes) != self.signature {
-            return Err("wallet ownership signature must use lower-case hex".into());
-        }
-        let signature = Signature::from_slice(&bytes).map_err(|_| "invalid wallet signature")?;
-        self.address
-            .key()?
-            .verify_strict(&expected_challenge.message(expected_address)?, &signature)
-            .map_err(|_| "invalid wallet ownership signature".into())
+fn read_key(directory: &Path, name: &str) -> Result<Option<WalletKey>, String> {
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
+        .open(directory.join(name))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("wallet key unavailable: {error}")),
+    };
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err("wallet key must be one owner-only regular file".into());
     }
+    let mut bytes = Zeroizing::new(vec![0u8; MAGIC.len() + 64]);
+    file.read_exact(&mut bytes)
+        .map_err(|_| "invalid wallet key length")?;
+    let mut extra = Zeroizing::new([0u8; 1]);
+    if file.read(&mut *extra).map_err(|e| e.to_string())? != 0 || !bytes.starts_with(MAGIC) {
+        return Err("invalid wallet key format".into());
+    }
+    let keypair = Zeroizing::new(
+        <[u8; 64]>::try_from(&bytes[MAGIC.len()..]).expect("fixed wallet key length"),
+    );
+    WalletKey::from_keypair_bytes(&keypair).map(Some)
+}
+
+fn sync(directory: &Path) -> Result<(), String> {
+    File::open(directory)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+fn write_new(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(directory.join(name))
+        .map_err(|error| error.to_string())?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| error.to_string())?;
+    sync(directory)
+}
+
+pub(crate) fn initialize(directory: &Path) -> Result<Identity, String> {
+    initialize_at(directory, |_| Ok(()))
+}
+
+fn initialize_at(
+    directory: &Path,
+    mut checkpoint: impl FnMut(u8) -> Result<(), String>,
+) -> Result<Identity, String> {
+    if let Some(identity) = identity(directory)? {
+        let key = read_key(directory, KEY)?
+            .ok_or("existing wallet private key is missing; restore its backup")?;
+        if key.address() != identity.address {
+            return Err("wallet private key does not match its address receipt".into());
+        }
+        return Ok(identity);
+    }
+    let key = if let Some(key) = read_key(directory, KEY)? {
+        // Recover a first initialization interrupted before the public receipt.
+        key
+    } else {
+        let key = if let Some(key) = read_key(directory, PENDING_KEY)? {
+            key
+        } else {
+            let key = WalletKey::generate()?;
+            let mut bytes = Zeroizing::new(Vec::with_capacity(MAGIC.len() + 64));
+            bytes.extend_from_slice(MAGIC);
+            let keypair = key.to_keypair_bytes();
+            bytes.extend_from_slice(&*keypair);
+            write_new(directory, PENDING_KEY, &bytes)?;
+            key
+        };
+        checkpoint(1)?;
+        fs::rename(directory.join(PENDING_KEY), directory.join(KEY))
+            .map_err(|error| error.to_string())?;
+        sync(directory)?;
+        key
+    };
+    checkpoint(2)?;
+    let identity = Identity {
+        version: 1,
+        address: key.address(),
+    };
+    if crate::storage::read_owned(&directory.join(PENDING_IDENTITY), 256)?.is_some() {
+        fs::remove_file(directory.join(PENDING_IDENTITY)).map_err(|error| error.to_string())?;
+    }
+    write_new(
+        directory,
+        PENDING_IDENTITY,
+        &serde_json::to_vec(&identity).map_err(|error| error.to_string())?,
+    )?;
+    checkpoint(3)?;
+    fs::rename(directory.join(PENDING_IDENTITY), directory.join(IDENTITY))
+        .map_err(|error| error.to_string())?;
+    sync(directory)?;
+    Ok(identity)
+}
+
+pub(crate) fn prove(
+    directory: &Path,
+    challenge: OwnershipChallenge,
+) -> Result<OwnershipProof, String> {
+    let identity = identity(directory)?.ok_or("wallet is not initialized; start the node first")?;
+    let key = read_key(directory, KEY)?
+        .ok_or("existing wallet private key is missing; restore its backup")?;
+    if key.address() != identity.address {
+        return Err("wallet private key does not match its address receipt".into());
+    }
+    key.prove(challenge)
 }
 
 #[cfg(test)]

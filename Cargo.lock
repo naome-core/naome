@@ -2412,15 +2412,13 @@ version = "0.1.0-alpha.1"
 name = "naome-knowledge"
 version = "0.1.0-alpha.1"
 dependencies = [
- "bech32",
- "ed25519-dalek",
- "getrandom 0.4.3",
  "libp2p",
  "lz4_flex",
  "naome-authoring",
  "naome-checker",
  "naome-foundation",
  "naome-proof",
+ "naome-wallet",
  "nix",
  "rusqlite",
  "serde",
@@ -2440,6 +2438,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+]
+
+[[package]]
+name = "naome-wallet"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "bech32",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hex",
+ "serde",
+ "serde_json",
+ "zeroize",
 ]
 
 [[package]]

@@ -31,6 +31,7 @@ rust_library(
         "//crates/naome-checker:naome_checker",
         "//crates/naome-foundation:naome_foundation",
         "//crates/naome-proof:naome_proof",
+        "//crates/naome-wallet:naome_wallet",
     ] + all_crate_deps(normal = True),
 )
 
@@ -62,5 +63,6 @@ rust_binary(
         "//crates/naome-checker:naome_checker",
         "//crates/naome-foundation:naome_foundation",
         "//crates/naome-proof:naome_proof",
+        "//crates/naome-wallet:naome_wallet",
     ] + all_crate_deps(normal = True),
 )

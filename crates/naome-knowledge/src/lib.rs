@@ -32,7 +32,8 @@ pub mod resources;
 pub mod runtime;
 mod storage;
 mod store;
-pub mod wallet;
+#[cfg(unix)]
+mod wallet;
 mod wire;
 
 pub use corpus::ROOT_FORMAT as CORPUS_ROOT_FORMAT;
