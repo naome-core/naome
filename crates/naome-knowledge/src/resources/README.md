@@ -126,10 +126,13 @@ not a newly reduced page size. The serialized state owner remains singular.
 trace through the actual governor and operating-limit projection. A discrete
 CPU-sharing/I/O scheduler compares it with configured cadence and no provider
 cost observations. Matched runs retain the same arrivals, processor capacity,
-worker lanes, memory, work-unit allowance and absolute expiry. The matrix covers
+worker lanes, hard queue ceilings, memory, work-unit allowance and absolute expiry.
+New queue admission follows the actual operating limits; already admitted work
+drains without revocation. Overload rejections and expired jobs remain separate
+from completed work. The matrix covers
 Light, Dynamic, Heavy and Custom on one and four CPUs, with CPU-bound work at
 250 ms arrival intervals and waiting work at 50 ms intervals. It prints stable
-JSON results for completion counts, expirations, latency and peak concurrency.
+JSON results for completion counts, rejections, expirations, latency and peak concurrency.
 Additional pressure/recovery tests verify that learned costs cannot bypass a
 pause, owner mode or memory ceiling. These are deterministic policy comparisons,
 not evidence of native throughput, energy savings or universal optimality.

@@ -25,6 +25,7 @@ struct Job {
 struct Result {
     completed: usize,
     expired: usize,
+    rejected: usize,
     p95_latency_ms: u64,
     peak_running: usize,
     completed_ids: u64,
@@ -84,13 +85,14 @@ fn replay(profile: Profile, cpu_millis: u64, cpu_percent: u64, feedback: bool) -
     let mut next = [0; 4];
     let mut latencies = Vec::new();
     let mut expired = 0;
+    let mut rejected = 0;
     let mut peak_running = 0;
     let mut completed_ids = 0;
     let arrival_ms = if cpu_percent == 100 { 250 } else { 50 };
     for now in (0..400 * arrival_ms + 10_000).step_by(STEP_MS as usize) {
-        if now < 400 * arrival_ms && now % arrival_ms == 0 {
+        let arrival = if now < 400 * arrival_ms && now % arrival_ms == 0 {
             let id = now / arrival_ms;
-            queued.push_back(Job {
+            Some(Job {
                 id,
                 role: id as usize % Role::ALL.len(),
                 created: now,
@@ -98,8 +100,10 @@ fn replay(profile: Profile, cpu_millis: u64, cpu_percent: u64, feedback: bool) -
                 allowance: WORK_UNITS,
                 io_us: 200_000 * (100 - cpu_percent) / 100,
                 cpu_us: 200_000 * cpu_percent / 100,
-            });
-        }
+            })
+        } else {
+            None
+        };
         queued.retain(|job| {
             let keep = job.expires > now;
             expired += usize::from(!keep);
@@ -173,6 +177,18 @@ fn replay(profile: Profile, cpu_millis: u64, cpu_percent: u64, feedback: bool) -
         assert!(work.finding_interval >= limits.transport_busy_grace);
         assert!(work.finding_interval <= limits.finding_interval);
         assert!(work.solving_interval <= limits.solving_interval);
+        if let Some(job) = arrival {
+            if queued_roles[job.role] < work.queued_jobs_per_role as u64 {
+                queued.push_back(job);
+            } else {
+                rejected += 1;
+            }
+        }
+        for role in 0..Role::ALL.len() {
+            assert!(
+                queued.iter().filter(|job| job.role == role).count() <= limits.queued_jobs_per_role
+            );
+        }
         while running.len() < budget.concurrency {
             let Some(index) = queued.iter().position(|job| {
                 now >= next[job.role] && running_roles[job.role] < limits.workers[job.role] as u64
@@ -205,11 +221,12 @@ fn replay(profile: Profile, cpu_millis: u64, cpu_percent: u64, feedback: bool) -
         }
     }
     assert!(queued.is_empty() && running.is_empty());
-    assert_eq!(latencies.len() + expired, 400);
+    assert_eq!(latencies.len() + expired + rejected, 400);
     latencies.sort_unstable();
     Result {
         completed: latencies.len(),
         expired,
+        rejected,
         peak_running,
         completed_ids,
         p95_latency_ms: latencies[(latencies.len() * 95 / 100).min(latencies.len() - 1)],
@@ -239,13 +256,14 @@ fn matched_replays_compare_configured_cadence_with_provider_feedback() {
                         "baseline": baseline, "feedback": adaptive,
                     })
                 );
+                assert!(adaptive.completed >= baseline.completed);
+                assert!(adaptive.p95_latency_ms <= baseline.p95_latency_ms);
                 if cpu_percent == 10 && matches!(profile, Profile::Dynamic | Profile::Heavy) {
                     assert!(adaptive.completed > baseline.completed);
                     assert!(adaptive.p95_latency_ms < baseline.p95_latency_ms);
                 }
                 if cpu_percent == 100 {
                     assert!(adaptive.peak_running <= cpu_millis.div_ceil(1000) as usize);
-                    assert!(adaptive.completed >= baseline.completed);
                 }
             }
         }
