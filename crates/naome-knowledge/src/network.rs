@@ -1082,15 +1082,14 @@ impl Node {
                                 .map(ProofId::from_bytes)
                         })
                         .transpose()?;
-                    let ids = self
-                        .graph
-                        .ids_page(after, crate::resources::active_limits().status_page)?;
-                    let next_after = (ids.len() == crate::resources::active_limits().status_page)
+                    let status_page = crate::resources::active_limits().status_page;
+                    let ids = self.graph.ids_page(after, status_page)?;
+                    let next_after = (ids.len() == status_page)
                         .then(|| ids.last().map(|id| hex(id.as_bytes())))
                         .flatten();
                     Ok(
                         json!({"ids":ids.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
-                    "next_after":next_after,"accepted_proofs":self.graph.accepted_count(),
+                    "next_after":next_after,"status_page_ids":status_page,"accepted_proofs":self.graph.accepted_count(),
                     "root":hex(&self.graph.content_root()), "root_format":crate::CORPUS_ROOT_FORMAT, "pending_count":self.graph.pending_count()?, "pending":self.graph.pending_ids()?.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "connected":self.swarm.connected_peers().map(|peer| peer.to_string()).collect::<Vec<_>>(),
                     "compatibility":hex(&crate::compatibility()),

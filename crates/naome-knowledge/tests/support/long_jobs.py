@@ -407,6 +407,14 @@ def main():
     parser.add_argument('--mode',choices=['roles','recovery','limits','faults','basic'],required=True)
     parser.add_argument('--timeout',type=float,default=90);args=parser.parse_args()
     trial=Trial(args.binary,args.output,args.timeout,args.profile,'long-jobs-'+args.mode);probe=Probe(trial)
+    if args.mode=='roles' and 'NAOME_RESOURCE_CONFIG' not in os.environ:
+        # This scenario asserts cross-role overlap and fixed provider latency,
+        # not adaptation to shared CI-host CPU load. Pin the ordinary reference
+        # capacity so the governor cannot serialize its three required lanes.
+        resource_config=trial.output/'fixed-resource-config.json'
+        write_receipt(resource_config,{'version':1,'memory_bytes':512*1024*1024,
+            'workers':[1,2,2,2],'tuning':{}})
+        os.environ['NAOME_RESOURCE_CONFIG']=str(resource_config)
     trial.summary.update(fixture='ordinary_long_jobs',driver_sha256=digest(__file__),
         claim='finite deterministic providers, native checking and local real transport; no model or multi-day uptime claim')
     started=time.monotonic()
