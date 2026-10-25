@@ -276,7 +276,7 @@ async fn receive(
             && !publication_pressured
             && intake.programs.active.as_ref().is_some_and(|root| {
                 matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready())
-                    && root.authority.finalized
+                    && root.authority.ready(SelectionStage::Final)
             })
         {
             // Final question admission can refuse a transferred checked batch.
@@ -288,8 +288,8 @@ async fn receive(
             assert!(matches!(
                 questions.prepare_exchange(
                     &graph,
-                    &retained.authority.question,
-                    retained.authority.assessment.as_ref().unwrap(),
+                    retained.authority.question(),
+                    retained.authority.selected().unwrap(),
                 ),
                 Err(crate::Error::ExecutionLimit)
             ));
@@ -300,7 +300,7 @@ async fn receive(
             let retained = intake.programs.active.as_ref().unwrap();
             assert!(matches!(&retained.stage, Stage::Prepare(prepared) if prepared.pending()));
             assert!(
-                !retained.helpers.ready(),
+                !retained.closure.ready(),
                 "a transferred batch's helper prefix must be rebuilt after backpressure"
             );
             assert_eq!(graph.accepted_count(), usize::from(unrelated.is_some()));
@@ -311,8 +311,8 @@ async fn receive(
             && !pressured
             && intake.programs.active.as_ref().is_some_and(|root| {
                 matches!(&root.stage, Stage::Prepare(prepared) if prepared.pending())
-                    && root.helpers.ready()
-                    && !root.helpers.is_empty()
+                    && root.closure.ready()
+                    && root.closure.member_count() > 1
             })
         {
             let retained = crate::resources::with_disk_available(0, || {
@@ -396,8 +396,8 @@ async fn receive(
                 },
                 root.scanned,
                 root.input_complete,
-                root.helpers.busy(),
-                root.helpers.ready(),
+                root.closure.busy(),
+                root.closure.ready(),
             )),
         )
     });

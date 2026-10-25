@@ -3,21 +3,20 @@
 //! through the existing Graph/Question publication boundary.
 use super::*;
 mod dependencies;
-mod helpers;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+use crate::proof_work::CheckedWork;
 use crate::{
-    graph::program::{PreparedProgram, ProgramAdmission, ProgramCheck},
+    graph::program::{PreparedProgram, ProgramCheck},
     object::ProgramMetadata,
-    proof_work::CheckedWork,
     resources::adaptive::Observer,
 };
-pub(super) use helpers::Helpers;
 use naome_proof::program::{CHUNK_RECORDS, Chunk};
 
 type ProgramRequest = (PeerId, ProofId, ProofId, u64, usize);
 
-fn transfer_records() -> usize {
+pub(super) fn transfer_records() -> usize {
     // The wire format already bounds each chunk by CHUNK_RECORDS and
     // CHUNK_BYTES. CPU batches govern checking, not transport fragmentation;
     // still stop issuing new chunks while computation is paused.
@@ -40,22 +39,14 @@ struct Offer {
 }
 struct Root {
     offer: Offer,
-    authority: QuestionAuthority,
+    authority: Selection,
     stage: Stage,
     refresh: bool,
     allowed: bool,
     budget: Observer,
-    helpers: Helpers,
+    closure: Closure,
     scanned: u64,
     input_complete: bool,
-}
-struct QuestionAuthority {
-    question: CompiledQuestion,
-    assessment: Option<QuestionAssessment>,
-    pending: Option<oneshot::Receiver<QuestionAssessment>>,
-    until: Instant,
-    finalized: bool,
-    pending_final: bool,
 }
 enum Stage {
     Start,
@@ -66,76 +57,6 @@ enum Stage {
 impl Root {
     fn fetching(&self) -> bool {
         self.allowed && !self.refresh && matches!(self.stage, Stage::Fetch)
-    }
-}
-impl QuestionAuthority {
-    fn refresh<F, Fut>(
-        &mut self,
-        id: ProofId,
-        graph: &Graph,
-        questions: &mut LocalQuestions<F>,
-        final_stage: bool,
-    ) -> Result<bool, crate::Error>
-    where
-        F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<bool, String>> + Send + 'static,
-    {
-        let authority = self;
-        let context = questions.formal_context(graph);
-        if authority
-            .assessment
-            .as_ref()
-            .is_none_or(|assessment| !questions.exchange_eligible(&authority.question, assessment))
-            || Instant::now() >= authority.until
-            || (final_stage && !authority.finalized)
-        {
-            authority.assessment = None;
-            if authority.pending.is_none() && questions.available() {
-                let deadline = if questions.uses_jobs() {
-                    questions.interest_deadline(Instant::now())
-                } else {
-                    Instant::now() + crate::resources::limits().root_timeout
-                };
-                let purpose = if final_stage {
-                    crate::jobs::Purpose::Final
-                } else {
-                    crate::jobs::Purpose::Initial
-                };
-                let (selected, reply) = questions.begin_peer_exchange(
-                    graph,
-                    authority.question.clone(),
-                    id,
-                    purpose,
-                    deadline,
-                );
-                authority.question = selected;
-                authority.pending_final = final_stage;
-                authority.pending = Some(reply);
-            }
-        }
-        if let Some(reply) = &mut authority.pending {
-            match reply.try_recv() {
-                Ok(assessment) => {
-                    authority.pending = None;
-                    authority.assessment = Some(questions.refresh_exchange(
-                        graph,
-                        &authority.question,
-                        &assessment,
-                    )?);
-                    authority.until = Instant::now() + crate::resources::limits().root_timeout;
-                    authority.finalized = authority.pending_final;
-                }
-                Err(oneshot::error::TryRecvError::Empty) => {}
-                Err(_) => return Err("program interest assessment cancelled".into()),
-            }
-        }
-        if let Some(assessment) = &authority.assessment
-            && assessment.formal_context() != context
-        {
-            authority.assessment =
-                Some(questions.refresh_exchange(graph, &authority.question, assessment)?);
-        }
-        Ok(authority.assessment.is_some())
     }
 }
 
@@ -167,19 +88,16 @@ impl Programs {
                 .any(|offer| offer.metadata.manifest.proof_id() == id)
     }
     pub(super) fn selection_boundary_ready(&self) -> bool {
-        self.active.as_ref().is_some_and(|root| {
-            root.authority
-                .pending
-                .as_ref()
-                .is_some_and(|reply| !reply.is_empty())
-        })
+        self.active
+            .as_ref()
+            .is_some_and(|root| root.authority.boundary_ready())
     }
     fn busy(&self) -> bool {
         self.active.as_ref().is_some_and(|root| {
             root.allowed
                 && (matches!(root.stage, Stage::Check(_) | Stage::Prepare(_))
                     || root.input_complete && root.scanned < root.offer.metadata.manifest.commands
-                    || root.helpers.busy())
+                    || root.closure.busy())
         })
     }
     fn enqueue(
@@ -234,7 +152,7 @@ impl Programs {
             return Ok(None);
         }
         let id = root.offer.metadata.manifest.proof_id();
-        if let Some((helper, start, records)) = root.helpers.request(graph)? {
+        if let Some((helper, start, records)) = root.closure.request(graph)? {
             return Ok(Some((
                 root.offer.transfer.peer(),
                 id,
@@ -293,8 +211,8 @@ impl Programs {
             && root.offer.transfer.peer() == peer
             && id.is_none_or(|id| {
                 root.offer.metadata.manifest.proof_id() == id
-                    || root.helpers.contains(id)
-                    || root.helpers.needs(id)
+                    || root.closure.contains(id)
+                    || root.closure.needs(id)
             })
         {
             root.refresh = true;
@@ -321,19 +239,12 @@ impl Programs {
             if !offer.transfer.live(Instant::now()) {
                 return Progress::Skipped(id, "queued program metadata expired".into());
             }
-            let authority = (|| -> Result<QuestionAuthority, crate::Error> {
+            let authority = (|| -> Result<Selection, crate::Error> {
                 let question = offer
                     .metadata
                     .question()?
                     .ok_or("program has no supported interest question")?;
-                Ok(QuestionAuthority {
-                    question,
-                    assessment: None,
-                    pending: None,
-                    until: Instant::now(),
-                    finalized: false,
-                    pending_final: false,
-                })
+                Ok(Selection::new(id, question))
             })();
             match authority {
                 Ok(authority) => {
@@ -344,7 +255,7 @@ impl Programs {
                         refresh: false,
                         allowed: false,
                         budget: Observer::default(),
-                        helpers: Helpers::default(),
+                        closure: Closure::new(id, None),
                         scanned: 0,
                         input_complete: false,
                     })
@@ -360,17 +271,18 @@ impl Programs {
             if graph.contains(id)? {
                 return Ok(Some(Vec::new()));
             }
-            root.allowed = root.authority.refresh(
-                id,
-                graph,
-                questions,
-                matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready()),
-            )?;
+            let selection_stage = if matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready())
+            {
+                SelectionStage::Final
+            } else {
+                SelectionStage::Initial
+            };
+            root.allowed = root.authority.renew(selection_stage, graph, questions)?;
             if !root.allowed {
                 return Ok(None);
             }
             let snapshot = root.budget.refresh(graph.ownership().directory())?.clone();
-            let cache = root.helpers.cache_share(snapshot.budget.cache_bytes)?;
+            let cache = root.closure.cache_share(snapshot.budget.cache_bytes)?;
             match &mut root.stage {
                 Stage::Check(check) => check.restrict_cache(cache)?,
                 Stage::Prepare(prepared) => prepared.restrict_cache(cache)?,
@@ -385,15 +297,15 @@ impl Programs {
                 && !prepared.current(graph)?
             {
                 prepared.invalidate();
-                root.helpers.invalidate_prefix();
+                root.closure.invalidate_prefix();
             }
-            root.helpers.advance(graph)?;
-            if root.helpers.member_count() + 1 > crate::resources::limits().closure_objects {
+            root.closure.advance(graph)?;
+            if root.closure.member_count() > crate::resources::limits().closure_objects {
                 return Err(crate::Error::InputLimit(
                     "program closure dependency capacity",
                 ));
             }
-            if !root.helpers.ready() && !matches!(root.stage, Stage::Start | Stage::Fetch) {
+            if !root.closure.ready() && !matches!(root.stage, Stage::Start | Stage::Fetch) {
                 return Ok(None);
             }
             match &mut root.stage {
@@ -407,19 +319,18 @@ impl Programs {
                 }
                 Stage::Fetch => {
                     if root.input_complete {
-                        let (complete, _) = root.helpers.scan_dependencies(
+                        let (complete, _) = root.closure.scan_dependencies(
                             &root.offer.metadata.manifest,
                             &mut root.scanned,
                             graph,
                         )?;
-                        if root.helpers.member_count() + 1
-                            > crate::resources::limits().closure_objects
+                        if root.closure.member_count() > crate::resources::limits().closure_objects
                         {
                             return Err(crate::Error::InputLimit(
                                 "program closure dependency capacity",
                             ));
                         }
-                        if !complete || !root.helpers.ready() {
+                        if !complete || !root.closure.ready() {
                             return Ok(None);
                         }
                         root.stage = Stage::Check(Box::new(ProgramCheck::open(
@@ -429,9 +340,9 @@ impl Programs {
                     }
                 }
                 Stage::Check(check) => {
-                    if let Some(proof) = check.advance(graph, root.helpers.context(graph))? {
+                    if let Some(proof) = check.advance(graph, root.closure.context(graph))? {
                         root.authority
-                            .question
+                            .question()
                             .classify_checked_program(proof.proof()?)
                             .map_err(crate::Error::from)?;
                         root.stage = Stage::Prepare(Box::new(PreparedProgram::new(proof)));
@@ -440,7 +351,7 @@ impl Programs {
                 Stage::Prepare(prepared) => {
                     let was_ready = prepared.ready();
                     let prefix = if prepared.pending() {
-                        root.helpers.take_prefix()
+                        root.closure.take_prefix()
                     } else {
                         None
                     };
@@ -452,12 +363,12 @@ impl Programs {
                         Ok(complete) => complete,
                         Err(error) => {
                             prepared.invalidate();
-                            root.helpers.invalidate_prefix();
+                            root.closure.invalidate_prefix();
                             return Err(error);
                         }
                     };
                     if prepared.pending() {
-                        root.helpers.invalidate_prefix();
+                        root.closure.invalidate_prefix();
                     }
                     if !complete || !was_ready {
                         return Ok(None);
@@ -468,23 +379,10 @@ impl Programs {
                     let batch = prepared.take_batch().ok_or("program batch absent")?;
                     // The transferred batch owns the prefix. If preparation or
                     // publication defers, rebuild it from the checked helpers.
-                    root.helpers.invalidate_prefix();
-                    let deadline = root.offer.transfer.deadline();
-                    let assessment = root
-                        .authority
-                        .assessment
-                        .as_ref()
-                        .ok_or("program final interest missing")?;
-                    let delta =
-                        questions.prepare_exchange(graph, &root.authority.question, assessment)?;
-                    let admitted = questions.publish_exchange(
-                        graph,
-                        id,
-                        batch,
-                        delta,
-                        root.offer.transfer.capability(),
-                        deadline,
-                    )?;
+                    root.closure.invalidate_prefix();
+                    let admitted =
+                        root.authority
+                            .publish(graph, questions, &root.offer.transfer, batch)?;
                     return Ok(Some(admitted));
                 }
             }
@@ -526,7 +424,7 @@ impl Intake {
             || self
                 .active
                 .as_ref()
-                .is_some_and(|root| root.helpers.contains(metadata.manifest.proof_id()))
+                .is_some_and(|root| root.closure.contains(metadata.manifest.proof_id()))
         {
             return Ok("cited_program_pending");
         }
@@ -541,9 +439,9 @@ impl Intake {
         graph: &Graph,
     ) -> Result<Option<ProgramRequest>, crate::Error> {
         if let Some(root) = &self.active
-            && !root.helpers.is_empty()
+            && root.closure.has_programs()
             && root.description.transfer.live(Instant::now())
-            && let Some((id, start, records)) = root.helpers.request(graph)?
+            && let Some((id, start, records)) = root.closure.request(graph)?
         {
             return Ok(Some((
                 root.description.transfer.peer(),
@@ -574,7 +472,7 @@ impl Intake {
             }
             let root = self.active.as_mut().ok_or("cited program parent missing")?;
             root.description.transfer.check(Instant::now())?;
-            return root.helpers.payload(id, chunk, graph);
+            return root.closure.payload(id, chunk, graph);
         }
         self.programs.payload(peer, id, chunk, graph)
     }
@@ -585,6 +483,6 @@ impl Intake {
         self.programs.refresh_needed()
     }
     pub(crate) fn program_busy(&self) -> bool {
-        self.programs.busy() || self.active.as_ref().is_some_and(|root| root.helpers.busy())
+        self.programs.busy() || self.active.as_ref().is_some_and(|root| root.closure.busy())
     }
 }
