@@ -29,7 +29,7 @@ fn current_message_schema_requires_exact_fields_and_types() {
             .is_err()
         );
     }
-    assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/5");
+    assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/6");
 }
 
 #[tokio::test]

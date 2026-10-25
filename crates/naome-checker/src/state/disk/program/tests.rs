@@ -43,7 +43,10 @@ fn checked(deep: bool) -> CheckedProgram {
             ])
             .unwrap();
     }
-    while engine.advance(256, 32768).unwrap() {}
+    while engine
+        .advance(256, 32768, &crate::ArtifactState::new())
+        .unwrap()
+    {}
     while !engine.prepare_export(256).unwrap() {}
     engine.checked().unwrap()
 }

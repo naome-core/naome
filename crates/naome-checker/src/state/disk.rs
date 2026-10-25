@@ -39,6 +39,34 @@ pub struct DiskArtifactState {
     read_cache: crate::ReadCacheLimits,
 }
 
+struct ProgramNodes(DiskMap);
+impl crate::context::ProgramNodes for ProgramNodes {
+    fn read(
+        &self,
+        address: [u8; 32],
+    ) -> Result<
+        (
+            naome_foundation::graph::Node<[u8; 32]>,
+            naome_foundation::graph::Properties,
+        ),
+        ContextError,
+    > {
+        let result = (|| {
+            let bytes = self.0.get(&address)?.ok_or(ContextError::Corrupt)?;
+            let (node, properties) = naome_proof::program::decode_graph_node(&bytes)
+                .map_err(|_| ContextError::Corrupt)?;
+            if naome_proof::program::graph_node_hash(node, properties) != address {
+                return Err(ContextError::Corrupt);
+            }
+            Ok((node, properties))
+        })();
+        if let Err(error @ (ContextError::Corrupt | ContextError::Storage(_))) = &result {
+            self.0.storage().record_failure(error);
+        }
+        result
+    }
+}
+
 fn maps(state: &DiskArtifactState) -> [&DiskMap; 9] {
     [
         &state.proofs,
@@ -297,6 +325,39 @@ impl super::registration::RegistrationView for DiskArtifactState {
 
 impl sealed::Sealed for DiskArtifactState {}
 impl ContextView for DiskArtifactState {
+    fn program_source(
+        &self,
+        id: ProofId,
+    ) -> Result<Option<crate::context::ProgramSource>, ContextError> {
+        self.report((|| {
+            let Some(header) = self.proof_header(id)? else {
+                return Ok(None);
+            };
+            if header.length == usize::MAX {
+                let root = header.location.ok_or(ContextError::Corrupt)?.address;
+                if naome_proof::program::graph_statement_id(root) != header.statement
+                    || !self.program_nodes.contains_key(&root)?
+                {
+                    return Err(ContextError::Corrupt);
+                }
+                Ok(Some(crate::context::ProgramSource::graph(
+                    id,
+                    header,
+                    root,
+                    Arc::new(ProgramNodes(self.program_nodes.clone())),
+                )))
+            } else {
+                let formula = self
+                    .proof_formula(header, header.length)?
+                    .ok_or(ContextError::Corrupt)?;
+                Ok(Some(crate::context::ProgramSource::formula(
+                    id,
+                    header,
+                    formula.into_owned(),
+                )))
+            }
+        })())
+    }
     fn read_cache_limits(&self) -> crate::ReadCacheLimits {
         self.read_cache
     }

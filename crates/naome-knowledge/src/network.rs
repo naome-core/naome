@@ -3,7 +3,9 @@
 //! and only a completely checked root closure reaches the durable graph.
 
 use crate::{
-    Envelope, Graph, discovery, hex,
+    Envelope, Graph,
+    corpus::{InventoryCursor, InventorySnapshot},
+    discovery, hex,
     object::{Metadata, id_bytes},
     wire::{Body, Codec, Frame, PROTOCOL},
 };
@@ -25,6 +27,8 @@ use std::{
 use tokio::sync::mpsc;
 mod command;
 mod exchange;
+mod inventory;
+use inventory::response as inventory_response;
 mod worker;
 use std::sync::{Arc, atomic::Ordering};
 
@@ -54,7 +58,7 @@ pub fn routing_contract() -> Value {
     json!({
         "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":crate::store::CATALOG_SCHEMA_VERSION,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
-            "protocol":"/naome/knowledge/5", "topic":"naome-knowledge-v5",
+            "protocol":"/naome/knowledge/6", "topic":"naome-knowledge-v6",
             "interest":"Explicit local positive selection before root fetch and before commit",
             "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::limits().queued_metadata,
@@ -127,7 +131,7 @@ enum Flight {
     Inventory {
         peer: PeerId,
         known: Option<[u8; 32]>,
-        after: Option<[u8; 32]>,
+        after: Option<InventoryCursor>,
         pages: usize,
     },
     Get {
@@ -155,8 +159,7 @@ struct Bucket {
 }
 #[derive(Clone, Copy, Default)]
 struct InventoryProgress {
-    root: Option<[u8; 32]>,
-    after: Option<[u8; 32]>,
+    after: Option<InventoryCursor>,
     pages: usize,
 }
 struct Node {
@@ -497,7 +500,7 @@ where
         gossip_config,
     )
     .map_err(|error| error.to_string())?;
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v5");
+    let topic = gossipsub::IdentTopic::new("naome-knowledge-v6");
     gossip
         .subscribe(&topic)
         .map_err(|error| error.to_string())?;
@@ -817,6 +820,7 @@ fn body_kind(body: &Body) -> &'static str {
         Body::Inventory { .. } => "inventory",
         Body::InventoryResult { .. } => "inventory_result",
         Body::InventoryUnchanged { .. } => "inventory_unchanged",
+        Body::InventoryRestart => "inventory_restart",
         Body::Get { .. } => "get",
         Body::Describe { .. } => "describe",
         Body::Description { .. } => "description",
@@ -851,33 +855,6 @@ fn body_id(body: &Body) -> Option<String> {
         }
         _ => None,
     }
-}
-
-fn inventory_response(
-    graph: &Graph,
-    known: Option<[u8; 32]>,
-    after: Option<[u8; 32]>,
-    limit: usize,
-) -> Result<Body, crate::Error> {
-    let root = graph.content_root();
-    if after.is_none() && known == Some(root) {
-        return Ok(Body::InventoryUnchanged { root });
-    }
-    if limit == 0 {
-        return Err("inventory page limit must be positive".into());
-    }
-    let limit = limit.min(crate::resources::limits().inventory_page);
-    let ids: Vec<_> = graph
-        .ids_page(after.map(ProofId::from_bytes), limit)?
-        .into_iter()
-        .map(|id| *id.as_bytes())
-        .collect();
-    let next = if ids.len() == limit {
-        ids.last().copied()
-    } else {
-        None
-    };
-    Ok(Body::InventoryResult { root, ids, next })
 }
 
 fn body_root(body: &Body) -> Option<String> {
@@ -1540,37 +1517,6 @@ impl Node {
         }
     }
 
-    fn inventory(&mut self, peer: PeerId, after: Option<[u8; 32]>, pages: usize) {
-        let local = self.graph.content_root();
-        let known = after.is_none().then(|| {
-            self.inventory_summaries
-                .get(&peer)
-                .filter(|(_, observed_local)| *observed_local == local)
-                .map_or(local, |(remote, _)| *remote)
-        });
-        let id = self.swarm.behaviour_mut().exchange.send_request(
-            &peer,
-            Frame::new(Body::Inventory {
-                known,
-                after,
-                limit: crate::resources::limits().inventory_page,
-            }),
-        );
-        self.flights.insert(
-            id,
-            Flight::Inventory {
-                peer,
-                known,
-                after,
-                pages,
-            },
-        );
-        self.next_inventory.insert(
-            peer,
-            Instant::now() + crate::resources::limits().reconcile_interval,
-        );
-    }
-
     fn charge(&mut self, peer: PeerId) -> bool {
         let now = Instant::now();
         let bucket = self.buckets.entry(peer).or_insert(Bucket {
@@ -1857,7 +1803,13 @@ impl Node {
                 known,
                 after,
                 limit,
-            } => inventory_response(&self.graph, known, after, limit)?,
+            } => match inventory_response(&self.graph, known, after, limit) {
+                Ok(body) => body,
+                Err(error) if !error.fatal() => Body::Error {
+                    reason: error.to_string(),
+                },
+                Err(error) => return Err(error.into()),
+            },
             Body::Describe { id } => match self.graph.description(ProofId::from_bytes(id)) {
                 Ok(Some(crate::object::ProofDescription::Program(metadata))) => {
                     Body::ProgramDescription {
@@ -2111,52 +2063,24 @@ impl Node {
                 Flight::Inventory {
                     peer, after, pages, ..
                 },
-                Body::InventoryResult { root, ids, next },
+                Body::InventoryResult {
+                    snapshot,
+                    ids,
+                    next,
+                },
             ) => {
-                if after.is_some()
-                    && self.inventory_progress.get(&peer).and_then(|p| p.root) != Some(root)
-                {
-                    self.inventory_progress.remove(&peer);
-                    self.inventory_summaries.remove(&peer);
-                    return Ok(());
-                }
-                if ids.len() > crate::resources::limits().inventory_page
-                    || next.is_some_and(|next| Some(&next) != ids.last())
-                    || !ids.windows(2).all(|pair| pair[0] < pair[1])
-                    || ids
-                        .first()
-                        .is_some_and(|id| after.is_some_and(|after| *id <= after))
-                {
-                    emit(json!({"event":"rejected","error":"invalid inventory"}));
-                    return Ok(());
-                }
-                // Keep the cursor until every ID is retained or already known.
-                // Queue pressure, throttling, failure and disconnect must not
-                // restart a scan at its prefix or silently discard its tail.
-                let mut retained = true;
-                for id in &ids {
-                    retained &= self.want(ProofId::from_bytes(*id))?;
-                }
-                if retained {
-                    if next.is_some() {
-                        self.inventory_progress.insert(
-                            peer,
-                            InventoryProgress {
-                                root: Some(root),
-                                after: next,
-                                pages: pages.saturating_add(1),
-                            },
-                        );
-                    } else {
-                        self.inventory_progress.remove(&peer);
-                        self.inventory_summaries
-                            .insert(peer, (root, self.graph.content_root()));
-                    }
-                }
-                emit(json!({"event":"inventory_page", "peer":peer.to_string(),
-                    "after":after.map(|id|hex(&id)), "page":pages,
-                    "count":ids.len(), "retained":retained,
-                    "last":ids.last().map(|id|hex(id))}));
+                self.received_inventory(peer, after, pages, snapshot, ids, next)?;
+            }
+            (
+                Flight::Inventory {
+                    peer,
+                    after: Some(_),
+                    ..
+                },
+                Body::InventoryRestart,
+            ) => {
+                self.inventory_progress.remove(&peer);
+                self.inventory_summaries.remove(&peer);
             }
             (Flight::Describe { id, .. }, Body::Description { metadata }) => {
                 if metadata.proof_id != hex(id.as_bytes()) {

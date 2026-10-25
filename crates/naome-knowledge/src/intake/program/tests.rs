@@ -66,7 +66,7 @@ fn source(graph: &Graph) -> CheckedWork {
         .unwrap();
     }
     work.append(&Command::Seal { proof: 1 }).unwrap();
-    while work.advance(&budget()).unwrap() {}
+    while work.advance(&budget(), graph.checked_context()).unwrap() {}
     while !work.prepare_export(&budget()).unwrap() {}
     work.into_checked().unwrap()
 }
@@ -465,3 +465,5 @@ async fn cited_program_and_parent_commit_together_and_final_decline_publishes_ne
         assert!(terminal && parent_sent && helper_described);
     }
 }
+
+mod composition;

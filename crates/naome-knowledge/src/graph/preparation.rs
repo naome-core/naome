@@ -76,6 +76,11 @@ impl Preparation {
         let count = count
             .checked_add(prefix.as_ref().map_or(0, |prefix| prefix.entries.len()))
             .ok_or("checked batch count overflow")?;
+        if count > crate::resources::limits().closure_objects {
+            return Err(crate::Error::InputLimit(
+                "checked closure operation capacity",
+            ));
+        }
         let disk = graph.reserve_publication(
             bytes
                 .checked_add(prior_bytes)
@@ -90,9 +95,23 @@ impl Preparation {
         stamp: Stamp,
         disk: crate::resources::DiskLease,
     ) -> Self {
-        let (context, context_bytes, entries) = prefix.map_or_else(
-            || (graph.context.clone(), graph.context_bytes, Vec::new()),
-            |prefix| (prefix.context, prefix.context_bytes, prefix.entries),
+        let (context, context_bytes, entries, edges) = prefix.map_or_else(
+            || {
+                (
+                    graph.context.clone(),
+                    graph.context_bytes,
+                    Vec::new(),
+                    BTreeMap::new(),
+                )
+            },
+            |prefix| {
+                (
+                    prefix.context,
+                    prefix.context_bytes,
+                    prefix.entries,
+                    prefix.edges,
+                )
+            },
         );
         let ids = entries.iter().map(|(id, _)| *id).collect();
         Self {
@@ -100,6 +119,7 @@ impl Preparation {
             batch: CheckedBatch {
                 context,
                 entries,
+                edges,
                 stamp,
                 context_bytes,
                 _disk: disk,
@@ -108,6 +128,9 @@ impl Preparation {
     }
     pub(super) fn context(&self) -> &DiskArtifactState {
         &self.batch.context
+    }
+    pub(super) fn ids(&self) -> impl Iterator<Item = ProofId> + '_ {
+        self.ids.iter().copied()
     }
     pub(super) fn stamp(&self) -> &Stamp {
         &self.batch.stamp
@@ -168,6 +191,9 @@ impl Preparation {
         )?;
         self.batch.context_bytes = context_bytes;
         self.ids.insert(record.id);
+        self.batch
+            .edges
+            .insert(record.id, record.dependencies.clone());
         self.batch.entries.push((record.id, record));
         Ok(())
     }
@@ -176,6 +202,7 @@ impl Preparation {
         graph: &Graph,
         context: DiskArtifactState,
         record: crate::object::BinaryProof,
+        dependencies: BTreeSet<ProofId>,
         growth: usize,
     ) -> Result<(), crate::Error> {
         self.batch.stamp.check(graph)?;
@@ -186,6 +213,7 @@ impl Preparation {
             .checked_add(growth)
             .ok_or("checked program context width")?;
         self.batch.context = context;
+        self.batch.edges.insert(record.id, dependencies);
         self.ids.insert(record.id);
         self.batch.entries.push((record.id, record));
         Ok(())
@@ -206,9 +234,9 @@ impl CheckedBatch {
         require_closure(
             graph,
             root,
-            self.entries
+            self.edges
                 .iter()
-                .map(|(id, record)| (*id, &record.dependencies)),
+                .map(|(id, dependencies)| (*id, dependencies)),
         )
     }
 }

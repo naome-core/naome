@@ -38,7 +38,10 @@ fn budget() -> Budget {
 fn finish(work: &mut Work) -> Status {
     let budget = budget();
     for _ in 0..100_000 {
-        if !work.advance(&budget).unwrap() {
+        if !work
+            .advance(&budget, &naome_checker::ArtifactState::new())
+            .unwrap()
+        {
             return work.status().unwrap();
         }
     }
@@ -98,7 +101,7 @@ fn native_disk_pressure_preserves_the_retryable_outcome_and_committed_prefix() {
             Err(crate::Error::DiskOverload { .. })
         ));
         assert!(matches!(
-            work.advance(&budget()),
+            work.advance(&budget(), &naome_checker::ArtifactState::new()),
             Err(crate::Error::DiskOverload { .. })
         ));
         assert_eq!(work.status().unwrap().commands, 1);
@@ -165,7 +168,7 @@ fn live_pause_rejects_a_stale_quantum_and_resumes_without_losing_input() {
         .unwrap(),
     );
     assert!(matches!(
-        work.advance(&budget()),
+        work.advance(&budget(), &naome_checker::ArtifactState::new()),
         Err(crate::Error::ExecutionLimit)
     ));
     assert_eq!(work.status().unwrap().commands, 3);
@@ -258,14 +261,21 @@ fn pressure_pauses_mid_transformation_and_resumes_every_mathematical_step() {
     let mut quantum = budget();
     quantum.batch_steps = 1;
     for _ in 0..4 {
-        assert!(work.advance(&quantum).unwrap());
+        assert!(
+            work.advance(&quantum, &naome_checker::ArtifactState::new())
+                .unwrap()
+        );
     }
     let before = work.status().unwrap();
     assert!(!before.fully_checked);
     let mut paused = quantum.clone();
     paused.paused = Some("memory pressure".into());
     paused.batch_steps = 0;
-    assert!(!work.advance(&paused).unwrap());
+    assert!(
+        !work
+            .advance(&paused, &naome_checker::ArtifactState::new())
+            .unwrap()
+    );
     let after = work.status().unwrap();
     assert_eq!(after.checked_commands, before.checked_commands);
     assert_eq!(
@@ -341,7 +351,10 @@ fn formulas_cannot_be_promoted_to_proofs_or_invalid_mp_hidden_by_sealing() {
         for command in commands {
             work.append(&command).unwrap();
         }
-        assert!(work.advance(&budget()).is_err());
+        assert!(
+            work.advance(&budget(), &naome_checker::ArtifactState::new())
+                .is_err()
+        );
         assert!(!work.status().unwrap().fully_checked);
     }
 }
@@ -357,7 +370,10 @@ fn malformed_custom_boundaries_and_false_saved_equations_fail_closed() {
     connection.execute("UPDATE equation SET result=(SELECT node FROM result WHERE position=1) WHERE sequence=(SELECT min(sequence) FROM equation)",[]).unwrap();
     drop(connection);
     let mut work = Work::open(&directory.path()).unwrap();
-    assert!(work.advance(&budget()).is_err());
+    assert!(
+        work.advance(&budget(), &naome_checker::ArtifactState::new())
+            .is_err()
+    );
     assert!(!work.status().unwrap().fully_checked);
 }
 
@@ -375,7 +391,7 @@ fn schema_freshness_is_checked_across_disk_traversals() {
     .unwrap();
     let mut rejected = false;
     for _ in 0..100 {
-        match work.advance(&budget()) {
+        match work.advance(&budget(), &naome_checker::ArtifactState::new()) {
             Err(e) => {
                 assert!(e.contains("freshness"));
                 rejected = true;
@@ -404,7 +420,10 @@ fn owner_and_immutable_nodes_reject_concurrent_writers_and_corruption() {
     assert!(work.status().is_err());
     drop(work);
     let mut work = Work::open(&directory.path()).unwrap();
-    assert!(work.advance(&budget()).is_err());
+    assert!(
+        work.advance(&budget(), &naome_checker::ArtifactState::new())
+            .is_err()
+    );
 }
 
 #[test]
@@ -469,7 +488,7 @@ fn a_forged_persisted_proved_bit_never_authorizes_a_seal() {
     let mut work = Work::open(&directory.path()).unwrap();
     work.append(&Command::Seal { proof: 1 }).unwrap();
     assert!(
-        work.advance(&budget())
+        work.advance(&budget(), &naome_checker::ArtifactState::new())
             .unwrap_err()
             .contains("saved proof result differs")
     );

@@ -18,6 +18,7 @@ use std::{
 };
 use tokio::sync::oneshot;
 
+mod certificate;
 mod managed;
 mod program;
 #[cfg(test)]
@@ -53,6 +54,19 @@ struct ApprovedRoot {
     steps: usize,
     checker_work: usize,
     final_assessment: Option<QuestionAssessment>,
+}
+
+impl ApprovedRoot {
+    fn member_count(&self) -> usize {
+        self.staged
+            .keys()
+            .copied()
+            .chain(self.needed.iter().copied())
+            .chain(self.helpers.members())
+            .chain(std::iter::once(self.description.id))
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
 }
 
 type DeclinedDescriptionKey = (PeerId, ProofId, StatementId, Identity);
@@ -208,23 +222,38 @@ impl Intake {
             .map(|root| {
                 root.needed
                     .iter()
-                    .filter(|id| !root.helpers.contains(**id))
-                    .map(|id| (root.description.peer, root.description.id, *id))
-                    .collect()
+                    .copied()
+                    .filter(|id| !root.helpers.contains(*id))
+                    .chain(root.helpers.needed())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|id| (root.description.peer, root.description.id, id))
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default()
+            .into_iter()
+            .chain(self.programs.needed())
+            .collect()
     }
 
     pub(crate) fn authorizes(&self, peer: PeerId, root_id: ProofId, id: ProofId) -> bool {
-        self.active.as_ref().is_some_and(|root| {
-            root.description.peer == peer
-                && root.description.id == root_id
-                && matches!(root.phase, Phase::Fetch)
-                && root.initial.is_some()
-                && root.needed.contains(&id)
-                && Instant::now().duration_since(root.description.created)
-                    < crate::resources::limits().root_timeout
-        })
+        self.programs.authorizes(peer, root_id, id)
+            || self.active.as_ref().is_some_and(|root| {
+                root.description.peer == peer
+                    && root.description.id == root_id
+                    && matches!(root.phase, Phase::Fetch)
+                    && root.initial.is_some()
+                    && (root.needed.contains(&id)
+                        || root.helpers.needs(id)
+                        || root.helpers.contains(id))
+                    && root
+                        .description
+                        .grant
+                        .as_ref()
+                        .is_none_or(|grant| grant.check().is_ok())
+                    && Instant::now().duration_since(root.description.created)
+                        < crate::resources::limits().root_timeout
+            })
     }
 
     pub(crate) fn payload(
@@ -235,7 +264,43 @@ impl Intake {
         object: Envelope,
         graph: &Graph,
     ) -> Result<(), String> {
+        if self.programs.authorizes(peer, root_id, expected) {
+            return self
+                .programs
+                .certificate_payload(peer, root_id, expected, object, graph)
+                .map_err(String::from);
+        }
+        if self.active.as_ref().is_some_and(|root| {
+            root.description.peer == peer
+                && root.description.id == root_id
+                && Instant::now().duration_since(root.description.created)
+                    >= crate::resources::limits().root_timeout
+        }) {
+            return Err("expired proof fetch grant".into());
+        }
+        if !self.authorizes(peer, root_id, expected) {
+            return Err("unrequested proof payload".into());
+        }
         let root = self.active.as_mut().ok_or("unrequested proof payload")?;
+        let (bytes, steps) = certificate::resources(&object)?;
+        let (helper_count, helper_bytes, helper_steps) = root.helpers.certificate_usage();
+        if root.staged.len() + helper_count >= crate::resources::limits().closure_objects
+            || root.bytes + helper_bytes + bytes > crate::resources::limits().closure_bytes
+            || root.checker_work
+                + (helper_count + 1) * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
+                > crate::resources::limits().closure_work_bytes
+        {
+            return Err("staged closure resource capacity".into());
+        }
+        if root.steps + helper_steps + steps > crate::resources::limits().closure_steps {
+            return Err("staged closure step work limit".into());
+        }
+        if root.helpers.needs(expected) {
+            return root
+                .helpers
+                .certificate_payload(expected, object, graph)
+                .map_err(String::from);
+        }
         if Instant::now().duration_since(root.description.created)
             >= crate::resources::limits().root_timeout
         {
@@ -249,28 +314,7 @@ impl Intake {
         {
             return Err("unrequested or mismatched proof payload".into());
         }
-        // Reserve before certificate decoding or normal-form construction.
-        let bytes = object.proof.len() / 2;
-        if object.proof.len() > 2 * crate::resources::limits().proof_bytes
-            || !object.proof.len().is_multiple_of(2)
-            || root.staged.len() >= crate::resources::limits().closure_objects
-            || root.bytes + bytes > crate::resources::limits().closure_bytes
-            || root.checker_work + naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
-                > crate::resources::limits().closure_work_bytes
-        {
-            return Err("staged closure byte or object capacity".into());
-        }
-        let header = crate::unhex(
-            object
-                .proof
-                .get(..8)
-                .ok_or("truncated certificate header")?,
-        )?;
-        let steps =
-            u32::from_be_bytes(header.try_into().map_err(|_| "certificate header")?) as usize;
-        if steps == 0 || steps > crate::resources::limits().closure_steps - root.steps {
-            return Err("staged closure step work limit".into());
-        }
+        // The shared certificate header charge precedes decoding and allocation.
         let candidate = object.prepare()?;
         if Instant::now().duration_since(root.description.created)
             >= crate::resources::limits().root_timeout
@@ -287,19 +331,21 @@ impl Intake {
         for dependency in &candidate.dependencies {
             if !graph.contains(*dependency)?
                 && !root.staged.contains_key(dependency)
+                && !root.helpers.contains(*dependency)
                 && *dependency != expected
             {
                 root.needed.insert(*dependency);
             }
         }
         root.staged.insert(expected, candidate);
-        if root.staged.len() + root.needed.len() > crate::resources::limits().closure_objects {
+        if root.member_count() > crate::resources::limits().closure_objects {
             return Err("staged closure dependency capacity".into());
         }
         Ok(())
     }
 
     pub(crate) fn abort(&mut self, root_id: ProofId) {
+        self.programs.remove(root_id);
         self.waiting.retain(|w| w.description.id != root_id);
         if self
             .active
@@ -332,6 +378,17 @@ impl Intake {
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|root| root.member_count() > crate::resources::limits().closure_objects)
+        {
+            let root = self.active.take().expect("overloaded closure");
+            return Progress::Skipped(
+                root.description.id,
+                "staged closure dependency capacity".into(),
+            );
+        }
         if let Err(error) = self.advance_program_helpers(graph, questions)
             && !error.retryable()
         {
@@ -400,7 +457,12 @@ impl Intake {
                         || assessment.prefilter.policy != policy
                 })
             {
-                return Err("stale approval before proof fetch".into());
+                let current = questions.refresh_exchange(
+                    graph,
+                    &root.question,
+                    root.initial.as_ref().expect("approved root"),
+                )?;
+                root.initial = Some(current);
             }
             match &mut root.phase {
                 Phase::Initial(receiver) => match receiver.try_recv() {
@@ -449,13 +511,10 @@ impl Intake {
                 }
                 Phase::Final(receiver, _) => match receiver.try_recv() {
                     Ok(assessment) => {
-                        if !root
-                            .initial
-                            .as_ref()
-                            .expect("approved root")
-                            .prefilter
-                            .same_context(&assessment.prefilter)
-                            || !questions.exchange_eligible(&root.question, &assessment)
+                        if !questions.exchange_eligible(
+                            &root.question,
+                            root.initial.as_ref().expect("approved root"),
+                        ) || !questions.exchange_eligible(&root.question, &assessment)
                         {
                             return Err("stale or declined final interest".into());
                         }

@@ -8,6 +8,7 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
         running: true,
         computation: crate::resources::ComputationState::Running,
         accepted_proofs: 3,
+        proof_verification: ProofVerification::Checked,
         interest: interest.clone(),
     };
     let response = Response {
@@ -180,7 +181,7 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
 }
 
 #[tokio::test]
-async fn status_counts_only_unique_checked_closure_members_running_stopped_and_recovered() {
+async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissions() {
     let directory = Directory::new();
     let (helper, root, question) = closure();
     let root_id = ProofId::from_bytes(id_bytes(&root.proof_id).unwrap());
@@ -199,6 +200,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             accepted_proofs: 0,
+            proof_verification: ProofVerification::NotRun,
             interest: String::new()
         }
     );
@@ -251,6 +253,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
             running: true,
             computation: crate::resources::ComputationState::Running,
             accepted_proofs: 2,
+            proof_verification: ProofVerification::Checked,
             interest: String::new()
         }
     );
@@ -262,6 +265,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             accepted_proofs: 2,
+            proof_verification: ProofVerification::NotRun,
             interest: String::new()
         }
     );
@@ -275,9 +279,12 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
     );
     drop(recovered);
     crate::store::corrupt_payload(&directory.0, &helper.proof_id);
+    let recorded = status(&directory.0).await.unwrap();
+    assert_eq!(recorded.accepted_proofs, 2);
+    assert_eq!(recorded.proof_verification, ProofVerification::NotRun);
     assert!(
-        status(&directory.0).await.is_err(),
-        "corrupt durable content cannot return a proof count"
+        Graph::open(&directory.0).is_err(),
+        "corruption cannot become checked knowledge"
     );
 }
 
@@ -315,6 +322,7 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             accepted_proofs: 1,
+            proof_verification: ProofVerification::NotRun,
             interest: String::new()
         }
     );
@@ -346,7 +354,7 @@ async fn stop_fails_closed_when_group_exit_remains_denied_at_the_deadline() {
 }
 
 #[tokio::test]
-async fn stop_requires_graph_release_and_revalidation_after_confirmed_group_exit() {
+async fn stop_requires_directory_release_and_reports_offline_admissions_without_revalidation() {
     let directory = Directory::new();
     let graph = Graph::open(&directory.0).unwrap();
     let held = wait_for_stop(&directory.0, Instant::now(), || {
@@ -361,13 +369,14 @@ async fn stop_requires_graph_release_and_revalidation_after_confirmed_group_exit
     graph.ingest(helper.clone(), Instant::now()).unwrap();
     drop(graph);
     crate::store::corrupt_payload(&directory.0, &helper.proof_id);
-    let corrupt = wait_for_stop(&directory.0, Instant::now(), || {
+    let recorded = wait_for_stop(&directory.0, Instant::now(), || {
         Err(nix::errno::Errno::ESRCH)
     })
     .await
-    .unwrap_err();
-    assert!(corrupt.starts_with("node did not release its directory:"));
-    assert!(status(&directory.0).await.is_err());
+    .unwrap();
+    assert_eq!(recorded.accepted_proofs, 1);
+    assert_eq!(recorded.proof_verification, ProofVerification::NotRun);
+    assert!(Graph::open(&directory.0).is_err());
 }
 
 #[test]
@@ -633,3 +642,5 @@ async fn handoff_abort_handles_the_actual_setsid_race_while_original_child_is_he
         other => panic!("unproved session cannot complete: {other};{report}"),
     }
 }
+
+mod offline;

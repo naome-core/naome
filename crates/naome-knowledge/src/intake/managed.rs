@@ -1,4 +1,5 @@
-//! Long decisions retain only metadata. Every payload grant remains short.
+//! Long decisions retain metadata and at most one live checked closure.
+//! The closure is evicted when its short grant or checked generation expires.
 use super::*;
 
 pub(super) enum Phase {
@@ -6,6 +7,7 @@ pub(super) enum Phase {
     Final {
         reply: oneshot::Receiver<QuestionAssessment>,
         initial: QuestionAssessment,
+        batch: Option<Box<CheckedBatch>>,
     },
     Refresh {
         initial: QuestionAssessment,
@@ -127,7 +129,7 @@ impl Intake {
                 .pop_front()
                 .expect("bounded metadata decision queue");
             let id = waiting.description.id;
-            let result = (|| -> Result<bool, String> {
+            let result = (|| -> Result<Option<Vec<ProofId>>, String> {
                 if graph.contains(id)? {
                     return Err("received answer makes pending metadata obsolete".into());
                 }
@@ -150,23 +152,65 @@ impl Intake {
                         Err(oneshot::error::TryRecvError::Empty) => {}
                         Err(_) => return Err("initial interest cancelled".into()),
                     },
-                    Phase::Final { reply, initial } => match reply.try_recv() {
-                        Ok(assessment) => {
-                            if !initial.prefilter.same_context(&assessment.prefilter)
-                                || !questions.exchange_eligible(&waiting.question, &assessment)
-                            {
-                                return Err("final interest declined or stale".into());
-                            }
-                            questions.prepare_exchange(graph, &waiting.question, &assessment)?;
-                            waiting.phase = Phase::Refresh {
-                                initial: initial.clone(),
-                                final_assessment: Some(Box::new(assessment)),
-                                ready: false,
-                            };
+                    Phase::Final {
+                        reply,
+                        initial,
+                        batch,
+                    } => {
+                        let current = batch
+                            .as_ref()
+                            .map(|batch| graph.batch_current(batch))
+                            .transpose()?;
+                        if current.is_some_and(|current| {
+                            !current
+                                || now.saturating_duration_since(waiting.description.created)
+                                    >= crate::resources::limits().root_timeout
+                                || !crate::resources::adaptive::work_available()
+                        }) {
+                            *batch = None;
                         }
-                        Err(oneshot::error::TryRecvError::Empty) => {}
-                        Err(_) => return Err("final interest cancelled".into()),
-                    },
+                        match reply.try_recv() {
+                            Ok(assessment) => {
+                                if !questions.exchange_eligible(&waiting.question, initial)
+                                    || !questions.exchange_eligible(&waiting.question, &assessment)
+                                {
+                                    return Err("final interest declined or stale".into());
+                                }
+                                let delta = questions.prepare_exchange(
+                                    graph,
+                                    &waiting.question,
+                                    &assessment,
+                                )?;
+                                if let Some(batch) = batch.take()
+                                    && waiting
+                                        .description
+                                        .grant
+                                        .as_ref()
+                                        .is_none_or(|grant| grant.check().is_ok())
+                                {
+                                    return questions
+                                        .publish_exchange(
+                                            graph,
+                                            id,
+                                            *batch,
+                                            delta,
+                                            waiting.description.grant.clone(),
+                                            waiting.description.created
+                                                + crate::resources::limits().root_timeout,
+                                        )
+                                        .map(Some)
+                                        .map_err(String::from);
+                                }
+                                waiting.phase = Phase::Refresh {
+                                    initial: initial.clone(),
+                                    final_assessment: Some(Box::new(assessment)),
+                                    ready: false,
+                                };
+                            }
+                            Err(oneshot::error::TryRecvError::Empty) => {}
+                            Err(_) => return Err("final interest cancelled".into()),
+                        }
+                    }
                     Phase::Refresh {
                         initial,
                         final_assessment,
@@ -196,15 +240,16 @@ impl Intake {
                                 final_assessment: final_assessment.as_deref().cloned(),
                             };
                             self.active = Some(root);
-                            return Ok(true);
+                            return Ok(Some(Vec::new()));
                         }
                     }
                 }
-                Ok(false)
+                Ok(None)
             })();
             match result {
-                Ok(true) => {}
-                Ok(false) => self.waiting.push_back(waiting),
+                Ok(Some(ids)) if !ids.is_empty() => return Progress::Accepted(ids),
+                Ok(Some(_)) => {}
+                Ok(None) => self.waiting.push_back(waiting),
                 Err(error) => {
                     self.decline(
                         &waiting.description,
@@ -268,9 +313,14 @@ impl Intake {
                 )?;
                 return Ok(Some(admitted));
             }
-            // Checked staging is deliberately dropped while final interest may
-            // take days. One later metadata refresh and refetch is necessary.
-            drop(batch);
+            // The same sealed CheckedBatch used by program intake may survive
+            // a short final decision. Keep one closure across all waiting roots;
+            // long decisions and pressure retain only metadata and refetch later.
+            for waiting in &mut self.waiting {
+                if let Phase::Final { batch, .. } = &mut waiting.phase {
+                    *batch = None;
+                }
+            }
             if self.waiting.len() >= crate::resources::limits().interest_decisions
                 || !questions.available_peer()
             {
@@ -292,7 +342,11 @@ impl Intake {
             self.waiting.push_back(Waiting {
                 description: root.description.clone(),
                 question,
-                phase: Phase::Final { reply, initial },
+                phase: Phase::Final {
+                    reply,
+                    initial,
+                    batch: Some(Box::new(batch)),
+                },
                 context,
                 until,
             });
