@@ -52,6 +52,9 @@ jobs:
       - name: Check CI contracts
         run: python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
 
+      - name: Validate workflow syntax and expressions
+        run: python3 tools/ci/check_workflows.py
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

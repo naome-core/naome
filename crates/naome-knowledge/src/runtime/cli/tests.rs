@@ -2,6 +2,34 @@ mod computation;
 use super::*;
 
 #[test]
+fn information_options_are_exact_and_do_not_consume_interest_text() {
+    for option in ["--version", "-V"] {
+        assert_eq!(
+            information(&[OsString::from(option)]),
+            Some(format!("naome {}", env!("CARGO_PKG_VERSION")))
+        );
+    }
+    for option in ["--help", "-h"] {
+        assert!(
+            information(&[OsString::from(option)])
+                .unwrap()
+                .contains("naome start")
+        );
+    }
+    for arguments in [vec!["interest", "--version"], vec!["--help", "start"]] {
+        assert!(
+            information(
+                &arguments
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect::<Vec<_>>()
+            )
+            .is_none()
+        );
+    }
+}
+
+#[test]
 fn output_option_does_not_consume_literal_interest() {
     for (args, json) in [
         (vec!["interest", "--json"], false),

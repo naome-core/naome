@@ -81,32 +81,12 @@ pub(super) fn validate(text: &str) -> Result<(), String> {
 }
 
 fn read<T: serde::de::DeserializeOwned>(directory: &Path, name: &str) -> Result<Option<T>, String> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
-        .open(directory.join(name))
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-    {
-        return Err("owner configuration must be one owned regular file".into());
-    }
-    let mut data = Vec::new();
-    file.take((6 * crate::resources::limits().owner_text_bytes + 512) as u64 + 1)
-        .read_to_end(&mut data)
-        .map_err(|error| error.to_string())?;
-    if data.len() > (6 * crate::resources::limits().owner_text_bytes + 512) {
-        return Err("owner configuration byte limit".into());
-    }
-    serde_json::from_slice(&data)
-        .map(Some)
-        .map_err(|error| error.to_string())
+    crate::storage::read_owned(
+        &directory.join(name),
+        6 * crate::resources::limits().owner_text_bytes + 512,
+    )?
+    .map(|data| serde_json::from_slice(&data).map_err(|error| error.to_string()))
+    .transpose()
 }
 
 fn sync(directory: &Path) -> Result<(), String> {

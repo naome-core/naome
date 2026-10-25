@@ -1,5 +1,6 @@
 use super::*;
 use rusqlite::{Connection, OpenFlags, params};
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     fs::File,
     os::unix::fs::MetadataExt,

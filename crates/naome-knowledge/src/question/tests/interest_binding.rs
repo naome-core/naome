@@ -1,6 +1,38 @@
 use super::*;
 
 #[tokio::test]
+async fn pending_interest_cannot_be_sealed_after_its_policy_or_owner_changes() {
+    for owner_failure in [false, true] {
+        let directory = Directory::new();
+        let graph = Graph::default();
+        let mut provider = crate::jobs::tests::Manual::new();
+        let mut local = Managed::managed(
+            provider.client.clone(),
+            &directory.0,
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        let (reply, receiver) = oneshot::channel();
+        local.process(Command::Admit(question(QUESTION), reply), &graph);
+        let (id, _) = provider.requests().remove(0);
+        if owner_failure {
+            local.select(None);
+            provider.complete(id, Ok(crate::jobs::Output::Interest(true)));
+        } else {
+            local.policy.revision += 1;
+            provider.complete(id, Ok(crate::jobs::Output::Interest(true)));
+            let interest = local.completed().await;
+            local.finish(&graph, interest);
+        }
+        let admission = receiver.await.unwrap();
+        assert_eq!(admission.outcome, AdmissionOutcome::NotInserted);
+        assert_eq!(admission.assessment.interest, InterestAssessment::Stale);
+        assert!(admission.assessment.selected.is_none());
+        assert_eq!(local.registry.len(), 0);
+    }
+}
+
+#[tokio::test]
 async fn independent_admissions_share_interest_epoch_but_receive_fresh_formal_receipts() {
     let directory = Directory::new();
     let graph = Graph::default();
@@ -19,7 +51,7 @@ async fn independent_admissions_share_interest_epoch_but_receive_fresh_formal_re
     }
     let requests = owner.requests();
     assert_eq!(requests.len(), 2);
-    let before = local.context_key(&graph).0;
+    let before = local.formal_context(&graph).snapshot;
     for (id, _) in requests {
         owner.complete(id, Ok(crate::jobs::Output::Interest(true)));
         let outcome = local.completed().await;
@@ -35,7 +67,10 @@ async fn independent_admissions_share_interest_epoch_but_receive_fresh_formal_re
     };
     assert_eq!(first.snapshot_before(), before);
     assert_eq!(second.snapshot_before(), first.snapshot_after());
-    assert_eq!(second.snapshot_after(), local.context_key(&graph).0);
+    assert_eq!(
+        second.snapshot_after(),
+        local.formal_context(&graph).snapshot
+    );
     assert_eq!(local.registry.len(), 2);
     assert!(
         owner.requests().is_empty(),

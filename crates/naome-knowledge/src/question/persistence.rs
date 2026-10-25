@@ -292,19 +292,21 @@ impl Persistence {
         let Some(sequence) = self.checkpoint.get::<String>("queued", &key, 128)? else {
             return Ok(());
         };
-        self.checkpoint.commit(
-            &self.header,
-            vec![
-                Update::Remove {
-                    kind: "queued",
-                    key,
-                },
-                Update::Remove {
-                    kind: "backlog",
-                    key: sequence,
-                },
-            ],
-        )
+        self.checkpoint
+            .commit(
+                &self.header,
+                vec![
+                    Update::Remove {
+                        kind: "queued",
+                        key,
+                    },
+                    Update::Remove {
+                        kind: "backlog",
+                        key: sequence,
+                    },
+                ],
+            )
+            .map_err(String::from)
     }
     /// An outbox entry precedes the proof commit. Recovery decides its outcome
     /// from the rechecked graph, never from a persisted success flag.
@@ -326,7 +328,7 @@ impl Persistence {
                     &question.source(),
                 )?],
             )
-            .map_err(crate::Error::UncertainDurability)
+            .map_err(crate::Error::from)
     }
     pub(super) fn finish_publication(
         &mut self,
@@ -340,7 +342,7 @@ impl Persistence {
                     key: crate::hex(root.as_bytes()),
                 }],
             )
-            .map_err(crate::Error::UncertainDurability)
+            .map_err(crate::Error::from)
     }
     pub(super) fn publications(
         &self,
@@ -432,7 +434,9 @@ impl Persistence {
                 key: resolution,
             });
         }
-        self.checkpoint.commit(&self.header, updates)
+        self.checkpoint
+            .commit(&self.header, updates)
+            .map_err(String::from)
     }
     pub(super) fn delivered(
         &mut self,
@@ -460,6 +464,7 @@ impl Persistence {
         };
         self.checkpoint
             .commit(&self.header, std::mem::take(&mut updates))
+            .map_err(String::from)
     }
 }
 fn validate_entry(key: &str, entry: &Entry) -> Result<CompiledQuestion, String> {

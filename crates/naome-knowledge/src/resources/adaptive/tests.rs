@@ -1,4 +1,5 @@
 use super::*;
+mod files;
 fn hardware() -> Observed {
     Observed {
         memory_total: 8 * 1024 * MIB,
@@ -125,6 +126,14 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     let mut questions = LocalQuestions::new(Some(crate::mocks::assess_interest as fn(_) -> _));
     let unanswered = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
     assert!(questions.generation_decision(&graph, &unanswered).passed());
+    let (_, selected) = questions.begin_exchange(
+        &graph,
+        unanswered.clone(),
+        Instant::now() + Duration::from_secs(30),
+    );
+    let interest = questions.completed().await;
+    questions.finish(&graph, interest);
+    let selected = selected.await.unwrap();
     let computations = questions.computation_count();
     let checks = graph.checker_calls();
     let control = Control::bind_test(&directory.0, graph.ownership()).unwrap();
@@ -143,6 +152,10 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     let mut observed = hardware();
     observed.process_rss = 40 * MIB;
     publish(Snapshot::derive(selection(8 * MIB), observed.clone(), 512 * MIB).unwrap());
+    assert!(matches!(
+        questions.prepare_exchange(&graph, &unanswered, &selected),
+        Err(crate::Error::ExecutionLimit)
+    ));
     for _ in 0..10 {
         assert_eq!(graph.resolve_pending().unwrap(), (vec![], vec![]));
         assert!(

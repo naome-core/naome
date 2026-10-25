@@ -461,7 +461,15 @@ class Driver:
         times, final = {}, {}
         while time.monotonic() < deadline:
             for index in indices:
-                status = self.nodes[index].status_snapshot()
+                node = self.nodes[index]
+                status = node.command("status")
+                # Read the complete ID oracle once the bounded status can match it.
+                # Repeated full scans during catch-up compete with the transfer itself.
+                if status["accepted_proofs"] != len(expected) or status["root"] != root or status["pending"]:
+                    times.pop(str(index), None)
+                    final.pop(str(index), None)
+                    continue
+                status = node.status_snapshot()
                 if set(status["ids"]) == expected and status["root"] == root and not status["pending"]:
                     times.setdefault(str(index), time.monotonic() - started)
                     final[str(index)] = status

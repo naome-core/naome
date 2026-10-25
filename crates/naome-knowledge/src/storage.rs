@@ -55,7 +55,9 @@ pub(crate) fn write_marker(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
+/// Read one bounded local input after validating the opened descriptor. Opening
+/// special files must not wait for another process before their type is known.
+pub(crate) fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
@@ -66,31 +68,34 @@ fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
         Err(error) => return Err(error.to_string()),
     };
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-    {
-        return Err("research checkpoint must be one regular owned file".into());
-    }
+    require_owned(&metadata)?;
     let mut bytes = Vec::new();
-    file.take(u64::try_from(limit).map_err(|_| "research read limit")? + 1)
+    let maximum = u64::try_from(limit)
+        .ok()
+        .and_then(|limit| limit.checked_add(1))
+        .ok_or("local input read limit")?;
+    file.take(maximum)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.len() > limit {
-        return Err("research checkpoint byte capacity".into());
+        return Err("local input byte capacity".into());
     }
     Ok(Some(bytes))
 }
 
 pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, String> {
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    require_owned(&metadata)?;
+    Ok(metadata)
+}
+fn require_owned(metadata: &fs::Metadata) -> Result<(), String> {
     if !metadata.is_file()
         || metadata.nlink() != 1
         || metadata.uid() != nix::unistd::geteuid().as_raw()
     {
         return Err("local store must be one owned regular file".into());
     }
-    Ok(metadata)
+    Ok(())
 }
 pub(crate) fn sqlite_common(
     connection: &rusqlite::Connection,
@@ -127,3 +132,6 @@ impl FileGeneration {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

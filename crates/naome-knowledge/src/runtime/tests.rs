@@ -1,5 +1,6 @@
 use super::*;
 mod computation;
+mod publication;
 
 #[tokio::test]
 async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames() {

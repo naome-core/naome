@@ -6,6 +6,25 @@ use std::{
     io::{self, IsTerminal, Write as _},
 };
 
+pub(super) fn information(arguments: &[OsString]) -> Option<String> {
+    match arguments {
+        [option] if option == "--version" || option == "-V" => {
+            Some(format!("naome {}", env!("CARGO_PKG_VERSION")))
+        }
+        [option] if option == "--help" || option == "-h" => Some(
+            "NAOME checked-knowledge node\n\n\
+             Usage:\n  naome start\n  naome stop\n  naome pause\n  naome resume\n  naome status\n  \
+             naome interest <text>\n  naome resources [history [after]]\n  \
+             naome --version\n\n\
+             Place --json before a command for machine output.\n\
+             NAOME_NODE_DIR selects the local node directory.\n\
+             Resource budgets adapt automatically."
+                .into(),
+        ),
+        _ => None,
+    }
+}
+
 pub(super) struct Arguments<'a> {
     pub command: &'a str,
     pub text: Option<&'a str>,

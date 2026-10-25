@@ -1,0 +1,8 @@
+# Only permissive licenses used by the ordinary product and its build graph.
+# A new license must be reviewed rather than silently accepted at release time.
+accepted = [
+    "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
+    "Unicode-3.0", "Unicode-DFS-2016", "CC0-1.0", "0BSD", "OpenSSL",
+]
+ignore-dev-dependencies = true
+workarounds = ["ring"]
