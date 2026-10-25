@@ -6,8 +6,6 @@ use naome_checker::{ContextError, ContextStorage, DiskArtifactState};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 mod admission;
 mod codec;
-#[cfg(test)]
-mod compaction_discriminator;
 mod startup;
 use std::{
     collections::{BTreeMap, BTreeSet},

@@ -289,17 +289,15 @@ fn cold_dynamic_mp_requires_both_seeds_and_identical_original_citations() {
     let mut twin = Twin::new();
     let registry = QuestionRegistry::new();
     let policy = PrefilterPolicy::default();
-    let (_, p) = twin.register(super::tests::schema_steps(false));
-    let q = crate::normalize_and_check(
-        ProofCertificate::new(super::tests::schema_steps(true)).unwrap(),
-    )
-    .unwrap()
-    .conclusion()
-    .clone();
+    let (_, p) = twin.register(super::schema_steps(false));
+    let q = crate::normalize_and_check(ProofCertificate::new(super::schema_steps(true)).unwrap())
+        .unwrap()
+        .conclusion()
+        .clone();
     let target = Formula::implies(unresolved(), equal());
     let _ = twin.register(lift(&p, &q, fact_steps(&unresolved())));
     assert!(twin.compare(&target, &registry, &policy).passed());
-    let _ = twin.register(super::tests::schema_steps(true));
+    let _ = twin.register(super::schema_steps(true));
     let result = twin.compare(&target, &registry, &policy);
     assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
     assert_eq!(
@@ -420,7 +418,7 @@ fn cold_mutual_implications_and_finite_universal_instances_match_exactly() {
         Some(RejectionReason::ProvenEquivalent)
     );
     let mut universal = Twin::new();
-    let mut steps = super::tests::schema_steps(false);
+    let mut steps = super::schema_steps(false);
     let target = crate::normalize_and_check(ProofCertificate::new(steps.clone()).unwrap())
         .unwrap()
         .conclusion()
@@ -445,7 +443,7 @@ fn cold_mutual_implications_and_finite_universal_instances_match_exactly() {
 #[test]
 fn cold_large_mp_intermediate_is_never_truncated_by_the_question_limit() {
     let mut twin = Twin::new();
-    let (_, p) = twin.register(super::tests::schema_steps(false));
+    let (_, p) = twin.register(super::schema_steps(false));
     let mut large = unresolved();
     for _ in 0..9 {
         large = Formula::implies(large.clone(), large);
@@ -466,7 +464,7 @@ fn cold_large_mp_intermediate_is_never_truncated_by_the_question_limit() {
         .is_err()
     );
     let target = Formula::for_all(var(19), p);
-    let mut steps = super::tests::schema_steps(false);
+    let mut steps = super::schema_steps(false);
     steps.push(ProofStep::Generalization {
         premise: 0,
         variable: var(19),

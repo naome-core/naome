@@ -1,3 +1,4 @@
+mod compaction;
 use super::*;
 use crate::Graph;
 use naome_checker::ContextView;

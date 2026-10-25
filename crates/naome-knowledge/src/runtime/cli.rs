@@ -152,7 +152,4 @@ fn human(command: &str, status: &Status, color: bool) -> String {
 }
 
 #[cfg(test)]
-mod computation_tests;
-
-#[cfg(test)]
 mod tests;
