@@ -191,9 +191,19 @@ impl Graph {
     /// Reconstruct empty authenticated roots from bounded owned canonical pages.
     /// Every dependency must already be checked; stored order grants no validity.
     pub fn open(directory: &Path) -> Result<Self, crate::Error> {
-        Self::open_inner(directory, false)
+        Self::open_inner(directory, false, &mut || Ok(()))
     }
-    fn open_inner(directory: &Path, cleanup: bool) -> Result<Self, crate::Error> {
+    pub(crate) fn open_observed(
+        directory: &Path,
+        observe: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<Self, crate::Error> {
+        Self::open_inner(directory, false, observe)
+    }
+    fn open_inner(
+        directory: &Path,
+        cleanup: bool,
+        observe: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<Self, crate::Error> {
         let store = Arc::new(Store::open(directory)?);
         let summary = store.summary()?;
         let halt = Arc::new(Mutex::new(None));
@@ -231,6 +241,7 @@ impl Graph {
             replay_compaction = storage::startup_test_threshold(replay_compaction);
         }
         loop {
+            observe()?;
             let page = graph
                 .store
                 .replay_page(after, crate::resources::active_limits().replay_page)?;
@@ -239,12 +250,13 @@ impl Graph {
             }
             graph.cold(graph.checked_storage.begin_startup_page())?;
             for (ordinal, record) in page {
+                observe()?;
                 graph.cold(graph.checked_storage.adapt_cache())?;
                 if ordinal != after.checked_add(1).ok_or("replay ordinal overflow")? {
                     return Err("durable replay order is incomplete".into());
                 }
                 if let Some(manifest) = record.program()? {
-                    graph.replay_program(&manifest)?;
+                    graph.replay_program(&manifest, observe)?;
                     graph.bytes = graph
                         .bytes
                         .checked_add(record.bytes.len())
@@ -1032,7 +1044,7 @@ impl Default for Graph {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&directory).expect("new isolated test catalog");
-        Self::open_inner(&directory, true).expect("empty test catalog")
+        Self::open_inner(&directory, true, &mut || Ok(())).expect("empty test catalog")
     }
 }
 #[cfg(test)]

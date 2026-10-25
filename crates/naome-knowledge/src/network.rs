@@ -393,15 +393,17 @@ where
     if let Some(startup) = &startup {
         startup.phase("begin");
     }
-    if autonomy.is_some() {
-        let snapshot = crate::resources::adaptive::Snapshot::derive(
-            crate::resources::adaptive::load(&config.directory)?,
-            crate::resources::adaptive::sample(&config.directory)?,
-            crate::resources::limits().memory_bytes as u64,
-        )?;
-        crate::resources::adaptive::publish(snapshot);
-    }
-    let graph = Graph::open(&config.directory)?;
+    // One resource owner spans synchronous checked replay and the live loop.
+    // Refresh at replay boundaries instead of freezing its initial quantum.
+    let mut resources = autonomy
+        .as_ref()
+        .map(|_| crate::resources::adaptive::history::Controller::open(&config.directory))
+        .transpose()?;
+    let graph = if let Some(resources) = &mut resources {
+        Graph::open_observed(&config.directory, &mut || resources.refresh())?
+    } else {
+        Graph::open(&config.directory)?
+    };
     if let Some(startup) = &startup {
         startup.phase("checked");
     }
@@ -639,10 +641,6 @@ where
         .map(|control| control as Arc<dyn crate::publication::LocalAuthority>);
     let mut stopping = false;
     let mut next_profile_check = Instant::now();
-    let mut resources = control
-        .as_ref()
-        .map(|_| crate::resources::adaptive::history::Controller::open(&directory))
-        .transpose()?;
     if let Some(control) = &control {
         control.publish()?;
     }

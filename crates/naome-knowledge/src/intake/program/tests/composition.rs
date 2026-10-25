@@ -168,6 +168,70 @@ fn work_selection() -> crate::resources::adaptive::Selection {
     }
 }
 
+#[test]
+fn startup_replay_refreshes_the_owner_budget_between_program_quanta() {
+    const CASE: &str = "intake::program::tests::composition::startup_replay_refreshes_the_owner_budget_between_program_quanta";
+    if isolated(CASE) {
+        return;
+    }
+    use crate::resources::adaptive::{self, Snapshot};
+    let directory = Directory::new();
+    let (graph, manifests, _) = populated(&directory.0);
+    let expected = graph.content_root();
+    drop(graph);
+    let mut selection = work_selection();
+    selection.custom.as_mut().unwrap().batch_steps = 1;
+    let initial = Snapshot::derive(
+        selection,
+        adaptive::sample(&directory.0).unwrap(),
+        crate::resources::limits().memory_bytes as u64,
+    )
+    .unwrap();
+    let mut grown = initial.clone();
+    grown.selection.custom.as_mut().unwrap().batch_steps = 128;
+    grown.budget.batch_steps = 128;
+    grown.timestamp_ms += 1;
+    adaptive::publish(initial);
+    let before = crate::resources::feedback::statistics().check.units;
+    let mut observations = 0;
+    let replayed = Graph::open_observed(&directory.0, &mut || {
+        observations += 1;
+        if crate::resources::feedback::statistics().check.units > before {
+            adaptive::publish(grown.clone());
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(replayed.content_root(), expected);
+    assert_eq!(replayed.accepted_count(), 3);
+    let work = directory.0.join(".program-work").join(format!(
+        "{}.sqlite3",
+        crate::hex(manifests[0].proof_id().as_bytes())
+    ));
+    let connection =
+        rusqlite::Connection::open_with_flags(work, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let mut statement = connection
+        .prepare("SELECT snapshot FROM budget ORDER BY sequence")
+        .unwrap();
+    let quanta = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .map(|bytes| {
+            serde_json::from_slice::<Snapshot>(&bytes.unwrap())
+                .unwrap()
+                .budget
+                .batch_steps
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(quanta.first(), Some(&1));
+    assert!(
+        quanta.contains(&128),
+        "startup retained its initial budget: {quanta:?}"
+    );
+    assert!(observations > 2);
+}
+
 async fn receive(
     source: &Graph,
     directory: &std::path::Path,
