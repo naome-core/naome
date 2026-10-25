@@ -714,14 +714,17 @@ impl Owner {
     }
 
     fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
-        crate::resources::feedback::jobs(
-            self.journal
-                .records
-                .values()
-                .filter(|record| matches!(record.state, State::Queued | State::Suspended))
-                .count(),
-            self.running.len(),
-        );
+        let mut queued = [0; 4];
+        let mut running = [0; 4];
+        for record in self.journal.records.values() {
+            if matches!(record.state, State::Queued | State::Suspended) {
+                queued[record.input.lane()] += 1;
+            }
+        }
+        for id in self.running.keys() {
+            running[self.journal.records[id].input.lane()] += 1;
+        }
+        crate::resources::feedback::jobs(queued, running);
         for offset in 0..lanes().len() {
             let lane = (self.next_lane + offset) % lanes().len();
             let active = self

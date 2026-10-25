@@ -35,6 +35,10 @@ fn control_limit() -> usize {
     // configured owner-text capacity. They never duplicate owner text.
     (6 * crate::resources::limits().owner_text_bytes + 512).max(4096 + 512)
 }
+// Only authenticated resource responses use this fixed diagnostic allowance:
+// at most 4 KiB of snapshot plus the fixed four-role scalar statistics. Request,
+// owner-text, provider, and peer frame limits are unchanged.
+const RESOURCE_RESPONSE_LIMIT: usize = 12 * 1024;
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
 static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
 
@@ -585,7 +589,15 @@ impl Control {
         // drain expires, while provider teardown has already been requested.
         tokio::time::timeout(
             crate::resources::limits().control_request_timeout,
-            write_frame(&mut stream, &response),
+            write_frame_bounded(
+                &mut stream,
+                &response,
+                if resources {
+                    RESOURCE_RESPONSE_LIMIT
+                } else {
+                    control_limit()
+                },
+            ),
         )
         .await
         .map_err(|_| "local control write timeout")??;
@@ -633,14 +645,21 @@ pub(crate) async fn requested_stop(watch: &mut Option<tokio::sync::watch::Receiv
 }
 
 async fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result<T, String> {
+    read_frame_bounded(stream, control_limit()).await
+}
+
+async fn read_frame_bounded<T: serde::de::DeserializeOwned>(
+    stream: &mut UnixStream,
+    limit: usize,
+) -> Result<T, String> {
     tokio::time::timeout(crate::resources::limits().control_timeout, async {
         let mut bytes = Vec::new();
         BufReader::new(stream)
-            .take(control_limit() as u64 + 1)
+            .take(limit as u64 + 1)
             .read_until(b'\n', &mut bytes)
             .await
             .map_err(|error| error.to_string())?;
-        if bytes.len() > control_limit() || bytes.last() != Some(&b'\n') {
+        if bytes.len() > limit || bytes.last() != Some(&b'\n') {
             return Err("local control frame limit or incomplete request".into());
         }
         serde_json::from_slice(&bytes).map_err(|error| error.to_string())
@@ -650,9 +669,17 @@ async fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> 
 }
 
 async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), String> {
+    write_frame_bounded(stream, value, control_limit()).await
+}
+
+async fn write_frame_bounded<T: Serialize>(
+    stream: &mut UnixStream,
+    value: &T,
+    limit: usize,
+) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
-    if bytes.len() > control_limit() {
+    if bytes.len() > limit {
         return Err("local control response limit".into());
     }
     tokio::time::timeout(
@@ -693,6 +720,11 @@ async fn request_response(
         }
         Err(error) => return Err(error.to_string()),
     };
+    let response_limit = if matches!(operation, Operation::Resources) {
+        RESOURCE_RESPONSE_LIMIT
+    } else {
+        control_limit()
+    };
     write_frame(
         &mut stream,
         &Request {
@@ -702,7 +734,7 @@ async fn request_response(
         },
     )
     .await?;
-    let response: Response = read_frame(&mut stream).await?;
+    let response: Response = read_frame_bounded(&mut stream, response_limit).await?;
     if response.token != endpoint.token {
         return Err("local control response instance mismatch".into());
     }

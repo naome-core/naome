@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+mod feedback;
+use crate::resources::feedback::{Phase, Sample};
 
 const INTERNAL: &str = "NAOME_INTERNAL_RESEARCH_PROVIDER";
 const SUPERVISOR: &str = "--research-supervisor-v1";
@@ -27,6 +29,11 @@ struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 enum Frame {
+    Feedback {
+        id: u64,
+        phase: Phase,
+        sample: Sample,
+    },
     Ready {
         id: u64,
         binding: String,
@@ -120,6 +127,7 @@ pub(super) async fn run(
     slot: std::fs::File,
     computation: crate::resources::ComputationPermit,
 ) -> Outcome {
+    let mut feedback = feedback::Attempt::new(record.input.feedback_role());
     let state = std::sync::Arc::new(std::sync::Mutex::new(None));
     let result = run_owned(
         record,
@@ -129,6 +137,7 @@ pub(super) async fn run(
         slot,
         computation,
         state.clone(),
+        &mut feedback,
     )
     .await;
     let state = state
@@ -139,6 +148,7 @@ pub(super) async fn run(
         } else {
             State::Failed
         });
+    feedback.finish(state);
     Outcome { state, result }
 }
 
@@ -150,6 +160,7 @@ async fn run_owned(
     slot: std::fs::File,
     permit: crate::resources::ComputationPermit,
     disposition: std::sync::Arc<std::sync::Mutex<Option<State>>>,
+    feedback: &mut feedback::Attempt,
 ) -> Result<Output, String> {
     let remaining_ms = remaining_ms.min(record.expires_ms.saturating_sub(wall_ms()?));
     if remaining_ms == 0 {
@@ -281,8 +292,17 @@ async fn run_owned(
                         serde_json::json!({"event":"research_working","job":id,"phase":"result_ready"}),
                     );
                 }
+                Frame::Feedback { id, phase, sample } if ready && id == record.id => {
+                    feedback.observe(
+                        phase,
+                        sample,
+                        outstanding,
+                        super::provider::complete(&record, checkpoint),
+                    )?;
+                }
                 Frame::Reserve { id, next }
                     if ready
+                        && feedback.ready()
                         && outstanding.is_none()
                         && id == record.id
                         && next
@@ -291,7 +311,9 @@ async fn run_owned(
                                 .ok_or("provider checkpoint overflow")? =>
                 {
                     drop(working.take());
+                    let waiting = Instant::now();
                     working = Some(computation.enter().await);
+                    feedback.pause(waiting.elapsed());
                     let (reply, receipt) = oneshot::channel();
                     events
                         .send(Event::Reserve { id, next, reply })
@@ -335,6 +357,7 @@ async fn run_owned(
                     id,
                     checkpoint: next,
                 } if ready
+                    && feedback.unit_ready(next)
                     && outstanding == Some(next)
                     && id == record.id
                     && next == checkpoint + 1 =>
@@ -352,8 +375,11 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| "research checkpoint owner stopped")??;
+                    feedback.checkpoint(next)?;
                     drop(working.take());
+                    let waiting = Instant::now();
                     working = Some(computation.enter().await);
+                    feedback.pause(waiting.elapsed());
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: checkpoint,
@@ -366,6 +392,7 @@ async fn run_owned(
                 Frame::CleanupComplete { id } if id == record.id => cleaned = true,
                 Frame::Result { id, output }
                     if ready
+                        && feedback.finished()
                         && cleaned
                         && outstanding.is_none()
                         && id == record.id
@@ -430,6 +457,7 @@ async fn run_owned(
                     ));
                 }
                 Frame::Ready { id, .. }
+                | Frame::Feedback { id, .. }
                 | Frame::Descendant { id, .. }
                 | Frame::CpuActive { id, .. }
                 | Frame::CpuDone { id, .. }
@@ -882,6 +910,7 @@ fn work() -> Result<(), String> {
         id: record.id,
         receiver,
         descendants: Vec::new(),
+        blocked_nanos: 0,
     };
     match super::provider::drive(provider.as_mut(), &mut owner, record.checkpoint) {
         Ok(output) => emit(&Frame::Result {
@@ -903,16 +932,18 @@ struct WorkerControl {
     id: u64,
     receiver: sync_channel::Receiver<Vec<u8>>,
     descendants: Vec<Descendant>,
+    blocked_nanos: u64,
 }
 impl WorkerControl {
-    fn grant(&self, next: u32) -> Result<(), String> {
-        let grant: Grant = serde_json::from_slice(
-            &self
-                .receiver
-                .recv()
-                .map_err(|_| "provider durable grant closed")?,
-        )
-        .map_err(|e| e.to_string())?;
+    fn grant(&mut self, next: u32) -> Result<(), String> {
+        let waiting = Instant::now();
+        let bytes = self.receiver.recv();
+        self.blocked_nanos = self
+            .blocked_nanos
+            .saturating_add(waiting.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
+        let grant: Grant =
+            serde_json::from_slice(&bytes.map_err(|_| "provider durable grant closed")?)
+                .map_err(|e| e.to_string())?;
         if grant.id != self.id || grant.next != next {
             return Err("provider durable grant identity differs".into());
         }
@@ -920,6 +951,16 @@ impl WorkerControl {
     }
 }
 impl super::provider::Supervisor for WorkerControl {
+    fn blocked_nanos(&self) -> u64 {
+        self.blocked_nanos
+    }
+    fn observe(&mut self, phase: Phase, sample: Sample) -> Result<(), String> {
+        emit(&Frame::Feedback {
+            id: self.id,
+            phase,
+            sample,
+        })
+    }
     fn program(
         &mut self,
         unit: u32,

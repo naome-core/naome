@@ -1,4 +1,5 @@
 use super::*;
+mod comparison;
 
 fn hardware() -> Observed {
     Observed {

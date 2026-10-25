@@ -242,6 +242,15 @@ pub(crate) enum Input {
 }
 
 impl Input {
+    fn feedback_role(&self) -> crate::resources::feedback::Role {
+        use crate::resources::feedback::Role;
+        match self {
+            Self::Find { .. } => Role::Finding,
+            Self::Solve { .. } => Role::Solving,
+            Self::Interest { root: None, .. } => Role::LocalInterest,
+            Self::Interest { root: Some(_), .. } => Role::PeerInterest,
+        }
+    }
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Find { .. } => {}
@@ -259,12 +268,7 @@ impl Input {
     }
 
     fn lane(&self) -> usize {
-        match self {
-            Self::Find { .. } => 0,
-            Self::Solve { .. } => 1,
-            Self::Interest { root: None, .. } => 2,
-            Self::Interest { root: Some(_), .. } => 3,
-        }
+        self.feedback_role().index()
     }
 
     fn account_key(&self) -> String {

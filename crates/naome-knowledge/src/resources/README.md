@@ -45,6 +45,35 @@ kernel memory-pressure level inform pressure handling.
 latency, cache lookups and provider backlog at their existing owning boundaries.
 These observations are process-local scheduling evidence, not durable proof
 facts. `adaptive/governor.rs` combines fresh observations with this feedback.
+Provider workers additionally report setup, individual reserved work units and
+finalization through their existing supervised process channel. The attempt
+owner validates identity, phase order and the outstanding reservation before
+accepting a measurement. A successful unit report precedes the ordinary durable
+checkpoint acknowledgement; telemetry cannot reserve or checkpoint work itself.
+Cancellation, expiry, failure, uncertain custody and complete attempts have
+separate counters. Late reports during teardown do not train the controller.
+
+Each role exposes elapsed time, blocked grant time, worker CPU, worker peak RSS
+and checker work. CPU and peak RSS describe the provider worker itself; native
+descendant observation remains the independent node-wide memory/CPU authority.
+Missing OS metrics remain unknown. Complete-attempt service time includes native
+startup, durable IPC and cleanup while excluding computation-gate waits. Only
+complete attempts train its recent service estimate. Recent paired active/CPU
+costs exclude blocked grants; a missing CPU sample restores conservative hardware
+concurrency, and a later complete known sample can recover measured overlap.
+Lifetime phase totals remain diagnostic and do not grant job allowances.
+
+Automatic finding and solving cadence uses each role's own service cost and
+installed worker lanes. Unknown roles retain configured cadence; owner-selected
+explicit intervals still apply. Dynamic and Heavy modes may overlap waiting
+work only when every demanding role has complete CPU observations spanning a
+scheduling quantum. Growth is gradual and remains below installed workers,
+observed memory headroom and worker RSS estimates. Light retains one compute
+slot and Custom retains the owner's ceilings. All modes retain pressure pauses,
+the original job identity, binding, settings, reservations and absolute deadline.
+The authenticated `resources` response carries these fixed four-role statistics
+in a separate bounded diagnostic frame; request and peer framing are unchanged.
+
 Expensive work reduces the execution quantum; faster work permits gradual
 growth. Cache growth requires observed reuse as well as misses; one-pass
 streams do not cause unbounded growth.
@@ -82,6 +111,25 @@ Identify protocol/address vector bounds remain at their original protection
 ceilings (32/16), independently of adaptive transport queues and stream counts.
 In-flight responses are checked against the installed admitted format bounds,
 not a newly reduced page size. The serialized state owner remains singular.
+
+## Reproducible provider feedback comparisons
+
+`adaptive/governor/tests/comparison.rs` replays a frozen complete-attempt cost
+trace through the actual governor and operating-limit projection. A discrete
+CPU-sharing/I/O scheduler compares it with configured cadence and no provider
+cost observations. Matched runs retain the same arrivals, processor capacity,
+worker lanes, memory, work-unit allowance and absolute expiry. The matrix covers
+Light, Dynamic, Heavy and Custom on one and four CPUs, with CPU-bound work at
+250 ms arrival intervals and waiting work at 50 ms intervals. It prints stable
+JSON results for completion counts, expirations, latency and peak concurrency.
+Additional pressure/recovery tests verify that learned costs cannot bypass a
+pause, owner mode or memory ceiling. These are deterministic policy comparisons,
+not evidence of native throughput, energy savings or universal optimality.
+
+The separate `native_provider_feedback_reaches_owner_without_changing_job_allowances`
+process test starts ordinary loopback nodes with real isolated workers. It checks
+all roles and phases at the owner, checked data exchange, and the unchanged
+durable job horizons, work allowances and monotone reservation/checkpoint bounds.
 
 ## Persisted data and restart
 

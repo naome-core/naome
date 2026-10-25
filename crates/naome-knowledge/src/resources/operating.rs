@@ -6,7 +6,7 @@ pub(super) fn derive(capacity: &Limits, budget: &Budget) -> Limits {
     derive_with_statistics(capacity, budget, super::feedback::statistics())
 }
 
-fn derive_with_statistics(
+pub(super) fn derive_with_statistics(
     capacity: &Limits,
     budget: &Budget,
     statistics: super::feedback::Statistics,
@@ -100,7 +100,15 @@ fn derive_with_statistics(
     let measured = (statistics.check.units > 0).then(|| {
         std::time::Duration::from_nanos(check_nanos.saturating_mul(batch as u64)).max(quantum)
     });
-    let base_interval = measured.unwrap_or(capacity.finding_interval);
+    let provider_interval = super::feedback::Role::ALL
+        .into_iter()
+        .map(|role| statistics.providers.get(role))
+        .filter(|provider| provider.completed > 0 && (provider.queued > 0 || provider.running > 0))
+        .map(|provider| provider.interval(slots, quantum, capacity.job_tick_interval))
+        .min();
+    let base_interval = measured
+        .or(provider_interval)
+        .unwrap_or(capacity.finding_interval);
     let busy = statistics.queued_jobs > 0 || statistics.running_jobs > 0;
     work.tick_interval = if busy {
         base_interval.min(capacity.tick_interval)
@@ -112,17 +120,25 @@ fn derive_with_statistics(
     } else {
         capacity.job_tick_interval
     };
-    work.finding_interval = base_interval
+    work.finding_interval = statistics
+        .providers
+        .finding
+        .interval(
+            slots.min(capacity.workers[0]),
+            quantum,
+            capacity.finding_interval,
+        )
         .saturating_mul(
             1u32.checked_shl(statistics.empty_finding_streak.min(31) as u32)
                 .unwrap_or(u32::MAX),
         )
         .min(capacity.finding_interval)
         .max(quantum);
-    work.solving_interval = measured
-        .unwrap_or(capacity.solving_interval)
-        .min(capacity.solving_interval)
-        .max(quantum);
+    work.solving_interval = statistics.providers.solving.interval(
+        slots.min(capacity.workers[1]),
+        quantum,
+        capacity.solving_interval,
+    );
     work.production_interval = measured
         .unwrap_or(capacity.production_interval)
         .min(capacity.production_interval)
