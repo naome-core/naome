@@ -25,7 +25,7 @@ defaults:
 
 jobs:
   build:
-    name: Package (${{ inputs.target }})
+    name: Build and verify package
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     outputs:

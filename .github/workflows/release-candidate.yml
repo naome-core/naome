@@ -1,0 +1,55 @@
+name: Release candidate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/release*.yml
+      - .github/workflows/full-cargo.yml
+      - .github/workflows/rust-tests.yml
+      - tools/release/**
+      - tools/ci/test_release*.py
+      - tools/ci/audit_dependencies.py
+      - tools/ci/pinned_tool.py
+      - crates/naome-knowledge/src/runtime/cli.rs
+      - crates/naome-knowledge/src/runtime/cli/**
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Cargo version without v (empty selects the workspace version)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Validate candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate version and exact source
+        id: prepare
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: python3 tools/release/release.py prepare --version "$REQUESTED_VERSION"
+
+  packages:
+    name: Packages
+    needs: prepare
+    uses: ./.github/workflows/release-packages.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}

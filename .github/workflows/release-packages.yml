@@ -1,0 +1,75 @@
+name: Build and verify release packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+    outputs:
+      artifact-id:
+        value: ${{ jobs.verify.outputs.artifact-id }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linux:
+    name: Linux x86_64
+    uses: ./.github/workflows/release-build.yml
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-musl
+      version: ${{ inputs.version }}
+
+  macos:
+    name: macOS ARM64
+    uses: ./.github/workflows/release-build.yml
+    with:
+      runner: macos-15
+      target: aarch64-apple-darwin
+      version: ${{ inputs.version }}
+
+  verify:
+    name: Verify complete download set
+    if: ${{ always() }}
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reject missing, skipped, cancelled or failed platforms
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/check_results.py linux macos
+      - name: Download only the packages selected by the build jobs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.linux.outputs.artifact-id }},${{ needs.macos.outputs.artifact-id }}
+          merge-multiple: true
+          path: .local/release
+      - name: Verify source, archive contents and both target identities
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python3 tools/release/release.py assemble --version "$RELEASE_VERSION" --directory .local/release
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-release
+          path: .local/release/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1
+
