@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/6");
+pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge");
+pub(crate) const TOPIC: &str = "naome-knowledge";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

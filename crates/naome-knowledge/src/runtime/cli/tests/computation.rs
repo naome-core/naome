@@ -10,7 +10,6 @@ fn current_lifecycle_surface_and_automatic_pause_reason_are_explicit() {
         assert!(Arguments::parse(&[command, "extra"].map(OsString::from)).is_err());
     }
     let status = Status {
-        wallet: None,
         running: true,
         computation: crate::resources::ComputationState::Paused,
         computation_reason: Some("operating system power saving".into()),
@@ -27,7 +26,6 @@ fn current_lifecycle_surface_and_automatic_pause_reason_are_explicit() {
 #[test]
 fn pause_guidance_uses_only_reported_conditions_and_preserves_terminal_safety() {
     let mut status = Status {
-        wallet: None,
         running: true,
         computation: crate::resources::ComputationState::Paused,
         computation_reason: None,

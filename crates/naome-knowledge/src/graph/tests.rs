@@ -105,7 +105,7 @@ fn citation(graph: &Graph, parent: &Envelope) -> Envelope {
 }
 
 #[test]
-fn aliases_and_alternative_derivations_coexist_without_ledger_selection() {
+fn aliases_and_alternative_derivations_coexist() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
     let child = citation(&graph, &parent);

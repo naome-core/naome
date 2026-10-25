@@ -1,11 +1,13 @@
 use super::*;
-use crate::storage::{marker_valid, research_directory, write_marker};
+use crate::storage::{RESEARCH_MARKER, marker_valid, research_directory, write_marker};
 use std::{
     collections::BTreeSet,
     fs::File,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
+
+const CHECKPOINT_DOMAIN: &str = "naome:research-jobs";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +24,6 @@ pub(super) struct Account {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Journal {
-    pub version: u8,
     pub compatibility: String,
     pub configuration: String,
     pub next_id: u64,
@@ -39,7 +40,6 @@ pub(super) struct Journal {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
-    version: u8,
     compatibility: String,
     configuration: String,
     next_id: u64,
@@ -55,7 +55,6 @@ struct Header {
 impl Journal {
     fn header(&self) -> Header {
         Header {
-            version: 3,
             compatibility: self.compatibility.clone(),
             configuration: self.configuration.clone(),
             next_id: self.next_id,
@@ -71,7 +70,6 @@ impl Journal {
     }
     fn from_header(header: Header) -> Self {
         Self {
-            version: 3,
             compatibility: header.compatibility,
             configuration: header.configuration,
             next_id: header.next_id,
@@ -129,15 +127,14 @@ impl Disk {
         let root = research_directory(directory)?;
         let path = root.join("jobs.sqlite3");
         let marker = directory.join("research.initialized");
-        let established = marker_valid(&marker, b"naome-research-jobs-v3\n")?;
+        let established = marker_valid(&marker, RESEARCH_MARKER)?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open_for_replay(&path, "naome:research-jobs:v1")?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)?
         } else {
             if established {
                 return Err("research journal is missing; refusing a fresh allowance".into());
             }
             let journal = Journal {
-                version: 3,
                 compatibility: crate::hex(&crate::compatibility()),
                 configuration: identity(&settings),
                 next_id: 1,
@@ -153,7 +150,7 @@ impl Disk {
             journal.validate(settings)?;
             crate::checkpoint::Checkpoint::create(
                 &path,
-                "naome:research-jobs:v1",
+                CHECKPOINT_DOMAIN,
                 &journal.header(),
                 vec![],
             )?
@@ -185,8 +182,7 @@ impl Disk {
             },
         )?;
         let header: Header = checkpoint.header()?;
-        if header.version != 3
-            || header.compatibility != crate::hex(&crate::compatibility())
+        if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.configuration).is_err()
         {
             return Err("unsupported research journal configuration or header".into());
@@ -397,7 +393,7 @@ impl Disk {
         disk.retire_acknowledged_candidates()?;
         drop(reconfiguration_locks);
         if !established {
-            write_marker(&marker, b"naome-research-jobs-v3\n")?;
+            write_marker(&marker, RESEARCH_MARKER)?;
         }
         Ok((disk, journal))
     }
@@ -784,15 +780,12 @@ impl Journal {
     }
 
     fn validate_changes(&self, settings: Settings, full: bool) -> Result<(), String> {
-        if self.version != 3
-            || self.compatibility != crate::hex(&crate::compatibility())
+        if self.compatibility != crate::hex(&crate::compatibility())
             || self.configuration != identity(&settings)
             || self.next_id == 0
             || self.slots.is_empty()
         {
-            return Err(
-                "research journal version, compatibility, configuration or capacity differs".into(),
-            );
+            return Err("research journal compatibility, configuration or capacity differs".into());
         }
         if self
             .retired_jobs

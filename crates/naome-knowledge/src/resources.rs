@@ -121,8 +121,6 @@ resource_policy! {
         work registry_index_cache_bytes: usize = 4 * 1024 * 1024;
         work checked_index_cache_bytes: usize = 4 * 1024 * 1024;
         work checkpoint_cache_bytes: usize = 2 * 1024 * 1024;
-        work ledger_state_bytes: usize = 8 * 1024 * 1024;
-        work ledger_cache_bytes: usize = 1024 * 1024;
         work catalog_cache_bytes: usize = 8 * 1024 * 1024;
         work pending_page: usize = 128;
         work checked_cache_bytes: usize = 32 * 1024 * 1024;
@@ -676,9 +674,6 @@ impl Limits {
             .and_then(|n| n.checked_add(transport_frames))
             .and_then(|n| n.checked_add(queued_commands))
             .and_then(|n| n.checked_add(index_caches))
-            .and_then(|n| n.checked_add(self.ledger_state_bytes))
-            .and_then(|n| n.checked_add(self.ledger_cache_bytes))
-            .and_then(|n| n.checked_add(16 * naome_ledger::MAX_RECORD_BYTES))
             .and_then(|n| n.checked_add(CHECKER_RESERVE))
             .ok_or("resource allocation overflow")?;
         if charged > self.memory_bytes {
@@ -752,7 +747,6 @@ impl Limits {
                 certificate_steps: self.assessment_certificate_steps,
                 certificate_bytes: self.assessment_certificate_bytes,
             },
-            ..Default::default()
         }
     }
     fn resident_reservation(&self) -> usize {

@@ -19,7 +19,7 @@ async fn pending_interest_cannot_be_sealed_after_its_policy_or_owner_changes() {
             local.select(None);
             provider.complete(id, Ok(crate::jobs::Output::Interest(true)));
         } else {
-            local.policy.revision += 1;
+            local.policy.limits.operations -= 1;
             provider.complete(id, Ok(crate::jobs::Output::Interest(true)));
             let interest = local.completed().await;
             local.finish(&graph, interest);
@@ -101,13 +101,13 @@ async fn reusable_interest_cannot_be_rebound_to_another_question_policy_or_owner
             .prepare_exchange(&graph, &question(SOLVED), &assessment)
             .is_err()
     );
-    local.policy.revision += 1;
+    local.policy.limits.operations -= 1;
     assert!(
         local
             .prepare_exchange(&graph, &original, &assessment)
             .is_err()
     );
-    local.policy.revision -= 1;
+    local.policy.limits.operations += 1;
     local.select(Some([19; 32]));
     let mut rebound = assessment;
     rebound.selection = local.selection;

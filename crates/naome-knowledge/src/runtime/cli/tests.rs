@@ -26,7 +26,7 @@ fn information_options_are_exact_and_do_not_consume_interest_text() {
                 "--version"
             ]
         );
-        assert!(!help.contains("wallet") && !help.contains("resources"));
+        assert!(!help.contains("resources"));
         assert!(help.contains("--json") && help.contains("adapt automatically"));
     }
     for arguments in [vec!["interest", "--version"], vec!["--help", "start"]] {
@@ -81,7 +81,6 @@ fn startup_handoff_is_explicit_and_cannot_change_other_operator_commands() {
 #[test]
 fn untrusted_interest_cannot_style_or_rewrite_operator_rows() {
     let status = Status {
-        wallet: None,
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,

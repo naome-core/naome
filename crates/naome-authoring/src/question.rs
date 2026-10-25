@@ -255,7 +255,7 @@ impl CompiledQuestion {
 
     /// Matches only a checker-validated conclusion against the two exact targets.
     /// Compilation alone establishes well-formedness; this match establishes
-    /// mathematical resolution without any ledger or publication authority.
+    /// mathematical resolution without publication authority.
     pub fn classify_checked_proof(
         &self,
         proof: &CheckedProof,

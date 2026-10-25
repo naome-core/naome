@@ -30,7 +30,7 @@ COUNT, FIRST = 4096, 8100
 LARGE_COUNT = 12288
 LINE_LIMIT, SOURCE_LIMIT = 524288, 65536
 RAW_LIMIT = 256 * 1024**2
-EXPECTED_METADATA_ERROR = "question limit exceeded: question source bytes"
+EXPECTED_METADATA_MESSAGE = "question limit exceeded: question source bytes"
 
 
 def streaming_digest(path):
@@ -321,7 +321,11 @@ def main():
                     assert envelope["proof_id"] == identifier and envelope["statement_id"] == statement
                     assert envelope["compatibility"] == compatibility
                     assert bytes.fromhex(envelope["proof"]) == canonical
-                    assert result["metadata"] is None and result["metadata_error"] == EXPECTED_METADATA_ERROR
+                    assert result["metadata"] is None, result
+                    error = result["metadata_error"]
+                    assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
+                    assert error["message"] == EXPECTED_METADATA_MESSAGE, error
+                    assert error["retryable"] is False and error["fatal"] is False, error
                     identifiers.append(identifier)
                     timings.append(duration)
                     completed, payload = sequence, payload + len(canonical)

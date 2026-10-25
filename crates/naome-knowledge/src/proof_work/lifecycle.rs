@@ -45,7 +45,6 @@ pub(crate) fn retire_candidate(directory: &Path, job: u64) -> Result<bool, Strin
     let mut header = [0; 100];
     file.read_exact(&mut header).map_err(|e| e.to_string())?;
     if &header[..16] != b"SQLite format 3\0"
-        || header[60..64] != naome_checker::program::SCHEMA_VERSION.to_be_bytes()
         || header[68..72] != (naome_checker::program::APPLICATION_ID as u32).to_be_bytes()
     {
         return Err("candidate cache format differs; refusing retirement".into());
@@ -56,6 +55,7 @@ pub(crate) fn retire_candidate(directory: &Path, job: u64) -> Result<bool, Strin
     )
     .map_err(|e| e.to_string())?;
     crate::storage::sqlite_common(&connection, 4096).map_err(|e| e.to_string())?;
+    naome_checker::program::verify_database(&connection).map_err(|e| e.to_string())?;
     let (busy, _, _): (i64, i64, i64) = connection
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))

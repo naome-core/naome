@@ -31,7 +31,7 @@ pub(crate) use owner::Profile as OwnerProfile;
 pub(crate) use startup::Startup;
 
 fn control_limit() -> usize {
-    // Existing owner-text capacity plus bounded wallet identity/association metadata.
+    // Bound escaped owner text plus the JSON frame and control metadata.
     6 * crate::resources::limits().owner_text_bytes + 1024
 }
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
@@ -187,9 +187,6 @@ pub enum ProofVerification {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
-    /// Bounded custody and association metadata; verified funds are read through
-    /// the internal [`crate::NodeWallet::funds`] service outside node control.
-    pub wallet: Option<crate::WalletStatus>,
     pub running: bool,
     pub computation: crate::resources::ComputationState,
     pub computation_reason: Option<String>,
@@ -212,7 +209,6 @@ struct Endpoint {
 struct IdentityReceipt {
     version: u8,
     peer_id: String,
-    wallet_address: naome_wallet::Address,
 }
 
 fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, String> {
@@ -227,10 +223,6 @@ fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, String>
         })
         .transpose()
 }
-pub(crate) fn wallet_anchor(directory: &Path) -> Result<Option<naome_wallet::Address>, String> {
-    Ok(identity_receipt(directory)?.map(|receipt| receipt.wallet_address))
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Operation {
@@ -571,7 +563,6 @@ impl Control {
             token: self.endpoint.token.clone(),
             report: Report::Status {
                 status: Status {
-                    wallet: crate::wallet::observe(&self.directory),
                     running,
                     computation,
                     computation_reason,
@@ -779,7 +770,6 @@ fn initialize(directory: &Path) -> Result<(), String> {
     if receipt.is_none() && previously_started {
         return Err("existing node identity receipt is missing".into());
     }
-    let wallet = crate::wallet::initialize(directory)?;
     if receipt.is_none() {
         let incoming = directory.join(".identity-receipt-incoming");
         if crate::storage::read_owned(&incoming, 1024)?.is_some() {
@@ -790,7 +780,6 @@ fn initialize(directory: &Path) -> Result<(), String> {
             &serde_json::to_vec(&IdentityReceipt {
                 version: 1,
                 peer_id,
-                wallet_address: wallet.address,
             })
             .map_err(|error| error.to_string())?,
         )?;
@@ -860,7 +849,6 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
 async fn stopped_status(directory: &Path) -> Result<Status, String> {
     let store = crate::store::Store::open(directory)?;
     Ok(Status {
-        wallet: crate::wallet::observe(directory),
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,
@@ -879,7 +867,6 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
     // A daemon or embedding racing this command cannot become another writer.
     let store = crate::store::Store::open(directory)?;
     Ok(Status {
-        wallet: crate::wallet::observe(directory),
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,
@@ -1306,7 +1293,6 @@ pub async fn execute() -> Result<(), String> {
             command,
             json,
             &Status {
-                wallet: None,
                 running: false,
                 computation: crate::resources::ComputationState::Stopped,
                 computation_reason: None,

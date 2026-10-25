@@ -25,20 +25,6 @@ class StartupWrapperExit(RuntimeError):
     """An incomplete sample after the exact direct CLI Child was reaped."""
 
 
-def wallet_status(directory):
-    receipt = Path(directory) / "wallet.json"
-    if not receipt.exists():
-        return None
-    identity = json.loads(receipt.read_text())
-    connection = Path(directory) / "wallet-connection.json"
-    linked = json.loads(connection.read_text()) if connection.exists() else None
-    return {"signing_address": identity["address"],
-            "network": linked["network"] if linked else None,
-            "wallet_address": linked["wallet"] if linked else identity["address"],
-            "connection": "connected" if linked else "local",
-            "key_available": (Path(directory) / "wallet.key").is_file()}
-
-
 class Trial:
     def __init__(self, binary, output, timeout, profile, mode):
         self.binary = binary.resolve()
@@ -90,8 +76,7 @@ class Trial:
         assert result.returncode == 0, f"{verb}: {result.stderr}"
         assert result.stderr == "", f"{verb}: {result.stderr}"
         value = json.loads(result.stdout)
-        assert set(value) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason", "wallet"}, value
-        assert value["wallet"] == wallet_status(node.directory), value
+        assert set(value) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason"}, value
         assert isinstance(value["running"], bool), value
         assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value
         assert isinstance(value["interest"], str), value
@@ -137,7 +122,7 @@ class Trial:
                     "exit_code": process.returncode, "stdout": stdout.decode(), "stderr": stderr.decode()})
                 assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
                 status = json.loads(stdout)
-                assert set(status) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason", "wallet"}, status
+                assert set(status) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason"}, status
                 assert isinstance(status["running"], bool) and status["running"] is True, status
                 assert type(status["accepted_proofs"]) is int and status["accepted_proofs"] >= 0, status
                 assert isinstance(status["interest"], str), status
@@ -367,7 +352,7 @@ class Trial:
                 return None
             assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
             status = json.loads(stdout)
-            assert set(status) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason", "wallet"} and status["running"] is True, status
+            assert set(status) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason"} and status["running"] is True, status
             if record["pre_ready_capture"] and record["complete_pre_ready_resource_frames"]:
                 record["coverage"] = "COMPLETE_SAMPLED_PRE_READY_NATIVE_CUSTODY_ONLY"
             elif record["pre_ready_capture"]:
@@ -457,7 +442,7 @@ def wait_until(predicate, deadline):
 
 
 def retain_evidence(output, summary, mode, profile):
-    private = {"identity.key", "wallet.key", ".wallet-key-incoming", "control.json", ".control-incoming", "knowledge.lock", "lifecycle.lock"}
+    private = {"identity.key", "control.json", ".control-incoming", "knowledge.lock", "lifecycle.lock"}
     paths = [path for path in sorted(output.rglob("*"))
         if path.is_file() and not path.is_symlink()
         and path.name != "summary.json" and not private.intersection(path.relative_to(output).parts)]
@@ -1132,22 +1117,22 @@ def main():
         sender, receiver = Node(trial, 0), Node(trial, 1)
         seed = Node(trial, 2) if args.mode == "dht" else None
         for node in trial.nodes:
-            assert trial.call(node, "status") == {"wallet": None, "running": False, "accepted_proofs": 0, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
-            assert node.start() == {"wallet": wallet_status(node.directory), "running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(node, "status") == {"running": False, "accepted_proofs": 0, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert node.start() == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
             key = node.directory / "identity.key"
             assert key.exists(), "first start failed to initialize identity"
             node.identity_sha256 = digest(key)
             original = dict(node.process)
-            assert trial.call(node, "start") == {"wallet": wallet_status(node.directory), "running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(node, "start") == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
             assert process_identity(original["pid"]) == original, "duplicate start replaced the node owner"
             assert json.loads((node.directory / "control.json").read_text())["pid"] == original["pid"]
             alias = trial.output / f"alias-{node.index}"
             alias.symlink_to(node.directory, target_is_directory=True)
             alias_node = SimpleNamespace(directory=alias, index=node.index)
-            assert trial.call(alias_node, "status") == {"wallet": wallet_status(alias_node.directory), "running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
-            assert trial.call(alias_node, "start") == {"wallet": wallet_status(alias_node.directory), "running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(alias_node, "status") == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(alias_node, "start") == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
             assert process_identity(original["pid"]) == original, "path alias created a second node owner"
-            assert trial.call(alias_node, "stop") == {"wallet": wallet_status(alias_node.directory), "running": False, "accepted_proofs": 0, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert trial.call(alias_node, "stop") == {"running": False, "accepted_proofs": 0, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
             node.stop()
         trial.summary["scenarios"]["automatic_initialization_detached_start_and_single_owner"] = {"result": "pass"}
         for verb in ["run", "init", "relay", "contract", "proof", "question"]:
@@ -1190,7 +1175,7 @@ def main():
         assert sum(event.get("event") == "starting" for event in sender.logs()[sender.event_offset:]) == 1, "concurrent start created more than one runtime owner"
         trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
         def expected_status(node):
-            return {"wallet": wallet_status(node.directory), "running": True, "accepted_proofs": 3,
+            return {"running": True, "accepted_proofs": 3,
                 "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
 
         def converged():
@@ -1242,7 +1227,7 @@ def main():
         assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
         trial.summary["scenarios"]["repeated_catalog_outputs_do_not_inflate_accepted_count"] = {"result": "pass", "unique_proofs": 3}
         for node in trial.nodes:
-            assert node.stop() == {"wallet": wallet_status(node.directory), "running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert node.stop() == {"running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
             assert digest(node.directory / "identity.key") == node.identity_sha256
             node.config["runtime"]["question_interval_ms"] = 3600000
             node.write_config()
@@ -1257,7 +1242,7 @@ def main():
         # Preserve SQL widths while invalidating the authenticated content.
         original = replace_catalog_payload(receiver, member, bytes([saved[0] ^ 1]) + saved[1:])
         try:
-            assert trial.call(receiver, "status") == {"wallet": wallet_status(receiver.directory), "running": False, "accepted_proofs": 3,
+            assert trial.call(receiver, "status") == {"running": False, "accepted_proofs": 3,
                 "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
             offset = len(receiver.logs())
             receiver.release_port()
@@ -1268,7 +1253,7 @@ def main():
         finally:
             replace_catalog_payload(receiver, member, original)
             receiver.reserve_port()
-        assert trial.call(receiver, "status") == {"wallet": wallet_status(receiver.directory), "running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+        assert trial.call(receiver, "status") == {"running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
         trial.summary["scenarios"]["offline_status_reports_unverified_admissions_but_start_rejects_corrupt_payloads"] = {"result": "pass"}
         trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": "pass"}
         trial.summary["result"] = "pass"
@@ -1276,6 +1261,13 @@ def main():
         trial.summary["result"] = "fail"
         trial.summary["error"] = str(error)
         traceback.print_exc()
+        trial.summary["failure_statuses"] = []
+        for node in trial.nodes:
+            try:
+                status = trial.call(node, "status")
+                trial.summary["failure_statuses"].append({"node": node.index, "status": status})
+            except Exception as status_error:
+                trial.summary["failure_statuses"].append({"node": node.index, "error": str(status_error)})
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)

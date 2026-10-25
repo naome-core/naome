@@ -38,4 +38,4 @@ pub(crate) fn root(count: usize, fingerprint: [u8; 32]) -> Result<[u8; 32], Stri
     Ok(hash.finalize().into())
 }
 
-pub const ROOT_FORMAT: &str = "naome:knowledge:set:v3";
+pub const ROOT_FORMAT: &str = "naome:knowledge:set";

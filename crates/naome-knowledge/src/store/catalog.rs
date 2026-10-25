@@ -22,8 +22,7 @@ pub(crate) fn set_scan_count() -> usize {
     SET_SCANS.with(Cell::get)
 }
 
-const APPLICATION_ID: i64 = 0x4e414f31;
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+const APPLICATION_ID: i64 = 0x4e414f43;
 const IDS_PAGE_QUERY: &str = "SELECT substr(id,1,33) FROM proofs
     WHERE id > ?1 ORDER BY id LIMIT ?2";
 
@@ -147,7 +146,7 @@ impl Catalog {
             return Err("proof catalog must be a regular file".into());
         }
         let connection = open_connection(path)?;
-        verify_version(&connection)?;
+        verify_application(&connection)?;
         let cache_bytes = configure(&connection)?;
         verify_schema(&connection)?;
         read_meta(&connection, Some(database_id))?;
@@ -181,9 +180,6 @@ impl Catalog {
         let application: i64 = connection
             .pragma_query_value(None, "application_id", |row| row.get(0))
             .map_err(sql_error)?;
-        let version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .map_err(sql_error)?;
         let objects: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL",
@@ -191,7 +187,7 @@ impl Catalog {
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
-        if application != 0 || version != 0 || objects != 0 {
+        if application != 0 || objects != 0 {
             return Err("catalog initialization stage is not empty".into());
         }
         let cache_bytes = configure(&connection)?;
@@ -225,7 +221,7 @@ impl Catalog {
             return Err("proof catalog must be a regular file".into());
         }
         let connection = open_connection(path)?;
-        verify_version(&connection)?;
+        verify_application(&connection)?;
         configure(&connection)?;
         verify_schema(&connection)?;
         Ok(read_meta(&connection, None)?.database_id)
@@ -551,9 +547,6 @@ fn initialize_schema(connection: &Connection, database_id: [u8; 32]) -> Result<(
         .pragma_update(None, "application_id", APPLICATION_ID)
         .map_err(sql_error)?;
     transaction
-        .pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(sql_error)?;
-    transaction
         .execute(
             "INSERT INTO meta(singleton, database_id, state,
             corpus_root, corpus_count, payload_bytes) VALUES(1, ?1, 'initializing', NULL, 0, 0)",
@@ -743,21 +736,18 @@ fn configure(connection: &Connection) -> Result<usize, crate::Error> {
     Ok(cache_bytes)
 }
 
-fn verify_version(connection: &Connection) -> Result<(), crate::Error> {
+fn verify_application(connection: &Connection) -> Result<(), crate::Error> {
     let application: i64 = connection
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .map_err(sql_error)?;
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(sql_error)?;
-    if application != APPLICATION_ID || version != SCHEMA_VERSION {
+    if application != APPLICATION_ID {
         return Err("unsupported or uninitialized proof catalog".into());
     }
     Ok(())
 }
 
 fn verify_schema(connection: &Connection) -> Result<(), crate::Error> {
-    verify_version(connection)?;
+    verify_application(connection)?;
     let mut statement = connection
         .prepare(
             "SELECT substr(type,1,17), substr(name,1,65), substr(sql,1,8193)
@@ -777,7 +767,7 @@ fn verify_schema(connection: &Connection) -> Result<(), crate::Error> {
         }
         .ok_or("unexpected catalog schema object")?;
         if sql.len() > 8192 || normalize_sql(&sql) != normalize_sql(expected.1) {
-            return Err("catalog schema differs from current version".into());
+            return Err("catalog schema differs from the current contract".into());
         }
         found += 1;
     }
@@ -794,16 +784,6 @@ fn verify_schema(connection: &Connection) -> Result<(), crate::Error> {
 }
 
 fn normalize_sql(sql: &str) -> String {
-    let mut sql = sql.to_owned();
-    // ALTER TABLE quotes only these exact known table identifiers. Do not
-    // remove arbitrary quotes from expressions or relax supported constraints.
-    for (name, _) in &TABLES {
-        sql = sql.replace(&format!("TABLE \"{name}\""), &format!("TABLE {name}"));
-        sql = sql.replace(
-            &format!("REFERENCES \"{name}\""),
-            &format!("REFERENCES {name}"),
-        );
-    }
     sql.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

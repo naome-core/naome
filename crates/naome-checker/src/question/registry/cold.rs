@@ -155,7 +155,7 @@ impl DiskRegistry {
 }
 pub(super) fn formula_address(bytes: &[u8]) -> Identity {
     let mut hash = Sha256::new();
-    hash.update(b"naome:registered-question-formula:v1\0");
+    hash.update(b"naome:registered-question-formula\0");
     hash.update(bytes);
     hash.finalize().into()
 }

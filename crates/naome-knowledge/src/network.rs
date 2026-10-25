@@ -59,9 +59,9 @@ pub use crate::discovery::{Config as DiscoveryConfig, Peer};
 /// change the mathematical compatibility fingerprint or proof admission.
 pub fn routing_contract() -> Value {
     json!({
-        "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"catalog_schema":crate::store::CATALOG_SCHEMA_VERSION,"incompatible":"Rejected without conversion or reset"},
+        "corpus_fingerprint":{"produced":crate::CORPUS_ROOT_FORMAT,"incompatible":"Rejected without conversion or reset"},
         "question_exchange":{
-            "protocol":"/naome/knowledge/6", "topic":"naome-knowledge-v6",
+            "protocol":crate::wire::PROTOCOL.as_ref(), "topic":crate::wire::TOPIC,
             "interest":"Explicit local positive selection before root fetch and before commit",
             "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
             "limits":{"active_roots":1,"queued_metadata":crate::resources::active_limits().queued_metadata,
@@ -522,7 +522,7 @@ where
         gossip_config,
     )
     .map_err(|error| error.to_string())?;
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v6");
+    let topic = gossipsub::IdentTopic::new(crate::wire::TOPIC);
     gossip
         .subscribe(&topic)
         .map_err(|error| error.to_string())?;
