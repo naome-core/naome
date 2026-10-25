@@ -301,8 +301,9 @@ impl Graph {
             if page.is_empty() {
                 break;
             }
-            graph.cold(graph.checked_storage.begin_write_phase())?;
+            graph.cold(graph.checked_storage.begin_startup_page())?;
             for (ordinal, record) in page {
+                graph.cold(graph.checked_storage.adapt_cache())?;
                 if ordinal != after.checked_add(1).ok_or("replay ordinal overflow")? {
                     return Err("durable replay order is incomplete".into());
                 }
@@ -351,7 +352,7 @@ impl Graph {
                     .ok_or("accepted count overflow")?;
                 after = ordinal;
             }
-            graph.cold(graph.checked_storage.finish_write_phase())?;
+            graph.cold(graph.checked_storage.finish_startup_page(&graph.context))?;
             if let Some(live) = graph.prune_startup_checked_storage_at(replay_compaction)? {
                 replay_compaction = Self::replay_compaction_threshold(live);
             }

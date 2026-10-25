@@ -1,5 +1,5 @@
 use super::{
-    DiskArtifactState, StatementId, decode_root, decode_statement_record, formula_address,
+    DiskArtifactState, StatementId, decode_root, decode_statement_record, formula_address, maps,
     statement_id,
 };
 use crate::context::{ContextError, ContextStorage};
@@ -223,20 +223,6 @@ impl DiskArtifactCopy {
         })();
         self.source.report(result)
     }
-}
-
-fn maps(state: &DiskArtifactState) -> [&DiskMap; 9] {
-    [
-        &state.proofs,
-        &state.derivations,
-        &state.statements,
-        &state.artifacts,
-        &state.witnesses,
-        &state.outgoing,
-        &state.deductions,
-        &state.instances,
-        &state.program_nodes,
-    ]
 }
 
 #[cfg(test)]
