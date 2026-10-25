@@ -13,7 +13,7 @@ use std::{fs, io::Read};
 use std::{
     path::Path,
     sync::{Arc, OnceLock, RwLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 const MIB: u64 = 1024 * 1024;
 mod controller;
@@ -260,6 +260,17 @@ pub(crate) fn work_changes() -> tokio::sync::watch::Receiver<()> {
 pub fn current() -> Option<Snapshot> {
     let live = LIVE.get()?.read().ok()?;
     live.as_ref().map(|live| live.snapshot.clone())
+}
+/// Retained work yields at this cadence so resource observations and control
+/// tasks can run before another execution quantum is attempted.
+pub(crate) fn work_delay() -> Duration {
+    Duration::from_millis(current().map_or(5, |snapshot| {
+        if snapshot.budget.paused.is_some() {
+            250
+        } else {
+            snapshot.budget.yield_ms.max(1)
+        }
+    }))
 }
 pub(crate) fn publish(snapshot: Snapshot) {
     let mut live = LIVE
