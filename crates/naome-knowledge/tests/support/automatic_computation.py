@@ -106,7 +106,8 @@ def run(trial):
     donor.config["runtime"]["question_interval_ms"] = 3600000
     donor.write_config()
     pressure(donor, False)
-    assert donor.start()["computation"] == "running"
+    donor.start()
+    trial.wait(lambda: state(trial, donor, "running"), maximum=40)
     assert donor.peer == original_peer
     assert process_identity(donor.process["pid"]) == donor.process
     trial.summary.update(result="pass", fixture="automatic_resource_computation_pause",
