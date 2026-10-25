@@ -31,6 +31,14 @@ class ResultGateTests(unittest.TestCase):
 
 
 class BuildContractTests(unittest.TestCase):
+    def test_bazel_node_version_matches_the_cargo_release_identity(self):
+        version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+        module = ast.parse((ROOT / "crates/naome-knowledge/BUILD.bazel").read_text())
+        libraries = [node.value for node in module.body if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "rust_library"]
+        self.assertEqual(len(libraries), 1)
+        keywords = {item.arg: item.value for item in libraries[0].keywords}
+        self.assertEqual(ast.literal_eval(keywords["version"]), version)
+
     def test_bazel_and_cargo_use_the_same_pinned_rust(self):
         pinned = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
         module = ast.parse((ROOT / "MODULE.bazel").read_text())

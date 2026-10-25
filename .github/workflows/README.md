@@ -58,6 +58,16 @@ python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
 The CI contract tests require Python 3.11 or newer. For the full matrix, use the
 Cargo commands and profile instructions in the root `AGENTS.md`.
 
+## Downloadable releases
+
+`release.yml` validates read-only candidates when release infrastructure changes
+and provides an explicit manual publication path. Both stable and prerelease
+publication require successful main-push CI and the complete Full Cargo matrix
+at the exact source commit. Native package builds have no publication or signing
+rights; attestation and immutable publication run in separate jobs. See
+[release operations](../../docs/releases/README.md) and
+[download verification](../../tools/release/DOWNLOAD.md).
+
 The Bazel disk and repository caches live under `~/.cache/naome-bazel` and use the
 existing GitHub Actions cache allowance. Successful main pushes alone save caches.
 Caches are optional accelerators; full Cargo commands always execute. No billing

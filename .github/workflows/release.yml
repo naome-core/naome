@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  # A candidate exercises the identical build/packaging path without publishing.
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/release*.yml
+      - tools/release/**
+      - tools/ci/test_release*.py
+      - crates/naome-knowledge/src/runtime/cli.rs
+      - crates/naome-knowledge/src/runtime/cli/**
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact Cargo version without v (required for publication)
+        type: string
+        default: ""
+      publish:
+        description: Publish an immutable release from qualified main
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Publications are serialized globally and never automatically cancelled.
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'publication' || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Validate release request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify release policy
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_POLICY_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && github.repository == 'naome-core/naome' && secrets.RELEASE_POLICY_TOKEN || '' }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        run: |
+          arguments=(--version "$REQUESTED_VERSION")
+          if [ "$PUBLISH" = true ]; then arguments+=(--publish); fi
+          python3 tools/release/release.py prepare "${arguments[@]}"
+
+  linux:
+    needs: prepare
+    uses: ./.github/workflows/release-build.yml
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-musl
+      version: ${{ needs.prepare.outputs.version }}
+
+  macos:
+    needs: prepare
+    uses: ./.github/workflows/release-build.yml
+    with:
+      runner: macos-15
+      target: aarch64-apple-darwin
+      version: ${{ needs.prepare.outputs.version }}
+
+  verify:
+    name: Verify complete download set
+    if: ${{ always() }}
+    needs: [prepare, linux, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reject missing, skipped, cancelled or failed platforms
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/check_results.py prepare linux macos
+      - name: Download only the packages selected by the build jobs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.linux.outputs.artifact-id }},${{ needs.macos.outputs.artifact-id }}
+          merge-multiple: true
+          path: .local/release
+      - name: Verify source, archive contents and both target identities
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: python3 tools/release/release.py assemble --version "$RELEASE_VERSION" --directory .local/release
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-release
+          path: .local/release/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+      - name: Reject workflow cancellation
+        if: ${{ always() && cancelled() }}
+        run: exit 1
+
+  attest:
+    name: Attest verified release bytes
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && github.repository == 'naome-core/naome' }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: release
+      - name: Sign provenance for every downloadable payload and checksum file
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/*
+          create-storage-record: false
+      - name: Include the offline verification bundle
+        env:
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" release/provenance.sigstore.json
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: attested-release
+          path: release/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    name: Publish immutable release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && github.repository == 'naome-core/naome' }}
+    needs: [prepare, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.attest.outputs.artifact-id }}
+          path: .local/release
+      - name: Recheck qualification, verify signatures, stage and publish once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_POLICY_TOKEN: ${{ secrets.RELEASE_POLICY_TOKEN }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: python3 tools/release/release.py publish --version "$RELEASE_VERSION" --directory .local/release
