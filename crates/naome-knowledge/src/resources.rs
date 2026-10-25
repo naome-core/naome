@@ -752,7 +752,6 @@ impl Limits {
                 certificate_steps: self.assessment_certificate_steps,
                 certificate_bytes: self.assessment_certificate_bytes,
             },
-            ..Default::default()
         }
     }
     fn resident_reservation(&self) -> usize {
