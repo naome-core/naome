@@ -78,6 +78,8 @@ impl QuestionRegistry {
             return Ok(());
         }
         let statement = statement_id(&bytes);
+        let equivalence =
+            super::equivalence::key(entry.formula).map_err(|_| RejectionReason::InvalidRegistry)?;
         let mut bucket = self.statements.get(&statement).cloned().unwrap_or_default();
         if let Some((record, ())) = bucket.entries().next()
             && self.records.get(record) != Some(entry.formula)
@@ -88,6 +90,13 @@ impl QuestionRegistry {
         self.records.insert(entry.record, entry.formula.clone());
         bucket.insert(entry.record, ());
         self.statements.set(statement, bucket);
+        let mut related = self
+            .statements
+            .get(&equivalence)
+            .cloned()
+            .unwrap_or_default();
+        related.insert(entry.record, ());
+        self.statements.set(equivalence, related);
         self.length = length;
         Ok(())
     }

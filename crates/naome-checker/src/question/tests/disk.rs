@@ -404,21 +404,15 @@ fn target_directed_instantiation_matches_cold_replay_and_certifies_original_sour
 fn cold_mutual_implications_and_finite_universal_instances_match_exactly() {
     let mut twin = Twin::new();
     let a = unresolved();
-    let b = Formula::for_all(var(17), a.clone());
+    let (b, forward, backward) = fixtures::guarded_equivalence(&a);
     let mut registry = QuestionRegistry::new();
     registry
         .insert(RegisteredQuestion::new([1; 32], &b).unwrap())
         .unwrap();
     let policy = PrefilterPolicy::default();
-    let _ = twin.register(vec![ProofStep::VacuousUniversal {
-        formula: a.clone().into(),
-    }]);
+    let _ = twin.register(forward);
     assert!(twin.compare(&a, &registry, &policy).passed());
-    let _ = twin.register(vec![ProofStep::UniversalInstantiation {
-        variable: var(17),
-        replacement: var(18),
-        body: a.into(),
-    }]);
+    let _ = twin.register(backward);
     assert_eq!(
         twin.compare(&unresolved(), &registry, &policy).reason,
         Some(RejectionReason::ProvenEquivalent)
@@ -687,3 +681,5 @@ fn proof_registration_rules_match_for_duplicates_collisions_aliases_and_missing_
     // Replication admits a distinct normalized alias for the same derivation.
     let _ = twin.register(vec![ProofStep::ProofReference { proof_id: parent }]);
 }
+
+mod equivalence;

@@ -27,6 +27,7 @@ use crate::Graph;
 
 // Worst-case JSON escaping of one protocol-bounded source plus its receipt.
 const QUESTION_ENTRY_MAX_BYTES: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 2048;
+mod cache;
 mod persistence;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,8 +351,8 @@ pub(crate) struct LocalQuestions<F> {
     storage_error: Option<String>,
     interest_horizon: Duration,
     selection: Option<Identity>,
-    /// One computed read-only decision, never an admission or interest receipt.
-    cached: Option<PrefilterDecision>,
+    /// Bounded complete read-only decisions, never admission or interest receipts.
+    cache: cache::DecisionCache,
     /// Only successful local admission with an actually delivered receipt.
     admitted: BTreeMap<Identity, AdmittedProvenance>,
     known: BTreeMap<Identity, CompiledQuestion>,
@@ -384,7 +385,7 @@ where
                 crate::object::id_bytes(&crate::jobs::Binding::new([0; 32], [0; 32]).selection)
                     .expect("canonical built-in provider identity"),
             ),
-            cached: None,
+            cache: cache::DecisionCache::default(),
             admitted: BTreeMap::new(),
             known: BTreeMap::new(),
             #[cfg(test)]
@@ -426,6 +427,9 @@ where
     }
 
     pub(crate) fn maintain_registry(&mut self) -> Result<(), crate::Error> {
+        let cache_bytes =
+            crate::resources::adaptive::cache(crate::resources::limits().question_cache_bytes);
+        self.cache.trim(cache_bytes);
         if !crate::resources::adaptive::work_available() {
             return Ok(());
         }
@@ -615,7 +619,7 @@ where
             return false;
         }
         self.selection = selection;
-        self.cached = None;
+        self.cache.clear();
         for (_, pending) in std::mem::take(&mut self.pending) {
             if let (Some(client), Some(job)) = (&self.managed, pending.job)
                 && let Err(error) = client.acknowledge(job)
@@ -690,7 +694,14 @@ where
         reuse: bool,
         record: Option<Identity>,
     ) -> PrefilterDecision {
-        let snapshot = self.snapshot(graph);
+        let cache_bytes =
+            crate::resources::adaptive::cache(crate::resources::limits().question_cache_bytes);
+        self.cache.trim(cache_bytes);
+        let snapshot = KnowledgeSnapshot::new(
+            crate::compatibility(),
+            graph.checked_context(),
+            &self.registry,
+        );
         let request = AssessmentQuestion::new(
             FOUNDATION_ID,
             question.core(),
@@ -702,11 +713,8 @@ where
         if !crate::resources::adaptive::work_available() {
             return naome_checker::question::defer_question(&request, &snapshot, &self.policy);
         }
-        if reuse
-            && let Some(cached) = &self.cached
-            && cached.matches_inputs(&request, &snapshot, &self.policy)
-        {
-            return cached.clone();
+        if reuse && let Some(cached) = self.cache.get(&request, &snapshot, &self.policy) {
+            return cached;
         }
         let mut decision = assess_question(&request, &snapshot, &self.policy);
         #[cfg(test)]
@@ -720,7 +728,7 @@ where
                 other => other,
             };
         }
-        self.cached = (!decision.inconclusive()).then(|| decision.clone());
+        self.cache.insert(&decision, cache_bytes);
         decision
     }
 
@@ -935,7 +943,7 @@ where
         if let Some(question) = delta.question {
             self.remember(question, false);
         }
-        self.cached = None;
+        self.cache.clear();
         Ok(())
     }
 
@@ -1277,7 +1285,7 @@ where
                     });
                     outcome = AdmissionOutcome::Admitted(Box::new(receipt));
                     previous_registry = Some(previous);
-                    self.cached = None;
+                    self.cache.clear();
                 }
                 Err(reason) => {
                     prefilter = prefilter.reject(reason, "Q02_REGISTRY_INSERTION");

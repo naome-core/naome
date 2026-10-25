@@ -218,7 +218,7 @@ fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
     assert_eq!(novelty.input_id(), result.input);
     assert_eq!(novelty.snapshot_id(), result.snapshot);
     assert_eq!(novelty.policy_id(), result.policy);
-    assert_eq!(novelty.rule_set(), 3);
+    assert_eq!(novelty.rule_set(), 4);
 
     let changed_source =
         AssessmentQuestion::new(FOUNDATION_ID, &target, b"source B", &[], None).unwrap();
@@ -399,17 +399,12 @@ fn canonical_duplicates_and_self_record_exemption_cannot_hide_other_records() {
 #[test]
 fn unanswered_equivalence_requires_both_actual_checked_implications() {
     let a = unresolved();
-    let b = Formula::for_all(var(17), a.clone());
+    let (b, forward_steps, backward_steps) = fixtures::guarded_equivalence(&a);
     let registry = [RegisteredQuestion::new([1; 32], &b).unwrap()];
     let policy = PrefilterPolicy::default();
     let mut state = ArtifactState::new();
     assert!(decision(&a, &state, &registry, &policy).passed());
-    let (forward, _) = register(
-        &mut state,
-        vec![ProofStep::VacuousUniversal {
-            formula: a.clone().into(),
-        }],
-    );
+    let (forward, _) = register(&mut state, forward_steps);
     assert!(
         decision(&a, &state, &registry, &policy).passed(),
         "one direction cannot establish equivalence"
@@ -427,14 +422,7 @@ fn unanswered_equivalence_requires_both_actual_checked_implications() {
         decision(&a, &state, &registry, &policy).passed(),
         "failed evidence cannot enter checked state"
     );
-    let _ = register(
-        &mut state,
-        vec![ProofStep::UniversalInstantiation {
-            variable: var(17),
-            replacement: var(18),
-            body: a.clone().into(),
-        }],
-    );
+    let _ = register(&mut state, backward_steps);
     let result = decision(&a, &state, &registry, &policy);
     assert_eq!(result.reason, Some(RejectionReason::ProvenEquivalent));
     assert_eq!(result.rule, "Q05_CHECKED_MUTUAL_IMPLICATIONS");
@@ -939,29 +927,17 @@ fn complete_large_checked_context_approves_irrelevant_data_and_finds_late_witnes
     assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
 
     let mut equivalent = state.clone();
-    let related = Formula::for_all(var(17), unrelated.clone());
+    let (related, forward_steps, backward_steps) = fixtures::guarded_equivalence(&unrelated);
     let mut changed_registry = registry.clone();
     changed_registry
         .insert(RegisteredQuestion::new([255; 32], &related).unwrap())
         .unwrap();
-    let _ = register(
-        &mut equivalent,
-        vec![ProofStep::VacuousUniversal {
-            formula: unrelated.clone().into(),
-        }],
-    );
+    let _ = register(&mut equivalent, forward_steps);
     assert!(
         indexed_decision(&unrelated, &equivalent, &changed_registry, &policy).passed(),
         "one direction remains insufficient"
     );
-    let _ = register(
-        &mut equivalent,
-        vec![ProofStep::UniversalInstantiation {
-            variable: var(17),
-            replacement: var(18),
-            body: unrelated.clone().into(),
-        }],
-    );
+    let _ = register(&mut equivalent, backward_steps);
     let result = indexed_decision(&unrelated, &equivalent, &changed_registry, &policy);
     assert_eq!(result.reason, Some(RejectionReason::ProvenEquivalent));
     assert_eq!(result.related_record, Some([255; 32]));
