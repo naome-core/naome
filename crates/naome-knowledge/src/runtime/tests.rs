@@ -543,6 +543,11 @@ async fn selection_epoch_binds_owner_revision_text_and_recovery_errors() {
     assert_ne!(first, control.selection().unwrap());
     control.owner.lock().unwrap().recovery_error = Some("recovery uncertain".into());
     assert!(control.selection().is_err());
+    assert_eq!(
+        crate::publication::LocalAuthority::check_selection(&control, None),
+        Err(crate::Error::StaleAuthority),
+        "an unknown expected selection cannot authorize an uncertain owner"
+    );
     let mut watch = Some(control.stop_watch());
     control.stopping.send_replace(true);
     tokio::time::timeout(Duration::from_secs(1), requested_stop(&mut watch))

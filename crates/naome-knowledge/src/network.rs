@@ -608,6 +608,9 @@ where
         .store(node.graph.accepted_count(), Ordering::Release);
     let mut controls = worker::Controls::spawn(control.clone(), published.clone());
     let mut stop_watch = control.as_ref().map(|control| control.stop_watch());
+    let authority = control
+        .clone()
+        .map(|control| control as Arc<dyn crate::publication::LocalAuthority>);
     let mut stopping = false;
     let mut next_profile_check = Instant::now();
     let mut resources = control
@@ -633,8 +636,8 @@ where
                 node.intake.invalidate_interest(); node.inventory_summaries.clear();
                 }
             }
-        node.graph.set_commit_guard(crate::graph::CommitGuard::new(
-            node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+        node.graph.set_commit_guard(crate::publication::CommitGuard::new(
+            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
         ));
         // A cold peer may stay quiet after its response. Wake at the next
         // paced request deadline instead of quantizing reads to the tick.
@@ -658,8 +661,8 @@ where
             event = events.recv() => {
                 let event = event.ok_or("proof transport stopped or exceeded its event capacity")?;
                 node.transport_epoch = event.epoch;
-                node.graph.set_commit_guard(crate::graph::CommitGuard::new(
-                    node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+                node.graph.set_commit_guard(crate::publication::CommitGuard::new(
+                    node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
                 ));
                 node.event(event.event, event.grant)?;
                 published.ready.store(node.ready, Ordering::Release);
@@ -713,8 +716,8 @@ where
             && (control.selection_changed() || node.intake.selection_boundary_ready()
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
                 && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
-        node.graph.set_commit_guard(crate::graph::CommitGuard::new(
-            node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+        node.graph.set_commit_guard(crate::publication::CommitGuard::new(
+            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
         ));
         node.graph.maintain_checked_storage()?;
         questions.maintain_registry()?;
@@ -1569,7 +1572,7 @@ impl Node {
     fn event(
         &mut self,
         event: SwarmEvent<BehaviourEvent>,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<(), String> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
@@ -1816,7 +1819,7 @@ impl Node {
         &mut self,
         peer: PeerId,
         body: Body,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<Body, String> {
         let response = match body {
             Body::Inventory {
@@ -1945,7 +1948,7 @@ impl Node {
         peer: PeerId,
         flight: Flight,
         body: Body,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<(), String> {
         let expected_peer = match &flight {
             Flight::Inventory { peer, .. }

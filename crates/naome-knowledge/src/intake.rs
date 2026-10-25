@@ -25,7 +25,7 @@ mod tests;
 
 #[derive(Clone)]
 struct Description {
-    grant: Option<crate::graph::PeerGrant>,
+    grant: Option<crate::publication::PeerGrant>,
     peer: PeerId,
     id: ProofId,
     statement: StatementId,
@@ -127,7 +127,7 @@ impl Intake {
         peer: PeerId,
         metadata: Metadata,
         graph: &Graph,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<&'static str, String> {
         let (id, statement, question) = metadata.compile()?;
         if graph.contains(id)? {
