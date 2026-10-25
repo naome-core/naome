@@ -370,9 +370,14 @@ impl Graph {
         })
     }
 
-    pub(super) fn replay_program(&mut self, manifest: &Manifest) -> Result<(), crate::Error> {
+    pub(super) fn replay_program(
+        &mut self,
+        manifest: &Manifest,
+        observe: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), crate::Error> {
         let mut check = ProgramCheck::open(self, manifest.clone())?;
         let proof = loop {
+            observe()?;
             self.cold(self.checked_storage.adapt_cache())?;
             if let Some(proof) = check.advance(self, &self.context)? {
                 break proof;
@@ -385,6 +390,7 @@ impl Graph {
             .map_err(crate::Error::from)?;
         let mut budget = Observer::default();
         while !cursor.complete() {
+            observe()?;
             let snapshot = budget.refresh(self.store.directory())?;
             self.cold(self.checked_storage.adapt_cache())?;
             if snapshot.budget.paused.is_some() {

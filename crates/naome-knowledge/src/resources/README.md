@@ -93,6 +93,10 @@ snapshot and retries without stopping the network or fabricating a fresh sample.
 `adaptive/observer.rs` owns the sampling schedule, last usable snapshot and
 telemetry-failure policy for both the history controller and standalone program
 work. The controller retains persistence and publication of the live node budget.
+The native owner opens this same controller before checked startup replay and
+refreshes it between bounded replay portions, then retains it for the live loop.
+Startup therefore observes pressure and executed work instead of borrowing one
+unchanging initial quantum. Readiness still requires complete mathematical replay.
 Without an initial observation, program work remains retryable and cannot invent
 an admission budget; invalid profile settings remain a distinct configuration
 error.
