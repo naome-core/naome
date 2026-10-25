@@ -3,13 +3,13 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-enum FormulaContext {
+pub(crate) enum FormulaContext {
     Binding,
     Statement,
     Certificate,
 }
 
-struct ParsedFormula {
+pub(crate) struct ParsedFormula {
     formula: DefinedFormula,
     expanded_nodes: u32,
     expanded_depth: u32,

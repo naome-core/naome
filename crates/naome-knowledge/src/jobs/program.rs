@@ -1,18 +1,12 @@
 //! Provider records are durable candidates, never checked graph membership.
-use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command, RECORD_BYTES};
+use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command, encode_command};
 
 pub(super) fn validate_group(records: &[Command]) -> Result<(), String> {
     if records.is_empty() || records.len() > CHUNK_RECORDS {
         return Err("provider program group capacity".into());
     }
     for command in records {
-        if serde_json::to_vec(command)
-            .map_err(|e| e.to_string())?
-            .len()
-            > RECORD_BYTES
-        {
-            return Err("provider program record capacity".into());
-        }
+        encode_command(command)?;
     }
     if serde_json::to_vec(records)
         .map_err(|e| e.to_string())?

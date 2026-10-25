@@ -125,22 +125,84 @@ impl ProgramCheck {
     }
 }
 
+/// The common post-check lifecycle for a standalone local or received program.
+/// A stale graph restarts registration while retaining the live checked proof.
+pub(crate) struct PreparedProgram {
+    proof: CheckedWork,
+    registration: Registration,
+}
+enum Registration {
+    Pending,
+    Active(Box<ProgramAdmission>),
+    Ready(Box<CheckedBatch>),
+}
+impl PreparedProgram {
+    pub(crate) fn new(proof: CheckedWork) -> Self {
+        Self {
+            proof,
+            registration: Registration::Pending,
+        }
+    }
+    pub(crate) fn proof(&self) -> Result<&naome_checker::program::CheckedProgram, crate::Error> {
+        self.proof.proof()
+    }
+    pub(crate) fn restrict_cache(&mut self, bytes: u64) -> Result<(), crate::Error> {
+        self.proof.restrict_cache(bytes)
+    }
+    pub(crate) fn ready(&self) -> bool {
+        matches!(self.registration, Registration::Ready(_))
+    }
+    pub(crate) fn take_batch(&mut self) -> Option<CheckedBatch> {
+        match std::mem::replace(&mut self.registration, Registration::Pending) {
+            Registration::Ready(batch) => Some(*batch),
+            other => {
+                self.registration = other;
+                None
+            }
+        }
+    }
+    pub(crate) fn advance(&mut self, graph: &Graph, records: usize) -> Result<bool, crate::Error> {
+        if let Registration::Ready(batch) = &self.registration {
+            if graph.batch_current(batch)? {
+                return Ok(true);
+            }
+            self.registration = Registration::Pending;
+        }
+        if matches!(self.registration, Registration::Pending) {
+            self.registration =
+                Registration::Active(Box::new(graph.begin_program_admission(&self.proof)?));
+        }
+        let Registration::Active(admission) = &mut self.registration else {
+            unreachable!()
+        };
+        match admission.advance(graph, &self.proof, records) {
+            Ok(false) => Ok(false),
+            Ok(true) => {
+                let Registration::Active(admission) =
+                    std::mem::replace(&mut self.registration, Registration::Pending)
+                else {
+                    unreachable!()
+                };
+                self.registration =
+                    Registration::Ready(Box::new(admission.finish(graph, &self.proof)?));
+                Ok(true)
+            }
+            Err(crate::Error::StaleAuthority) => {
+                self.registration = Registration::Pending;
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 pub(crate) struct ProgramAdmission {
-    prefix: Option<CheckedBatch>,
+    preparation: Preparation,
     cursor: naome_checker::ProgramRegistration,
-    base: [u8; 32],
-    storage: Arc<CheckedStorage>,
-    epoch: u64,
 }
 impl ProgramAdmission {
     fn current(&self, graph: &Graph) -> Result<(), crate::Error> {
-        if self.base != graph.context.snapshot_id()
-            || !Arc::ptr_eq(&self.storage, &graph.checked_storage)
-            || self.epoch != graph.cold(graph.checked_storage.copy_epoch())?
-        {
-            return Err(STALE_COMMIT);
-        }
-        Ok(())
+        self.preparation.stamp().check(graph)
     }
     pub(crate) fn advance(
         &mut self,
@@ -157,7 +219,7 @@ impl ProgramAdmission {
             graph.store.directory(),
             (records as u64).saturating_mul(128 * 1024),
         )?;
-        let source = self.storage.clone();
+        let source = self.preparation.stamp().storage.clone();
         let phase = source
             .admission_phase()
             .map_err(crate::Error::CorruptStorage)?;
@@ -171,7 +233,7 @@ impl ProgramAdmission {
         Ok(self.cursor.complete())
     }
     pub(crate) fn finish(
-        self,
+        mut self,
         graph: &Graph,
         proof: &CheckedWork,
     ) -> Result<CheckedBatch, crate::Error> {
@@ -179,14 +241,13 @@ impl ProgramAdmission {
         let checked = proof.proof()?;
         let growth = program_context_bytes(checked)?;
         let context = self.cursor.finish().map_err(crate::Error::from)?;
-        CheckedBatch::from_program(
+        self.preparation.append_program(
             graph,
             context,
             crate::object::BinaryProof::from_program(checked)?,
-            self.epoch,
             growth,
-            self.prefix,
-        )
+        )?;
+        Ok(self.preparation.into_prefix())
     }
 }
 
@@ -278,26 +339,18 @@ impl Graph {
         proof: &CheckedWork,
         prefix: Option<CheckedBatch>,
     ) -> Result<ProgramAdmission, crate::Error> {
-        self.ensure_live()?;
-        if let Some(prefix) = &prefix
-            && !self.batch_current(prefix)?
-        {
-            return Err(STALE_COMMIT);
-        }
-        let context = prefix
-            .as_ref()
-            .map_or(&self.context, |prefix| &prefix.context);
-        let cursor = context
+        let record = crate::object::BinaryProof::from_program(proof.proof()?)?;
+        let preparation = Preparation::new(self, prefix, record.bytes.len(), 1)?;
+        let cursor = preparation
+            .context()
             .begin_program_registration(proof.proof()?)
             .map_err(crate::Error::from)?;
         Ok(ProgramAdmission {
+            preparation,
             cursor,
-            prefix,
-            base: self.context.snapshot_id(),
-            storage: self.checked_storage.clone(),
-            epoch: self.cold(self.checked_storage.copy_epoch())?,
         })
     }
+
     pub(super) fn replay_program(&mut self, manifest: &Manifest) -> Result<(), crate::Error> {
         let mut check = ProgramCheck::open(self, manifest.clone())?;
         let proof = loop {
