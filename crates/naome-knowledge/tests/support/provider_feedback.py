@@ -46,6 +46,10 @@ def run(trial):
         node.write_config()
     receiver.start()
     source.start()
+    # A ready native node may still be in the existing 30-second OS-pressure
+    # recovery window. Wait for real admission without bypassing its sensors.
+    trial.wait(lambda: all(trial.call(node, "status")["computation"] == "running"
+                           for node in trial.nodes), maximum=40)
 
     def observed():
         reports = [feedback(trial, node) for node in trial.nodes]

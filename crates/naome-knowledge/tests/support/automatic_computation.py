@@ -45,6 +45,10 @@ def run(trial):
     for node in trial.nodes:
         node.write_config()
     donor.start()
+    # Lifecycle readiness can correctly precede compute admission. Honor the
+    # existing 30-second pressure recovery before the work-progress oracle;
+    # the whole-driver deadline and the controlled pause checks are unchanged.
+    trial.wait(lambda: state(trial, donor, "running"), maximum=40)
     trial.wait(lambda: next((record for record in journal(donor)["records"].values()
         if record["state"] == "running" and record["input"]["role"] == "find"
         and record["checkpoint"] > 0), None), maximum=15)
