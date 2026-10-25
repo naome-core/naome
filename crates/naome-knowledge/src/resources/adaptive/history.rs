@@ -1,12 +1,7 @@
 use super::*;
 use rusqlite::{Connection, OpenFlags, params};
 use std::os::unix::fs::OpenOptionsExt;
-use std::{
-    fs::File,
-    os::unix::fs::MetadataExt,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{fs::File, os::unix::fs::MetadataExt, path::PathBuf, time::Instant};
 fn sql<T>(r: rusqlite::Result<T>) -> Result<T, String> {
     r.map_err(|e| e.to_string())
 }
@@ -20,6 +15,7 @@ pub(crate) struct Controller {
     version: i64,
     last: Option<Snapshot>,
     next: Instant,
+    governor: Governor,
 }
 impl Controller {
     pub(crate) fn open(directory: &Path) -> Result<Self, String> {
@@ -63,7 +59,11 @@ impl Controller {
             return Err("resource history format mismatch".into());
         }
         sql(connection.execute_batch("PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;"))?;
-        crate::storage::sqlite_common(&connection, 64 * 1024).map_err(|e| e.to_string())?;
+        crate::storage::sqlite_common(
+            &connection,
+            super::super::active_limits().checkpoint_cache_bytes,
+        )
+        .map_err(|e| e.to_string())?;
         File::open(directory)
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
@@ -76,6 +76,7 @@ impl Controller {
             version,
             last: None,
             next: Instant::now(),
+            governor: Governor::default(),
         };
         owner.refresh()?;
         Ok(owner)
@@ -84,7 +85,7 @@ impl Controller {
         if Instant::now() < self.next {
             return Ok(());
         }
-        self.next = Instant::now() + Duration::from_secs(1);
+        let sampled = Instant::now();
         let path = self.directory.join("resource-history.sqlite3");
         let metadata = crate::storage::owned_file(&path)?;
         let version: i64 = sql(self
@@ -93,11 +94,26 @@ impl Controller {
         if (metadata.dev(), metadata.ino()) != self.identity || version != self.version {
             return Err("resource history changed outside owner".into());
         }
-        let snapshot = Snapshot::derive(
-            load(&self.directory)?,
-            sample(&self.directory)?,
-            super::super::limits().memory_bytes as u64,
-        )?;
+        let selection = load(&self.directory)?;
+        let (snapshot, valid) = match sample_node(&self.directory) {
+            Ok(sample) => (
+                self.governor.observe(
+                    selection,
+                    sample,
+                    super::super::limits().memory_bytes as u64,
+                )?,
+                true,
+            ),
+            Err(error) => (self.governor.unavailable(selection).ok_or(error)?, false),
+        };
+        self.governor.sampled(sampled.elapsed());
+        let interval = self.governor.interval();
+        self.next = Instant::now()
+            + if valid {
+                interval
+            } else {
+                interval.min(std::time::Duration::from_secs(1))
+            };
         let changed = self.last.as_ref().is_none_or(|last| {
             last.selection != snapshot.selection
                 || last.budget != snapshot.budget
@@ -131,8 +147,11 @@ pub fn page(directory: &Path, after: u64) -> Result<Vec<serde_json::Value>, Stri
     if app != APPLICATION {
         return Err("resource history format mismatch".into());
     }
-    let mut statement=sql(connection.prepare("SELECT sequence,substr(payload,1,4097) FROM snapshots WHERE sequence>?1 ORDER BY sequence LIMIT 64"))?;
-    let mut rows = sql(statement.query([i64::try_from(after).map_err(|e| e.to_string())?]))?;
+    let mut statement=sql(connection.prepare("SELECT sequence,substr(payload,1,4097) FROM snapshots WHERE sequence>?1 ORDER BY sequence LIMIT ?2"))?;
+    let mut rows = sql(statement.query([
+        i64::try_from(after).map_err(|e| e.to_string())?,
+        super::super::active_limits().status_page as i64,
+    ]))?;
     let mut result = Vec::new();
     while let Some(row) = sql(rows.next())? {
         let sequence: i64 = sql(row.get(0))?;

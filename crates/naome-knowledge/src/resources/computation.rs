@@ -1,7 +1,9 @@
 //! Per-node computation admission, independent of network and capacity budgets.
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::watch;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 /// Network readiness is reported separately from productive computation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,60 +15,48 @@ pub enum ComputationState {
     Paused,
 }
 
-#[derive(Clone, Copy, Default)]
-struct Admission {
-    paused: bool,
-    active: usize,
-}
-
-/// One authority shared by the state owner, local control and provider service.
+/// Tracks admitted work; the shared adaptive budget is the only pause authority.
+#[derive(Default)]
 pub(crate) struct Computation {
-    admission: watch::Sender<Admission>,
-}
-
-impl Default for Computation {
-    fn default() -> Self {
-        Self {
-            admission: watch::channel(Admission::default()).0,
-        }
-    }
+    active: AtomicUsize,
 }
 
 impl Computation {
-    pub(crate) fn set_paused(&self, paused: bool) {
-        self.admission.send_if_modified(|state| {
-            let changed = state.paused != paused;
-            state.paused = paused;
-            changed
-        });
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> ComputationState {
+        self.status().0
     }
 
-    pub(crate) fn state(&self) -> ComputationState {
-        let state = self.admission.borrow();
-        match (state.paused, state.active) {
-            (false, _) => ComputationState::Running,
-            (true, 0) => ComputationState::Paused,
-            (true, _) => ComputationState::Pausing,
-        }
+    pub(crate) fn status(&self) -> (ComputationState, Option<String>) {
+        super::adaptive::inspect_work(|available, reason| {
+            let state = if available {
+                ComputationState::Running
+            } else if self.active.load(Ordering::Acquire) == 0 {
+                ComputationState::Paused
+            } else {
+                ComputationState::Pausing
+            };
+            (state, reason.map(str::to_owned))
+        })
     }
 
     /// Admission and pause share one lock, so acknowledged quiescence cannot
     /// race with a new computation. Existing bounded work may finish its step.
     pub(crate) fn try_enter(self: &Arc<Self>) -> Option<ComputationPermit> {
-        let entered = self.admission.send_if_modified(|state| {
-            if state.paused {
-                return false;
-            }
-            state.active = state.active.checked_add(1).expect("computation count");
-            true
-        });
-        entered.then(|| ComputationPermit(self.clone()))
+        super::adaptive::admit_work(|| {
+            self.active
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    active.checked_add(1)
+                })
+                .expect("computation count");
+            ComputationPermit(self.clone())
+        })
     }
 
     /// Providers wait at confirmed boundaries; their original deadline and
     /// cancellation remain owned by the surrounding process supervisor.
     pub(crate) async fn enter(self: &Arc<Self>) -> ComputationPermit {
-        let mut changed = self.admission.subscribe();
+        let mut changed = super::adaptive::work_changes();
         loop {
             if let Some(permit) = self.try_enter() {
                 return permit;
@@ -86,9 +76,8 @@ impl ComputationPermit {
 
 impl Drop for ComputationPermit {
     fn drop(&mut self) {
-        self.0.admission.send_modify(|state| {
-            state.active = state.active.checked_sub(1).expect("owned computation");
-        });
+        let previous = self.0.active.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous > 0, "owned computation");
     }
 }
 

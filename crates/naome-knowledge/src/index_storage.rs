@@ -95,7 +95,7 @@ impl IndexStorage {
             .map_err(|e| e.to_string())?;
         crate::storage::sqlite_common(
             &connection,
-            crate::resources::limits().registry_index_cache_bytes,
+            crate::resources::active_limits().registry_index_cache_bytes,
         )
         .map_err(|error| error.to_string())?;
         let version = connection
@@ -165,6 +165,11 @@ impl IndexStorage {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     fn live(&self, connection: &Connection) -> Result<(), ContextError> {
+        crate::storage::sqlite_adapt(
+            connection,
+            crate::resources::active_limits().registry_index_cache_bytes,
+        )
+        .map_err(sql)?;
         if let Some(error) = self.error() {
             return Err(ContextError::Storage(error));
         }

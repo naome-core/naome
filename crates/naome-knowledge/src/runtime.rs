@@ -190,6 +190,7 @@ pub enum ProofVerification {
 pub struct Status {
     pub running: bool,
     pub computation: crate::resources::ComputationState,
+    pub computation_reason: Option<String>,
     pub accepted_proofs: usize,
     pub proof_verification: ProofVerification,
     pub interest: String,
@@ -217,8 +218,6 @@ enum Operation {
     Status,
     Resources,
     Stop,
-    Pause,
-    Resume,
     Interest(String),
 }
 
@@ -244,7 +243,10 @@ enum Report {
         status: Status,
     },
     Resources {
-        snapshot: Option<crate::resources::adaptive::Snapshot>,
+        snapshot: Option<Box<crate::resources::adaptive::Snapshot>>,
+        capacity_bytes: usize,
+        workers: [usize; 4],
+        feedback: crate::resources::feedback::Statistics,
     },
 }
 
@@ -498,13 +500,6 @@ impl Control {
         if stopping {
             self.stopping.send_replace(true);
         }
-        if ready && !self.stopping() {
-            match request.operation {
-                Operation::Pause => self.computation.set_paused(true),
-                Operation::Resume => self.computation.set_paused(false),
-                _ => {}
-            }
-        }
         let directory = self.directory.clone();
         let state = self.owner.clone();
         let dirty = self.selection_dirty.clone();
@@ -515,7 +510,7 @@ impl Control {
             let _ownership = ownership;
             match request.operation {
                 Operation::Resources => Ok(String::new()),
-                Operation::Status | Operation::Pause | Operation::Resume => {
+                Operation::Status => {
                     let mut owner = state
                         .lock()
                         .map_err(|_| "owner configuration lock poisoned")?;
@@ -559,21 +554,26 @@ impl Control {
         .await
         .map_err(|error| format!("owner control worker failed: {error}"))??;
         let running = ready && !self.stopping();
+        let (computation, computation_reason) = if running {
+            self.computation.status()
+        } else {
+            (crate::resources::ComputationState::Stopped, None)
+        };
         let response = Response {
             token: self.endpoint.token.clone(),
             report: if resources {
                 Report::Resources {
-                    snapshot: crate::resources::adaptive::current(),
+                    snapshot: crate::resources::adaptive::current().map(Box::new),
+                    capacity_bytes: crate::resources::limits().memory_bytes,
+                    workers: crate::resources::limits().workers,
+                    feedback: crate::resources::feedback::statistics(),
                 }
             } else {
                 Report::Status {
                     status: Status {
                         running,
-                        computation: if running {
-                            self.computation.state()
-                        } else {
-                            crate::resources::ComputationState::Stopped
-                        },
+                        computation,
+                        computation_reason,
                         accepted_proofs: count,
                         proof_verification: ProofVerification::Checked,
                         interest,
@@ -871,6 +871,7 @@ async fn stopped_status(directory: &Path) -> Result<Status, String> {
     Ok(Status {
         running: false,
         computation: crate::resources::ComputationState::Stopped,
+        computation_reason: None,
         accepted_proofs: store.stored_count()?,
         proof_verification: ProofVerification::NotRun,
         interest: owner::load(directory)?,
@@ -888,6 +889,7 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
     Ok(Status {
         running: false,
         computation: crate::resources::ComputationState::Stopped,
+        computation_reason: None,
         accepted_proofs: store.stored_count()?,
         proof_verification: ProofVerification::NotRun,
         interest: owner::update(directory, text).map_err(|error| error.message)?,
@@ -899,18 +901,6 @@ async fn status(directory: &Path) -> Result<Status, String> {
         return Ok(status);
     }
     stopped_status(directory).await
-}
-
-async fn computation(directory: &Path, paused: bool) -> Result<Status, String> {
-    let operation = if paused {
-        Operation::Pause
-    } else {
-        Operation::Resume
-    };
-    request(directory, operation, None)
-        .await?
-        .filter(|status| status.running)
-        .ok_or_else(|| "node is not running; start it before pause or resume".into())
 }
 
 async fn start(directory: &Path) -> Result<Status, String> {
@@ -1280,14 +1270,20 @@ async fn wait_for_stop(
     }
 }
 
-/// Ordinary CLI exposes lifecycle, computation control and local owner interest.
+/// Ordinary CLI exposes lifecycle, passive observation and local owner interest.
 pub async fn execute() -> Result<(), String> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if let Some(output) = cli::information(&arguments) {
         println!("{output}");
         return Ok(());
     }
-    crate::resources::initialize_from_environment()?;
+    if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
+        && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
+    {
+        crate::resources::initialize_for(&directory()?)?;
+    } else {
+        crate::resources::initialize_from_environment()?;
+    }
     let plain = if arguments.first().is_some_and(|a| a == "--json") {
         &arguments[1..]
     } else {
@@ -1327,15 +1323,13 @@ pub async fn execute() -> Result<(), String> {
             &Status {
                 running: false,
                 computation: crate::resources::ComputationState::Stopped,
+                computation_reason: None,
                 accepted_proofs: 0,
                 proof_verification: ProofVerification::NotRun,
                 interest: String::new(),
             },
         )?;
         return Ok(());
-    }
-    if matches!(command, "pause" | "resume") && !directory.exists() {
-        return Err("node is not running; start it before pause or resume".into());
     }
     crate::storage::private_directory(&directory)?;
     let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
@@ -1346,8 +1340,6 @@ pub async fn execute() -> Result<(), String> {
         }
         "start" => start(&directory).await?,
         "stop" => stop(&directory).await?,
-        "pause" => computation(&directory, true).await?,
-        "resume" => computation(&directory, false).await?,
         "status" => status(&directory).await?,
         "interest" => interest(&directory, text.expect("parsed interest text")).await?,
         _ => unreachable!(),
@@ -1358,6 +1350,11 @@ pub async fn execute() -> Result<(), String> {
 async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     use crate::resources::adaptive::{self, Snapshot};
     let directory = directory()?;
+    let directory = if directory.exists() {
+        fs::canonicalize(directory).map_err(|error| error.to_string())?
+    } else {
+        directory
+    };
     if arguments.first().is_some_and(|v| v == "history") {
         if arguments.len() > 2 {
             return Err("usage: naome resources history [after]".into());
@@ -1388,9 +1385,15 @@ async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), Strin
     let active = if directory.exists() {
         match request_response(&directory, Operation::Resources, None).await? {
             Some(Response {
-                report: Report::Resources { snapshot },
+                report:
+                    Report::Resources {
+                        snapshot,
+                        capacity_bytes,
+                        workers,
+                        feedback,
+                    },
                 ..
-            }) => snapshot,
+            }) => Some((snapshot, capacity_bytes, workers, feedback)),
             None => None,
             _ => return Err("unexpected resource response type".into()),
         }
@@ -1407,6 +1410,6 @@ async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), Strin
         adaptive::sample(location)?,
         crate::resources::limits().memory_bytes as u64,
     )?;
-    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"limits":crate::resources::limits(),"configured":configured,"active":active,"caller_observation":proposed,"memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
+    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"caller_capacity":crate::resources::limits(),"configured":configured,"active":active.as_ref().and_then(|report|report.0.as_ref()),"installed_capacity":active.as_ref().map(|report|serde_json::json!({"memory_bytes":report.1,"workers":report.2})),"feedback":active.as_ref().map(|report|report.3),"caller_observation":proposed,"caller_memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
     Ok(())
 }

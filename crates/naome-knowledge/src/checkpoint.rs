@@ -222,6 +222,11 @@ impl Checkpoint {
                 "checkpoint requires replay after an uncertain write: {error}"
             ));
         }
+        crate::storage::sqlite_adapt(
+            &self.connection,
+            crate::resources::active_limits().checkpoint_cache_bytes,
+        )
+        .map_err(sql)?;
         let current = owned(&self.path)?;
         if current.dev() != self.identity.dev() || current.ino() != self.identity.ino() {
             return Err("transactional checkpoint file was replaced".into());
@@ -518,7 +523,7 @@ fn connect(path: &Path) -> Result<Connection, String> {
     .map_err(sql)?;
     crate::storage::sqlite_common(
         &connection,
-        crate::resources::limits().checkpoint_cache_bytes,
+        crate::resources::active_limits().checkpoint_cache_bytes,
     )
     .map_err(sql)?;
     connection

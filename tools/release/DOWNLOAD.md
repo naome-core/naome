@@ -62,10 +62,11 @@ naome --help
 naome start
 naome status
 naome interest 'Your exact interest text'
-naome pause
-naome resume
 naome stop
 ```
+
+Computation pauses and resumes automatically when host conditions require it;
+`naome status` reports the current state and reason.
 
 The default data directory is `$XDG_DATA_HOME/naome`, or
 `$HOME/.local/share/naome` when `XDG_DATA_HOME` is unset. `NAOME_NODE_DIR`

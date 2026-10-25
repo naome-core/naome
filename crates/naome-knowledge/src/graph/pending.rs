@@ -54,7 +54,7 @@ impl PendingStore {
             let page = checkpoint.page(
                 "pending",
                 after.as_deref(),
-                crate::resources::limits().pending_page,
+                crate::resources::active_limits().pending_page,
                 crate::resources::limits().active_job_bytes,
             )?;
             if page.is_empty() {
@@ -267,7 +267,7 @@ impl PendingStore {
             let page = self.checkpoint.page(
                 "pending",
                 after.as_deref(),
-                crate::resources::limits().pending_page,
+                crate::resources::active_limits().pending_page,
                 crate::resources::limits().active_job_bytes,
             )?;
             if page.is_empty() {
@@ -334,7 +334,7 @@ impl PendingStore {
         let read = |after: Option<&str>| {
             self.checkpoint.query(|connection| {
             let mut statement = connection.prepare("SELECT sequence FROM temp.proof_ready WHERE sequence > ?1 ORDER BY sequence LIMIT ?2").map_err(sql)?;
-            statement.query_map(rusqlite::params![after.unwrap_or(""), i64::try_from(crate::resources::limits().pending_page).map_err(|_| "pending page width")?], |r| r.get::<_, String>(0)).map_err(sql)?.collect::<Result<Vec<_>, _>>().map_err(sql)
+            statement.query_map(rusqlite::params![after.unwrap_or(""), i64::try_from(crate::resources::active_limits().pending_page).map_err(|_| "pending page width")?], |r| r.get::<_, String>(0)).map_err(sql)?.collect::<Result<Vec<_>, _>>().map_err(sql)
         })
         };
         let mut keys = read(self.header.cursor.as_deref())?;
@@ -372,7 +372,7 @@ impl PendingStore {
             .page(
                 "proof",
                 after,
-                limit.min(crate::resources::limits().id_page),
+                limit.min(crate::resources::active_limits().id_page),
                 crate::resources::limits().closure_bytes,
             )?
             .into_iter()

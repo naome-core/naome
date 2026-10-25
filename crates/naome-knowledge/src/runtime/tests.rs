@@ -8,6 +8,7 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
     let status = Status {
         running: true,
         computation: crate::resources::ComputationState::Running,
+        computation_reason: None,
         accepted_proofs: 3,
         proof_verification: ProofVerification::Checked,
         interest: interest.clone(),
@@ -45,7 +46,10 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
     let resource = Response {
         token: "a".repeat(64),
         report: Report::Resources {
-            snapshot: Some(snapshot.clone()),
+            snapshot: Some(Box::new(snapshot.clone())),
+            capacity_bytes: crate::resources::limits().memory_bytes,
+            workers: crate::resources::limits().workers,
+            feedback: crate::resources::feedback::Statistics::default(),
         },
     };
     let (mut sender, mut receiver) = UnixStream::pair().unwrap();
@@ -56,11 +60,12 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
     written.unwrap();
     let Report::Resources {
         snapshot: Some(read),
+        ..
     } = read.unwrap().report
     else {
         panic!("resource report expected");
     };
-    assert_eq!(read, snapshot);
+    assert_eq!(*read, snapshot);
 }
 use crate::{Envelope, object::id_bytes};
 use naome_authoring::CompiledQuestion;
@@ -200,6 +205,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
         Status {
             running: false,
             computation: crate::resources::ComputationState::Stopped,
+            computation_reason: None,
             accepted_proofs: 0,
             proof_verification: ProofVerification::NotRun,
             interest: String::new()
@@ -253,6 +259,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
         Status {
             running: true,
             computation: crate::resources::ComputationState::Running,
+            computation_reason: None,
             accepted_proofs: 2,
             proof_verification: ProofVerification::Checked,
             interest: String::new()
@@ -265,6 +272,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
         Status {
             running: false,
             computation: crate::resources::ComputationState::Stopped,
+            computation_reason: None,
             accepted_proofs: 2,
             proof_verification: ProofVerification::NotRun,
             interest: String::new()
@@ -322,6 +330,7 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
         Status {
             running: false,
             computation: crate::resources::ComputationState::Stopped,
+            computation_reason: None,
             accepted_proofs: 1,
             proof_verification: ProofVerification::NotRun,
             interest: String::new()

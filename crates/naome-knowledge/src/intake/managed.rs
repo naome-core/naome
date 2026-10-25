@@ -91,7 +91,7 @@ impl Intake {
         let (context, _) = self.managed_context.expect("current managed context");
         self.declined
             .retain(|_, declined| declined.formal == context && declined.until > now);
-        if self.waiting.len() < crate::resources::limits().interest_decisions
+        if self.waiting.len() < crate::resources::active_limits().interest_decisions
             && questions.available_peer()
             && let Some(description) = self.queue.pop_front()
         {
@@ -313,7 +313,7 @@ impl Intake {
                     *batch = None;
                 }
             }
-            if self.waiting.len() >= crate::resources::limits().interest_decisions
+            if self.waiting.len() >= crate::resources::active_limits().interest_decisions
                 || !questions.available_peer()
             {
                 return Err("final decision queue capacity".into());

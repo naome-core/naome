@@ -174,11 +174,7 @@ impl Disk {
                     return Err("noncanonical provider program key".into());
                 }
                 let record = checkpoint
-                    .get::<Record>(
-                        "record",
-                        &id.to_string(),
-                        crate::resources::limits().active_job_bytes,
-                    )?
+                    .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
                     .ok_or("provider program job missing")?;
                 if unit > record.reserved_units || !matches!(record.input, Input::Solve { .. }) {
                     return Err("provider program reservation missing".into());
@@ -213,11 +209,13 @@ impl Disk {
         }
         let mut journal = Journal::from_header(header);
         journal.configuration = identity(&settings);
-        let mut resident_bytes = 0usize;
+        let mut resident_bytes = 4096usize;
+        let mut terminal_residents = Vec::new();
+        let mut observed_residents = 0usize;
         let mut unacknowledged = 0usize;
         checkpoint.scan(
             "record",
-            crate::resources::limits().active_job_bytes,
+            crate::checkpoint::MAX_ROW,
             |key, bytes| {
                 let record: Record = crate::checkpoint::decode(bytes)?;
                 if record.id.to_string() != key
@@ -254,13 +252,19 @@ impl Disk {
                     }
                 }
                 if resident.contains(&record.id) {
-                    resident_bytes = resident_bytes
-                        .checked_add(bytes.len() + key.len() + 128)
+                    observed_residents += 1;
+                    let charge = bytes.len().checked_add(key.len() + 128)
+                        .and_then(|bytes| bytes.checked_add(if matches!(record.input, Input::Find { .. }) { 0 } else { 8192 }))
                         .ok_or("research resident memory overflow")?;
-                    if resident_bytes > crate::resources::limits().active_job_bytes {
-                        return Err("research resident rows exceed active memory budget".into());
+                    if record.state.terminal() {
+                        terminal_residents.push((record.id, charge));
+                    } else {
+                        resident_bytes = resident_bytes.checked_add(charge).ok_or("research resident memory overflow")?;
+                        if resident_bytes > crate::resources::limits().active_job_bytes {
+                            return Err("resource overload: retained active research obligations exceed installed capacity".into());
+                        }
+                        journal.records.insert(record.id, record);
                     }
-                    journal.records.insert(record.id, record);
                 }
                 Ok(())
             },
@@ -271,8 +275,28 @@ impl Disk {
         if checkpoint.count("request")? != unacknowledged {
             return Err("research request index cardinality differs".into());
         }
-        if resident.len() != journal.records.len() {
+        if resident.len() != observed_residents {
             return Err("research resident record is missing".into());
+        }
+        // Completed results are immutable history. Keep only the part that fits
+        // the new working set; recovery scans still visit every archived row.
+        for (id, charge) in terminal_residents {
+            if resident_bytes
+                .checked_add(charge)
+                .is_some_and(|bytes| bytes <= crate::resources::limits().active_job_bytes)
+                && journal.records.len() < crate::resources::limits().resident_jobs
+            {
+                let record = checkpoint
+                    .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
+                    .ok_or("research resident record disappeared")?;
+                resident_bytes += charge;
+                journal.records.insert(id, record);
+            } else {
+                journal.retired_jobs = journal
+                    .retired_jobs
+                    .checked_add(1)
+                    .ok_or("research retired count overflow")?;
+            }
         }
         let needed = journal
             .records
@@ -293,11 +317,7 @@ impl Disk {
                 .ok_or("research archive time overflow")?;
             if let Some(id) = account.held {
                 let held = checkpoint
-                    .get::<Record>(
-                        "record",
-                        &id.to_string(),
-                        crate::resources::limits().active_job_bytes,
-                    )?
+                    .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
                     .ok_or("held research job is missing")?;
                 if held.state != State::InDoubt || held.input.account_key() != key {
                     return Err("held research account identity differs".into());
@@ -421,11 +441,9 @@ impl Disk {
             if id == 0 || job != id.to_string() {
                 continue;
             }
-            let record = self.checkpoint.get::<Record>(
-                "record",
-                job,
-                crate::resources::limits().active_job_bytes,
-            )?;
+            let record =
+                self.checkpoint
+                    .get::<Record>("record", job, crate::checkpoint::MAX_ROW)?;
             if record.is_some_and(|record| {
                 record.id == id && record.acknowledged && record.state.terminal()
             }) {
@@ -533,11 +551,7 @@ impl Disk {
             if !skip.contains(&id) {
                 let record = self
                     .checkpoint
-                    .get::<Record>(
-                        "record",
-                        &id.to_string(),
-                        crate::resources::limits().active_job_bytes,
-                    )?
+                    .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
                     .ok_or("research history record is missing")?;
                 if record.id != id {
                     return Err("research history record identity differs".into());
@@ -574,11 +588,7 @@ impl Disk {
         };
         let record = self
             .checkpoint
-            .get::<Record>(
-                "record",
-                &id.to_string(),
-                crate::resources::limits().active_job_bytes,
-            )?
+            .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
             .ok_or("indexed research request is missing")?;
         if record.id != id
             || record.input != *input
@@ -591,11 +601,9 @@ impl Disk {
         Ok(Some(record))
     }
     pub(super) fn acknowledge(&mut self, journal: &Journal, id: u64) -> Result<(), String> {
-        let Some(mut record) = self.checkpoint.get::<Record>(
-            "record",
-            &id.to_string(),
-            crate::resources::limits().active_job_bytes,
-        )?
+        let Some(mut record) =
+            self.checkpoint
+                .get::<Record>("record", &id.to_string(), crate::checkpoint::MAX_ROW)?
         else {
             if id < journal.next_id {
                 return Ok(());

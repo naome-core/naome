@@ -44,7 +44,7 @@ def archive(path, name, files, epoch):
 def lifecycle(run, directory):
     directory.mkdir(mode=0o700)
     write_json(directory / "config.json", {"directory": str(directory), "listen": "/ip4/127.0.0.1/tcp/0", "peers": [],
-                                          "producer_sources": [], "discovery": {"mdns": False, "dht": False}})
+                                          "producer_sources": [], "discovery": {"mdns": False, "dht": False, "internet": False}})
     def command(name, *arguments):
         return json.loads(run("--json", name, *arguments))
     try:
@@ -55,12 +55,13 @@ def lifecycle(run, directory):
             raise ValueError("extracted node is not ready for computation")
         if command("interest", "Release smoke test")["interest"] != "Release smoke test":
             raise ValueError("extracted node did not persist owner interest")
-        paused = command("pause")
-        if not paused["running"] or paused["computation"] not in ("pausing", "paused"):
-            raise ValueError("extracted node lost networking while pausing computation")
-        resumed = command("resume")
-        if not resumed["running"] or resumed["computation"] != "running":
-            raise ValueError("extracted node failed to resume computation")
+        resources = command("resources")
+        capacity = resources.get("installed_capacity") or {}
+        budget = (resources.get("active") or {}).get("budget", {})
+        workers = capacity.get("workers", [])
+        if (capacity.get("memory_bytes", 0) <= 0 or len(workers) != 4 or any(worker <= 0 for worker in workers)
+                or not 0 < budget.get("memory_bytes", 0) <= capacity["memory_bytes"]):
+            raise ValueError("extracted node did not report its active resource budget within installed capacity")
     finally:
         stopped = command("stop")
         if stopped["running"] or stopped["computation"] != "stopped":

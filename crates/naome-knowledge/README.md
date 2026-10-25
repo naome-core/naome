@@ -3,43 +3,37 @@
 See [networking and security](NETWORKING.md) for automatic Internet discovery,
 encrypted transport, public graph visibility and trust boundaries.
 
-`naome start` starts the node. `naome pause` closes admission for productive
-computation while keeping gossip, discovery, peering and bounded delivery of
-already checked proofs available. `naome resume` opens computation admission
-again. Both commands require a running node and are idempotent.
+`naome start` starts the node. The resource governor automatically pauses
+productive computation when resources or operating-system policy require it,
+and resumes it after a stable recovery window. `naome stop` ends the node.
+`naome interest <text>` remains available while computation is paused.
 
 `naome status` reports network readiness separately from computation:
 
-- `running`: computation can proceed within the existing resource budgets.
-- `pausing`: no new computation is admitted; an admitted step is still draining.
+- `running`: computation can proceed within the installed resource budgets.
+- `pausing`: new computation is closed; an admitted step is still draining.
 - `paused`: admitted computation has reached a safe boundary.
-- `stopped`: the node is stopped.
+- `stopped`: the node is not running.
 
-Use `naome --json status` for the machine-readable `computation` field. A pause
-request can return `pausing`; subsequent status reads show when it becomes
-`paused`. Existing provider steps finish at their confirmed checkpoint boundary.
-Providers retain their original deadlines, reservations and cancellation paths;
-pause does not grant additional time or work. A non-cooperative step remains
-`pausing` until it finishes or its existing deadline ends it.
+`naome --json status` exposes `computation` and `computation_reason`. The reason
+is null while computation is running or the node is stopped. A pause may first
+report `pausing`; existing provider steps finish at their confirmed checkpoint
+boundary. Original deadlines, reservations and work-unit accounting continue to
+apply during a pause. A non-cooperative step remains subject to its existing
+process supervisor and cleanup limits.
 
 During a pause, the node defers generation, solving, interest assessment,
-mathematical intake, bulk fetching and background compaction. Incoming offers
-receive a retryable protocol refusal; in-flight payloads can be requested again
-after resume. No unchecked proof becomes accepted. Existing queues and transport
-limits remain bounded.
+new proof intake and expensive validation. Gossip, discovery, peering and bounded
+delivery of already checked proofs remain active. No unchecked proof becomes
+accepted. Existing queue, protocol, peer and transport limits remain binding.
+A real memory shortage can still refuse a network allocation; network service
+never bypasses the installed shared capacity.
 
-Computation pause is independent of automatic memory and disk pressure. Serving
-checked data still obeys all existing memory, disk, per-peer and transport limits;
-resource pressure may therefore restrict delivery even while peering continues.
-Network work still uses CPU, memory and bandwidth, and the host must remain awake.
+The same governor decision controls ordinary work and provider boundaries.
+There is no separately persisted manual pause state. Restart re-observes current
+conditions and revalidates stored proofs through the existing startup path;
+a restart does not grant new time or work to retained obligations.
 
-The pause belongs to the current daemon. `start` on an already running paused
-node preserves the pause. `stop` ends the daemon; a later start, including after
-a crash, starts with computation enabled and revalidates persisted proofs through
-the existing startup path. `interest` remains available during a pause.
-
-Status also reports `proof_verification`. A live checked graph reports `checked`;
-a stopped node reports `not_run` and its `accepted_proofs` count describes recorded
-admissions without mathematical replay. Offline controls still check structural
-storage integrity. Every startup independently rechecks all admitted proofs before
-they can be used as checked knowledge.
+See [the resource policy](src/resources/README.md) for capacity ownership,
+pressure signals and recovery behavior. Native energy or CPU savings have not
+been measured.

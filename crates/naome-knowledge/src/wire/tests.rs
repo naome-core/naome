@@ -65,7 +65,7 @@ async fn frame_custody_is_shared_and_released_after_handling() {
     let codec = Codec::default();
     let other = codec.clone();
     let mut retained = Vec::new();
-    for _ in 0..crate::resources::limits().inbound_frames {
+    for _ in 0..crate::resources::active_limits().inbound_frames {
         retained.push(codec.read(&mut Cursor::new(encoded())).await.unwrap());
     }
     assert!(

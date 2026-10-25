@@ -1,10 +1,14 @@
-//! Process-wide immutable resource capacity. Changing this ceiling requires a
-//! restart; adaptive admission budgets below it can change during operation.
-//! Histories are not limited by these working-set and per-operation budgets.
+//! Canonical startup capacity, live work admission and resource custody.
+//! Native startup calibrates capacity once; explicit owner profiles remain
+//! ceilings. Live budgets may shrink without redefining stored/protocol formats.
+//! See `resources/README.md` for the ownership and calibration contract.
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 pub mod adaptive;
+mod calibration;
 mod computation;
+pub(crate) mod feedback;
+mod operating;
 pub use computation::ComputationState;
 pub(crate) use computation::{Computation, ComputationPermit};
 use std::{
@@ -78,10 +82,10 @@ macro_rules! resource_policy {
             pub fn resolve(&self)->Result<Limits,String>{
                 if self.version!=PROFILE_VERSION{return Err("unsupported resource profile version".into());}
                 if self.memory_bytes==0||self.memory_bytes>isize::MAX as usize{return Err("invalid process memory budget".into());}
-                let scale=|value:usize|value.checked_mul(self.memory_bytes).and_then(|n|n.checked_div(DEFAULT.memory_bytes)).map(|n|n.max(1)).ok_or("resource scaling overflow");
+                let scale=|value:usize|usize::try_from(value as u128 * self.memory_bytes as u128 / DEFAULT.memory_bytes as u128).map(|n|n.max(1)).map_err(|_| "resource scaling overflow");
                 let mut limits=Limits{
                     memory_bytes:self.memory_bytes,workers:self.workers,resident_jobs:0,
-                    $($scaled:self.tuning.$scaled.unwrap_or(<$sty>::try_from(scale(DEFAULT.$scaled as usize)?).map_err(|_|concat!(stringify!($scaled)," width"))?),)*
+                    $($scaled:match self.tuning.$scaled {Some(value)=>value,None=><$sty>::try_from(scale(DEFAULT.$scaled as usize)?).map_err(|_|concat!(stringify!($scaled)," width"))?},)*
                     $($fixed:self.tuning.$fixed.unwrap_or(DEFAULT.$fixed),)*
                     $($timer:self.tuning.$milliseconds.map(Duration::from_millis).unwrap_or(DEFAULT.$timer),)*
                 };
@@ -173,6 +177,8 @@ resource_policy! {
         exchange_streams: usize = 4;
         inbound_streams: usize = 16;
         identify_protocol_bytes: usize = 256;
+        identify_protocols: usize = 32;
+        identify_addresses: usize = 16;
         replay_guard_bytes: usize = 384 * 1024 * 1024;
         upgrade_connections_per_peer: u32 = 3;
         connections_per_peer: u32 = 2;
@@ -281,6 +287,18 @@ struct EffectiveProfile {
     limits: Limits,
 }
 pub fn initialize_from_environment() -> Result<&'static Limits, String> {
+    initialize(
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .as_path(),
+    )
+}
+
+pub(crate) fn initialize_for(directory: &std::path::Path) -> Result<&'static Limits, String> {
+    initialize(directory)
+}
+
+fn initialize(directory: &std::path::Path) -> Result<&'static Limits, String> {
     if let Some(snapshot) = std::env::var_os("NAOME_EFFECTIVE_RESOURCES") {
         let snapshot = snapshot
             .to_str()
@@ -305,15 +323,52 @@ pub fn initialize_from_environment() -> Result<&'static Limits, String> {
         }
         return Ok(limits());
     }
+    let mut automatic = None;
     let profile = match std::env::var_os("NAOME_RESOURCE_CONFIG") {
         Some(path) => {
             let path = std::fs::canonicalize(path).map_err(|e| format!("resource profile: {e}"))?;
             let bytes = crate::store::read_bounded(&path, 64 * 1024)?;
             serde_json::from_slice(&bytes).map_err(|e| format!("resource profile: {e}"))?
         }
-        None => ResourceProfile::default(),
+        None => {
+            let location = directory
+                .ancestors()
+                .find(|path| path.is_dir())
+                .ok_or("resource observation directory is unavailable")?;
+            let observed = adaptive::sample(location)?;
+            let profile = calibration::capacity(&observed)?;
+            let selection = if directory.is_dir() {
+                adaptive::load(directory)?
+            } else {
+                adaptive::Selection::default()
+            };
+            automatic = Some((selection, observed));
+            profile
+        }
     };
-    configure(profile)
+    let capacity = configure(profile)?;
+    if let Some((selection, observed)) = automatic {
+        adaptive::publish(adaptive::Snapshot::derive(
+            selection,
+            observed,
+            capacity.memory_bytes as u64,
+        )?);
+    }
+    Ok(capacity)
+}
+
+/// Live work admission below the installed capacity. Stored formats, external
+/// custody and already admitted leases always use their owning fixed contracts.
+pub(crate) fn active_limits() -> Arc<Limits> {
+    adaptive::operating_limits()
+}
+
+pub(crate) fn program_cache(bytes: u64) -> u64 {
+    if adaptive::current().is_some() {
+        operating::program_cache(limits(), bytes)
+    } else {
+        bytes
+    }
 }
 /// Spawned daemons/providers inherit exact resolved values rather than reloading
 /// a file that an operator might have edited while their parent was running.
@@ -459,6 +514,8 @@ impl Limits {
             .map_err(|_| "checker read cache exceeds its byte budget")?;
         for count in [
             self.inbound_frames,
+            self.identify_protocols,
+            self.identify_addresses,
             self.control_clients,
             self.cli_commands,
             self.pending_page,
@@ -647,6 +704,11 @@ impl Limits {
             || self.command_bytes < 6 * self.owner_text_bytes + 512
         {
             return Err("inconsistent resource limits or unsupported canonical proof size".into());
+        }
+        if self.identify_protocols > DEFAULT.identify_protocols
+            || self.identify_addresses > DEFAULT.identify_addresses
+        {
+            return Err("identify parser safeguards may only be reduced".into());
         }
         let maximum = naome_checker::question::AssessmentLimits::MAXIMUM;
         for (value, max) in [

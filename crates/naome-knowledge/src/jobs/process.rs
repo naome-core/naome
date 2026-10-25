@@ -687,7 +687,7 @@ fn supervise() -> Result<(), String> {
         .take()
         .ok_or("provider worker output absent")?;
     let (sender, receiver) =
-        sync_channel::sync_channel(crate::resources::limits().supervisor_commands);
+        sync_channel::sync_channel(crate::resources::active_limits().supervisor_commands);
     let parent = sender.clone();
     std::thread::spawn(move || {
         loop {

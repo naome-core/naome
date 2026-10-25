@@ -2,6 +2,7 @@ use super::*;
 mod allowance;
 mod checkpoint;
 mod lifecycle;
+mod resource_calibration;
 use std::time::Duration;
 use std::{
     fs,

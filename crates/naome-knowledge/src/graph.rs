@@ -202,8 +202,8 @@ impl Graph {
             context: DiskArtifactState::new(storage.clone())
                 .with_read_cache_limits(
                     naome_checker::ReadCacheLimits::new(
-                        crate::resources::limits().checker_cache_entries,
-                        crate::resources::limits().checker_cache_bytes,
+                        crate::resources::active_limits().checker_cache_entries,
+                        crate::resources::active_limits().checker_cache_bytes,
                     )
                     .map_err(crate::Error::from)?,
                 )
@@ -213,7 +213,7 @@ impl Graph {
             checks: [const { std::sync::atomic::AtomicU64::new(0) }; 2],
             checked_storage: storage,
             old_generations: Vec::new(),
-            next_compaction: crate::resources::limits().checked_cache_bytes,
+            next_compaction: crate::resources::active_limits().checked_cache_bytes,
             compaction: None,
             pending: BTreeMap::new(),
             backlog: Mutex::new(pending::PendingStore::open(directory)?),
@@ -225,7 +225,7 @@ impl Graph {
             store,
         };
         let mut after = 0u64;
-        let mut replay_compaction = crate::resources::limits().checked_cache_bytes;
+        let mut replay_compaction = crate::resources::active_limits().checked_cache_bytes;
         #[cfg(test)]
         {
             replay_compaction = storage::startup_test_threshold(replay_compaction);
@@ -233,7 +233,7 @@ impl Graph {
         loop {
             let page = graph
                 .store
-                .replay_page(after, crate::resources::limits().replay_page)?;
+                .replay_page(after, crate::resources::active_limits().replay_page)?;
             if page.is_empty() {
                 break;
             }
@@ -312,10 +312,11 @@ impl Graph {
     /// all generations share the single bounded cache.
     pub(crate) fn maintain_checked_storage(&mut self) -> Result<(), crate::Error> {
         self.checked_storage.adapt_cache()?;
-        let bytes =
-            crate::resources::adaptive::cache(crate::resources::limits().checker_cache_bytes);
+        let bytes = crate::resources::adaptive::cache(
+            crate::resources::active_limits().checker_cache_bytes,
+        );
         let cache_limits = naome_checker::ReadCacheLimits::new(
-            crate::resources::limits()
+            crate::resources::active_limits()
                 .checker_cache_entries
                 .min(bytes / 512),
             bytes,
@@ -334,7 +335,7 @@ impl Graph {
 
     fn replay_compaction_threshold(live: usize) -> usize {
         live.saturating_add(live / 2)
-            .max(live.saturating_add(crate::resources::limits().checked_cache_bytes))
+            .max(live.saturating_add(crate::resources::active_limits().checked_cache_bytes))
     }
 
     // This call path is exclusive to open_inner, before any checked view escapes.
@@ -350,7 +351,7 @@ impl Graph {
         let live = self.cold(self.checked_storage.prune_startup(&self.context))?;
         self.next_compaction = live
             .saturating_mul(2)
-            .max(live.saturating_add(crate::resources::limits().checked_cache_bytes));
+            .max(live.saturating_add(crate::resources::active_limits().checked_cache_bytes));
         Ok(Some(live))
     }
 
@@ -361,8 +362,8 @@ impl Graph {
         self.maintain_checked_storage_step(
             threshold,
             DiskCopyBudget {
-                records: crate::resources::limits().compaction_records,
-                bytes: crate::resources::limits().compaction_bytes,
+                records: crate::resources::active_limits().compaction_records,
+                bytes: crate::resources::active_limits().compaction_bytes,
             },
         )
     }
@@ -439,6 +440,7 @@ impl Graph {
         // A copy transaction contains only this bounded quantum. Admissions
         // between quanta use separate per-proof transactions, including mirrors;
         // no corpus-sized transaction reaches finish.
+        let started = Instant::now();
         self.cold(copy.target.begin_write_phase())?;
         let progress = self.cold(
             copy.cursor
@@ -448,6 +450,11 @@ impl Graph {
                 .map_err(crate::Error::from),
         )?;
         self.cold(copy.target.finish_write_phase())?;
+        crate::resources::feedback::record(
+            crate::resources::feedback::Kind::Compact,
+            progress.records.saturating_add(progress.node_visits),
+            started.elapsed(),
+        );
         if !progress.complete {
             return Ok(None);
         }
@@ -461,7 +468,7 @@ impl Graph {
         let live = self.cold(copy.target.allocated_bytes())?;
         let threshold = live
             .saturating_mul(2)
-            .max(live.saturating_add(crate::resources::limits().checked_cache_bytes));
+            .max(live.saturating_add(crate::resources::active_limits().checked_cache_bytes));
         self.cold(gate.detach(copy.epoch, &copy.target))?;
         // Linearize publication with already reported failures, including a
         // concurrent cold reader. Everything below is an infallible state move.
@@ -574,7 +581,7 @@ impl Graph {
                 .values()
                 .map(|(candidate, _)| candidate.bytes.len())
                 .sum::<usize>();
-            if self.pending.len() < crate::resources::limits().pending_page
+            if self.pending.len() < crate::resources::active_limits().pending_page
                 && candidate.bytes.len()
                     <= crate::resources::limits()
                         .closure_bytes
@@ -899,7 +906,7 @@ impl Graph {
         Ok(missing)
     }
     pub fn pending_ids(&self) -> Result<Vec<ProofId>, crate::Error> {
-        self.pending_ids_after(None, crate::resources::limits().id_page)
+        self.pending_ids_after(None, crate::resources::active_limits().id_page)
     }
     pub fn storage_error(&self) -> Option<String> {
         self.storage_error
@@ -946,7 +953,7 @@ impl Graph {
         limit: usize,
     ) -> Result<Vec<ProofId>, crate::Error> {
         self.ensure_live()?;
-        if limit == 0 || limit > crate::resources::limits().id_page {
+        if limit == 0 || limit > crate::resources::active_limits().id_page {
             return Err("inventory page limit".into());
         }
         let expected = self.cold(

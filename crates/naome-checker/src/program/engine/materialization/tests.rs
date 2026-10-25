@@ -113,7 +113,8 @@ fn incremental_tree_projection_preserves_foundation_formula_and_golden_identity(
                 .and_then(|state| state.tree.as_ref())
                 .unwrap();
             assert!(
-                tree.cache.capacity() * std::mem::size_of::<(u64, Node<u64>)>()
+                tree.cache.len() * Tree::entry_bytes()
+                    + tree.order.capacity() * std::mem::size_of::<u64>()
                     <= Tree::cache_bytes(4096) as usize
             );
         }

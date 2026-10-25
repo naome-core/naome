@@ -13,11 +13,15 @@ use std::io::Read;
 use std::{
     fs,
     path::Path,
-    sync::{OnceLock, RwLock},
+    sync::{Arc, OnceLock, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 const MIB: u64 = 1024 * 1024;
+mod governor;
 pub(crate) mod history;
+mod observation;
+pub(crate) use governor::Governor;
+pub(crate) use observation::sample_node;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,19 +64,28 @@ impl Selection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Observed {
     pub memory_total: u64,
     pub memory_available: u64,
     pub memory_limit: u64,
+    /// Resident bytes of the state-owner process. Descendants are reported
+    /// separately so a local work target is not reinterpreted on upgrade.
     pub process_rss: u64,
     pub peak_rss: u64,
+    /// Live process-tree CPU time plus reaped child CPU time.
     pub process_cpu_ms: u64,
     pub cpu_millis: u64,
     pub load_millis: u64,
     pub disk_available: u64,
 }
+impl Observed {
+    pub(crate) fn resident_bytes(&self) -> u64 {
+        self.process_rss
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Budget {
@@ -108,9 +121,25 @@ impl Snapshot {
                 .saturating_add(observed.memory_available)
                 .saturating_sub(reserve),
         );
+        let cpus = observed.cpu_millis.div_ceil(1000).max(1) as usize;
+        let worker_bytes = (super::limits().provider_stream_bytes as u64).saturating_mul(4);
+        let slots = if light {
+            1
+        } else if heavy {
+            cpus
+        } else {
+            // Begin below the host ceiling; measured demand may grow later.
+            cpus.saturating_sub(1).max(1)
+        };
         let desired = match selection.profile {
-            Profile::Light => 64 * MIB,
-            Profile::Dynamic => (observed.memory_limit / 8).max(32 * MIB),
+            Profile::Light => observed
+                .process_rss
+                .saturating_add(super::CHECKER_RESERVE as u64)
+                .saturating_add(worker_bytes),
+            Profile::Dynamic => observed
+                .process_rss
+                .saturating_add(super::CHECKER_RESERVE as u64)
+                .saturating_add(worker_bytes.saturating_mul(slots as u64)),
             Profile::Heavy => observed.memory_limit,
             Profile::Custom => {
                 selection
@@ -121,26 +150,7 @@ impl Snapshot {
             }
         };
         let memory = desired.min(safe).min(capacity);
-        let cpus = (observed.cpu_millis / 1000).max(1) as usize;
-        let idle = observed
-            .cpu_millis
-            .saturating_sub(observed.load_millis)
-            .max(1000);
-        let slots = if light {
-            1
-        } else if heavy {
-            // Providers also wait for I/O. Allow bounded oversubscription and
-            // one lane per role; installed worker and OS CPU ceilings remain.
-            cpus.saturating_mul(2)
-                .max(super::limits().workers.len())
-                .min((memory / (16 * MIB)).max(1) as usize)
-        } else if selection.profile == Profile::Custom {
-            ((idle / 1000).max(1) as usize)
-                .min(cpus)
-                .min((memory / (16 * MIB)).max(1) as usize)
-        } else {
-            ((idle / 2000).max(1) as usize).min(cpus)
-        };
+        let slots = slots.min((memory / worker_bytes.max(1)).max(1) as usize);
         let concurrency = selection
             .custom
             .as_ref()
@@ -148,30 +158,39 @@ impl Snapshot {
         let cache = selection
             .custom
             .as_ref()
-            .map_or(memory / if heavy { 8 } else { 16 }, |c| c.cache_bytes)
+            .map_or(
+                observed.process_rss.max(worker_bytes)
+                    / if light {
+                        8
+                    } else if heavy {
+                        2
+                    } else {
+                        4
+                    },
+                |custom| custom.cache_bytes,
+            )
             .min(memory / 4)
             .max(4096);
-        let batch = if light {
-            16
-        } else if heavy {
-            512
-        } else {
-            64
-        };
         let batch = selection
             .custom
             .as_ref()
-            .map_or(batch, |c| c.batch_steps)
+            .map_or(
+                if light {
+                    1
+                } else if heavy {
+                    cpus.saturating_mul(2)
+                } else {
+                    slots.max(2)
+                },
+                |custom| custom.batch_steps,
+            )
             .min((memory as usize / 8192).max(1));
-        let network = if light {
-            1
-        } else {
-            concurrency.saturating_mul(if heavy { 4 } else { 2 })
-        };
         let network = selection
             .custom
             .as_ref()
-            .map_or(network, |c| c.network_requests)
+            .map_or(if light { 1 } else { concurrency.max(1) }, |custom| {
+                custom.network_requests
+            })
             .min(super::limits().flights);
         let paused = if memory < 8 * MIB || observed.process_rss > memory {
             Some("memory pressure".into())
@@ -190,15 +209,19 @@ impl Snapshot {
                 concurrency: if pressure { 0 } else { concurrency },
                 cache_bytes: cache,
                 batch_steps: if pressure { 0 } else { batch },
-                network_requests: if pressure { 0 } else { network },
+                network_requests: if pressure { network.min(1) } else { network },
                 yield_ms: if heavy {
                     0
-                } else if light {
-                    100
-                } else if observed.load_millis >= observed.cpu_millis {
-                    50
                 } else {
-                    5
+                    let quantum = super::limits().transport_busy_grace.as_millis() as u64;
+                    let quota_delay = quantum
+                        .saturating_mul(1000u64.saturating_sub(observed.cpu_millis))
+                        / observed.cpu_millis.max(1);
+                    if light {
+                        quantum.saturating_add(quota_delay)
+                    } else {
+                        quota_delay
+                    }
                 },
                 paused,
             },
@@ -222,8 +245,16 @@ struct Live {
     // Observed RSS already includes existing charged allocations. Retain this
     // baseline so the live headroom does not charge those bytes a second time.
     charged: usize,
+    operating: Arc<super::Limits>,
 }
 static LIVE: OnceLock<RwLock<Option<Live>>> = OnceLock::new();
+static CHANGED: OnceLock<tokio::sync::watch::Sender<()>> = OnceLock::new();
+
+pub(crate) fn work_changes() -> tokio::sync::watch::Receiver<()> {
+    CHANGED
+        .get_or_init(|| tokio::sync::watch::channel(()).0)
+        .subscribe()
+}
 pub fn current() -> Option<Snapshot> {
     let live = LIVE.get()?.read().ok()?;
     live.as_ref().map(|live| live.snapshot.clone())
@@ -233,15 +264,45 @@ pub(crate) fn publish(snapshot: Snapshot) {
         .get_or_init(|| RwLock::new(None))
         .write()
         .expect("budget owner");
+    let operating = Arc::new(super::operating::derive(super::limits(), &snapshot.budget));
     *live = Some(Live {
+        operating,
         snapshot,
         charged: super::memory_usage().0,
     });
+    if let Some(changed) = CHANGED.get() {
+        changed.send_replace(());
+    }
 }
 pub(crate) fn work_available() -> bool {
-    live_limit(1, |budget| {
-        usize::from(budget.paused.is_none() && budget.batch_steps > 0 && budget.concurrency > 0)
-    }) > 0
+    inspect_work(|available, _| available)
+}
+
+pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<&str>) -> R) -> R {
+    let Some(live) = LIVE.get() else {
+        return inspect(true, None);
+    };
+    let Ok(live) = live.read() else {
+        return inspect(false, Some("resource state unavailable"));
+    };
+    let Some(live) = live.as_ref() else {
+        return inspect(true, None);
+    };
+    let budget = &live.snapshot.budget;
+    let available = budget.paused.is_none() && budget.batch_steps > 0 && budget.concurrency > 0;
+    inspect(
+        available,
+        budget
+            .paused
+            .as_deref()
+            .or((!available).then_some("no computation budget")),
+    )
+}
+
+/// Keep the budget read boundary through permit creation. A concurrent pause
+/// either precedes this admission or observes its already admitted work.
+pub(crate) fn admit_work<R>(admit: impl FnOnce() -> R) -> Option<R> {
+    inspect_work(|available, _| available.then(admit))
 }
 /// Hold the live read boundary through the atomic reservation. A reduction
 /// cannot race past admission; already admitted leases remain valid and drain.
@@ -254,7 +315,7 @@ pub(crate) fn reserve_memory<R>(capacity: usize, reserve: impl FnOnce(usize) -> 
     };
     let limit = live.as_ref().map_or(capacity, |live| {
         let snapshot = &live.snapshot;
-        if snapshot.budget.paused.is_some() {
+        if snapshot.observed.process_rss >= snapshot.budget.memory_bytes {
             return 0;
         }
         let target = usize::try_from(snapshot.budget.memory_bytes).unwrap_or(usize::MAX);
@@ -325,240 +386,23 @@ pub fn save(directory: &Path, selection: &Selection) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 pub fn sample(directory: &Path) -> Result<Observed, String> {
-    use nix::sys::time::TimeValLike;
-    let (total, available, rss, load) = platform_sample()?;
-    let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
-        .map_err(|e| e.to_string())?;
-    let peak = u64::try_from(usage.max_rss()).map_err(|e| e.to_string())?;
-    #[cfg(target_os = "linux")]
-    let peak = peak.saturating_mul(1024);
-    let mut observed = Observed {
-        memory_total: total,
-        memory_available: available,
-        memory_limit: total,
-        process_rss: rss,
-        peak_rss: peak,
-        process_cpu_ms: u64::try_from(
-            usage
-                .user_time()
-                .num_milliseconds()
-                .saturating_add(usage.system_time().num_milliseconds()),
-        )
-        .map_err(|e| e.to_string())?,
-        cpu_millis: std::thread::available_parallelism()
-            .map_err(|e| e.to_string())?
-            .get() as u64
-            * 1000,
-        load_millis: load,
-        disk_available: 0,
-    };
-    for resource in [
-        nix::sys::resource::Resource::RLIMIT_AS,
-        nix::sys::resource::Resource::RLIMIT_DATA,
-    ] {
-        let (limit, _) = nix::sys::resource::getrlimit(resource).map_err(|e| e.to_string())?;
-        if limit != nix::sys::resource::RLIM_INFINITY {
-            observed.memory_limit = observed.memory_limit.min(limit);
-        }
-    }
-    #[cfg(target_os = "linux")]
-    cgroups(&mut observed)?;
-    let stats = nix::sys::statvfs::statvfs(directory).map_err(|e| e.to_string())?;
-    observed.disk_available = (u128::from(stats.blocks_available())
-        * u128::from(stats.fragment_size()))
-    .min(u128::from(u64::MAX)) as u64;
-    Ok(observed)
+    observation::sample(directory)
 }
-#[cfg(any(test, target_os = "linux"))]
-fn read_small(path: &Path) -> Result<String, String> {
-    let mut text = String::new();
-    fs::File::open(path)
-        .and_then(|f| f.take(65537).read_to_string(&mut text))
-        .map_err(|e| e.to_string())?;
-    if text.len() > 65536 {
-        return Err("hardware observation capacity".into());
-    }
-    Ok(text)
+
+pub(crate) fn operating_limits() -> Arc<super::Limits> {
+    static CAPACITY: OnceLock<Arc<super::Limits>> = OnceLock::new();
+    LIVE.get()
+        .and_then(|live| live.read().ok())
+        .and_then(|live| live.as_ref().map(|live| live.operating.clone()))
+        .unwrap_or_else(|| {
+            CAPACITY
+                .get_or_init(|| Arc::new(super::limits().clone()))
+                .clone()
+        })
 }
-#[cfg(target_os = "linux")]
-fn platform_sample() -> Result<(u64, u64, u64, u64), String> {
-    let memory = read_small(Path::new("/proc/meminfo"))?;
-    let field = |text: &str, name: &str| -> Result<u64, String> {
-        text.lines()
-            .find_map(|l| l.strip_prefix(name))
-            .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
-            .and_then(|v| v.checked_mul(1024))
-            .ok_or_else(|| format!("missing {name}"))
-    };
-    let status = read_small(Path::new("/proc/self/status"))?;
-    let load = read_small(Path::new("/proc/loadavg"))?
-        .split_whitespace()
-        .next()
-        .ok_or("missing load")?
-        .parse::<f64>()
-        .map_err(|e| e.to_string())?;
-    Ok((
-        field(&memory, "MemTotal:")?,
-        field(&memory, "MemAvailable:")?,
-        field(&status, "VmRSS:")?,
-        (load * 1000.0) as u64,
-    ))
-}
-#[cfg(target_os = "macos")]
-fn platform_sample() -> Result<(u64, u64, u64, u64), String> {
-    let command = |path: &str, args: &[&str]| -> Result<String, String> {
-        let output = std::process::Command::new(path)
-            .args(args)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() || output.stdout.len() > 65536 {
-            return Err("hardware observation failed".into());
-        }
-        String::from_utf8(output.stdout).map_err(|e| e.to_string())
-    };
-    let total = command("/usr/sbin/sysctl", &["-n", "hw.memsize"])?
-        .trim()
-        .parse::<u64>()
-        .map_err(|e| e.to_string())?;
-    let vm = command("/usr/bin/vm_stat", &[])?;
-    let page = vm
-        .lines()
-        .next()
-        .and_then(|s| s.split("page size of ").nth(1))
-        .and_then(|s| s.split_whitespace().next())
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or("missing VM page size")?;
-    let mut available = 0u64;
-    for name in ["Pages free:", "Pages inactive:", "Pages speculative:"] {
-        let pages = vm
-            .lines()
-            .find_map(|l| l.strip_prefix(name))
-            .and_then(|s| s.trim().trim_end_matches('.').parse::<u64>().ok())
-            .ok_or("missing VM pages")?;
-        available = available.saturating_add(pages.saturating_mul(page));
-    }
-    let rss = command(
-        "/bin/ps",
-        &["-o", "rss=", "-p", &std::process::id().to_string()],
-    )?
-    .trim()
-    .parse::<u64>()
-    .map_err(|e| e.to_string())?
-    .saturating_mul(1024);
-    let load = command("/usr/sbin/sysctl", &["-n", "vm.loadavg"])?;
-    let load = load
-        .split_whitespace()
-        .nth(1)
-        .ok_or("missing system load")?
-        .parse::<f64>()
-        .map_err(|e| e.to_string())?;
-    Ok((total, available, rss, (load * 1000.0) as u64))
-}
-#[cfg(target_os = "linux")]
-fn cgroups(observed: &mut Observed) -> Result<(), String> {
-    let membership = read_small(Path::new("/proc/self/cgroup"))?;
-    apply_cgroups(observed, Path::new("/sys/fs/cgroup"), &membership)
-}
-#[cfg(any(test, target_os = "linux"))]
-fn apply_cgroups(observed: &mut Observed, root: &Path, membership: &str) -> Result<(), String> {
-    // Walk every ancestor: a container's effective ceiling may be imposed by
-    // its parent, even when its own file says `max`.
-    for line in membership.lines() {
-        let fields: Vec<_> = line.splitn(3, ':').collect();
-        if fields.len() != 3 {
-            return Err("invalid cgroup membership".into());
-        }
-        let relative = Path::new(fields[2].trim_start_matches('/'));
-        if relative
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-        {
-            return Err("invalid cgroup path".into());
-        }
-        let (base, v2) = if fields[1].is_empty() {
-            (root.to_path_buf(), true)
-        } else if fields[1].split(',').any(|v| v == "memory") {
-            (root.join("memory"), false)
-        } else if fields[1].split(',').any(|v| v == "cpu") {
-            (
-                if root.join("cpu").exists() {
-                    root.join("cpu")
-                } else {
-                    root.join("cpu,cpuacct")
-                },
-                false,
-            )
-        } else {
-            continue;
-        };
-        let mut path = base.join(relative);
-        loop {
-            let limit_path = path.join(if v2 {
-                "memory.max"
-            } else {
-                "memory.limit_in_bytes"
-            });
-            if limit_path.exists() {
-                let text = read_small(&limit_path)?;
-                if text.trim() != "max" {
-                    let limit = text.trim().parse::<u64>().map_err(|e| e.to_string())?;
-                    let used = read_small(&path.join(if v2 {
-                        "memory.current"
-                    } else {
-                        "memory.usage_in_bytes"
-                    }))?
-                    .trim()
-                    .parse::<u64>()
-                    .map_err(|e| e.to_string())?;
-                    observed.memory_limit = observed.memory_limit.min(limit);
-                    observed.memory_available =
-                        observed.memory_available.min(limit.saturating_sub(used));
-                }
-            }
-            if v2 && path.join("cpu.max").exists() {
-                let text = read_small(&path.join("cpu.max"))?;
-                let mut parts = text.split_whitespace();
-                if let (Some(quota), Some(period)) = (parts.next(), parts.next())
-                    && quota != "max"
-                {
-                    let quota = quota.parse::<u64>().map_err(|e| e.to_string())?;
-                    let period = period.parse::<u64>().map_err(|e| e.to_string())?;
-                    if period == 0 || quota == 0 {
-                        return Err("invalid cgroup CPU quota".into());
-                    }
-                    observed.cpu_millis = observed
-                        .cpu_millis
-                        .min(quota.saturating_mul(1000) / period)
-                        .max(1);
-                }
-            }
-            if !v2 && path.join("cpu.cfs_quota_us").exists() {
-                let quota = read_small(&path.join("cpu.cfs_quota_us"))?;
-                if quota.trim() != "-1" {
-                    let quota = quota.trim().parse::<u64>().map_err(|e| e.to_string())?;
-                    let period = read_small(&path.join("cpu.cfs_period_us"))?
-                        .trim()
-                        .parse::<u64>()
-                        .map_err(|e| e.to_string())?;
-                    if quota == 0 || period == 0 {
-                        return Err("invalid cgroup CPU quota".into());
-                    }
-                    observed.cpu_millis = observed
-                        .cpu_millis
-                        .min(quota.saturating_mul(1000) / period)
-                        .max(1);
-                }
-            }
-            if path == base {
-                break;
-            }
-            if !path.pop() || !path.starts_with(&base) {
-                break;
-            }
-        }
-    }
-    Ok(())
-}
+
+#[cfg(test)]
+use observation::apply_cgroups;
 
 #[cfg(test)]
 mod tests;

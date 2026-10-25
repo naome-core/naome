@@ -1,6 +1,7 @@
 //! Replay-derived tree costs and bounded projection of an immutable formula DAG.
 use super::*;
 use naome_foundation::{FORMULA_MAX_BYTES, FORMULA_MAX_DEPTH, FORMULA_MAX_NODES};
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Shape {
@@ -38,30 +39,32 @@ impl Shape {
 pub(super) struct Tree {
     pending: Vec<u64>,
     bytes: Vec<u8>,
-    cache: Vec<(u64, Node<u64>)>,
+    cache: BTreeMap<u64, Node<u64>>,
+    order: VecDeque<u64>,
     cache_limit: usize,
-    replace: usize,
 }
 impl Tree {
+    // Conservative map-node, allocation and FIFO metadata charge per entry.
+    fn entry_bytes() -> usize {
+        std::mem::size_of::<(u64, Node<u64>)>() + 128
+    }
     pub fn cache_bytes(budget: u64) -> u64 {
-        (budget / 4).min(64 * std::mem::size_of::<(u64, Node<u64>)>() as u64)
+        budget / 4
     }
     pub fn new(root: u64, budget: u64) -> Self {
-        let cache_limit =
-            Self::cache_bytes(budget) as usize / std::mem::size_of::<(u64, Node<u64>)>();
+        let cache_limit = Self::cache_bytes(budget) as usize / Self::entry_bytes();
         Self {
             pending: vec![root],
             bytes: Vec::new(),
-            cache: Vec::with_capacity(cache_limit),
+            cache: BTreeMap::new(),
+            order: VecDeque::new(),
             cache_limit,
-            replace: 0,
         }
     }
     pub fn restrict_cache(&mut self, budget: u64) {
-        self.cache_limit =
-            Self::cache_bytes(budget) as usize / std::mem::size_of::<(u64, Node<u64>)>();
-        self.cache = Vec::with_capacity(self.cache_limit);
-        self.replace = 0;
+        self.cache_limit = Self::cache_bytes(budget) as usize / Self::entry_bytes();
+        self.cache.clear();
+        self.order = VecDeque::new();
     }
     pub fn advance(
         &mut self,
@@ -71,21 +74,24 @@ impl Tree {
         // Reauthenticate on every owner boundary; cached nodes never restore
         // trust across quanta, replay, or an observed external write.
         self.cache.clear();
-        self.replace = 0;
+        self.order.clear();
         for _ in 0..steps {
             let Some(&id) = self.pending.last() else {
                 return Ok(true);
             };
             // A failed cold read preserves this exact node for a later retry.
-            let node = match self.cache.iter().find(|(cached, _)| *cached == id) {
-                Some((_, node)) => *node,
+            let node = match self.cache.get(&id) {
+                Some(node) => *node,
                 None => {
                     let node = load(id)?;
-                    if self.cache.len() < self.cache_limit {
-                        self.cache.push((id, node));
-                    } else if self.cache_limit > 0 {
-                        self.cache[self.replace] = (id, node);
-                        self.replace = (self.replace + 1) % self.cache_limit;
+                    if self.cache_limit > 0 {
+                        if self.cache.len() >= self.cache_limit
+                            && let Some(oldest) = self.order.pop_front()
+                        {
+                            self.cache.remove(&oldest);
+                        }
+                        self.cache.insert(id, node);
+                        self.order.push_back(id);
                     }
                     node
                 }

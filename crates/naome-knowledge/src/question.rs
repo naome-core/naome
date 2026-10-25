@@ -187,7 +187,7 @@ impl QuestionInbox {
 /// The creator chooses who receives the administrative capability; cloning an
 /// ordinary handle never grants import or policy mutation.
 pub fn channel() -> (QuestionHandle, QuestionAdminHandle, QuestionInbox) {
-    let (sender, receiver) = mpsc::channel(crate::resources::limits().question_commands);
+    let (sender, receiver) = mpsc::channel(crate::resources::active_limits().question_commands);
     (
         QuestionHandle {
             sender: sender.clone(),
@@ -384,7 +384,7 @@ where
             persistence: None,
             index_storage: None,
             compaction: None,
-            next_compaction: crate::resources::limits().registry_index_cache_bytes,
+            next_compaction: crate::resources::active_limits().registry_index_cache_bytes,
             old_indexes: Vec::new(),
             storage_error: None,
             interest_horizon: crate::resources::limits().interest_timeout,
@@ -434,8 +434,9 @@ where
     }
 
     pub(crate) fn maintain_registry(&mut self) -> Result<(), crate::Error> {
-        let cache_bytes =
-            crate::resources::adaptive::cache(crate::resources::limits().question_cache_bytes);
+        let cache_bytes = crate::resources::adaptive::cache(
+            crate::resources::active_limits().question_cache_bytes,
+        );
         self.cache.trim(cache_bytes);
         if !crate::resources::adaptive::work_available() {
             return Ok(());
@@ -476,16 +477,25 @@ where
             self.compaction = Some(copy);
         }
         if let Some(mut copy) = self.compaction.take() {
+            let started = Instant::now();
             let progress = match copy.cursor.as_mut().expect("active registry copy").advance(
                 naome_checker::DiskCopyBudget {
-                    records: crate::resources::limits().compaction_records,
-                    bytes: crate::resources::limits().compaction_bytes,
+                    records: crate::resources::active_limits().compaction_records,
+                    bytes: crate::resources::active_limits().compaction_bytes,
                 },
             ) {
                 Ok(progress) => progress,
-                Err(naome_checker::ContextError::Limit) => return Ok(()),
+                Err(naome_checker::ContextError::Limit) => {
+                    self.compaction = Some(copy);
+                    return Ok(());
+                }
                 Err(error) => return Err(error.into()),
             };
+            crate::resources::feedback::record(
+                crate::resources::feedback::Kind::Compact,
+                progress.records.saturating_add(progress.node_visits),
+                started.elapsed(),
+            );
             if progress.complete {
                 let registry = copy
                     .cursor
@@ -494,9 +504,10 @@ where
                     .finish(&self.registry)
                     .map_err(|e| e.to_string())?;
                 let live = copy.target.allocated_bytes()?;
-                self.next_compaction = live.saturating_mul(2).max(
-                    live.saturating_add(crate::resources::limits().registry_index_cache_bytes),
-                );
+                self.next_compaction =
+                    live.saturating_mul(2).max(live.saturating_add(
+                        crate::resources::active_limits().registry_index_cache_bytes,
+                    ));
                 copy.source.end_mirror(&copy.target);
                 self.old_indexes.push(Arc::downgrade(&copy.source));
                 self.registry = registry;
@@ -516,8 +527,8 @@ where
                 .saturating_add(std::mem::size_of::<CompiledQuestion>() + 512)
         }
         let needed = bytes(&question);
-        let budget = crate::resources::limits().checked_cache_bytes / 8;
-        let limit = crate::resources::limits().question_page;
+        let budget = crate::resources::active_limits().checked_cache_bytes / 8;
+        let limit = crate::resources::active_limits().question_page;
         if needed > budget {
             return;
         }
@@ -659,7 +670,7 @@ where
                     .sum::<usize>()
                     + question.source().len()
                     + question.canonical_core().len() * 64
-                    <= crate::resources::limits().checked_cache_bytes)
+                    <= crate::resources::active_limits().checked_cache_bytes)
     }
 
     fn snapshot<'a>(&'a self, graph: &'a Graph) -> KnowledgeSnapshot<'a> {
@@ -712,8 +723,9 @@ where
         reuse: bool,
         record: Option<Identity>,
     ) -> PrefilterDecision {
-        let cache_bytes =
-            crate::resources::adaptive::cache(crate::resources::limits().question_cache_bytes);
+        let cache_bytes = crate::resources::adaptive::cache(
+            crate::resources::active_limits().question_cache_bytes,
+        );
         self.cache.trim(cache_bytes);
         let snapshot = KnowledgeSnapshot::new(
             crate::compatibility(),
@@ -762,7 +774,7 @@ where
 
     pub(crate) fn available(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.len() < 2 * crate::resources::limits().interest_decisions
+            self.pending.len() < 2 * crate::resources::active_limits().interest_decisions
         } else {
             self.pending.is_empty()
         }
@@ -771,7 +783,7 @@ where
     pub(crate) fn available_peer(&self) -> bool {
         if self.managed.is_some() {
             self.pending.values().filter(|p| p.peer).count()
-                < crate::resources::limits().interest_decisions
+                < crate::resources::active_limits().interest_decisions
         } else {
             self.available()
         }
@@ -779,7 +791,7 @@ where
     pub(crate) fn available_local(&self) -> bool {
         if self.managed.is_some() {
             self.pending.values().filter(|p| !p.peer).count()
-                < crate::resources::limits().interest_decisions
+                < crate::resources::active_limits().interest_decisions
         } else {
             self.available()
         }
@@ -1043,7 +1055,7 @@ where
         let peer = matches!(reply, Reply::Exchange { root: Some(_), .. });
         let available = if self.managed.is_some() {
             self.pending.values().filter(|p| p.peer == peer).count()
-                < crate::resources::limits().interest_decisions
+                < crate::resources::active_limits().interest_decisions
         } else {
             self.pending.is_empty()
         };

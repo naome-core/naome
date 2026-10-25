@@ -106,7 +106,9 @@ pub(crate) struct Codec {
 impl Default for Codec {
     fn default() -> Self {
         Self {
-            budget: Arc::new(Semaphore::new(crate::resources::limits().inbound_frames)),
+            budget: Arc::new(Semaphore::new(
+                crate::resources::active_limits().inbound_frames,
+            )),
         }
     }
 }

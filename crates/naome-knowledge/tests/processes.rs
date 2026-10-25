@@ -136,9 +136,9 @@ fn ordinary_owner_interest_is_exact_durable_and_serialized() {
     run_autonomous("interest");
 }
 
-#[cfg(all(unix, feature = "developer-tools"))]
+#[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
 #[test]
-fn ordinary_computation_pause_preserves_gossip_peering_and_checked_delivery() {
+fn automatic_resource_pause_preserves_provider_budgets_and_control() {
     run_autonomous("pause");
 }
 
@@ -193,7 +193,7 @@ fn run_autonomous(mode: &str) {
     command
         .arg(root.join(match mode {
             "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
-            "pause" => "crates/naome-knowledge/tests/support/computation_pause.py",
+            "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
             _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))
@@ -206,6 +206,7 @@ fn run_autonomous(mode: &str) {
                 "direct" => "60",
                 "guardian-probe" => "45",
                 "startup" => "50",
+                "pause" => "120",
                 _ => "90",
             },
             "--profile",
@@ -219,24 +220,6 @@ fn run_autonomous(mode: &str) {
         command.arg("--guardian-loss-probe");
     } else {
         command.args(["--mode", mode]);
-    }
-    if mode == "pause" {
-        use sha2::Digest;
-        // Start the controlled catalog at its streamed-program question. Other
-        // answers must not invalidate the receiver's selected program question.
-        let key = (0..=u8::MAX)
-            .find_map(|seed| {
-                let key = libp2p::identity::Keypair::ed25519_from_bytes([seed; 32]).unwrap();
-                let cursor = sha2::Sha256::digest(key.public().to_peer_id().to_bytes())[0];
-                (naome_knowledge::mocks::create_question(u64::from(cursor))
-                    == naome_knowledge::mocks::create_question(0))
-                .then_some(key)
-            })
-            .unwrap();
-        command.args([
-            "--donor-key",
-            &naome_knowledge::hex(&key.to_protobuf_encoding().unwrap()),
-        ]);
     }
     #[cfg(feature = "developer-tools")]
     if matches!(mode, "relay" | "guardian-probe") {

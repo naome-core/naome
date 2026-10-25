@@ -272,7 +272,7 @@ fn profiles_have_distinct_semantics_and_never_exceed_safe_hardware_capacity() {
     let pressured = Snapshot::derive(Selection::default(), limited, 512 * MIB).unwrap();
     assert!(pressured.budget.paused.is_some());
     assert_eq!(pressured.budget.concurrency, 0);
-    assert_eq!(pressured.budget.network_requests, 0);
+    assert_eq!(pressured.budget.network_requests, 1);
     let resumed = Snapshot::derive(Selection::default(), hardware(), 512 * MIB).unwrap();
     assert!(resumed.budget.paused.is_none());
 }

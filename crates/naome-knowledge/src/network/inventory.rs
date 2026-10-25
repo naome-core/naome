@@ -1,6 +1,14 @@
 //! Finite, restartable inventory scans over a fixed append-only horizon.
 use super::*;
 
+/// Frozen admission for one request; later calibration cannot reinterpret it.
+#[derive(Clone, Copy)]
+pub(super) struct Request {
+    pub(super) after: Option<InventoryCursor>,
+    limit: usize,
+    pages: usize,
+}
+
 pub(super) fn response(
     graph: &Graph,
     known: Option<[u8; 32]>,
@@ -16,8 +24,10 @@ pub(super) fn response(
             "inventory page limit must be positive",
         ));
     }
-    let Some(page) =
-        graph.inventory_page(after, limit.min(crate::resources::limits().inventory_page))?
+    let Some(page) = graph.inventory_page(
+        after,
+        limit.min(crate::resources::active_limits().inventory_page),
+    )?
     else {
         return Ok(Body::InventoryRestart);
     };
@@ -29,18 +39,20 @@ pub(super) fn response(
 }
 
 fn valid_page(
-    after: Option<InventoryCursor>,
+    request: Request,
     snapshot: InventorySnapshot,
     ids: &[[u8; 32]],
     next: Option<InventoryCursor>,
 ) -> bool {
+    let after = request.after;
     let position = after.map_or(0, |cursor| cursor.after);
     if snapshot.count > i64::MAX as u64
         || after.is_some_and(|cursor| cursor.snapshot != snapshot)
         || position > snapshot.count
+        || request.limit == 0
+        || ids.len() as u64 > (snapshot.count - position).min(request.limit as u64)
+        || (ids.is_empty() && position < snapshot.count)
         || ids.len() > crate::resources::limits().inventory_page
-        || ids.len() as u64 > snapshot.count - position
-        || ids.is_empty() && position < snapshot.count
         || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
     {
         return false;
@@ -54,6 +66,11 @@ fn valid_page(
 
 impl Node {
     pub(super) fn inventory(&mut self, peer: PeerId, after: Option<InventoryCursor>, pages: usize) {
+        let request = Request {
+            after,
+            limit: crate::resources::active_limits().inventory_page,
+            pages,
+        };
         let local = self.graph.content_root();
         let known = after.is_none().then(|| {
             self.inventory_summaries
@@ -66,16 +83,16 @@ impl Node {
             Frame::new(Body::Inventory {
                 known,
                 after,
-                limit: crate::resources::limits().inventory_page,
+                limit: request.limit,
             }),
         );
         self.flights.insert(
             id,
             Flight::Inventory {
+                started: Instant::now(),
                 peer,
                 known,
-                after,
-                pages,
+                request,
             },
         );
         self.next_inventory.insert(
@@ -87,13 +104,13 @@ impl Node {
     pub(super) fn received_inventory(
         &mut self,
         peer: PeerId,
-        after: Option<InventoryCursor>,
-        pages: usize,
+        request: Request,
         snapshot: InventorySnapshot,
         ids: Vec<[u8; 32]>,
         next: Option<InventoryCursor>,
     ) -> Result<(), String> {
-        if !valid_page(after, snapshot, &ids, next) {
+        let Request { after, pages, .. } = request;
+        if !valid_page(request, snapshot, &ids, next) {
             emit(json!({"event":"rejected","error":"invalid inventory"}));
             return Ok(());
         }

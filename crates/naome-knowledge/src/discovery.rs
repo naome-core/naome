@@ -87,8 +87,8 @@ pub(crate) fn identified_kind(
             .iter()
             .any(|protocol| matches!(protocol.as_ref(), internet::PROTOCOL | internet::RELAY_HOP));
     let valid = info.public_key.to_peer_id() == peer_id
-        && info.listen_addrs.len() <= crate::resources::limits().inbound_streams
-        && info.protocols.len() <= crate::resources::limits().inbound_frames
+        && info.listen_addrs.len() <= crate::resources::limits().identify_addresses
+        && info.protocols.len() <= crate::resources::limits().identify_protocols
         && info.protocols.iter().all(|protocol| {
             protocol.as_ref().len() <= crate::resources::limits().identify_protocol_bytes
         })
@@ -465,7 +465,7 @@ impl Behaviour {
                         peers: crate::resources::limits().contacts,
                         addresses_per_peer: crate::resources::limits().addresses_per_contact,
                         address_bytes: crate::resources::limits().address_bytes,
-                        responses: crate::resources::limits().provider_events,
+                        responses: crate::resources::active_limits().provider_events,
                         interfaces: crate::resources::limits().discovery_interfaces,
                     },
                 )
@@ -481,7 +481,7 @@ impl Behaviour {
             settings
                 .set_query_timeout(crate::resources::limits().query_timeout)
                 .set_parallelism(
-                    NonZeroUsize::new(crate::resources::limits().dht_parallelism)
+                    NonZeroUsize::new(crate::resources::active_limits().dht_parallelism)
                         .expect("validated nonzero"),
                 )
                 .set_replication_factor(
@@ -664,7 +664,7 @@ impl State {
         kad.store_mut().prune(now);
         // libp2p can also own one automatic bootstrap query. Count that query
         // before starting application work; its finite timeout is unchanged.
-        if kad.iter_queries().count() >= crate::resources::limits().application_queries {
+        if kad.iter_queries().count() >= crate::resources::active_limits().application_queries {
             return;
         }
         if !self.relay && now >= self.next_provide {

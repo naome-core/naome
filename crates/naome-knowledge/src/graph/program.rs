@@ -10,12 +10,14 @@ use std::time::Duration;
 pub(crate) struct ProgramBudget {
     snapshot: Option<Snapshot>,
     next: Instant,
+    governor: adaptive::Governor,
 }
 impl Default for ProgramBudget {
     fn default() -> Self {
         Self {
             snapshot: None,
             next: Instant::now(),
+            governor: adaptive::Governor::default(),
         }
     }
 }
@@ -26,13 +28,15 @@ impl ProgramBudget {
             return Ok(self.snapshot.as_ref().expect("active node budget"));
         }
         if Instant::now() >= self.next {
-            let snapshot = Snapshot::derive(
+            let sampled = Instant::now();
+            let snapshot = self.governor.observe(
                 adaptive::load(directory)?,
-                adaptive::sample(directory)?,
+                adaptive::sample_node(directory)?,
                 crate::resources::limits().memory_bytes as u64,
             )?;
             self.snapshot = Some(snapshot);
-            self.next = Instant::now() + Duration::from_secs(1);
+            self.governor.sampled(sampled.elapsed());
+            self.next = Instant::now() + self.governor.interval();
         }
         Ok(self.snapshot.as_ref().expect("initial program budget"))
     }

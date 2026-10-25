@@ -161,6 +161,30 @@ async fn receive(
     depth: usize,
     rebind: bool,
 ) {
+    use crate::resources::adaptive::{self, Custom, Profile, Selection, Snapshot};
+    // These isolated mathematical/atomic-publication cases count calls using
+    // the shared work fixture's quantum, rather than host load or recovery time.
+    // Native governor recovery has separate coverage; real memory and disk
+    // leases still apply here, including the registration-pressure assertion.
+    let work = budget();
+    let capacity = crate::resources::limits().memory_bytes as u64;
+    let snapshot = Snapshot::derive(
+        Selection {
+            profile: Profile::Custom,
+            custom: Some(Custom {
+                memory_bytes: capacity,
+                concurrency: work.concurrency,
+                cache_bytes: crate::resources::limits().checked_cache_bytes as u64,
+                batch_steps: work.batch_steps,
+                network_requests: work.network_requests,
+            }),
+        },
+        adaptive::sample(directory).unwrap(),
+        capacity,
+    )
+    .unwrap();
+    assert!(snapshot.budget.paused.is_none(), "{snapshot:?}");
+    adaptive::publish(snapshot.clone());
     let root = metadata.manifest.proof_id();
     let mut graph = Graph::open(directory).unwrap();
     let mut questions = LocalQuestions::new(Some(accepting as fn(_) -> _));
@@ -176,7 +200,43 @@ async fn receive(
     let mut accepted = None;
     let mut unrelated = None;
     let mut pressured = false;
+    let mut publication_pressured = false;
     for _ in 0..5000 {
+        if rebind
+            && !publication_pressured
+            && intake.programs.active.as_ref().is_some_and(|root| {
+                matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready())
+                    && root.authority.finalized
+            })
+        {
+            // Final question admission can refuse a transferred checked batch.
+            // Recovery must rebuild its private helper prefix before retrying.
+            let mut constrained = snapshot.clone();
+            constrained.budget.cache_bytes = work.cache_bytes;
+            adaptive::publish(constrained);
+            let retained = intake.programs.active.as_ref().unwrap();
+            assert!(matches!(
+                questions.prepare_exchange(
+                    &graph,
+                    &retained.authority.question,
+                    retained.authority.assessment.as_ref().unwrap(),
+                ),
+                Err(crate::Error::ExecutionLimit)
+            ));
+            assert!(matches!(
+                intake.advance(&mut graph, &mut questions),
+                Progress::Waiting
+            ));
+            let retained = intake.programs.active.as_ref().unwrap();
+            assert!(matches!(&retained.stage, Stage::Prepare(prepared) if prepared.pending()));
+            assert!(
+                !retained.helpers.ready(),
+                "a transferred batch's helper prefix must be rebuilt after backpressure"
+            );
+            assert_eq!(graph.accepted_count(), usize::from(unrelated.is_some()));
+            adaptive::publish(snapshot.clone());
+            publication_pressured = true;
+        }
         if rebind
             && !pressured
             && intake.programs.active.as_ref().is_some_and(|root| {
@@ -253,13 +313,24 @@ async fn receive(
                 .unwrap();
         }
     }
-    assert_eq!(
-        accepted
-            .expect("finite compositional checking must finish")
-            .into_iter()
-            .collect::<BTreeSet<_>>(),
-        expected
-    );
+    let accepted = accepted.unwrap_or_else(|| {
+        panic!(
+            "finite compositional checking must finish; budget={:?}; progress={:?}",
+            adaptive::current().map(|snapshot| snapshot.budget),
+            intake.programs.active.as_ref().map(|root| (
+                match &root.stage {
+                    Stage::Fetch => "fetch",
+                    Stage::Check(_) => "check",
+                    Stage::Prepare(_) => "prepare",
+                },
+                root.scanned,
+                root.input_complete,
+                root.helpers.busy(),
+                root.helpers.ready(),
+            )),
+        )
+    });
+    assert_eq!(accepted.into_iter().collect::<BTreeSet<_>>(), expected);
     assert_eq!(fetched, expected);
     assert_eq!(
         unrelated.is_some(),
@@ -270,6 +341,7 @@ async fn receive(
         pressured, rebind,
         "registration must encounter real disk admission pressure"
     );
+    assert_eq!(publication_pressured, rebind);
     let mut all_expected = expected.clone();
     all_expected.extend(unrelated);
     assert_eq!(graph.accepted_count(), all_expected.len());

@@ -30,7 +30,7 @@ fn hot_reads_keep_owned_bytes_and_cached_allocation_generation_and_charge() {
         assert_eq!(entry.bytes.capacity(), capacity);
         assert_eq!(entry.state, EntryState::Persisted(storage.generation));
         assert_eq!(cache.charged, charged);
-        assert!(cache.charged <= crate::resources::limits().checked_cache_bytes);
+        assert!(cache.charged <= crate::resources::active_limits().checked_cache_bytes);
         cache.clock
     };
     assert!(matches!(
@@ -89,7 +89,7 @@ fn hot_read_and_write_rollover_preserves_generation_charge_and_successor_persist
             assert_eq!(entry.bytes.capacity(), capacity);
             assert_eq!(entry.state, EntryState::Persisted(storage.generation));
             assert_eq!(cache.charged, capacity + CACHE_ENTRY_BYTES);
-            assert!(cache.charged <= crate::resources::limits().checked_cache_bytes);
+            assert!(cache.charged <= crate::resources::active_limits().checked_cache_bytes);
         }
         successor.write(address, &bytes).unwrap();
         successor.evict_cache();
@@ -279,7 +279,7 @@ fn every_cached_existing_and_unreferenced_write_reaches_the_mirror() {
             assert!(Arc::ptr_eq(&source.cache, &target.cache));
             assert!(
                 source.cache.lock().unwrap().charged
-                    <= crate::resources::limits().checked_cache_bytes
+                    <= crate::resources::active_limits().checked_cache_bytes
             );
             assert!(graph.storage_error().is_none());
         }
@@ -422,7 +422,7 @@ fn copy_read_mirror_and_real_sql_commit_failures_halt_without_handoff() {
                     .unwrap()
                     .execute_batch(
                         "CREATE TRIGGER reject_mirror BEFORE INSERT ON nodes BEGIN
-                         SELECT RAISE(ABORT,'injected mirror I/O refusal'); END;",
+                     SELECT RAISE(ABORT,'injected mirror I/O refusal'); END;",
                     )
                     .unwrap();
                 assert!(source.write([70; 32], b"unpublished staged write").is_err());
@@ -438,11 +438,11 @@ fn copy_read_mirror_and_real_sql_commit_failures_halt_without_handoff() {
                     .unwrap()
                     .execute_batch(
                         "PRAGMA foreign_keys=ON;
-                         CREATE TABLE copy_parent(id INTEGER PRIMARY KEY);
-                         CREATE TABLE copy_child(id INTEGER REFERENCES copy_parent(id)
-                             DEFERRABLE INITIALLY DEFERRED);
-                         CREATE TRIGGER reject_copy_commit AFTER INSERT ON nodes BEGIN
-                             INSERT INTO copy_child(id) VALUES(1); END;",
+                     CREATE TABLE copy_parent(id INTEGER PRIMARY KEY);
+                     CREATE TABLE copy_child(id INTEGER REFERENCES copy_parent(id)
+                         DEFERRABLE INITIALLY DEFERRED);
+                     CREATE TRIGGER reject_copy_commit AFTER INSERT ON nodes BEGIN
+                         INSERT INTO copy_child(id) VALUES(1); END;",
                     )
                     .unwrap();
             }

@@ -160,8 +160,9 @@ impl CheckedStorage {
                 .cache
                 .lock()
                 .map_err(|_| "checked cache lock poisoned")?;
-            let limit =
-                crate::resources::adaptive::cache(crate::resources::limits().checked_cache_bytes);
+            let limit = crate::resources::adaptive::cache(
+                crate::resources::active_limits().checked_cache_bytes,
+            );
             cache.trim(limit);
             if cache.charged > limit {
                 self.flush_buffered(&mut cache, false)
@@ -180,7 +181,7 @@ impl CheckedStorage {
                 "cache_size",
                 -i64::try_from(
                     (crate::resources::adaptive::cache(
-                        crate::resources::limits().checked_index_cache_bytes,
+                        crate::resources::active_limits().checked_index_cache_bytes,
                     ) / 1024)
                         .max(1),
                 )
@@ -357,7 +358,7 @@ impl CheckedStorage {
         .map_err(|e| e.to_string())?;
         crate::storage::sqlite_common(
             &connection,
-            crate::resources::limits().checked_index_cache_bytes,
+            crate::resources::active_limits().checked_index_cache_bytes,
         )
         .map_err(|error| error.to_string())?;
         if startup {
@@ -526,9 +527,11 @@ impl CheckedStorage {
                 }
                 let bytes = entry.bytes.clone();
                 cache.touch(address);
+                crate::resources::feedback::cache(true);
                 return Ok(bytes);
             }
         }
+        crate::resources::feedback::cache(false);
         let bytes = self.read_uncached(address, maximum)?;
         self.cache
             .lock()
@@ -813,8 +816,9 @@ impl Cache {
             }
         }
         let charge = bytes.capacity().saturating_add(CACHE_ENTRY_BYTES);
-        let limit =
-            crate::resources::adaptive::cache(crate::resources::limits().checked_cache_bytes);
+        let limit = crate::resources::adaptive::cache(
+            crate::resources::active_limits().checked_cache_bytes,
+        );
         self.trim(limit);
         if charge > limit {
             return;

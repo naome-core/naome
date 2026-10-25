@@ -183,10 +183,10 @@ impl Persistence {
                 .page(
                     "question",
                     after,
-                    crate::resources::limits().question_page,
+                    crate::resources::active_limits().question_page,
                     crate::resources::limits()
                         .active_job_bytes
-                        .min(crate::resources::limits().checked_cache_bytes),
+                        .min(crate::resources::active_limits().checked_cache_bytes),
                 )?
                 .into_iter()
                 .map(|(key, bytes)| {
@@ -351,7 +351,7 @@ impl Persistence {
             .page(
                 "publication",
                 None,
-                crate::resources::limits().publications,
+                crate::resources::active_limits().publications,
                 crate::resources::limits().active_job_bytes,
             )?
             .into_iter()
