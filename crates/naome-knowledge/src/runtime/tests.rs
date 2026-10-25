@@ -1,10 +1,12 @@
 use super::*;
+mod computation;
 
 #[tokio::test]
 async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames() {
     let interest = "\u{0001}".repeat(crate::resources::limits().owner_text_bytes);
     let status = Status {
         running: true,
+        computation: crate::resources::ComputationState::Running,
         accepted_proofs: 3,
         interest: interest.clone(),
     };
@@ -195,6 +197,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         stopped_status(&directory.0).await.unwrap(),
         Status {
             running: false,
+            computation: crate::resources::ComputationState::Stopped,
             accepted_proofs: 0,
             interest: String::new()
         }
@@ -246,6 +249,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         response.unwrap().unwrap(),
         Status {
             running: true,
+            computation: crate::resources::ComputationState::Running,
             accepted_proofs: 2,
             interest: String::new()
         }
@@ -256,6 +260,7 @@ async fn status_counts_only_unique_checked_closure_members_running_stopped_and_r
         status(&directory.0).await.unwrap(),
         Status {
             running: false,
+            computation: crate::resources::ComputationState::Stopped,
             accepted_proofs: 2,
             interest: String::new()
         }
@@ -308,6 +313,7 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
         status,
         Status {
             running: false,
+            computation: crate::resources::ComputationState::Stopped,
             accepted_proofs: 1,
             interest: String::new()
         }

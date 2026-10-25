@@ -178,6 +178,7 @@ pub fn report_error(error: &str) {
 #[serde(deny_unknown_fields)]
 pub struct Status {
     pub running: bool,
+    pub computation: crate::resources::ComputationState,
     pub accepted_proofs: usize,
     pub interest: String,
 }
@@ -204,6 +205,8 @@ enum Operation {
     Status,
     Resources,
     Stop,
+    Pause,
+    Resume,
     Interest(String),
 }
 
@@ -238,6 +241,7 @@ pub(crate) struct Control {
     directory: PathBuf,
     endpoint: Endpoint,
     stopping: tokio::sync::watch::Sender<bool>,
+    pub(crate) computation: std::sync::Arc<crate::resources::Computation>,
     owner: std::sync::Arc<Mutex<OwnerState>>,
     selection_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ownership: Option<std::sync::Arc<crate::store::Store>>,
@@ -391,6 +395,7 @@ impl Control {
             directory,
             endpoint,
             stopping: tokio::sync::watch::channel(false).0,
+            computation: std::sync::Arc::default(),
             owner: std::sync::Arc::new(Mutex::new(OwnerState {
                 text,
                 recovery_error: None,
@@ -463,6 +468,13 @@ impl Control {
         if stopping {
             self.stopping.send_replace(true);
         }
+        if ready && !self.stopping() {
+            match request.operation {
+                Operation::Pause => self.computation.set_paused(true),
+                Operation::Resume => self.computation.set_paused(false),
+                _ => {}
+            }
+        }
         let directory = self.directory.clone();
         let state = self.owner.clone();
         let dirty = self.selection_dirty.clone();
@@ -473,7 +485,7 @@ impl Control {
             let _ownership = ownership;
             match request.operation {
                 Operation::Resources => Ok(String::new()),
-                Operation::Status => {
+                Operation::Status | Operation::Pause | Operation::Resume => {
                     let mut owner = state
                         .lock()
                         .map_err(|_| "owner configuration lock poisoned")?;
@@ -516,6 +528,7 @@ impl Control {
         })
         .await
         .map_err(|error| format!("owner control worker failed: {error}"))??;
+        let running = ready && !self.stopping();
         let response = Response {
             token: self.endpoint.token.clone(),
             report: if resources {
@@ -525,7 +538,12 @@ impl Control {
             } else {
                 Report::Status {
                     status: Status {
-                        running: ready && !stopping,
+                        running,
+                        computation: if running {
+                            self.computation.state()
+                        } else {
+                            crate::resources::ComputationState::Stopped
+                        },
                         accepted_proofs: count,
                         interest,
                     },
@@ -817,6 +835,7 @@ async fn stopped_status(directory: &Path) -> Result<Status, String> {
     let graph = Graph::open(directory)?;
     Ok(Status {
         running: false,
+        computation: crate::resources::ComputationState::Stopped,
         accepted_proofs: graph.accepted_count(),
         interest: owner::load(directory)?,
     })
@@ -832,6 +851,7 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
     let graph = Graph::open(directory)?;
     Ok(Status {
         running: false,
+        computation: crate::resources::ComputationState::Stopped,
         accepted_proofs: graph.accepted_count(),
         interest: owner::update(directory, text).map_err(|error| error.message)?,
     })
@@ -842,6 +862,18 @@ async fn status(directory: &Path) -> Result<Status, String> {
         return Ok(status);
     }
     stopped_status(directory).await
+}
+
+async fn computation(directory: &Path, paused: bool) -> Result<Status, String> {
+    let operation = if paused {
+        Operation::Pause
+    } else {
+        Operation::Resume
+    };
+    request(directory, operation, None)
+        .await?
+        .filter(|status| status.running)
+        .ok_or_else(|| "node is not running; start it before pause or resume".into())
 }
 
 async fn start(directory: &Path) -> Result<Status, String> {
@@ -1211,7 +1243,7 @@ async fn wait_for_stop(
     }
 }
 
-/// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
+/// Ordinary CLI exposes lifecycle, computation control and local owner interest.
 pub async fn execute() -> Result<(), String> {
     crate::resources::initialize_from_environment()?;
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -1253,11 +1285,15 @@ pub async fn execute() -> Result<(), String> {
             json,
             &Status {
                 running: false,
+                computation: crate::resources::ComputationState::Stopped,
                 accepted_proofs: 0,
                 interest: String::new(),
             },
         )?;
         return Ok(());
+    }
+    if matches!(command, "pause" | "resume") && !directory.exists() {
+        return Err("node is not running; start it before pause or resume".into());
     }
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
@@ -1268,6 +1304,8 @@ pub async fn execute() -> Result<(), String> {
         }
         "start" => start(&directory).await?,
         "stop" => stop(&directory).await?,
+        "pause" => computation(&directory, true).await?,
+        "resume" => computation(&directory, false).await?,
         "status" => status(&directory).await?,
         "interest" => interest(&directory, text.expect("parsed interest text")).await?,
         _ => unreachable!(),

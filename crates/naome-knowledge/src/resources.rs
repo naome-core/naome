@@ -4,6 +4,9 @@
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 pub mod adaptive;
+mod computation;
+pub use computation::ComputationState;
+pub(crate) use computation::{Computation, ComputationPermit};
 use std::{
     sync::{
         Arc, OnceLock,
