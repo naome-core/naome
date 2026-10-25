@@ -1350,6 +1350,11 @@ pub async fn execute() -> Result<(), String> {
 async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), String> {
     use crate::resources::adaptive::{self, Snapshot};
     let directory = directory()?;
+    let directory = if directory.exists() {
+        fs::canonicalize(directory).map_err(|error| error.to_string())?
+    } else {
+        directory
+    };
     if arguments.first().is_some_and(|v| v == "history") {
         if arguments.len() > 2 {
             return Err("usage: naome resources history [after]".into());

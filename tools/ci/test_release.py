@@ -332,16 +332,40 @@ class PackageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 package.verify_audit(broken)
 
-    def test_lifecycle_stops_its_node_after_a_failed_pause_check(self):
+    def test_lifecycle_stops_its_node_after_a_failed_resource_check(self):
         operations = []
         def run(_json, command, *_arguments):
             operations.append(command)
             status = {"running": command != "stop", "computation": "stopped" if command == "stop" else "running", "proof_verification": "not_run" if command == "stop" else "checked", "interest": "Release smoke test"}
-            # A defective pause must be detected and still request shutdown.
+            # Missing daemon resource diagnostics must still request shutdown.
             return json.dumps(status)
-        with self.assertRaisesRegex(ValueError, "pausing computation"):
+        with self.assertRaisesRegex(ValueError, "active resource budget"):
             package.lifecycle(run, self.directory / "node")
-        self.assertEqual(operations, ["start", "status", "interest", "pause", "stop"])
+        self.assertEqual(operations, ["start", "status", "interest", "resources", "stop"])
+
+    def test_lifecycle_observes_resources_and_preserves_interest_after_shutdown(self):
+        operations = []
+        running = False
+        interest = ""
+        def run(_json, command, *arguments):
+            nonlocal running, interest
+            operations.append(command)
+            if command == "resources":
+                return json.dumps({"installed_capacity": {"memory_bytes": 1024, "workers": [1, 1, 1, 1]},
+                                   "active": {"budget": {"memory_bytes": 512}}})
+            if command == "start":
+                running = True
+            elif command == "stop":
+                running = False
+            elif command == "interest":
+                interest = arguments[0]
+            elif command != "status":
+                self.fail(f"unexpected lifecycle command: {command}")
+            return json.dumps({"running": running, "computation": "running" if running else "stopped",
+                               "proof_verification": "checked" if running else "not_run", "interest": interest})
+        package.lifecycle(run, self.directory / "node")
+        self.assertEqual(operations, ["start", "status", "interest", "resources", "stop", "status"])
+        self.assertFalse(running)
 
     def test_resuming_a_release_rejects_an_outdated_security_database(self):
         self.complete_set()
