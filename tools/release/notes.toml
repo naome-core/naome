@@ -1,8 +1,7 @@
 [releases."0.1.0-alpha.1"]
-summary = "The first versioned alpha of the NAOME knowledge node and its wallet and ledger libraries."
+summary = "The first versioned alpha of the economy-free NAOME knowledge node."
 features = [
   "Mathematical proof, definition and question checking and authoring, checked proof exchange, automatic peer discovery and supervised autonomous computation.",
-  "Persistent wallet keys, a local ledger core and an internal node wallet service support network-bound signed transactions and revocable node spending. The public CLI retains automatic lifecycle, status and exact owner interests without manual resource or wallet commands.",
   "Linux x86_64 static musl and macOS ARM64 packages contain the ordinary executable, license notices, installation instructions, CycloneDX inventory, lockfile and build identity. No developer tools, trained models, private configuration or existing state are bundled.",
   "Checksums, the exact RustSec audit, source and qualification metadata, and signed GitHub Actions provenance accompany the downloads.",
 ]
@@ -20,7 +19,6 @@ limitations = [
   "Pre-release protocols and stored formats may change; this alpha does not promise production workload readiness.",
   "The macOS executable is ad-hoc signed, without Apple Developer ID signing or notarization; browser downloads remain subject to Gatekeeper policy.",
   "Resource budgets and automatic pauses follow real host observations. A running node can have paused computation; status reports the reason while bounded network and lifecycle control remain available.",
-  "The ledger validates a caller-supplied accepted transaction order and explicitly selected genesis/network identity. Network launch, issuance and reward policies, replication, consensus and finality remain separate requirements; startup creates no coin allocation.",
   "Dependency security evidence is a point-in-time whole-lockfile audit. The retained paste notice RUSTSEC-2024-0436 concerns an unmaintained package, rather than a known vulnerability or unsoundness.",
   "Trained-model quality, physical NAT traversal and Internet-scale convergence are not qualified by this release.",
 ]

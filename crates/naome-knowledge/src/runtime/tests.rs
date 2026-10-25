@@ -6,13 +6,6 @@ mod publication;
 async fn maximum_escaped_owner_text_fits_bounded_control_frames() {
     let interest = "\u{0001}".repeat(crate::resources::limits().owner_text_bytes);
     let status = Status {
-        wallet: Some(crate::WalletStatus {
-            signing_address: naome_wallet::WalletKey::generate().unwrap().address(),
-            network: Some(naome_ledger::NetworkId::from_bytes([7; 32])),
-            wallet_address: Some(naome_wallet::WalletKey::generate().unwrap().address()),
-            connection: crate::WalletConnection::Connected,
-            key_available: true,
-        }),
         running: true,
         computation: crate::resources::ComputationState::Running,
         computation_reason: None,
@@ -172,7 +165,6 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     assert_eq!(
         stopped_status(&directory.0).await.unwrap(),
         Status {
-            wallet: None,
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
@@ -227,7 +219,6 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     assert_eq!(
         response.unwrap().unwrap(),
         Status {
-            wallet: None,
             running: true,
             computation: crate::resources::ComputationState::Running,
             computation_reason: None,
@@ -241,7 +232,6 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     assert_eq!(
         status(&directory.0).await.unwrap(),
         Status {
-            wallet: None,
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
@@ -300,7 +290,6 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
     assert_eq!(
         status,
         Status {
-            wallet: None,
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
@@ -503,66 +492,58 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
 }
 
 #[test]
-fn established_node_receipt_prevents_wallet_replacement_after_both_wallet_files_are_lost() {
+fn identity_receipt_corruption_or_loss_never_changes_an_established_key() {
     let directory = Directory::new();
     initialize(&directory.0).unwrap();
-    let wallet = crate::wallet::identity(&directory.0).unwrap().unwrap();
-    let key = fs::read(directory.0.join("wallet.key")).unwrap();
-    let receipt = fs::read(directory.0.join("identity.json")).unwrap();
-    fs::remove_file(directory.0.join("wallet.key")).unwrap();
-    fs::remove_file(directory.0.join("wallet.json")).unwrap();
+    let key = fs::read(directory.0.join("identity.key")).unwrap();
+    let receipt_path = directory.0.join("identity.json");
+    let receipt = fs::read(&receipt_path).unwrap();
+    fs::write(directory.0.join("node.log"), b"").unwrap();
+    for invalid in [
+        b"{".as_slice(),
+        br#"{"version":1}"#,
+        br#"{"version":1,"peer_id":42}"#,
+    ] {
+        fs::write(&receipt_path, invalid).unwrap();
+        assert!(initialize(&directory.0).is_err());
+        assert_eq!(fs::read(&receipt_path).unwrap(), invalid);
+        assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
+    }
+    fs::remove_file(&receipt_path).unwrap();
     assert!(
         initialize(&directory.0)
             .unwrap_err()
-            .contains("refusing to replace")
+            .contains("receipt is missing")
     );
-    assert!(!directory.0.join("wallet.key").exists());
-    assert!(!directory.0.join("wallet.json").exists());
-    assert_eq!(
-        fs::read(directory.0.join("identity.json")).unwrap(),
-        receipt
-    );
-    fs::write(directory.0.join("wallet.key"), &key).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(
-        directory.0.join("wallet.key"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
+    assert!(!receipt_path.exists());
+    assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
+    fs::write(&receipt_path, &receipt).unwrap();
     initialize(&directory.0).unwrap();
-    assert_eq!(
-        crate::wallet::identity(&directory.0).unwrap().unwrap(),
-        wallet
-    );
-    assert_eq!(fs::read(directory.0.join("wallet.key")).unwrap(), key);
+    assert_eq!(fs::read(&receipt_path).unwrap(), receipt);
 }
 
 #[test]
-fn interrupted_node_receipt_publication_retains_the_original_wallet_and_rejects_replacement() {
+fn interrupted_identity_receipt_publication_reuses_the_existing_peer_key() {
     let directory = Directory::new();
-    let identity = crate::wallet::initialize(&directory.0).unwrap();
-    let key = fs::read(directory.0.join("wallet.key")).unwrap();
-    write_new(
-        &directory.0.join(".identity-receipt-incoming"),
-        b"{\"version\":",
-    )
-    .unwrap();
+    let key = identity::Keypair::generate_ed25519();
+    let encoded = key.to_protobuf_encoding().unwrap();
+    fs::write(directory.0.join("identity.key"), &encoded).unwrap();
+    let incoming = directory.0.join(".identity-receipt-incoming");
+    fs::write(&incoming, b"partial publication").unwrap();
     initialize(&directory.0).unwrap();
-    assert_eq!(wallet_anchor(&directory.0).unwrap(), Some(identity.address));
-    assert_eq!(fs::read(directory.0.join("wallet.key")).unwrap(), key);
-    assert!(!directory.0.join(".identity-receipt-incoming").exists());
-    let other = Directory::new();
-    crate::wallet::initialize(&other.0).unwrap();
-    for name in ["wallet.key", "wallet.json"] {
-        fs::copy(other.0.join(name), directory.0.join(name)).unwrap();
-    }
-    assert!(crate::NodeWallet::open(&directory.0).is_err());
-    assert!(
-        initialize(&directory.0)
-            .unwrap_err()
-            .contains("initialized node receipt")
+    assert!(!incoming.exists());
+    assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), encoded);
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.0.join("identity.json")).unwrap()).unwrap();
+    assert_eq!(
+        receipt,
+        serde_json::json!({
+            "version": 1,
+            "peer_id": key.public().to_peer_id().to_string(),
+        })
     );
-    assert_eq!(wallet_anchor(&directory.0).unwrap(), Some(identity.address));
+    initialize(&directory.0).unwrap();
+    assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), encoded);
 }
 
 #[tokio::test]

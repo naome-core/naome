@@ -81,7 +81,7 @@ def smoke(binary, version, *, start=False):
         status = json.loads(run("--json", "status"))
         if any(status.get(key) != value for key, value in expected.items()) or node.exists():
             raise ValueError("packaged status must not create state or start a node")
-        for command in ("publish", "pause", "resume", "resources", "wallet"):
+        for command in ("publish", "pause", "resume", "resources"):
             rejected = subprocess.run([str(binary.resolve()), command], env=environment, capture_output=True, timeout=30)
             if rejected.returncode == 0 or node.exists():
                 raise ValueError("packaged product accepts an invalid command or creates state for a stopped node")

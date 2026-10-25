@@ -1,4 +1,4 @@
-//! Immutable checker-validated proof sets, independent of ledger selection.
+//! Economy-free replication of immutable, checker-validated proof sets.
 //!
 //! Peers exchange hints and derived questions before full certificates. Each
 //! receiver requires fresh formal approval and positive local interest, then
@@ -32,13 +32,6 @@ pub mod resources;
 pub mod runtime;
 mod storage;
 mod store;
-#[cfg(unix)]
-mod wallet;
-#[cfg(unix)]
-pub use wallet::{
-    NodeWallet, PaymentStatus, WalletConnection, WalletError, WalletFunds, WalletLedger,
-    WalletStatus,
-};
 mod wire;
 
 pub use corpus::ROOT_FORMAT as CORPUS_ROOT_FORMAT;

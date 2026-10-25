@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from proof_network import stored_objects
 
 from autonomous_lifecycle import (
-    Node, Trial, digest, process_group, process_identity, retain_evidence, wallet_status,
+    Node, Trial, digest, process_group, process_identity, retain_evidence,
 )
 
 
@@ -84,7 +84,7 @@ def human(trial, node, verb, text=None, terminal=False, no_color=False, json_mod
 def assert_owner_status(value, *, running, interest, accepted_proofs=None):
     assert set(value) == {
         "running", "accepted_proofs", "interest", "proof_verification",
-        "computation", "computation_reason", "wallet",
+        "computation", "computation_reason",
     }, value
     assert value["running"] is running, value
     assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value
@@ -118,7 +118,7 @@ def run(trial):
     assert b"valid UTF-8" in invalid.stderr
     assert not fresh.directory.exists(), "invalid input mutated an absent node directory"
     initial = "  Mathematical logic\n\tλ and 🦀  "
-    expected = {"wallet": None, "running": False, "accepted_proofs": 0, "interest": initial, "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+    expected = {"running": False, "accepted_proofs": 0, "interest": initial, "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
     assert trial.call(fresh, "interest", text=initial) == expected
     assert trial.call(fresh, "status") == expected
     assert not (fresh.directory / "identity.key").exists(), "interest implicitly initialized identity"
@@ -218,7 +218,7 @@ def run(trial):
     assert process_identity(old_process["pid"]) == old_process
     os.killpg(old_process["group"], signal.SIGKILL)
     trial.wait(lambda: not process_group(old_process), maximum=5)
-    assert trial.call(first, "status") == {"wallet": wallet_status(first.directory), "running": False, "accepted_proofs": 3, "interest": initial, "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": initial, "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
     first.start()
     assert digest(first.directory / "identity.key") == identity
     assert first.ids() == accepted
@@ -243,7 +243,7 @@ def run(trial):
         assert not stop.result()["running"]
         assert update.result()["interest"] == "race stop"
     assert not process_group(first.process)
-    assert trial.call(first, "status") == {"wallet": wallet_status(first.directory), "running": False, "accepted_proofs": 3, "interest": "race stop", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": "race stop", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
     assert first.ids() == accepted
     trial.summary["scenarios"]["start_stop_update_races_preserve_owner_text_and_checked_ids"] = {"result": "pass"}
     trial.summary["accepted_ids"] = sorted(accepted)
