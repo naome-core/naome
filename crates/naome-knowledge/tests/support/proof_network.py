@@ -43,7 +43,7 @@ def proof_id(statement, proof):
 
 
 def program_id(manifest):
-    framed=b"naome:program-proof:v2\0"+b"naome:zfc"
+    framed=b"naome:program-proof\0"+b"naome:zfc"
     framed+=manifest['commands'].to_bytes(8,'big')+manifest['input_bytes'].to_bytes(8,'big')
     for field in ['program_hash','stream_root','conclusion','statement']:
         framed+=bytes(manifest[field])
@@ -59,13 +59,13 @@ def verify_program_input(catalog,manifest):
     for position,command,chain in catalog.execute('SELECT position,command,hash FROM program_input WHERE id=? ORDER BY position',(identity,)):
         assert position==count and 0<len(command)<=4096
         assert json.dumps(json.loads(command),separators=(',',':')).encode()==command
-        previous=hashlib.sha256(b'naome:proof-program:v2'+previous+len(command).to_bytes(8,'big')+command).digest()
+        previous=hashlib.sha256(b'naome:proof-program'+previous+len(command).to_bytes(8,'big')+command).digest()
         assert chain==previous
         count+=1;size+=len(command)
     assert (count,size,previous)==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']))
     remaining=bytes(32)
     for command,suffix in catalog.execute('SELECT command,suffix FROM program_input WHERE id=? ORDER BY position DESC',(identity,)):
-        remaining=hashlib.sha256(b'naome:program-stream:v1\0'+len(command).to_bytes(8,'big')+command+remaining).digest()
+        remaining=hashlib.sha256(b'naome:program-stream\0'+len(command).to_bytes(8,'big')+command+remaining).digest()
         assert suffix==remaining
     assert remaining==bytes(manifest['stream_root'])
 
@@ -92,7 +92,7 @@ def content_root(compatibility, ids):
     while pending:
         bit, left = pending.pop()
         current = branch(bit, left, current)
-    return hashlib.sha256(b"naome:knowledge:set:v3\0" + bytes.fromhex(compatibility)
+    return hashlib.sha256(b"naome:knowledge:set\0" + bytes.fromhex(compatibility)
         + len(ordered).to_bytes(8, "big") + current).hexdigest()
 
 
@@ -127,11 +127,10 @@ def stored_objects(node):
         return []
     assert receipt.is_file(), "catalog lineage receipt required"
     format_bytes = receipt.read_bytes()
-    assert len(format_bytes) == 72 and format_bytes[:8] == b"NAOCORP4"
+    assert len(format_bytes) == 72 and format_bytes[:8] == b"NAOCORP\0"
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as catalog:
         catalog.execute("BEGIN")
-        assert catalog.execute("PRAGMA application_id").fetchone()[0] == 0x4e414f31
-        assert catalog.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert catalog.execute("PRAGMA application_id").fetchone()[0] == 0x4e414f43
         assert catalog.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
         assert catalog.execute("PRAGMA foreign_key_check").fetchall() == []
         assert [row[0] for row in catalog.execute(
@@ -171,8 +170,8 @@ def stored_objects(node):
             assert 1 <= len(payload) == length <= 65536 and hashlib.sha256(payload).digest() == checksum
             object = {"proof_id": id.hex(), "statement_id": statement.hex(),
                 "compatibility": compatibility.hex(), "proof": payload.hex()}
-            if payload.startswith(b'\xffNAOP2\0'):
-                manifest=json.loads(payload[7:])
+            if payload.startswith(b'\xffNAOP\0'):
+                manifest=json.loads(payload[len(b'\xffNAOP\0'):])
                 assert program_id(manifest)==object['proof_id'] and bytes(manifest['statement'])==statement
                 verify_program_input(catalog,manifest)
                 object['program_manifest']=manifest

@@ -10,10 +10,10 @@ use naome_proof::program::Command;
 
 mod engine;
 mod error;
-pub use engine::{
-    APPLICATION_ID, CheckedProgram, Engine, ProgramDependency, SCHEMA_VERSION, Status,
-};
+mod schema;
+pub use engine::{CheckedProgram, Engine, ProgramDependency, Status};
 pub use error::Error;
+pub use schema::{APPLICATION_ID, verify_database};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Value<F> {

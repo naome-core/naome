@@ -13,8 +13,8 @@ fn fixture() -> (Manifest, Chunk, Progress) {
     let manifest = Manifest {
         commands: 3,
         input_bytes: 104,
-        program_hash: digest("ede14e89907d1ef7ad7c3bfd777d6b342b8613d3ea3b7fd796d6010ea24f62ab"),
-        stream_root: digest("f98475d4b5eb410c33f270c9907f5aa5c10a71c5426581e503cf9295a84f203d"),
+        program_hash: digest("137c0a5aafab51f5134401e5826da936a1fe9fa30e74ca5fd947ed897cd1be36"),
+        stream_root: digest("8b162de23bf080af0034b43b5b4a223106a808f0445e6c86921652af15e6a62e"),
         conclusion: [17; 32],
         statement: [23; 32],
     };
@@ -56,11 +56,11 @@ fn fixed_command_bytes_and_both_commitments_remain_exact() {
     );
     assert_eq!(
         records[0].hash,
-        digest("b6ffaa5838f9f5dcd611bf7b0da664781e000cbed18a719fd4083af845738587")
+        digest("da09b39a0d6d09d7b2bab31388f2a734d4bf2cefb4c1c1011ba738b3590fa327")
     );
     assert_eq!(
         records[1].suffix,
-        digest("c63b4cbcafa6732e5a4b4570fd64b378ec3bdc26dcf49654b10aedefc3cb00d2")
+        digest("3d94e6ee8db52b6caecf25a7e680b1a510232d99268927166062244d1a1e728d")
     );
 }
 
@@ -68,7 +68,7 @@ fn fixed_command_bytes_and_both_commitments_remain_exact() {
 fn chunk_boundaries_resume_the_exact_authenticated_prefix() {
     let (manifest, mut chunk, initial) = fixture();
     chunk.records.truncate(1);
-    chunk.next = digest("c63b4cbcafa6732e5a4b4570fd64b378ec3bdc26dcf49654b10aedefc3cb00d2");
+    chunk.next = digest("3d94e6ee8db52b6caecf25a7e680b1a510232d99268927166062244d1a1e728d");
     let (progress, first) = initial.prepare_append(&manifest, &chunk).unwrap();
     assert!(progress.require_complete(&manifest).is_err());
     let mut reader = ChunkReader::new(0, [0; 32], CHUNK_RECORDS, 33).unwrap();

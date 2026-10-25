@@ -218,7 +218,6 @@ fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
     assert_eq!(novelty.input_id(), result.input);
     assert_eq!(novelty.snapshot_id(), result.snapshot);
     assert_eq!(novelty.policy_id(), result.policy);
-    assert_eq!(novelty.rule_set(), 4);
 
     let changed_source =
         AssessmentQuestion::new(FOUNDATION_ID, &target, b"source B", &[], None).unwrap();
@@ -258,12 +257,16 @@ fn novelty_replays_only_for_the_identical_complete_local_world_and_input() {
     assert!(!novelty.matches_inputs(&input, &changed_context, &policy));
     for changed_policy in [
         PrefilterPolicy {
-            revision: policy.revision + 1,
-            ..policy
+            limits: AssessmentLimits {
+                operations: policy.limits.operations - 1,
+                ..policy.limits
+            },
         },
         PrefilterPolicy {
-            rule_set: 9,
-            ..policy
+            limits: AssessmentLimits {
+                dependencies: policy.limits.dependencies - 1,
+                ..policy.limits
+            },
         },
     ] {
         assert!(!novelty.matches_inputs(&input, &snapshot, &changed_policy));
@@ -611,7 +614,7 @@ fn changing_registry_snapshot_or_policy_invalidates_bound_approval() {
     let policy = PrefilterPolicy::default();
     let first = decision(&target, &state, &[], &policy);
     let mut new_policy = policy;
-    new_policy.revision += 1;
+    new_policy.limits.operations -= 1;
     let second = decision(&target, &state, &[], &new_policy);
     assert!(first.passed() && second.passed());
     assert!(!first.same_context(&second));
@@ -619,11 +622,6 @@ fn changing_registry_snapshot_or_policy_invalidates_bound_approval() {
     let third = decision(&target, &state, &registry, &policy);
     assert!(!first.same_context(&third));
     assert_eq!(third.reason, Some(RejectionReason::ExactDuplicate));
-    new_policy.rule_set = 1;
-    assert_eq!(
-        decision(&target, &state, &[], &new_policy).reason,
-        Some(RejectionReason::UnsupportedPolicy)
-    );
 }
 
 #[test]
@@ -647,12 +645,14 @@ fn intrinsic_bindings_survive_early_policy_and_work_failures() {
     let first = AssessmentQuestion::new(FOUNDATION_ID, &target, b"source A", &[], None).unwrap();
     let second = AssessmentQuestion::new(FOUNDATION_ID, &target, b"source B", &[], None).unwrap();
     let mut policy = PrefilterPolicy {
-        rule_set: 99,
-        ..PrefilterPolicy::default()
+        limits: AssessmentLimits {
+            operations: 0,
+            ..AssessmentLimits::MAXIMUM
+        },
     };
     let a = assess_question(&first, &snapshots[0], &policy);
     let b = assess_question(&second, &snapshots[1], &policy);
-    assert_eq!(a.reason, Some(RejectionReason::UnsupportedPolicy));
+    assert_eq!(a.reason, Some(RejectionReason::InvalidPolicy));
     assert_eq!(a.question, b.question);
     assert_ne!(a.input, b.input);
     assert_ne!(a.snapshot, b.snapshot);

@@ -75,3 +75,24 @@ fn candidate_retirement_preserves_replacement_foreign_files_and_live_custody() {
     assert_eq!(fs::read(&foreign).unwrap(), expected);
     assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
 }
+
+#[test]
+fn candidate_retirement_preserves_owned_files_with_a_damaged_current_schema() {
+    for change in [
+        "ALTER TABLE input ADD COLUMN unexpected INTEGER",
+        "CREATE TRIGGER unexpected AFTER INSERT ON input BEGIN DELETE FROM result; END",
+    ] {
+        let directory = Directory::new();
+        let path = directory.0.join(".program-work/candidate-1.sqlite3");
+        let mut work = Work::open(&path).unwrap();
+        identity(&mut work);
+        drop(work);
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(change).unwrap();
+        drop(connection);
+        let expected = fs::read(&path).unwrap();
+        assert!(retire_candidate(&directory.0, 1).is_err());
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        assert!(path.with_extension("proof-work.lock").exists());
+    }
+}

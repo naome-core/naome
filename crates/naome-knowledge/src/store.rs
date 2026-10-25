@@ -14,7 +14,6 @@ use std::{
 mod catalog;
 mod program;
 use catalog::Catalog;
-pub(crate) use catalog::SCHEMA_VERSION as CATALOG_SCHEMA_VERSION;
 pub(crate) use catalog::Summary;
 #[cfg(test)]
 pub(crate) use catalog::program::manifest_reads;
@@ -25,7 +24,7 @@ pub(crate) use naome_proof::program::Progress as ProgramProgress;
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
 pub(crate) const COMMIT_DEADLINE_ERROR: crate::Error = crate::Error::Deadline;
 const FORMAT_FILE: &str = "proof-corpus.format";
-const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP4";
+const FORMAT_MAGIC: &[u8; 8] = b"NAOCORP\0";
 const INITIAL_DATABASE: &str = ".proof-corpus-initializing.sqlite3";
 #[cfg(test)]
 std::thread_local! { static FORMAT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -433,7 +432,7 @@ fn catalog_leaf_exists(path: &Path) -> Result<bool, crate::Error> {
 
 fn new_identity(directory: &Path) -> Result<[u8; 32], crate::Error> {
     let mut hash = Sha256::new();
-    hash.update(b"naome:proof-catalog-lineage:v1\0");
+    hash.update(b"naome:proof-catalog-lineage\0");
     hash.update(directory.to_string_lossy().as_bytes());
     hash.update(std::process::id().to_be_bytes());
     hash.update(

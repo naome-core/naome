@@ -81,6 +81,11 @@ impl From<&str> for Error {
         Self::Invalid(value.into())
     }
 }
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Storage(error)
+    }
+}
 impl From<crate::ContextError> for Error {
     fn from(error: crate::ContextError) -> Self {
         Self::Context(error)
