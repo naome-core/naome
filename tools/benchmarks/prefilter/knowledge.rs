@@ -43,3 +43,81 @@ fn measure_prefilter_cache() {
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "run tools/benchmarks/prefilter.py for a matched baseline comparison"]
+async fn measure_prefilter_node_api() {
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    let directory = Directory(
+        std::env::temp_dir().join(format!("naome-prefilter-comparison-{}", std::process::id(),)),
+    );
+    std::fs::create_dir(&directory.0).unwrap();
+    let identity = libp2p::identity::Keypair::generate_ed25519();
+    std::fs::write(
+        directory.0.join("identity.key"),
+        identity.to_protobuf_encoding().unwrap(),
+    )
+    .unwrap();
+    let config = crate::network::Config {
+        directory: directory.0.clone(),
+        listen: "/ip4/127.0.0.1/tcp/0".into(),
+        peers: Vec::new(),
+        discovery: Some(crate::network::DiscoveryConfig {
+            mdns: false,
+            dht: false,
+            ..Default::default()
+        }),
+        producer_sources: Vec::new(),
+    };
+    let (handle, admin, inbox) = channel();
+    let task = tokio::spawn(crate::network::run_with_questions(
+        config,
+        false,
+        inbox,
+        |_| async { Ok(true) },
+    ));
+    let initial = tokio::time::timeout(Duration::from_secs(10), handle.context())
+        .await
+        .unwrap()
+        .unwrap();
+    let inputs: Vec<_> = (0..8)
+        .map(|index| {
+            CompiledQuestion::compile(&format!(
+                "goal=all(x,{}mem(x,x){})",
+                "not(".repeat(index),
+                ")".repeat(index),
+            ))
+            .unwrap()
+        })
+        .collect();
+    let evaluations = 2048;
+    let started = Instant::now();
+    for index in 0..evaluations {
+        let result = handle
+            .assess(inputs[index % inputs.len()].clone())
+            .await
+            .unwrap();
+        assert!(result.prefilter.passed());
+        assert_eq!(result.interest, InterestAssessment::Assessed(true));
+        black_box(result);
+    }
+    let elapsed_ns = started.elapsed().as_nanos();
+    assert_eq!(handle.context().await.unwrap(), initial);
+    assert_eq!(initial.registered_questions, 0);
+    assert_eq!(initial.checked_proofs, 0);
+    admin.stop().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    println!(
+        "PREFILTER_MEASUREMENT {}",
+        serde_json::json!({"group":"node_api_alternating","unique_cases":inputs.len(),"evaluations":evaluations,"interest_assessments":evaluations,"elapsed_ns":elapsed_ns})
+    );
+}

@@ -34,6 +34,14 @@ The fresh case represents the mandatory recomputation used at admission; cached
 read-only decisions never replace this check. The cache is cold at the start of
 each workload, so timing includes its initial misses.
 
+A separate workload sends 2,048 alternating requests through the running node's
+public `QuestionHandle::assess` channel. It includes request cloning, owner-thread
+dispatch and the existing interest callback path. The callback deterministically
+accepts every input and does no model inference. The node has no peers, multicast
+or DHT discovery. Startup is outside the interval; the test verifies that graph
+and registry context stay unchanged and that every interest callback succeeds.
+This provides a local API latency boundary alongside the internal cache counts.
+
 These are synthetic, bounded local workloads. Report extra recognized cases and
 avoided computations separately from latency. Include regressions, medians and
 the observed range. Process peak RSS includes fixture setup and the test runner;
