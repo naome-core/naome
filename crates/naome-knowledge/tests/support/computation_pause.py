@@ -21,7 +21,7 @@ def checkpoints(node):
             for record in journal(node)["records"].values()}
 
 
-def run(trial):
+def run(trial, donor_key):
     donor, receiver, publisher = (Node(trial, index) for index in range(3))
     trial.summary["node_count"] = 3
     probe = Probe(trial)
@@ -32,8 +32,14 @@ def run(trial):
         trial.call(donor, command, success=False)
 
     donor.config["runtime"].update(jobs=job_settings(
-        finding={"steps": 4, "cpu_ms": 400, "horizon_ms": 120000},
+        finding={"steps": 8, "step_ms": 1000, "cpu_ms": 100, "horizon_ms": 120000},
         solving={"program_units": 8, "cpu_ms": 50, "horizon_ms": 120000}))
+    # A fixed test identity selects the streamed question first. The next
+    # finding job stays in flight while that program is checked and published.
+    key_path = donor.directory / "identity.key"
+    with key_path.open("xb") as key:
+        key.write(bytes.fromhex(donor_key))
+    key_path.chmod(0o600)
     for node in trial.nodes:
         node.write_config()
         node.start()
@@ -53,7 +59,7 @@ def run(trial):
         if row["published"]), None), maximum=30)
     identity = published["id"]
     assert published["manifest"]["commands"] == 1024
-    probe.witness_cpu(donor)
+    probe.observe(donor)
     original_process = dict(donor.process)
     original_peer = donor.peer
     endpoint = (donor.directory / "control.json").read_bytes()
@@ -68,6 +74,7 @@ def run(trial):
     retained = running[0]
     frozen = checkpoints(donor)
     accepted = donor.ids()
+    assert accepted == {identity}, "fixture published competing answers before pausing"
     offset = len(donor.logs())
     assert trial.call(donor, "pause")["computation"] == "paused"
     assert trial.call(donor, "start")["computation"] == "paused"
@@ -135,11 +142,12 @@ def main():
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--mode", choices=["pause"], default="pause")
+    parser.add_argument("--donor-key", required=True)
     args = parser.parse_args()
     assert os.name == "posix"
     trial = Trial(args.binary, args.output, args.timeout, args.profile, args.mode)
     try:
-        run(trial)
+        run(trial, args.donor_key)
     except BaseException as error:
         trial.summary.update(result="fail", error=f"{type(error).__name__}: {error}")
         raise

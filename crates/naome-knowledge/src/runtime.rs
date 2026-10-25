@@ -515,6 +515,7 @@ impl Control {
         })
         .await
         .map_err(|error| format!("owner control worker failed: {error}"))??;
+        let running = ready && !self.stopping();
         let response = Response {
             token: self.endpoint.token.clone(),
             report: if resources {
@@ -524,8 +525,8 @@ impl Control {
             } else {
                 Report::Status {
                     status: Status {
-                        running: ready && !self.stopping(),
-                        computation: if ready && !self.stopping() {
+                        running,
+                        computation: if running {
                             self.computation.state()
                         } else {
                             crate::resources::ComputationState::Stopped
