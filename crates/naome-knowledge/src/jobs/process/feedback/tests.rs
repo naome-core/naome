@@ -97,9 +97,9 @@ fn failed_work_and_forged_time_cannot_authorize_checkpoint_or_result() {
 #[test]
 fn phase_times_must_fit_the_same_owned_attempt_without_overlapping_claims() {
     let mut attempt = Attempt::new(Role::Finding);
-    attempt.started = Instant::now() - Duration::from_secs(1);
+    attempt.started = Instant::now() - Duration::from_secs(3600);
     let measured = Sample {
-        elapsed_nanos: 600_000_000,
+        elapsed_nanos: 2_700_000_000_000,
         ..sample(true)
     };
     attempt
@@ -111,4 +111,21 @@ fn phase_times_must_fit_the_same_owned_attempt_without_overlapping_claims() {
             .is_err()
     );
     assert!(!attempt.unit_ready(1));
+}
+
+#[test]
+fn ending_an_interrupted_admission_wait_reports_it_once_without_advancing_work() {
+    let mut attempt = Attempt::new(Role::LocalInterest);
+    attempt.wait();
+    assert!(attempt.waiting.is_some());
+    attempt.waiting = Some(Instant::now() - Duration::from_secs(1));
+    attempt.resume();
+    assert!(attempt.waiting.is_none());
+    assert!(attempt.paused >= Duration::from_secs(1));
+    let retained = attempt.paused;
+    attempt.resume();
+    assert_eq!(attempt.paused, retained);
+    assert!(!attempt.ready());
+    assert!(!attempt.unit_ready(1));
+    assert!(!attempt.finished());
 }

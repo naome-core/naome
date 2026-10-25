@@ -319,9 +319,9 @@ async fn run_owned(
                                 .ok_or("provider checkpoint overflow")? =>
                 {
                     drop(working.take());
-                    let waiting = Instant::now();
+                    feedback.wait();
                     working = Some(computation.enter().await);
-                    feedback.pause(waiting.elapsed());
+                    feedback.resume();
                     let (reply, receipt) = oneshot::channel();
                     events
                         .send(Event::Reserve { id, next, reply })
@@ -385,9 +385,9 @@ async fn run_owned(
                         .map_err(|_| "research checkpoint owner stopped")??;
                     feedback.checkpoint(next)?;
                     drop(working.take());
-                    let waiting = Instant::now();
+                    feedback.wait();
                     working = Some(computation.enter().await);
-                    feedback.pause(waiting.elapsed());
+                    feedback.resume();
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: checkpoint,
@@ -438,6 +438,9 @@ async fn run_owned(
         _=&mut cancel=>{*disposition.lock().expect("provider disposition owner")=Some(State::Cancelled);Err("research cancelled".into())},
         _=tokio::time::sleep_until(deadline)=>{*disposition.lock().expect("provider disposition owner")=Some(State::Expired);Err("research deadline expired".into())},
     };
+    // Cancellation or expiry can drop the admission wait before it receives a
+    // permit. Close that measurement before custody drain and child reaping.
+    feedback.resume();
     let completion_state = disposition
         .lock()
         .expect("provider disposition owner")

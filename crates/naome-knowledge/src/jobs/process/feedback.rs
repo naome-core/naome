@@ -6,6 +6,7 @@ pub(super) struct Attempt {
     role: Role,
     started: Instant,
     paused: Duration,
+    waiting: Option<Instant>,
     setup: Option<bool>,
     unit: Option<(u32, bool)>,
     finalized: Option<bool>,
@@ -17,6 +18,7 @@ impl Attempt {
             role,
             started: Instant::now(),
             paused: Duration::ZERO,
+            waiting: None,
             setup: None,
             unit: None,
             finalized: None,
@@ -97,8 +99,15 @@ impl Attempt {
     pub(super) fn finished(&self) -> bool {
         self.finalized == Some(true)
     }
-    pub(super) fn pause(&mut self, elapsed: Duration) {
-        self.paused = self.paused.saturating_add(elapsed);
+    pub(super) fn wait(&mut self) {
+        self.waiting.get_or_insert_with(Instant::now);
+    }
+    pub(super) fn resume(&mut self) {
+        if let Some(started) = self.waiting.take() {
+            let elapsed = started.elapsed();
+            self.paused = self.paused.saturating_add(elapsed);
+            feedback::provider_wait(self.role, elapsed);
+        }
     }
     pub(super) fn finish(&self, state: State) {
         let disposition = match state {

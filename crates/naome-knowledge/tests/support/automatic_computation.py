@@ -6,6 +6,7 @@ from pathlib import Path
 
 from autonomous_lifecycle import Node, Trial, process_identity, write_receipt
 from long_jobs import Probe, job_settings, journal
+from provider_feedback import feedback
 
 
 def state(trial, node, expected):
@@ -92,6 +93,8 @@ def run(trial):
     assert resumed["reserved_units"] >= retained["reserved_units"]
     assert resumed["spent_ms"] >= retained["spent_ms"]
     assert resumed["settings"] == retained["settings"]
+    finding_feedback = feedback(trial, donor)["finding"]
+    assert finding_feedback["admission_wait_nanos"] >= 20_000_000_000, finding_feedback
     pressure(donor, True)
     trial.wait(lambda: state(trial, donor, "paused"), maximum=5)
     probe.observe(donor)
@@ -105,6 +108,7 @@ def run(trial):
     trial.summary.update(result="pass", fixture="automatic_resource_computation_pause",
         paused_checkpoints=frozen,
         resumed_job=resumed["id"],
+        finding_feedback=finding_feedback,
         claim="native automatic memory-target pause; real provider checkpoint retention, live authenticated control and resume with original budgets; CPU-only transport service is qualified separately")
 
 

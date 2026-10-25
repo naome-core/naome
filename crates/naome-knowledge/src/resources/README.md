@@ -57,7 +57,9 @@ Each role exposes elapsed time, blocked grant time, worker CPU, worker peak RSS
 and checker work. CPU and peak RSS describe the provider worker itself; native
 descendant observation remains the independent node-wide memory/CPU authority.
 Missing OS metrics remain unknown. Complete-attempt service time includes native
-startup, durable IPC and cleanup while excluding computation-gate waits. Only
+startup, durable IPC and cleanup while excluding computation-gate waits. The
+node owner measures those admission waits, including waits interrupted by
+cancellation or expiry, and reports their cumulative duration separately. Only
 complete attempts train its recent service estimate. Recent paired active/CPU
 costs exclude blocked grants; a missing CPU sample restores conservative hardware
 concurrency, and a later complete known sample can recover measured overlap.

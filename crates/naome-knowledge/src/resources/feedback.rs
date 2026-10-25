@@ -104,6 +104,13 @@ pub(crate) fn provider_checkpoint(role: Role) {
     let entry = providers.get_mut(role);
     entry.checkpointed_units = entry.checkpointed_units.saturating_add(1);
 }
+pub(crate) fn provider_wait(role: Role, elapsed: Duration) {
+    let mut providers = PROVIDERS.lock().unwrap_or_else(|error| error.into_inner());
+    let entry = providers.get_mut(role);
+    entry.admission_wait_nanos = entry
+        .admission_wait_nanos
+        .saturating_add(provider::nanos(elapsed));
+}
 pub(crate) fn provider_finished(
     role: Role,
     disposition: Disposition,
