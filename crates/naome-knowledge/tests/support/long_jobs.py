@@ -154,8 +154,12 @@ class Probe:
 
 def roles(trial,probe):
     receiver,donor=Node(trial,0),Node(trial,1)
+    # Keep finding pending through the measured slot ramp, so the first short
+    # interest batches cannot all finish before three roles can overlap.
+    # Keep solving pending through question preparation and peer delivery too;
+    # the original allowances, absolute horizons and observation bounds remain.
     receiver.config['runtime'].update(jobs=job_settings(
-        finding={'step_ms':300},interest={'step_ms':400},solving={'cpu_ms':20000,'descendant':True}))
+        finding={'steps':20,'step_ms':300},interest={'step_ms':400},solving={'cpu_ms':40000,'descendant':True}))
     # Establish ordinary identities with the same persisted job settings, then
     # configure both static peer policies before admitting any research work.
     for node in [receiver,donor]:node.write_config();node.start();node.stop()

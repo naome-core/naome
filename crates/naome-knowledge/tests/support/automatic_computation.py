@@ -3,6 +3,7 @@
 import argparse
 import os
 from pathlib import Path
+import time
 
 from autonomous_lifecycle import Node, Trial, process_identity, retain_evidence, write_receipt
 from long_jobs import Probe, job_settings, journal
@@ -29,6 +30,31 @@ def pressure(node, constrained):
 def checkpoints(node):
     return {record["id"]: (record["reserved_units"], record["checkpoint"])
             for record in journal(node)["records"].values()}
+
+
+def memory_recovery(trial, node, frozen, accepted):
+    started = time.monotonic()
+    receipt = {"elapsed_seconds": 0, "native_cpu_hold_observed": False}
+    trial.summary["memory_recovery"] = receipt
+
+    def resumed():
+        status = trial.call(node, "status")
+        assert status["running"], status
+        receipt["elapsed_seconds"] = time.monotonic() - started
+        if status["computation"] == "running":
+            return status
+        assert status["computation"] in {"pausing", "paused"}, status
+        cpu_hold = status["computation_reason"] == "sustained external CPU pressure"
+        receipt["native_cpu_hold_observed"] |= cpu_hold
+        # Forty seconds bounds recovery from the controlled memory target.
+        # A separate native CPU hold requires its own quiet window; keep all
+        # work frozen while it drains, within the original whole-trial limit.
+        assert cpu_hold or receipt["elapsed_seconds"] < 40, status
+        assert checkpoints(node) == frozen, "productive work advanced during resource pause"
+        assert node.ids() == accepted, "paused node published or admitted new work"
+        return None
+
+    return trial.wait(resumed, maximum=trial.remaining(float("inf")))
 
 
 def run(trial):
@@ -88,7 +114,7 @@ def run(trial):
                    for event in donor.logs()[offset:])
 
     pressure(donor, False)
-    trial.wait(lambda: state(trial, donor, "running"), maximum=40)
+    memory_recovery(trial, donor, frozen, accepted)
     resumed = trial.wait(lambda: next((record for record in journal(donor)["records"].values()
         if record["id"] == retained["id"] and record["checkpoint"] > retained["checkpoint"]), None), maximum=5)
     assert resumed["created_ms"] == retained["created_ms"]
