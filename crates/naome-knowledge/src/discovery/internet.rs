@@ -37,6 +37,8 @@ pub(crate) fn bootstrap() -> Vec<Peer> {
 pub(crate) fn participation_key() -> kad::RecordKey {
     let mut hash = Sha256::new();
     hash.update(b"naome:knowledge:participants:v1\0");
+    hash.update(crate::wire::PROTOCOL.as_ref().as_bytes());
+    hash.update(b"\0");
     hash.update(crate::compatibility());
     // A valid sha2-256 multihash is interoperable with public provider routing.
     let mut bytes = vec![0x12, 0x20];

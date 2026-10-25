@@ -7,9 +7,9 @@ bootstrap infrastructure is an availability dependency, not a mathematical
 authority. The pinned public bootstrap identities come from the IPFS Foundation's
 [public utilities](https://docs.ipfs.tech/concepts/public-utilities/#amino-dht-bootstrappers).
 
-The DHT participation key is a SHA-256 multihash of a NAOME namespace and the
-current mathematical compatibility fingerprint. It advertises participation,
-not private interests or proof contents. The node does not serve the public
+The DHT participation key is a SHA-256 multihash of a NAOME namespace, the
+current exchange protocol and mathematical compatibility fingerprint. It
+advertises participation, not private interests or proof contents. The node does not serve the public
 DHT's arbitrary records. Compatible proof peers must still advertise NAOME's
 exact protocol and independently pass every receiver-side mathematical check.
 
@@ -51,8 +51,9 @@ authorize other local services or additional ports. Only one relay hop is
 accepted. Relays and DHT hints confer no proof-admission authority.
 
 Authenticated connections are bounded by observed IPv4 /24 or IPv6 /64 origin,
-with additional handshake-rate limits. Incoming identities cannot consume the
-outbound contact reserve. Unreachable hints can be replaced by authenticated
+with additional handshake-rate limits. Unresolved DNS endpoints share a
+conservative origin quota instead of receiving a quota per hostname. Incoming
+identities cannot consume the outbound contact reserve. Unreachable hints can be replaced by authenticated
 connections. Unpinned proof connections have finite leases; pinned infrastructure
 and the bounded set of selected relays follow their connection and reservation
 lifecycles. These measures limit inexpensive identity churn and persistent slot

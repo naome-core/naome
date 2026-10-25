@@ -137,3 +137,24 @@ fn selected_relays_survive_proof_leases_until_their_reservation_is_retired() {
     book.relays.remove(&relay);
     assert_eq!(book.expired(deadline), [relay]);
 }
+
+#[test]
+fn rotating_dns_names_cannot_give_each_identity_a_separate_origin_quota() {
+    let mut book = Book::new(peer(), true, &Config::default());
+    let now = Instant::now();
+    for index in 0..crate::resources::limits().contacts / 4 {
+        let address = format!("/dns4/peer-{index}.example/tcp/4001")
+            .parse()
+            .unwrap();
+        book.admit_connection(connection(index), peer(), &address, true, now)
+            .unwrap();
+    }
+    let address = "/dns4/another.example/tcp/4001".parse().unwrap();
+    assert!(
+        book.admit_connection(connection(100), peer(), &address, true, now)
+            .is_err()
+    );
+    let address = "/ip4/9.9.9.1/tcp/4001".parse().unwrap();
+    book.admit_connection(connection(101), peer(), &address, true, now)
+        .unwrap();
+}

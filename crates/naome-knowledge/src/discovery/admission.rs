@@ -8,6 +8,9 @@ enum Group {
     V4([u8; 3]),
     V6([u8; 8]),
     Circuit(PeerId),
+    // Some transports retain the original DNS endpoint in Swarm events.
+    // Hostname rotation must not give each identity a fresh origin quota.
+    UnresolvedDns,
 }
 fn group(address: &Multiaddr) -> Option<Group> {
     match address::ip(address)? {
@@ -69,7 +72,13 @@ impl Book {
         outbound: bool,
         now: Instant,
     ) -> Result<(), String> {
-        let group = group(remote).unwrap_or(Group::Circuit(peer));
+        let group = group(remote).unwrap_or_else(|| {
+            if super::is_relayed(remote) || matches!(remote.iter().next(), Some(Protocol::P2p(_))) {
+                Group::Circuit(peer)
+            } else {
+                Group::UnresolvedDns
+            }
+        });
         let pinned = self
             .contacts
             .get(&peer)
