@@ -73,8 +73,9 @@ scheduling quantum. Growth is gradual and remains below installed workers,
 observed memory headroom and worker RSS estimates. Light retains one compute
 slot and Custom retains the owner's ceilings. All modes retain pressure pauses,
 the original job identity, binding, settings, reservations and absolute deadline.
-The authenticated `resources` response carries these fixed four-role statistics
-in a separate bounded diagnostic frame; request and peer framing are unchanged.
+These process-local statistics remain inputs to automatic resource management.
+Ordinary status exposes the computation state and pause reason. No resource
+history is persisted and there is no public resource-report command.
 
 Expensive work reduces the execution quantum; faster work permits gradual
 growth. Cache growth requires observed reuse as well as misses; one-pass
@@ -91,8 +92,8 @@ A transient hardware observation failure closes new work using the last valid
 snapshot and retries without stopping the network or fabricating a fresh sample.
 
 `adaptive/observer.rs` owns the sampling schedule, last usable snapshot and
-telemetry-failure policy for both the history controller and standalone program
-work. The controller retains persistence and publication of the live node budget.
+telemetry-failure policy for both the native controller and standalone program
+work. The controller publishes the live node budget without a history database.
 The native owner opens this same controller before checked startup replay and
 refreshes it between bounded replay portions, then retains it for the live loop.
 Startup therefore observes pressure and executed work instead of borrowing one
@@ -152,6 +153,10 @@ The separate `native_provider_feedback_reaches_owner_without_changing_job_allowa
 process test starts ordinary loopback nodes with real isolated workers. It checks
 all roles and phases at the owner, checked data exchange, and the unchanged
 durable job horizons, work allowances and monotone reservation/checkpoint bounds.
+These process fixtures explicitly enable `NAOME_DEV_RESOURCE_OBSERVATIONS=1`
+in a `developer-tools` build to observe live snapshots and feedback through the
+existing bounded node log. Ordinary builds do not emit these diagnostic events;
+the observer and governor use the same operational telemetry in either build.
 
 ## Persisted data and restart
 

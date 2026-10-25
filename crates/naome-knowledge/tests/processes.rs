@@ -1,6 +1,9 @@
 use std::{path::PathBuf, process::Command};
 
 static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(unix)]
+#[path = "support/wallet_service.rs"]
+mod wallet_service;
 
 #[cfg(all(unix, feature = "developer-tools"))]
 #[test]
@@ -138,14 +141,18 @@ fn ordinary_owner_interest_is_exact_durable_and_serialized() {
 
 #[cfg(unix)]
 #[test]
-fn ordinary_wallet_proves_key_control_and_preserves_custody_across_restart() {
-    run_autonomous("wallet");
+fn ordinary_startup_preserves_wallet_custody_across_restart() {
+    run_autonomous("wallet-custody");
 }
 
 #[cfg(unix)]
 #[test]
-fn test_coins_use_existing_wallets_with_shared_node_spending_and_revocation() {
-    run_autonomous("test-coins");
+fn internal_wallet_service_connects_nodes_and_preserves_payments_across_restart() {
+    if let Some(input) = std::env::var_os("NAOME_WALLET_SERVICE_TEST_INPUT") {
+        wallet_service::run(std::path::Path::new(&input));
+    } else {
+        run_autonomous("wallet-service");
+    }
 }
 
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
@@ -211,8 +218,8 @@ fn run_autonomous(mode: &str) {
     command
         .arg(root.join(match mode {
             "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
-            "wallet" => "crates/naome-knowledge/tests/support/wallet.py",
-            "test-coins" => "crates/naome-knowledge/tests/support/test_coins.py",
+            "wallet-custody" => "crates/naome-knowledge/tests/support/wallet_custody.py",
+            "wallet-service" => "crates/naome-knowledge/tests/support/wallet_service.py",
             "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
             "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
@@ -241,6 +248,11 @@ fn run_autonomous(mode: &str) {
         command.arg("--guardian-loss-probe");
     } else {
         command.args(["--mode", mode]);
+    }
+    if mode == "wallet-service" {
+        command
+            .arg("--service-binary")
+            .arg(std::env::current_exe().expect("process test executable"));
     }
     #[cfg(feature = "developer-tools")]
     if matches!(mode, "relay" | "guardian-probe") {

@@ -70,7 +70,7 @@ class ResourceLifecycleTests(unittest.TestCase):
 
 class OwnerStatusTests(unittest.TestCase):
     def status(self, **changes):
-        return {"running": True, "accepted_proofs": 0, "interest": "exact owner text",
+        return {"wallet": None, "running": True, "accepted_proofs": 0, "interest": "exact owner text",
                 "proof_verification": "checked", "computation": "running",
                 "computation_reason": None, **changes}
 

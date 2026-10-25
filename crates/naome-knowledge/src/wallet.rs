@@ -1,6 +1,6 @@
 //! Local wallet custody. The caller serializes initialization with the node's
 //! lifecycle lock. Existing private keys are immutable and never regenerated.
-use naome_wallet::{Address, OwnershipChallenge, OwnershipProof, WalletKey};
+use naome_wallet::{Address, WalletKey};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -145,7 +145,7 @@ fn initialize_at(
     Ok(identity)
 }
 
-/// Loads an existing, receipt-bound private key without creating or rotating it.
+/// Loads an existing, receipt-bound key without creating or rotating it.
 pub(crate) fn key(directory: &Path) -> Result<WalletKey, String> {
     let identity = identity(directory)?.ok_or("wallet is not initialized; start the node first")?;
     let key = read_key(directory, KEY)?
@@ -155,15 +155,10 @@ pub(crate) fn key(directory: &Path) -> Result<WalletKey, String> {
     }
     Ok(key)
 }
-
-pub(crate) fn prove(
-    directory: &Path,
-    challenge: OwnershipChallenge,
-) -> Result<OwnershipProof, String> {
-    key(directory)?.prove(challenge)
-}
-
-pub(crate) mod connection;
+mod connection;
+mod service;
+pub(crate) use service::observe;
+pub use service::{NodeWallet, WalletConnection, WalletFunds, WalletFundsScope, WalletStatus};
 
 #[cfg(test)]
 mod tests;

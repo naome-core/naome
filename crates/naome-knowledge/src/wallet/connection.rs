@@ -21,7 +21,7 @@ pub(crate) struct Connection {
 }
 
 pub(crate) fn read(directory: &Path) -> Result<Option<Connection>, String> {
-    crate::storage::read_owned(&directory.join(FILE), 8192)?
+    crate::storage::read_owned_snapshot(&directory.join(FILE), 8192)?
         .map(|bytes| {
             let connection: Connection =
                 serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;

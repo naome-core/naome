@@ -12,10 +12,10 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
-import subprocess
 import time
 from autonomous_lifecycle import Node, Trial, process_group, process_identity, retain_evidence, write_receipt
 from proof_network import stored_objects
+from resource_observation import latest
 
 
 class AutonomousNode(Node):
@@ -53,16 +53,8 @@ def program_rows(node):
             'SELECT id,manifest,received,EXISTS(SELECT 1 FROM proofs WHERE proofs.id=programs.id) FROM programs ORDER BY id')]
 
 
-def resources(trial,node):
-    result=subprocess.run([str(trial.binary),'--json','resources'],capture_output=True,text=True,
-        env={**os.environ,'NAOME_NODE_DIR':str(node.directory)},timeout=trial.remaining())
-    assert result.returncode==0,result.stderr
-    value=json.loads(result.stdout)
-    assert value['configured']['profile']==getattr(node,'expected_profile','dynamic')
-    return value
-
-
 def run(trial,units,memory_mib=None):
+    os.environ["NAOME_DEV_RESOURCE_OBSERVATIONS"]="1"
     donor,receiver=AutonomousNode(trial,0),AutonomousNode(trial,1)
     if memory_mib is not None:
         assert 8<=memory_mib<=512
@@ -108,7 +100,10 @@ def run(trial,units,memory_mib=None):
     assert resumed and resumed[0]['position']==after['received'],resumed[:1]
     source_objects=stored_objects(donor);received_objects=stored_objects(receiver)
     assert next(value for value in source_objects if value['proof_id']==identity)==next(value for value in received_objects if value['proof_id']==identity)
-    snapshot=resources(trial,receiver)
+    observation=trial.wait(lambda:latest(receiver))
+    snapshot=observation['snapshot']
+    assert snapshot['selection']['profile']==getattr(receiver,'expected_profile','dynamic')
+    assert 0<snapshot['budget']['memory_bytes']<=observation['capacity_bytes']
     receiver.stop();before=set(receiver.ids())
     work=(receiver.directory/'.program-work'/f'{identity}.sqlite3').resolve()
     with closing(sqlite3.connect(work.as_uri()+'?mode=ro&immutable=1',uri=True)) as connection:
@@ -116,13 +111,13 @@ def run(trial,units,memory_mib=None):
         assert commands==committed==manifest['commands'] and sealed
         assert connection.execute('SELECT count(*) FROM node').fetchone()[0]>256
     if memory_mib is not None:
-        assert work.stat().st_size>snapshot['active']['budget']['memory_bytes'],"screen must exceed its configured working-memory target"
+        assert work.stat().st_size>snapshot['budget']['memory_bytes'],"screen must exceed its configured working-memory target"
     receiver.start()
     assert receiver.ids()==before and identity in before
     assert trial.call(receiver,'status')['accepted_proofs']==len(before)
     trial.summary.update(result='pass',fixture='autonomous_program_replication',program=published,
         receiver_prefix_at_restart=after['received'],receiver_first_resumed_position=resumed[0]['position'],
-        receiver_work_database_bytes=work.stat().st_size,receiver_resources=snapshot,
+        receiver_work_database_bytes=work.stat().st_size,receiver_resource_observation=observation,
         source='autonomous supervised deterministic provider',
         claim='two isolated ordinary node processes on one host, real loopback libp2p transfer, independent complete receiver checking and restart replay; no physical multi-host or NAT claim')
 
