@@ -203,7 +203,7 @@ impl Helpers {
         for (id, helper) in &self.items {
             let progress = graph.ownership().program_progress(&helper.manifest)?;
             if progress.commands < helper.manifest.commands {
-                let records = crate::resources::adaptive::batch(CHUNK_RECORDS);
+                let records = transfer_records();
                 return Ok((records > 0).then_some((*id, progress.commands, records)));
             }
         }
