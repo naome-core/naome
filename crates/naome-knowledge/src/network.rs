@@ -617,7 +617,6 @@ where
     published
         .count
         .store(node.graph.accepted_count(), Ordering::Release);
-    let mut controls = worker::Controls::spawn(control.clone(), published.clone());
     let mut stop_watch = control.as_ref().map(|control| control.stop_watch());
     let authority = control
         .clone()
@@ -628,6 +627,10 @@ where
         .as_ref()
         .map(|_| crate::resources::adaptive::history::Controller::open(&directory))
         .transpose()?;
+    if let Some(control) = &control {
+        control.publish()?;
+    }
+    let mut controls = worker::Controls::spawn(control.clone(), published.clone());
     emit(
         json!({"event":"starting", "peer_id":own_id.to_string(), "compatibility":hex(&crate::compatibility())}),
     );
