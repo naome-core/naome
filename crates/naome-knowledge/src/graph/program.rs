@@ -301,6 +301,7 @@ impl Graph {
     pub(super) fn replay_program(&mut self, manifest: &Manifest) -> Result<(), crate::Error> {
         let mut check = ProgramCheck::open(self, manifest.clone())?;
         let proof = loop {
+            self.cold(self.checked_storage.adapt_cache())?;
             if let Some(proof) = check.advance(self)? {
                 break proof;
             }
@@ -313,6 +314,7 @@ impl Graph {
         let mut budget = ProgramBudget::default();
         while !cursor.complete() {
             let snapshot = budget.refresh(self.store.directory())?;
+            self.cold(self.checked_storage.adapt_cache())?;
             if snapshot.budget.paused.is_some() {
                 std::thread::sleep(Duration::from_millis(250));
                 continue;
