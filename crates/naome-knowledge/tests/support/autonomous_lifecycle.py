@@ -1261,6 +1261,13 @@ def main():
         trial.summary["result"] = "fail"
         trial.summary["error"] = str(error)
         traceback.print_exc()
+        trial.summary["failure_statuses"] = []
+        for node in trial.nodes:
+            try:
+                status = trial.call(node, "status")
+                trial.summary["failure_statuses"].append({"node": node.index, "status": status})
+            except Exception as status_error:
+                trial.summary["failure_statuses"].append({"node": node.index, "error": str(status_error)})
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)

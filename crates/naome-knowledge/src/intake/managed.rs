@@ -226,11 +226,11 @@ impl Intake {
             if root.closure.needed().next().is_some() || !root.closure.certificate_ready() {
                 return Ok(ActiveStep::Waiting);
             }
-            // Capacity is checked before transferring the owned staged closure.
-            if !root.selection.ready(SelectionStage::Final)
-                && (self.waiting.len() >= crate::resources::active_limits().interest_decisions
-                    || !questions.available_peer())
-            {
+            // Final selection drains a root that already owns its intake slot.
+            // Blocking it behind the waiting limit after capacity falls makes
+            // active and waiting roots wait for each other. New descriptions
+            // remain bounded at admission, as do actual provider decisions.
+            if !root.selection.ready(SelectionStage::Final) && !questions.available_peer() {
                 return Err(crate::Error::ExecutionLimit);
             }
             let batch = root
