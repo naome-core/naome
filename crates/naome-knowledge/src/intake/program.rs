@@ -2,6 +2,7 @@
 //! Persistent input remains untrusted until a fresh Checker result is committed
 //! through the existing Graph/Question publication boundary.
 use super::*;
+mod dependencies;
 mod helpers;
 #[cfg(test)]
 mod tests;
@@ -34,6 +35,9 @@ struct Root {
     refresh: bool,
     allowed: bool,
     budget: ProgramBudget,
+    helpers: Helpers,
+    scanned: u64,
+    input_complete: bool,
 }
 struct QuestionAuthority {
     question: CompiledQuestion,
@@ -46,6 +50,9 @@ struct QuestionAuthority {
 enum Stage {
     Fetch,
     Check(Box<ProgramCheck>),
+    Prepare {
+        proof: Box<CheckedWork>,
+    },
     Register {
         proof: Box<CheckedWork>,
         admission: Box<ProgramAdmission>,
@@ -69,9 +76,11 @@ impl QuestionAuthority {
     {
         let authority = self;
         let (snapshot, policy) = questions.context_key(graph);
-        if authority.assessment.as_ref().is_none_or(|assessment| {
-            assessment.prefilter.snapshot != snapshot || assessment.prefilter.policy != policy
-        }) || Instant::now() >= authority.until
+        if authority
+            .assessment
+            .as_ref()
+            .is_none_or(|assessment| !questions.exchange_eligible(&authority.question, assessment))
+            || Instant::now() >= authority.until
             || (final_stage && !authority.finalized)
         {
             authority.assessment = None;
@@ -102,15 +111,11 @@ impl QuestionAuthority {
             match reply.try_recv() {
                 Ok(assessment) => {
                     authority.pending = None;
-                    if assessment.prefilter.snapshot != snapshot
-                        || assessment.prefilter.policy != policy
-                    {
-                        return Ok(false);
-                    }
-                    if !questions.exchange_eligible(&authority.question, &assessment) {
-                        return Err("program question declined".into());
-                    }
-                    authority.assessment = Some(assessment);
+                    authority.assessment = Some(questions.refresh_exchange(
+                        graph,
+                        &authority.question,
+                        &assessment,
+                    )?);
                     authority.until = Instant::now() + crate::resources::limits().root_timeout;
                     authority.finalized = authority.pending_final;
                 }
@@ -118,12 +123,18 @@ impl QuestionAuthority {
                 Err(_) => return Err("program interest assessment cancelled".into()),
             }
         }
+        if let Some(assessment) = &authority.assessment
+            && (assessment.prefilter.snapshot != snapshot || assessment.prefilter.policy != policy)
+        {
+            authority.assessment =
+                Some(questions.refresh_exchange(graph, &authority.question, assessment)?);
+        }
         Ok(authority.assessment.is_some())
     }
 }
 
 impl Programs {
-    fn remove(&mut self, id: ProofId) {
+    pub(super) fn remove(&mut self, id: ProofId) {
         self.queue
             .retain(|offer| offer.metadata.manifest.proof_id() != id);
         if self
@@ -159,7 +170,13 @@ impl Programs {
     }
     fn busy(&self) -> bool {
         self.active.as_ref().is_some_and(|root| {
-            root.allowed && matches!(root.stage, Stage::Check(_) | Stage::Register { .. })
+            root.allowed
+                && (matches!(
+                    root.stage,
+                    Stage::Check(_) | Stage::Prepare { .. } | Stage::Register { .. }
+                ) || root.input_complete
+                    && root.scanned < root.offer.metadata.manifest.commands
+                    || root.helpers.busy())
         })
     }
     fn enqueue(
@@ -209,10 +226,7 @@ impl Programs {
         });
         Ok("queued")
     }
-    fn request(
-        &self,
-        graph: &Graph,
-    ) -> Result<Option<(PeerId, ProofId, u64, usize)>, crate::Error> {
+    fn request(&self, graph: &Graph) -> Result<Option<ProgramRequest>, crate::Error> {
         let Some(root) = &self.active else {
             return Ok(None);
         };
@@ -230,6 +244,9 @@ impl Programs {
             return Ok(None);
         }
         let id = root.offer.metadata.manifest.proof_id();
+        if let Some((helper, start, records)) = root.helpers.request(graph)? {
+            return Ok(Some((root.offer.peer, id, helper, start, records)));
+        }
         let progress = graph
             .ownership()
             .program_progress(&root.offer.metadata.manifest)?;
@@ -237,7 +254,7 @@ impl Programs {
             return Ok(None);
         }
         let records = crate::resources::adaptive::batch(CHUNK_RECORDS);
-        Ok((records > 0).then_some((root.offer.peer, id, progress.commands, records)))
+        Ok((records > 0).then_some((root.offer.peer, id, id, progress.commands, records)))
     }
     fn refresh_needed(&self) -> Vec<(PeerId, ProofId)> {
         self.active
@@ -276,15 +293,20 @@ impl Programs {
         {
             return Err("unrequested program payload".into());
         }
-        graph
+        let progress = graph
             .ownership()
             .append_program(&root.offer.metadata.manifest, &chunk)?;
+        root.input_complete = progress.commands == root.offer.metadata.manifest.commands;
         Ok(())
     }
     pub(super) fn failed(&mut self, peer: PeerId, id: Option<ProofId>) {
         if let Some(root) = &mut self.active
             && root.offer.peer == peer
-            && id.is_none_or(|id| root.offer.metadata.manifest.proof_id() == id)
+            && id.is_none_or(|id| {
+                root.offer.metadata.manifest.proof_id() == id
+                    || root.helpers.contains(id)
+                    || root.helpers.needs(id)
+            })
         {
             root.refresh = true;
         }
@@ -330,6 +352,9 @@ impl Programs {
                         refresh: false,
                         allowed: false,
                         budget: ProgramBudget::default(),
+                        helpers: Helpers::default(),
+                        scanned: 0,
+                        input_complete: false,
                     })
                 }
                 Err(error) => return Progress::Skipped(id, error.to_string()),
@@ -353,14 +378,24 @@ impl Programs {
                 return Ok(None);
             }
             let snapshot = root.budget.refresh(graph.ownership().directory())?.clone();
+            let cache = root.helpers.cache_share(snapshot.budget.cache_bytes)?;
             match &mut root.stage {
-                Stage::Check(check) => check.restrict_cache(snapshot.budget.cache_bytes)?,
-                Stage::Register { proof, .. } | Stage::Ready { proof, .. } => {
-                    proof.restrict_cache(snapshot.budget.cache_bytes)?
-                }
+                Stage::Check(check) => check.restrict_cache(cache)?,
+                Stage::Prepare { proof }
+                | Stage::Register { proof, .. }
+                | Stage::Ready { proof, .. } => proof.restrict_cache(cache)?,
                 Stage::Fetch => {}
             }
             if snapshot.budget.paused.is_some() && !matches!(root.stage, Stage::Ready { .. }) {
+                return Ok(None);
+            }
+            root.helpers.advance(graph)?;
+            if root.helpers.member_count() + 1 > crate::resources::limits().closure_objects {
+                return Err(crate::Error::InputLimit(
+                    "program closure dependency capacity",
+                ));
+            }
+            if !root.helpers.ready() && !matches!(root.stage, Stage::Fetch) {
                 return Ok(None);
             }
             match &mut root.stage {
@@ -368,7 +403,24 @@ impl Programs {
                     let progress = graph
                         .ownership()
                         .start_program(&root.offer.metadata.manifest)?;
-                    if progress.commands == root.offer.metadata.manifest.commands {
+                    root.input_complete =
+                        progress.commands == root.offer.metadata.manifest.commands;
+                    if root.input_complete {
+                        let (complete, _) = root.helpers.scan_dependencies(
+                            &root.offer.metadata.manifest,
+                            &mut root.scanned,
+                            graph,
+                        )?;
+                        if root.helpers.member_count() + 1
+                            > crate::resources::limits().closure_objects
+                        {
+                            return Err(crate::Error::InputLimit(
+                                "program closure dependency capacity",
+                            ));
+                        }
+                        if !complete || !root.helpers.ready() {
+                            return Ok(None);
+                        }
                         root.stage = Stage::Check(Box::new(ProgramCheck::open(
                             graph,
                             root.offer.metadata.manifest.clone(),
@@ -376,17 +428,27 @@ impl Programs {
                     }
                 }
                 Stage::Check(check) => {
-                    if let Some(proof) = check.advance(graph)? {
+                    if let Some(proof) = check.advance(graph, root.helpers.context(graph))? {
                         root.authority
                             .question
                             .classify_checked_program(proof.proof()?)
                             .map_err(crate::Error::from)?;
-                        let admission = graph.begin_program_admission(&proof)?;
-                        root.stage = Stage::Register {
+                        root.stage = Stage::Prepare {
                             proof: Box::new(proof),
-                            admission: Box::new(admission),
                         };
                     }
+                }
+                Stage::Prepare { proof } => {
+                    let admission =
+                        graph.begin_program_admission_after(proof, root.helpers.take_prefix())?;
+                    let Stage::Prepare { proof } = std::mem::replace(&mut root.stage, Stage::Fetch)
+                    else {
+                        unreachable!()
+                    };
+                    root.stage = Stage::Register {
+                        proof,
+                        admission: Box::new(admission),
+                    };
                 }
                 Stage::Register { proof, admission } => {
                     match admission.advance(graph, proof, snapshot.budget.batch_steps.max(1)) {
@@ -404,23 +466,26 @@ impl Programs {
                         }
                         Ok(false) => {}
                         Err(crate::Error::StaleAuthority) => {
-                            **admission = graph.begin_program_admission(proof)?
+                            root.helpers.invalidate_prefix();
+                            let Stage::Register { proof, .. } =
+                                std::mem::replace(&mut root.stage, Stage::Fetch)
+                            else {
+                                unreachable!()
+                            };
+                            root.stage = Stage::Prepare { proof };
                         }
                         Err(error) => return Err(error),
                     }
                 }
-                Stage::Ready { proof, batch } => {
+                Stage::Ready { proof: _, batch } => {
                     if !graph.batch_current(batch)? {
-                        let admission = graph.begin_program_admission(proof)?;
+                        root.helpers.invalidate_prefix();
                         let Stage::Ready { proof, .. } =
                             std::mem::replace(&mut root.stage, Stage::Fetch)
                         else {
                             unreachable!()
                         };
-                        root.stage = Stage::Register {
-                            proof,
-                            admission: Box::new(admission),
-                        };
+                        root.stage = Stage::Prepare { proof };
                         return Ok(None);
                     }
                     if root.refresh
@@ -492,10 +557,11 @@ impl Intake {
         graph: &Graph,
         grant: Option<crate::graph::PeerGrant>,
     ) -> Result<&'static str, crate::Error> {
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|root| root.helpers.contains(metadata.manifest.proof_id()))
+        if self.programs.helper_contains(metadata.manifest.proof_id())
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|root| root.helpers.contains(metadata.manifest.proof_id()))
         {
             return Ok("cited_program_pending");
         }
@@ -528,9 +594,7 @@ impl Intake {
                 records,
             )));
         }
-        self.programs
-            .request(graph)
-            .map(|request| request.map(|(peer, id, start, records)| (peer, id, id, start, records)))
+        self.programs.request(graph)
     }
     pub(crate) fn program_payload(
         &mut self,
@@ -540,11 +604,16 @@ impl Intake {
         chunk: Chunk,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
+        if self.programs.authorizes(peer, root_id, id) {
+            return self
+                .programs
+                .helper_payload(peer, root_id, id, chunk, graph);
+        }
         if root_id != id {
             if !self.authorizes(peer, root_id, id) {
                 return Err("unrequested cited program payload".into());
             }
-            let root = self.active.as_ref().ok_or("cited program parent missing")?;
+            let root = self.active.as_mut().ok_or("cited program parent missing")?;
             if let Some(grant) = &root.description.grant {
                 grant.check()?;
             }

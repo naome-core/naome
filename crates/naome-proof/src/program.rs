@@ -8,7 +8,7 @@ use naome_foundation::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const FORMAT: &str = "naome:proof-program:v1";
+pub const FORMAT: &str = "naome:proof-program:v2";
 /// An individual command is small; splitting an input into commands never
 /// changes its mathematical meaning or imposes a total program byte limit.
 pub const RECORD_BYTES: usize = 4096;
@@ -39,13 +39,13 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn proof_id(&self) -> ProofId {
-        ProofId::from_bytes(self.address(b"naome:program-proof:v1\0"))
+        ProofId::from_bytes(self.address(b"naome:program-proof:v2\0"))
     }
     pub fn statement_id(&self) -> StatementId {
         StatementId::from_bytes(self.statement)
     }
     pub fn derivation_id(&self) -> DerivationId {
-        DerivationId::from_bytes(self.address(b"naome:program-derivation:v1\0"))
+        DerivationId::from_bytes(self.address(b"naome:program-derivation:v2\0"))
     }
     fn address(&self, domain: &[u8]) -> [u8; 32] {
         let mut hash = Sha256::new();
@@ -317,6 +317,12 @@ pub enum Command {
     },
     Axiom {
         axiom: Axiom,
+    },
+    /// Reuse one concrete proof from the receiver's checker-owned context.
+    /// The identity alone grants no validity; evaluation resolves and imports
+    /// its authenticated conclusion before producing a proved result.
+    ProofReference {
+        proof_id: [u8; 32],
     },
     Separation {
         predicate: u64,

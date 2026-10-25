@@ -11,6 +11,9 @@ pub(super) fn dependency_visits() -> usize {
 pub(crate) struct CheckedBatch {
     pub(super) context: DiskArtifactState,
     pub(super) entries: Vec<(ProofId, crate::object::BinaryProof)>,
+    // Only edges inside this bounded unpublished closure. Program references
+    // themselves remain canonical commands rather than duplicated catalog flags.
+    pub(super) edges: BTreeMap<ProofId, BTreeSet<ProofId>>,
     pub(super) base_snapshot: [u8; 32],
     pub(super) storage: Arc<CheckedStorage>,
     pub(super) copy_epoch: u64,
@@ -19,10 +22,15 @@ pub(crate) struct CheckedBatch {
 }
 
 impl CheckedBatch {
-    pub(super) fn from_program(
+    pub(crate) fn context(&self) -> &DiskArtifactState {
+        &self.context
+    }
+
+    pub(super) fn extend(
         graph: &Graph,
         context: DiskArtifactState,
         record: crate::object::BinaryProof,
+        dependencies: BTreeSet<ProofId>,
         copy_epoch: u64,
         growth: usize,
         prefix: Option<CheckedBatch>,
@@ -35,20 +43,30 @@ impl CheckedBatch {
                 .sum::<usize>()
         });
         let count = prefix.as_ref().map_or(1, |prefix| prefix.entries.len() + 1);
+        if count > crate::resources::limits().closure_objects {
+            return Err(crate::Error::InputLimit(
+                "checked closure operation capacity",
+            ));
+        }
         let disk = graph.reserve_publication(record.bytes.len() + prior_bytes, count)?;
         let context_bytes = prefix
             .as_ref()
             .map_or(graph.context_bytes, |prefix| prefix.context_bytes)
             .checked_add(growth)
             .ok_or("checked program context width")?;
-        let mut entries = prefix.map_or_else(Vec::new, |prefix| prefix.entries);
+        let (mut entries, mut edges) = prefix.map_or_else(
+            || (Vec::new(), BTreeMap::new()),
+            |prefix| (prefix.entries, prefix.edges),
+        );
         if entries.iter().any(|(id, _)| *id == record.id) {
             return Err("duplicate staged program".into());
         }
+        edges.insert(record.id, dependencies);
         entries.push((record.id, record));
         Ok(Self {
             context,
             entries,
+            edges,
             base_snapshot: graph.context.snapshot_id(),
             storage: graph.checked_storage.clone(),
             copy_epoch,
@@ -170,6 +188,7 @@ impl Graph {
             CheckedBatch {
                 context,
                 entries,
+                edges: records,
                 base_snapshot: self.context.snapshot_id(),
                 storage: self.checked_storage.clone(),
                 copy_epoch,
@@ -239,7 +258,7 @@ impl Graph {
                 prefix
                     .entries
                     .iter()
-                    .map(|(id, record)| (*id, record))
+                    .map(|(id, _)| (*id, prefix.edges.get(id).expect("checked closure edges")))
                     .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
@@ -252,10 +271,9 @@ impl Graph {
             let dependencies = if let Some(candidate) = candidates.get(&id) {
                 &candidate.dependencies
             } else {
-                &prefix_records
+                *prefix_records
                     .get(&id)
                     .ok_or("missing committed dependency")?
-                    .dependencies
             };
             for dependency in dependencies {
                 if !self.contains(*dependency)? {
@@ -281,9 +299,23 @@ impl Graph {
             candidates.values().map(|c| c.bytes.len()).sum::<usize>() + prefix_bytes,
             candidates.len() + prefix_count,
         )?;
-        let (mut context, mut context_bytes, mut entries) = prefix.map_or_else(
-            || (self.context.clone(), self.context_bytes, Vec::new()),
-            |prefix| (prefix.context, prefix.context_bytes, prefix.entries),
+        let (mut context, mut context_bytes, mut entries, mut edges) = prefix.map_or_else(
+            || {
+                (
+                    self.context.clone(),
+                    self.context_bytes,
+                    Vec::new(),
+                    BTreeMap::new(),
+                )
+            },
+            |prefix| {
+                (
+                    prefix.context,
+                    prefix.context_bytes,
+                    prefix.entries,
+                    prefix.edges,
+                )
+            },
         );
         let mut bytes = self.bytes;
         // Resolve internal edges once. Only dependencies outside this batch
@@ -353,6 +385,7 @@ impl Graph {
                     .register_proof_for_replication(checked)
                     .map_err(crate::Error::from),
             )?;
+            edges.insert(id, record.dependencies.clone());
             entries.push((id, record));
             for dependent in dependents.remove(&id).unwrap_or_default() {
                 let remaining = waiting.get_mut(&dependent).expect("batch dependency");
@@ -368,12 +401,55 @@ impl Graph {
         Ok(CheckedBatch {
             context,
             entries,
+            edges,
             base_snapshot: self.context.snapshot_id(),
             storage: self.checked_storage.clone(),
             copy_epoch,
             context_bytes,
             _disk: disk,
         })
+    }
+
+    /// Check one necessary certificate helper against the private predecessor
+    /// closure. It has no independent publication or question-selection effect.
+    pub(crate) fn prepare_helper_after(
+        &self,
+        candidate: Candidate,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<CheckedBatch, crate::Error> {
+        self.ensure_live()?;
+        crate::resources::require_work_admission()?;
+        if prefix
+            .as_ref()
+            .map(|batch| self.batch_current(batch))
+            .transpose()?
+            .is_some_and(|current| !current)
+        {
+            return Err(STALE_COMMIT);
+        }
+        let epoch = self.cold(self.checked_storage.copy_epoch())?;
+        let record = candidate.record();
+        let _disk = self.reserve_publication(record.bytes.len(), 1)?;
+        let base = prefix
+            .as_ref()
+            .map_or(&self.context, |batch| &batch.context);
+        let checked = self.check_normal(candidate.normal, base)?;
+        if checked.proof_id() != record.id || checked.statement_id() != record.statement {
+            return Err("checked helper identity mismatch".into());
+        }
+        let growth = if self.cold(base.contains_statement(checked.statement_id()))? {
+            0
+        } else {
+            checked
+                .conclusion()
+                .encode_canonical()
+                .map_err(crate::Error::from)?
+                .len()
+        };
+        let mut context = base.clone();
+        self.cold(context.register_proof_for_replication(checked))?;
+        let dependencies = record.dependencies.clone();
+        CheckedBatch::extend(self, context, record, dependencies, epoch, growth, prefix)
     }
 
     /// Commit a prepared delta against its exact checked base, then publish

@@ -30,7 +30,10 @@ fn shared(levels: usize, unused: u32) -> Engine {
     });
     commands.push(Command::Seal { proof: closed });
     engine.append_group(&commands).unwrap();
-    while engine.advance(256, 32768).unwrap() {}
+    while engine
+        .advance(256, 32768, &crate::ArtifactState::new())
+        .unwrap()
+    {}
     engine
 }
 
@@ -101,7 +104,9 @@ fn incremental_tree_projection_preserves_foundation_formula_and_golden_identity(
     while !engine.prepare_export(7).unwrap() {
         quanta += 1;
         if quanta == 20 {
-            engine.advance(0, 4096).unwrap();
+            engine
+                .advance(0, 4096, &crate::ArtifactState::new())
+                .unwrap();
             let tree = engine
                 .finalization
                 .as_ref()

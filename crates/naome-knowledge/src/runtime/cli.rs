@@ -81,8 +81,12 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     } else {
         format!("{red}○ Stopped{reset}")
     };
+    let verification = match status.proof_verification {
+        super::ProofVerification::Checked => "checked in this run",
+        super::ProofVerification::NotRun => "stored; verification not run",
+    };
     let mut output = format!(
-        "\n  NAOME  {action}\n\n  State            {state}\n  Accepted proofs  {}\n\n  Interest\n",
+        "\n  NAOME  {action}\n\n  State            {state}\n  Accepted proofs  {} ({verification})\n\n  Interest\n",
         status.accepted_proofs,
     );
     if status.interest.is_empty() {
@@ -153,6 +157,7 @@ mod tests {
         let status = Status {
             running: false,
             accepted_proofs: 3,
+            proof_verification: super::super::ProofVerification::NotRun,
             interest: "λ 🦀\n\r\t\x1b[32m\x1b]8;;link\x07\u{009b}2J\u{202e}x\n".into(),
         };
         let rendered = human("status", &status, false);

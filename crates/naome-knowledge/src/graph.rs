@@ -1030,6 +1030,33 @@ impl Graph {
     pub fn content_root(&self) -> [u8; 32] {
         self.root
     }
+
+    /// Read a fixed admission-order interval without pinning a checked storage
+    /// generation. Later insertions cannot change or extend the captured range.
+    pub(crate) fn inventory_page(
+        &self,
+        after: Option<crate::corpus::InventoryCursor>,
+        limit: usize,
+    ) -> Result<Option<crate::corpus::InventoryPage>, crate::Error> {
+        self.ensure_live()?;
+        if limit == 0 || limit > crate::resources::limits().inventory_page {
+            return Err(crate::Error::InputLimit("inventory page limit"));
+        }
+        let page = self.cold(
+            self.store
+                .inventory_page(after, limit, self.fixed_summary()),
+        )?;
+        if let Some(page) = &page {
+            for id in &page.ids {
+                if !self.cold(self.context.contains_proof(*id).map_err(crate::Error::from))? {
+                    return self.cold(Err(crate::Error::CorruptStorage(
+                        "canonical inventory differs from checked set".into(),
+                    )));
+                }
+            }
+        }
+        Ok(page)
+    }
     pub fn get(&self, id: &str) -> Result<Option<Envelope>, crate::Error> {
         self.object(ProofId::from_bytes(id_bytes(id)?))
     }

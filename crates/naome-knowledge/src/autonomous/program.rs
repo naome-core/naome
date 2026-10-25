@@ -124,7 +124,9 @@ impl Generated {
                 return Err("candidate retained stream differs".into());
             }
             if !status.fully_checked {
-                if !work.advance(&snapshot.budget)? && !work.status()?.fully_checked {
+                if !work.advance(&snapshot.budget, graph.checked_context())?
+                    && !work.status()?.fully_checked
+                {
                     return Err("candidate has no completely checked seal".into());
                 }
                 return Ok(None);
