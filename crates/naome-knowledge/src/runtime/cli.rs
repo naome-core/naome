@@ -14,11 +14,7 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
         [option] if option == "--help" || option == "-h" => Some(
             "NAOME checked-knowledge node\n\n\
              Usage:\n  naome start\n  naome stop\n  naome status\n  \
-             naome interest <text>\n  naome resources [history [after]]\n  \
-             naome wallet address\n  naome wallet challenge <audience>\n  \
-             naome wallet prove <challenge.json>\n  \
-             naome wallet verify <address> <challenge.json> <proof.json>\n  \
-             naome --version\n\n\
+             naome interest <text>\n  naome --help\n  naome --version\n\n\
              Place --json before a command for machine output.\n\
              NAOME_NODE_DIR selects the local node directory.\n\
              Resource budgets adapt automatically."
@@ -129,6 +125,32 @@ fn human(command: &str, status: &Status, color: bool) -> String {
         // The reason originates in the local resource policy; retain terminal
         // escaping so passive diagnostics cannot acquire display authority.
         writeln!(output, "    Computation reason: {reason}").expect("String write");
+    }
+    if matches!(
+        status.computation,
+        crate::resources::ComputationState::Pausing | crate::resources::ComputationState::Paused
+    ) {
+        let advice = match status.computation_reason.as_deref() {
+            Some("disk pressure") => Some("Free disk space on the node's filesystem."),
+            Some(
+                "memory pressure"
+                | "node process tree memory pressure"
+                | "operating system memory pressure",
+            ) => Some("Reduce memory use on this host if the pause persists."),
+            Some("operating system power saving") => {
+                Some("Check the host's power-saving setting if computation should resume.")
+            }
+            Some("operating system thermal pressure") => Some("Let the host cool down."),
+            Some("sustained external CPU pressure") => Some("Let other CPU-intensive work finish."),
+            Some("hardware observation unavailable") => {
+                Some("Hardware observations are retried automatically.")
+            }
+            _ => None,
+        };
+        if let Some(advice) = advice {
+            writeln!(output, "    {advice}").expect("String write");
+        }
+        output.push_str("    Computation resumes automatically after stable recovery.\n");
     }
     output.push_str("\n  Interest\n");
     if status.interest.is_empty() {

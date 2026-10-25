@@ -7,7 +7,7 @@ import time
 
 from autonomous_lifecycle import Node, Trial, process_identity, retain_evidence, write_receipt
 from long_jobs import Probe, job_settings, journal
-from provider_feedback import feedback
+from resource_observation import latest
 
 
 def state(trial, node, expected):
@@ -58,6 +58,7 @@ def memory_recovery(trial, node, frozen, accepted):
 
 
 def run(trial):
+    os.environ["NAOME_DEV_RESOURCE_OBSERVATIONS"] = "1"
     donor = Node(trial, 0)
     trial.summary["node_count"] = 1
     probe = Probe(trial)
@@ -123,8 +124,14 @@ def run(trial):
     assert resumed["reserved_units"] >= retained["reserved_units"]
     assert resumed["spent_ms"] >= retained["spent_ms"]
     assert resumed["settings"] == retained["settings"]
-    finding_feedback = feedback(trial, donor)["finding"]
-    assert finding_feedback["admission_wait_nanos"] >= 20_000_000_000, finding_feedback
+    def observed_wait():
+        observation = latest(donor)
+        if observation is None:
+            return None
+        finding = observation["feedback"]["providers"]["finding"]
+        return finding if finding["admission_wait_nanos"] >= 20_000_000_000 else None
+
+    finding_feedback = trial.wait(observed_wait, maximum=5)
     pressure(donor, True)
     trial.wait(lambda: state(trial, donor, "paused"), maximum=5)
     probe.observe(donor)

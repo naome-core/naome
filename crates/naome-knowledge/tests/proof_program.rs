@@ -47,7 +47,7 @@ fn autonomous_program_transfer_resumes_after_receiver_crash_and_rechecks_on_rest
 }
 
 #[test]
-fn ordinary_cli_exposes_no_manual_proof_or_resource_mutation() {
+fn ordinary_cli_rejects_removed_commands_without_creating_node_state() {
     let directory = std::env::temp_dir().join(name("autonomous-only-cli"));
     fs::create_dir(&directory).unwrap();
     let work = directory.join("manual.sqlite3");
@@ -58,25 +58,44 @@ fn ordinary_cli_exposes_no_manual_proof_or_resource_mutation() {
         vec!["proof", "publish", work.to_str().unwrap()],
         vec!["proof", "follow", "00"],
         vec!["proof", "unfollow", "00"],
-        vec!["resources", "heavy"],
-        vec!["resources", "light"],
-        vec!["resources", "dynamic"],
-        vec!["resources", "custom", "limits.json"],
+        vec!["resources"],
+        vec!["resources", "history"],
+        vec!["resources", "history", "1"],
+        vec!["wallet"],
+        vec!["wallet", "address"],
+        vec!["wallet", "challenge", "test-verifier"],
+        vec!["wallet", "prove", "challenge.json"],
+        vec![
+            "wallet",
+            "verify",
+            "address",
+            "challenge.json",
+            "proof.json",
+        ],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_naome"))
-            .env("NAOME_NODE_DIR", directory.join("node"))
-            .env_remove("NAOME_EFFECTIVE_RESOURCES")
-            .env_remove("NAOME_RESOURCE_CONFIG")
-            .args(&args)
-            .output()
-            .unwrap();
-        assert!(
-            !output.status.success(),
-            "unexpected manual operation: {args:?}"
-        );
-        assert!(output.stdout.is_empty());
+        for json in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_naome"));
+            command
+                .env("NAOME_NODE_DIR", directory.join("node"))
+                .env_remove("NAOME_EFFECTIVE_RESOURCES")
+                .env_remove("NAOME_RESOURCE_CONFIG");
+            if json {
+                command.arg("--json");
+            }
+            let output = command.args(&args).output().unwrap();
+            assert!(
+                !output.status.success(),
+                "unexpected removed operation: {args:?}"
+            );
+            assert!(output.stdout.is_empty());
+            let error = String::from_utf8(output.stderr).unwrap();
+            assert!(
+                error.contains("usage: naome [--json] start | stop | status | interest <text>"),
+                "{error}"
+            );
+            assert!(!directory.join("node").exists());
+        }
     }
     assert!(!work.exists());
-    assert!(!directory.join("node/resource-profile.json").exists());
     fs::remove_dir_all(directory).unwrap();
 }

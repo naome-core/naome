@@ -3,10 +3,12 @@ import copy
 import pathlib
 import sys
 import unittest
+from types import SimpleNamespace
 
 SUPPORT = pathlib.Path(__file__).resolve().parents[2] / "crates/naome-knowledge/tests/support"
 sys.path.insert(0, str(SUPPORT))
 from provider_feedback import observe_budgets
+from resource_observation import latest
 
 
 def record():
@@ -51,6 +53,17 @@ class ProviderBudgetOracleTests(unittest.TestCase):
                 changed = copy.deepcopy(baseline)
                 changed[field] = value
                 observe(copy.deepcopy(previous), changed)
+
+
+class ResourceObservationTests(unittest.TestCase):
+    def test_restarted_node_cannot_borrow_observations_from_the_previous_process(self):
+        first = {"event": "resource_observation", "snapshot": {"pid": 10}, "capacity_bytes": 100}
+        second = {"event": "resource_observation", "snapshot": {"pid": 20}, "capacity_bytes": 200}
+        events = [first, second, {"event": "ready"}, first]
+        node = SimpleNamespace(process={"pid": 20}, logs=lambda: events)
+        self.assertEqual(latest(node), second)
+        node.process = {"pid": 30}
+        self.assertIsNone(latest(node))
 
 
 if __name__ == "__main__":

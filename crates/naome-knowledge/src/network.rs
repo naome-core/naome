@@ -397,7 +397,7 @@ where
     // Refresh at replay boundaries instead of freezing its initial quantum.
     let mut resources = autonomy
         .as_ref()
-        .map(|_| crate::resources::adaptive::history::Controller::open(&config.directory))
+        .map(|_| crate::resources::adaptive::Controller::open(&config.directory))
         .transpose()?;
     let graph = if let Some(resources) = &mut resources {
         Graph::open_observed(&config.directory, &mut || resources.refresh())?

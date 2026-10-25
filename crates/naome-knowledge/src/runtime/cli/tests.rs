@@ -10,11 +10,24 @@ fn information_options_are_exact_and_do_not_consume_interest_text() {
         );
     }
     for option in ["--help", "-h"] {
-        assert!(
-            information(&[OsString::from(option)])
-                .unwrap()
-                .contains("naome start")
+        let help = information(&[OsString::from(option)]).unwrap();
+        let commands = help
+            .lines()
+            .filter_map(|line| line.strip_prefix("  naome "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            commands,
+            [
+                "start",
+                "stop",
+                "status",
+                "interest <text>",
+                "--help",
+                "--version"
+            ]
         );
+        assert!(!help.contains("wallet") && !help.contains("resources"));
+        assert!(help.contains("--json") && help.contains("adapt automatically"));
     }
     for arguments in [vec!["interest", "--version"], vec!["--help", "start"]] {
         assert!(

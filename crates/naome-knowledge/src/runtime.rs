@@ -27,19 +27,12 @@ mod cli;
 mod owner;
 mod replay_guard;
 mod startup;
-mod wallet;
 pub(crate) use owner::Profile as OwnerProfile;
 pub(crate) use startup::Startup;
 
 fn control_limit() -> usize {
-    // Resource reports carry a bounded 4 KiB snapshot, independently of the
-    // configured owner-text capacity. They never duplicate owner text.
-    (6 * crate::resources::limits().owner_text_bytes + 512).max(4096 + 512)
+    6 * crate::resources::limits().owner_text_bytes + 512
 }
-// Only authenticated resource responses use this fixed diagnostic allowance:
-// at most 4 KiB of snapshot plus the fixed four-role scalar statistics. Request,
-// owner-text, provider, and peer frame limits are unchanged.
-const RESOURCE_RESPONSE_LIMIT: usize = 12 * 1024;
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
 static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
 
@@ -221,7 +214,6 @@ struct IdentityReceipt {
 #[serde(rename_all = "snake_case")]
 enum Operation {
     Status,
-    Resources,
     Stop,
     Interest(String),
 }
@@ -244,15 +236,7 @@ struct Response {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Report {
-    Status {
-        status: Status,
-    },
-    Resources {
-        snapshot: Option<Box<crate::resources::adaptive::Snapshot>>,
-        capacity_bytes: usize,
-        workers: [usize; 4],
-        feedback: Box<crate::resources::feedback::Statistics>,
-    },
+    Status { status: Status },
 }
 
 pub(crate) struct Control {
@@ -501,7 +485,6 @@ impl Control {
                 .map_err(|e| e.to_string())?;
         }
         let stopping = matches!(request.operation, Operation::Stop);
-        let resources = matches!(request.operation, Operation::Resources);
         if stopping {
             self.stopping.send_replace(true);
         }
@@ -514,7 +497,6 @@ impl Control {
             // transition finishes, including after a disconnected control client.
             let _ownership = ownership;
             match request.operation {
-                Operation::Resources => Ok(String::new()),
                 Operation::Status => {
                     let mut owner = state
                         .lock()
@@ -566,39 +548,22 @@ impl Control {
         };
         let response = Response {
             token: self.endpoint.token.clone(),
-            report: if resources {
-                Report::Resources {
-                    snapshot: crate::resources::adaptive::current().map(Box::new),
-                    capacity_bytes: crate::resources::limits().memory_bytes,
-                    workers: crate::resources::limits().workers,
-                    feedback: Box::new(crate::resources::feedback::statistics()),
-                }
-            } else {
-                Report::Status {
-                    status: Status {
-                        running,
-                        computation,
-                        computation_reason,
-                        accepted_proofs: count,
-                        proof_verification: ProofVerification::Checked,
-                        interest,
-                    },
-                }
+            report: Report::Status {
+                status: Status {
+                    running,
+                    computation,
+                    computation_reason,
+                    accepted_proofs: count,
+                    proof_verification: ProofVerification::Checked,
+                    interest,
+                },
             },
         };
         // Leave time for a response timeout to settle before the node's stop
         // drain expires, while provider teardown has already been requested.
         tokio::time::timeout(
             crate::resources::limits().control_request_timeout,
-            write_frame_bounded(
-                &mut stream,
-                &response,
-                if resources {
-                    RESOURCE_RESPONSE_LIMIT
-                } else {
-                    control_limit()
-                },
-            ),
+            write_frame(&mut stream, &response),
         )
         .await
         .map_err(|_| "local control write timeout")??;
@@ -646,13 +611,7 @@ pub(crate) async fn requested_stop(watch: &mut Option<tokio::sync::watch::Receiv
 }
 
 async fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result<T, String> {
-    read_frame_bounded(stream, control_limit()).await
-}
-
-async fn read_frame_bounded<T: serde::de::DeserializeOwned>(
-    stream: &mut UnixStream,
-    limit: usize,
-) -> Result<T, String> {
+    let limit = control_limit();
     tokio::time::timeout(crate::resources::limits().control_timeout, async {
         let mut bytes = Vec::new();
         BufReader::new(stream)
@@ -670,14 +629,7 @@ async fn read_frame_bounded<T: serde::de::DeserializeOwned>(
 }
 
 async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), String> {
-    write_frame_bounded(stream, value, control_limit()).await
-}
-
-async fn write_frame_bounded<T: Serialize>(
-    stream: &mut UnixStream,
-    value: &T,
-    limit: usize,
-) -> Result<(), String> {
+    let limit = control_limit();
     let mut bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     if bytes.len() > limit {
@@ -692,11 +644,11 @@ async fn write_frame_bounded<T: Serialize>(
     .map_err(|error| error.to_string())
 }
 
-async fn request_response(
+async fn request(
     directory: &Path,
     operation: Operation,
     launch: Option<&str>,
-) -> Result<Option<Response>, String> {
+) -> Result<Option<Status>, String> {
     let Some(endpoint) = endpoint(directory)? else {
         return Ok(None);
     };
@@ -721,11 +673,6 @@ async fn request_response(
         }
         Err(error) => return Err(error.to_string()),
     };
-    let response_limit = if matches!(operation, Operation::Resources) {
-        RESOURCE_RESPONSE_LIMIT
-    } else {
-        control_limit()
-    };
     write_frame(
         &mut stream,
         &Request {
@@ -735,28 +682,12 @@ async fn request_response(
         },
     )
     .await?;
-    let response: Response = read_frame_bounded(&mut stream, response_limit).await?;
+    let response: Response = read_frame(&mut stream).await?;
     if response.token != endpoint.token {
         return Err("local control response instance mismatch".into());
     }
-    Ok(Some(response))
-}
-
-async fn request(
-    directory: &Path,
-    operation: Operation,
-    launch: Option<&str>,
-) -> Result<Option<Status>, String> {
-    request_response(directory, operation, launch)
-        .await
-        .and_then(|response| {
-            response
-                .map(|r| match r.report {
-                    Report::Status { status } => Ok(status),
-                    _ => Err("unexpected control response type".into()),
-                })
-                .transpose()
-        })
+    let Report::Status { status } = response.report;
+    Ok(Some(status))
 }
 
 fn directory() -> Result<PathBuf, String> {
@@ -1305,31 +1236,12 @@ pub async fn execute() -> Result<(), String> {
         println!("{output}");
         return Ok(());
     }
-    let (json, plain) = match arguments.split_first() {
-        Some((option, rest)) if option == "--json" => (true, rest),
-        _ => (false, arguments.as_slice()),
-    };
-    if plain.first().is_some_and(|argument| argument == "wallet") {
-        if std::env::var_os(DAEMON_NONCE).is_some() {
-            return Err("invalid internal wallet invocation".into());
-        }
-        let _replay_guard = replay_guard::optional("wallet")?;
-        return wallet::execute(&plain[1..], json);
-    }
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
     {
         crate::resources::initialize_for(&directory()?)?;
     } else {
         crate::resources::initialize_from_environment()?;
-    }
-    let plain = if arguments.first().is_some_and(|a| a == "--json") {
-        &arguments[1..]
-    } else {
-        &arguments[..]
-    };
-    if plain.first().is_some_and(|a| a == "resources") {
-        return resources_command(&plain[1..]).await;
     }
     if let Some(result) = crate::jobs::internal(&arguments) {
         return result;
@@ -1384,71 +1296,4 @@ pub async fn execute() -> Result<(), String> {
         _ => unreachable!(),
     };
     cli::print(command, json, &status)
-}
-
-async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), String> {
-    use crate::resources::adaptive::{self, Snapshot};
-    let directory = directory()?;
-    let directory = if directory.exists() {
-        fs::canonicalize(directory).map_err(|error| error.to_string())?
-    } else {
-        directory
-    };
-    if arguments.first().is_some_and(|v| v == "history") {
-        if arguments.len() > 2 {
-            return Err("usage: naome resources history [after]".into());
-        }
-        let after = arguments
-            .get(1)
-            .map(|s| {
-                s.to_str()
-                    .ok_or("invalid history cursor")?
-                    .parse::<u64>()
-                    .map_err(|e| e.to_string())
-            })
-            .transpose()?
-            .unwrap_or(0);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&adaptive::history::page(&directory, after)?)
-                .map_err(|e| e.to_string())?
-        );
-        return Ok(());
-    }
-    if !arguments.is_empty() {
-        return Err(
-            "usage: naome resources [history [after]]; resource budgets adapt automatically".into(),
-        );
-    }
-    let configured = adaptive::load(&directory)?;
-    let active = if directory.exists() {
-        match request_response(&directory, Operation::Resources, None).await? {
-            Some(Response {
-                report:
-                    Report::Resources {
-                        snapshot,
-                        capacity_bytes,
-                        workers,
-                        feedback,
-                    },
-                ..
-            }) => Some((snapshot, capacity_bytes, workers, feedback)),
-            None => None,
-            _ => return Err("unexpected resource response type".into()),
-        }
-    } else {
-        None
-    };
-    let location = if directory.exists() {
-        directory.as_path()
-    } else {
-        std::path::Path::new("/tmp")
-    };
-    let proposed = Snapshot::derive(
-        configured.clone(),
-        adaptive::sample(location)?,
-        crate::resources::limits().memory_bytes as u64,
-    )?;
-    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"caller_capacity":crate::resources::limits(),"configured":configured,"active":active.as_ref().and_then(|report|report.0.as_ref()),"installed_capacity":active.as_ref().map(|report|serde_json::json!({"memory_bytes":report.1,"workers":report.2})),"feedback":active.as_ref().map(|report|report.3.as_ref()),"caller_observation":proposed,"caller_memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
-    Ok(())
 }
