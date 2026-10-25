@@ -1,5 +1,13 @@
 # Codex repository instructions
 
+## Repository guidance files
+
+Do not create Markdown documentation files other than `AGENTS.md` unless the
+user explicitly requests an exception and the matching CI policy change.
+Keep operational guidance in CLI help, API guidance in Rustdoc, and reviewed
+version-specific release notes and installation instructions at their release
+consumers. Do not recreate removed documentation or duplicate instruction sources.
+
 ## Language defaults
 
 Write chat replies, progress updates and questions in German by default. Write
@@ -74,17 +82,21 @@ pauses or ends; report immediately if disarming cannot be confirmed.
 
 After merge, verify the merged head, successful required PR checks, reachability
 of the merge commit from `origin/main`, and equivalence of the merged feature
-patch. Record the post-merge `CI` and `Full Cargo CI` run links and current status,
-separately from MR checks and local validation. Ordinary PR delivery tasks must
-not wait for the complete main pipeline or full Cargo matrix to finish before
-completing. Report pending or unavailable post-merge results as unverified;
+patch. Record the post-merge `CI` run link and current status, and any full Cargo
+qualification available for that exact commit, separately from MR checks and
+local validation. Full Cargo runs nightly and within publications; its absence
+after an ordinary push is expected. Ordinary PR delivery tasks must not wait
+for the complete main pipeline or the next full Cargo matrix before completing.
+Report pending or unavailable results as unverified;
 successful MR checks do not establish full Cargo qualification. A failed
 post-merge run remains a main regression. A merge does not authorize another scope.
 
 ### Scheduled main-pipeline repair
 
-The separately authorized scheduled monitor checks `main` hourly and owns
-post-merge pipeline follow-up. It autonomously diagnoses actionable `CI` and
+The separately authorized scheduled monitor checks `main` CI and available full
+Cargo qualifications hourly and owns pipeline follow-up. A missing per-commit
+full Cargo run is expected between nightly or publication runs. The monitor
+autonomously diagnoses actionable `CI` and
 `Full Cargo CI` failures, implements focused fixes, publishes repair PRs, and
 squash-merges them only after the same live gate above passes. This recurring
 repair scope is explicitly authorized; ordinary delivery tasks retain their
@@ -142,10 +154,15 @@ Rust dependency authority. Bazel's Rust pin must match `rust-toolchain.toml`.
 
 ### Full Cargo verification
 
-`Full Cargo CI` runs after every push to `main`, without cancelling previous
-main runs. It can also be dispatched manually; dispatching `CI` with
-`full_cargo=true` runs the same full matrix before a merge when needed. The
-full matrix is deliberately outside the MR merge gate.
+`Full Cargo CI` runs nightly at 01:17 UTC on `main`, without cancelling previous
+runs. It can also be dispatched manually; dispatching `CI` with
+`full_cargo=true` runs the same full matrix before a merge when needed. Every
+publication runs this same complete matrix within its own `Release` workflow,
+on the exact source commit, before attestation and publication. The publisher
+independently requires all four matrix jobs and their result job to have
+succeeded on the standard runners in that same release run. Nightly results
+do not replace this publication qualification. The full matrix remains outside
+the MR merge gate; the four fast required contexts remain unchanged.
 
 Every platform runs the complete workspace in both `test` and `release`
 profiles, including the long system tests. Each profile builds all targets

@@ -76,6 +76,13 @@ class Trial:
         assert result.returncode == 0, f"{verb}: {result.stderr}"
         assert result.stderr == "", f"{verb}: {result.stderr}"
         value = json.loads(result.stdout)
+        if verb == "resources":
+            assert set(value) == {"version", "active", "caller_capacity", "caller_memory_charge",
+                "caller_observation", "configured", "feedback", "installed_capacity"}, value
+            assert value["version"] == 1, value
+            assert value["installed_capacity"]["memory_bytes"] > 0, value
+            assert len(value["installed_capacity"]["workers"]) == 4, value
+            return value
         assert set(value) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason"}, value
         assert isinstance(value["running"], bool), value
         assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value

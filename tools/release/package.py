@@ -14,8 +14,9 @@ import tomllib
 from pathlib import Path
 
 from policy import REPOSITORY, ROOT, TARGETS, check_source, git, identity
+from installation import instructions
 
-FILES = {"naome", "LICENSE", "THIRD_PARTY_LICENSES.html", "SYSTEM_LICENSES.txt", "README.md", "Cargo.lock", "sbom.cdx.json", "build.json"}
+FILES = {"naome", "LICENSE", "THIRD_PARTY_LICENSES.html", "SYSTEM_LICENSES.txt", "INSTALL.txt", "Cargo.lock", "sbom.cdx.json", "build.json"}
 
 
 def digest(path):
@@ -120,7 +121,7 @@ def build_package(target, version, output, notices, sbom, system_licenses):
                 "linkage": "system" if target.endswith("darwin") else "static-musl"}
     files = {"naome": binary.read_bytes(), "LICENSE": (ROOT / "LICENSE").read_bytes(),
              "Cargo.lock": (ROOT / "Cargo.lock").read_bytes(), "sbom.cdx.json": sbom.read_bytes(),
-             "README.md": (ROOT / "tools/release/DOWNLOAD.md").read_bytes(),
+             "INSTALL.txt": instructions(version, sha).encode(),
              "THIRD_PARTY_LICENSES.html": notices.read_bytes(), "SYSTEM_LICENSES.txt": system_licenses.read_bytes(),
              "build.json": (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode()}
     if any(not data for data in files.values()):
@@ -148,6 +149,8 @@ def verify_package(path, version, sha, *, execute=False):
             raise ValueError("archive contains a link, invalid permissions or oversized member")
         files = {entry.name.rsplit("/", 1)[1]: tar.extractfile(entry).read() for entry in entries}
     build = json.loads(files["build.json"])
+    if files["INSTALL.txt"] != instructions(version, sha).encode():
+        raise ValueError("installation instructions differ from the reviewed release source")
     for key, value in {**identity(version), "schema": 1, "repository": REPOSITORY, "commit": sha,
                        "target": target, "features": [], "profile": "release"}.items():
         if build.get(key) != value:

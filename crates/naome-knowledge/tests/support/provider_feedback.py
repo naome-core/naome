@@ -2,8 +2,6 @@
 """Native provider-to-owner feedback with unchanged durable job allowances."""
 import argparse
 import json
-import os
-import subprocess
 from pathlib import Path
 
 from autonomous_lifecycle import Node, Trial, write_receipt
@@ -31,16 +29,7 @@ def observe_budgets(previous, state):
 
 
 def feedback(trial, node):
-    command = [str(trial.binary), "--json", "resources"]
-    result = subprocess.run(command, stdin=subprocess.DEVNULL,
-        env={**os.environ, "NAOME_NODE_DIR": str(node.directory)},
-        capture_output=True, text=True, timeout=trial.remaining(10))
-    trial.summary["commands"].append({"node": node.index, "command": command,
-        "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
-    assert result.returncode == 0, result.stderr
-    assert not result.stderr, result.stderr
-    report = json.loads(result.stdout)
-    assert report["installed_capacity"]["memory_bytes"] > 0
+    report = trial.call(node, "resources")
     return report["feedback"]["providers"]
 
 

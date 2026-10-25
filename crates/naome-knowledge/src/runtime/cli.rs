@@ -20,8 +20,32 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              naome wallet verify <address> <challenge.json> <proof.json>\n  \
              naome --version\n\n\
              Place --json before a command for machine output.\n\
-             NAOME_NODE_DIR selects the local node directory.\n\
-             Resource budgets adapt automatically."
+             \nData and configuration:\n\
+             NAOME_NODE_DIR selects an isolated node directory. The default is\n\
+             $XDG_DATA_HOME/naome, or $HOME/.local/share/naome. First start creates\n\
+             config.json. Stop and back up the entire directory before updating.\n\
+             Pre-release software supports current formats without legacy migration.\n\
+             \nComputation and resources:\n\
+             Budgets adapt automatically. Status reports running, pausing, paused\n\
+             or stopped computation and its reason. Pressure closes new computation;\n\
+             admitted work drains without new time or work allowances. Bounded\n\
+             discovery, checked-proof serving and lifecycle control remain active.\n\
+             No unchecked proof is admitted. Network allocations retain memory limits.\n\
+             \nNetworking and privacy:\n\
+             The checked graph is public to compatible peers: do not store secrets.\n\
+             mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\
+             peers as a client. Discovery reveals identities and reachable addresses.\n\
+             Noise authenticates transport; it does not hide addresses or timing.\n\
+             config.json discovery.internet, discovery.dht and discovery.mdns control\n\
+             discovery. Set internet=false for an isolated DHT with its own bootstrap\n\
+             peers. Keep allow_private_addresses disabled for public operation.\n\
+             \nWallet key control:\n\
+             Back up wallet.key and wallet.json securely. They are separate from\n\
+             identity.key; private files are owner-only, without passphrase encryption.\n\
+             Inspect the challenge audience before signing. Verifiers must supply\n\
+             their original fresh challenge and expected address, and enforce expiry\n\
+             and single use. An ownership proof establishes key control only.\n\
+             This node provides no coin issuance, spendable balance or shared ledger."
                 .into(),
         ),
         _ => None,

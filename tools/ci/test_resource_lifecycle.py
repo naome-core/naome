@@ -8,6 +8,7 @@ SUPPORT = pathlib.Path(__file__).resolve().parents[2] / "crates/naome-knowledge/
 sys.path.insert(0, str(SUPPORT))
 from autonomous_lifecycle import Trial
 from automatic_computation import memory_recovery
+from long_jobs import observe_work
 from owner_interest import assert_owner_status
 from proof_network_discovery import contact_retired
 
@@ -36,14 +37,16 @@ class RecoveryTrial:
 
 
 class ResourceLifecycleTests(unittest.TestCase):
-    def recover(self, reason, resumes, *, progress=False, admission=False):
+    def recover(self, reason, resumes, *, progress=False, admission=False, deadline=120):
         clock = Clock()
         self.clock = clock
         trial = RecoveryTrial(clock, reason, resumes)
+        trial.deadline = deadline
         node = type("Node", (), {"ids": lambda _: {1} if admission else set()})()
         with patch("time.monotonic", side_effect=lambda: clock.now), patch("time.sleep", side_effect=clock.sleep), \
                 patch("automatic_computation.checkpoints", side_effect=lambda _: {1: (2, 3 if progress else 2)}):
-            memory_recovery(trial, node, {1: (2, 2)}, set())
+            self.result = memory_recovery(trial, node, {1: (2, 2)}, set())
+        self.receipt = trial.summary["memory_recovery"]
         return clock.now
 
     def test_memory_only_recovery_keeps_its_original_40_second_bound(self):
@@ -51,21 +54,71 @@ class ResourceLifecycleTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.recover("memory pressure", 45)
 
-    def test_additional_cpu_hold_may_outlast_memory_recovery(self):
+    def test_native_cpu_hold_is_retained_without_claiming_resume(self):
         reason = lambda now: "memory pressure" if now < 10 else "sustained external CPU pressure"
-        self.assertGreaterEqual(self.recover(reason, 70), 70)
+        self.assertGreaterEqual(self.recover(reason, 70), 40)
+        self.assertIsNone(self.result)
+        self.assertEqual(self.receipt["result"], "native_cpu_hold_preserved")
+
+    def test_cleared_native_cpu_hold_can_qualify_observed_resume(self):
+        self.assertGreaterEqual(self.recover("sustained external CPU pressure", 35), 35)
+        self.assertEqual(self.receipt["result"], "native_resume_observed")
 
     def test_cpu_hold_cannot_extend_the_original_whole_deadline(self):
         with self.assertRaises(AssertionError):
-            self.recover("sustained external CPU pressure", 125)
-        self.assertGreaterEqual(self.clock.now, 120)
-        self.assertLess(self.clock.now, 120.1)
+            self.recover("sustained external CPU pressure", 125, deadline=30)
+        self.assertGreaterEqual(self.clock.now, 30)
+        self.assertLess(self.clock.now, 30.3)
 
     def test_cpu_hold_never_permits_progress_or_publication(self):
         for change, message in (({"progress": True}, "productive work advanced"),
                                 ({"admission": True}, "paused node published")):
             with self.subTest(change=change), self.assertRaisesRegex(AssertionError, message):
                 self.recover("sustained external CPU pressure", 70, **change)
+
+
+class WorkWindowTests(unittest.TestCase):
+    def observe(self, capacity, *, predicate=None, deadline=90, pid=7):
+        clock = Clock()
+        self.clock = clock
+        def call(node, command):
+            self.assertEqual(command, "resources")
+            value = capacity(clock.now) if callable(capacity) else capacity
+            return {"active": {"pid": pid, "budget": {"concurrency": value,
+                "paused": "sustained external CPU pressure" if value == 0 else None}}}
+        trial = type("Trial", (), {"deadline": deadline, "summary": {}, "call": staticmethod(call)})()
+        node = type("Node", (), {"process": {"pid": 7}})()
+        with patch("time.monotonic", side_effect=lambda: clock.now), patch("time.sleep", side_effect=clock.sleep):
+            result = observe_work(trial, node, "overlap", predicate or (lambda: False), 15, 3)
+        self.receipt = trial.summary["work_windows"]["overlap"]
+        return result
+
+    def test_missing_progress_under_sufficient_capacity_is_still_a_failure(self):
+        with self.assertRaisesRegex(AssertionError, "despite sufficient admitted capacity"):
+            self.observe(3)
+
+    def test_real_constraints_are_reported_without_claiming_overlap(self):
+        for capacity in (0, 1, 2):
+            with self.subTest(capacity=capacity):
+                self.assertIsNone(self.observe(capacity))
+                self.assertEqual(self.receipt["result"], "resource_limited")
+
+    def test_observed_progress_after_a_constraint_is_qualified(self):
+        self.assertTrue(self.observe(lambda now: 2 if now < 4 else 3,
+            predicate=lambda: self.clock.now >= 5))
+        self.assertEqual(self.receipt["result"], "observed")
+
+    def test_foreign_budget_and_expired_whole_trial_are_not_constraints(self):
+        with self.assertRaises(AssertionError):
+            self.observe(2, pid=8)
+        with self.assertRaisesRegex(AssertionError, "whole-trial deadline"):
+            self.observe(2, deadline=7)
+
+    def test_predicate_failures_cannot_be_hidden_by_a_resource_constraint(self):
+        def corrupt():
+            raise AssertionError("incorrect proof state")
+        with self.assertRaisesRegex(AssertionError, "incorrect proof state"):
+            self.observe(2, predicate=corrupt)
 
 
 class OwnerStatusTests(unittest.TestCase):

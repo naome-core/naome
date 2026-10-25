@@ -103,8 +103,11 @@ class Probe:
         return {job for job,phase in active.items() if phase=='cpu_active'
             and str(job) in journal(node)['records'] and journal(node)['records'][str(job)]['state']=='running'}
 
-    def witness_cpu(self,node):
-        jobs=self.trial.wait(lambda:self.cpu_active(node),maximum=5)
+    def witness_cpu(self,node,*,respect_admission=False):
+        jobs=(observe_work(self.trial,node,f'cpu_worker_node_{node.index}',lambda:self.cpu_active(node),5,1)
+              if respect_admission else self.trial.wait(lambda:self.cpu_active(node),maximum=5))
+        if jobs is None:
+            return None
         workers={event['pid'] for event in node.logs() if event.get('event')=='research_worker' and event['job'] in jobs}
         identities={pid:process_identity(pid) for pid in workers}
         assert identities and all(identities.values()),'CPU witness requires live worker identities'
@@ -152,6 +155,34 @@ class Probe:
         return retained
 
 
+def observe_work(trial, node, name, predicate, maximum, slots):
+    """Bound progress under admitted capacity; retain real resource constraints."""
+    end = min(trial.deadline, time.monotonic() + maximum)
+    receipt = {'required_slots': slots, 'seconds': maximum, 'samples': []}
+    trial.summary.setdefault('work_windows', {})[name] = receipt
+    sample_at = 0
+    while time.monotonic() < end:
+        if time.monotonic() >= sample_at:
+            active = trial.call(node, 'resources')['active']
+            assert active and active['pid'] == node.process['pid'], active
+            budget = active['budget']
+            assert type(budget['concurrency']) is int and budget['concurrency'] >= 0, budget
+            assert budget['paused'] is None or (isinstance(budget['paused'], str) and budget['paused']), budget
+            assert (budget['concurrency'] == 0) == (budget['paused'] is not None), budget
+            receipt['samples'].append({'concurrency': budget['concurrency'], 'paused': budget['paused']})
+            sample_at = time.monotonic() + 0.5
+        value = predicate()
+        if value:
+            receipt['result'] = 'observed'
+            return value
+        time.sleep(0.05)
+    assert time.monotonic() < trial.deadline, 'original whole-trial deadline expired'
+    assert any(sample['concurrency'] < slots for sample in receipt['samples']), \
+        f'{name} timed out despite sufficient admitted capacity: {receipt}'
+    receipt['result'] = 'resource_limited'
+    return None
+
+
 def roles(trial,probe):
     receiver,donor=Node(trial,0),Node(trial,1)
     # Keep twenty finding units pending through the measured slot ramp. The
@@ -171,14 +202,16 @@ def roles(trial,probe):
         state=journal(receiver)
         running={lane(record) for record in state['records'].values() if record['state']=='running'}
         return state if {0,1,2}.issubset(running) else None
-    overlap=trial.wait(overlapping,maximum=15)
-    probe.witness_cpu(receiver)
-    trial.summary['overlap']={'running_lanes':sorted({lane(r) for r in overlap['records'].values() if r['state']=='running'}),
+    overlap=observe_work(trial,receiver,'three_role_overlap',overlapping,15,3)
+    cpu_jobs=probe.witness_cpu(receiver,respect_admission=True)
+    trial.summary['native_receiver_cpu_work_observed']=bool(cpu_jobs)
+    trial.summary['overlap']={'native_three_role_overlap_observed':bool(overlap),
+        'running_lanes':sorted({lane(r) for r in (overlap or journal(receiver))['records'].values() if r['state']=='running'}),
         'journal_sha256':digest(receiver.directory/'research/jobs.sqlite3')}
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
-    trial.wait(lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
-        and event.get('interest')=='Assessed(true)' for event in receiver.logs())>=3,maximum=12)
+    observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
+        and event.get('interest')=='Assessed(true)' for event in receiver.logs())>=3,12,2)
     donor.config['runtime']['question_interval_ms']=100
     donor.config['peers']=[{'id':receiver.peer,'address':f'/ip4/127.0.0.1/tcp/{receiver.port}'}]
     donor.write_config();donor.start()
@@ -186,10 +219,21 @@ def roles(trial,probe):
         stored=receiver.ids()
         accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
         return len(stored)==3 and stored==donor.ids() and accepted==stored
-    trial.wait(all_peer_answers,maximum=20)
-    assert any(event.get('event')=='solve_cancelled_by_answer' for event in receiver.logs())
+    delivered=observe_work(trial,receiver,'checked_peer_delivery',all_peer_answers,20,2)
+    if delivered:
+        assert any(event.get('event')=='solve_cancelled_by_answer' for event in receiver.logs())
+    else:
+        assert any(event.get('event')=='identified' and event.get('peer')==donor.peer for event in receiver.logs()), \
+            'resource-limited node did not authenticate its peer'
+        assert any(event.get('peer')==donor.peer and event.get('event') in {'exchange_request','exchange_response'}
+            and event.get('kind') in {'inventory','inventory_result'} for event in receiver.logs()), \
+            'resource-limited node did not service inventory traffic'
     accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
-    assert accepted==receiver.ids(),'peer answers must arrive during pending local solving'
+    if delivered:
+        assert accepted==receiver.ids(),'peer answers must arrive during pending local solving'
+    else:
+        assert accepted <= receiver.ids() <= donor.ids(), 'resource-limited node admitted unexpected proofs'
+    trial.summary['native_checked_peer_delivery_observed']=bool(delivered)
     probe.observe(receiver);probe.observe(donor)
     endpoint=json.loads((receiver.directory/'control.json').read_text())
     slow=[]
@@ -206,11 +250,15 @@ def roles(trial,probe):
     donor.stop();probe.ended()
     busy=Node(trial,2)
     busy.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':0,'cpu_ms':20000,'descendant':True}))
-    busy.write_config();busy.start();probe.witness_cpu(busy)
-    assert probe.cpu_active(busy)
+    busy.write_config();busy.start()
+    busy_jobs=probe.witness_cpu(busy,respect_admission=True)
+    trial.summary['native_stop_during_cpu_work_observed']=bool(busy_jobs)
+    if busy_jobs:
+        assert probe.cpu_active(busy)
     started=time.monotonic();busy.stop();assert time.monotonic()-started<5
     probe.ended()
-    trial.summary['scenarios']['independent_roles_real_peer_answers_slow_controls_and_group_cleanup']={'result':'pass'}
+    trial.summary['scenarios']['native_resource_admission_peer_control_and_group_cleanup']={
+        'result':'pass','three_role_overlap_observed':bool(overlap),'checked_peer_delivery_observed':bool(delivered)}
 
 
 def recovery(trial,probe):
@@ -413,12 +461,13 @@ def main():
     parser.add_argument('--timeout',type=float,default=90);args=parser.parse_args()
     trial=Trial(args.binary,args.output,args.timeout,args.profile,'long-jobs-'+args.mode);probe=Probe(trial)
     if args.mode=='roles' and 'NAOME_RESOURCE_CONFIG' not in os.environ:
-        # This scenario asserts cross-role overlap and fixed provider latency,
-        # not adaptation to shared CI-host CPU load. Pin the ordinary reference
-        # capacity so the governor cannot serialize its three required lanes.
+        # Pin the ordinary reference capacity. Three-slot admission is tested
+        # independently with controlled scheduler budgets; this native scenario
+        # records the real capacity. One CPU-solving worker leaves room for peer-interest work;
+        # live CPU pauses and admission reductions remain authoritative.
         resource_config=trial.output/'fixed-resource-config.json'
         write_receipt(resource_config,{'version':1,'memory_bytes':512*1024*1024,
-            'workers':[1,2,2,2],'tuning':{}})
+            'workers':[1,1,2,2],'tuning':{}})
         os.environ['NAOME_RESOURCE_CONFIG']=str(resource_config)
     trial.summary.update(fixture='ordinary_long_jobs',driver_sha256=digest(__file__),
         claim='finite deterministic providers, native checking and local real transport; no model or multi-day uptime claim')

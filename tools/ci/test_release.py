@@ -34,7 +34,15 @@ class Repository:
     def __init__(self):
         self.sha = SHA
         self.immutable = True
-        self.runs = {name: [qualified_run(name)] for name in ("ci.yml", "full-cargo.yml")}
+        self.runs = {"ci.yml": [qualified_run("ci.yml")]}
+        self.release_run = qualified_run("release.yml", id=42, event="workflow_dispatch",
+                                         status="in_progress", conclusion=None,
+                                         html_url="https://github.com/naome-core/naome/actions/runs/42")
+        self.jobs = []
+        for platform, runner in (("Linux x86_64", "ubuntu-24.04"), ("macOS ARM64", "macos-15")):
+            for profile in ("test", "release"):
+                self.job(f"Cargo ({platform}, {profile}) / Full workspace", runner)
+        self.job("Full Cargo results", "ubuntu-24.04")
         self.releases = []
         self.tag = None
         self.assets = []
@@ -42,6 +50,12 @@ class Repository:
         self.fail_upload = None
         self.protected = True
         self.bypass = []
+
+    def job(self, name, runner):
+        self.jobs.append({"id": 100 + len(self.jobs), "run_id": 42, "head_sha": SHA,
+                          "name": "Full source qualification / " + name,
+                          "status": "completed", "conclusion": "success", "labels": [runner],
+                          "html_url": "https://github.com/naome-core/naome/actions/runs/42/job/100"})
 
     def get(self, path, missing=False):
         if path == "":
@@ -57,11 +71,15 @@ class Repository:
             return {"enforcement": "active", "bypass_actors": self.bypass}
         if path == "/immutable-releases":
             return {"enabled": self.immutable}
+        if path.startswith("/actions/runs/"):
+            return copy.deepcopy(self.release_run)
         if path.startswith("/git/ref/tags/"):
             return self.tag
         raise AssertionError(path)
 
     def pages(self, path, key=None):
+        if path.startswith("/actions/runs/42/jobs?"):
+            return copy.deepcopy(self.jobs)
         if path == "/releases":
             return copy.deepcopy(self.releases)
         if path.endswith("/assets"):
@@ -94,6 +112,15 @@ class Repository:
 
 
 class QualificationTests(unittest.TestCase):
+    def test_publication_requires_complete_notes_for_its_exact_version(self):
+        self.assertIn(f"# v{VERSION}", release.notes(policy.identity(VERSION)))
+        for entry in [None, {}, {"summary": "Only a summary"},
+                      {"summary": "Reviewed", "features": [], "qualification": ["ok"], "data": ["ok"], "limitations": ["ok"]}]:
+            with self.subTest(entry=entry), patch.object(release.tomllib, "loads", return_value={"releases": {VERSION: entry}}), self.assertRaises(ValueError):
+                release.notes({"version": VERSION, "tag": f"v{VERSION}"})
+        with patch.object(release.tomllib, "loads", return_value={"releases": {}}), self.assertRaises(ValueError):
+            release.notes({"version": VERSION, "tag": f"v{VERSION}"})
+
     def test_only_canonical_versions_and_ordering(self):
         ordered = ["0.1.0-alpha.1", "0.1.0-alpha.2", "0.1.0-beta.1", "0.1.0-rc.1", "0.1.0", "0.1.1", "1.0.0"]
         self.assertEqual(sorted(ordered, key=policy.version_key), ordered)
@@ -110,13 +137,13 @@ class QualificationTests(unittest.TestCase):
                 policy.identity("1.2.3", root)
 
     def test_latest_attempt_not_an_old_success_is_authoritative(self):
-        old = qualified_run("full-cargo.yml")
+        old = qualified_run("ci.yml")
         for state in ["failure", "cancelled", "skipped", None]:
             for changes in [{"run_number": 2}, {"run_attempt": 2}]:
                 with self.subTest(state=state, changes=changes), self.assertRaises(ValueError):
-                    policy.successful_run([old, {**old, **changes, "conclusion": state}], "full-cargo.yml", SHA)
+                    policy.successful_run([old, {**old, **changes, "conclusion": state}], "ci.yml", SHA)
         with self.assertRaises(ValueError):
-            policy.successful_run([old, {**old, "run_attempt": 2, "status": "in_progress"}], "full-cargo.yml", SHA)
+            policy.successful_run([old, {**old, "run_attempt": 2, "status": "in_progress"}], "ci.yml", SHA)
 
     def test_spoofed_workflow_fork_branch_event_or_commit_does_not_qualify(self):
         for changes in [{"path": ".github/workflows/spoof.yml"}, {"head_repository": {"full_name": "attacker/naome"}},
@@ -127,18 +154,72 @@ class QualificationTests(unittest.TestCase):
     def test_both_complete_qualifications_and_immutable_main_are_required(self):
         release_id = {"version": "1.2.3", "tag": "v1.2.3", "prerelease": False}
         api = Repository()
-        self.assertEqual(set(policy.check_publication(api, release_id, SHA)[0]), {"ci.yml", "full-cargo.yml"})
+        self.assertEqual(set(policy.check_publication(api, release_id, SHA, "42")[0]), {"ci.yml", "full-cargo.yml"})
         for attribute, value in [("sha", "b" * 40), ("immutable", False), ("protected", False), ("bypass", [{"actor_id": 1}])]:
             broken = Repository()
             setattr(broken, attribute, value)
             with self.subTest(attribute=attribute), self.assertRaises(ValueError):
-                policy.check_publication(broken, release_id, SHA)
+                policy.check_publication(broken, release_id, SHA, "42")
         for workflow in api.runs:
             broken = Repository()
             broken.runs[workflow] = []
             with self.subTest(workflow=workflow), self.assertRaises(ValueError):
-                policy.check_publication(broken, release_id, SHA)
+                policy.check_publication(broken, release_id, SHA, "42")
         self.assertEqual(api.mutations, [])
+
+    def test_request_can_start_fresh_qualification_but_cannot_publish_without_it(self):
+        api = Repository()
+        api.jobs = []
+        release_id = policy.identity(VERSION)
+        self.assertEqual(set(policy.check_request(api, release_id, SHA)[0]), {"ci.yml"})
+        with self.assertRaises(ValueError):
+            policy.check_publication(api, release_id, SHA, "42")
+        self.assertEqual(api.mutations, [])
+
+    def test_prepare_admits_a_request_before_its_matrix_without_granting_publication(self):
+        api = Repository()
+        api.jobs = []
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            with patch.object(release, "context", return_value=(SHA, "42")), \
+                    patch.object(release, "publication_context", return_value=(SHA, "42")), \
+                    patch.object(release, "GitHub", return_value=api), patch.object(release, "notes"), \
+                    patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                release.prepare(VERSION, True)
+            self.assertEqual(output.read_text(), f"version={VERSION}\n")
+        with self.assertRaises(ValueError):
+            policy.check_publication(api, policy.identity(VERSION), SHA, "42")
+        self.assertEqual(api.mutations, [])
+
+    def test_every_matrix_job_and_result_must_succeed_on_its_standard_runner(self):
+        release_id = policy.identity(VERSION)
+        for index in range(5):
+            for changes in ({"status": "in_progress", "conclusion": None},
+                            *({"conclusion": state} for state in ("failure", "cancelled", "skipped", "timed_out", None)),
+                            {"head_sha": "b" * 40}, {"run_id": 43},
+                            {"labels": ["self-hosted"]}, {"labels": ["macos-15-xlarge"]}):
+                api = Repository()
+                api.jobs[index].update(changes)
+                with self.subTest(index=index, changes=changes), self.assertRaises(ValueError):
+                    policy.check_publication(api, release_id, SHA, "42")
+            for duplicate in (False, True):
+                api = Repository()
+                if duplicate:
+                    api.jobs.append(copy.deepcopy(api.jobs[index]))
+                else:
+                    api.jobs.pop(index)
+                with self.subTest(index=index, duplicate=duplicate), self.assertRaises(ValueError):
+                    policy.check_publication(api, release_id, SHA, "42")
+
+    def test_matrix_from_another_run_source_or_event_cannot_qualify_publication(self):
+        for changes in ({"id": 43}, {"path": ".github/workflows/full-cargo.yml"},
+                        {"head_sha": "b" * 40}, {"head_branch": "candidate"}, {"event": "schedule"},
+                        {"head_repository": {"full_name": "fork/naome"}},
+                        {"status": "completed", "conclusion": "failure"}):
+            api = Repository()
+            api.release_run.update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                policy.check_publication(api, policy.identity(VERSION), SHA, "42")
 
     def test_reuse_and_downgrade_are_rejected(self):
         release_id = {"version": "1.2.3-rc.1", "tag": "v1.2.3-rc.1", "prerelease": True}
@@ -147,11 +228,11 @@ class QualificationTests(unittest.TestCase):
             api = Repository()
             api.releases = [previous]
             with self.subTest(previous=previous), self.assertRaises(ValueError):
-                policy.check_publication(api, release_id, SHA)
+                policy.check_publication(api, release_id, SHA, "42")
         api = Repository()
         api.tag = {"object": {"type": "commit", "sha": SHA}}
         with self.assertRaises(ValueError):
-            policy.check_publication(api, release_id, SHA)
+            policy.check_publication(api, release_id, SHA, "42")
 
     def test_dispatch_from_a_branch_fork_or_event_cannot_publish(self):
         environment = {"GITHUB_REPOSITORY": "naome-core/naome", "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch"}
@@ -186,7 +267,8 @@ class PackageTests(unittest.TestCase):
         build = {"schema": 1, "repository": "naome-core/naome", "commit": SHA, "target": target, "profile": "release",
                  "features": [], "version": VERSION, "tag": f"v{VERSION}", "prerelease": "-" in VERSION,
                  "binary_sha256": hashlib.sha256(binary).hexdigest(), "cargo_lock_sha256": hashlib.sha256(lockfile).hexdigest()}
-        return {name: b"notice" for name in package.FILES} | {"naome": binary, "build.json": json.dumps(build).encode(), "Cargo.lock": lockfile}
+        return {name: b"notice" for name in package.FILES} | {"naome": binary, "build.json": json.dumps(build).encode(),
+                "Cargo.lock": lockfile, "INSTALL.txt": package.instructions(VERSION, SHA).encode()}
 
     def make_archive(self, target=None, files=None, directory=None):
         target = target or policy.TARGETS[0]
@@ -228,7 +310,8 @@ class PackageTests(unittest.TestCase):
     def test_tampered_binary_lockfile_identity_and_extra_paths_are_rejected(self):
         for mutation in [lambda files: files.update(naome=b"changed"), lambda files: files.update({"Cargo.lock": b"changed"}),
                          lambda files: files.update({"build.json": files["build.json"].replace(SHA.encode(), b"b" * 40)}),
-                         lambda files: files.update({"../escape": b"outside"})]:
+                         lambda files: files.update({"../escape": b"outside"}),
+                         lambda files: files.update({"INSTALL.txt": b"run before verifying"})]:
             files = self.payload(policy.TARGETS[0])
             mutation(files)
             with tempfile.TemporaryDirectory() as name:
@@ -289,7 +372,7 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(api.mutations[-1][0:2], ("PATCH", "/releases/1"))
         before = list(api.mutations)
         with self.assertRaises(ValueError):
-            policy.check_publication(api, policy.identity(VERSION), SHA, resume_marker=f"<!-- naome-release:42:{SHA} -->")
+            policy.check_publication(api, policy.identity(VERSION), SHA, "42", resume_marker=f"<!-- naome-release:42:{SHA} -->")
         self.assertEqual(api.mutations, before)
 
     def test_failed_upload_can_resume_only_the_owned_draft_without_replacement(self):
@@ -306,7 +389,7 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(len(api.assets), 1)
             uploaded = copy.deepcopy(api.assets[0])
             with self.assertRaises(ValueError):
-                policy.check_publication(api, policy.identity(VERSION), SHA, resume_marker="foreign run")
+                policy.check_publication(api, policy.identity(VERSION), SHA, "42", resume_marker="foreign run")
             api.fail_upload = None
             # Keep the summary outside the immutable asset directory.
             with tempfile.TemporaryDirectory() as name, patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(Path(name) / "summary")}):
@@ -315,6 +398,16 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(len(api.releases), 1)
             self.assertEqual(len(api.assets), 6)
             self.assertFalse(api.releases[0]["draft"])
+
+    def test_failed_full_matrix_cannot_create_a_draft_upload_or_tag(self):
+        self.complete_set()
+        api = Repository()
+        api.jobs[0]["conclusion"] = "failure"
+        with patch.object(release, "publication_context", return_value=(SHA, "42")), \
+                patch.object(release, "GitHub", return_value=api), patch.object(release, "attestations"), \
+                patch.object(release, "require_current_audit"), self.assertRaises(ValueError):
+            release.publish(self.directory, VERSION)
+        self.assertEqual(api.mutations, [])
 
     def test_vulnerable_suppressed_filtered_or_foreign_lockfile_audit_cannot_publish(self):
         self.complete_set()
