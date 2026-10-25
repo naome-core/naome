@@ -41,12 +41,41 @@ def archive(path, name, files, epoch):
                 tar.addfile(entry, io.BytesIO(data))
 
 
-def smoke(binary, version):
+def lifecycle(run, directory):
+    directory.mkdir(mode=0o700)
+    write_json(directory / "config.json", {"directory": str(directory), "listen": "/ip4/127.0.0.1/tcp/0", "peers": [],
+                                          "producer_sources": [], "discovery": {"mdns": False, "dht": False}})
+    def command(name, *arguments):
+        return json.loads(run("--json", name, *arguments))
+    try:
+        if not command("start")["running"]:
+            raise ValueError("extracted node failed to start")
+        status = command("status")
+        if not status["running"] or status["computation"] != "running":
+            raise ValueError("extracted node is not ready for computation")
+        if command("interest", "Release smoke test")["interest"] != "Release smoke test":
+            raise ValueError("extracted node did not persist owner interest")
+        paused = command("pause")
+        if not paused["running"] or paused["computation"] not in ("pausing", "paused"):
+            raise ValueError("extracted node lost networking while pausing computation")
+        resumed = command("resume")
+        if not resumed["running"] or resumed["computation"] != "running":
+            raise ValueError("extracted node failed to resume computation")
+    finally:
+        stopped = command("stop")
+        if stopped["running"] or stopped["computation"] != "stopped":
+            raise ValueError("extracted node shutdown was not confirmed")
+    persisted = command("status")
+    if persisted["running"] or persisted["interest"] != "Release smoke test":
+        raise ValueError("extracted node did not retain interest across daemon shutdown")
+
+
+def smoke(binary, version, *, start=False):
     with tempfile.TemporaryDirectory(prefix="naome-release-smoke-") as directory:
         node = Path(directory) / "uncreated-node"
         environment = {**os.environ, "NAOME_NODE_DIR": str(node)}
         def run(*arguments):
-            return subprocess.check_output([str(binary.resolve()), *arguments], env=environment, text=True, timeout=30).strip()
+            return subprocess.check_output([str(binary.resolve()), *arguments], env=environment, text=True, timeout=60).strip()
         if run("--version") != f"naome {version}" or "naome start" not in run("--help"):
             raise ValueError("packaged executable has incorrect version/help")
         expected = {"running": False, "computation": "stopped", "accepted_proofs": 0, "interest": ""}
@@ -56,6 +85,8 @@ def smoke(binary, version):
             rejected = subprocess.run([str(binary.resolve()), command], env=environment, capture_output=True, timeout=30)
             if rejected.returncode == 0 or node.exists():
                 raise ValueError("packaged product accepts an invalid command or creates state for a stopped node")
+        if start:
+            lifecycle(run, node)
 
 
 def build_package(target, version, output, notices, sbom, system_licenses):
@@ -124,7 +155,7 @@ def verify_package(path, version, sha, *, execute=False):
             binary = Path(directory) / "naome"
             binary.write_bytes(files["naome"])
             binary.chmod(0o755)
-            smoke(binary, version)
+            smoke(binary, version, start=True)
     return build
 
 

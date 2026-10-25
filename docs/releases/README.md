@@ -91,8 +91,11 @@ and macOS 15 ARM64, pinned Rust and locked dependencies, no build-cache restore,
 no developer features, and only the `naome` binary. It verifies static Linux
 linkage and the macOS architecture/ad-hoc signature. Both original and extracted
 executables pass version/help/stopped-status smoke checks without creating node
-state. The full matrix qualifies the source; package smoke checks additionally
-exercise the distributed musl binary.
+state. The extracted binary additionally starts a real node with isolated
+temporary state, a loopback listener, and discovery disabled; it checks status,
+interest persistence, pause/resume and confirmed shutdown. Ordinary resource
+budgets remain in force. The full matrix qualifies the source; package smoke
+checks additionally exercise the distributed musl binary.
 
 Pinned `cargo-cyclonedx` generates a target-specific CycloneDX 1.5 SBOM, and
 `cargo-about` gathers dependency license texts under an explicit license policy.

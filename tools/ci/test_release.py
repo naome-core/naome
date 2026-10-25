@@ -216,7 +216,10 @@ class PackageTests(unittest.TestCase):
         path.unlink()
         second = self.make_archive()
         self.assertEqual(first, second.read_bytes())
-        build = package.verify_package(second, VERSION, SHA, execute=True)
+        # This unit fixture exercises extraction and metadata routing; both
+        # native CI jobs run the lifecycle against the actual compiled node.
+        with patch.object(package, "lifecycle"):
+            build = package.verify_package(second, VERSION, SHA, execute=True)
         self.assertEqual(build["target"], "x86_64-unknown-linux-musl")
         with tarfile.open(second) as tar:
             for entry in tar.getmembers():
@@ -328,6 +331,17 @@ class PackageTests(unittest.TestCase):
             mutate(broken)
             with self.assertRaises(ValueError):
                 package.verify_audit(broken)
+
+    def test_lifecycle_stops_its_node_after_a_failed_pause_check(self):
+        operations = []
+        def run(_json, command, *_arguments):
+            operations.append(command)
+            status = {"running": command != "stop", "computation": "stopped" if command == "stop" else "running", "interest": "Release smoke test"}
+            # A defective pause must be detected and still request shutdown.
+            return json.dumps(status)
+        with self.assertRaisesRegex(ValueError, "pausing computation"):
+            package.lifecycle(run, self.directory / "node")
+        self.assertEqual(operations, ["start", "status", "interest", "pause", "stop"])
 
 
 if __name__ == "__main__":
