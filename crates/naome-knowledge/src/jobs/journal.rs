@@ -2,8 +2,8 @@ use super::*;
 use crate::storage::{marker_valid, research_directory, write_marker};
 use std::{
     collections::BTreeSet,
-    fs::{File, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    fs::File,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -335,7 +335,7 @@ impl Disk {
         journal.validate(settings)?;
         for (index, expected) in journal.slots.iter().enumerate() {
             let file = slot_file(&root, index, false)?;
-            let metadata = file.metadata().map_err(|e| e.to_string())?;
+            let metadata = file.file().metadata().map_err(|e| e.to_string())?;
             if (metadata.dev(), metadata.ino()) != *expected {
                 return Err("research physical slot identity differs".into());
             }
@@ -750,17 +750,17 @@ impl Disk {
         let root = self.path.parent().ok_or("research slot parent absent")?;
         for index in range {
             let file = slot_file(root, index, false)?;
-            let metadata = file.metadata().map_err(|e| e.to_string())?;
+            let metadata = file.file().metadata().map_err(|e| e.to_string())?;
             if self.slots.get(index) != Some(&(metadata.dev(), metadata.ino())) {
                 return Err("research physical slot identity differs".into());
             }
             match file.try_lock() {
                 Ok(()) => {
-                    file.sync_all().map_err(|e| e.to_string())?;
+                    file.file().sync_all().map_err(|e| e.to_string())?;
                     File::open(root)
                         .and_then(|f| f.sync_all())
                         .map_err(|e| e.to_string())?;
-                    return Ok(Some(file));
+                    return Ok(Some(file.into_file()));
                 }
                 Err(std::fs::TryLockError::WouldBlock) => {}
                 Err(error) => return Err(format!("research slot lock: {error}")),
@@ -913,32 +913,22 @@ fn validate_account(key: &str, account: &Account, _settings: Settings) -> Result
     Ok(())
 }
 
-fn slot_file(root: &Path, index: usize, create: bool) -> Result<File, String> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(create)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
-        .open(root.join(format!("slot-{index}.lock")))
-        .map_err(|e| format!("research slot-{index} unavailable: {e}"))?;
-    let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-    {
-        return Err("research slot must be one owned regular file".into());
-    }
-    Ok(file)
+fn slot_file(root: &Path, index: usize, create: bool) -> Result<crate::storage::LockFile, String> {
+    let path = root.join(format!("slot-{index}.lock"));
+    (if create {
+        crate::storage::LockFile::open(&path)
+    } else {
+        crate::storage::LockFile::existing(&path)
+    })
+    .map_err(|e| format!("research slot-{index} unavailable: {e}"))
 }
 
 fn install_slots(root: &Path) -> Result<Vec<(u64, u64)>, String> {
     let mut slots = Vec::new();
     for index in 0..crate::resources::limits().workers.iter().sum() {
         let file = slot_file(root, index, true)?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        let metadata = file.metadata().map_err(|e| e.to_string())?;
+        file.file().sync_all().map_err(|e| e.to_string())?;
+        let metadata = file.file().metadata().map_err(|e| e.to_string())?;
         slots.push((metadata.dev(), metadata.ino()));
     }
     File::open(root)

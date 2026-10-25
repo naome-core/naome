@@ -1,9 +1,6 @@
 //! Incremental consumption of a durable untrusted provider stream.
 use super::*;
-use crate::{
-    graph::program::{PreparedProgram, ProgramBudget},
-    proof_work::Work,
-};
+use crate::{graph::program::PreparedProgram, proof_work::Work, resources::adaptive::Observer};
 use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command, Prefix};
 
 pub(super) struct Generated {
@@ -14,7 +11,7 @@ pub(super) struct Generated {
     pending: Option<oneshot::Receiver<Result<Vec<Command>, String>>>,
     work: Option<Work>,
     checked: Option<PreparedProgram>,
-    budget: ProgramBudget,
+    budget: Observer,
 }
 impl Generated {
     pub(super) fn new(job: u64, units: u32) -> Self {
@@ -26,7 +23,7 @@ impl Generated {
             pending: None,
             work: None,
             checked: None,
-            budget: ProgramBudget::default(),
+            budget: Observer::default(),
         }
     }
     pub(super) fn restrict_cache(&mut self, graph: &Graph) -> Result<(), crate::Error> {

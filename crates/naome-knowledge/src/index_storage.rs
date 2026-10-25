@@ -21,7 +21,7 @@ pub(crate) struct IndexStorage {
     identity: (u64, u64),
     version: i64,
     error: Mutex<Option<String>>,
-    _lease: Arc<fs::File>,
+    _lease: Arc<crate::storage::LockFile>,
     label: String,
     mirror: Mutex<Option<Arc<Self>>>,
 }
@@ -29,16 +29,7 @@ impl IndexStorage {
     pub(crate) fn open(directory: &Path, label: &str) -> Result<Arc<Self>, String> {
         let root = crate::storage::research_directory(directory)?;
         let lease_path = root.join(format!(".disposable-{label}.lock"));
-        let lease = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-            .open(&lease_path)
-            .map_err(|e| e.to_string())?;
-        owned(&lease_path)?;
+        let lease = crate::storage::LockFile::open(&lease_path).map_err(|e| e.to_string())?;
         lease
             .try_lock()
             .map_err(|_| "local question index is already owned")?;
@@ -56,7 +47,11 @@ impl IndexStorage {
         }
         Self::fresh(&root, label, Arc::new(lease))
     }
-    fn fresh(root: &Path, label: &str, lease: Arc<fs::File>) -> Result<Arc<Self>, String> {
+    fn fresh(
+        root: &Path,
+        label: &str,
+        lease: Arc<crate::storage::LockFile>,
+    ) -> Result<Arc<Self>, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let prefix = format!(".disposable-{label}-");
         let sequence = NEXT

@@ -779,14 +779,8 @@ fn directory() -> Result<PathBuf, String> {
     })
 }
 
-async fn operation_lock(directory: &Path) -> Result<File, String> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(directory.join("lifecycle.lock"))
+async fn operation_lock(directory: &Path) -> Result<crate::storage::LockFile, String> {
+    let file = crate::storage::LockFile::open(&directory.join("lifecycle.lock"))
         .map_err(|error| error.to_string())?;
     let deadline = Instant::now() + crate::resources::limits().lifecycle_timeout;
     loop {

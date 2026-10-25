@@ -41,6 +41,14 @@ owner preferences, control endpoints and logs are created with owner-only file
 permissions. Local files are not application-encrypted; disk encryption and
 protection of the operating-system account remain separate controls.
 
+Receiver-selected certificate, program and helper transfers share one short
+metadata grant bound to the peer, selected root, expiry and revocation capability.
+Expired or revoked grants cannot request or stage more input, including late
+in-flight replies. Fresh matching metadata can resume the retained input prefix;
+it does not renew the original interest decision or grant mathematical validity.
+Publication checks the grant's deadline and revocation again at its durable
+commit boundary.
+
 ## Untrusted routing and resource pressure
 
 Untrusted routing hints cannot authorize loopback, private, link-local,

@@ -22,6 +22,7 @@ impl Governor {
         selection: Selection,
         sample: observation::Sample,
         capacity: u64,
+        now: Instant,
     ) -> Result<Snapshot, String> {
         self.update(
             selection,
@@ -29,7 +30,7 @@ impl Governor {
             capacity,
             feedback::statistics(),
             sample.pressure,
-            Instant::now(),
+            now,
         )
     }
 

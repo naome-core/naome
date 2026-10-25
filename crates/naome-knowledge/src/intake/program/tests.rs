@@ -343,7 +343,7 @@ async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph()
     let completed = questions.completed().await;
     questions.finish(&graph, completed);
     intake.programs.active.as_mut().unwrap().budget =
-        ProgramBudget::fixed_for_test(crate::resources::tests::snapshot(true));
+        Observer::fixed_for_test(crate::resources::tests::snapshot(true));
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
         Progress::Waiting
@@ -485,3 +485,5 @@ async fn cited_program_and_parent_commit_together_and_final_decline_publishes_ne
 }
 
 mod composition;
+
+mod grants;

@@ -43,12 +43,12 @@ pub(crate) struct Store {
     _lock: DirectoryLock,
 }
 
-struct DirectoryLock(File);
+struct DirectoryLock(crate::storage::LockFile);
 impl Drop for DirectoryLock {
     fn drop(&mut self) {
         // A child spawning concurrently can temporarily inherit this open-file
         // description. Closing only our descriptor would leave its lock alive.
-        let _ = self.0.unlock();
+        let _ = self.0.file().unlock();
     }
 }
 
@@ -74,13 +74,8 @@ impl Store {
         crate::storage::private_directory(directory)?;
         let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
         let directory = directory.as_path();
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(directory.join("knowledge.lock"))
-            .map_err(|error| error.to_string())?;
+        let lock = crate::storage::LockFile::open(&directory.join("knowledge.lock"))
+            .map_err(crate::Error::from)?;
         lock.try_lock()
             .map_err(|error| format!("knowledge directory already owned: {error}"))?;
         let lock = DirectoryLock(lock);

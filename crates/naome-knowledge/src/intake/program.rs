@@ -7,9 +7,10 @@ mod helpers;
 #[cfg(test)]
 mod tests;
 use crate::{
-    graph::program::{PreparedProgram, ProgramAdmission, ProgramBudget, ProgramCheck},
+    graph::program::{PreparedProgram, ProgramAdmission, ProgramCheck},
     object::ProgramMetadata,
     proof_work::CheckedWork,
+    resources::adaptive::Observer,
 };
 pub(super) use helpers::Helpers;
 use naome_proof::program::{CHUNK_RECORDS, Chunk};
@@ -34,18 +35,16 @@ pub(super) struct Programs {
     declined: BTreeMap<ProofId, Instant>,
 }
 struct Offer {
-    peer: PeerId,
     metadata: ProgramMetadata,
-    grant: Option<crate::publication::PeerGrant>,
+    transfer: TransferGrant,
 }
 struct Root {
     offer: Offer,
     authority: QuestionAuthority,
     stage: Stage,
-    described: Instant,
     refresh: bool,
     allowed: bool,
-    budget: ProgramBudget,
+    budget: Observer,
     helpers: Helpers,
     scanned: u64,
     input_complete: bool,
@@ -63,6 +62,11 @@ enum Stage {
     Fetch,
     Check(Box<ProgramCheck>),
     Prepare(Box<PreparedProgram>),
+}
+impl Root {
+    fn fetching(&self) -> bool {
+        self.allowed && !self.refresh && matches!(self.stage, Stage::Fetch)
+    }
 }
 impl QuestionAuthority {
     fn refresh<F, Fut>(
@@ -195,9 +199,7 @@ impl Programs {
             if root.offer.metadata.manifest != metadata.manifest {
                 return Err("program manifest changed during transfer".into());
             }
-            root.offer.peer = peer;
-            root.offer.grant = grant;
-            root.described = Instant::now();
+            root.offer.transfer = TransferGrant::new(peer, id, grant);
             root.refresh = false;
             return Ok("metadata_refreshed");
         }
@@ -219,9 +221,8 @@ impl Programs {
             return Ok("queued_duplicate");
         }
         self.queue.push_back(Offer {
-            peer,
             metadata,
-            grant,
+            transfer: TransferGrant::new(peer, id, grant),
         });
         Ok("queued")
     }
@@ -229,22 +230,18 @@ impl Programs {
         let Some(root) = &self.active else {
             return Ok(None);
         };
-        if !root.allowed
-            || root.refresh
-            || !matches!(root.stage, Stage::Fetch)
-            || root
-                .offer
-                .grant
-                .as_ref()
-                .is_some_and(|grant| grant.check().is_err())
-            || Instant::now().duration_since(root.described)
-                >= crate::resources::limits().root_timeout
-        {
+        if !root.fetching() || !root.offer.transfer.live(Instant::now()) {
             return Ok(None);
         }
         let id = root.offer.metadata.manifest.proof_id();
         if let Some((helper, start, records)) = root.helpers.request(graph)? {
-            return Ok(Some((root.offer.peer, id, helper, start, records)));
+            return Ok(Some((
+                root.offer.transfer.peer(),
+                id,
+                helper,
+                start,
+                records,
+            )));
         }
         let progress = graph
             .ownership()
@@ -253,22 +250,24 @@ impl Programs {
             return Ok(None);
         }
         let records = transfer_records();
-        Ok((records > 0).then_some((root.offer.peer, id, id, progress.commands, records)))
+        Ok((records > 0).then_some((
+            root.offer.transfer.peer(),
+            id,
+            id,
+            progress.commands,
+            records,
+        )))
     }
     fn refresh_needed(&self) -> Vec<(PeerId, ProofId)> {
         self.active
             .as_ref()
-            .filter(|root| {
-                root.refresh
-                    || root
-                        .offer
-                        .grant
-                        .as_ref()
-                        .is_some_and(|grant| grant.check().is_err())
-                    || Instant::now().duration_since(root.described)
-                        >= crate::resources::limits().root_timeout / 2
+            .filter(|root| root.refresh || root.offer.transfer.refresh_due(Instant::now()))
+            .map(|root| {
+                vec![(
+                    root.offer.transfer.peer(),
+                    root.offer.metadata.manifest.proof_id(),
+                )]
             })
-            .map(|root| vec![(root.offer.peer, root.offer.metadata.manifest.proof_id())])
             .unwrap_or_default()
     }
     fn payload(
@@ -279,19 +278,10 @@ impl Programs {
         graph: &Graph,
     ) -> Result<(), crate::Error> {
         let root = self.active.as_mut().ok_or("unrequested program payload")?;
-        if root.offer.peer != peer
-            || root.offer.metadata.manifest.proof_id() != id
-            || !root.allowed
-            || root.refresh
-            || !matches!(root.stage, Stage::Fetch)
-            || root
-                .offer
-                .grant
-                .as_ref()
-                .is_some_and(|grant| grant.check().is_err())
-        {
+        if !root.fetching() {
             return Err("unrequested program payload".into());
         }
+        root.offer.transfer.authorize(peer, id, Instant::now())?;
         let progress = graph
             .ownership()
             .append_program(&root.offer.metadata.manifest, &chunk)?;
@@ -300,7 +290,7 @@ impl Programs {
     }
     pub(super) fn failed(&mut self, peer: PeerId, id: Option<ProofId>) {
         if let Some(root) = &mut self.active
-            && root.offer.peer == peer
+            && root.offer.transfer.peer() == peer
             && id.is_none_or(|id| {
                 root.offer.metadata.manifest.proof_id() == id
                     || root.helpers.contains(id)
@@ -310,7 +300,8 @@ impl Programs {
             root.refresh = true;
         }
         self.queue.retain(|offer| {
-            offer.peer != peer || id.is_some_and(|id| offer.metadata.manifest.proof_id() != id)
+            offer.transfer.peer() != peer
+                || id.is_some_and(|id| offer.metadata.manifest.proof_id() != id)
         });
     }
     pub(super) fn advance<F, Fut>(
@@ -327,6 +318,9 @@ impl Programs {
             && let Some(offer) = self.queue.pop_front()
         {
             let id = offer.metadata.manifest.proof_id();
+            if !offer.transfer.live(Instant::now()) {
+                return Progress::Skipped(id, "queued program metadata expired".into());
+            }
             let authority = (|| -> Result<QuestionAuthority, crate::Error> {
                 let question = offer
                     .metadata
@@ -347,10 +341,9 @@ impl Programs {
                         offer,
                         authority,
                         stage: Stage::Start,
-                        described: Instant::now(),
                         refresh: false,
                         allowed: false,
-                        budget: ProgramBudget::default(),
+                        budget: Observer::default(),
                         helpers: Helpers::default(),
                         scanned: 0,
                         input_complete: false,
@@ -469,22 +462,14 @@ impl Programs {
                     if !complete || !was_ready {
                         return Ok(None);
                     }
-                    if root.refresh
-                        || Instant::now().duration_since(root.described)
-                            >= crate::resources::limits().root_timeout
-                        || root
-                            .offer
-                            .grant
-                            .as_ref()
-                            .is_some_and(|grant| grant.check().is_err())
-                    {
+                    if root.refresh || !root.offer.transfer.live(Instant::now()) {
                         return Ok(None);
                     }
                     let batch = prepared.take_batch().ok_or("program batch absent")?;
                     // The transferred batch owns the prefix. If preparation or
                     // publication defers, rebuild it from the checked helpers.
                     root.helpers.invalidate_prefix();
-                    let deadline = Instant::now() + crate::resources::limits().root_timeout;
+                    let deadline = root.offer.transfer.deadline();
                     let assessment = root
                         .authority
                         .assessment
@@ -497,7 +482,7 @@ impl Programs {
                         id,
                         batch,
                         delta,
-                        root.offer.grant.clone(),
+                        root.offer.transfer.capability(),
                         deadline,
                     )?;
                     return Ok(Some(admitted));
@@ -557,18 +542,12 @@ impl Intake {
     ) -> Result<Option<ProgramRequest>, crate::Error> {
         if let Some(root) = &self.active
             && !root.helpers.is_empty()
-            && root
-                .description
-                .grant
-                .as_ref()
-                .is_none_or(|grant| grant.check().is_ok())
-            && Instant::now().duration_since(root.description.created)
-                < crate::resources::limits().root_timeout
+            && root.description.transfer.live(Instant::now())
             && let Some((id, start, records)) = root.helpers.request(graph)?
         {
             return Ok(Some((
-                root.description.peer,
-                root.description.id,
+                root.description.transfer.peer(),
+                root.description.transfer.root(),
                 id,
                 start,
                 records,
@@ -594,9 +573,7 @@ impl Intake {
                 return Err("unrequested cited program payload".into());
             }
             let root = self.active.as_mut().ok_or("cited program parent missing")?;
-            if let Some(grant) = &root.description.grant {
-                grant.check()?;
-            }
+            root.description.transfer.check(Instant::now())?;
             return root.helpers.payload(id, chunk, graph);
         }
         self.programs.payload(peer, id, chunk, graph)
