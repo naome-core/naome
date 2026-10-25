@@ -18,6 +18,8 @@ fn disk_pressure_at_work_creation_and_append_retains_the_completed_provider_cand
         return;
     }
 
+    // This case tests disk deferral, not the host's current pressure state.
+    crate::resources::tests::budget(false);
     let graph = Graph::default();
     let owner = jobs::tests::Manual::new();
     let question = CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();

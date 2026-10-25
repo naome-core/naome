@@ -1,9 +1,9 @@
 use super::{
-    DiskArtifactState, StatementId, decode_root, decode_statement_record, formula_address, maps,
-    statement_id,
+    DiskArtifactState, MapKind, StatementId, decode_root, decode_statement_record, formula_address,
+    maps, statement_id,
 };
 use crate::context::{ContextError, ContextStorage};
-use crate::state::disk_map::{DiskMap, MAX_NODE_BYTES, Walk};
+use crate::state::disk_map::{DiskMap, Lookup, MAX_NODE_BYTES, Walk};
 use std::sync::Arc;
 
 /// Limits actual authenticated record visits and raw bytes read in one step.
@@ -38,6 +38,37 @@ impl DiskCopyProgress {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Phase {
+    Map(MapKind),
+    Formulas,
+    Bucket(crate::context::BucketKind),
+    Complete,
+}
+impl Phase {
+    fn next(self) -> Self {
+        use crate::context::BucketKind;
+        match self {
+            Self::Map(kind) => kind.next().map_or(Self::Formulas, Self::Map),
+            Self::Formulas => Self::Bucket(BucketKind::Outgoing),
+            Self::Bucket(BucketKind::Outgoing) => Self::Bucket(BucketKind::Deductions),
+            Self::Bucket(BucketKind::Deductions) => Self::Bucket(BucketKind::Instances),
+            Self::Bucket(BucketKind::Instances) | Self::Complete => Self::Complete,
+        }
+    }
+    fn map(self, source: &DiskArtifactState) -> &DiskMap {
+        use crate::context::BucketKind;
+        match self {
+            Self::Map(kind) => kind.map(source),
+            Self::Formulas => &source.statements,
+            Self::Bucket(BucketKind::Outgoing) => &source.outgoing,
+            Self::Bucket(BucketKind::Deductions) => &source.deductions,
+            Self::Bucket(BucketKind::Instances) => &source.instances,
+            Self::Complete => unreachable!("completed copy has no next map"),
+        }
+    }
+}
+
 /// A live checked context's authenticated, resumable copy. The cursor holds
 /// two depth-bounded DFS stacks at most, and one pending formula descriptor.
 /// No persisted root or caller-supplied address set can complete this cursor.
@@ -45,10 +76,11 @@ impl DiskCopyProgress {
 pub struct DiskArtifactCopy {
     source: DiskArtifactState,
     target: Arc<dyn ContextStorage>,
-    phase: usize,
+    phase: Phase,
     walk: Option<Walk>,
     nested: Option<Walk>,
     formula: Option<(StatementId, [u8; 32], usize)>,
+    membership: Option<Lookup>,
     failed: bool,
 }
 
@@ -61,10 +93,11 @@ impl DiskArtifactState {
         DiskArtifactCopy {
             source: self.clone(),
             target,
-            phase: 0,
+            phase: Phase::Map(MapKind::Proofs),
             walk: None,
             nested: None,
             formula: None,
+            membership: None,
             failed: false,
         }
     }
@@ -72,7 +105,11 @@ impl DiskArtifactState {
 
 impl DiskArtifactCopy {
     pub fn complete(&self) -> bool {
-        !self.failed && self.phase == 13 && self.nested.is_none() && self.formula.is_none()
+        !self.failed
+            && matches!(self.phase, Phase::Complete)
+            && self.nested.is_none()
+            && self.formula.is_none()
+            && self.membership.is_none()
     }
 
     /// Yield after a bounded number of actual reads, including all nine maps,
@@ -95,6 +132,25 @@ impl DiskArtifactCopy {
         }
         let mut work = DiskCopyProgress::default();
         loop {
+            if let Some(lookup) = &mut self.membership {
+                if lookup.complete() {
+                    if lookup.value()?.is_none() {
+                        return Err(ContextError::Corrupt);
+                    }
+                    self.membership = None;
+                    continue;
+                }
+                if !work.fits(budget, MAX_NODE_BYTES) {
+                    break;
+                }
+                let bytes = self
+                    .source
+                    .program_nodes
+                    .advance_lookup(lookup)?
+                    .ok_or(ContextError::Corrupt)?;
+                work.node(bytes);
+                continue;
+            }
             if let Some((id, address, length)) = self.formula {
                 if length > budget.bytes {
                     return Err(ContextError::Limit);
@@ -128,7 +184,7 @@ impl DiskArtifactCopy {
                 work.node(visit.bytes.len());
                 continue;
             }
-            if self.phase == 13 {
+            if matches!(self.phase, Phase::Complete) {
                 break;
             }
             if self.walk.is_none() {
@@ -137,30 +193,29 @@ impl DiskArtifactCopy {
             let walk = self.walk.as_mut().expect("active copy phase");
             if walk.complete() {
                 self.walk = None;
-                self.phase += 1;
+                self.phase = self.phase.next();
                 continue;
             }
             if !work.fits(budget, MAX_NODE_BYTES) {
                 break;
             }
             let visit = walk.step()?.ok_or(ContextError::Corrupt)?;
-            if self.phase < 9 {
+            if matches!(self.phase, Phase::Map(_)) {
                 self.target.write(visit.address, &visit.bytes)?;
             }
             work.node(visit.bytes.len());
             if let Some((key, record)) = visit.entry {
-                if self.phase == 9 {
+                if matches!(self.phase, Phase::Formulas) {
                     let (address, length) = decode_statement_record(&record)?;
                     if length == 0 {
-                        if naome_proof::program::graph_statement_id(address).as_bytes() != &key
-                            || !self.source.program_nodes.contains_key(&address)?
-                        {
+                        if naome_proof::program::graph_statement_id(address).as_bytes() != &key {
                             return Err(ContextError::Corrupt);
                         }
+                        self.membership = Some(self.source.program_nodes.lookup(address));
                     } else {
                         self.formula = Some((StatementId::from_bytes(key), address, length));
                     }
-                } else if self.phase > 9 {
+                } else if matches!(self.phase, Phase::Bucket(_)) {
                     let root = decode_root(Some(&record))?;
                     self.nested = Some(DiskMap::from_root(self.phase_map().storage(), root).walk());
                 }
@@ -171,14 +226,7 @@ impl DiskArtifactCopy {
     }
 
     fn phase_map(&self) -> &DiskMap {
-        match self.phase {
-            0..=8 => maps(&self.source)[self.phase],
-            9 => &self.source.statements,
-            10 => &self.source.outgoing,
-            11 => &self.source.deductions,
-            12 => &self.source.instances,
-            _ => unreachable!("completed copy has no next map"),
-        }
+        self.phase.map(&self.source)
     }
 
     /// Consume a fully exhausted cursor and bind only roots of an already

@@ -32,9 +32,17 @@ fn missing_check_feedback_preserves_configured_work_cadence() {
 
 #[test]
 fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {
-    let capacity = crate::resources::ResourceProfile::default()
-        .resolve()
-        .unwrap();
+    const TEST: &str = "resources::operating::tests::smaller_live_budgets_reduce_work_without_redefining_formats_or_custody";
+    if std::env::var_os("NAOME_OPERATING_LIMITS_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_OPERATING_LIMITS_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+    let capacity = crate::resources::limits().clone();
     let budget = Budget {
         memory_bytes: 32 * 1024 * 1024,
         concurrency: 1,
@@ -44,19 +52,39 @@ fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {
         yield_ms: 0,
         paused: None,
     };
-    let work = derive(&capacity, &budget);
+    let mut snapshot = super::super::adaptive::Snapshot::derive(
+        super::super::adaptive::Selection::default(),
+        super::super::adaptive::Observed {
+            memory_total: 8 << 30,
+            memory_limit: 8 << 30,
+            memory_available: 6 << 30,
+            process_rss: 16 << 20,
+            cpu_millis: 8000,
+            disk_available: 1 << 30,
+            ..Default::default()
+        },
+        capacity.memory_bytes as u64,
+    )
+    .unwrap();
+    snapshot.budget = budget;
+    super::super::adaptive::publish(snapshot);
+    let work = super::super::active_limits();
+    let installed = super::super::limits();
     assert_eq!(work.pending_page, 2);
     assert_eq!(work.compaction_records, 2);
     assert_eq!(work.solving_jobs, 1);
     assert!(work.checked_cache_bytes < capacity.checked_cache_bytes);
-    assert_eq!(work.proof_bytes, capacity.proof_bytes);
-    assert_eq!(work.closure_objects, capacity.closure_objects);
-    assert_eq!(work.assessment_operations, capacity.assessment_operations);
-    assert_eq!(work.job_work_units, capacity.job_work_units);
-    assert_eq!(work.job_horizon, capacity.job_horizon);
-    assert_eq!(work.replay_guard_bytes, capacity.replay_guard_bytes);
-    assert_eq!(work.request_burst, capacity.request_burst);
-    assert_eq!(work.workers, capacity.workers);
-    assert_eq!(work.identify_protocols, capacity.identify_protocols);
-    assert_eq!(work.identify_addresses, capacity.identify_addresses);
+    assert_eq!(installed.proof_bytes, capacity.proof_bytes);
+    assert_eq!(installed.closure_objects, capacity.closure_objects);
+    assert_eq!(
+        installed.assessment_operations,
+        capacity.assessment_operations
+    );
+    assert_eq!(installed.job_work_units, capacity.job_work_units);
+    assert_eq!(installed.job_horizon, capacity.job_horizon);
+    assert_eq!(installed.replay_guard_bytes, capacity.replay_guard_bytes);
+    assert_eq!(installed.request_burst, capacity.request_burst);
+    assert_eq!(installed.workers, capacity.workers);
+    assert_eq!(installed.identify_protocols, capacity.identify_protocols);
+    assert_eq!(installed.identify_addresses, capacity.identify_addresses);
 }

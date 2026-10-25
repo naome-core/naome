@@ -245,7 +245,7 @@ struct Live {
     // Observed RSS already includes existing charged allocations. Retain this
     // baseline so the live headroom does not charge those bytes a second time.
     charged: usize,
-    operating: Arc<super::Limits>,
+    operating: Arc<super::OperatingLimits>,
 }
 static LIVE: OnceLock<RwLock<Option<Live>>> = OnceLock::new();
 static CHANGED: OnceLock<tokio::sync::watch::Sender<()>> = OnceLock::new();
@@ -389,14 +389,14 @@ pub fn sample(directory: &Path) -> Result<Observed, String> {
     observation::sample(directory)
 }
 
-pub(crate) fn operating_limits() -> Arc<super::Limits> {
-    static CAPACITY: OnceLock<Arc<super::Limits>> = OnceLock::new();
+pub(crate) fn operating_limits() -> Arc<super::OperatingLimits> {
+    static CAPACITY: OnceLock<Arc<super::OperatingLimits>> = OnceLock::new();
     LIVE.get()
         .and_then(|live| live.read().ok())
         .and_then(|live| live.as_ref().map(|live| live.operating.clone()))
         .unwrap_or_else(|| {
             CAPACITY
-                .get_or_init(|| Arc::new(super::limits().clone()))
+                .get_or_init(|| Arc::new(super::OperatingLimits::at_capacity(super::limits())))
                 .clone()
         })
 }

@@ -319,6 +319,7 @@ async fn receive(
             adaptive::current().map(|snapshot| snapshot.budget),
             intake.programs.active.as_ref().map(|root| (
                 match &root.stage {
+                    Stage::Start => "start",
                     Stage::Fetch => "fetch",
                     Stage::Check(_) => "check",
                     Stage::Prepare(_) => "prepare",

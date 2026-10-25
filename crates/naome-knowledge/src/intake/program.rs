@@ -48,6 +48,7 @@ struct QuestionAuthority {
     pending_final: bool,
 }
 enum Stage {
+    Start,
     Fetch,
     Check(Box<ProgramCheck>),
     Prepare(Box<PreparedProgram>),
@@ -334,7 +335,7 @@ impl Programs {
                     self.active = Some(Root {
                         offer,
                         authority,
-                        stage: Stage::Fetch,
+                        stage: Stage::Start,
                         described: Instant::now(),
                         refresh: false,
                         allowed: false,
@@ -369,7 +370,7 @@ impl Programs {
             match &mut root.stage {
                 Stage::Check(check) => check.restrict_cache(cache)?,
                 Stage::Prepare(prepared) => prepared.restrict_cache(cache)?,
-                Stage::Fetch => {}
+                Stage::Start | Stage::Fetch => {}
             }
             if snapshot.budget.paused.is_some()
                 && !matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready())
@@ -388,16 +389,19 @@ impl Programs {
                     "program closure dependency capacity",
                 ));
             }
-            if !root.helpers.ready() && !matches!(root.stage, Stage::Fetch) {
+            if !root.helpers.ready() && !matches!(root.stage, Stage::Start | Stage::Fetch) {
                 return Ok(None);
             }
             match &mut root.stage {
-                Stage::Fetch => {
+                Stage::Start => {
                     let progress = graph
                         .ownership()
                         .start_program(&root.offer.metadata.manifest)?;
                     root.input_complete =
                         progress.commands == root.offer.metadata.manifest.commands;
+                    root.stage = Stage::Fetch;
+                }
+                Stage::Fetch => {
                     if root.input_complete {
                         let (complete, _) = root.helpers.scan_dependencies(
                             &root.offer.metadata.manifest,

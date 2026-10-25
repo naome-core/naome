@@ -47,19 +47,25 @@ impl DiskMap {
     }
 
     pub(crate) fn get(&self, key: &[u8; 32]) -> Result<Option<Vec<u8>>, ContextError> {
-        let Some(root) = self.root else {
-            return Ok(None);
-        };
-        let mut pending = Pending::root(root);
-        loop {
-            match load_node(self.storage.as_ref(), pending)? {
-                Node::Leaf { key: stored, value } => return Ok((stored == *key).then_some(value)),
-                Node::Branch { bit, left, right } => {
-                    let child = if key_bit(key, bit) { right } else { left };
-                    pending = pending.child(child, bit)?;
-                }
-            }
+        let mut lookup = self.lookup(*key);
+        while self.advance_lookup(&mut lookup)?.is_some() {}
+        lookup.into_value()
+    }
+
+    pub(crate) fn lookup(&self, key: [u8; 32]) -> Lookup {
+        Lookup {
+            pending: self.root.map(Pending::root),
+            key,
+            value: None,
+            failed: false,
         }
+    }
+
+    pub(crate) fn advance_lookup(
+        &self,
+        lookup: &mut Lookup,
+    ) -> Result<Option<usize>, ContextError> {
+        lookup.step(self.storage.as_ref())
     }
 
     pub(crate) fn contains_key(&self, key: &[u8; 32]) -> Result<bool, ContextError> {
@@ -85,16 +91,6 @@ impl DiskMap {
             previous_key: after,
             after,
         }
-    }
-
-    /// Copy only nodes reachable from this live authenticated root. The
-    /// traversal stack is bounded independently of the number of entries.
-    pub(crate) fn copy_to(&self, storage: Arc<dyn ContextStorage>) -> Result<Self, ContextError> {
-        let mut walk = self.walk();
-        while let Some(visit) = walk.step()? {
-            storage.write(visit.address, &visit.bytes)?;
-        }
-        Ok(Self::from_root(storage, self.root))
     }
 
     pub(crate) fn walk(&self) -> Walk {
@@ -207,6 +203,55 @@ impl DiskMap {
             root,
             range: node.range(),
         })
+    }
+}
+
+/// An authenticated point lookup with one bounded node read per step. The
+/// key and live root are captured before a caller starts charging its work.
+pub(crate) struct Lookup {
+    pending: Option<Pending>,
+    key: [u8; 32],
+    value: Option<Vec<u8>>,
+    failed: bool,
+}
+impl Lookup {
+    pub(crate) fn complete(&self) -> bool {
+        !self.failed && self.pending.is_none()
+    }
+    pub(crate) fn value(&self) -> Result<Option<&[u8]>, ContextError> {
+        if !self.complete() {
+            return Err(ContextError::Corrupt);
+        }
+        Ok(self.value.as_deref())
+    }
+    fn into_value(self) -> Result<Option<Vec<u8>>, ContextError> {
+        self.value()?;
+        Ok(self.value)
+    }
+    fn step(&mut self, storage: &dyn ContextStorage) -> Result<Option<usize>, ContextError> {
+        if self.failed {
+            return Err(ContextError::Corrupt);
+        }
+        let Some(pending) = self.pending.take() else {
+            return Ok(None);
+        };
+        let result = (|| {
+            let (node, bytes) = load_node_sized(storage, pending)?;
+            match node {
+                Node::Leaf { key, value } => self.value = (key == self.key).then_some(value),
+                Node::Branch { bit, left, right } => {
+                    let child = if key_bit(&self.key, bit) { right } else { left };
+                    self.pending = Some(pending.child(child, bit)?);
+                }
+            }
+            Ok(Some(bytes))
+        })();
+        if let Err(error) = &result {
+            self.failed = true;
+            self.pending = None;
+            storage.record_failure(error);
+        }
+        result
     }
 }
 
@@ -509,6 +554,13 @@ fn load_node(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, Con
 }
 
 fn load_node_inner(storage: &dyn ContextStorage, pending: Pending) -> Result<Node, ContextError> {
+    load_node_sized(storage, pending).map(|(node, _)| node)
+}
+
+fn load_node_sized(
+    storage: &dyn ContextStorage,
+    pending: Pending,
+) -> Result<(Node, usize), ContextError> {
     if pending.depth > 256 {
         return Err(ContextError::Corrupt);
     }
@@ -533,7 +585,7 @@ fn load_node_inner(storage: &dyn ContextStorage, pending: Pending) -> Result<Nod
     {
         return Err(ContextError::Corrupt);
     }
-    Ok(node)
+    Ok((node, bytes.len()))
 }
 
 fn storage_address(bytes: &[u8]) -> [u8; 32] {

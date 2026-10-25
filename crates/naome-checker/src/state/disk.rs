@@ -67,18 +67,38 @@ impl crate::context::ProgramNodes for ProgramNodes {
     }
 }
 
-fn maps(state: &DiskArtifactState) -> [&DiskMap; 9] {
-    [
-        &state.proofs,
-        &state.derivations,
-        &state.statements,
-        &state.artifacts,
-        &state.witnesses,
-        &state.outgoing,
-        &state.deductions,
-        &state.instances,
-        &state.program_nodes,
-    ]
+// This one inventory names every authenticated map for complete copies and
+// selected startup frontiers. Map-specific record semantics stay typed below.
+macro_rules! checked_maps {
+    ($($kind:ident => $field:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum MapKind { $($kind),+ }
+        impl MapKind {
+            const ALL: &'static [Self] = &[$(Self::$kind),+];
+            fn map(self, state: &DiskArtifactState) -> &DiskMap {
+                match self { $(Self::$kind => &state.$field),+ }
+            }
+            fn next(self) -> Option<Self> {
+                let position = Self::ALL.iter().position(|kind| *kind == self)
+                    .expect("complete checked map inventory");
+                Self::ALL.get(position + 1).copied()
+            }
+        }
+        fn maps(state: &DiskArtifactState) -> [&DiskMap; MapKind::ALL.len()] {
+            [$(&state.$field),+]
+        }
+    };
+}
+checked_maps! {
+    Proofs => proofs,
+    Derivations => derivations,
+    Statements => statements,
+    Artifacts => artifacts,
+    Witnesses => witnesses,
+    Outgoing => outgoing,
+    Deductions => deductions,
+    Instances => instances,
+    ProgramNodes => program_nodes,
 }
 
 impl DiskArtifactState {
@@ -150,49 +170,14 @@ impl DiskArtifactState {
     /// authenticated roots and snapshot. This cannot restore a persisted root
     /// or grant validity to new records. Old handles retain their own storage.
     pub fn copy_to(&self, storage: Arc<dyn ContextStorage>) -> Result<Self, ContextError> {
-        self.report((|| {
-            let next = Self {
-                read_cache: self.read_cache,
-                proofs: self.proofs.copy_to(storage.clone())?,
-                derivations: self.derivations.copy_to(storage.clone())?,
-                statements: self.statements.copy_to(storage.clone())?,
-                artifacts: self.artifacts.copy_to(storage.clone())?,
-                witnesses: self.witnesses.copy_to(storage.clone())?,
-                outgoing: self.outgoing.copy_to(storage.clone())?,
-                deductions: self.deductions.copy_to(storage.clone())?,
-                instances: self.instances.copy_to(storage.clone())?,
-                program_nodes: self.program_nodes.copy_to(storage.clone())?,
-            };
-            for entry in self.statements.entries() {
-                let (id, record) = entry?;
-                let id = StatementId::from_bytes(id);
-                let (address, length) = decode_statement_record(&record)?;
-                if length == 0 {
-                    if naome_proof::program::graph_statement_id(address) != id
-                        || !self.program_nodes.contains_key(&address)?
-                    {
-                        return Err(ContextError::Corrupt);
-                    }
-                    continue;
-                }
-                let bytes = self.statements.storage().read(address, length)?;
-                if bytes.len() != length
-                    || formula_address(&bytes) != address
-                    || statement_id(&bytes) != id
-                {
-                    return Err(ContextError::Corrupt);
-                }
-                storage.write(address, &bytes)?;
-            }
-            for index in [&self.outgoing, &self.deductions, &self.instances] {
-                for entry in index.entries() {
-                    let (_, record) = entry?;
-                    let bucket = DiskMap::from_root(index.storage(), decode_root(Some(&record))?);
-                    let _ = bucket.copy_to(storage.clone())?;
-                }
-            }
-            Ok(next)
-        })())
+        let mut copy = self.begin_copy(storage);
+        while !copy.complete() {
+            copy.advance(DiskCopyBudget {
+                records: usize::MAX,
+                bytes: CHECKER_MAX_FORMULA_WORK_BYTES,
+            })?;
+        }
+        copy.finish(self)
     }
 
     /// Aliases coexist only after exact checked identity/conclusion/dependency

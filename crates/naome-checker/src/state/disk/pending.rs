@@ -1,6 +1,6 @@
 //! Enumerate a buffered storage frontier from already checked live roots.
 use super::{
-    DiskArtifactState, decode_root, decode_statement_record, formula_address, maps, statement_id,
+    DiskArtifactState, MapKind, decode_root, decode_statement_record, formula_address, statement_id,
 };
 use crate::{ContextError, StatementId, state::disk_map::DiskMap};
 
@@ -19,13 +19,14 @@ impl DiskArtifactState {
         mut select: impl FnMut([u8; 32]) -> Result<bool, ContextError>,
     ) -> Result<(), ContextError> {
         self.report((|| {
-            for (kind, map) in maps(self).into_iter().enumerate() {
+            for kind in MapKind::ALL {
+                let map = kind.map(self);
                 let mut walk = map.walk();
                 while let Some(visit) = walk.step_selected(&mut select)? {
                     let Some((key, record)) = visit.entry else {
                         continue;
                     };
-                    if kind == 2 {
+                    if matches!(kind, MapKind::Statements) {
                         let (address, length) = decode_statement_record(&record)?;
                         let id = StatementId::from_bytes(key);
                         if length == 0 {
@@ -43,7 +44,10 @@ impl DiskArtifactState {
                                 return Err(ContextError::Corrupt);
                             }
                         }
-                    } else if (5..=7).contains(&kind) {
+                    } else if matches!(
+                        kind,
+                        MapKind::Outgoing | MapKind::Deductions | MapKind::Instances
+                    ) {
                         let mut nested =
                             DiskMap::from_root(map.storage(), decode_root(Some(&record))?).walk();
                         while nested.step_selected(&mut select)?.is_some() {}
