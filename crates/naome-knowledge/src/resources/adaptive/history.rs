@@ -93,13 +93,26 @@ impl Controller {
         if (metadata.dev(), metadata.ino()) != self.identity || version != self.version {
             return Err("resource history changed outside owner".into());
         }
-        let snapshot = self.governor.observe(
-            load(&self.directory)?,
-            sample(&self.directory)?,
-            super::super::limits().memory_bytes as u64,
-        )?;
+        let selection = load(&self.directory)?;
+        let (snapshot, valid) = match sample_node(&self.directory) {
+            Ok(sample) => (
+                self.governor.observe(
+                    selection,
+                    sample,
+                    super::super::limits().memory_bytes as u64,
+                )?,
+                true,
+            ),
+            Err(error) => (self.governor.unavailable(selection).ok_or(error)?, false),
+        };
         self.governor.sampled(sampled.elapsed());
-        self.next = Instant::now() + self.governor.interval();
+        let interval = self.governor.interval();
+        self.next = Instant::now()
+            + if valid {
+                interval
+            } else {
+                interval.min(std::time::Duration::from_secs(1))
+            };
         let changed = self.last.as_ref().is_none_or(|last| {
             last.selection != snapshot.selection
                 || last.budget != snapshot.budget

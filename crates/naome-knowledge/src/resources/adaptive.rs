@@ -20,6 +20,7 @@ mod governor;
 pub(crate) mod history;
 mod observation;
 pub(crate) use governor::Governor;
+pub(crate) use observation::sample_node;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,14 +121,14 @@ impl Snapshot {
                 .saturating_sub(reserve),
         );
         let cpus = observed.cpu_millis.div_ceil(1000).max(1) as usize;
-        let idle = observed.cpu_millis.saturating_sub(observed.load_millis);
         let worker_bytes = (super::limits().provider_stream_bytes as u64).saturating_mul(4);
         let slots = if light {
             1
         } else if heavy {
             cpus
         } else {
-            idle.div_ceil(1000).max(1) as usize
+            // Begin below the host ceiling; measured demand may grow later.
+            cpus.saturating_sub(1).max(1)
         };
         let desired = match selection.profile {
             Profile::Light => observed
@@ -207,7 +208,7 @@ impl Snapshot {
                 concurrency: if pressure { 0 } else { concurrency },
                 cache_bytes: cache,
                 batch_steps: if pressure { 0 } else { batch },
-                network_requests: if pressure { 0 } else { network },
+                network_requests: if pressure { network.min(1) } else { network },
                 yield_ms: if heavy {
                     0
                 } else {
@@ -218,9 +219,7 @@ impl Snapshot {
                     if light {
                         quantum.saturating_add(quota_delay)
                     } else {
-                        quantum.saturating_mul(observed.load_millis.min(observed.cpu_millis))
-                            / observed.cpu_millis.max(1)
-                            + quota_delay
+                        quota_delay
                     }
                 },
                 paused,
@@ -248,6 +247,13 @@ struct Live {
     operating: Arc<super::Limits>,
 }
 static LIVE: OnceLock<RwLock<Option<Live>>> = OnceLock::new();
+static CHANGED: OnceLock<tokio::sync::watch::Sender<()>> = OnceLock::new();
+
+pub(crate) fn work_changes() -> tokio::sync::watch::Receiver<()> {
+    CHANGED
+        .get_or_init(|| tokio::sync::watch::channel(()).0)
+        .subscribe()
+}
 pub fn current() -> Option<Snapshot> {
     let live = LIVE.get()?.read().ok()?;
     live.as_ref().map(|live| live.snapshot.clone())
@@ -263,11 +269,39 @@ pub(crate) fn publish(snapshot: Snapshot) {
         snapshot,
         charged: super::memory_usage().0,
     });
+    if let Some(changed) = CHANGED.get() {
+        changed.send_replace(());
+    }
 }
 pub(crate) fn work_available() -> bool {
-    live_limit(1, |budget| {
-        usize::from(budget.paused.is_none() && budget.batch_steps > 0 && budget.concurrency > 0)
-    }) > 0
+    inspect_work(|available, _| available)
+}
+
+pub(crate) fn inspect_work<R>(inspect: impl FnOnce(bool, Option<&str>) -> R) -> R {
+    let Some(live) = LIVE.get() else {
+        return inspect(true, None);
+    };
+    let Ok(live) = live.read() else {
+        return inspect(false, Some("resource state unavailable"));
+    };
+    let Some(live) = live.as_ref() else {
+        return inspect(true, None);
+    };
+    let budget = &live.snapshot.budget;
+    let available = budget.paused.is_none() && budget.batch_steps > 0 && budget.concurrency > 0;
+    inspect(
+        available,
+        budget
+            .paused
+            .as_deref()
+            .or((!available).then_some("no computation budget")),
+    )
+}
+
+/// Keep the budget read boundary through permit creation. A concurrent pause
+/// either precedes this admission or observes its already admitted work.
+pub(crate) fn admit_work<R>(admit: impl FnOnce() -> R) -> Option<R> {
+    inspect_work(|available, _| available.then(admit))
 }
 /// Hold the live read boundary through the atomic reservation. A reduction
 /// cannot race past admission; already admitted leases remain valid and drain.
@@ -280,7 +314,7 @@ pub(crate) fn reserve_memory<R>(capacity: usize, reserve: impl FnOnce(usize) -> 
     };
     let limit = live.as_ref().map_or(capacity, |live| {
         let snapshot = &live.snapshot;
-        if snapshot.budget.paused.is_some() {
+        if snapshot.observed.process_rss >= snapshot.budget.memory_bytes {
             return 0;
         }
         let target = usize::try_from(snapshot.budget.memory_bytes).unwrap_or(usize::MAX);

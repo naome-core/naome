@@ -22,7 +22,7 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             hardware(),
             512 * MIB,
             Statistics::default(),
-            [false; 3],
+            Pressure::default(),
             now,
         )
         .unwrap();
@@ -39,7 +39,7 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(1),
         )
         .unwrap();
@@ -55,7 +55,7 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(2),
         )
         .unwrap();
@@ -67,7 +67,10 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             hardware(),
             512 * MIB,
             stats,
-            [false, true, false],
+            Pressure {
+                memory: true,
+                ..Pressure::default()
+            },
             now + Duration::from_secs(3),
         )
         .unwrap();
@@ -79,8 +82,19 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(4),
+        )
+        .unwrap();
+    assert_eq!(resumed.budget.concurrency, 0);
+    let resumed = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            512 * MIB,
+            stats,
+            Pressure::default(),
+            now + Duration::from_secs(34),
         )
         .unwrap();
     assert!(resumed.budget.concurrency > 0);
@@ -108,12 +122,12 @@ fn live_memory_reduction_pauses_without_extending_custom_allowances() {
             observed,
             512 * MIB,
             Statistics::default(),
-            [false; 3],
+            Pressure::default(),
             Instant::now(),
         )
         .unwrap();
     assert_eq!(snapshot.budget.memory_bytes, 32 * MIB);
-    assert_eq!(snapshot.budget.network_requests, 0);
+    assert_eq!(snapshot.budget.network_requests, 1);
     assert!(snapshot.budget.paused.is_some());
 }
 
@@ -127,7 +141,7 @@ fn streaming_misses_do_not_spend_more_memory_without_observed_reuse() {
             hardware(),
             512 * MIB,
             Statistics::default(),
-            [false; 3],
+            Pressure::default(),
             now,
         )
         .unwrap();
@@ -141,7 +155,7 @@ fn streaming_misses_do_not_spend_more_memory_without_observed_reuse() {
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(1),
         )
         .unwrap();
@@ -158,7 +172,7 @@ fn slower_network_without_more_throughput_reduces_the_pipeline() {
             hardware(),
             512 * MIB,
             Statistics::default(),
-            [false; 3],
+            Pressure::default(),
             now,
         )
         .unwrap();
@@ -176,7 +190,7 @@ fn slower_network_without_more_throughput_reduces_the_pipeline() {
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(1),
         )
         .unwrap();
@@ -188,7 +202,7 @@ fn slower_network_without_more_throughput_reduces_the_pipeline() {
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(2),
         )
         .unwrap();
@@ -200,7 +214,7 @@ fn slower_network_without_more_throughput_reduces_the_pipeline() {
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(3),
         )
         .unwrap();
@@ -231,7 +245,7 @@ fn descendant_memory_obeys_node_capacity_without_redefining_a_local_work_target(
             hardware(),
             512 * MIB,
             stats,
-            [false; 3],
+            Pressure::default(),
             now,
         )
         .unwrap();
@@ -246,10 +260,169 @@ fn descendant_memory_obeys_node_capacity_without_redefining_a_local_work_target(
                 descendant_rss: 512 * MIB,
                 ..Statistics::default()
             },
-            [false; 3],
+            Pressure::default(),
             now + Duration::from_secs(1),
         )
         .unwrap();
     assert!(pressure.budget.paused.is_some());
     assert_eq!(pressure.budget.concurrency, 0);
+}
+
+fn cpu_pressure(percent: u16) -> Pressure {
+    Pressure {
+        cpu: Some(observation::cpu::Load {
+            external_percent: percent,
+            available_millis: 8000 * (100 - u64::from(percent)) / 100,
+        }),
+        ..Pressure::default()
+    }
+}
+
+#[test]
+fn external_cpu_requires_sustained_pressure_and_a_quiet_recovery_window() {
+    let mut governor = Governor::default();
+    let now = Instant::now();
+    let mut at = |seconds, percent| {
+        governor
+            .update(
+                Selection::default(),
+                hardware(),
+                512 * MIB,
+                Statistics::default(),
+                cpu_pressure(percent),
+                now + Duration::from_secs(seconds),
+            )
+            .unwrap()
+    };
+    assert!(at(0, 95).budget.paused.is_none());
+    assert!(at(9, 95).budget.paused.is_none());
+    assert!(at(10, 20).budget.paused.is_none());
+    assert!(at(11, 95).budget.paused.is_none());
+    let paused = at(21, 95);
+    assert_eq!(
+        paused.budget.paused.as_deref(),
+        Some("sustained external CPU pressure")
+    );
+    assert_eq!(paused.budget.batch_steps, 0);
+    assert_eq!(paused.budget.network_requests, 1);
+    assert!(at(22, 20).budget.paused.is_some());
+    assert!(at(40, 70).budget.paused.is_some());
+    assert!(at(41, 20).budget.paused.is_some());
+    assert!(at(70, 20).budget.paused.is_some());
+    let clear = at(71, 20);
+    assert!(clear.budget.paused.is_none());
+    assert!(clear.budget.concurrency > 0);
+}
+
+#[test]
+fn energy_thermal_and_observation_failures_hold_until_confirmed_recovery() {
+    let mut governor = Governor::default();
+    let now = Instant::now();
+    let pressure = Pressure {
+        low_power: Some(true),
+        thermal: Some(true),
+        ..Pressure::default()
+    };
+    let paused = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            512 * MIB,
+            Statistics::default(),
+            pressure,
+            now,
+        )
+        .unwrap();
+    assert!(paused.budget.paused.is_some());
+    let unknown = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            512 * MIB,
+            Statistics::default(),
+            Pressure::default(),
+            now + Duration::from_secs(60),
+        )
+        .unwrap();
+    assert!(unknown.budget.paused.is_some());
+    let clear = Pressure {
+        low_power: Some(false),
+        thermal: Some(false),
+        ..Pressure::default()
+    };
+    let last_good = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            512 * MIB,
+            Statistics::default(),
+            clear,
+            now + Duration::from_secs(61),
+        )
+        .unwrap();
+    let unavailable = governor.unavailable(Selection::default()).unwrap();
+    assert_eq!(unavailable.timestamp_ms, last_good.timestamp_ms);
+    assert_eq!(
+        unavailable.budget.paused.as_deref(),
+        Some("hardware observation unavailable")
+    );
+    let waiting = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            512 * MIB,
+            Statistics::default(),
+            clear,
+            now + Duration::from_secs(90),
+        )
+        .unwrap();
+    assert!(waiting.budget.paused.is_some());
+    assert!(
+        governor
+            .update(
+                Selection::default(),
+                hardware(),
+                512 * MIB,
+                Statistics::default(),
+                clear,
+                now + Duration::from_secs(120)
+            )
+            .unwrap()
+            .budget
+            .paused
+            .is_none()
+    );
+}
+
+#[test]
+fn observation_failure_applies_new_smaller_owner_ceilings_without_freshness_or_capacity_growth() {
+    let mut governor = Governor::default();
+    let valid = governor
+        .update(
+            Selection::default(),
+            hardware(),
+            512 * MIB,
+            Statistics::default(),
+            Pressure::default(),
+            Instant::now(),
+        )
+        .unwrap();
+    let selection = Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes: 8 * MIB,
+            concurrency: 1,
+            cache_bytes: 4096,
+            batch_steps: 1,
+            network_requests: 1,
+        }),
+    };
+    let stale = governor.unavailable(selection.clone()).unwrap();
+    assert_eq!(stale.selection, selection);
+    assert_eq!(stale.timestamp_ms, valid.timestamp_ms);
+    assert_eq!(stale.budget.memory_bytes, 8 * MIB);
+    assert_eq!(stale.budget.cache_bytes, 4096);
+    assert_eq!(stale.budget.concurrency, 0);
+    assert_eq!(stale.budget.batch_steps, 0);
+    assert_eq!(stale.budget.network_requests, 1);
 }

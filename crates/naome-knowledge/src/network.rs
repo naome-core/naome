@@ -739,6 +739,10 @@ where
         if stopping {
             break;
         }
+        // Reclaim caches even while productive work is suspended. These
+        // maintenance owners check the same budget before starting compaction.
+        node.graph.maintain_checked_storage()?;
+        questions.maintain_registry()?;
         if work.is_none() {
             continue;
         }
@@ -749,8 +753,6 @@ where
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(
             node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
         ));
-        node.graph.maintain_checked_storage()?;
-        questions.maintain_registry()?;
         questions.cancel_closed();
         match node.intake.advance(&mut node.graph, &mut questions) {
             crate::intake::Progress::Waiting => {}
@@ -1902,9 +1904,7 @@ impl Node {
                 start,
                 limit,
             } => {
-                if crate::resources::adaptive::network(1) == 0
-                    || crate::resources::adaptive::batch(1) == 0
-                {
+                if crate::resources::adaptive::network(1) == 0 {
                     Body::Error {
                         reason: "program resources paused".into(),
                     }

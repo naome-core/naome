@@ -31,7 +31,7 @@ impl ProgramBudget {
             let sampled = Instant::now();
             let snapshot = self.governor.observe(
                 adaptive::load(directory)?,
-                adaptive::sample(directory)?,
+                adaptive::sample_node(directory)?,
                 crate::resources::limits().memory_bytes as u64,
             )?;
             self.snapshot = Some(snapshot);

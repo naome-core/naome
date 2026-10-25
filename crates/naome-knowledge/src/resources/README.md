@@ -46,10 +46,24 @@ latency, cache lookups and provider backlog at their existing owning boundaries.
 These observations are process-local scheduling evidence, not durable proof
 facts. `adaptive/governor.rs` combines fresh observations with this feedback.
 Expensive work reduces the execution quantum; faster work permits gradual
-growth. Observed cache reuse together with misses can increase the cache target within
-available memory; one-pass streams do not cause unbounded growth.
-Pressure reduces admission immediately. Sampling frequency includes its own
-observed cost and remains bounded by existing control/freshness deadlines.
+growth. Cache growth requires observed reuse as well as misses; one-pass
+streams do not cause unbounded growth.
+Memory, disk, power-saving or thermal pressure closes computation admission.
+Native CPU deltas subtract the node process tree over the same interval; load
+average is diagnostic only. External host CPU above 85% for ten seconds pauses
+computation; recovery requires CPU below 60% and thirty seconds of clear
+conditions with memory and disk headroom. These are stability-policy starting
+values, not measured optimal thresholds. Unsupported energy/thermal sensors
+remain unknown; a previously asserted condition must be confirmed clear before
+resumption. Linux uses firmware thermal trip points; macOS uses the OS warning.
+A transient hardware observation failure closes new work using the last valid
+snapshot and retries without stopping the network or fabricating a fresh sample.
+
+Sampling frequency includes its own
+observed cost and remains bounded by existing control/freshness deadlines. Native
+subprocess probes have both output and wall-clock bounds and retain custody of
+a timed-out child until reaping is confirmed. One unreaped probe prevents more
+helpers from accumulating.
 
 `operating.rs` projects the live budget onto local working sets. Caches share a
 conservative capacity-weighted target, including retained generations and program
@@ -60,6 +74,10 @@ at the owning operation boundary; it is not a synchronous RSS guarantee.
 
 Already admitted memory and disk leases remain valid and drain. Control requests
 and bounded publication readback retain their reserved paths during a work pause.
+The existing `Computation` gate tracks draining work from this same live budget;
+it owns no second pause flag. Compute concurrency and quanta become zero while
+a single bounded network request remains possible. Memory leases still enforce
+actual headroom and the immutable shared capacity.
 In-flight responses are checked against the installed admitted format bounds,
 not a newly reduced page size. The serialized state owner remains singular.
 

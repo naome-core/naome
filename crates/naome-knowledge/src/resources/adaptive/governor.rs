@@ -3,10 +3,13 @@
 use super::*;
 use crate::resources::feedback::{self, Statistics};
 use std::time::{Duration, Instant};
+mod pause;
+use observation::Pressure;
 
 #[derive(Default)]
 pub(crate) struct Governor {
     previous: Option<(Instant, Snapshot, Statistics)>,
+    pause: pause::Pause,
     stable: u32,
     sample_cost: Duration,
     network_rate: u64,
@@ -17,15 +20,15 @@ impl Governor {
     pub(crate) fn observe(
         &mut self,
         selection: Selection,
-        observed: Observed,
+        sample: observation::Sample,
         capacity: u64,
     ) -> Result<Snapshot, String> {
         self.update(
             selection,
-            observed,
+            sample.observed,
             capacity,
             feedback::statistics(),
-            observation::pressure(),
+            sample.pressure,
             Instant::now(),
         )
     }
@@ -36,7 +39,7 @@ impl Governor {
         observed: Observed,
         capacity: u64,
         statistics: Statistics,
-        pressure: [bool; 3],
+        pressure: Pressure,
         now: Instant,
     ) -> Result<Snapshot, String> {
         let mut next = Snapshot::derive(selection, observed, capacity)?;
@@ -46,19 +49,11 @@ impl Governor {
                 .saturating_duration_since(*before_time)
                 .as_millis()
                 .max(1) as u64;
-            let cpu = next
-                .observed
-                .process_cpu_ms
-                .saturating_sub(before.observed.process_cpu_ms)
-                .saturating_mul(1000)
-                / elapsed;
-            let external = next.observed.load_millis.saturating_sub(cpu);
-            let cpu_available = next
-                .observed
-                .cpu_millis
-                .saturating_sub(external)
-                .div_ceil(1000)
-                .max(1) as usize;
+            let available = pressure
+                .cpu
+                .map_or(next.observed.cpu_millis, |cpu| cpu.available_millis);
+            let external = next.observed.cpu_millis.saturating_sub(available);
+            let cpu_available = available.div_ceil(1000).max(1) as usize;
             if next.selection.profile != Profile::Custom && next.selection.profile != Profile::Light
             {
                 let demand =
@@ -79,15 +74,13 @@ impl Governor {
                         + quota_delay;
                 }
                 let per_job = statistics.descendant_rss / statistics.running_jobs.max(1);
-                if per_job > 0 {
-                    next.budget.concurrency = next.budget.concurrency.min(
-                        (next
-                            .budget
-                            .memory_bytes
-                            .saturating_sub(next.observed.process_rss)
-                            / per_job)
-                            .max(1) as usize,
-                    );
+                if let Some(slots) = next
+                    .budget
+                    .memory_bytes
+                    .saturating_sub(next.observed.process_rss)
+                    .checked_div(per_job)
+                {
+                    next.budget.concurrency = next.budget.concurrency.min(slots.max(1) as usize);
                 }
             }
             if next.selection == before.selection && next.selection.profile != Profile::Custom {
@@ -112,7 +105,7 @@ impl Governor {
                     .saturating_sub(previous.cache_misses);
                 let cache = before.budget.cache_bytes;
                 next.budget.cache_bytes =
-                    if hits > 0 && misses > hits && !pressure[1] && !pressure[2] {
+                    if hits > 0 && misses > hits && !pressure.memory && !pressure.io {
                         cache.saturating_add((cache / 4).max(4096))
                     } else {
                         cache
@@ -155,14 +148,13 @@ impl Governor {
                     self.network_latency = average;
                 }
             }
-            let constrained =
-                pressure.iter().any(|pressed| *pressed) || next.budget.paused.is_some();
+            let constrained = pressure.memory || pressure.io || next.budget.paused.is_some();
             self.stable = if constrained || next.selection != before.selection {
                 0
             } else {
                 self.stable.saturating_add(1)
             };
-            if pressure[2] {
+            if pressure.io {
                 next.budget.concurrency = next
                     .budget
                     .concurrency
@@ -176,7 +168,7 @@ impl Governor {
                     .network_requests
                     .min((before.budget.network_requests / 2).max(1));
             }
-            if pressure[1] {
+            if pressure.memory {
                 next.budget.paused = Some("operating system memory pressure".into());
             }
         }
@@ -192,17 +184,48 @@ impl Governor {
         {
             next.budget.paused = Some("node process tree memory pressure".into());
         }
-        if pressure[1] {
+        if pressure.memory {
             next.budget.paused = Some("operating system memory pressure".into());
             next.budget.cache_bytes = (next.budget.cache_bytes / 2).max(4096);
         }
+        self.pause.apply(
+            &mut next,
+            pressure,
+            statistics.descendant_rss,
+            capacity,
+            now,
+        );
         if next.budget.paused.is_some() {
             next.budget.concurrency = 0;
             next.budget.batch_steps = 0;
-            next.budget.network_requests = 0;
+            next.budget.network_requests = next.budget.network_requests.min(1);
         }
         self.previous = Some((now, next.clone(), statistics));
         Ok(next)
+    }
+
+    pub(crate) fn unavailable(&mut self, selection: Selection) -> Option<Snapshot> {
+        self.pause.unavailable();
+        let previous = &self.previous.as_ref()?.1;
+        // A telemetry failure closes work and may narrow a newly selected
+        // ceiling; it must never expand an allocation from stale observations.
+        let mut snapshot = Snapshot::derive(
+            selection,
+            previous.observed.clone(),
+            previous.budget.memory_bytes,
+        )
+        .ok()?;
+        snapshot.timestamp_ms = previous.timestamp_ms;
+        snapshot.budget.cache_bytes = snapshot.budget.cache_bytes.min(previous.budget.cache_bytes);
+        snapshot.budget.network_requests = snapshot
+            .budget
+            .network_requests
+            .min(previous.budget.network_requests);
+        snapshot.budget.paused = Some("hardware observation unavailable".into());
+        snapshot.budget.concurrency = 0;
+        snapshot.budget.batch_steps = 0;
+        snapshot.budget.network_requests = snapshot.budget.network_requests.min(1);
+        Some(snapshot)
     }
 
     pub(crate) fn sampled(&mut self, elapsed: Duration) {
@@ -221,6 +244,7 @@ impl Governor {
                     .min(limits.replay_guard_freshness),
             )
             .max(limits.transport_busy_grace)
+            .max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
     }
 }
 

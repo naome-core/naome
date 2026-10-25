@@ -36,6 +36,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled", "hooks"] }
 sha2.workspace = true
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "signal", "io-util", "net", "process"] }
 socket2 = { version = "=0.6.5", optional = true }
+sysinfo = { version = "=0.39.6", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "fs", "user", "resource", "time"] }

@@ -25,7 +25,7 @@ impl<'a> Arguments<'a> {
             _ => (false, arguments),
         };
         let (command, text) = match arguments {
-            [command] if matches!(command.to_str(), Some("start" | "stop" | "status" | "pause" | "resume")) => {
+            [command] if matches!(command.to_str(), Some("start" | "stop" | "status")) => {
                 (command.to_str().expect("matched UTF-8 command"), None)
             }
             [command, text] if command == "interest" => {
@@ -33,7 +33,7 @@ impl<'a> Arguments<'a> {
                 owner::validate(text)?;
                 ("interest", Some(text))
             }
-            _ => return Err("usage: naome [--json] start | stop | status | pause | resume | interest <text>\nplace --json before the command for machine output".into()),
+            _ => return Err("usage: naome [--json] start | stop | status | interest <text>\nplace --json before the command for machine output".into()),
         };
         if startup_handoff && command != "start" {
             return Err("startup handoff is only valid for --json start".into());
@@ -73,8 +73,6 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     let action = match command {
         "start" => format!("{green}✓{reset} Start complete"),
         "stop" => format!("{green}✓{reset} Stop complete"),
-        "pause" => format!("{green}✓{reset} Computation pause requested"),
-        "resume" => format!("{green}✓{reset} Computation resumed"),
         "interest" => format!("{green}✓{reset} Interest saved"),
         _ => "Node status".into(),
     };
@@ -90,13 +88,27 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     let computation = match status.computation {
         crate::resources::ComputationState::Stopped => "Stopped",
         crate::resources::ComputationState::Running => "Running",
-        crate::resources::ComputationState::Pausing => "Pausing (finishing current work)",
-        crate::resources::ComputationState::Paused => "Paused (network remains available)",
+        crate::resources::ComputationState::Pausing => {
+            "Pausing automatically (finishing current work)"
+        }
+        crate::resources::ComputationState::Paused => {
+            "Paused automatically (network remains available)"
+        }
     };
     let mut output = format!(
-        "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted proofs  {} ({verification})\n\n  Interest\n",
+        "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted proofs  {} ({verification})\n",
         status.accepted_proofs,
     );
+    if let Some(reason) = &status.computation_reason {
+        let reason = reason
+            .chars()
+            .flat_map(char::escape_default)
+            .collect::<String>();
+        // The reason originates in the local resource policy; retain terminal
+        // escaping so passive diagnostics cannot acquire display authority.
+        writeln!(output, "    Computation reason: {reason}").expect("String write");
+    }
+    output.push_str("\n  Interest\n");
     if status.interest.is_empty() {
         output.push_str("    (none)\n");
     } else {
@@ -168,6 +180,7 @@ mod tests {
         let status = Status {
             running: false,
             computation: crate::resources::ComputationState::Stopped,
+            computation_reason: None,
             accepted_proofs: 3,
             proof_verification: super::super::ProofVerification::NotRun,
             interest: "λ 🦀\n\r\t\x1b[32m\x1b]8;;link\x07\u{009b}2J\u{202e}x\n".into(),

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Ordinary computation control with live providers, DHT peers and checked delivery."""
+"""Automatic resource pause with real providers, live peering and original budgets."""
 import argparse
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 from autonomous_lifecycle import Node, Trial, process_identity, write_receipt
 from long_jobs import Probe, job_settings, journal
@@ -16,6 +15,17 @@ def state(trial, node, expected):
     return status if status["computation"] == expected else None
 
 
+def pressure(node, constrained):
+    # Exercise the ordinary current-format soft memory target without consuming
+    # host resources or changing immutable capacity. Actual memory shortage may
+    # refuse payload allocations; CPU-only serving has a separate native test.
+    selection = {"profile": "custom", "custom": {
+        "memory_bytes": 8 * 1024 * 1024, "concurrency": 1,
+        "cache_bytes": 4096, "batch_steps": 1, "network_requests": 1,
+    }} if constrained else {"profile": "heavy", "custom": None}
+    write_receipt(node.directory / "resource-profile.json", selection)
+
+
 def checkpoints(node):
     return {record["id"]: (record["reserved_units"], record["checkpoint"])
             for record in journal(node)["records"].values()}
@@ -25,12 +35,6 @@ def run(trial, donor_key):
     donor, receiver, publisher = (Node(trial, index) for index in range(3))
     trial.summary["node_count"] = 3
     probe = Probe(trial)
-    absent = SimpleNamespace(directory=trial.output / "absent", index=3)
-    for command in ("pause", "resume"):
-        trial.call(absent, command, success=False)
-        assert not absent.directory.exists(), "stopped computation command initialized a node"
-        trial.call(donor, command, success=False)
-
     donor.config["runtime"].update(jobs=job_settings(
         finding={"steps": 8, "step_ms": 1000, "cpu_ms": 100, "horizon_ms": 120000},
         solving={"program_units": 8, "cpu_ms": 50, "horizon_ms": 120000}))
@@ -63,8 +67,7 @@ def run(trial, donor_key):
     original_process = dict(donor.process)
     original_peer = donor.peer
     endpoint = (donor.directory / "control.json").read_bytes()
-    pause = trial.call(donor, "pause")
-    assert pause["running"] and pause["computation"] in {"pausing", "paused"}
+    pressure(donor, True)
     trial.wait(lambda: state(trial, donor, "paused"), maximum=5)
     probe.observe(donor)
     before = journal(donor)
@@ -76,20 +79,16 @@ def run(trial, donor_key):
     accepted = donor.ids()
     assert accepted == {identity}, "fixture published competing answers before pausing"
     offset = len(donor.logs())
-    assert trial.call(donor, "pause")["computation"] == "paused"
+    pressure(donor, True)
+    assert state(trial, donor, "paused")
     assert trial.call(donor, "start")["computation"] == "paused"
     assert (donor.directory / "control.json").read_bytes() == endpoint
     assert process_identity(original_process["pid"]) == original_process
 
     # This peer starts after the pause and bootstraps through the paused node.
     receiver.start()
-    trial.wait(lambda: identity in receiver.ids(), maximum=20)
-    trial.wait(lambda: any(event.get("event") == "accepted" and event.get("id") == identity
-               and event.get("source") == "fetch" for event in receiver.logs()))
-    served = [event for event in donor.logs()[offset:]
-              if event.get("event") == "exchange_request"
-              and event.get("peer") == receiver.peer]
-    assert any(event.get("kind") == "program_get" for event in served), served
+    trial.wait(lambda: any(event.get("event") == "identified" and event.get("peer") == receiver.peer
+        for event in donor.logs()[offset:]), maximum=15)
     assert any(event.get("event") == "identified" and event.get("peer") == receiver.peer
                for event in donor.logs()[offset:]), "new peer was not admitted during pause"
 
@@ -97,11 +96,8 @@ def run(trial, donor_key):
     publisher.config["runtime"]["question_interval_ms"] = 1000
     publisher.write_config()
     publisher.start()
-    trial.call(publisher, "pause")
-    trial.wait(lambda: state(trial, publisher, "paused"), maximum=5)
     trial.wait(lambda: any(event.get("event") == "identified"
         and event.get("peer") == publisher.peer for event in donor.logs()[offset:]))
-    trial.call(publisher, "resume")
     announcement = trial.wait(lambda: next((event for event in donor.logs()[offset:]
         if event.get("event") == "announcement" and event.get("id") not in accepted), None), maximum=15)
     assert state(trial, donor, "paused")
@@ -112,34 +108,35 @@ def run(trial, donor_key):
     probe.observe(publisher)
     probe.observe(receiver)
 
-    assert trial.call(donor, "resume")["computation"] == "running"
-    assert trial.call(donor, "resume")["computation"] == "running"
+    pressure(donor, False)
+    trial.wait(lambda: state(trial, donor, "running"), maximum=40)
     resumed = trial.wait(lambda: next((record for record in journal(donor)["records"].values()
         if record["id"] == retained["id"] and record["checkpoint"] > retained["checkpoint"]), None), maximum=5)
     assert resumed["created_ms"] == retained["created_ms"]
     assert resumed["expires_ms"] == retained["expires_ms"]
     assert resumed["binding"] == retained["binding"]
     assert resumed["reserved_units"] >= retained["reserved_units"]
-    trial.call(donor, "pause")
+    pressure(donor, True)
     trial.wait(lambda: state(trial, donor, "paused"), maximum=5)
     probe.observe(donor)
     donor.stop()
     donor.config["runtime"]["question_interval_ms"] = 3600000
     donor.write_config()
+    pressure(donor, False)
     assert donor.start()["computation"] == "running"
     assert donor.peer == original_peer
     assert process_identity(donor.process["pid"]) == donor.process
-    trial.summary.update(result="pass", fixture="ordinary_computation_pause",
+    trial.summary.update(result="pass", fixture="automatic_resource_computation_pause",
         checked_program=identity, paused_checkpoints=frozen,
         resumed_job=resumed["id"], gossip_announcement=announcement,
-        claim="local ordinary CLI and isolated loopback nodes; real DHT peering, gossip and independently checked program delivery during computation pause")
+        claim="native automatic memory-target pause; real provider checkpoint retention and resume with original budgets; DHT peering and gossip remain live; CPU-only checked delivery is qualified separately")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--timeout", type=float, default=90)
+    parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--mode", choices=["pause"], default="pause")
     parser.add_argument("--donor-key", required=True)

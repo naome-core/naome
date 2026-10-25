@@ -21,3 +21,16 @@ fn cpu_times_cover_both_supported_ps_formats_and_long_running_processes() {
     assert!(cpu_time("00:NaN").is_err());
     assert!(cpu_time("-1:00").is_err());
 }
+
+#[test]
+fn psi_requires_a_valid_full_stall_measurement_instead_of_any_old_partial_stall() {
+    assert_eq!(
+        psi(
+            "some avg10=0.01 avg60=0.00 total=5\nfull avg10=0.00 avg60=0.00 total=0",
+            "full"
+        ),
+        Some(0.0)
+    );
+    assert_eq!(psi("full avg10=5.00 avg60=1.00 total=5", "full"), Some(5.0));
+    assert_eq!(psi("full avg10=NaN", "full"), None);
+}

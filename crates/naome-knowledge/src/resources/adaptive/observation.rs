@@ -2,35 +2,53 @@
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
+pub(super) mod cpu;
+mod power;
+mod probe;
 
-static MEMORY_PRESSURE: AtomicBool = AtomicBool::new(false);
-static CPU_PRESSURE: AtomicBool = AtomicBool::new(false);
-static IO_PRESSURE: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Pressure {
+    pub cpu: Option<cpu::Load>,
+    pub memory: bool,
+    pub io: bool,
+    pub low_power: Option<bool>,
+    pub thermal: Option<bool>,
+}
 
-pub(super) fn pressure() -> [bool; 3] {
-    [
-        CPU_PRESSURE.load(Ordering::Relaxed),
-        MEMORY_PRESSURE.load(Ordering::Relaxed),
-        IO_PRESSURE.load(Ordering::Relaxed),
-    ]
+pub(crate) struct Sample {
+    pub(super) observed: Observed,
+    pub(super) pressure: Pressure,
 }
 
 pub(super) fn sample(directory: &Path) -> Result<Observed, String> {
+    sample_node(directory).map(|sample| sample.observed)
+}
+
+pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
     use nix::sys::time::TimeValLike;
-    let (total, available, _, load) = platform_sample()?;
-    let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
-        .map_err(|e| e.to_string())?;
-    let children = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_CHILDREN)
-        .map_err(|e| e.to_string())?;
+    // Sampling must not initialize the immutable capacity before calibration.
+    let allowance = super::super::LIMITS
+        .get()
+        .map_or(Duration::from_secs(1), |limits| limits.control_timeout / 2);
+    let deadline = Instant::now() + allowance;
+    let (total, available, _, load) = platform_sample(deadline)?;
     let (rss, cpu, own_rss) = process_tree(
-        &run("/bin/ps", &["-axo", "pid=,ppid=,rss=,time="], 512 * 1024)?,
+        &probe::run(
+            "/bin/ps",
+            &["-axo", "pid=,ppid=,rss=,time="],
+            512 * 1024,
+            deadline,
+        )?,
         std::process::id(),
     )?;
     super::super::feedback::descendants(rss.saturating_sub(own_rss));
-    let peak = u64::try_from(usage.max_rss()).map_err(|e| e.to_string())?;
+    let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
+        .map_err(|error| error.to_string())?;
+    let children = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_CHILDREN)
+        .map_err(|error| error.to_string())?;
+    let peak = u64::try_from(usage.max_rss()).map_err(|error| error.to_string())?;
     #[cfg(target_os = "linux")]
     let peak = peak.saturating_mul(1024);
     let mut observed = Observed {
@@ -46,10 +64,10 @@ pub(super) fn sample(directory: &Path) -> Result<Observed, String> {
                     .num_milliseconds()
                     .saturating_add(children.system_time().num_milliseconds()),
             )
-            .map_err(|e| e.to_string())?,
+            .map_err(|error| error.to_string())?,
         ),
         cpu_millis: std::thread::available_parallelism()
-            .map_err(|e| e.to_string())?
+            .map_err(|error| error.to_string())?
             .get() as u64
             * 1000,
         load_millis: load,
@@ -59,65 +77,83 @@ pub(super) fn sample(directory: &Path) -> Result<Observed, String> {
         nix::sys::resource::Resource::RLIMIT_AS,
         nix::sys::resource::Resource::RLIMIT_DATA,
     ] {
-        let (limit, _) = nix::sys::resource::getrlimit(resource).map_err(|e| e.to_string())?;
+        let (limit, _) =
+            nix::sys::resource::getrlimit(resource).map_err(|error| error.to_string())?;
         if limit != nix::sys::resource::RLIM_INFINITY {
             observed.memory_limit = observed.memory_limit.min(limit);
         }
     }
     #[cfg(target_os = "linux")]
+    cgroups(&mut observed)?;
+    let power = power::sample(deadline);
+    let mut pressure = Pressure {
+        cpu: cpu::sample(observed.process_cpu_ms, observed.cpu_millis),
+        low_power: power.low_power,
+        thermal: power.thermal,
+        ..Pressure::default()
+    };
+    #[cfg(target_os = "linux")]
     {
-        cgroups(&mut observed)?;
-        let read_pressure = |name: &str| {
-            fs::read_to_string(format!("/proc/pressure/{name}"))
-                .ok()
-                .and_then(|text| {
-                    text.lines()
-                        .find(|line| line.starts_with("some "))
-                        .and_then(|line| {
-                            line.split_whitespace()
-                                .find_map(|field| field.strip_prefix("avg10="))
-                        })
-                        .and_then(|value| value.parse::<f64>().ok())
-                })
-                .is_some_and(|value| value > 0.0)
-        };
-        CPU_PRESSURE.store(read_pressure("cpu"), Ordering::Relaxed);
-        MEMORY_PRESSURE.store(read_pressure("memory"), Ordering::Relaxed);
-        IO_PRESSURE.store(read_pressure("io"), Ordering::Relaxed);
+        pressure.memory = read_optional(Path::new("/proc/pressure/memory"))?
+            .as_deref()
+            .and_then(|text| psi(text, "full"))
+            .is_some_and(|percent| percent >= 5.0);
+        pressure.io = read_optional(Path::new("/proc/pressure/io"))?
+            .as_deref()
+            .and_then(|text| psi(text, "some"))
+            .is_some_and(|percent| percent >= 10.0);
     }
     #[cfg(target_os = "macos")]
-    MEMORY_PRESSURE.store(mac_memory_pressure()?, Ordering::Relaxed);
-    let stats = nix::sys::statvfs::statvfs(directory).map_err(|e| e.to_string())?;
+    {
+        pressure.memory = probe::run(
+            "/usr/sbin/sysctl",
+            &["-n", "kern.memorystatus_vm_pressure_level"],
+            64,
+            deadline,
+        )
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .is_some_and(|level| matches!(level, 2 | 4));
+    }
+    let stats = nix::sys::statvfs::statvfs(directory).map_err(|error| error.to_string())?;
     observed.disk_available = (u128::from(stats.blocks_available())
         * u128::from(stats.fragment_size()))
     .min(u128::from(u64::MAX)) as u64;
-    Ok(observed)
+    Ok(Sample { observed, pressure })
 }
 
-fn run(path: &str, arguments: &[&str], maximum: usize) -> Result<String, String> {
-    let mut child = Command::new(path)
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let mut output = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .ok_or("hardware observation output absent")?
-        .take(maximum as u64 + 1)
-        .read_to_end(&mut output);
-    if read.is_err() || output.len() > maximum {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("hardware observation capacity".into());
+#[cfg(any(test, target_os = "linux"))]
+fn read_optional(path: &Path) -> Result<Option<String>, String> {
+    match read_bounded(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
-    if !child.wait().map_err(|e| e.to_string())?.success() {
-        return Err("hardware observation failed".into());
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn read_bounded(path: &Path) -> Result<String, std::io::Error> {
+    let mut text = String::new();
+    fs::File::open(path)?
+        .take(65537)
+        .read_to_string(&mut text)?;
+    if text.len() > 65536 {
+        return Err(std::io::Error::other("hardware observation capacity"));
     }
-    String::from_utf8(output).map_err(|e| e.to_string())
+    Ok(text)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn psi(text: &str, kind: &str) -> Option<f64> {
+    let line = text
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some(kind))?;
+    let percent = line
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("avg10="))?
+        .parse::<f64>()
+        .ok()?;
+    (percent.is_finite() && (0.0..=100.0).contains(&percent)).then_some(percent)
 }
 
 fn process_tree(text: &str, root: u32) -> Result<(u64, u64, u64), String> {
@@ -198,24 +234,6 @@ fn cpu_time(value: &str) -> Result<u64, String> {
         .ok_or_else(|| "process CPU overflow".into())
 }
 
-#[cfg(target_os = "macos")]
-fn mac_memory_pressure() -> Result<bool, String> {
-    let value = run(
-        "/usr/sbin/sysctl",
-        &["-n", "kern.memorystatus_vm_pressure_level"],
-        64,
-    )?;
-    match value
-        .trim()
-        .parse::<u32>()
-        .map_err(|_| "invalid macOS memory pressure observation")?
-    {
-        1 => Ok(false),
-        2 | 4 => Ok(true),
-        _ => Err("unknown macOS memory pressure observation".into()),
-    }
-}
-
 #[cfg(any(test, target_os = "linux"))]
 fn read_small(path: &Path) -> Result<String, String> {
     let mut text = String::new();
@@ -228,7 +246,7 @@ fn read_small(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 #[cfg(target_os = "linux")]
-fn platform_sample() -> Result<(u64, u64, u64, u64), String> {
+fn platform_sample(_deadline: Instant) -> Result<(u64, u64, u64, u64), String> {
     let memory = read_small(Path::new("/proc/meminfo"))?;
     let field = |text: &str, name: &str| -> Result<u64, String> {
         text.lines()
@@ -252,17 +270,8 @@ fn platform_sample() -> Result<(u64, u64, u64, u64), String> {
     ))
 }
 #[cfg(target_os = "macos")]
-fn platform_sample() -> Result<(u64, u64, u64, u64), String> {
-    let command = |path: &str, args: &[&str]| -> Result<String, String> {
-        let output = std::process::Command::new(path)
-            .args(args)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() || output.stdout.len() > 65536 {
-            return Err("hardware observation failed".into());
-        }
-        String::from_utf8(output.stdout).map_err(|e| e.to_string())
-    };
+fn platform_sample(deadline: Instant) -> Result<(u64, u64, u64, u64), String> {
+    let command = |path: &str, args: &[&str]| probe::run(path, args, 65536, deadline);
     let total = command("/usr/sbin/sysctl", &["-n", "hw.memsize"])?
         .trim()
         .parse::<u64>()
