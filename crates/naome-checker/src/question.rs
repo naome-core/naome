@@ -911,10 +911,10 @@ fn recheck(
 }
 
 fn checker_reason(error: &CheckError) -> RejectionReason {
-    match error {
-        CheckError::FormulaWorkLimitExceeded { .. }
-        | CheckError::DerivedFormula { .. }
-        | CheckError::ContextAccess {
+    match error.kind() {
+        crate::CheckErrorKind::FormulaWorkLimitExceeded { .. }
+        | crate::CheckErrorKind::DerivedFormula { .. }
+        | crate::CheckErrorKind::ContextAccess {
             source: ContextError::Limit,
             ..
         } => RejectionReason::ExecutionLimit,

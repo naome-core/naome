@@ -90,9 +90,7 @@ impl ProgramCheck {
                 return Ok(None);
             }
             let checked = self.work.take().expect("program work").into_checked()?;
-            if checked.proof()?.manifest() != &self.manifest {
-                return Err("mathematically checked program differs from manifest".into());
-            }
+            checked.proof()?.check_manifest(&self.manifest)?;
             return Ok(Some(checked));
         }
         if !progress {

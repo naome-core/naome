@@ -239,11 +239,14 @@ fn malformed_mismatched_open_and_non_normal_bytes_have_no_accepted_effects() {
         statement_id: hex(statement.as_bytes()),
         proof: hex(&bytes),
     };
-    assert!(
+    assert_eq!(
         graph
             .ingest(invalid, Instant::now())
             .unwrap_err()
-            .contains("mathematically invalid")
+            .diagnostic()
+            .unwrap()
+            .failure,
+        naome_checker::diagnostics::Failure::OpenConclusion
     );
     let bytes = ProofCertificate::new(vec![
         ProofStep::EqualityReflexivity {

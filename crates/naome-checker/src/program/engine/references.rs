@@ -67,13 +67,32 @@ impl Engine {
         evaluation: &mut Evaluation,
         context: &dyn ContextView,
         proof: ProofId,
+        query: Option<&crate::diagnostics::FormulaQuery>,
     ) -> Result<Option<u64>, Error> {
         if evaluation.reference.is_none() {
-            evaluation.reference = Some(
-                context
-                    .program_source(proof)?
-                    .ok_or("program references an unknown checked proof")?,
-            );
+            let snapshot = context.snapshot_id();
+            if self
+                .reference_snapshot
+                .is_some_and(|previous| previous != snapshot)
+            {
+                self.context_consistent = false;
+            }
+            self.reference_snapshot = Some(snapshot);
+            evaluation.reference = match context.program_source(proof)? {
+                Some(source) => Some(source),
+                None => {
+                    return Err(Error::Check(Box::new(self.proof_diagnostic(
+                        &Command::ProofReference {
+                            proof_id: *proof.as_bytes(),
+                        },
+                        crate::diagnostics::Failure::MissingProof {
+                            proof_id: crate::diagnostics::Digest(*proof.as_bytes()),
+                        },
+                        context,
+                        query,
+                    )?)));
+                }
+            };
         }
         let source = evaluation
             .reference

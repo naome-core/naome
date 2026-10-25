@@ -165,6 +165,7 @@ impl ArtifactState {
             derivation_id,
             proof_id,
             canonical_conclusion_length,
+            context_snapshot: _,
         } = proof;
 
         self.question_index

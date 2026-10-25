@@ -116,6 +116,7 @@ impl<'source> Parser<'source> {
                 expected: "a relation definition alias in formula position",
             });
         };
+        self.record_expansion(name, offset);
         let mut terms = TermBudget::new(context, depth, 1);
         let arguments = self.term_arguments(offset, name, arity, &mut terms)?;
         self.ensure_definition_arity(offset, name, arity, arguments.len())?;
@@ -156,6 +157,7 @@ impl<'source> Parser<'source> {
                 });
             }
         };
+        self.record_expansion(name, offset);
         // Each function contributes one graph atom, a three-node conjunction
         // and a three-node existential. Preflight before recursive arguments
         // or constraint allocation; the same limit also bounds the call stack.
@@ -304,6 +306,7 @@ impl<'source> Parser<'source> {
             })?;
         self.charge_formula_nodes(context, expanded_nodes, offset)?;
         self.check_expanded_depth(offset, depth, expanded_depth)?;
+        self.record_expansion(name, offset);
         let formula = self
             .formula_bindings
             .get(name)

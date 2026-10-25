@@ -623,7 +623,7 @@ class Driver:
             self.retain_proof("dependent", child)
             before = len(self.nodes[3].events)
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
-            self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and "required dependency missing" in event.get("error", ""), since=before)
+            self.nodes[3].wait_event(lambda event: event.get("event") == "proof_skipped" and "required dependency missing" in event.get("error", {}).get("message", ""), since=before)
             status = self.nodes[3].status_snapshot()
             assert not status["pending"] and set(status["ids"]) == set(initial)
             assert len(stored_objects(self.nodes[3])) == len(initial)
@@ -664,7 +664,7 @@ class Driver:
                     expected_error = "compatibility mismatch"
                 elif label == "mathematical":
                     object["proof"] = "00000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
-                    expected_error = "mathematically invalid"
+                    expected_error = "mp.expected_implication"
                 else:
                     unrelated_source = source(60)
                     unrelated = self.nodes[0].command("test_compile", source=unrelated_source)["object"]
@@ -676,7 +676,9 @@ class Driver:
                 metadata = {"proof_id": object["proof_id"], "statement_id": object["statement_id"], "question": q}
                 offset = len(self.nodes[1].events)
                 self.nodes[0].command("test_offer", peer=self.nodes[1].identity, metadata=metadata, object=object)
-                event = self.nodes[1].wait_event(lambda event: event.get("event") == "proof_skipped" and expected_error in event.get("error", ""), since=offset)
+                event = self.nodes[1].wait_event(lambda event: event.get("event") == "proof_skipped" and (
+                    (event.get("error", {}).get("diagnostic") or {}).get("failure", {}).get("code") == expected_error
+                    if label == "mathematical" else expected_error in event.get("error", {}).get("message", "")), since=offset)
                 status = self.nodes[1].status_snapshot()
                 assert status["ids"] == baseline["ids"] and status["root"] == baseline["root"] and not status["pending"]
                 assert len(stored_objects(self.nodes[1])) == len(baseline["ids"])

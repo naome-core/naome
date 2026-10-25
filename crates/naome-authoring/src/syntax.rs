@@ -74,6 +74,9 @@ pub(crate) struct Variables<'a> {
     next: u32,
 }
 impl<'a> Variables<'a> {
+    pub(crate) fn names(&self) -> impl Iterator<Item = (&'a str, FreeVariable)> + '_ {
+        self.named.iter().map(|(name, variable)| (*name, *variable))
+    }
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.named.contains_key(name)
     }

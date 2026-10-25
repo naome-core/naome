@@ -13,8 +13,7 @@ use naome_authoring::{
     compile_artifact, compile_artifact_against_proof_context,
 };
 use naome_checker::{
-    ArtifactState, CheckError, CheckedProof, check_definition_with_state,
-    check_normal_form_with_state,
+    ArtifactState, CheckedProof, check_definition_with_state, check_normal_form_with_state,
 };
 use naome_proof::{
     ArtifactId, ArtifactPayload, DefinitionId, DerivationId, ProofCertificate, ProofId, ProofStep,
@@ -261,10 +260,10 @@ fn compiled_proof(compiled: &CompiledArtifact) -> &CompiledProof {
 }
 
 fn assert_unknown_reference(result: Result<CompiledProof, CompileError>, expected: ProofId) {
-    match result {
-        Err(CompileError::Check { source, .. }) => assert!(matches!(
-            source.as_ref(),
-            CheckError::UnknownProofReference { step: 0, proof_id } if *proof_id == expected
+    match result.map_err(CompileError::into_kind) {
+        Err(naome_authoring::CompileErrorKind::Check { source, .. }) => assert!(matches!(
+            source.kind(),
+            naome_checker::CheckErrorKind::UnknownProofReference { step: 0, proof_id } if *proof_id == expected
         )),
         other => panic!("expected unknown proof reference, got {other:?}"),
     }
@@ -374,10 +373,10 @@ def self_equal = relation(x):
     let source =
         compile_artifact_against_proof_context(colliding_name, &context.state).unwrap_err();
     assert!(matches!(
-        &source,
-        CompileError::DuplicateDefinitionAlias { name, .. } if name == "self_equal"
+        source.kind(),
+        naome_authoring::CompileErrorKind::DuplicateDefinitionAlias { name, .. } if name == "self_equal"
     ));
-    let diagnostic = source.diagnostic(colliding_name);
+    let diagnostic = source.diagnostic();
     assert_eq!(diagnostic.code().as_str(), "NAO0016");
     let span = diagnostic.primary_span().unwrap();
     assert_eq!(&colliding_name[span.start()..span.end()], "self_equal");
@@ -422,9 +421,12 @@ def presentation_only = relation(a, b):
         "defs: future = \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\" def current = relation(x): future(x)",
     ] {
         assert!(matches!(
-            compile_artifact_against_proof_context(source, &context.state),
-            Err(CompileError::UnknownDefinitionAlias { .. }
-                | CompileError::DefinitionNotSelected { .. })
+            compile_artifact_against_proof_context(source, &context.state)
+                .map_err(CompileError::into_kind),
+            Err(
+                naome_authoring::CompileErrorKind::UnknownDefinitionAlias { .. }
+                    | naome_authoring::CompileErrorKind::DefinitionNotSelected { .. }
+            )
         ));
     }
 
@@ -518,8 +520,9 @@ def presentation_only = relation(a, b):
         compile_artifact(include_str!("fixtures/reflexive-relation.nao")).unwrap();
     assert_eq!(compiled_definition_id(&dependency_free), first_id);
     assert!(matches!(
-        compile_artifact(include_str!("fixtures/reflexive-relation-alias.nao")),
-        Err(CompileError::DefinitionNotSelected { .. })
+        compile_artifact(include_str!("fixtures/reflexive-relation-alias.nao"))
+            .map_err(CompileError::into_kind),
+        Err(naome_authoring::CompileErrorKind::DefinitionNotSelected { .. })
     ));
 
     let final_proof_id = long.proof_id();
@@ -800,8 +803,8 @@ fn only_exact_checked_definition_registration_enables_aliases() {
     admit_compiled(&mut other, &definition);
     let mut context = CheckedContext::default();
     assert!(
-        matches!(compile_artifact_against_proof_context(source, &context.state),
-        Err(CompileError::DefinitionNotSelected { definition_id, .. }) if definition_id == id)
+        matches!(compile_artifact_against_proof_context(source, &context.state).map_err(CompileError::into_kind),
+        Err(naome_authoring::CompileErrorKind::DefinitionNotSelected { definition_id, .. }) if definition_id == id)
     );
     assert!(context.payloads.is_empty());
     assert!(

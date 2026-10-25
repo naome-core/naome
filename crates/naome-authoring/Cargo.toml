@@ -8,7 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-developer-tools = ["dep:serde_json"]
+developer-tools = ["dep:serde_json", "dep:rusqlite"]
 
 [[bin]]
 name = "naome-author"
@@ -17,11 +17,13 @@ doc = false
 required-features = ["developer-tools"]
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 naome-checker = { path = "../naome-checker" }
 naome-foundation = { path = "../naome-foundation" }
 naome-proof = { path = "../naome-proof" }
 sha2.workspace = true
 serde_json = { version = "1", optional = true }
+rusqlite = { version = "=0.40.2", features = ["bundled", "hooks"], optional = true }
 
 [lints]
 workspace = true

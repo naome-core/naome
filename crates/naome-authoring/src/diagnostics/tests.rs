@@ -1,5 +1,6 @@
+use super::CompileErrorKind as CompileError;
 use super::*;
-use naome_foundation::Formula;
+mod proof;
 
 #[test]
 fn diagnostic_codes_and_source_positions_are_stable() {
@@ -38,18 +39,16 @@ fn diagnostic_codes_and_source_positions_are_stable() {
         },
         CompileError::Check {
             span: SourceSpan::point(0),
-            source: Box::new(CheckError::UnknownProofReference { step: 0, proof_id }),
-        },
-        CompileError::StatementMismatch {
-            span: SourceSpan::point(0),
-            comparison: Box::new(
-                naome_foundation::FormulaMismatch::between(
-                    &Formula::equal(FreeVariable::new(0), FreeVariable::new(0)),
-                    &Formula::member(FreeVariable::new(0), FreeVariable::new(0)),
+            source: Box::new(
+                naome_checker::check(
+                    &ProofCertificate::new(vec![ProofStep::ProofReference { proof_id }]).unwrap(),
                 )
-                .unwrap(),
+                .unwrap_err(),
             ),
         },
+        compile("goal=all(x,mem(x,x)) proof: a=refl(x) b=gen(a,x) return b")
+            .unwrap_err()
+            .into_kind(),
         CompileError::DuplicateFormulaBinding {
             offset: 0,
             name: "formula".to_owned(),

@@ -29,10 +29,10 @@ pub struct Ingest {
     pub status: &'static str,
     pub id: ProofId,
     pub admitted: Vec<ProofId>,
-    pub rejected: Vec<(ProofId, String)>,
+    pub rejected: Vec<(ProofId, crate::Error)>,
 }
 
-type PendingResolution = (Vec<ProofId>, Vec<(ProofId, String)>);
+type PendingResolution = (Vec<ProofId>, Vec<(ProofId, crate::Error)>);
 
 /// The sole acceptance owner for this operating path. Checked state is private.
 pub struct Graph {
@@ -679,7 +679,7 @@ impl Graph {
                     if self.storage_error().is_some() {
                         return Err(error);
                     }
-                    rejected.push((id, error.to_string()));
+                    rejected.push((id, error));
                 }
             }
             let removed = self.backlog()?.remove(id);
@@ -709,21 +709,9 @@ impl Graph {
             self.checks[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         naome_authoring::compile_against_proof_context(source, context).map_err(|error| {
-            if let naome_authoring::CompileError::Check { source, .. } = &error
-                && let naome_checker::CheckError::ContextAccess { source, .. } = source.as_ref()
-            {
-                let error = crate::Error::from(source.clone());
-                if error.fatal() {
-                    *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                        error
-                            .storage_detail()
-                            .unwrap_or("checked storage failure")
-                            .to_owned(),
-                    );
-                }
-                return error;
-            }
-            crate::Error::InvalidInput(error.to_string())
+            let error = crate::Error::from(error);
+            self.record_check_failure(&error);
+            error
         })
     }
 
@@ -737,21 +725,21 @@ impl Graph {
             self.checks[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         check_normal_form_with_state(normal, context).map_err(|error| {
-            if let naome_checker::CheckError::ContextAccess { source, .. } = &error {
-                let error = crate::Error::from(source.clone());
-                if error.fatal() {
-                    *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-                        error
-                            .storage_detail()
-                            .unwrap_or("checked storage failure")
-                            .to_owned(),
-                    );
-                }
-                error
-            } else {
-                crate::Error::InvalidInput(format!("mathematically invalid: {error}"))
-            }
+            let error = crate::Error::from(error);
+            self.record_check_failure(&error);
+            error
         })
+    }
+
+    fn record_check_failure(&self, error: &crate::Error) {
+        if error.fatal() {
+            *self.storage_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+                error
+                    .storage_detail()
+                    .unwrap_or("checked storage failure")
+                    .to_owned(),
+            );
+        }
     }
 
     fn checked_registration(

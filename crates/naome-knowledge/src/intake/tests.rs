@@ -875,7 +875,7 @@ async fn final_interest_batch_prepared_before_copy_attach_never_reaches_persiste
     match intake.advance(&mut graph, &mut questions) {
         Progress::Skipped(id, error) => {
             assert_eq!(id, root);
-            assert_eq!(error, crate::Error::StaleAuthority.to_string());
+            assert_eq!(error, crate::Error::StaleAuthority);
         }
         _ => panic!("a pre-attach held batch must be stale"),
     }

@@ -122,7 +122,7 @@ impl Intake {
                 .pop_front()
                 .expect("bounded metadata decision queue");
             let id = waiting.description.transfer.root();
-            let result = (|| -> Result<Option<Vec<ProofId>>, String> {
+            let result = (|| -> Result<Option<Vec<ProofId>>, crate::Error> {
                 if graph.contains(id)? {
                     return Err("received answer makes pending metadata obsolete".into());
                 }
@@ -185,8 +185,7 @@ impl Intake {
                                             waiting.description.transfer.capability(),
                                             waiting.description.transfer.deadline(),
                                         )
-                                        .map(Some)
-                                        .map_err(String::from);
+                                        .map(Some);
                                 }
                                 waiting.phase = Phase::Refresh {
                                     initial: initial.clone(),
@@ -246,7 +245,7 @@ impl Intake {
             return Progress::Waiting;
         };
         let id = root.description.transfer.root();
-        let result = (|| -> Result<Option<Vec<ProofId>>, String> {
+        let result = (|| -> Result<Option<Vec<ProofId>>, crate::Error> {
             if !root.description.transfer.live(now) {
                 if root.helpers.is_empty() {
                     return Err("short proof grant expired".into());

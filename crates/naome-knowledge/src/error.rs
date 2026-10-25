@@ -17,34 +17,128 @@ pub enum Error {
     StaleAuthority,
     Deadline,
     InvalidInput(String),
+    Proof {
+        message: String,
+        diagnostic: std::sync::Arc<naome_checker::diagnostics::ProofDiagnostic>,
+    },
+    Compile(Box<naome_authoring::CompileDiagnostic>),
+    DiagnosticInspection(naome_checker::diagnostics::InspectionError),
+    CertificateFormat {
+        message: String,
+        input_digest: naome_checker::diagnostics::Digest,
+        reason: naome_authoring::FormatFailure,
+    },
+    /// Invalid data read from owned storage remains fatal while retaining the
+    /// original structured diagnostic. It is never a candidate repair request.
+    Stored(Box<Error>),
     CorruptStorage(String),
     UncertainDurability(String),
 }
 impl Error {
+    /// The same mathematical contract survives both native proof paths.
+    pub fn diagnostic(&self) -> Option<&naome_checker::diagnostics::ProofDiagnostic> {
+        match self {
+            Self::Proof { diagnostic, .. } => Some(diagnostic),
+            Self::Compile(diagnostic) => diagnostic.proof(),
+            Self::Stored(error) => error.diagnostic(),
+            _ => None,
+        }
+    }
+    pub fn compile_diagnostic(&self) -> Option<&naome_authoring::CompileDiagnostic> {
+        match self {
+            Self::Compile(diagnostic) => Some(diagnostic),
+            Self::Stored(error) => error.compile_diagnostic(),
+            _ => None,
+        }
+    }
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::MemoryOverload { .. } => "resource.memory_overload",
+            Self::DiskOverload { .. } => "resource.disk_overload",
+            Self::ExecutionLimit => "resource.execution_limit",
+            Self::InputLimit(_) => "input.limit",
+            Self::StaleAuthority => "publication.stale_authority",
+            Self::Deadline => "publication.deadline",
+            Self::InvalidInput(_) => "input.invalid",
+            Self::Proof { .. } => "proof.check",
+            Self::Compile(_) => "source.compile",
+            Self::DiagnosticInspection(_) => "diagnostic.inspection",
+            Self::CertificateFormat { .. } => "certificate.format",
+            Self::Stored(_) => "storage.invalid_record",
+            Self::CorruptStorage(_) => "storage.corrupt",
+            Self::UncertainDurability(_) => "storage.uncertain_durability",
+        }
+    }
     pub fn retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::MemoryOverload { .. }
-                | Self::DiskOverload { .. }
-                | Self::ExecutionLimit
-                | Self::StaleAuthority
-                | Self::Deadline
-        )
+        if matches!(self, Self::Stored(_)) {
+            return false;
+        }
+        self.diagnostic()
+            .is_some_and(|d| matches!(d.failure, naome_checker::diagnostics::Failure::ContextLimit))
+            || matches!(
+                self,
+                Self::MemoryOverload { .. }
+                    | Self::DiskOverload { .. }
+                    | Self::ExecutionLimit
+                    | Self::StaleAuthority
+                    | Self::Deadline
+            )
     }
     pub(crate) fn storage(self) -> Self {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
+            error @ (Self::Proof { .. } | Self::Compile(_) | Self::CertificateFormat { .. })
+                if !error.retryable() =>
+            {
+                Self::Stored(Box::new(error))
+            }
             other => other,
         }
     }
     pub(crate) fn storage_detail(&self) -> Option<&str> {
         match self {
+            Self::Stored(error) => error.detail(),
+            Self::Proof { message, .. } if self.fatal() => Some(message),
+            Self::Compile(diagnostic) if self.fatal() => Some(diagnostic.message()),
             Self::CorruptStorage(message) | Self::UncertainDurability(message) => Some(message),
             _ => None,
         }
     }
     pub(crate) fn fatal(&self) -> bool {
-        matches!(self, Self::CorruptStorage(_) | Self::UncertainDurability(_))
+        self.diagnostic()
+            .is_some_and(|d| d.outcome == naome_checker::diagnostics::Outcome::ContextFailure)
+            || matches!(
+                self,
+                Self::Stored(_) | Self::CorruptStorage(_) | Self::UncertainDurability(_)
+            )
+    }
+    fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Proof { message, .. }
+            | Self::CertificateFormat { message, .. }
+            | Self::InvalidInput(message)
+            | Self::CorruptStorage(message)
+            | Self::UncertainDurability(message) => Some(message),
+            Self::Compile(diagnostic) => Some(diagnostic.message()),
+            Self::Stored(error) => error.detail(),
+            _ => None,
+        }
+    }
+    fn format_error(
+        &self,
+    ) -> Option<(
+        naome_checker::diagnostics::Digest,
+        &naome_authoring::FormatFailure,
+    )> {
+        match self {
+            Self::CertificateFormat {
+                input_digest,
+                reason,
+                ..
+            } => Some((*input_digest, reason)),
+            Self::Stored(error) => error.format_error(),
+            _ => None,
+        }
     }
     #[cfg(test)]
     pub(crate) fn contains(&self, pattern: &str) -> bool {
@@ -76,6 +170,11 @@ impl fmt::Display for Error {
             Self::ExecutionLimit => f.write_str("operation execution resources exhausted"),
             Self::InputLimit(message) => f.write_str(message),
             Self::InvalidInput(message) => f.write_str(message),
+            Self::Proof { message, .. } => f.write_str(message),
+            Self::Compile(diagnostic) => f.write_str(diagnostic.message()),
+            Self::DiagnosticInspection(error) => error.fmt(f),
+            Self::CertificateFormat { message, .. } => f.write_str(message),
+            Self::Stored(error) => write!(f, "storage halted: {error}"),
             Self::CorruptStorage(message) | Self::UncertainDurability(message) => {
                 write!(f, "storage halted: {message}")
             }
@@ -86,7 +185,15 @@ impl fmt::Display for Error {
         }
     }
 }
-impl StdError for Error {}
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Stored(error) => Some(error),
+            Self::DiagnosticInspection(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         use std::io::ErrorKind;
@@ -115,6 +222,15 @@ impl From<naome_checker::program::Error> for Error {
             return Self::ExecutionLimit;
         }
         match error {
+            naome_checker::program::Error::Check(diagnostic) => Self::Proof {
+                message: format!(
+                    "proof command {} violates {}",
+                    diagnostic.location.step,
+                    diagnostic.code()
+                ),
+                diagnostic: diagnostic.into(),
+            },
+            naome_checker::program::Error::Inspection(error) => Self::DiagnosticInspection(error),
             naome_checker::program::Error::Invalid(message) => Self::InvalidInput(message),
             naome_checker::program::Error::Storage(error) => {
                 Self::CorruptStorage(error.to_string())
@@ -143,7 +259,61 @@ impl From<naome_checker::ContextError> for Error {
 }
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("OperationError", 9)?;
+        value.serialize_field("schema_version", &1)?;
+        value.serialize_field("code", self.code())?;
+        value.serialize_field("message", &self.to_string())?;
+        value.serialize_field("retryable", &self.retryable())?;
+        value.serialize_field("diagnostic", &self.diagnostic())?;
+        value.serialize_field("source_diagnostic", &self.compile_diagnostic())?;
+        value.serialize_field(
+            "inspection_error",
+            &match self {
+                Self::DiagnosticInspection(error) => Some(error),
+                _ => None,
+            },
+        )?;
+        #[derive(serde::Serialize)]
+        struct Format<'a> {
+            input_digest: naome_checker::diagnostics::Digest,
+            reason: &'a naome_authoring::FormatFailure,
+        }
+        let format_error = self.format_error().map(|(input_digest, reason)| Format {
+            input_digest,
+            reason,
+        });
+        value.serialize_field("format_error", &format_error)?;
+        value.serialize_field("fatal", &self.fatal())?;
+        value.end()
+    }
+}
+
+impl From<naome_checker::CheckError> for Error {
+    fn from(error: naome_checker::CheckError) -> Self {
+        Self::Proof {
+            message: error.to_string(),
+            diagnostic: error.into_diagnostic(),
+        }
+    }
+}
+
+impl From<naome_authoring::CompileError> for Error {
+    fn from(error: naome_authoring::CompileError) -> Self {
+        Self::Compile(Box::new(error.into_diagnostic()))
+    }
+}
+
+impl From<naome_authoring::ResolutionError> for Error {
+    fn from(error: naome_authoring::ResolutionError) -> Self {
+        let message = error.to_string();
+        match error {
+            naome_authoring::ResolutionError::Target(diagnostic) => Self::Proof {
+                message,
+                diagnostic: diagnostic.into(),
+            },
+            naome_authoring::ResolutionError::Program(error) => error.into(),
+        }
     }
 }
 
@@ -165,3 +335,6 @@ impl From<naome_checker::ArtifactStateError> for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

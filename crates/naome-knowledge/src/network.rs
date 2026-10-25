@@ -1805,7 +1805,7 @@ impl Node {
                         } else if let Flight::Get { root, .. } = flight {
                             self.intake.abort(root);
                             emit(
-                                json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":"payload response peer or compatibility revoked"}),
+                                json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":crate::Error::from("payload response peer or compatibility revoked")}),
                             );
                         }
                     }
@@ -1823,7 +1823,7 @@ impl Node {
                 if let Some(Flight::Get { root, .. }) = self.flights.remove(&request_id) {
                     self.intake.abort(root);
                     emit(
-                        json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":"required payload request failed"}),
+                        json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from("required payload request failed")}),
                     );
                 }
                 emit(json!({"event":"request_failed","error":error.to_string()}));
@@ -2072,7 +2072,7 @@ impl Node {
                     self.graph.program_failure(&error);
                     self.intake.program_failed(peer, expected_id);
                     emit(
-                        json!({"event":"program_chunk_rejected","id":hex(expected_id.as_bytes()),"error":error.to_string()}),
+                        json!({"event":"program_chunk_rejected","id":hex(expected_id.as_bytes()),"error":error}),
                     );
                 }
             }
@@ -2174,12 +2174,14 @@ impl Node {
             }
             (Flight::Get { root, .. }, Body::Error { reason }) => {
                 self.intake.abort(root);
-                emit(json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":reason}));
+                emit(
+                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from(reason)}),
+                );
             }
             (Flight::Get { root, .. }, Body::Missing) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":"required dependency missing"}),
+                    json!({"event":"proof_skipped", "id":hex(root.as_bytes()),"error":crate::Error::from("required dependency missing")}),
                 );
             }
             (_, Body::Error { reason }) => emit(json!({"event":"peer_error","error":reason})),
@@ -2189,7 +2191,7 @@ impl Node {
             (Flight::Get { root, .. }, _) => {
                 self.intake.abort(root);
                 emit(
-                    json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":"unexpected required payload response"}),
+                    json!({"event":"proof_skipped","id":hex(root.as_bytes()),"error":crate::Error::from("unexpected required payload response")}),
                 );
             }
             _ => emit(json!({"event":"rejected","error":"unexpected response kind"})),

@@ -68,9 +68,14 @@ impl Logic {
 
     /// Derives `B` from `A` and `A → B`.
     pub fn modus_ponens(premise: &Formula, implication: &Formula) -> Result<Formula, LogicError> {
-        implication
-            .implication_consequent_for(premise)
-            .ok_or(LogicError::ModusPonensMismatch)
+        let (antecedent, consequent) = implication
+            .view()
+            .implication_parts()
+            .ok_or(LogicError::ExpectedImplication)?;
+        if antecedent != *premise {
+            return Err(LogicError::AntecedentMismatch);
+        }
+        Ok(consequent.to_owned())
     }
 
     /// Universally quantifies a selected free variable in an earlier formula.
@@ -83,14 +88,16 @@ impl Logic {
 /// An invalid primitive inference-rule application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogicError {
-    /// Modus ponens did not receive matching `A` and `A → B` formulas.
-    ModusPonensMismatch,
+    /// The implication operand has another outer constructor.
+    ExpectedImplication,
+    /// The implication's antecedent differs from the proved premise.
+    AntecedentMismatch,
 }
 
 impl fmt::Display for LogicError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ModusPonensMismatch => formatter.write_str(
+            Self::ExpectedImplication | Self::AntecedentMismatch => formatter.write_str(
                 "modus ponens requires an implication whose antecedent equals the premise",
             ),
         }

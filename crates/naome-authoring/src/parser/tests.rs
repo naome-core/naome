@@ -1,3 +1,4 @@
+use naome_checker::CheckErrorKind as CheckError;
 #[path = "../../tests/support/hex_decode.rs"]
 mod hex_decode;
 use hex_decode::{hex_bytes, hex32};
@@ -100,7 +101,7 @@ fn compile_with_proof_state(
     source: &str,
     state: &ProofState,
 ) -> Result<CompiledProof, CompileError> {
-    match compile_with_artifact_state(source, state)? {
+    match compile_with_artifact_state(source, state).map_err(crate::CompileError::into_kind)? {
         CompiledArtifact::Proof(proof) => Ok(proof),
         CompiledArtifact::Definition(_) => Err(CompileError::ExpectedProof { offset: 0 }),
     }
@@ -134,6 +135,7 @@ fn parse_step_with_names(source: &str, names: &[&'static str]) -> Result<ProofSt
             StepBinding {
                 position: u32::try_from(index).unwrap(),
                 span: SourceSpan::point(0),
+                arguments: Vec::new(),
             },
         );
     }
@@ -144,7 +146,7 @@ fn parse_step_with_names(source: &str, names: &[&'static str]) -> Result<ProofSt
 
 fn assert_check_error(result: Result<CompiledProof, CompileError>, expected: CheckError) {
     match result {
-        Err(CompileError::Check { source, .. }) => assert_eq!(source.as_ref(), &expected),
+        Err(CompileError::Check { source, .. }) => assert_eq!(source.kind(), &expected),
         other => panic!("expected checker error {expected:?}, got {other:?}"),
     }
 }
@@ -1204,7 +1206,7 @@ fn complete_parsing_precedes_checking_and_statement_comparison() {
     assert!(matches!(
         compile(&open),
         Err(CompileError::Check { source, .. })
-            if matches!(source.as_ref(), CheckError::OpenConclusion { .. })
+            if matches!(source.kind(), CheckError::OpenConclusion { .. })
     ));
 
     let mismatch = SOURCE.replace("all(x, eq(x, x))", "all(x, mem(x, x))");
@@ -1217,7 +1219,7 @@ fn complete_parsing_precedes_checking_and_statement_comparison() {
     assert!(matches!(
         compile(&invalid_mp),
         Err(CompileError::Check { source, .. })
-            if matches!(source.as_ref(), CheckError::Logic { .. })
+            if matches!(source.kind(), CheckError::Logic { .. })
     ));
 }
 
@@ -2030,4 +2032,11 @@ fn primitive_question_and_proof_grammars_share_binding_expansion_and_diagnostics
         question.diagnostic().primary_span().unwrap().start(),
         proof.diagnostic(source).primary_span().unwrap().start()
     );
+}
+
+fn compile(source: &str) -> Result<CompiledProof, CompileError> {
+    crate::compile(source).map_err(crate::CompileError::into_kind)
+}
+fn compile_artifact(source: &str) -> Result<CompiledArtifact, CompileError> {
+    crate::compile_artifact(source).map_err(crate::CompileError::into_kind)
 }

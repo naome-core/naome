@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 mod tests;
 
 pub const CODEC_ID: &str = "naome:proof-codec:v0";
-pub const CHECKER_ID: &str = "naome:zfc-checker:v0";
+pub use naome_checker::CHECKER_ID;
 pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program:v3";
 const PROGRAM_MAGIC: &[u8] = b"\xffNAOP2\0";
 
@@ -279,8 +279,13 @@ fn prepare_candidate(
     maximum_dependencies: usize,
     memory: std::sync::Arc<crate::resources::MemoryLease>,
 ) -> Result<Candidate, crate::Error> {
-    let certificate = ProofCertificate::from_canonical_bytes(&bytes)
-        .map_err(|error| format!("malformed certificate: {error}"))?;
+    let certificate = ProofCertificate::from_canonical_bytes(&bytes).map_err(|error| {
+        crate::Error::CertificateFormat {
+            message: format!("malformed certificate: {error}"),
+            input_digest: naome_checker::diagnostics::Digest::of(&bytes),
+            reason: naome_authoring::FormatFailure::from(&error),
+        }
+    })?;
     let normal = certificate.into_unchecked_normal_form();
     if normal.canonical_bytes() != bytes.as_ref() {
         return Err("non-normal proof bytes".into());

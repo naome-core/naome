@@ -13,8 +13,10 @@ use naome_authoring::{
     QuestionError, compile_artifact,
 };
 use naome_proof::ArtifactId;
+#[path = "naome/program.rs"]
+mod program;
 
-const USAGE: &str = "usage: naome-author proof <proof.nao> | question <question.nao>";
+const USAGE: &str = "usage: naome-author proof [--json] <proof.nao> | question [--json] <question.nao> | program [--json] <commands.jsonl>\nprogram checks JSONL commands in a private temporary disk database; it requires a final seal and uses an empty checked context";
 
 fn main() -> ExitCode {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
@@ -39,11 +41,17 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
         [command, flag, path] if flag == "--json" => (command, path, true),
         _ => return Err(CliError::Usage),
     };
-    if command != OsStr::new("proof") && command != OsStr::new("question") {
+    if command != OsStr::new("proof")
+        && command != OsStr::new("question")
+        && command != OsStr::new("program")
+    {
         return Err(CliError::Usage);
     }
 
     let path = PathBuf::from(path);
+    if command == OsStr::new("program") {
+        return program::run(&path, json, output);
+    }
     let maximum = if command == OsStr::new("question") {
         QUESTION_SOURCE_MAX_BYTES
     } else {
@@ -54,7 +62,7 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
         let question = CompiledQuestion::compile_with_diagnostic(&source).map_err(|error| {
             CliError::Question {
                 path: path.clone(),
-                diagnostic: Some(error.diagnostic().clone()),
+                diagnostic: Some(Box::new(error.diagnostic().clone())),
                 source: error.into_error(),
             }
         })?;
@@ -67,7 +75,7 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
             })?;
         if json {
             let result = serde_json::json!({
-                "schema_version": 1, "ok": true, "kind": "question",
+                "schema_version": 2, "ok": true, "kind": "question",
                 "source_hash": hex(question.source_hash()),
                 "resolution_id": hex(question.resolution_id()),
                 "negation_parity": question.negation_parity(),
@@ -83,13 +91,12 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
     }
     let artifact = compile_artifact(&source).map_err(|error| CliError::Compile {
         path: path.clone(),
-        diagnostic: error.diagnostic(&source),
         source: Box::new(error),
     })?;
     if json {
         let result = match &artifact {
             CompiledArtifact::Proof(proof) => serde_json::json!({
-                "schema_version": 1, "ok": true, "kind": "proof",
+                "schema_version": 2, "ok": true, "kind": "proof",
                 "statement_id": hex(proof.statement_id().as_bytes()),
                 "derivation_id": hex(proof.derivation_id().as_bytes()),
                 "proof_id": hex(proof.proof_id().as_bytes()),
@@ -97,7 +104,7 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
                 "canonical_proof": hex(proof.canonical_proof_bytes()),
             }),
             CompiledArtifact::Definition(definition) => serde_json::json!({
-                "schema_version": 1, "ok": true, "kind": "definition",
+                "schema_version": 2, "ok": true, "kind": "definition",
                 "definition_id": hex(definition.definition_id().as_bytes()),
                 "artifact_id": hex(definition.artifact_id().as_bytes()),
                 "canonical_definition": hex(definition.canonical_definition_bytes()),
@@ -202,13 +209,16 @@ enum CliError {
     },
     Compile {
         path: PathBuf,
-        diagnostic: CompileDiagnostic,
         source: Box<CompileError>,
     },
     Question {
         path: PathBuf,
-        diagnostic: Option<CompileDiagnostic>,
+        diagnostic: Option<Box<CompileDiagnostic>>,
         source: QuestionError,
+    },
+    Program {
+        path: PathBuf,
+        source: program::ProgramError,
     },
     Output {
         source: io::Error,
@@ -223,6 +233,7 @@ impl CliError {
             | Self::SourceTooLong { .. }
             | Self::Compile { .. }
             | Self::Question { .. }
+            | Self::Program { .. }
             | Self::Output { .. } => 1,
         }
     }
@@ -241,9 +252,8 @@ impl fmt::Display for CliError {
                 display_path(path),
                 DiagnosticCode::SourceTooLong,
             ),
-            Self::Compile {
-                path, diagnostic, ..
-            } => {
+            Self::Compile { path, source } => {
+                let diagnostic = source.diagnostic();
                 let path = display_path(path);
                 match diagnostic.primary_position() {
                     Some(position) => write!(
@@ -265,6 +275,7 @@ impl fmt::Display for CliError {
             Self::Question { path, source, .. } => {
                 write!(formatter, "{}: {source}", display_path(path))
             }
+            Self::Program { path, source } => write!(formatter, "{}: {source}", display_path(path)),
             Self::Output { source } => write!(formatter, "failed to write output: {source}"),
         }
     }
@@ -280,12 +291,15 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn error_json(error: &CliError) -> serde_json::Value {
+    if let CliError::Program { source, .. } = error {
+        return source.json();
+    }
     let diagnostic = match error {
-        CliError::Compile { diagnostic, .. }
-        | CliError::Question {
+        CliError::Compile { source, .. } => Some(source.diagnostic()),
+        CliError::Question {
             diagnostic: Some(diagnostic),
             ..
-        } => Some(diagnostic),
+        } => Some(diagnostic.as_ref()),
         _ => None,
     };
     let phase = match diagnostic.map(CompileDiagnostic::code) {
@@ -296,17 +310,13 @@ fn error_json(error: &CliError) -> serde_json::Value {
         None if matches!(error, CliError::Output { .. }) => "output",
         None => "input",
     };
-    let details = diagnostic.map(|diagnostic| serde_json::json!({
-        "code": diagnostic.code().as_str(),
-        "message": diagnostic.message(),
-        "span": diagnostic.primary_span().map(|span| serde_json::json!({ "start": span.start(), "end": span.end() })),
-        "position": diagnostic.primary_position().map(|position| serde_json::json!({ "line": position.line(), "column": position.column() })),
-        "formula_mismatch": diagnostic.formula_mismatch().map(|comparison| serde_json::json!({
-            "expected": comparison.expected(), "actual": comparison.actual(),
-            "path": comparison.path().iter().map(|segment| segment.as_str()).collect::<Vec<_>>(),
+    let details = diagnostic.map(|diagnostic| serde_json::to_value(diagnostic).expect("diagnostic serialization is infallible")).or_else(|| match error {
+        CliError::SourceTooLong { maximum, .. } => Some(serde_json::json!({
+            "code": DiagnosticCode::SourceTooLong.as_str(),
+            "message": format!("source exceeds the {maximum}-byte limit"),
+            "span": null, "position": null, "proof": null,
+            "details": { "kind": "limit", "resource": "source_bytes", "maximum": maximum, "actual_at_least": maximum + 1 },
         })),
-    })).or_else(|| match error {
-        CliError::SourceTooLong { maximum, .. } => Some(serde_json::json!({ "code": DiagnosticCode::SourceTooLong.as_str(), "message": format!("source exceeds the {maximum}-byte limit"), "span": null, "position": null })),
         _ => None,
     });
     let message = if details.is_some() {
@@ -315,7 +325,7 @@ fn error_json(error: &CliError) -> serde_json::Value {
         Some(error.to_string())
     };
     serde_json::json!({
-        "schema_version": 1, "ok": false, "phase": phase,
+        "schema_version": 2, "ok": false, "phase": phase,
         "diagnostic": details,
         "message": message,
     })
@@ -327,6 +337,7 @@ impl Error for CliError {
             Self::Read { source, .. } | Self::Output { source } => Some(source),
             Self::Compile { source, .. } => Some(source.as_ref()),
             Self::Question { source, .. } => Some(source),
+            Self::Program { source, .. } => Some(source),
             Self::Usage | Self::SourceTooLong { .. } => None,
         }
     }

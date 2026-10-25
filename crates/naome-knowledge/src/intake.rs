@@ -89,7 +89,7 @@ pub(crate) struct Intake {
 
 pub(crate) enum Progress {
     Waiting,
-    Skipped(ProofId, String),
+    Skipped(ProofId, crate::Error),
     Accepted(Vec<ProofId>),
 }
 
@@ -263,12 +263,11 @@ impl Intake {
         expected: ProofId,
         object: Envelope,
         graph: &Graph,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::Error> {
         if self.programs.authorizes(peer, root_id, expected) {
             return self
                 .programs
-                .certificate_payload(peer, root_id, expected, object, graph)
-                .map_err(String::from);
+                .certificate_payload(peer, root_id, expected, object, graph);
         }
         if self.active.as_ref().is_some_and(|root| {
             root.description.transfer.peer() == peer
@@ -295,10 +294,7 @@ impl Intake {
             return Err("staged closure step work limit".into());
         }
         if root.helpers.needs(expected) {
-            return root
-                .helpers
-                .certificate_payload(expected, object, graph)
-                .map_err(String::from);
+            return root.helpers.certificate_payload(expected, object, graph);
         }
         if !root.description.transfer.live(Instant::now()) {
             return Err("expired proof fetch grant".into());
@@ -387,7 +383,7 @@ impl Intake {
         {
             graph.program_failure(&error);
             if let Some(root) = self.active.take() {
-                return Progress::Skipped(root.description.transfer.root(), error.to_string());
+                return Progress::Skipped(root.description.transfer.root(), error);
             }
         }
         match self.programs.advance(graph, questions) {
@@ -434,7 +430,7 @@ impl Intake {
             return Progress::Waiting;
         };
         let id = root.description.transfer.root();
-        let operation = (|| -> Result<Option<Vec<ProofId>>, String> {
+        let operation = (|| -> Result<Option<Vec<ProofId>>, crate::Error> {
             if !root.description.transfer.live(now) {
                 if root.helpers.is_empty() {
                     return Err("root intake deadline".into());
@@ -462,7 +458,8 @@ impl Intake {
                             return Err(format!(
                                 "question declined: {:?}/{:?}",
                                 assessment.prefilter.reason, assessment.interest
-                            ));
+                            )
+                            .into());
                         }
                         root.initial = Some(assessment);
                         root.needed.insert(id); // Parent first; no advertised helper list.

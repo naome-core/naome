@@ -13,6 +13,8 @@
 //! that normal form's distinct direct proof and definition dependencies.
 
 pub mod context;
+pub mod diagnostics;
+pub use diagnostics::CHECKER_ID;
 pub mod program;
 pub mod question;
 mod state;
@@ -58,7 +60,7 @@ pub const CHECKER_MAX_FORMULA_WORK_BYTES: usize = CERTIFICATE_MAX_BYTES;
 /// closed conclusion and content identities reconstructed from it. Those
 /// identities are content addresses; this type does not establish block
 /// admission or chain inclusion.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 #[must_use]
 pub struct CheckedProof {
     normal_form: ProofNormalForm,
@@ -67,7 +69,30 @@ pub struct CheckedProof {
     derivation_id: DerivationId,
     proof_id: ProofId,
     canonical_conclusion_length: usize,
+    context_snapshot: [u8; 32],
 }
+
+// Diagnostic provenance is not part of mathematical content equality.
+impl PartialEq for CheckedProof {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            &self.normal_form,
+            &self.conclusion,
+            self.statement_id,
+            self.derivation_id,
+            self.proof_id,
+            self.canonical_conclusion_length,
+        ) == (
+            &other.normal_form,
+            &other.conclusion,
+            other.statement_id,
+            other.derivation_id,
+            other.proof_id,
+            other.canonical_conclusion_length,
+        )
+    }
+}
+impl Eq for CheckedProof {}
 
 /// A conservative definition accepted against one selected-artifact state.
 ///
@@ -113,6 +138,10 @@ impl CheckedDefinition {
 }
 
 impl CheckedProof {
+    /// The checked immutable context used to derive this proof.
+    pub fn context_snapshot(&self) -> [u8; 32] {
+        self.context_snapshot
+    }
     /// Returns the checked proof's canonical normal form.
     pub const fn normal_form(&self) -> &ProofNormalForm {
         &self.normal_form
@@ -195,6 +224,15 @@ fn check_with_canonical_conclusion(
     artifact_state: &dyn ContextView,
     identity_mode: IdentityMode,
 ) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
+    check_with_diagnostic_query(certificate, artifact_state, identity_mode, None)
+}
+
+fn check_with_diagnostic_query(
+    certificate: &ProofCertificate,
+    artifact_state: &dyn ContextView,
+    identity_mode: IdentityMode,
+    query: Option<&diagnostics::FormulaQuery>,
+) -> Result<(Formula, Vec<u8>, Option<DerivationId>), CheckError> {
     let reads = context::cache::ReadContext::new(artifact_state);
     let artifact_state: &dyn ContextView = &reads;
     let steps = certificate.steps();
@@ -222,7 +260,17 @@ fn check_with_canonical_conclusion(
             &last_uses,
             artifact_state,
             &mut remaining_work,
-        )?;
+        )
+        .map_err(|kind| {
+            diagnostics::certificate::error(
+                kind,
+                certificate,
+                artifact_state,
+                &results,
+                None,
+                query,
+            )
+        })?;
         let derivation_inputs = derivation_ids
             .as_deref()
             .map(|derivation_ids| derivation_inputs(step, derivation_ids));
@@ -239,9 +287,18 @@ fn check_with_canonical_conclusion(
                     IdentityMode::OmitDerivation => formula.encode_canonical(),
                     IdentityMode::Derive => formula.encode_free_variable_normalized(),
                 };
-                canonical.map_err(|source| CheckError::DerivedFormula {
-                    step: position,
-                    source,
+                canonical.map_err(|source| {
+                    diagnostics::certificate::error(
+                        CheckErrorKind::DerivedFormula {
+                            step: position,
+                            source,
+                        },
+                        certificate,
+                        artifact_state,
+                        &results,
+                        Some(&formula),
+                        query,
+                    )
                 })
             })
             .transpose()?;
@@ -252,7 +309,16 @@ fn check_with_canonical_conclusion(
                     .as_ref()
                     .expect("an uncharged formula was canonically encoded")
                     .len();
-                charge_formula_work(position, length, &mut remaining_work)?;
+                charge_formula_work(position, length, &mut remaining_work).map_err(|kind| {
+                    diagnostics::certificate::error(
+                        kind,
+                        certificate,
+                        artifact_state,
+                        &results,
+                        Some(&formula),
+                        query,
+                    )
+                })?;
                 length
             }
         };
@@ -285,10 +351,26 @@ fn check_with_canonical_conclusion(
         .pop()
         .flatten()
         .expect("every ProofCertificate has at least one reconstructed step");
-    charge_formula_work(final_step, canonical_length, &mut remaining_work)?;
+    charge_formula_work(final_step, canonical_length, &mut remaining_work).map_err(|kind| {
+        diagnostics::certificate::error(
+            kind,
+            certificate,
+            artifact_state,
+            &results,
+            Some(&conclusion),
+            query,
+        )
+    })?;
 
     if !conclusion.is_closed() {
-        return Err(CheckError::OpenConclusion { step: final_step });
+        return Err(diagnostics::certificate::error(
+            CheckErrorKind::OpenConclusion { step: final_step },
+            certificate,
+            artifact_state,
+            &results,
+            Some(&conclusion),
+            query,
+        ));
     }
 
     Ok((
@@ -339,7 +421,18 @@ pub fn check_normal_form_with_state(
     normal_form: ProofNormalForm,
     artifact_state: &dyn ContextView,
 ) -> Result<CheckedProof, CheckError> {
-    check_normal_form_with_resolver(normal_form, artifact_state)
+    check_normal_form_with_resolver(normal_form, artifact_state, None)
+}
+
+/// Uses the same checker and captures a requested bounded formula fragment if
+/// checking fails. Queries never change mathematical acceptance or resource
+/// limits. Ordinary callers should use `check_normal_form_with_state`.
+pub fn check_normal_form_with_inspection(
+    normal_form: ProofNormalForm,
+    artifact_state: &dyn ContextView,
+    query: &diagnostics::FormulaQuery,
+) -> Result<CheckedProof, CheckError> {
+    check_normal_form_with_resolver(normal_form, artifact_state, Some(query))
 }
 
 /// Expands an authoring definition body and checks its canonical certificate.
@@ -470,11 +563,13 @@ fn function_obligation(input_arity: u32, body: Formula) -> Formula {
 fn check_normal_form_with_resolver(
     normal_form: ProofNormalForm,
     artifact_state: &dyn ContextView,
+    query: Option<&diagnostics::FormulaQuery>,
 ) -> Result<CheckedProof, CheckError> {
-    let (conclusion, canonical_conclusion, derivation_id) = check_with_canonical_conclusion(
+    let (conclusion, canonical_conclusion, derivation_id) = check_with_diagnostic_query(
         normal_form.certificate(),
         artifact_state,
         IdentityMode::Derive,
+        query,
     )?;
     let derivation_id =
         derivation_id.expect("derivation mode computes the final derivation identity");
@@ -489,6 +584,7 @@ fn check_normal_form_with_resolver(
         derivation_id,
         proof_id,
         canonical_conclusion_length,
+        context_snapshot: artifact_state.snapshot_id(),
     })
 }
 
@@ -538,9 +634,9 @@ fn last_uses(steps: &[ProofStep]) -> Vec<Option<u32>> {
     last_uses
 }
 
-fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), CheckError> {
+fn preflight_schema_depth(step: u32, parameter_count: usize) -> Result<(), CheckErrorKind> {
     if parameter_count >= FORMULA_MAX_DEPTH as usize {
-        return Err(CheckError::DerivedFormula {
+        return Err(CheckErrorKind::DerivedFormula {
             step,
             source: FormulaCodecError::DepthLimitExceeded {
                 maximum: FORMULA_MAX_DEPTH,
@@ -558,7 +654,7 @@ fn derive_step(
     last_uses: &[Option<u32>],
     artifact_state: &dyn ContextView,
     remaining_work: &mut usize,
-) -> Result<DerivedStep, CheckError> {
+) -> Result<DerivedStep, CheckErrorKind> {
     let formula = match proof_step {
         ProofStep::Simplification {
             antecedent,
@@ -616,20 +712,20 @@ fn derive_step(
             let schema = primitive_separation(step, schema, artifact_state)?;
             schema
                 .formula()
-                .map_err(|source| CheckError::Schema { step, source })?
+                .map_err(|source| CheckErrorKind::Schema { step, source })?
         }
         ProofStep::Replacement(schema) => {
             preflight_schema_depth(step, schema.parameters.len())?;
             let schema = primitive_replacement(step, schema, artifact_state)?;
             schema
                 .formula()
-                .map_err(|source| CheckError::Schema { step, source })?
+                .map_err(|source| CheckErrorKind::Schema { step, source })?
         }
         ProofStep::ProofReference { proof_id } => {
             let header = artifact_state
                 .proof_header(*proof_id)
-                .map_err(|source| CheckError::ContextAccess { step, source })?
-                .ok_or(CheckError::UnknownProofReference {
+                .map_err(|source| CheckErrorKind::ContextAccess { step, source })?
+                .ok_or(CheckErrorKind::UnknownProofReference {
                     step,
                     proof_id: *proof_id,
                 })?;
@@ -637,8 +733,8 @@ fn derive_step(
             charge_formula_work(step, header.length, remaining_work)?;
             let formula = artifact_state
                 .proof_formula(header, header.length)
-                .map_err(|source| CheckError::ContextAccess { step, source })?
-                .ok_or(CheckError::ContextAccess {
+                .map_err(|source| CheckErrorKind::ContextAccess { step, source })?
+                .ok_or(CheckErrorKind::ContextAccess {
                     step,
                     source: ContextError::Corrupt,
                 })?;
@@ -668,7 +764,7 @@ fn derive_step(
                         FormulaMismatch::between(&antecedent.to_owned(), &premise.formula)
                     })
                     .map(Box::new);
-                CheckError::Logic {
+                CheckErrorKind::Logic {
                     step,
                     source,
                     comparison,
@@ -702,7 +798,7 @@ fn primitive_formula<'a>(
     step: u32,
     formula: &'a ProofFormula,
     artifact_state: &dyn ContextView,
-) -> Result<Cow<'a, Formula>, CheckError> {
+) -> Result<Cow<'a, Formula>, CheckErrorKind> {
     if let Some(formula) = formula.as_primitive() {
         Ok(Cow::Borrowed(formula))
     } else {
@@ -711,7 +807,7 @@ fn primitive_formula<'a>(
             .expect("every non-primitive proof formula contains a definition")
             .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
             .map(|value| Cow::Owned(value.0))
-            .map_err(|source| CheckError::DefinitionExpansion { step, source })
+            .map_err(|source| CheckErrorKind::DefinitionExpansion { step, source })
     }
 }
 
@@ -719,7 +815,7 @@ fn primitive_separation(
     step: u32,
     schema: &ProofSeparation,
     artifact_state: &dyn ContextView,
-) -> Result<Separation, CheckError> {
+) -> Result<Separation, CheckErrorKind> {
     Ok(Separation {
         predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
         element: schema.element,
@@ -733,7 +829,7 @@ fn primitive_replacement(
     step: u32,
     schema: &ProofReplacement,
     artifact_state: &dyn ContextView,
-) -> Result<Replacement, CheckError> {
+) -> Result<Replacement, CheckErrorKind> {
     Ok(Replacement {
         predicate: primitive_formula(step, &schema.predicate, artifact_state)?.into_owned(),
         input: schema.input,
@@ -771,12 +867,16 @@ fn result(results: &[Option<CheckedStep>], reference: u32) -> &CheckedStep {
         .expect("ProofCertificate guarantees references to earlier steps")
 }
 
-fn charge_formula_work(step: u32, amount: usize, remaining: &mut usize) -> Result<(), CheckError> {
+fn charge_formula_work(
+    step: u32,
+    amount: usize,
+    remaining: &mut usize,
+) -> Result<(), CheckErrorKind> {
     if amount > *remaining {
         let actual = (CHECKER_MAX_FORMULA_WORK_BYTES - *remaining)
             .checked_add(amount)
             .expect("formula work charges fit usize");
-        return Err(CheckError::FormulaWorkLimitExceeded {
+        return Err(CheckErrorKind::FormulaWorkLimitExceeded {
             step,
             actual,
             maximum: CHECKER_MAX_FORMULA_WORK_BYTES,
@@ -787,10 +887,60 @@ fn charge_formula_work(step: u32, amount: usize, remaining: &mut usize) -> Resul
     Ok(())
 }
 
+/// A checking failure with its input-bound, serializable mathematical evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckError {
+    kind: CheckErrorKind,
+    diagnostic: std::sync::Arc<diagnostics::ProofDiagnostic>,
+}
+impl CheckError {
+    pub fn kind(&self) -> &CheckErrorKind {
+        &self.kind
+    }
+    pub fn into_kind(self) -> CheckErrorKind {
+        self.kind
+    }
+    pub fn diagnostic(&self) -> &diagnostics::ProofDiagnostic {
+        &self.diagnostic
+    }
+    /// Shares immutable evidence without copying formula or provenance data.
+    pub fn shared_diagnostic(&self) -> std::sync::Arc<diagnostics::ProofDiagnostic> {
+        self.diagnostic.clone()
+    }
+    pub fn into_diagnostic(self) -> std::sync::Arc<diagnostics::ProofDiagnostic> {
+        self.diagnostic
+    }
+    /// Authoring attaches source origins without changing mathematical evidence.
+    pub fn diagnostic_mut(&mut self) -> &mut diagnostics::ProofDiagnostic {
+        std::sync::Arc::make_mut(&mut self.diagnostic)
+    }
+    pub fn step(&self) -> u32 {
+        self.kind.step()
+    }
+    pub fn formula_mismatch(&self) -> Option<&FormulaMismatch> {
+        self.kind.formula_mismatch()
+    }
+}
+impl fmt::Display for CheckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+impl Error for CheckError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.kind)
+    }
+}
+impl serde::Serialize for CheckError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(self.diagnostic.as_ref(), serializer)
+    }
+}
+
 /// A dependency, mathematical, or deterministic-resource checking failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum CheckError {
+pub enum CheckErrorKind {
     /// A cold checked-context record could not be authenticated or read.
     ContextAccess { step: u32, source: ContextError },
     /// A referenced proof is absent from the supplied selected-artifact state.
@@ -823,7 +973,7 @@ pub enum CheckError {
     OpenConclusion { step: u32 },
 }
 
-impl CheckError {
+impl CheckErrorKind {
     /// Bounded expected/actual previews for a mismatched inference operand.
     pub fn formula_mismatch(&self) -> Option<&FormulaMismatch> {
         match self {
@@ -847,7 +997,7 @@ impl CheckError {
     }
 }
 
-impl fmt::Display for CheckError {
+impl fmt::Display for CheckErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ContextAccess { step, source } => write!(
@@ -902,7 +1052,7 @@ impl fmt::Display for CheckError {
     }
 }
 
-impl Error for CheckError {
+impl Error for CheckErrorKind {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::ContextAccess { source, .. } => Some(source),
