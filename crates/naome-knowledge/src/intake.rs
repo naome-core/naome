@@ -21,17 +21,16 @@ use tokio::sync::oneshot;
 mod certificate;
 mod managed;
 mod program;
+mod transfer;
+use transfer::TransferGrant;
 #[cfg(test)]
 mod tests;
 
 #[derive(Clone)]
 struct Description {
-    grant: Option<crate::publication::PeerGrant>,
-    peer: PeerId,
-    id: ProofId,
+    transfer: TransferGrant,
     statement: StatementId,
     question: CompiledQuestion,
-    created: Instant,
 }
 
 enum Phase {
@@ -57,13 +56,16 @@ struct ApprovedRoot {
 }
 
 impl ApprovedRoot {
+    fn fetching(&self) -> bool {
+        matches!(self.phase, Phase::Fetch) && self.initial.is_some()
+    }
     fn member_count(&self) -> usize {
         self.staged
             .keys()
             .copied()
             .chain(self.needed.iter().copied())
             .chain(self.helpers.members())
-            .chain(std::iter::once(self.description.id))
+            .chain(std::iter::once(self.description.transfer.root()))
             .collect::<BTreeSet<_>>()
             .len()
     }
@@ -122,12 +124,15 @@ impl Intake {
         }
         self.active
             .as_ref()
-            .is_some_and(|root| root.description.id == id)
-            || self.queue.iter().any(|description| description.id == id)
+            .is_some_and(|root| root.description.transfer.root() == id)
+            || self
+                .queue
+                .iter()
+                .any(|description| description.transfer.root() == id)
             || self
                 .waiting
                 .iter()
-                .any(|waiting| waiting.description.id == id)
+                .any(|waiting| waiting.description.transfer.root() == id)
     }
 
     #[cfg(test)]
@@ -151,21 +156,19 @@ impl Intake {
             return Ok("duplicate");
         }
         if let Some(root) = &mut self.active
-            && root.description.id == id
+            && root.description.transfer.root() == id
             && !root.helpers.is_empty()
         {
             if root.description.statement != statement || root.description.question != question {
                 return Err("refreshed parent metadata differs".into());
             }
-            root.description.peer = peer;
-            root.description.grant = grant;
-            root.description.created = Instant::now();
+            root.description.transfer = TransferGrant::new(peer, id, grant);
             return Ok("metadata_refreshed");
         }
         if let Some(waiting) = self
             .waiting
             .iter_mut()
-            .find(|w| w.description.peer == peer && w.description.id == id)
+            .find(|w| w.description.transfer.peer() == peer && w.description.transfer.root() == id)
         {
             if waiting.description.statement != statement
                 || waiting.description.question != question
@@ -174,15 +177,14 @@ impl Intake {
             }
             if let managed::Phase::Refresh { ready, .. } = &mut waiting.phase {
                 *ready = true;
-                waiting.description.created = Instant::now();
-                waiting.description.grant = grant;
+                waiting.description.transfer = TransferGrant::new(peer, id, grant);
                 return Ok("metadata_refreshed");
             }
             return Ok("queued_duplicate");
         }
         let same = |description: &Description| {
-            description.peer == peer
-                && description.id == id
+            description.transfer.peer() == peer
+                && description.transfer.root() == id
                 && description.statement == statement
                 && description.question == question
         };
@@ -204,12 +206,9 @@ impl Intake {
             return Err("description queue capacity".into());
         }
         self.queue.push_back(Description {
-            grant,
-            peer,
-            id,
+            transfer: TransferGrant::new(peer, id, grant),
             statement,
             question,
-            created: Instant::now(),
         });
         Ok("queued")
     }
@@ -218,9 +217,7 @@ impl Intake {
         self.active
             .as_ref()
             .filter(|root| {
-                matches!(root.phase, Phase::Fetch)
-                    && Instant::now().duration_since(root.description.created)
-                        < crate::resources::limits().root_timeout
+                matches!(root.phase, Phase::Fetch) && root.description.transfer.live(Instant::now())
             })
             .map(|root| {
                 root.needed
@@ -230,7 +227,13 @@ impl Intake {
                     .chain(root.helpers.needed())
                     .collect::<BTreeSet<_>>()
                     .into_iter()
-                    .map(|id| (root.description.peer, root.description.id, id))
+                    .map(|id| {
+                        (
+                            root.description.transfer.peer(),
+                            root.description.transfer.root(),
+                            id,
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -242,20 +245,14 @@ impl Intake {
     pub(crate) fn authorizes(&self, peer: PeerId, root_id: ProofId, id: ProofId) -> bool {
         self.programs.authorizes(peer, root_id, id)
             || self.active.as_ref().is_some_and(|root| {
-                root.description.peer == peer
-                    && root.description.id == root_id
-                    && matches!(root.phase, Phase::Fetch)
-                    && root.initial.is_some()
+                root.fetching()
+                    && root
+                        .description
+                        .transfer
+                        .authorizes(peer, root_id, Instant::now())
                     && (root.needed.contains(&id)
                         || root.helpers.needs(id)
                         || root.helpers.contains(id))
-                    && root
-                        .description
-                        .grant
-                        .as_ref()
-                        .is_none_or(|grant| grant.check().is_ok())
-                    && Instant::now().duration_since(root.description.created)
-                        < crate::resources::limits().root_timeout
             })
     }
 
@@ -274,10 +271,9 @@ impl Intake {
                 .map_err(String::from);
         }
         if self.active.as_ref().is_some_and(|root| {
-            root.description.peer == peer
-                && root.description.id == root_id
-                && Instant::now().duration_since(root.description.created)
-                    >= crate::resources::limits().root_timeout
+            root.description.transfer.peer() == peer
+                && root.description.transfer.root() == root_id
+                && !root.description.transfer.live(Instant::now())
         }) {
             return Err("expired proof fetch grant".into());
         }
@@ -304,24 +300,15 @@ impl Intake {
                 .certificate_payload(expected, object, graph)
                 .map_err(String::from);
         }
-        if Instant::now().duration_since(root.description.created)
-            >= crate::resources::limits().root_timeout
-        {
+        if !root.description.transfer.live(Instant::now()) {
             return Err("expired proof fetch grant".into());
         }
-        if root.description.peer != peer
-            || root.description.id != root_id
-            || !matches!(root.phase, Phase::Fetch)
-            || !root.needed.contains(&expected)
-            || id_bytes(&object.proof_id)? != *expected.as_bytes()
-        {
+        if !root.needed.contains(&expected) || id_bytes(&object.proof_id)? != *expected.as_bytes() {
             return Err("unrequested or mismatched proof payload".into());
         }
         // The shared certificate header charge precedes decoding and allocation.
         let candidate = object.prepare()?;
-        if Instant::now().duration_since(root.description.created)
-            >= crate::resources::limits().root_timeout
-        {
+        if !root.description.transfer.live(Instant::now()) {
             return Err("expired proof staging grant".into());
         }
         if candidate.id == root_id && candidate.statement != root.description.statement {
@@ -349,11 +336,12 @@ impl Intake {
 
     pub(crate) fn abort(&mut self, root_id: ProofId) {
         self.programs.remove(root_id);
-        self.waiting.retain(|w| w.description.id != root_id);
+        self.waiting
+            .retain(|w| w.description.transfer.root() != root_id);
         if self
             .active
             .as_ref()
-            .is_some_and(|root| root.description.id == root_id)
+            .is_some_and(|root| root.description.transfer.root() == root_id)
         {
             self.active = None;
         }
@@ -361,12 +349,14 @@ impl Intake {
 
     pub(crate) fn disconnected(&mut self, peer: PeerId) {
         self.programs.failed(peer, None);
-        self.waiting.retain(|w| w.description.peer != peer);
-        self.queue.retain(|description| description.peer != peer);
+        self.waiting
+            .retain(|w| w.description.transfer.peer() != peer);
+        self.queue
+            .retain(|description| description.transfer.peer() != peer);
         if self
             .active
             .as_ref()
-            .is_some_and(|root| root.description.peer == peer)
+            .is_some_and(|root| root.description.transfer.peer() == peer)
         {
             self.active = None;
         }
@@ -388,7 +378,7 @@ impl Intake {
         {
             let root = self.active.take().expect("overloaded closure");
             return Progress::Skipped(
-                root.description.id,
+                root.description.transfer.root(),
                 "staged closure dependency capacity".into(),
             );
         }
@@ -397,7 +387,7 @@ impl Intake {
         {
             graph.program_failure(&error);
             if let Some(root) = self.active.take() {
-                return Progress::Skipped(root.description.id, error.to_string());
+                return Progress::Skipped(root.description.transfer.root(), error.to_string());
             }
         }
         match self.programs.advance(graph, questions) {
@@ -415,15 +405,16 @@ impl Intake {
             && questions.available()
             && let Some(description) = self.queue.pop_front()
         {
-            if Instant::now().duration_since(description.created)
-                >= crate::resources::limits().root_timeout
-            {
-                return Progress::Skipped(description.id, "queued root intake deadline".into());
+            if !description.transfer.live(Instant::now()) {
+                return Progress::Skipped(
+                    description.transfer.root(),
+                    "queued root intake deadline".into(),
+                );
             }
             let (question, receiver) = questions.begin_exchange(
                 graph,
                 description.question.clone(),
-                description.created + crate::resources::limits().root_timeout,
+                description.transfer.deadline(),
             );
             self.active = Some(ApprovedRoot {
                 description,
@@ -442,11 +433,9 @@ impl Intake {
         let Some(mut root) = self.active.take() else {
             return Progress::Waiting;
         };
-        let id = root.description.id;
+        let id = root.description.transfer.root();
         let operation = (|| -> Result<Option<Vec<ProofId>>, String> {
-            if now.duration_since(root.description.created)
-                >= crate::resources::limits().root_timeout
-            {
+            if !root.description.transfer.live(now) {
                 if root.helpers.is_empty() {
                     return Err("root intake deadline".into());
                 } else {
@@ -493,15 +482,13 @@ impl Intake {
                         root.helpers.take_prefix(),
                     )?;
                     if questions.available() {
-                        if Instant::now().duration_since(root.description.created)
-                            >= crate::resources::limits().root_timeout
-                        {
+                        if !root.description.transfer.live(Instant::now()) {
                             return Err("root validation deadline".into());
                         }
                         let (selected, receiver) = questions.begin_exchange(
                             graph,
                             root.question.clone(),
-                            root.description.created + crate::resources::limits().root_timeout,
+                            root.description.transfer.deadline(),
                         );
                         if selected != root.question {
                             return Err("question provenance changed".into());
@@ -522,9 +509,7 @@ impl Intake {
                         }
                         let delta =
                             questions.prepare_exchange(graph, &root.question, &assessment)?;
-                        if Instant::now().duration_since(root.description.created)
-                            >= crate::resources::limits().root_timeout
-                        {
+                        if !root.description.transfer.live(Instant::now()) {
                             return Err("root commit deadline".into());
                         }
                         let Phase::Final(_, batch) =
@@ -537,8 +522,8 @@ impl Intake {
                             id,
                             *batch,
                             delta,
-                            root.description.grant.clone(),
-                            root.description.created + crate::resources::limits().root_timeout,
+                            root.description.transfer.capability(),
+                            root.description.transfer.deadline(),
                         )?;
                         return Ok(Some(admitted));
                     }

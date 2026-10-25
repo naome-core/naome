@@ -193,3 +193,6 @@ impl FileGeneration {
 
 #[cfg(test)]
 mod tests;
+
+mod lock;
+pub(crate) use lock::LockFile;

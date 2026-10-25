@@ -362,8 +362,13 @@ async fn unrelated_context_refreshes_formal_checks_but_expired_grants_cannot_fet
     let mut intake = Intake::default();
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     approve(&mut intake, &mut questions, &mut graph).await;
-    intake.active.as_mut().unwrap().description.created =
-        Instant::now() - crate::resources::limits().root_timeout;
+    intake
+        .active
+        .as_mut()
+        .unwrap()
+        .description
+        .transfer
+        .set_received_for_test(Instant::now() - crate::resources::limits().root_timeout);
     assert!(intake.needed().is_empty());
     assert!(!intake.authorizes(peer, id, id));
     assert!(
@@ -374,8 +379,12 @@ async fn unrelated_context_refreshes_formal_checks_but_expired_grants_cannot_fet
     );
     let mut queued = Intake::default();
     queued.enqueue(peer, metadata, &graph).unwrap();
-    queued.queue.front_mut().unwrap().created =
-        Instant::now() - crate::resources::limits().root_timeout;
+    queued
+        .queue
+        .front_mut()
+        .unwrap()
+        .transfer
+        .set_received_for_test(Instant::now() - crate::resources::limits().root_timeout);
     assert!(matches!(
         queued.advance(&mut graph, &mut questions),
         Progress::Skipped(..)

@@ -20,8 +20,10 @@ const MIB: u64 = 1024 * 1024;
 mod governor;
 pub(crate) mod history;
 mod observation;
+mod observer;
 pub(crate) use governor::Governor;
 pub(crate) use observation::sample_node;
+pub(crate) use observer::Observer;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
