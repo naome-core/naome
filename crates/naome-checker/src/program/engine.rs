@@ -1,6 +1,7 @@
 //! Checker-owned incremental evaluation against an owner-provided connection.
 //! Reopening reconstructs trust by replay; persisted flags grant no validity.
 use super::{self as checker, Error, Value};
+use crate::{ArtifactState, ContextView, context::ProgramSource};
 use naome_foundation::{
     Formula,
     construction::Expression,
@@ -8,10 +9,12 @@ use naome_foundation::{
 };
 use naome_proof::program::{self as format, Manifest};
 use naome_proof::program::{Command, RECORD_BYTES};
+use naome_proof::{DerivationId, ProofId, StatementId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 pub const APPLICATION_ID: i64 = 0x4e415057;
+pub const SCHEMA_VERSION: u32 = 2;
 fn sql<T>(value: rusqlite::Result<T>) -> Result<T, Error> {
     value.map_err(Error::Storage)
 }
@@ -28,9 +31,11 @@ fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
         )
     })
 }
-use format::command_hash;
+use format::{ChunkReader, command_hash, decode_command, encode_command};
 mod materialization;
+mod references;
 use materialization::{Finalization, Shape};
+pub use references::ProgramDependency;
 
 #[derive(Debug, Serialize)]
 pub struct Status {
@@ -81,7 +86,9 @@ impl CheckedProgram {
     }
     /// Changes only volatile SQLite caches; the complete checked result remains immutable.
     pub fn restrict_cache(&mut self, bytes: u64) -> Result<(), Error> {
-        self.engine.advance(0, bytes).map(|_| ())
+        self.engine
+            .advance(0, bytes, &ArtifactState::new())
+            .map(|_| ())
     }
     pub fn input_chunk(
         &self,
@@ -153,8 +160,11 @@ struct Evaluation {
     source_hash: [u8; 32],
     restore_sequence: i64,
     restoring: bool,
+    reference: Option<ProgramSource>,
+    reference_depth: u64,
 }
 enum Operation {
+    Reference(ProofId),
     Input(u64),
     Equal(u32, u32),
     Member(u32, u32),
@@ -193,13 +203,6 @@ impl Engine {
         maximum: usize,
     ) -> Result<format::Chunk, Error> {
         self.live()?;
-        if records == 0
-            || records > format::CHUNK_RECORDS
-            || maximum == 0
-            || maximum > format::CHUNK_BYTES
-        {
-            return Err("program chunk request capacity".into());
-        }
         let commands: u64 =
             sql(self
                 .connection
@@ -221,53 +224,30 @@ impl Engine {
         };
         let mut statement=sql(self.connection.prepare_cached("SELECT position,substr(command,1,4097),substr(hash,1,33) FROM input WHERE position>=?1 ORDER BY position LIMIT ?2"))?;
         let mut rows = sql(statement.query(params![number(start)?, records as i64]))?;
-        let mut chunk = format::Chunk {
-            start,
-            previous,
-            next: [0; 32],
-            records: Vec::new(),
-        };
-        let mut hash = previous;
-        let mut bytes = 0usize;
+        let mut reader = ChunkReader::new(start, previous, records, maximum)?;
         while let Some(row) = sql(rows.next())? {
             let position = sql(unsigned(row, 0))?;
             let encoded: Vec<u8> = sql(row.get(1))?;
             let stored: Vec<u8> = sql(row.get(2))?;
-            if position != start + chunk.records.len() as u64 || encoded.len() > RECORD_BYTES {
-                return Err("program record order or width differs".into());
-            }
-            if encoded.len() > maximum.saturating_sub(bytes) {
-                if chunk.records.is_empty() {
-                    return Err("program record exceeds chunk budget".into());
-                }
+            let stored = stored.try_into().map_err(|_| "program input hash width")?;
+            if !reader.push(position, &encoded, stored)? {
                 break;
             }
-            let command: Command = serde_json::from_slice(&encoded).map_err(|e| e.to_string())?;
-            if serde_json::to_vec(&command).map_err(|e| e.to_string())? != encoded {
-                return Err("noncanonical program command".into());
-            }
-            hash = command_hash(hash, &encoded);
-            if stored != hash {
-                return Err("program input hash mismatch".into());
-            }
-            bytes += encoded.len();
-            chunk.records.push(command);
         }
-        if start < commands && chunk.records.is_empty() {
-            return Err("program input prefix missing".into());
-        }
-        let end = start + chunk.records.len() as u64;
-        if end < commands {
+        let end = reader.end();
+        let next = if end < commands {
             let bytes: Vec<u8> = sql(self.connection.query_row(
                 "SELECT suffix FROM stream WHERE position=?1",
                 [number(end)?],
                 |row| row.get(0),
             ))?;
-            chunk.next = bytes
+            bytes
                 .try_into()
-                .map_err(|_| "program stream suffix width")?;
-        }
-        Ok(chunk)
+                .map_err(|_| "program stream suffix width")?
+        } else {
+            [0; 32]
+        };
+        reader.finish(commands, next).map_err(Into::into)
     }
     /// Build the export commitment, reachable-node index and bounded conclusion
     /// projection in quanta after mathematical replay. All derived state belongs
@@ -390,20 +370,24 @@ impl Engine {
                 CREATE TABLE equation(sequence INTEGER PRIMARY KEY, position INTEGER NOT NULL, operation INTEGER NOT NULL, source INTEGER NOT NULL, depth INTEGER NOT NULL, result INTEGER NOT NULL, UNIQUE(position,operation,source,depth)) STRICT;
                 CREATE INDEX equation_order ON equation(position,operation,sequence);
                 CREATE TABLE budget(sequence INTEGER PRIMARY KEY, snapshot BLOB NOT NULL CHECK(length(snapshot)<=4096), command INTEGER NOT NULL, equation INTEGER NOT NULL) STRICT;
-                PRAGMA application_id=1312903255; PRAGMA user_version=1; COMMIT;"))?;
+                PRAGMA application_id=1312903255; PRAGMA user_version=2; COMMIT;"))?;
         } else if app != APPLICATION_ID {
             return Err("proof work format mismatch".into());
         }
         let version: i64 = sql(connection.pragma_query_value(None, "user_version", |r| r.get(0)))?;
-        if version != 1 {
+        if version != i64::from(SCHEMA_VERSION) {
             return Err("unsupported proof work version".into());
         }
-        sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
+        // The minimum evaluator budget splits into sub-page cache allowances.
+        // Small temporary pages keep its disk-backed cache from rounding to zero.
+        sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp.page_size=512;
             CREATE TEMP TABLE checked(position INTEGER PRIMARY KEY, node INTEGER NOT NULL, proved INTEGER NOT NULL);
             CREATE TEMP TABLE authenticated_node(id INTEGER PRIMARY KEY, hash BLOB NOT NULL, free INTEGER NOT NULL, required INTEGER NOT NULL, nodes INTEGER NOT NULL, bytes INTEGER NOT NULL, depth INTEGER NOT NULL);
             CREATE TEMP TABLE verified(source INTEGER NOT NULL, depth INTEGER NOT NULL, result INTEGER NOT NULL, PRIMARY KEY(source,depth)) WITHOUT ROWID;
             CREATE TEMP TABLE stack(sequence INTEGER PRIMARY KEY, source INTEGER NOT NULL, depth INTEGER NOT NULL);"))?;
         sql(connection.execute_batch("CREATE TEMP TABLE stream(position INTEGER PRIMARY KEY,suffix BLOB NOT NULL CHECK(length(suffix)=32)); CREATE TEMP TABLE export_pending(id INTEGER PRIMARY KEY); CREATE TEMP TABLE export_node(id INTEGER PRIMARY KEY);"))?;
+        sql(connection.execute_batch("CREATE TEMP TABLE checked_reference(proof BLOB PRIMARY KEY CHECK(length(proof)=32), statement BLOB NOT NULL CHECK(length(statement)=32), derivation BLOB NOT NULL CHECK(length(derivation)=32)) WITHOUT ROWID;
+            CREATE TEMP TABLE reference_pending(sequence INTEGER PRIMARY KEY,address BLOB NOT NULL CHECK(length(address)=32));"))?;
         let data_version = sql(connection.pragma_query_value(None, "data_version", |r| r.get(0)))?;
         Ok(Self {
             connection,
@@ -463,10 +447,7 @@ impl Engine {
         if sealed {
             return Err("proof program is sealed".into());
         }
-        let bytes = serde_json::to_vec(command).map_err(|e| e.to_string())?;
-        if bytes.len() > RECORD_BYTES {
-            return Err("proof command byte capacity".into());
-        }
+        let bytes = encode_command(command)?;
         let previous = previous.try_into().map_err(|_| "program hash corruption")?;
         let hash = command_hash(previous, &bytes);
         sql(self.connection.execute(
@@ -493,7 +474,12 @@ impl Engine {
     }
     /// Advances at most one adaptive quantum. A shortage is a recoverable pause,
     /// never a mathematical rejection and never a permanent size exclusion.
-    pub fn advance(&mut self, steps: usize, cache_bytes: u64) -> Result<bool, Error> {
+    pub fn advance(
+        &mut self,
+        steps: usize,
+        cache_bytes: u64,
+        context: &dyn ContextView,
+    ) -> Result<bool, Error> {
         self.live()?;
         if cache_bytes < 4096 {
             return Err("invalid effective cache budget".into());
@@ -509,7 +495,11 @@ impl Engine {
             sql(self
                 .connection
                 .pragma_update(Some("temp"), "cache_size", kib))?;
-            sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
+            // A growing allowance needs no eviction. Preserve the live temp
+            // evaluator while still trimming on initialization and every cut.
+            if self.cache_budget == 0 || cache_bytes < self.cache_budget {
+                sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
+            }
             if let Some(tree) = self
                 .finalization
                 .as_mut()
@@ -524,7 +514,7 @@ impl Engine {
         }
         let before = (self.cursor, self.checked_hash, self.accepted);
         sql(self.connection.execute_batch("BEGIN IMMEDIATE"))?;
-        let result = self.advance_batch(steps);
+        let result = self.advance_batch(steps, context);
         match result {
             Ok(progress) => match sql(self.connection.execute_batch("COMMIT")) {
                 Ok(()) => Ok(progress),
@@ -543,7 +533,7 @@ impl Engine {
             }
         }
     }
-    fn advance_batch(&mut self, steps: usize) -> Result<bool, Error> {
+    fn advance_batch(&mut self, steps: usize, context: &dyn ContextView) -> Result<bool, Error> {
         let mut progress = false;
         for _ in 0..steps {
             if self.active.is_none() {
@@ -558,10 +548,7 @@ impl Engine {
                 if stored_hash != source_hash {
                     return Err("program input hash mismatch".into());
                 }
-                let command: Command = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                if serde_json::to_vec(&command).map_err(|e| e.to_string())? != bytes {
-                    return Err("noncanonical stored program command".into());
-                }
+                let command: Command = decode_command(&bytes)?;
                 let plan = checker::prepare(&command, self.cursor, self)?;
                 let mut operations = Vec::new();
                 for (predicate, from, to) in plan.absent {
@@ -571,7 +558,14 @@ impl Engine {
                     operations.push(Operation::Substitute(input, from, to));
                     operations.push(Operation::AssertEqual(transformed, predicate));
                 }
-                compile(plan.expression, &mut operations);
+                match plan.construction {
+                    checker::Construction::Formula(expression) => {
+                        compile(expression, &mut operations);
+                    }
+                    checker::Construction::Reference(proof) => {
+                        operations.push(Operation::Reference(proof));
+                    }
+                }
                 self.active = Some(Evaluation {
                     operations,
                     registers: Vec::new(),
@@ -581,13 +575,15 @@ impl Engine {
                     source_hash,
                     restore_sequence: 0,
                     restoring: true,
+                    reference: None,
+                    reference_depth: 0,
                 });
                 sql(self
                     .connection
                     .execute_batch("DELETE FROM verified; DELETE FROM stack;"))?;
             }
             let mut active = self.active.take().expect("active command");
-            if let Some(value) = self.operation(&mut active)? {
+            if let Some(value) = self.operation(&mut active, context)? {
                 active.registers.push(value);
                 active.position += 1;
                 active.restore_sequence = 0;
@@ -645,9 +641,16 @@ impl Engine {
         }
         Ok(progress)
     }
-    fn operation(&mut self, evaluation: &mut Evaluation) -> Result<Option<u64>, Error> {
+    fn operation(
+        &mut self,
+        evaluation: &mut Evaluation,
+        context: &dyn ContextView,
+    ) -> Result<Option<u64>, Error> {
         let r = &evaluation.registers;
         let node = match evaluation.operations[evaluation.position] {
+            Operation::Reference(proof) => {
+                return self.import_reference(evaluation, context, proof);
+            }
             Operation::Input(id) => {
                 self.load(id)?;
                 return Ok(Some(id));

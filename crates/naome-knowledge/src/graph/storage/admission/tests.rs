@@ -519,11 +519,11 @@ fn prepared_batch_staleness_deadline_and_last_snapshot_generation_lifetime_survi
     let (id, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
     let envelope = object(&graph, 8116);
     graph.ingest(envelope, Instant::now()).unwrap();
-    assert!(
+    assert_eq!(
         graph
             .commit_batch(id, batch, Instant::now() + Duration::from_secs(1))
-            .unwrap_err()
-            .contains("stale")
+            .unwrap_err(),
+        crate::Error::StaleAuthority,
     );
     let (id, batch) = graph.prepare_generated(SOURCE, &[], &question).unwrap();
     assert_eq!(

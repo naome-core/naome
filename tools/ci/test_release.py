@@ -181,7 +181,7 @@ class PackageTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def payload(self, target):
-        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","accepted_proofs":0,"interest":""}}\';;\n*) exit 1;;\nesac\n'.encode()
+        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","proof_verification":"not_run","accepted_proofs":0,"interest":""}}\';;\n*) exit 1;;\nesac\n'.encode()
         lockfile = (ROOT / "Cargo.lock").read_bytes()
         build = {"schema": 1, "repository": "naome-core/naome", "commit": SHA, "target": target, "profile": "release",
                  "features": [], "version": VERSION, "tag": f"v{VERSION}", "prerelease": "-" in VERSION,
@@ -336,7 +336,7 @@ class PackageTests(unittest.TestCase):
         operations = []
         def run(_json, command, *_arguments):
             operations.append(command)
-            status = {"running": command != "stop", "computation": "stopped" if command == "stop" else "running", "interest": "Release smoke test"}
+            status = {"running": command != "stop", "computation": "stopped" if command == "stop" else "running", "proof_verification": "not_run" if command == "stop" else "checked", "interest": "Release smoke test"}
             # A defective pause must be detected and still request shutdown.
             return json.dumps(status)
         with self.assertRaisesRegex(ValueError, "pausing computation"):

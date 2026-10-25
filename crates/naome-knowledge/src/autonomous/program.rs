@@ -1,21 +1,19 @@
 //! Incremental consumption of a durable untrusted provider stream.
 use super::*;
 use crate::{
-    graph::program::{ProgramAdmission, ProgramBudget},
-    proof_work::{CheckedWork, Work},
+    graph::program::{PreparedProgram, ProgramBudget},
+    proof_work::Work,
 };
-use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command, command_hash};
+use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command, Prefix};
 
 pub(super) struct Generated {
     job: u64,
     units: u32,
     unit: u32,
-    imported: u64,
-    hash: [u8; 32],
+    prefix: Prefix,
     pending: Option<oneshot::Receiver<Result<Vec<Command>, String>>>,
     work: Option<Work>,
-    checked: Option<CheckedWork>,
-    admission: Option<ProgramAdmission>,
+    checked: Option<PreparedProgram>,
     budget: ProgramBudget,
 }
 impl Generated {
@@ -24,12 +22,10 @@ impl Generated {
             job,
             units,
             unit: 1,
-            imported: 0,
-            hash: [0; 32],
+            prefix: Prefix::default(),
             pending: None,
             work: None,
             checked: None,
-            admission: None,
             budget: ProgramBudget::default(),
         }
     }
@@ -75,37 +71,29 @@ impl Generated {
                     match pending.try_recv() {
                         Ok(result) => {
                             let records = result?;
-                            let before = self.imported;
-                            let mut imported = before;
-                            let mut hash = self.hash;
+                            let before = self.prefix;
+                            let mut prefix = before;
                             for command in &records {
-                                hash = command_hash(
-                                    hash,
-                                    &serde_json::to_vec(command).map_err(|e| e.to_string())?,
-                                );
-                                imported = imported
-                                    .checked_add(1)
-                                    .ok_or("program command address exhausted")?;
+                                prefix.append(&naome_proof::program::encode_command(command)?)?;
                             }
                             let status = work.status()?;
-                            if status.commands == before {
+                            if status.commands == before.commands {
                                 work.append_group(&records)?;
-                            } else if status.commands < imported {
+                            } else if status.commands < prefix.commands {
                                 return Err(
                                     "candidate checkpoint ends inside a provider group".into()
                                 );
                             }
                             let status = work.status()?;
-                            if status.commands == imported
-                                && status.program_hash != crate::hex(&hash)
+                            if status.commands == prefix.commands
+                                && status.program_hash != crate::hex(&prefix.hash)
                             {
                                 return Err(
                                     "candidate input differs from its retained provider stream"
                                         .into(),
                                 );
                             }
-                            self.imported = imported;
-                            self.hash = hash;
+                            self.prefix = prefix;
                             self.unit = self
                                 .unit
                                 .checked_add(1)
@@ -120,11 +108,15 @@ impl Generated {
                 return Ok(None);
             }
             let status = work.status()?;
-            if status.commands != self.imported || status.program_hash != crate::hex(&self.hash) {
+            if status.commands != self.prefix.commands
+                || status.program_hash != crate::hex(&self.prefix.hash)
+            {
                 return Err("candidate retained stream differs".into());
             }
             if !status.fully_checked {
-                if !work.advance(&snapshot.budget)? && !work.status()?.fully_checked {
+                if !work.advance(&snapshot.budget, graph.checked_context())?
+                    && !work.status()?.fully_checked
+                {
                     return Err("candidate has no completely checked seal".into());
                 }
                 return Ok(None);
@@ -136,13 +128,13 @@ impl Generated {
             question
                 .classify_checked_program(checked.proof()?)
                 .map_err(crate::Error::from)?;
-            self.checked = Some(checked);
+            self.checked = Some(PreparedProgram::new(checked));
         }
-        let checked = self.checked.as_ref().ok_or("checked candidate absent")?;
+        let checked = self.checked.as_mut().ok_or("checked candidate absent")?;
         let proof = checked.proof()?;
-        let manifest = proof.manifest();
+        let manifest = proof.manifest().clone();
         let store = graph.ownership();
-        let progress = store.start_program(manifest)?;
+        let progress = store.start_program(&manifest)?;
         if progress.commands < manifest.commands {
             let chunk = proof
                 .input_chunk(
@@ -151,27 +143,16 @@ impl Generated {
                     CHUNK_BYTES,
                 )
                 .map_err(crate::Error::from)?;
-            store.append_program(manifest, &chunk)?;
+            store.append_program(&manifest, &chunk)?;
             return Ok(None);
         }
-        if self.admission.is_none() {
-            self.admission = Some(graph.begin_program_admission(checked)?);
-        }
-        let admission = self.admission.as_mut().expect("candidate admission");
-        match admission.advance(graph, checked, snapshot.budget.batch_steps.max(1)) {
-            Ok(false) => Ok(None),
-            Ok(true) => {
-                let admission = self.admission.take().expect("candidate admission");
-                Ok(Some((
-                    manifest.proof_id(),
-                    admission.finish(graph, checked)?,
-                )))
-            }
-            Err(crate::Error::StaleAuthority) => {
-                self.admission = Some(graph.begin_program_admission(checked)?);
-                Ok(None)
-            }
-            Err(error) => Err(error),
+        if checked.advance(graph, snapshot.budget.batch_steps.max(1))? {
+            Ok(Some((
+                manifest.proof_id(),
+                checked.take_batch().expect("prepared candidate"),
+            )))
+        } else {
+            Ok(None)
         }
     }
 }
@@ -239,7 +220,11 @@ mod tests {
             assert!(error.retryable());
         });
         assert_eq!(
-            (generated.unit, generated.imported, generated.hash),
+            (
+                generated.unit,
+                generated.prefix.commands,
+                generated.prefix.hash
+            ),
             (1, 0, [0; 32])
         );
         assert_eq!(
@@ -253,7 +238,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!((generated.unit, generated.imported), (2, 1));
+        assert_eq!((generated.unit, generated.prefix.commands), (2, 1));
         assert_eq!(
             generated.work.as_ref().unwrap().status().unwrap().commands,
             1

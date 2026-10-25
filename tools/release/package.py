@@ -51,7 +51,7 @@ def lifecycle(run, directory):
         if not command("start")["running"]:
             raise ValueError("extracted node failed to start")
         status = command("status")
-        if not status["running"] or status["computation"] != "running":
+        if not status["running"] or status["computation"] != "running" or status["proof_verification"] != "checked":
             raise ValueError("extracted node is not ready for computation")
         if command("interest", "Release smoke test")["interest"] != "Release smoke test":
             raise ValueError("extracted node did not persist owner interest")
@@ -66,7 +66,7 @@ def lifecycle(run, directory):
         if stopped["running"] or stopped["computation"] != "stopped":
             raise ValueError("extracted node shutdown was not confirmed")
     persisted = command("status")
-    if persisted["running"] or persisted["interest"] != "Release smoke test":
+    if persisted["running"] or persisted["proof_verification"] != "not_run" or persisted["interest"] != "Release smoke test":
         raise ValueError("extracted node did not retain interest across daemon shutdown")
 
 
@@ -78,8 +78,9 @@ def smoke(binary, version, *, start=False):
             return subprocess.check_output([str(binary.resolve()), *arguments], env=environment, text=True, timeout=60).strip()
         if run("--version") != f"naome {version}" or "naome start" not in run("--help"):
             raise ValueError("packaged executable has incorrect version/help")
-        expected = {"running": False, "computation": "stopped", "accepted_proofs": 0, "interest": ""}
-        if json.loads(run("--json", "status")) != expected or node.exists():
+        expected = {"running": False, "computation": "stopped", "proof_verification": "not_run", "accepted_proofs": 0, "interest": ""}
+        status = json.loads(run("--json", "status"))
+        if any(status.get(key) != value for key, value in expected.items()) or node.exists():
             raise ValueError("packaged status must not create state or start a node")
         for command in ("publish", "pause", "resume"):
             rejected = subprocess.run([str(binary.resolve()), command], env=environment, capture_output=True, timeout=30)

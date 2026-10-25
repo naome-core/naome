@@ -1,5 +1,7 @@
 //! Independent lifecycle and a bounded, instance-bound local control channel.
-use crate::{Graph, autonomous::Intervals, network};
+#[cfg(test)]
+use crate::Graph;
+use crate::{autonomous::Intervals, network};
 use libp2p::identity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -173,13 +175,23 @@ pub fn report_error(error: &str) {
     }
 }
 
-/// The complete ordinary status surface. Count only unique checked accepted IDs.
+/// Whether this process reconstructed mathematical validity for the reported set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofVerification {
+    Checked,
+    NotRun,
+}
+
+/// The ordinary status surface. Offline counts describe recorded admissions;
+/// only a live checked graph can report `ProofVerification::Checked`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
     pub running: bool,
     pub computation: crate::resources::ComputationState,
     pub accepted_proofs: usize,
+    pub proof_verification: ProofVerification,
     pub interest: String,
 }
 
@@ -246,6 +258,19 @@ pub(crate) struct Control {
     selection_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ownership: Option<std::sync::Arc<crate::store::Store>>,
     startup: Option<Startup>,
+}
+
+impl crate::publication::LocalAuthority for Control {
+    fn check_selection(&self, expected: Option<[u8; 32]>) -> Result<(), crate::Error> {
+        if self.stopping() {
+            return Err(crate::Error::StaleAuthority);
+        }
+        let selection = self.selection().map_err(|_| crate::Error::StaleAuthority)?;
+        if Some(selection) != expected {
+            return Err(crate::Error::StaleAuthority);
+        }
+        Ok(())
+    }
 }
 
 struct OwnerState {
@@ -532,6 +557,7 @@ impl Control {
                             crate::resources::ComputationState::Stopped
                         },
                         accepted_proofs: count,
+                        proof_verification: ProofVerification::Checked,
                         interest,
                     },
                 }
@@ -819,11 +845,12 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
 }
 
 async fn stopped_status(directory: &Path) -> Result<Status, String> {
-    let graph = Graph::open(directory)?;
+    let store = crate::store::Store::open(directory)?;
     Ok(Status {
         running: false,
         computation: crate::resources::ComputationState::Stopped,
-        accepted_proofs: graph.accepted_count(),
+        accepted_proofs: store.stored_count()?,
+        proof_verification: ProofVerification::NotRun,
         interest: owner::load(directory)?,
     })
 }
@@ -833,13 +860,14 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
     if let Some(status) = request(directory, Operation::Interest(text.into()), None).await? {
         return Ok(status);
     }
-    // Keep the graph's kernel lock through persistence and status construction.
+    // Keep the store's kernel lock through persistence and status construction.
     // A daemon or embedding racing this command cannot become another writer.
-    let graph = Graph::open(directory)?;
+    let store = crate::store::Store::open(directory)?;
     Ok(Status {
         running: false,
         computation: crate::resources::ComputationState::Stopped,
-        accepted_proofs: graph.accepted_count(),
+        accepted_proofs: store.stored_count()?,
+        proof_verification: ProofVerification::NotRun,
         interest: owner::update(directory, text).map_err(|error| error.message)?,
     })
 }
@@ -1278,6 +1306,7 @@ pub async fn execute() -> Result<(), String> {
                 running: false,
                 computation: crate::resources::ComputationState::Stopped,
                 accepted_proofs: 0,
+                proof_verification: ProofVerification::NotRun,
                 interest: String::new(),
             },
         )?;

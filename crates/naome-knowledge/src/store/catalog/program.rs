@@ -1,10 +1,8 @@
 //! Canonical bounded program records, kept outside checked membership until
 //! Graph publishes a complete mathematically checked manifest transaction.
 use super::*;
-use naome_proof::program::{
-    CHUNK_BYTES, CHUNK_RECORDS, Chunk, Command, Manifest, RECORD_BYTES, command_hash,
-};
-use serde::{Deserialize, Serialize};
+use naome_proof::program::Progress;
+use naome_proof::program::{Chunk, ChunkReader, Manifest, Prefix, RECORD_BYTES, decode_command};
 #[cfg(test)]
 thread_local! { static MANIFEST_READS: Cell<usize> = const { Cell::new(0) }; }
 #[cfg(test)]
@@ -16,13 +14,6 @@ fn sql_error(error: rusqlite::Error) -> crate::Error {
     naome_checker::program::Error::Storage(error).into()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Progress {
-    pub commands: u64,
-    pub input_bytes: u64,
-    pub hash: [u8; 32],
-    pub remaining: [u8; 32],
-}
 fn ordinal(value: u64) -> Result<i64, crate::Error> {
     i64::try_from(value).map_err(|_| "physical program address exhausted".into())
 }
@@ -30,19 +21,14 @@ fn positive(value: i64) -> Result<u64, crate::Error> {
     u64::try_from(value).map_err(|_| "negative program address".into())
 }
 fn manifest_bytes(manifest: &Manifest) -> Result<Vec<u8>, crate::Error> {
-    let bytes = serde_json::to_vec(manifest).map_err(|e| e.to_string())?;
-    if bytes.len() > 2048 || manifest.commands == 0 || manifest.input_bytes == 0 {
-        return Err("invalid program manifest".into());
-    }
     ordinal(manifest.commands)?;
     ordinal(manifest.input_bytes)?;
-    Ok(bytes)
+    manifest.canonical_bytes().map_err(Into::into)
 }
 fn decode_manifest(bytes: &[u8]) -> Result<Manifest, crate::Error> {
-    let manifest: Manifest = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    if manifest_bytes(&manifest)? != bytes {
-        return Err("noncanonical program manifest".into());
-    }
+    let manifest = Manifest::from_canonical_bytes(bytes)?;
+    ordinal(manifest.commands)?;
+    ordinal(manifest.input_bytes)?;
     Ok(manifest)
 }
 fn progress(connection: &Connection, manifest: &Manifest) -> Result<Progress, crate::Error> {
@@ -69,15 +55,9 @@ pub(super) fn require_complete(
     connection: &Connection,
     manifest: &Manifest,
 ) -> Result<(), crate::Error> {
-    let value = progress(connection, manifest)?;
-    if value.commands != manifest.commands
-        || value.input_bytes != manifest.input_bytes
-        || value.hash != manifest.program_hash
-        || value.remaining != [0; 32]
-    {
-        return Err("program input is incomplete or differs from manifest".into());
-    }
-    Ok(())
+    progress(connection, manifest)?
+        .require_complete(manifest)
+        .map_err(Into::into)
 }
 impl Catalog {
     pub(in crate::store) fn start_program(
@@ -143,74 +123,22 @@ impl Catalog {
         chunk: &Chunk,
     ) -> Result<Progress, crate::Error> {
         self.replay_summary.set(None);
-        if chunk.records.is_empty() || chunk.records.len() > CHUNK_RECORDS {
-            return Err("program chunk record capacity".into());
-        }
-        let mut encoded = Vec::with_capacity(chunk.records.len());
-        let mut total = 0usize;
-        for command in &chunk.records {
-            let bytes = serde_json::to_vec(command).map_err(|e| e.to_string())?;
-            total = total
-                .checked_add(bytes.len())
-                .ok_or("program chunk width")?;
-            if bytes.len() > RECORD_BYTES || total > CHUNK_BYTES {
-                return Err("program chunk byte capacity".into());
-            }
-            encoded.push(bytes);
-        }
-        let mut suffixes = vec![[0; 32]; encoded.len()];
-        let mut suffix = chunk.next;
-        for (index, bytes) in encoded.iter().enumerate().rev() {
-            suffix = naome_proof::program::stream_hash(bytes, suffix);
-            suffixes[index] = suffix;
-        }
         let transaction = begin(&self.connection, TransactionBehavior::Immediate)?;
         self.require_validated_version(&transaction)?;
-        let mut value = progress(&transaction, manifest)?;
-        if value.commands != chunk.start
-            || value.hash != chunk.previous
-            || value.remaining != suffix
-        {
-            return Err("program chunk authentication or prefix mismatch".into());
-        }
-        let end = value
-            .commands
-            .checked_add(encoded.len() as u64)
-            .ok_or("program chunk cursor width")?;
-        if end > manifest.commands || (end == manifest.commands && chunk.next != [0; 32]) {
-            return Err("program chunk end mismatch".into());
-        }
-        for ((command, bytes), suffix) in chunk.records.iter().zip(&encoded).zip(suffixes) {
-            if matches!(command, Command::Seal { .. }) && value.commands + 1 != manifest.commands {
-                return Err("program seal precedes declared end".into());
-            }
-            let hash = command_hash(value.hash, bytes);
+        let (value, records) = progress(&transaction, manifest)?.prepare_append(manifest, chunk)?;
+        for record in records {
             transaction
                 .execute(
                     "INSERT INTO program_input VALUES(?1,?2,?3,?4,?5)",
                     params![
                         manifest.proof_id().as_bytes().as_slice(),
-                        ordinal(value.commands)?,
-                        bytes,
-                        hash.as_slice(),
-                        suffix.as_slice()
+                        ordinal(record.position)?,
+                        record.bytes,
+                        record.hash.as_slice(),
+                        record.suffix.as_slice()
                     ],
                 )
                 .map_err(sql_error)?;
-            value.commands += 1;
-            value.input_bytes = value
-                .input_bytes
-                .checked_add(bytes.len() as u64)
-                .ok_or("program byte width")?;
-            value.hash = hash;
-        }
-        value.remaining = chunk.next;
-        if value.input_bytes > manifest.input_bytes
-            || (value.commands == manifest.commands
-                && (value.input_bytes != manifest.input_bytes
-                    || value.hash != manifest.program_hash))
-        {
-            return Err("complete program hash or length mismatch".into());
         }
         transaction
             .execute(
@@ -237,9 +165,6 @@ impl Catalog {
         maximum: usize,
     ) -> Result<Chunk, crate::Error> {
         self.require_validated_version(&self.connection)?;
-        if records == 0 || records > CHUNK_RECORDS || maximum == 0 || maximum > CHUNK_BYTES {
-            return Err("program chunk request capacity".into());
-        }
         let value = progress(&self.connection, manifest)?;
         if start > value.commands {
             return Err("program cursor exceeds received prefix".into());
@@ -268,45 +193,17 @@ impl Catalog {
                 records as i64
             ])
             .map_err(sql_error)?;
-        let mut chunk = Chunk {
-            start,
-            previous,
-            next: [0; 32],
-            records: Vec::new(),
-        };
-        let mut hash = previous;
-        let mut bytes = 0usize;
+        let mut reader = ChunkReader::new(start, previous, records, maximum)?;
         while let Some(row) = rows.next().map_err(sql_error)? {
             let position: i64 = row.get(0).map_err(sql_error)?;
             let encoded: Vec<u8> = row.get(1).map_err(sql_error)?;
-            let stored: Vec<u8> = row.get(2).map_err(sql_error)?;
-            if positive(position)? != start + chunk.records.len() as u64
-                || encoded.len() > RECORD_BYTES
-            {
-                return Err("program record order or width differs".into());
-            }
-            if encoded.len() > maximum.saturating_sub(bytes) {
-                if chunk.records.is_empty() {
-                    return Err("program record exceeds working chunk budget".into());
-                }
+            let stored = key(row.get(2).map_err(sql_error)?)?;
+            if !reader.push(positive(position)?, &encoded, stored)? {
                 break;
             }
-            let command: Command = serde_json::from_slice(&encoded).map_err(|e| e.to_string())?;
-            if serde_json::to_vec(&command).map_err(|e| e.to_string())? != encoded {
-                return Err("noncanonical program input".into());
-            }
-            hash = command_hash(hash, &encoded);
-            if key(stored)? != hash {
-                return Err("program record hash differs".into());
-            }
-            bytes += encoded.len();
-            chunk.records.push(command);
         }
-        if start < value.commands && chunk.records.is_empty() {
-            return Err("program prefix is incomplete".into());
-        }
-        let end = start + chunk.records.len() as u64;
-        chunk.next = if end == value.commands {
+        let end = reader.end();
+        let next = if end == value.commands {
             value.remaining
         } else {
             let suffix: Vec<u8> = self
@@ -319,7 +216,7 @@ impl Catalog {
                 .map_err(sql_error)?;
             key(suffix)?
         };
-        Ok(chunk)
+        reader.finish(value.commands, next).map_err(Into::into)
     }
 }
 
@@ -353,19 +250,19 @@ pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Err
             if positive(position)? != observed.commands || bytes.len() > RECORD_BYTES {
                 return Err("staged program input order or width differs".into());
             }
-            let command: Command = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            if serde_json::to_vec(&command).map_err(|e| e.to_string())? != bytes {
-                return Err("noncanonical staged program record".into());
-            }
-            observed.hash = command_hash(observed.hash, &bytes);
+            decode_command(&bytes)?;
+            let mut prefix = Prefix {
+                commands: observed.commands,
+                input_bytes: observed.input_bytes,
+                hash: observed.hash,
+            };
+            prefix.append(&bytes)?;
+            observed.commands = prefix.commands;
+            observed.input_bytes = prefix.input_bytes;
+            observed.hash = prefix.hash;
             if observed.hash != hash {
                 return Err("staged program input hash differs".into());
             }
-            observed.commands += 1;
-            observed.input_bytes = observed
-                .input_bytes
-                .checked_add(bytes.len() as u64)
-                .ok_or("staged program byte width")?;
         }
         let mut reverse=connection.prepare_cached("SELECT substr(command,1,4097),substr(suffix,1,33) FROM program_input WHERE id=?1 ORDER BY position DESC").map_err(sql_error)?;
         let mut reverse_rows = reverse.query([id.as_slice()]).map_err(sql_error)?;

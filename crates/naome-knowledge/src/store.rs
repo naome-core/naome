@@ -16,11 +16,11 @@ mod program;
 use catalog::Catalog;
 pub(crate) use catalog::SCHEMA_VERSION as CATALOG_SCHEMA_VERSION;
 pub(crate) use catalog::Summary;
-pub(crate) use catalog::program::Progress as ProgramProgress;
 #[cfg(test)]
 pub(crate) use catalog::program::manifest_reads;
 #[cfg(test)]
 pub(crate) use catalog::{payload_reads, set_scan_count};
+pub(crate) use naome_proof::program::Progress as ProgramProgress;
 
 pub(crate) const DATABASE_FILE: &str = "proof-corpus.sqlite3";
 pub(crate) const COMMIT_DEADLINE_ERROR: crate::Error = crate::Error::Deadline;
@@ -172,6 +172,17 @@ impl Store {
         catalog.summary()
     }
 
+    /// Read an explicitly unverified admission count under directory custody.
+    /// This neither replays proofs nor creates a checked catalog generation.
+    pub(crate) fn stored_count(&self) -> Result<usize, crate::Error> {
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
+        catalog.stored_count()
+    }
+
     pub(crate) fn replay_page(
         &self,
         after: u64,
@@ -197,6 +208,20 @@ impl Store {
             .map_err(|_| "proof catalog lock poisoned")?;
         self.ensure_database()?;
         catalog.ids_page(after, limit, expected)
+    }
+
+    pub(crate) fn inventory_page(
+        &self,
+        after: Option<crate::corpus::InventoryCursor>,
+        limit: usize,
+        expected: Summary,
+    ) -> Result<Option<crate::corpus::InventoryPage>, crate::Error> {
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
+        catalog.inventory_page(after, limit, expected)
     }
 
     pub(crate) fn get_binary(
@@ -302,7 +327,7 @@ impl Store {
         expected: Summary,
         deadline: Option<Instant>,
         next_root: [u8; 32],
-        guard: Option<&crate::graph::CommitGuard>,
+        guard: Option<&crate::publication::CommitGuard>,
     ) -> Result<Summary, crate::Error> {
         self.persist_records(root, objects, expected, deadline, Some(next_root), guard)
     }
@@ -314,7 +339,7 @@ impl Store {
         expected: Summary,
         deadline: Option<Instant>,
         next_root: Option<[u8; 32]>,
-        guard: Option<&crate::graph::CommitGuard>,
+        guard: Option<&crate::publication::CommitGuard>,
     ) -> Result<Summary, crate::Error> {
         let mut batch = Vec::new();
         for object in objects {

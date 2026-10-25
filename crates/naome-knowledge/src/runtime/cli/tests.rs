@@ -70,6 +70,7 @@ fn untrusted_interest_cannot_style_or_rewrite_operator_rows() {
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         accepted_proofs: 3,
+        proof_verification: super::super::ProofVerification::NotRun,
         interest: "λ 🦀\n\r\t\x1b[32m\x1b]8;;link\x07\u{009b}2J\u{202e}x\n".into(),
     };
     let rendered = human("status", &status, false);

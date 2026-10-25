@@ -102,6 +102,10 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     } else {
         format!("{red}○ Stopped{reset}")
     };
+    let verification = match status.proof_verification {
+        super::ProofVerification::Checked => "checked in this run",
+        super::ProofVerification::NotRun => "stored; verification not run",
+    };
     let computation = match status.computation {
         crate::resources::ComputationState::Stopped => "Stopped",
         crate::resources::ComputationState::Running => "Running",
@@ -109,7 +113,7 @@ fn human(command: &str, status: &Status, color: bool) -> String {
         crate::resources::ComputationState::Paused => "Paused (network remains available)",
     };
     let mut output = format!(
-        "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted proofs  {}\n\n  Interest\n",
+        "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted proofs  {} ({verification})\n\n  Interest\n",
         status.accepted_proofs,
     );
     if status.interest.is_empty() {

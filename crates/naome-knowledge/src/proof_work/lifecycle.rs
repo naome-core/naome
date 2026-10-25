@@ -54,7 +54,7 @@ pub(crate) fn retire_candidate(directory: &Path, job: u64) -> Result<bool, Strin
     let mut header = [0; 100];
     file.read_exact(&mut header).map_err(|e| e.to_string())?;
     if &header[..16] != b"SQLite format 3\0"
-        || header[60..64] != 1u32.to_be_bytes()
+        || header[60..64] != naome_checker::program::SCHEMA_VERSION.to_be_bytes()
         || header[68..72] != (naome_checker::program::APPLICATION_ID as u32).to_be_bytes()
     {
         return Err("candidate cache format differs; refusing retirement".into());

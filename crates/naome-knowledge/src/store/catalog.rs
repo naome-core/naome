@@ -6,6 +6,7 @@ use rusqlite::{
 };
 use sha2::{Digest, Sha256};
 use std::{cell::Cell, collections::BTreeMap, fs, path::Path, time::Instant};
+mod inventory;
 pub(super) mod program;
 
 #[cfg(test)]
@@ -126,7 +127,7 @@ pub(super) struct Commit<'a> {
     pub deadline: Option<Instant>,
     pub cut: Option<BatchCut>,
     pub next_root: Option<[u8; 32]>,
-    pub guard: Option<&'a crate::graph::CommitGuard>,
+    pub guard: Option<&'a crate::publication::CommitGuard>,
 }
 
 pub(super) struct Catalog {
@@ -231,6 +232,12 @@ impl Catalog {
 
     pub(super) fn active(&self) -> Result<bool, crate::Error> {
         Ok(self.meta()?.active)
+    }
+
+    /// Recorded admission count only. This grants no mathematical validity or
+    /// validated catalog generation and never reads proof payloads.
+    pub(super) fn stored_count(&self) -> Result<usize, crate::Error> {
+        Ok(self.meta()?.count)
     }
 
     /// Validate the complete catalog with bounded owned records. This establishes
