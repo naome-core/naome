@@ -2417,6 +2417,7 @@ dependencies = [
  "naome-authoring",
  "naome-checker",
  "naome-foundation",
+ "naome-ledger",
  "naome-proof",
  "naome-wallet",
  "nix",
@@ -2428,6 +2429,19 @@ dependencies = [
  "sysinfo",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "naome-ledger"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "hex",
+ "naome-wallet",
+ "nix",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
 ]
 
 [[package]]

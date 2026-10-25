@@ -6,6 +6,13 @@ mod publication;
 async fn maximum_escaped_owner_text_fits_bounded_control_frames() {
     let interest = "\u{0001}".repeat(crate::resources::limits().owner_text_bytes);
     let status = Status {
+        wallet: Some(crate::WalletStatus {
+            signing_address: naome_wallet::WalletKey::generate().unwrap().address(),
+            network: Some(naome_ledger::NetworkId::from_bytes([7; 32])),
+            wallet_address: Some(naome_wallet::WalletKey::generate().unwrap().address()),
+            connection: crate::WalletConnection::Connected,
+            key_available: true,
+        }),
         running: true,
         computation: crate::resources::ComputationState::Running,
         computation_reason: None,
@@ -165,6 +172,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     assert_eq!(
         stopped_status(&directory.0).await.unwrap(),
         Status {
+            wallet: None,
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
@@ -219,6 +227,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     assert_eq!(
         response.unwrap().unwrap(),
         Status {
+            wallet: None,
             running: true,
             computation: crate::resources::ComputationState::Running,
             computation_reason: None,
@@ -232,6 +241,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
     assert_eq!(
         status(&directory.0).await.unwrap(),
         Status {
+            wallet: None,
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
@@ -290,6 +300,7 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
     assert_eq!(
         status,
         Status {
+            wallet: None,
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,

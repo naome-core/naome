@@ -34,6 +34,8 @@ mod storage;
 mod store;
 #[cfg(unix)]
 mod wallet;
+#[cfg(unix)]
+pub use wallet::{NodeWallet, WalletConnection, WalletFunds, WalletStatus};
 mod wire;
 
 pub use corpus::ROOT_FORMAT as CORPUS_ROOT_FORMAT;

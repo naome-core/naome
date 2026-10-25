@@ -31,7 +31,8 @@ pub(crate) use owner::Profile as OwnerProfile;
 pub(crate) use startup::Startup;
 
 fn control_limit() -> usize {
-    6 * crate::resources::limits().owner_text_bytes + 512
+    // Existing owner-text capacity plus bounded wallet identity/association metadata.
+    6 * crate::resources::limits().owner_text_bytes + 1024
 }
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
 static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
@@ -186,6 +187,9 @@ pub enum ProofVerification {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
+    /// Bounded custody and association metadata; verified funds are read through
+    /// the internal [`crate::NodeWallet::funds`] service outside node control.
+    pub wallet: Option<crate::WalletStatus>,
     pub running: bool,
     pub computation: crate::resources::ComputationState,
     pub computation_reason: Option<String>,
@@ -550,6 +554,7 @@ impl Control {
             token: self.endpoint.token.clone(),
             report: Report::Status {
                 status: Status {
+                    wallet: crate::wallet::observe(&self.directory),
                     running,
                     computation,
                     computation_reason,
@@ -828,6 +833,7 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
 async fn stopped_status(directory: &Path) -> Result<Status, String> {
     let store = crate::store::Store::open(directory)?;
     Ok(Status {
+        wallet: crate::wallet::observe(directory),
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,
@@ -846,6 +852,7 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
     // A daemon or embedding racing this command cannot become another writer.
     let store = crate::store::Store::open(directory)?;
     Ok(Status {
+        wallet: crate::wallet::observe(directory),
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,
@@ -1272,6 +1279,7 @@ pub async fn execute() -> Result<(), String> {
             command,
             json,
             &Status {
+                wallet: None,
                 running: false,
                 computation: crate::resources::ComputationState::Stopped,
                 computation_reason: None,

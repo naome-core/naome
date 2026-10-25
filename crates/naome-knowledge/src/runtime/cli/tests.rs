@@ -81,6 +81,7 @@ fn startup_handoff_is_explicit_and_cannot_change_other_operator_commands() {
 #[test]
 fn untrusted_interest_cannot_style_or_rewrite_operator_rows() {
     let status = Status {
+        wallet: None,
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,

@@ -24,7 +24,7 @@ pub(crate) struct Identity {
     pub(crate) address: Address,
 }
 
-fn identity(directory: &Path) -> Result<Option<Identity>, String> {
+pub(crate) fn identity(directory: &Path) -> Result<Option<Identity>, String> {
     crate::storage::read_owned(&directory.join(IDENTITY), 256)?
         .map(|bytes| {
             let identity: Identity =
@@ -144,6 +144,21 @@ fn initialize_at(
     sync(directory)?;
     Ok(identity)
 }
+
+/// Loads an existing, receipt-bound key without creating or rotating it.
+pub(crate) fn key(directory: &Path) -> Result<WalletKey, String> {
+    let identity = identity(directory)?.ok_or("wallet is not initialized; start the node first")?;
+    let key = read_key(directory, KEY)?
+        .ok_or("existing wallet private key is missing; restore its backup")?;
+    if key.address() != identity.address {
+        return Err("wallet private key does not match its address receipt".into());
+    }
+    Ok(key)
+}
+mod connection;
+mod service;
+pub(crate) use service::observe;
+pub use service::{NodeWallet, WalletConnection, WalletFunds, WalletStatus};
 
 #[cfg(test)]
 mod tests;

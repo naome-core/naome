@@ -1,0 +1,22 @@
+[package]
+name = "naome-ledger"
+version.workspace = true
+edition.workspace = true
+description = "Deterministic, persistent currency ledger with wallet and node spending authorization."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+naome-wallet = { path = "../naome-wallet" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2.workspace = true
+hex = "0.4.3"
+
+[target.'cfg(unix)'.dependencies]
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+nix = { version = "0.30.1", default-features = false, features = ["fs", "user"] }
+
+[lints]
+workspace = true
