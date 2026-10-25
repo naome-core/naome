@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) const RESEARCH_MARKER: &[u8] = b"naome-research-jobs\n";
+
 /// Node state contains the identity key and private local owner preferences.
 /// Tighten only the owned node directory, without changing parent directories.
 pub(crate) fn private_directory(directory: &Path) -> Result<(), String> {
@@ -28,10 +30,7 @@ pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
                 && metadata.uid() == nix::unistd::geteuid().as_raw() => {}
         Ok(_) => return Err("research path must be one owned directory".into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if marker_valid(
-                &directory.join("research.initialized"),
-                b"naome-research-jobs-v3\n",
-            )? {
+            if marker_valid(&directory.join("research.initialized"), RESEARCH_MARKER)? {
                 return Err("established research directory is missing; no fresh allowance".into());
             }
             fs::create_dir(&path).map_err(|e| e.to_string())?;

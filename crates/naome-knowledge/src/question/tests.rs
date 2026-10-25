@@ -523,7 +523,7 @@ async fn running_node_registry_growth_rechecks_formally_and_policy_changes_inval
             .unwrap();
         if policy_change {
             let mut policy = PrefilterPolicy::default();
-            policy.revision += 1;
+            policy.limits.operations -= 1;
             admin.set_policy(policy).await.unwrap();
         } else {
             admin
@@ -562,15 +562,13 @@ async fn running_node_registry_growth_rechecks_formally_and_policy_changes_inval
             );
         }
     }
-    let unsupported = PrefilterPolicy {
-        rule_set: 9,
-        ..PrefilterPolicy::default()
-    };
-    admin.set_policy(unsupported).await.unwrap();
+    let mut invalid = PrefilterPolicy::default();
+    invalid.limits.operations = 0;
+    admin.set_policy(invalid).await.unwrap();
     let result = handle.admit_question(question(QUESTION)).await.unwrap();
     assert_eq!(
         result.assessment.prefilter.reason,
-        Some(RejectionReason::UnsupportedPolicy)
+        Some(RejectionReason::InvalidPolicy)
     );
     assert_eq!(result.assessment.interest, InterestAssessment::NotRun);
     assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
@@ -671,7 +669,7 @@ fn prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() {
         local.computations, 2,
         "same full inputs reuse the computed REJECT"
     );
-    local.policy.revision += 1;
+    local.policy.limits.operations -= 1;
     let next = local.assess(&graph, &input);
     assert!(!next.same_context(&rejected));
     assert_eq!(local.computations, 3);

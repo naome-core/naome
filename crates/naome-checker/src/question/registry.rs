@@ -66,7 +66,7 @@ impl QuestionRegistry {
             .checked_add(1)
             .ok_or(RejectionReason::ExecutionLimit)?;
         let mut hash = Sha256::new();
-        hash.update(b"naome:local-question-record:v2\0");
+        hash.update(b"naome:local-question-record\0");
         hash.update(entry.record);
         hash.update((bytes.len() as u64).to_le_bytes());
         hash.update(&bytes);
@@ -120,7 +120,7 @@ impl QuestionRegistry {
     /// of arrival order. A clone's later insertion leaves the old root intact.
     pub fn identity(&self) -> Identity {
         let mut hash = Sha256::new();
-        hash.update(b"naome:local-question-registry:v2\0");
+        hash.update(b"naome:local-question-registry\0");
         hash.update((self.length as u64).to_le_bytes());
         hash.update(self.cold.as_ref().map_or_else(
             || self.contents.fingerprint(),

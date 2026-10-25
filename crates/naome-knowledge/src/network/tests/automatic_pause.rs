@@ -62,7 +62,7 @@ fn answer_background(client: &mut Swarm<Behaviour>, event: SwarmEvent<BehaviourE
 }
 
 async fn connected(client: &mut Swarm<Behaviour>, server: PeerId, address: Multiaddr) {
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v6");
+    let topic = gossipsub::IdentTopic::new(crate::wire::TOPIC);
     client.behaviour_mut().gossip.subscribe(&topic).unwrap();
     client
         .dial(
@@ -293,7 +293,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
             Body::Error { reason } if reason == "computation paused"));
     }
 
-    let topic = gossipsub::IdentTopic::new("naome-knowledge-v6");
+    let topic = gossipsub::IdentTopic::new(crate::wire::TOPIC);
     let mut announcement = crate::compatibility().to_vec();
     announcement.extend_from_slice(&[99; 32]);
     // Keep both clients polled while gossip builds its ordinary heartbeat mesh.

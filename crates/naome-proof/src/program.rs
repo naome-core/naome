@@ -8,7 +8,10 @@ use naome_foundation::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const FORMAT: &str = "naome:proof-program:v2";
+pub const FORMAT: &str = "naome:proof-program";
+/// Current program-manifest framing, distinct from certificate payloads.
+pub const MANIFEST_MAGIC: &[u8] = b"\xffNAOP\0";
+const GRAPH_NODE_DOMAIN: &[u8] = b"naome:formula-graph\0";
 /// An individual command is small; splitting an input into commands never
 /// changes its mathematical meaning or imposes a total program byte limit.
 pub const RECORD_BYTES: usize = 4096;
@@ -44,13 +47,13 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn proof_id(&self) -> ProofId {
-        ProofId::from_bytes(self.address(b"naome:program-proof:v2\0"))
+        ProofId::from_bytes(self.address(b"naome:program-proof\0"))
     }
     pub fn statement_id(&self) -> StatementId {
         StatementId::from_bytes(self.statement)
     }
     pub fn derivation_id(&self) -> DerivationId {
-        DerivationId::from_bytes(self.address(b"naome:program-derivation:v2\0"))
+        DerivationId::from_bytes(self.address(b"naome:program-derivation\0"))
     }
     fn address(&self, domain: &[u8]) -> [u8; 32] {
         let mut hash = Sha256::new();
@@ -79,7 +82,7 @@ pub fn command_hash(previous: [u8; 32], bytes: &[u8]) -> [u8; 32] {
 /// against the immutable manifest before saving any of its records.
 pub fn stream_hash(bytes: &[u8], next: [u8; 32]) -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(b"naome:program-stream:v1\0");
+    hash.update(b"naome:program-stream\0");
     hash.update((bytes.len() as u64).to_be_bytes());
     hash.update(bytes);
     hash.update(next);
@@ -90,7 +93,7 @@ pub fn stream_hash(bytes: &[u8], next: [u8; 32]) -> [u8; 32] {
 /// structural properties. A node's children are content addresses.
 pub fn graph_node_bytes(node: Node<[u8; 32]>, properties: Properties) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(128);
-    bytes.extend_from_slice(b"naome:formula-graph:v1\0");
+    bytes.extend_from_slice(GRAPH_NODE_DOMAIN);
     for child in node.children().into_iter().flatten() {
         bytes.extend_from_slice(&child);
     }
@@ -142,7 +145,7 @@ pub fn formula_hash(formula: &Formula) -> [u8; 32] {
 /// fit the certificate codec retain their existing StatementId instead.
 pub fn graph_statement_id(root: [u8; 32]) -> StatementId {
     let mut hash = Sha256::new();
-    hash.update(b"naome:graph-statement:v1\0");
+    hash.update(b"naome:graph-statement\0");
     hash.update(naome_foundation::FOUNDATION_ID);
     hash.update(root);
     StatementId::from_bytes(hash.finalize().into())
@@ -150,7 +153,7 @@ pub fn graph_statement_id(root: [u8; 32]) -> StatementId {
 
 pub fn decode_graph_node(bytes: &[u8]) -> Result<(Node<[u8; 32]>, Properties), String> {
     let body = bytes
-        .strip_prefix(b"naome:formula-graph:v1\0")
+        .strip_prefix(GRAPH_NODE_DOMAIN)
         .ok_or("formula node domain")?;
     let offset = match body.len() {
         28 => 0,

@@ -61,21 +61,17 @@ impl AssessmentLimits {
     }
 }
 
-/// Rule set 4 adds certified elementary equivalence and interleaves opposite
-/// closure searches within the same total budget. Every inferred equivalence
-/// retains separately checked certificates for both implications.
+/// Resource limits for the current question assessment rules. Certified
+/// elementary equivalence interleaves opposite closure searches within the
+/// same total budget and retains checked certificates for both implications.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrefilterPolicy {
-    pub revision: u64,
-    pub rule_set: u64,
     pub limits: AssessmentLimits,
 }
 
 impl Default for PrefilterPolicy {
     fn default() -> Self {
         Self {
-            revision: 6,
-            rule_set: 4,
             limits: AssessmentLimits::MAXIMUM,
         }
     }
@@ -84,9 +80,7 @@ impl Default for PrefilterPolicy {
 impl PrefilterPolicy {
     pub fn identity(self) -> Identity {
         let mut digest = Sha256::new();
-        digest.update(b"naome:local-question-policy:v6\0");
-        digest.update(self.revision.to_le_bytes());
-        digest.update(self.rule_set.to_le_bytes());
+        digest.update(b"naome:local-question-policy\0");
         for value in self.limits.values() {
             digest.update((value as u64).to_le_bytes());
         }
@@ -94,14 +88,11 @@ impl PrefilterPolicy {
     }
 
     fn valid(self) -> bool {
-        self.revision != 0
-            && self.rule_set == 4
-            && self
-                .limits
-                .values()
-                .into_iter()
-                .zip(AssessmentLimits::MAXIMUM.values())
-                .all(|(value, maximum)| value > 0 && value <= maximum)
+        self.limits
+            .values()
+            .into_iter()
+            .zip(AssessmentLimits::MAXIMUM.values())
+            .all(|(value, maximum)| value > 0 && value <= maximum)
     }
 }
 
@@ -143,7 +134,7 @@ impl<'a> AssessmentQuestion<'a> {
             .map_err(|_| RejectionReason::InputLimit)?
             .0;
         let mut hash = Sha256::new();
-        hash.update(b"naome:local-question-input:v1\0");
+        hash.update(b"naome:local-question-input\0");
         for field in [foundation.as_bytes(), source, bytes.as_slice()] {
             hash.update((field.len() as u64).to_le_bytes());
             hash.update(field);
@@ -201,7 +192,7 @@ impl<'a> KnowledgeSnapshot<'a> {
         questions: &'a QuestionRegistry,
     ) -> Self {
         let mut hash = Sha256::new();
-        hash.update(b"naome:local-question-snapshot:v2\0");
+        hash.update(b"naome:local-question-snapshot\0");
         hash.update(context);
         hash.update(artifacts.snapshot_id());
         hash.update(questions.identity());
@@ -219,7 +210,7 @@ impl<'a> KnowledgeSnapshot<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RejectionReason {
-    UnsupportedPolicy,
+    InvalidPolicy,
     FoundationMismatch,
     InvalidTarget,
     MissingDependency,
@@ -241,7 +232,7 @@ pub enum RejectionReason {
 impl RejectionReason {
     pub const fn code(self) -> &'static str {
         match self {
-            Self::UnsupportedPolicy => "UNSUPPORTED_POLICY",
+            Self::InvalidPolicy => "INVALID_POLICY",
             Self::FoundationMismatch => "FOUNDATION_MISMATCH",
             Self::InvalidTarget => "INVALID_TARGET",
             Self::MissingDependency => "MISSING_DEPENDENCY",
@@ -291,7 +282,7 @@ impl PrefilterOutcome {
 /// fn forge(decision: &PrefilterDecision) -> NodeLocalNovelty {
 ///     NodeLocalNovelty {
 ///         question: decision.question.unwrap(), input: decision.input,
-///         snapshot: decision.snapshot, policy: decision.policy, rule_set: 2,
+///         snapshot: decision.snapshot, policy: decision.policy,
 ///     }
 /// }
 /// ```
@@ -308,7 +299,6 @@ pub struct NodeLocalNovelty {
     input: Identity,
     snapshot: Identity,
     policy: Identity,
-    rule_set: u64,
 }
 
 impl NodeLocalNovelty {
@@ -328,10 +318,6 @@ impl NodeLocalNovelty {
         self.policy
     }
 
-    pub const fn rule_set(&self) -> u64 {
-        self.rule_set
-    }
-
     /// Reuse requires the identical normalized input, complete local snapshot
     /// and policy. A mismatch requires fresh receiving-node assessment.
     pub fn matches_inputs(
@@ -344,7 +330,6 @@ impl NodeLocalNovelty {
             && self.input == question.input
             && self.snapshot == snapshot.identity
             && self.policy == policy.identity()
-            && self.rule_set == policy.rule_set
     }
 }
 
@@ -448,7 +433,7 @@ impl PrefilterDecision {
             RejectionReason::ExecutionLimit
                 | RejectionReason::ReceivingLimit
                 | RejectionReason::StaleContext
-                | RejectionReason::UnsupportedPolicy
+                | RejectionReason::InvalidPolicy
                 | RejectionReason::InvalidEvidence
         ) {
             PrefilterOutcome::Inconclusive
@@ -537,7 +522,7 @@ pub fn assess_question(
     let snapshot = &cached_snapshot;
     let mut decision = bound_decision(question, snapshot, policy);
     if !policy.valid() {
-        return decision.reject(RejectionReason::UnsupportedPolicy, "Q09_POLICY");
+        return decision.reject(RejectionReason::InvalidPolicy, "Q09_POLICY");
     }
     let mut work = Work {
         operations: policy.limits.operations,
@@ -554,7 +539,6 @@ pub fn assess_question(
                 input: question.input,
                 snapshot: snapshot.identity,
                 policy: policy.identity(),
-                rule_set: policy.rule_set,
             });
         }
         Ok(()) => {}

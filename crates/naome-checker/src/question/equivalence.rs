@@ -146,7 +146,7 @@ pub(super) fn key(formula: &Formula) -> Result<StatementId, ContextError> {
         }
     }
     let mut hash = Sha256::new();
-    hash.update(b"naome:question:elementary-equivalence:v1\0");
+    hash.update(b"naome:question:elementary-equivalence\0");
     hash.update(bytes);
     Ok(StatementId::from_bytes(hash.finalize().into()))
 }
