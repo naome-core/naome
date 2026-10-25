@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "system-tests")]
+mod automatic_pause;
 use naome_authoring::CompiledQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
 

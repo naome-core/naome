@@ -104,19 +104,24 @@ fn inventory_preserves_unchanged_shortcut_and_rejects_replaced_or_invalid_horizo
 
 #[test]
 fn receiver_rejects_missing_duplicate_and_rebound_inventory_pages() {
+    let request = |after| Request {
+        after,
+        limit: 3,
+        pages: 0,
+    };
     let snapshot = InventorySnapshot {
         lineage: [1; 32],
         root: [2; 32],
         count: 3,
     };
     let ids = [[3; 32], [1; 32], [2; 32]]; // Admission order need not be hash order.
-    assert!(valid_page(None, snapshot, &ids, None));
-    assert!(!valid_page(None, snapshot, &ids[..2], None));
-    assert!(!valid_page(None, snapshot, &[[3; 32]; 3], None));
+    assert!(valid_page(request(None), snapshot, &ids, None));
+    assert!(!valid_page(request(None), snapshot, &ids[..2], None));
+    assert!(!valid_page(request(None), snapshot, &[[3; 32]; 3], None));
     let after = InventoryCursor { snapshot, after: 1 };
-    assert!(valid_page(Some(after), snapshot, &ids[1..], None));
+    assert!(valid_page(request(Some(after)), snapshot, &ids[1..], None));
     assert!(!valid_page(
-        Some(after),
+        request(Some(after)),
         InventorySnapshot {
             root: [9; 32],
             ..snapshot
@@ -124,5 +129,52 @@ fn receiver_rejects_missing_duplicate_and_rebound_inventory_pages() {
         &ids[1..],
         None
     ));
-    assert!(!valid_page(Some(after), snapshot, &ids[1..], Some(after)));
+    assert!(!valid_page(
+        request(Some(after)),
+        snapshot,
+        &ids[1..],
+        Some(after)
+    ));
+}
+
+#[test]
+fn inventory_admission_keeps_its_limit_and_accepts_smaller_contiguous_peer_pages() {
+    let snapshot = InventorySnapshot {
+        lineage: [1; 32],
+        root: [2; 32],
+        count: 4,
+    };
+    let request = Request {
+        after: None,
+        limit: 3,
+        pages: 0,
+    };
+    let next = |after| Some(InventoryCursor { snapshot, after });
+    // A responder may have a smaller live page budget; it must still advance
+    // the original horizon, never announce a premature end or an empty stall.
+    assert!(valid_page(request, snapshot, &[[3; 32]], next(1)));
+    assert!(valid_page(
+        request,
+        snapshot,
+        &[[3; 32], [4; 32], [5; 32]],
+        next(3)
+    ));
+    assert!(!valid_page(request, snapshot, &[[3; 32]], None));
+    assert!(!valid_page(request, snapshot, &[], next(0)));
+    assert!(!valid_page(
+        request,
+        snapshot,
+        &[[3; 32], [4; 32], [5; 32], [6; 32]],
+        None
+    ));
+    // A later smaller request cannot accept the preceding larger response.
+    assert!(!valid_page(
+        Request {
+            limit: 1,
+            ..request
+        },
+        snapshot,
+        &[[3; 32], [4; 32], [5; 32]],
+        next(3)
+    ));
 }

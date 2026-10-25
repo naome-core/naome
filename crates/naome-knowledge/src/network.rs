@@ -132,8 +132,7 @@ enum Flight {
         started: Instant,
         peer: PeerId,
         known: Option<[u8; 32]>,
-        after: Option<InventoryCursor>,
-        pages: usize,
+        request: inventory::Request,
     },
     Get {
         started: Instant,
@@ -994,7 +993,7 @@ impl Node {
         if self.graph.contains(id)? || self.intake.contains(id) || self.wanted.contains_key(&id) {
             return Ok(true);
         }
-        if self.wanted.len() >= crate::resources::limits().fetches {
+        if self.wanted.len() >= crate::resources::active_limits().fetches {
             return Ok(false);
         }
         self.wanted.insert(
@@ -1486,8 +1485,10 @@ impl Node {
         for peer in &enabled {
             if self.request_ready(*peer, now)
                 && self.automatic_request_ready(*peer, now)
-                && crate::resources::limits().fetches - self.wanted.len()
-                    >= crate::resources::limits().inventory_page
+                && crate::resources::active_limits()
+                    .fetches
+                    .saturating_sub(self.wanted.len())
+                    >= crate::resources::active_limits().inventory_page
                 && self
                     .next_inventory
                     .get(peer)
@@ -2101,11 +2102,14 @@ impl Node {
             }
             (
                 Flight::Inventory {
-                    peer, known, after, ..
+                    peer,
+                    known,
+                    request,
+                    ..
                 },
                 Body::InventoryUnchanged { root },
             ) => {
-                if after.is_some() || known != Some(root) {
+                if request.after.is_some() || known != Some(root) {
                     emit(json!({"event":"rejected","error":"unsolicited inventory summary"}));
                 } else {
                     self.inventory_progress.remove(&peer);
@@ -2117,21 +2121,19 @@ impl Node {
                 }
             }
             (
-                Flight::Inventory {
-                    peer, after, pages, ..
-                },
+                Flight::Inventory { peer, request, .. },
                 Body::InventoryResult {
                     snapshot,
                     ids,
                     next,
                 },
             ) => {
-                self.received_inventory(peer, after, pages, snapshot, ids, next)?;
+                self.received_inventory(peer, request, snapshot, ids, next)?;
             }
             (
                 Flight::Inventory {
                     peer,
-                    after: Some(_),
+                    request: inventory::Request { after: Some(_), .. },
                     ..
                 },
                 Body::InventoryRestart,
