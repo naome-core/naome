@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from autonomous_lifecycle import Node, Trial, process_identity, write_receipt
+from autonomous_lifecycle import Node, Trial, process_identity, retain_evidence, write_receipt
 from long_jobs import Probe, job_settings, journal
 from provider_feedback import feedback
 
@@ -135,6 +135,7 @@ def main():
     finally:
         trial.close()
         write_receipt(trial.output / "result.json", trial.summary)
+        retain_evidence(trial.output, trial.summary, args.mode, args.profile)
     assert trial.summary["result"] == "pass", trial.summary
 
 

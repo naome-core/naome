@@ -359,7 +359,7 @@ fn live_limit(capacity: usize, limit: impl FnOnce(&Budget) -> usize) -> usize {
 
 pub fn load(directory: &Path) -> Result<Selection, String> {
     let path = directory.join("resource-profile.json");
-    let Some(bytes) = crate::storage::read_owned(&path, 4096)? else {
+    let Some(bytes) = crate::storage::read_owned_snapshot(&path, 4096)? else {
         return Ok(Selection::default());
     };
     let selection: Selection = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
