@@ -3,6 +3,9 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+const MARKER: &[u8] = b"naome-question-registry\n";
+const CHECKPOINT_DOMAIN: &str = "naome:questions";
+
 #[cfg(test)]
 thread_local! { static FAIL_EXCHANGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[cfg(test)]
@@ -42,7 +45,6 @@ pub(super) struct Entry {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
-    version: u8,
     compatibility: String,
     policy: String,
     backlog_sequence: u64,
@@ -67,9 +69,9 @@ impl Persistence {
         let root = crate::storage::research_directory(directory)?;
         let path = root.join("questions.sqlite3");
         let marker = directory.join("question-registry.initialized");
-        let established = crate::storage::marker_valid(&marker, b"naome-question-registry-v2\n")?;
+        let established = crate::storage::marker_valid(&marker, MARKER)?;
         let checkpoint = if path.exists() {
-            crate::checkpoint::Checkpoint::open_for_replay(&path, "naome:questions:v1")?
+            crate::checkpoint::Checkpoint::open_for_replay(&path, CHECKPOINT_DOMAIN)?
         } else {
             if established {
                 return Err(
@@ -78,23 +80,19 @@ impl Persistence {
                 );
             }
             let header = Header {
-                version: 2,
                 compatibility: crate::hex(&crate::compatibility()),
                 policy: crate::hex(&policy.identity()),
                 backlog_sequence: 0,
                 backlog_cursor: None,
             };
-            crate::checkpoint::Checkpoint::create(&path, "naome:questions:v1", &header, vec![])?
+            crate::checkpoint::Checkpoint::create(&path, CHECKPOINT_DOMAIN, &header, vec![])?
         };
         checkpoint.require_kinds(&["question", "admitted", "backlog", "queued", "publication"])?;
         let header: Header = checkpoint.header()?;
-        if header.version != 2
-            || header.compatibility != crate::hex(&crate::compatibility())
+        if header.compatibility != crate::hex(&crate::compatibility())
             || crate::object::id_bytes(&header.policy).is_err()
         {
-            return Err(
-                "question registry version, compatibility or policy identity differs".into(),
-            );
+            return Err("question registry compatibility or policy identity differs".into());
         }
         let persistence = Self {
             checkpoint,
@@ -102,7 +100,7 @@ impl Persistence {
             fault: std::sync::Mutex::new(None),
         };
         if !established {
-            crate::storage::write_marker(&marker, b"naome-question-registry-v2\n")?;
+            crate::storage::write_marker(&marker, MARKER)?;
         }
         Ok(persistence)
     }

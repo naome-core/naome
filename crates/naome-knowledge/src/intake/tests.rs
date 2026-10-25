@@ -742,7 +742,7 @@ async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_d
     };
     let historical = receipt.clone();
     let mut policy = PrefilterPolicy::default();
-    policy.revision += 1;
+    policy.limits.operations -= 1;
     let (sender, _receiver) = oneshot::channel();
     questions.process(Command::Policy(policy, sender), &graph);
     let peer = PeerId::random();

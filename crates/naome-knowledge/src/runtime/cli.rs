@@ -169,31 +169,6 @@ fn human(command: &str, status: &Status, color: bool) -> String {
         }
         output.push_str("    Computation resumes automatically after stable recovery.\n");
     }
-    if let Some(wallet) = &status.wallet {
-        writeln!(
-            output,
-            "\n  Wallet           {}",
-            wallet
-                .wallet_address
-                .map_or_else(|| "unavailable".into(), |address| address.to_string())
-        )
-        .expect("String write");
-        writeln!(output, "  Signing address  {}", wallet.signing_address).expect("String write");
-        if let Some(network) = wallet.network {
-            writeln!(output, "  Ledger network   {network}").expect("String write");
-        }
-        let connection = match wallet.connection {
-            crate::WalletConnection::Local => "local wallet",
-            crate::WalletConnection::Connected => {
-                "connected; spending authorization is checked when paying"
-            }
-            crate::WalletConnection::Unavailable => "association unavailable",
-        };
-        writeln!(output, "  Wallet link      {connection}").expect("String write");
-        if !wallet.key_available {
-            output.push_str("  Wallet key       unavailable; restore its backup\n");
-        }
-    }
     output.push_str("\n  Interest\n");
     if status.interest.is_empty() {
         output.push_str("    (none)\n");

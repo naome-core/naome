@@ -179,7 +179,7 @@ fn unanswered_targets_are_not_synthesized_and_limits_are_explicitly_inconclusive
         RejectionReason::ExecutionLimit,
         RejectionReason::ReceivingLimit,
         RejectionReason::StaleContext,
-        RejectionReason::UnsupportedPolicy,
+        RejectionReason::InvalidPolicy,
         RejectionReason::InvalidEvidence,
     ] {
         let decision =

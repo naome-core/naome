@@ -1,5 +1,6 @@
 use naome_authoring::CompiledProof;
 use naome_foundation::FOUNDATION_ID;
+use naome_proof::program::MANIFEST_MAGIC;
 use naome_proof::{ProofCertificate, ProofId, ProofNormalForm, ProofStep, StatementId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,10 +9,9 @@ use std::collections::BTreeSet;
 #[cfg(test)]
 mod tests;
 
-pub const CODEC_ID: &str = "naome:proof-codec:v0";
+pub const CODEC_ID: &str = "naome:proof-codec";
 pub use naome_checker::CHECKER_ID;
-pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program:v3";
-const PROGRAM_MAGIC: &[u8] = b"\xffNAOP2\0";
+pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program";
 
 pub(crate) fn program_manifest(
     bytes: &[u8],
@@ -20,7 +20,7 @@ pub(crate) fn program_manifest(
         return Ok(None);
     }
     let body = bytes
-        .strip_prefix(PROGRAM_MAGIC)
+        .strip_prefix(MANIFEST_MAGIC)
         .ok_or("unknown program payload format")?;
     let manifest = naome_proof::program::Manifest::from_canonical_bytes(body)?;
     if manifest.commands > i64::MAX as u64 || manifest.input_bytes > i64::MAX as u64 {
@@ -127,7 +127,7 @@ fn target_id(formula: &naome_foundation::Formula) -> Result<StatementId, crate::
 
 pub fn compatibility() -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(b"naome:knowledge:compatibility:v1\0");
+    hash.update(b"naome:knowledge:compatibility\0");
     for value in [FOUNDATION_ID, CODEC_ID, CHECKER_ID, GRAPH_POLICY_ID] {
         hash.update((value.len() as u32).to_be_bytes());
         hash.update(value.as_bytes());
@@ -183,7 +183,7 @@ impl BinaryProof {
         proof: &naome_checker::program::CheckedProgram,
     ) -> Result<Self, crate::Error> {
         let manifest = proof.manifest();
-        let mut bytes = PROGRAM_MAGIC.to_vec();
+        let mut bytes = MANIFEST_MAGIC.to_vec();
         bytes.extend(manifest.canonical_bytes()?);
         Ok(Self {
             id: manifest.proof_id(),

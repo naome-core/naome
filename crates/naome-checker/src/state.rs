@@ -47,14 +47,13 @@ impl Key256 for [u8; 32] {
     }
 }
 
-/// The already checked proofs and definitions selected by one chain state.
+/// The already checked proofs and definitions admitted to one mathematical context.
 ///
 /// Resolution is deliberately limited to this in-memory selected set. Candidate,
 /// archived, locally authored, and network-visible artifacts require explicit
-/// checked registration before mathematical dependency resolution. Chain callers
-/// register only artifacts from their selected blocks. An economy-free replicated
-/// graph may instead use [`Self::register_proof_for_replication`]; that mathematical
-/// context establishes no chain selection, finality, provenance, or rewards.
+/// checked registration before mathematical dependency resolution. Replicated
+/// graphs may use [`Self::register_proof_for_replication`] to retain alternative
+/// derivations; this mathematical context grants no publication authority.
 /// Cloning is constant-time: immutable resolver nodes remain shared, and every
 /// later successful registration copies only the changed Patricia paths.
 /// An explicitly temporary original-group verification branch may use
@@ -210,8 +209,8 @@ impl ArtifactState {
     ///
     /// Distinct certificates for the same derivation coexist without replacing
     /// immutable references. Every identity, conclusion and dependency check is
-    /// preserved. This API grants dependency resolution only; ledger callers must
-    /// retain [`Self::register_proof`] and its duplicate-derivation policy.
+    /// preserved. This API grants dependency resolution only. Callers requiring
+    /// unique derivations use [`Self::register_proof`] instead.
     pub fn register_proof_for_replication(
         &mut self,
         proof: CheckedProof,

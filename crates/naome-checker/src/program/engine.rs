@@ -13,8 +13,6 @@ use naome_proof::{DerivationId, ProofId, StatementId};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
-pub const APPLICATION_ID: i64 = 0x4e415057;
-pub const SCHEMA_VERSION: u32 = 2;
 fn sql<T>(value: rusqlite::Result<T>) -> Result<T, Error> {
     value.map_err(Error::Storage)
 }
@@ -363,31 +361,8 @@ impl Engine {
     }
     /// The caller owns file locks, native identity, resource leases and SQL
     /// connection configuration. Only this evaluator can issue CheckedProgram.
-    pub fn open(connection: Connection) -> Result<Self, Error> {
-        let app: i64 = sql(connection.pragma_query_value(None, "application_id", |r| r.get(0)))?;
-        if app == 0 {
-            let tables: i64 =
-                sql(connection.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0)))?;
-            if tables != 0 {
-                return Err("unknown proof work database".into());
-            }
-            sql(connection.execute_batch("BEGIN IMMEDIATE;
-                CREATE TABLE state(id INTEGER PRIMARY KEY CHECK(id=1), commands INTEGER NOT NULL, committed INTEGER NOT NULL, sealed INTEGER NOT NULL, hash BLOB NOT NULL CHECK(length(hash)=32)) STRICT;
-                INSERT INTO state VALUES(1,0,0,0,zeroblob(32));
-                CREATE TABLE input(position INTEGER PRIMARY KEY, command BLOB NOT NULL CHECK(length(command)<=4096), hash BLOB NOT NULL CHECK(length(hash)=32)) STRICT;
-                CREATE TABLE result(position INTEGER PRIMARY KEY, node INTEGER NOT NULL, proved INTEGER NOT NULL CHECK(proved IN (0,1))) STRICT;
-                CREATE TABLE node(id INTEGER PRIMARY KEY, hash BLOB NOT NULL UNIQUE CHECK(length(hash)=32), tag INTEGER NOT NULL, a INTEGER NOT NULL, b INTEGER NOT NULL, ak INTEGER NOT NULL, bk INTEGER NOT NULL, free INTEGER NOT NULL, required INTEGER NOT NULL) STRICT;
-                CREATE TABLE equation(sequence INTEGER PRIMARY KEY, position INTEGER NOT NULL, operation INTEGER NOT NULL, source INTEGER NOT NULL, depth INTEGER NOT NULL, result INTEGER NOT NULL, UNIQUE(position,operation,source,depth)) STRICT;
-                CREATE INDEX equation_order ON equation(position,operation,sequence);
-                CREATE TABLE budget(sequence INTEGER PRIMARY KEY, snapshot BLOB NOT NULL CHECK(length(snapshot)<=4096), command INTEGER NOT NULL, equation INTEGER NOT NULL) STRICT;
-                PRAGMA application_id=1312903255; PRAGMA user_version=2; COMMIT;"))?;
-        } else if app != APPLICATION_ID {
-            return Err("proof work format mismatch".into());
-        }
-        let version: i64 = sql(connection.pragma_query_value(None, "user_version", |r| r.get(0)))?;
-        if version != i64::from(SCHEMA_VERSION) {
-            return Err("unsupported proof work version".into());
-        }
+    pub fn open(mut connection: Connection) -> Result<Self, Error> {
+        super::schema::initialize(&mut connection)?;
         // The minimum evaluator budget splits into sub-page cache allowances.
         // Small temporary pages keep its disk-backed cache from rounding to zero.
         sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp.page_size=512;

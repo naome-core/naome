@@ -182,13 +182,13 @@ def main():
                                     for trial in driver.summary["trials"]),
         "errors": [error for trial in driver.summary["trials"] for error in trial.get("cleanup_errors", [])]}
     driver.summary["artifacts"] = {str(path): digest(path) for path in sorted(driver.output.rglob("*"))
-                                    if path.is_file() and path.name not in ["summary.json", "identity.key", "wallet.key", ".wallet-key-incoming", "knowledge.lock"]}
+                                    if path.is_file() and path.name not in ["summary.json", "identity.key", "knowledge.lock"]}
     (driver.output / "summary.json").write_text(json.dumps(driver.summary, indent=2) + "\n")
     if os.environ.get("GITHUB_ACTIONS") == "true":
         archive = driver.output.parent / f"shutdown-ci-{args.profile}.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
             for path in sorted(driver.output.rglob("*")):
-                if path.is_file() and path.name not in ["identity.key", "wallet.key", ".wallet-key-incoming", "knowledge.lock"]:
+                if path.is_file() and path.name not in ["identity.key", "knowledge.lock"]:
                     bundle.write(path, str(path.relative_to(driver.output)))
     print(json.dumps({"result": driver.summary["result"], "output": str(driver.output)}))
     return 0 if driver.summary["result"] == "pass" else 1

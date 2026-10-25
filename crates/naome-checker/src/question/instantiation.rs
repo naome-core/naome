@@ -16,7 +16,7 @@ pub(super) const MAX_INSTANTIATIONS: usize = naome_proof::QUESTION_TARGET_MAX_DE
 /// A domain-separated query key, never the identity of a mathematical statement.
 fn bytes_key(bytes: &[u8]) -> StatementId {
     let mut digest = Sha256::new();
-    digest.update(b"naome:question:universal-pattern:v1\0");
+    digest.update(b"naome:question:universal-pattern\0");
     digest.update(bytes);
     StatementId::from_bytes(digest.finalize().into())
 }
