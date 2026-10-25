@@ -1260,8 +1260,12 @@ async fn wait_for_stop(
 
 /// Ordinary CLI exposes lifecycle, computation control and local owner interest.
 pub async fn execute() -> Result<(), String> {
-    crate::resources::initialize_from_environment()?;
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if let Some(output) = cli::information(&arguments) {
+        println!("{output}");
+        return Ok(());
+    }
+    crate::resources::initialize_from_environment()?;
     let plain = if arguments.first().is_some_and(|a| a == "--json") {
         &arguments[1..]
     } else {
