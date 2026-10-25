@@ -210,11 +210,15 @@ impl Work {
     pub(crate) fn restrict_cache(&mut self, bytes: u64) -> Result<(), crate::Error> {
         self.live()?;
         self.engine
-            .advance(0, bytes)
+            .advance(0, bytes, &naome_checker::ArtifactState::new())
             .map(|_| ())
             .map_err(crate::Error::from)
     }
-    pub fn advance(&mut self, budget: &Budget) -> Result<bool, crate::Error> {
+    pub fn advance(
+        &mut self,
+        budget: &Budget,
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<bool, crate::Error> {
         self.live()?;
         if budget.cache_bytes < 4096
             || budget.cache_bytes > (budget.memory_bytes / 4).max(4096)
@@ -245,9 +249,11 @@ impl Work {
             (budget.batch_steps as u64).saturating_mul(16 * 1024),
         )?;
         let started = std::time::Instant::now();
-        let result = self
-            .engine
-            .advance(crate::resources::adaptive::batch(budget.batch_steps), cache);
+        let result = self.engine.advance(
+            crate::resources::adaptive::batch(budget.batch_steps),
+            cache,
+            context,
+        );
         crate::resources::feedback::record(
             crate::resources::feedback::Kind::Check,
             self.engine.last_quantum_steps(),
@@ -273,8 +279,7 @@ impl Work {
     }
     pub(crate) fn prepare_export(&mut self, budget: &Budget) -> Result<bool, crate::Error> {
         self.live()?;
-        self.engine
-            .advance(0, crate::resources::program_cache(budget.cache_bytes))?;
+        self.restrict_cache(crate::resources::program_cache(budget.cache_bytes))?;
         if budget.paused.is_some() || budget.batch_steps == 0 {
             return Ok(false);
         }

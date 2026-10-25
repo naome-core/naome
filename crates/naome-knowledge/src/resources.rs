@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 pub mod adaptive;
 mod calibration;
+mod computation;
 pub(crate) mod feedback;
 mod operating;
+pub use computation::ComputationState;
+pub(crate) use computation::{Computation, ComputationPermit};
 use std::{
     sync::{
         Arc, OnceLock,

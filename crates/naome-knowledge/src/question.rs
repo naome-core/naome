@@ -50,6 +50,16 @@ pub struct QuestionAssessment {
     pub submitted_negation_parity: bool,
     /// Exact provider and owner-selection epoch; absent after owner recovery error.
     pub selection: Option<Identity>,
+    // A positive provider result binds the exact question and selection inputs,
+    // independently of the snapshot used by the mandatory formal checks.
+    selected: Option<InterestSelection>,
+}
+
+#[derive(Clone, Debug)]
+struct InterestSelection {
+    source: Identity,
+    policy: Identity,
+    owner: Identity,
 }
 
 impl QuestionAssessment {
@@ -210,8 +220,8 @@ impl QuestionHandle {
     }
 
     /// Fresh formal admission after positive optional interest selection.
-    /// A changed graph, registry or policy invalidates the pending selection;
-    /// an earlier assessment/receipt is never an argument or authorization.
+    /// Graph and registry changes require fresh formal checks. Interest binds
+    /// the exact question, policy and owner/provider epoch independently.
     pub async fn admit_question(
         &self,
         question: CompiledQuestion,
@@ -643,6 +653,7 @@ where
                     interest: InterestAssessment::Stale,
                     submitted_negation_parity: pending.question.negation_parity(),
                     selection: pending.selection,
+                    selected: None,
                 },
                 AdmissionOutcome::NotInserted,
             );
@@ -860,7 +871,36 @@ where
             && self.selection.is_some()
             && assessment.selection == self.selection
             && assessment.interest == InterestAssessment::Assessed(true)
+            && assessment.selected.as_ref().is_some_and(|selected| {
+                selected.source == *question.source_hash()
+                    && selected.policy == self.policy.identity()
+                    && Some(selected.owner) == self.selection
+            })
             && (assessment.novelty().is_some() || self.exchange_record(question).is_some())
+    }
+
+    /// Reuse only sealed positive interest for the exact unchanged selection
+    /// inputs. Every receiver-side formal fact is recomputed on the live world.
+    pub(crate) fn refresh_exchange(
+        &mut self,
+        graph: &Graph,
+        question: &CompiledQuestion,
+        assessment: &QuestionAssessment,
+    ) -> Result<QuestionAssessment, crate::Error> {
+        if !self.exchange_eligible(question, assessment) {
+            return Err("stale or declined question interest".into());
+        }
+        let fresh = self.evaluate_record(graph, question, false, self.exchange_record(question));
+        if fresh.inconclusive() {
+            return Err(crate::Error::ExecutionLimit);
+        }
+        if !fresh.passed() {
+            return Err("question no longer passes fresh formal checks".into());
+        }
+        Ok(QuestionAssessment {
+            prefilter: fresh,
+            ..assessment.clone()
+        })
     }
 
     pub(crate) fn prepare_exchange(
@@ -870,13 +910,9 @@ where
         assessment: &QuestionAssessment,
     ) -> Result<QuestionDelta, String> {
         let record = self.exchange_record(question);
-        let fresh = self.evaluate_record(graph, question, false, record);
-        if !fresh.same_context(&assessment.prefilter)
-            || !fresh.passed()
-            || !self.exchange_eligible(question, assessment)
-        {
-            return Err("stale or declined final question assessment".into());
-        }
+        let fresh = self
+            .refresh_exchange(graph, question, assessment)?
+            .prefilter;
         let mut registry = self.registry.clone();
         let mut inserted = None;
         if record.is_none() {
@@ -907,7 +943,7 @@ where
         root: naome_proof::ProofId,
         batch: crate::graph::CheckedBatch,
         delta: QuestionDelta,
-        peer: Option<crate::graph::PeerGrant>,
+        peer: Option<crate::publication::PeerGrant>,
         deadline: Instant,
     ) -> Result<Vec<naome_proof::ProofId>, crate::Error> {
         if let (Some(persistence), Some(question)) = (&mut self.persistence, &delta.question)
@@ -1048,6 +1084,7 @@ where
                     prefilter,
                     submitted_negation_parity: question.negation_parity(),
                     selection: self.selection,
+                    selected: None,
                 },
                 AdmissionOutcome::NotInserted,
             );
@@ -1250,11 +1287,20 @@ where
         };
         let interest = if pending.selection != self.selection || self.selection.is_none() {
             InterestAssessment::Stale
-        } else if pending.prefilter.same_context(&prefilter) {
+        } else if pending.prefilter.policy == prefilter.policy {
             interest
         } else {
             prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
             InterestAssessment::Stale
+        };
+        let selected = if prefilter.passed() && interest == InterestAssessment::Assessed(true) {
+            self.selection.map(|owner| InterestSelection {
+                source: *pending.question.source_hash(),
+                policy: prefilter.policy,
+                owner,
+            })
+        } else {
+            None
         };
         let mut previous_registry = None;
         let mut outcome = AdmissionOutcome::NotInserted;
@@ -1310,6 +1356,7 @@ where
                 interest,
                 submitted_negation_parity: pending.question.negation_parity(),
                 selection: pending.selection,
+                selected,
             },
             outcome,
         );

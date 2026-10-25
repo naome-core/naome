@@ -32,6 +32,7 @@ impl Service {
         directory: &Path,
         settings: Settings,
         cursor: u64,
+        computation: Arc<crate::resources::Computation>,
     ) -> Result<(Self, Client, Recovery), String> {
         settings.validate()?;
         let (disk, journal) = Disk::open(directory, settings, cursor)?;
@@ -62,7 +63,8 @@ impl Service {
                     let (events, progress) =
                         mpsc::channel(crate::resources::active_limits().provider_events);
                     runtime.block_on(
-                        Owner::new(disk, journal, settings).run(receiver, stop, events, progress),
+                        Owner::new(disk, journal, settings, computation)
+                            .run(receiver, stop, events, progress),
                     )
                 })();
                 if let Err(failure) = &result {
@@ -135,6 +137,7 @@ struct PendingProgram {
     reply: oneshot::Sender<Result<(), String>>,
 }
 struct Owner {
+    computation: Arc<crate::resources::Computation>,
     disk: Disk,
     journal: Journal,
     settings: Settings,
@@ -155,9 +158,15 @@ enum Reservation {
 }
 
 impl Owner {
-    fn new(disk: Disk, journal: Journal, settings: Settings) -> Self {
+    fn new(
+        disk: Disk,
+        journal: Journal,
+        settings: Settings,
+        computation: Arc<crate::resources::Computation>,
+    ) -> Self {
         let recovery_skip = journal.records.keys().copied().collect();
         Self {
+            computation,
             disk,
             journal,
             recovery_skip,
@@ -749,6 +758,9 @@ impl Owner {
                 .take((lanes()[lane] - active).min(available))
                 .collect::<Vec<_>>();
             for id in ready {
+                let Some(computation) = self.computation.try_enter() else {
+                    break;
+                };
                 let Some(slot) = self.disk.slot(lane)? else {
                     continue;
                 };
@@ -805,6 +817,7 @@ impl Owner {
                         events,
                         receiver,
                         slot,
+                        computation,
                     ))
                     .catch_unwind()
                     .await

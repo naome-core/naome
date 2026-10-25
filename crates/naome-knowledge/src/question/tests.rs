@@ -385,7 +385,7 @@ async fn running_node_prefilter_reaches_separate_interest_without_storing_questi
 }
 
 #[tokio::test]
-async fn running_node_checked_proof_ingest_invalidates_pending_interest() {
+async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
     let directory = Directory::new();
     let (handle, admin, inbox) = channel();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -459,9 +459,12 @@ async fn running_node_checked_proof_ingest_invalidates_pending_interest() {
         .unwrap();
     assert_eq!(
         stale.assessment.prefilter.reason,
-        Some(RejectionReason::StaleContext)
+        Some(RejectionReason::KnownProof)
     );
-    assert_eq!(stale.assessment.interest, InterestAssessment::Stale);
+    assert_eq!(
+        stale.assessment.interest,
+        InterestAssessment::Assessed(true)
+    );
     assert!(stale.assessment.novelty().is_none());
     assert!(
         prior_pass.novelty().is_some(),
@@ -490,7 +493,7 @@ async fn running_node_checked_proof_ingest_invalidates_pending_interest() {
 }
 
 #[tokio::test]
-async fn running_node_registry_and_policy_updates_invalidate_pending_interest() {
+async fn running_node_registry_growth_rechecks_formally_and_policy_changes_invalidate_interest() {
     let directory = Directory::new();
     let (handle, admin, inbox) = channel();
     let started = Arc::new(Notify::new());
@@ -511,7 +514,7 @@ async fn running_node_registry_and_policy_updates_invalidate_pending_interest() 
             }
         },
     ));
-    for policy_change in [false, true] {
+    for policy_change in [true, false] {
         let client = handle.clone();
         let assessment =
             tokio::spawn(async move { client.admit_question(question(QUESTION)).await.unwrap() });
@@ -535,14 +538,29 @@ async fn running_node_registry_and_policy_updates_invalidate_pending_interest() 
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            result.assessment.prefilter.reason,
-            Some(RejectionReason::StaleContext)
-        );
-        assert_eq!(result.assessment.interest, InterestAssessment::Stale);
-        assert!(result.assessment.novelty().is_none());
-        assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
-        assert_eq!(context(&handle).await, changed);
+        if policy_change {
+            assert_eq!(
+                result.assessment.prefilter.reason,
+                Some(RejectionReason::StaleContext)
+            );
+            assert_eq!(result.assessment.interest, InterestAssessment::Stale);
+            assert!(result.assessment.novelty().is_none());
+            assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
+            assert_eq!(context(&handle).await, changed);
+        } else {
+            assert_eq!(
+                result.assessment.interest,
+                InterestAssessment::Assessed(true)
+            );
+            let AdmissionOutcome::Admitted(receipt) = result.outcome else {
+                panic!("unrelated registry growth must preserve interest");
+            };
+            assert_eq!(receipt.snapshot_before(), changed.snapshot);
+            assert_eq!(
+                context(&handle).await.registered_questions,
+                changed.registered_questions + 1
+            );
+        }
     }
     let unsupported = PrefilterPolicy {
         rule_set: 9,
@@ -556,7 +574,7 @@ async fn running_node_registry_and_policy_updates_invalidate_pending_interest() 
     );
     assert_eq!(result.assessment.interest, InterestAssessment::NotRun);
     assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
-    assert_eq!(context(&handle).await.registered_questions, 1);
+    assert_eq!(context(&handle).await.registered_questions, 2);
     stop(admin, task).await;
 }
 
@@ -1284,3 +1302,4 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
 }
 
 mod equivalence;
+mod interest_binding;

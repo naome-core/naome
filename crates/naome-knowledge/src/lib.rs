@@ -23,6 +23,7 @@ pub mod network;
 mod object;
 #[cfg(unix)]
 pub mod proof_work;
+mod publication;
 pub mod question;
 pub mod relay;
 pub mod resources;

@@ -1,5 +1,7 @@
 //! Independent lifecycle and a bounded, instance-bound local control channel.
-use crate::{Graph, autonomous::Intervals, network};
+#[cfg(test)]
+use crate::Graph;
+use crate::{autonomous::Intervals, network};
 use libp2p::identity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -173,12 +175,23 @@ pub fn report_error(error: &str) {
     }
 }
 
-/// The complete ordinary status surface. Count only unique checked accepted IDs.
+/// Whether this process reconstructed mathematical validity for the reported set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofVerification {
+    Checked,
+    NotRun,
+}
+
+/// The ordinary status surface. Offline counts describe recorded admissions;
+/// only a live checked graph can report `ProofVerification::Checked`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
     pub running: bool,
+    pub computation: crate::resources::ComputationState,
     pub accepted_proofs: usize,
+    pub proof_verification: ProofVerification,
     pub interest: String,
 }
 
@@ -204,6 +217,8 @@ enum Operation {
     Status,
     Resources,
     Stop,
+    Pause,
+    Resume,
     Interest(String),
 }
 
@@ -241,10 +256,24 @@ pub(crate) struct Control {
     directory: PathBuf,
     endpoint: Endpoint,
     stopping: tokio::sync::watch::Sender<bool>,
+    pub(crate) computation: std::sync::Arc<crate::resources::Computation>,
     owner: std::sync::Arc<Mutex<OwnerState>>,
     selection_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ownership: Option<std::sync::Arc<crate::store::Store>>,
     startup: Option<Startup>,
+}
+
+impl crate::publication::LocalAuthority for Control {
+    fn check_selection(&self, expected: Option<[u8; 32]>) -> Result<(), crate::Error> {
+        if self.stopping() {
+            return Err(crate::Error::StaleAuthority);
+        }
+        let selection = self.selection().map_err(|_| crate::Error::StaleAuthority)?;
+        if Some(selection) != expected {
+            return Err(crate::Error::StaleAuthority);
+        }
+        Ok(())
+    }
 }
 
 struct OwnerState {
@@ -381,6 +410,7 @@ impl Control {
             directory,
             endpoint,
             stopping: tokio::sync::watch::channel(false).0,
+            computation: std::sync::Arc::default(),
             owner: std::sync::Arc::new(Mutex::new(OwnerState {
                 text,
                 recovery_error: None,
@@ -453,6 +483,13 @@ impl Control {
         if stopping {
             self.stopping.send_replace(true);
         }
+        if ready && !self.stopping() {
+            match request.operation {
+                Operation::Pause => self.computation.set_paused(true),
+                Operation::Resume => self.computation.set_paused(false),
+                _ => {}
+            }
+        }
         let directory = self.directory.clone();
         let state = self.owner.clone();
         let dirty = self.selection_dirty.clone();
@@ -463,7 +500,7 @@ impl Control {
             let _ownership = ownership;
             match request.operation {
                 Operation::Resources => Ok(String::new()),
-                Operation::Status => {
+                Operation::Status | Operation::Pause | Operation::Resume => {
                     let mut owner = state
                         .lock()
                         .map_err(|_| "owner configuration lock poisoned")?;
@@ -506,6 +543,7 @@ impl Control {
         })
         .await
         .map_err(|error| format!("owner control worker failed: {error}"))??;
+        let running = ready && !self.stopping();
         let response = Response {
             token: self.endpoint.token.clone(),
             report: if resources {
@@ -518,8 +556,14 @@ impl Control {
             } else {
                 Report::Status {
                     status: Status {
-                        running: ready && !stopping,
+                        running,
+                        computation: if running {
+                            self.computation.state()
+                        } else {
+                            crate::resources::ComputationState::Stopped
+                        },
                         accepted_proofs: count,
+                        proof_verification: ProofVerification::Checked,
                         interest,
                     },
                 }
@@ -807,10 +851,12 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
 }
 
 async fn stopped_status(directory: &Path) -> Result<Status, String> {
-    let graph = Graph::open(directory)?;
+    let store = crate::store::Store::open(directory)?;
     Ok(Status {
         running: false,
-        accepted_proofs: graph.accepted_count(),
+        computation: crate::resources::ComputationState::Stopped,
+        accepted_proofs: store.stored_count()?,
+        proof_verification: ProofVerification::NotRun,
         interest: owner::load(directory)?,
     })
 }
@@ -820,12 +866,14 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
     if let Some(status) = request(directory, Operation::Interest(text.into()), None).await? {
         return Ok(status);
     }
-    // Keep the graph's kernel lock through persistence and status construction.
+    // Keep the store's kernel lock through persistence and status construction.
     // A daemon or embedding racing this command cannot become another writer.
-    let graph = Graph::open(directory)?;
+    let store = crate::store::Store::open(directory)?;
     Ok(Status {
         running: false,
-        accepted_proofs: graph.accepted_count(),
+        computation: crate::resources::ComputationState::Stopped,
+        accepted_proofs: store.stored_count()?,
+        proof_verification: ProofVerification::NotRun,
         interest: owner::update(directory, text).map_err(|error| error.message)?,
     })
 }
@@ -835,6 +883,18 @@ async fn status(directory: &Path) -> Result<Status, String> {
         return Ok(status);
     }
     stopped_status(directory).await
+}
+
+async fn computation(directory: &Path, paused: bool) -> Result<Status, String> {
+    let operation = if paused {
+        Operation::Pause
+    } else {
+        Operation::Resume
+    };
+    request(directory, operation, None)
+        .await?
+        .filter(|status| status.running)
+        .ok_or_else(|| "node is not running; start it before pause or resume".into())
 }
 
 async fn start(directory: &Path) -> Result<Status, String> {
@@ -1204,7 +1264,7 @@ async fn wait_for_stop(
     }
 }
 
-/// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
+/// Ordinary CLI exposes lifecycle, computation control and local owner interest.
 pub async fn execute() -> Result<(), String> {
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
@@ -1252,11 +1312,16 @@ pub async fn execute() -> Result<(), String> {
             json,
             &Status {
                 running: false,
+                computation: crate::resources::ComputationState::Stopped,
                 accepted_proofs: 0,
+                proof_verification: ProofVerification::NotRun,
                 interest: String::new(),
             },
         )?;
         return Ok(());
+    }
+    if matches!(command, "pause" | "resume") && !directory.exists() {
+        return Err("node is not running; start it before pause or resume".into());
     }
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
@@ -1267,6 +1332,8 @@ pub async fn execute() -> Result<(), String> {
         }
         "start" => start(&directory).await?,
         "stop" => stop(&directory).await?,
+        "pause" => computation(&directory, true).await?,
+        "resume" => computation(&directory, false).await?,
         "status" => status(&directory).await?,
         "interest" => interest(&directory, text.expect("parsed interest text")).await?,
         _ => unreachable!(),

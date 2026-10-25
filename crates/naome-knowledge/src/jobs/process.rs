@@ -118,9 +118,19 @@ pub(super) async fn run(
     events: mpsc::Sender<Event>,
     cancel: oneshot::Receiver<()>,
     slot: std::fs::File,
+    computation: crate::resources::ComputationPermit,
 ) -> Outcome {
     let state = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let result = run_owned(record, remaining_ms, events, cancel, slot, state.clone()).await;
+    let result = run_owned(
+        record,
+        remaining_ms,
+        events,
+        cancel,
+        slot,
+        computation,
+        state.clone(),
+    )
+    .await;
     let state = state
         .lock()
         .expect("provider disposition owner")
@@ -138,6 +148,7 @@ async fn run_owned(
     events: mpsc::Sender<Event>,
     mut cancel: oneshot::Receiver<()>,
     slot: std::fs::File,
+    permit: crate::resources::ComputationPermit,
     disposition: std::sync::Arc<std::sync::Mutex<Option<State>>>,
 ) -> Result<Output, String> {
     let remaining_ms = remaining_ms.min(record.expires_ms.saturating_sub(wall_ms()?));
@@ -220,6 +231,8 @@ async fn run_owned(
     let mut reader = FrameReader::new(output);
     let mut cleaned = false;
     let mut start_delivered = false;
+    let computation = permit.owner();
+    let mut working = Some(permit);
     let execution = async {
         input.write_all(&start).await.map_err(|e| e.to_string())?;
         start_delivered = true;
@@ -277,6 +290,8 @@ async fn run_owned(
                                 .checked_add(1)
                                 .ok_or("provider checkpoint overflow")? =>
                 {
+                    drop(working.take());
+                    working = Some(computation.enter().await);
                     let (reply, receipt) = oneshot::channel();
                     events
                         .send(Event::Reserve { id, next, reply })
@@ -337,6 +352,8 @@ async fn run_owned(
                     receipt
                         .await
                         .map_err(|_| "research checkpoint owner stopped")??;
+                    drop(working.take());
+                    working = Some(computation.enter().await);
                     let mut bytes = serde_json::to_vec(&Grant {
                         id,
                         next: checkpoint,

@@ -10,8 +10,8 @@ mod tests;
 
 pub const CODEC_ID: &str = "naome:proof-codec:v0";
 pub const CHECKER_ID: &str = "naome:zfc-checker:v0";
-pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program:v2";
-const PROGRAM_MAGIC: &[u8] = b"\xffNAOP1\0";
+pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program:v3";
+const PROGRAM_MAGIC: &[u8] = b"\xffNAOP2\0";
 
 pub(crate) fn program_manifest(
     bytes: &[u8],
@@ -22,17 +22,8 @@ pub(crate) fn program_manifest(
     let body = bytes
         .strip_prefix(PROGRAM_MAGIC)
         .ok_or("unknown program payload format")?;
-    if body.len() > 2048 {
-        return Err("program manifest width".into());
-    }
-    let manifest: naome_proof::program::Manifest =
-        serde_json::from_slice(body).map_err(|e| e.to_string())?;
-    if manifest.commands == 0
-        || manifest.input_bytes == 0
-        || manifest.commands > i64::MAX as u64
-        || manifest.input_bytes > i64::MAX as u64
-        || serde_json::to_vec(&manifest).map_err(|e| e.to_string())? != body
-    {
+    let manifest = naome_proof::program::Manifest::from_canonical_bytes(body)?;
+    if manifest.commands > i64::MAX as u64 || manifest.input_bytes > i64::MAX as u64 {
         return Err("invalid canonical program manifest".into());
     }
     Ok(Some(manifest))
@@ -151,6 +142,8 @@ pub(crate) struct BinaryProof {
     pub id: ProofId,
     pub statement: StatementId,
     pub bytes: std::sync::Arc<[u8]>,
+    // Certificate references only. Program citations belong to their canonical
+    // authenticated command stream and are rechecked incrementally on replay.
     pub dependencies: BTreeSet<ProofId>,
     pub _memory: Option<std::sync::Arc<crate::resources::MemoryLease>>,
 }
@@ -191,7 +184,7 @@ impl BinaryProof {
     ) -> Result<Self, crate::Error> {
         let manifest = proof.manifest();
         let mut bytes = PROGRAM_MAGIC.to_vec();
-        bytes.extend(serde_json::to_vec(manifest).map_err(|e| e.to_string())?);
+        bytes.extend(manifest.canonical_bytes()?);
         Ok(Self {
             id: manifest.proof_id(),
             statement: manifest.statement_id(),
