@@ -2,6 +2,115 @@ use super::*;
 use crate::test_support::{genesis, key};
 
 #[test]
+fn state_budget_rejects_growth_without_changing_validity_or_existing_state() {
+    let owner = key();
+    let initial = State::new(&genesis()).unwrap();
+    let mut bounded = State::with_budget(&genesis(), initial.state_bytes()).unwrap();
+    let before = bounded.clone();
+    let split = initial
+        .payment(
+            owner.address(),
+            &owner,
+            owner.address(),
+            Amount::from_units(1),
+        )
+        .unwrap();
+    assert!(matches!(
+        bounded.apply(&split),
+        Err(Error::ResourceLimit { .. })
+    ));
+    assert_eq!(bounded, before);
+    let recipient = WalletKey::generate().unwrap();
+    let grant = initial
+        .access_change(owner.address(), &owner, recipient.address(), true)
+        .unwrap();
+    let before = bounded.clone();
+    assert!(matches!(
+        bounded.apply(&grant),
+        Err(Error::ResourceLimit { .. })
+    ));
+    assert_eq!(bounded, before);
+    let mut sufficient = State::with_budget(
+        &genesis(),
+        initial.state_bytes() + UTXO_BYTES + OWNER_BYTES + GRANT_BYTES,
+    )
+    .unwrap();
+    sufficient.apply(&split).unwrap();
+    sufficient.apply(&grant).unwrap();
+    assert_eq!(sufficient.balance(owner.address()).unwrap().units(), 1000);
+    assert_eq!(
+        sufficient.authorized_nodes(owner.address()),
+        vec![recipient.address()]
+    );
+    let revoke = sufficient
+        .access_change(owner.address(), &owner, recipient.address(), false)
+        .unwrap();
+    let charged = sufficient.state_bytes();
+    sufficient.apply(&revoke).unwrap();
+    assert_eq!(sufficient.state_bytes(), charged - GRANT_BYTES);
+}
+
+#[test]
+fn input_selection_can_skip_dust_to_find_a_sufficient_bounded_payment() {
+    let owner = key();
+    let genesis = Genesis {
+        version: 1,
+        chain_id: [1; 32],
+        outputs: vec![
+            Output {
+                address: owner.address(),
+                amount: Amount::from_units(1000),
+            },
+            Output {
+                address: owner.address(),
+                amount: Amount::from_units(128),
+            },
+        ],
+    };
+    let mut state = State::new(&genesis).unwrap();
+    let large = OutPoint {
+        transaction: TransactionId::from_bytes(*state.network().as_bytes()),
+        index: 0,
+    };
+    let split = SignedTransaction::sign(
+        state.network(),
+        Operation::Payment {
+            owner: owner.address(),
+            authorization: 0,
+            inputs: vec![OutPoint {
+                transaction: large.transaction,
+                index: 1,
+            }],
+            outputs: vec![
+                Output {
+                    address: owner.address(),
+                    amount: Amount::from_units(1)
+                };
+                128
+            ],
+        },
+        &owner,
+    )
+    .unwrap();
+    assert!(split.id().unwrap() < large.transaction);
+    state.apply(&split).unwrap();
+    let payment = state
+        .payment(
+            owner.address(),
+            &owner,
+            owner.address(),
+            Amount::from_units(1000),
+        )
+        .unwrap();
+    let Operation::Payment { inputs, .. } = &payment.operation else {
+        panic!()
+    };
+    assert_eq!(inputs, &[large]);
+    state.apply(&payment).unwrap();
+    assert_eq!(state.balance(owner.address()).unwrap().units(), 1128);
+}
+
+#[test]
 fn payments_conserve_value_make_change_and_reject_conflicting_spends_without_mutation() {
     let alice = key();
     let bob = WalletKey::generate().unwrap();

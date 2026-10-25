@@ -1,6 +1,10 @@
 //! Exclusive local custody of a bounded-record, fully replayed SQLite journal.
-use crate::{Error, Genesis, MAX_RECORD_BYTES, NetworkId, SignedTransaction, State, TransactionId};
-use rusqlite::{Connection, OpenFlags, params};
+use crate::{
+    Control, Error, Genesis, Limits, MAX_RECORD_BYTES, NetworkId, SignedTransaction, State,
+    TransactionId,
+};
+use naome_storage::CommitError;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -12,6 +16,7 @@ use std::{
 const DATABASE: &str = "ledger.sqlite3";
 const PENDING: &str = ".ledger-incoming.sqlite3";
 const RECEIPT: &str = "ledger.json";
+const PENDING_RECEIPT: &str = ".ledger-identity-incoming";
 const APPLICATION: i64 = 0x4e414f4c;
 const META: &str = "CREATE TABLE metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), genesis BLOB NOT NULL, active INTEGER NOT NULL CHECK(active IN (0,1)), committed_count INTEGER NOT NULL CHECK(committed_count>=0), head BLOB NOT NULL CHECK(length(head)=32)) STRICT";
 const EVENTS: &str = "CREATE TABLE events (sequence INTEGER PRIMARY KEY CHECK(sequence>0), id BLOB NOT NULL UNIQUE CHECK(length(id)=32), payload BLOB NOT NULL) STRICT";
@@ -38,14 +43,26 @@ pub struct Ledger {
     state: State,
     poisoned: bool,
     database: PathBuf,
-    generation: (u64, u64),
+    generation: Generation,
+    directory: PathBuf,
     _lock: DirectoryLock,
 }
 impl Ledger {
     /// Initializes the selected network's canonical genesis; never resets an established ledger.
     pub fn create(directory: &Path, genesis: &Genesis) -> Result<Self, Error> {
+        Self::create_with_limits(directory, genesis, Limits::default(), &Control::default())
+    }
+    /// Initializes with host-supplied state/cache budgets and operation control.
+    pub fn create_with_limits(
+        directory: &Path,
+        genesis: &Genesis,
+        limits: Limits,
+        control: &Control,
+    ) -> Result<Self, Error> {
+        control.check()?;
+        let limits = limits.validate()?;
         let bytes = record(genesis)?;
-        let _ = State::new(genesis)?;
+        let _ = State::with_budget(genesis, limits.state_bytes)?;
         let (directory, lock) = lock_directory(directory, true)?;
         let database = directory.join(DATABASE);
         let pending = directory.join(PENDING);
@@ -57,23 +74,39 @@ impl Ledger {
         }
         if !database.try_exists()? {
             if !pending.try_exists()? {
-                let file = new_file(&pending)?;
-                file.sync_all()?;
-                let mut connection = connect(&pending)?;
-                let transaction = connection.transaction()?;
-                transaction.execute_batch(META)?;
-                transaction.execute_batch(EVENTS)?;
-                transaction.pragma_update(None, "application_id", APPLICATION)?;
-                transaction.pragma_update(None, "user_version", 1)?;
-                transaction.execute(
-                    "INSERT INTO metadata VALUES (1,?1,0,0,?2)",
-                    params![bytes, genesis.network()?.as_bytes().as_slice()],
-                )?;
-                transaction.commit()?;
-                drop(connection);
+                new_file(&pending)?.sync_all()?;
+            }
+            let mut connection = connect_with_limits(&pending, limits)?;
+            install_control(&connection, control)?;
+            let application: i64 =
+                connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+            let version: i64 =
+                connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let objects: i64 = connection.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            if application == 0 && version == 0 && objects == 0 {
+                naome_storage::write(
+                    &mut connection,
+                    TransactionBehavior::Immediate,
+                    Error::from,
+                    |transaction| {
+                        transaction.execute_batch(META)?;
+                        transaction.execute_batch(EVENTS)?;
+                        transaction.pragma_update(None, "application_id", APPLICATION)?;
+                        transaction.pragma_update(None, "user_version", 1)?;
+                        transaction.execute(
+                            "INSERT INTO metadata VALUES (1,?1,0,0,?2)",
+                            params![bytes, genesis.network()?.as_bytes().as_slice()],
+                        )?;
+                        control.check()
+                    },
+                )
+                .map_err(commit_error)?;
                 File::open(&pending)?.sync_all()?;
             }
-            let connection = connect(&pending)?;
             let (stored, active, count, _) = metadata(&connection)?;
             if active || count != 0 || stored != *genesis {
                 return Err(Error::Invalid("incomplete ledger has a different genesis"));
@@ -82,39 +115,80 @@ impl Ledger {
             fs::rename(&pending, &database)?;
             sync(&directory)?;
         }
-        let connection = connect(&database)?;
+        let connection = connect_with_limits(&database, limits)?;
+        install_control(&connection, control)?;
         let (stored, active, count, _) = metadata(&connection)?;
         if active || count != 0 || stored != *genesis {
             return Err(Error::Invalid("existing ledger cannot be recreated"));
         }
-        Self::load(directory, connection, lock, genesis.network()?)
+        Self::load(
+            directory,
+            connection,
+            lock,
+            genesis.network()?,
+            limits,
+            control,
+        )
     }
     /// Opens existing state without creating a missing ledger or issuing new coins.
     pub fn open(directory: &Path, expected_network: NetworkId) -> Result<Self, Error> {
+        Self::open_with_limits(
+            directory,
+            expected_network,
+            Limits::default(),
+            &Control::default(),
+        )
+    }
+    /// Replays within explicit host budgets. Cancellation/deadlines never mark history invalid.
+    pub fn open_with_limits(
+        directory: &Path,
+        expected_network: NetworkId,
+        limits: Limits,
+        control: &Control,
+    ) -> Result<Self, Error> {
+        control.check()?;
+        let limits = limits.validate()?;
         let (directory, lock) = lock_directory(directory, false)?;
         if !directory.join(DATABASE).try_exists()? {
             return Err(Error::Invalid(
                 "ledger database is missing; restore its backup",
             ));
         }
-        let connection = connect(&directory.join(DATABASE))?;
-        Self::load(directory, connection, lock, expected_network)
+        let connection = connect_with_limits(&directory.join(DATABASE), limits)?;
+        Self::load(
+            directory,
+            connection,
+            lock,
+            expected_network,
+            limits,
+            control,
+        )
     }
     fn load(
         directory: PathBuf,
         mut connection: Connection,
         lock: DirectoryLock,
         expected_network: NetworkId,
+        limits: Limits,
+        control: &Control,
     ) -> Result<Self, Error> {
-        let (genesis, active, count, head) = metadata(&connection)?;
-        let mut state = State::new(&genesis)?;
+        install_control(&connection, control)?;
+        let (genesis, active, count, head) =
+            metadata(&connection).map_err(|error| controlled(error, control))?;
+        let mut state = State::with_budget(&genesis, limits.state_bytes)?;
         let network = state.network();
         if network != expected_network {
             return Err(Error::WrongNetwork);
         }
         let mut statement=connection.prepare("SELECT sequence,id,length(payload),CASE WHEN length(payload)<=?1 THEN payload END FROM events ORDER BY sequence")?;
         let mut rows = statement.query([MAX_RECORD_BYTES as i64])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| controlled(error.into(), control))?
+        {
+            #[cfg(test)]
+            tests::replayed(control);
+            control.check()?;
             let sequence: i64 = row.get(0)?;
             if sequence
                 != i64::try_from(state.transaction_count() + 1).map_err(|_| Error::Capacity)?
@@ -154,32 +228,48 @@ impl Ledger {
                     "established ledger identity receipt is missing",
                 ));
             }
+            let pending = directory.join(PENDING_RECEIPT);
+            if pending.try_exists()? {
+                read_file(&pending, 256)?;
+                fs::remove_file(&pending)?;
+            }
             write_new(
-                &receipt,
+                &pending,
                 &record(&Receipt {
                     version: 1,
                     network,
                 })?,
             )?;
+            fs::rename(&pending, &receipt)?;
             sync(&directory)?;
         }
         if !active {
             if count != 0 {
                 return Err(Error::Invalid("inactive ledger contains transactions"));
             }
-            let transaction = connection.transaction()?;
-            transaction.execute("UPDATE metadata SET active=1 WHERE singleton=1", [])?;
-            transaction.commit()?;
+            naome_storage::write(
+                &mut connection,
+                TransactionBehavior::Immediate,
+                Error::from,
+                |transaction| {
+                    transaction.execute("UPDATE metadata SET active=1 WHERE singleton=1", [])?;
+                    control.check()
+                },
+            )
+            .map_err(commit_error)?;
         }
         let database = directory.join(DATABASE);
         let metadata = fs::symlink_metadata(&database)?;
         owned(&metadata)?;
+        control.check()?;
+        connection.progress_handler(0, None::<fn() -> bool>)?;
         Ok(Self {
             connection,
             state,
             poisoned: false,
             database,
-            generation: (metadata.dev(), metadata.ino()),
+            generation: Generation::of(&metadata),
+            directory,
             _lock: lock,
         })
     }
@@ -190,47 +280,143 @@ impl Ledger {
         }
         let metadata = fs::symlink_metadata(&self.database)?;
         owned(&metadata)?;
-        if (metadata.dev(), metadata.ino()) != self.generation {
+        if Generation::of(&metadata) != self.generation {
             return Err(Error::Invalid(
                 "ledger database was replaced; reopen before use",
             ));
         }
         Ok(&self.state)
     }
-    /// Atomically records a validated operation before exposing its resulting state.
-    pub fn submit(&mut self, transaction: &SignedTransaction) -> Result<TransactionId, Error> {
-        self.submit_at(transaction, |_| Ok(()))
+    /// Canonical local session directory, used to bind wallet associations.
+    pub fn directory(&self) -> &Path {
+        &self.directory
     }
+    /// Looks up an admitted transaction in this session's fully verified journal.
+    pub fn transaction(&self, id: TransactionId) -> Result<Option<SignedTransaction>, Error> {
+        self.state()?;
+        let bytes: Option<Vec<u8>> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM events WHERE id=?1",
+                [id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        bytes
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(Error::from))
+            .transpose()
+    }
+    /// Atomically records a validated operation before exposing its resulting state.
+    /// Repeating an already admitted signed transaction returns its ID without a second effect.
+    pub fn submit(&mut self, transaction: &SignedTransaction) -> Result<TransactionId, Error> {
+        self.submit_with_control(transaction, &Control::default())
+    }
+    pub fn submit_with_control(
+        &mut self,
+        transaction: &SignedTransaction,
+        control: &Control,
+    ) -> Result<TransactionId, Error> {
+        self.submit_controlled(transaction, control, |_| Ok(()))
+    }
+    #[cfg(test)]
     fn submit_at(
         &mut self,
         transaction: &SignedTransaction,
+        checkpoint: impl FnMut(u8) -> Result<(), Error>,
+    ) -> Result<TransactionId, Error> {
+        self.submit_controlled(transaction, &Control::default(), checkpoint)
+    }
+    fn submit_controlled(
+        &mut self,
+        transaction: &SignedTransaction,
+        control: &Control,
+        checkpoint: impl FnMut(u8) -> Result<(), Error>,
+    ) -> Result<TransactionId, Error> {
+        control.check()?;
+        self.state()?;
+        install_control(&self.connection, control)?;
+        let result = self.submit_inner(transaction, control, checkpoint);
+        if self
+            .connection
+            .progress_handler(0, None::<fn() -> bool>)
+            .is_err()
+        {
+            self.poisoned = true;
+            return Err(Error::RecoveryRequired);
+        }
+        result.map_err(|error| controlled(error, control))
+    }
+    fn submit_inner(
+        &mut self,
+        transaction: &SignedTransaction,
+        control: &Control,
         mut checkpoint: impl FnMut(u8) -> Result<(), Error>,
     ) -> Result<TransactionId, Error> {
-        let checked = self.state()?.validate(transaction)?;
+        if transaction.network != self.state.network() {
+            return Err(Error::WrongNetwork);
+        }
+        let id = transaction.verify_signature()?;
+        if self.transaction(id)?.is_some() {
+            return Ok(id);
+        }
+        let checked = self.state()?.validate_verified(transaction, id)?;
         let bytes = record(transaction)?;
         let next =
             i64::try_from(self.state.transaction_count() + 1).map_err(|_| Error::Capacity)?;
         let id = checked.id;
-        let sql = self.connection.transaction()?;
-        sql.execute(
-            "INSERT INTO events VALUES (?1,?2,?3)",
-            params![next, id.as_bytes().as_slice(), bytes],
-        )?;
-        sql.execute(
-            "UPDATE metadata SET committed_count=?1,head=?2 WHERE singleton=1",
-            params![next, self.state.next_journal_root(id).as_slice()],
-        )?;
-        checkpoint(1)?;
-        if sql.commit().is_err() {
-            self.poisoned = true;
-            return Err(Error::RecoveryRequired);
+        let root = self.state.next_journal_root(id);
+        let result = naome_storage::write(
+            &mut self.connection,
+            TransactionBehavior::Immediate,
+            Error::from,
+            |sql| {
+                sql.execute(
+                    "INSERT INTO events VALUES (?1,?2,?3)",
+                    params![next, id.as_bytes().as_slice(), bytes],
+                )?;
+                sql.execute(
+                    "UPDATE metadata SET committed_count=?1,head=?2 WHERE singleton=1",
+                    params![next, root.as_slice()],
+                )?;
+                checkpoint(1)?;
+                control.check()
+            },
+        );
+        match result {
+            Ok(()) => {}
+            Err(CommitError::Uncertain(_)) => {
+                self.poisoned = true;
+                return Err(Error::RecoveryRequired);
+            }
+            Err(error) => {
+                self.refresh_generation()?;
+                return Err(commit_error(error));
+            }
         }
         if checkpoint(2).is_err() {
             self.poisoned = true;
             return Err(Error::RecoveryRequired);
         }
+        self.refresh_generation()?;
         self.state.commit(checked);
         Ok(id)
+    }
+    fn refresh_generation(&mut self) -> Result<(), Error> {
+        let metadata = match fs::symlink_metadata(&self.database) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                self.poisoned = true;
+                return Err(Error::RecoveryRequired);
+            }
+        };
+        if owned(&metadata).is_err()
+            || (metadata.dev(), metadata.ino()) != (self.generation.device, self.generation.inode)
+        {
+            self.poisoned = true;
+            return Err(Error::RecoveryRequired);
+        }
+        self.generation = Generation::of(&metadata);
+        Ok(())
     }
 }
 
@@ -280,7 +466,11 @@ fn record(value: &impl Serialize) -> Result<Vec<u8>, Error> {
     }
     Ok(bytes)
 }
+#[cfg(test)]
 fn connect(path: &Path) -> Result<Connection, Error> {
+    connect_with_limits(path, Limits::default())
+}
+fn connect_with_limits(path: &Path, limits: Limits) -> Result<Connection, Error> {
     owned(&fs::symlink_metadata(path)?)?;
     let connection = Connection::open_with_flags(
         path,
@@ -289,6 +479,11 @@ fn connect(path: &Path) -> Result<Connection, Error> {
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     connection.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA fullfsync=ON; PRAGMA locking_mode=EXCLUSIVE; PRAGMA trusted_schema=OFF; PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA cache_size=-1024;")?;
+    connection.pragma_update(
+        None,
+        "cache_size",
+        -i64::try_from(limits.sqlite_cache_bytes / 1024).map_err(|_| Error::Capacity)?,
+    )?;
     connection.busy_timeout(std::time::Duration::ZERO)?;
     // Keep SQLite's own exclusion for this owner's lifetime. External SQL
     // writers must not change the journal behind the checked in-memory state.
@@ -311,6 +506,7 @@ fn lock_directory(directory: &Path, create: bool) -> Result<(PathBuf, DirectoryL
                     DATABASE,
                     PENDING,
                     RECEIPT,
+                    PENDING_RECEIPT,
                     "ledger.lock",
                     "ledger.sqlite3-journal",
                     ".ledger-incoming.sqlite3-journal",
@@ -387,5 +583,41 @@ fn sync(directory: &Path) -> Result<(), Error> {
     Ok(File::open(directory)?.sync_all()?)
 }
 
+fn install_control(connection: &Connection, control: &Control) -> Result<(), Error> {
+    let control = control.clone();
+    connection.progress_handler(1000, Some(move || control.check().is_err()))?;
+    Ok(())
+}
+fn controlled(error: Error, control: &Control) -> Error {
+    match error {
+        Error::Storage(_) => control.check().err().unwrap_or(error),
+        other => other,
+    }
+}
+fn commit_error(error: CommitError<Error>) -> Error {
+    match error {
+        CommitError::NotWritten(error) | CommitError::RolledBack(error) => error,
+        CommitError::Uncertain(_) => Error::RecoveryRequired,
+    }
+}
+#[derive(PartialEq, Eq)]
+struct Generation {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+impl Generation {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
 #[cfg(test)]
 mod tests;

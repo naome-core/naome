@@ -5,7 +5,16 @@ use crate::{
 };
 use naome_wallet::{Address, WalletKey};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+};
+
+// Include map nodes, allocator overhead and the subordinate key/value storage.
+// Scratch space is separately bounded by MAX_ITEMS and MAX_RECORD_BYTES.
+const UTXO_BYTES: usize = std::mem::size_of::<(OutPoint, Output)>() + 192;
+const OWNER_BYTES: usize = std::mem::size_of::<(Address, Access)>() + 192;
+const GRANT_BYTES: usize = std::mem::size_of::<(Address, u64)>() + 192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Access {
@@ -21,15 +30,24 @@ pub struct State {
     access: BTreeMap<Address, Access>,
     count: u64,
     journal_root: [u8; 32],
+    budget: usize,
+    charged: usize,
 }
 pub(crate) struct Checked {
     pub(crate) id: TransactionId,
     operation: Operation,
+    charged: usize,
 }
 impl State {
     pub fn new(genesis: &Genesis) -> Result<Self, Error> {
+        Self::with_budget(genesis, crate::Limits::default().state_bytes)
+    }
+    /// Reconstructs valid state within a host memory ceiling, not a history limit.
+    pub fn with_budget(genesis: &Genesis, budget: usize) -> Result<Self, Error> {
         let supply = genesis.validate()?;
         let network = genesis.network()?;
+        let charged = std::mem::size_of::<Self>() + genesis.outputs.len() * UTXO_BYTES;
+        require_budget(charged, budget)?;
         let utxos = genesis
             .outputs
             .iter()
@@ -51,6 +69,8 @@ impl State {
             access: BTreeMap::new(),
             count: 0,
             journal_root: *network.as_bytes(),
+            budget,
+            charged,
         })
     }
     pub const fn network(&self) -> NetworkId {
@@ -58,6 +78,10 @@ impl State {
     }
     pub const fn supply(&self) -> Amount {
         self.supply
+    }
+    /// Conservative charge for active outputs, owner sequence records and grants.
+    pub const fn state_bytes(&self) -> usize {
+        self.charged
     }
     pub const fn transaction_count(&self) -> u64 {
         self.count
@@ -77,12 +101,22 @@ impl State {
         self.utxos.iter()
     }
     pub fn balance(&self, address: Address) -> Result<Amount, Error> {
-        self.utxos
-            .values()
-            .filter(|output| output.address == address)
-            .try_fold(Amount::default(), |sum, output| {
-                sum.checked_add(output.amount)
-            })
+        self.balance_with_control(address, &crate::Control::default())
+    }
+    pub fn balance_with_control(
+        &self,
+        address: Address,
+        control: &crate::Control,
+    ) -> Result<Amount, Error> {
+        let mut sum = Amount::default();
+        control.check()?;
+        for output in self.utxos.values() {
+            control.check()?;
+            if output.address == address {
+                sum = sum.checked_add(output.amount)?;
+            }
+        }
+        Ok(sum)
     }
     /// Returns the current grant epoch, or zero for the owner's own key.
     pub fn spending_authority(&self, owner: Address, signer: Address) -> Option<u64> {
@@ -106,26 +140,47 @@ impl State {
         recipient: Address,
         amount: Amount,
     ) -> Result<SignedTransaction, Error> {
+        self.payment_with_control(owner, key, recipient, amount, &crate::Control::default())
+    }
+    pub fn payment_with_control(
+        &self,
+        owner: Address,
+        key: &WalletKey,
+        recipient: Address,
+        amount: Amount,
+        control: &crate::Control,
+    ) -> Result<SignedTransaction, Error> {
+        control.check()?;
         if amount.units() == 0 {
             return Err(Error::Invalid("payment must be positive"));
         }
         let authorization = self
             .spending_authority(owner, key.address())
             .ok_or(Error::Unauthorized)?;
-        let mut inputs = Vec::new();
-        let mut sum = Amount::default();
+        let mut selected = BTreeSet::new();
+        let mut owned = 0usize;
         for (point, output) in &self.utxos {
+            control.check()?;
             if output.address != owner {
                 continue;
             }
-            if inputs.len() == MAX_ITEMS {
-                return Err(Error::Capacity);
+            owned += 1;
+            selected.insert((Reverse(output.amount), *point));
+            if selected.len() > MAX_ITEMS {
+                selected.pop_last();
             }
-            inputs.push(*point);
-            sum = sum.checked_add(output.amount)?;
+        }
+        let mut inputs = Vec::new();
+        let mut sum = Amount::default();
+        for (Reverse(value), point) in selected {
+            inputs.push(point);
+            sum = sum.checked_add(value)?;
             if sum >= amount {
                 break;
             }
+        }
+        if sum < amount && owned > MAX_ITEMS {
+            return Err(Error::Capacity);
         }
         let change = sum.checked_sub(amount)?;
         let mut outputs = vec![Output {
@@ -187,6 +242,13 @@ impl State {
             return Err(Error::WrongNetwork);
         }
         let id = transaction.verify_signature()?;
+        self.validate_verified(transaction, id)
+    }
+    pub(crate) fn validate_verified(
+        &self,
+        transaction: &SignedTransaction,
+        id: TransactionId,
+    ) -> Result<Checked, Error> {
         self.count.checked_add(1).ok_or(Error::AmountOverflow)?;
         match &transaction.operation {
             Operation::Payment {
@@ -250,12 +312,32 @@ impl State {
                 }
             }
         }
+        let charged = match &transaction.operation {
+            Operation::Payment {
+                inputs, outputs, ..
+            } => self.charged - inputs.len() * UTXO_BYTES + outputs.len() * UTXO_BYTES,
+            Operation::Access { owner, enabled, .. } => {
+                let owners = if self.access.contains_key(owner) {
+                    0
+                } else {
+                    OWNER_BYTES
+                };
+                if *enabled {
+                    self.charged + owners + GRANT_BYTES
+                } else {
+                    self.charged - GRANT_BYTES
+                }
+            }
+        };
+        require_budget(charged, self.budget)?;
         Ok(Checked {
             id,
             operation: transaction.operation.clone(),
+            charged,
         })
     }
     pub(crate) fn commit(&mut self, checked: Checked) {
+        self.charged = checked.charged;
         self.journal_root = self.next_journal_root(checked.id);
         match checked.operation {
             Operation::Payment {
@@ -290,6 +372,14 @@ impl State {
             }
         }
         self.count += 1;
+    }
+}
+
+fn require_budget(requested: usize, budget: usize) -> Result<(), Error> {
+    if requested > budget {
+        Err(Error::ResourceLimit { requested, budget })
+    } else {
+        Ok(())
     }
 }
 

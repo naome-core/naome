@@ -76,13 +76,31 @@
 //!
 //! Each genesis/transaction record is limited to 64 KiB. SQLite's page cache is
 //! 1 MiB, temporary storage uses files, and memory mapping is disabled. Replay
-//! streams records; active UTXOs and grants remain in memory. No scale or
-//! performance qualification is claimed for large histories.
+//! streams records; active outputs, owner sequence records and grants have a
+//! conservative charged state budget (8 MiB by default). `Limits` lets the host
+//! set state and cache ceilings. Bounded record/selection scratch is additional;
+//! the node's `WalletLedger` reserves it together with state/cache capacity from
+//! the existing host memory pool. These are execution budgets, not history or
+//! transaction-validity limits. No large-history performance qualification is claimed.
+//!
+//! Keep one checked `Ledger` session for related wallet operations. Reads and
+//! writes reuse its state; only reopening replays history. Each operation has a
+//! fresh `Control` (30 seconds by default), with an absolute deadline and shared
+//! cancellation. Replay checks it per record and SQLite checks it during work.
+//! A cancelled or over-budget replay releases custody without changing history.
+//!
+//! Retain a prepared transaction before submission. `Ledger::submit` returns the
+//! same ID for an already admitted signed transaction without appending another
+//! event, even after its outputs are spent or its grant is revoked. Query
+//! `Ledger::transaction` to reconcile a lost result. Never replace an uncertain
+//! result with a newly signed payment using new inputs.
 //!
 //! The database uses DELETE journaling, `synchronous=EXTRA`, and `fullfsync=ON`.
 //! EXTRA also synchronizes journal removal as described in the
 //! [SQLite durability contract](https://www.sqlite.org/pragma.html#pragma_synchronous).
-//! Success is returned only after commit. An uncertain commit poisons the handle;
+//! Success is returned only after commit. Commit/rollback outcomes use the same
+//! observed transaction primitive as the node's checkpoints. An uncertain commit
+//! or unconfirmed rollback poisons the handle;
 //! reopen reconstructs whether the transaction was committed. Tests terminate a
 //! real child process before and after commit and verify recovery. This does not
 //! constitute a physical power-loss test.
@@ -93,11 +111,13 @@
 //! closed. Restoring an older, internally consistent backup rolls back local test
 //! history; detecting that requires an external accepted-state witness.
 
+mod execution;
 mod model;
 mod state;
 #[cfg(unix)]
 mod store;
 
+pub use execution::{Control, Limits};
 pub use model::{
     Amount, Genesis, NetworkId, Operation, OutPoint, Output, SignedTransaction, TransactionId,
 };
@@ -125,6 +145,10 @@ pub enum Error {
     Capacity,
     Busy,
     RecoveryRequired,
+    ResourceLimit { requested: usize, budget: usize },
+    Cancelled,
+    Deadline,
+    ExecutionLimit,
     Storage(String),
 }
 
@@ -143,6 +167,13 @@ impl std::fmt::Display for Error {
             Self::Capacity => f.write_str("ledger operation capacity"),
             Self::Busy => f.write_str("ledger is already in use"),
             Self::RecoveryRequired => f.write_str("ledger commit unconfirmed; reopen before use"),
+            Self::ResourceLimit { requested, budget } => write!(
+                f,
+                "ledger state requires {requested} bytes; host budget is {budget}"
+            ),
+            Self::Cancelled => f.write_str("ledger operation cancelled"),
+            Self::Deadline => f.write_str("ledger operation deadline expired"),
+            Self::ExecutionLimit => f.write_str("ledger execution resources unavailable"),
             Self::Storage(message) => write!(f, "ledger storage: {message}"),
         }
     }
@@ -150,7 +181,13 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
-        Self::Storage(error.to_string())
+        match error.kind() {
+            std::io::ErrorKind::WouldBlock => Self::Busy,
+            std::io::ErrorKind::OutOfMemory
+            | std::io::ErrorKind::StorageFull
+            | std::io::ErrorKind::QuotaExceeded => Self::ExecutionLimit,
+            _ => Self::Storage(error.to_string()),
+        }
     }
 }
 impl From<serde_json::Error> for Error {
@@ -161,6 +198,17 @@ impl From<serde_json::Error> for Error {
 #[cfg(unix)]
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
+        if let rusqlite::Error::SqliteFailure(code, _) = &error {
+            match code.code {
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => {
+                    return Self::Busy;
+                }
+                rusqlite::ErrorCode::DiskFull | rusqlite::ErrorCode::OutOfMemory => {
+                    return Self::ExecutionLimit;
+                }
+                _ => {}
+            }
+        }
         Self::Storage(error.to_string())
     }
 }

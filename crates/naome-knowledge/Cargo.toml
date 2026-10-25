@@ -29,6 +29,7 @@ naome-authoring = { path = "../naome-authoring" }
 naome-checker = { path = "../naome-checker" }
 naome-foundation = { path = "../naome-foundation" }
 naome-ledger = { path = "../naome-ledger" }
+naome-storage = { path = "../naome-storage" }
 naome-proof = { path = "../naome-proof" }
 naome-wallet = { path = "../naome-wallet" }
 serde = { version = "1", features = ["derive"] }

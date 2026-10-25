@@ -1,12 +1,7 @@
 //! Write outcomes belong to the transaction owner, before domain error handling.
 use super::*;
 
-#[derive(Debug)]
-pub(crate) enum CommitError {
-    NotWritten(crate::Error),
-    RolledBack(crate::Error),
-    Uncertain(String),
-}
+pub(crate) type CommitError = naome_storage::CommitError<crate::Error>;
 
 impl From<CommitError> for crate::Error {
     fn from(error: CommitError) -> Self {
@@ -16,15 +11,6 @@ impl From<CommitError> for crate::Error {
         }
     }
 }
-impl From<CommitError> for String {
-    fn from(error: CommitError) -> Self {
-        // String-returning domain owners stop after a failed save because their
-        // in-memory delta may already have changed. Retry-capable consumers keep
-        // the operation error instead of guessing durability from its text.
-        crate::Error::from(error).to_string()
-    }
-}
-
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Cut {
@@ -67,54 +53,45 @@ impl Checkpoint {
                 "checkpoint header capacity",
             )));
         }
-        let result =
-            (|| {
-                let transaction = self
-                    .connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(|error| CommitError::NotWritten(write_error(error)))?;
-                let staged =
-                    (|| -> Result<(), crate::Error> {
-                        if version_of(&transaction).map_err(crate::Error::CorruptStorage)?
-                            != self.data_version
-                        {
-                            return Err(crate::Error::CorruptStorage(
-                                "transactional checkpoint changed outside its owner".into(),
-                            ));
-                        }
-                        apply(&transaction, self.domain, &updates)?;
-                        transaction
-                    .execute(
-                        "UPDATE checkpoint SET header = ?1, digest = ?2 WHERE singleton = 1",
-                        params![payload, digest(self.domain, "header", "1", &payload).as_slice()],
-                    )
-                    .map_err(write_error)?;
-                        #[cfg(test)]
-                        if cut == Some(Cut::BeforeCommit) {
-                            return Err(crate::Error::ExecutionLimit);
-                        }
-                        Ok(())
-                    })();
-                if let Err(error) = staged {
-                    return Err(rollback(transaction, error));
-                }
-                // Keep the transaction after a failed COMMIT so rollback can be
-                // observed. Transaction::commit consumes it and hides Drop errors.
-                if let Err(error) = transaction.execute_batch("COMMIT") {
-                    if transaction.is_autocommit() {
-                        return Err(CommitError::Uncertain(sql(error)));
-                    }
-                    return Err(rollback(transaction, write_error(error)));
-                }
-                drop(transaction);
-                #[cfg(test)]
-                if cut == Some(Cut::AfterCommit) {
-                    return Err(CommitError::Uncertain(
-                        "injected failure after durable checkpoint commit".into(),
+        let result = naome_storage::write(
+            &mut self.connection,
+            TransactionBehavior::Immediate,
+            write_error,
+            |transaction| {
+                if version_of(transaction).map_err(crate::Error::CorruptStorage)?
+                    != self.data_version
+                {
+                    return Err(crate::Error::CorruptStorage(
+                        "transactional checkpoint changed outside its owner".into(),
                     ));
                 }
+                apply(transaction, self.domain, &updates)?;
+                transaction
+                    .execute(
+                        "UPDATE checkpoint SET header = ?1, digest = ?2 WHERE singleton = 1",
+                        params![
+                            payload,
+                            digest(self.domain, "header", "1", &payload).as_slice()
+                        ],
+                    )
+                    .map_err(write_error)?;
+                #[cfg(test)]
+                if cut == Some(Cut::BeforeCommit) {
+                    return Err(crate::Error::ExecutionLimit);
+                }
                 Ok(())
-            })();
+            },
+        );
+        #[cfg(test)]
+        let result = result.and_then(|()| {
+            if cut == Some(Cut::AfterCommit) {
+                Err(CommitError::Uncertain(
+                    "injected failure after durable checkpoint commit".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        });
         if let Err(CommitError::Uncertain(error)) = &result {
             // No read or later write may infer which version won. A fresh
             // checkpoint owner must replay the canonical records after reopen.
@@ -136,20 +113,6 @@ impl Checkpoint {
             );
         }
         Ok(())
-    }
-}
-
-fn rollback(transaction: rusqlite::Transaction<'_>, error: crate::Error) -> CommitError {
-    if transaction.is_autocommit() {
-        // Staging may fail after SQLite has already rolled back. No COMMIT was
-        // attempted on that branch, so the old records are still authoritative.
-        return CommitError::RolledBack(error);
-    }
-    match transaction.rollback() {
-        Ok(()) => CommitError::RolledBack(error),
-        Err(rollback) => CommitError::Uncertain(format!(
-            "{error}; checkpoint rollback is unconfirmed: {rollback}"
-        )),
     }
 }
 
