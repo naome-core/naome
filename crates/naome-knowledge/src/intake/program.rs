@@ -16,6 +16,17 @@ use naome_proof::program::{CHUNK_RECORDS, Chunk};
 
 type ProgramRequest = (PeerId, ProofId, ProofId, u64, usize);
 
+fn transfer_records() -> usize {
+    // The wire format already bounds each chunk by CHUNK_RECORDS and
+    // CHUNK_BYTES. CPU batches govern checking, not transport fragmentation;
+    // still stop issuing new chunks while computation is paused.
+    if crate::resources::adaptive::batch(1) == 0 {
+        0
+    } else {
+        CHUNK_RECORDS
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Programs {
     queue: VecDeque<Offer>,
@@ -240,7 +251,7 @@ impl Programs {
         if progress.commands == root.offer.metadata.manifest.commands {
             return Ok(None);
         }
-        let records = crate::resources::adaptive::batch(CHUNK_RECORDS);
+        let records = transfer_records();
         Ok((records > 0).then_some((root.offer.peer, id, id, progress.commands, records)))
     }
     fn refresh_needed(&self) -> Vec<(PeerId, ProofId)> {
