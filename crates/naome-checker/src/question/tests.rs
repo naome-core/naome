@@ -1,3 +1,5 @@
+mod checked_answers;
+mod disk;
 use super::*;
 use crate::{ArtifactState, normalize_and_check, normalize_and_check_with_state};
 use naome_foundation::{FreeVariable, ZfcAxiom};
