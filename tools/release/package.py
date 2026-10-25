@@ -51,8 +51,12 @@ def lifecycle(run, directory):
         if not command("start")["running"]:
             raise ValueError("extracted node failed to start")
         status = command("status")
-        if not status["running"] or status["computation"] != "running" or status["proof_verification"] != "checked":
-            raise ValueError("extracted node is not ready for computation")
+        computation = status.get("computation")
+        reason = status.get("computation_reason")
+        valid_computation = ((computation == "running" and reason is None)
+                             or (computation in ("pausing", "paused") and isinstance(reason, str) and bool(reason.strip())))
+        if status.get("running") is not True or status.get("proof_verification") != "checked" or not valid_computation:
+            raise ValueError("extracted node is not ready with a valid computation state")
         if command("interest", "Release smoke test")["interest"] != "Release smoke test":
             raise ValueError("extracted node did not persist owner interest")
         resources = command("resources")

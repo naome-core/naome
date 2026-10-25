@@ -344,28 +344,47 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(operations, ["start", "status", "interest", "resources", "stop"])
 
     def test_lifecycle_observes_resources_and_preserves_interest_after_shutdown(self):
-        operations = []
-        running = False
-        interest = ""
-        def run(_json, command, *arguments):
-            nonlocal running, interest
-            operations.append(command)
-            if command == "resources":
-                return json.dumps({"installed_capacity": {"memory_bytes": 1024, "workers": [1, 1, 1, 1]},
-                                   "active": {"budget": {"memory_bytes": 512}}})
-            if command == "start":
-                running = True
-            elif command == "stop":
+        for computation in ("running", "pausing", "paused"):
+            with self.subTest(computation=computation):
+                operations = []
                 running = False
-            elif command == "interest":
-                interest = arguments[0]
-            elif command != "status":
-                self.fail(f"unexpected lifecycle command: {command}")
-            return json.dumps({"running": running, "computation": "running" if running else "stopped",
-                               "proof_verification": "checked" if running else "not_run", "interest": interest})
-        package.lifecycle(run, self.directory / "node")
-        self.assertEqual(operations, ["start", "status", "interest", "resources", "stop", "status"])
-        self.assertFalse(running)
+                interest = ""
+                def run(_json, command, *arguments):
+                    nonlocal running, interest
+                    operations.append(command)
+                    if command == "resources":
+                        return json.dumps({"installed_capacity": {"memory_bytes": 1024, "workers": [1, 1, 1, 1]},
+                                           "active": {"budget": {"memory_bytes": 512}}})
+                    if command == "start":
+                        running = True
+                    elif command == "stop":
+                        running = False
+                    elif command == "interest":
+                        interest = arguments[0]
+                    elif command != "status":
+                        self.fail(f"unexpected lifecycle command: {command}")
+                    return json.dumps({"running": running, "computation": computation if running else "stopped",
+                                       "computation_reason": "operating system memory pressure" if running and computation != "running" else None,
+                                       "proof_verification": "checked" if running else "not_run", "interest": interest})
+                package.lifecycle(run, self.directory / computation)
+                self.assertEqual(operations, ["start", "status", "interest", "resources", "stop", "status"])
+                self.assertFalse(running)
+
+    def test_lifecycle_rejects_unchecked_or_inconsistent_computation_and_still_stops(self):
+        for computation, reason, verification in [("stopped", None, "checked"), ("unknown", None, "checked"),
+                ("paused", None, "checked"), ("pausing", "", "checked"), ("paused", 1, "checked"),
+                ("running", "memory pressure", "checked"), ("running", None, "not_run")]:
+            with self.subTest(computation=computation, reason=reason, verification=verification):
+                operations = []
+                def run(_json, command, *_arguments):
+                    operations.append(command)
+                    return json.dumps({"running": command != "stop",
+                        "computation": "stopped" if command == "stop" else computation,
+                        "computation_reason": reason, "proof_verification": verification})
+                with tempfile.TemporaryDirectory(dir=self.directory) as directory:
+                    with self.assertRaisesRegex(ValueError, "valid computation state"):
+                        package.lifecycle(run, Path(directory) / "node")
+                self.assertEqual(operations, ["start", "status", "stop"])
 
     def test_resuming_a_release_rejects_an_outdated_security_database(self):
         self.complete_set()
