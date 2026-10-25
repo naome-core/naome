@@ -8,10 +8,11 @@
 //! A target reduction pauses new mathematical work while retained work drains;
 //! it does not require the operating system's RSS to fall synchronously.
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::fs;
 #[cfg(any(test, target_os = "linux"))]
 use std::io::Read;
 use std::{
-    fs,
     path::Path,
     sync::{Arc, OnceLock, RwLock},
     time::{SystemTime, UNIX_EPOCH},
