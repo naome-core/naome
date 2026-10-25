@@ -2435,7 +2435,6 @@ dependencies = [
 name = "naome-ledger"
 version = "0.1.0-alpha.1"
 dependencies = [
- "getrandom 0.4.3",
  "hex",
  "naome-wallet",
  "nix",

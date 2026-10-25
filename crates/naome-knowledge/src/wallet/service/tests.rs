@@ -1,4 +1,18 @@
 use super::*;
+fn create_ledger(owner: &NodeWallet, directory: &Path) -> NetworkId {
+    let genesis = naome_ledger::Genesis {
+        version: 1,
+        chain_id: [1; 32],
+        outputs: vec![naome_ledger::Output {
+            address: owner.signing_address(),
+            amount: Amount::from_units(1000),
+        }],
+    };
+    let network = genesis.network().unwrap();
+    drop(Ledger::create(directory, &genesis).unwrap());
+    network
+}
+
 use std::{
     fs,
     sync::atomic::{AtomicU64, Ordering},
@@ -38,20 +52,35 @@ fn internal_services_share_existing_wallets_and_retain_revocable_full_spending_a
     let second = second_dir.wallet();
     let recipient = recipient_dir.wallet();
     let original = fs::read(owner_dir.0.join("wallet.key")).unwrap();
+    let network = create_ledger(&owner, &ledger_dir.0);
     owner
-        .create_test_ledger(&ledger_dir.0, Amount::from_units(1000))
+        .connect(&ledger_dir.0, network, owner.signing_address())
         .unwrap();
-    owner
-        .connect(&ledger_dir.0, owner.signing_address())
-        .unwrap();
+    let unrelated = Directory::new();
+    let other_genesis = naome_ledger::Genesis {
+        version: 1,
+        chain_id: [9; 32],
+        outputs: vec![naome_ledger::Output {
+            address: owner.signing_address(),
+            amount: Amount::from_units(1000),
+        }],
+    };
+    drop(Ledger::create(&unrelated.0, &other_genesis).unwrap());
+    assert!(
+        owner
+            .connect(&unrelated.0, network, owner.signing_address())
+            .is_err()
+    );
+    assert_eq!(owner.status().unwrap().network, Some(network));
+
     assert!(
         first
-            .connect(&ledger_dir.0, owner.signing_address())
+            .connect(&ledger_dir.0, network, owner.signing_address())
             .is_err()
     );
     for node in [&first, &second] {
         owner.authorize_node(node.signing_address()).unwrap();
-        node.connect(&ledger_dir.0, owner.signing_address())
+        node.connect(&ledger_dir.0, network, owner.signing_address())
             .unwrap();
         assert_eq!(
             node.status().unwrap().wallet_address,
@@ -84,7 +113,7 @@ fn internal_services_share_existing_wallets_and_retain_revocable_full_spending_a
     assert_eq!(first.status().unwrap().connection, WalletConnection::Local);
     assert!(
         first
-            .connect(&ledger_dir.0, owner.signing_address())
+            .connect(&ledger_dir.0, network, owner.signing_address())
             .is_err()
     );
     assert!(second.funds().unwrap().can_spend);
@@ -94,7 +123,7 @@ fn internal_services_share_existing_wallets_and_retain_revocable_full_spending_a
         .unwrap();
     assert_eq!(owner.funds().unwrap().available.units(), 0);
     recipient
-        .connect(&ledger_dir.0, recipient.signing_address())
+        .connect(&ledger_dir.0, network, recipient.signing_address())
         .unwrap();
     assert_eq!(recipient.funds().unwrap().available.units(), 1000);
     second.disconnect().unwrap();
@@ -112,13 +141,11 @@ fn passive_status_is_bounded_and_available_when_ledger_access_is_busy_or_missing
     assert!(NodeWallet::open(&directory.0).is_err());
     assert!(!directory.0.join("wallet.key").exists());
     let wallet = directory.wallet();
+    let network = create_ledger(&wallet, &ledger_dir.0);
     wallet
-        .create_test_ledger(&ledger_dir.0, Amount::from_units(1000))
+        .connect(&ledger_dir.0, network, wallet.signing_address())
         .unwrap();
-    wallet
-        .connect(&ledger_dir.0, wallet.signing_address())
-        .unwrap();
-    let locked = Ledger::open(&ledger_dir.0).unwrap();
+    let locked = Ledger::open(&ledger_dir.0, network).unwrap();
     assert!(
         wallet.funds().is_err(),
         "unavailable funds must never become a zero balance"
@@ -128,7 +155,7 @@ fn passive_status_is_bounded_and_available_when_ledger_access_is_busy_or_missing
     assert_eq!(status.wallet_address, Some(wallet.signing_address()));
     assert!(serde_json::to_vec(&status).unwrap().len() < 512);
     drop(locked);
-    fs::remove_file(ledger_dir.0.join("test-ledger.sqlite3")).unwrap();
+    fs::remove_file(ledger_dir.0.join("ledger.sqlite3")).unwrap();
     assert!(wallet.funds().is_err());
     assert!(
         wallet.disconnect().is_err(),
@@ -151,11 +178,9 @@ fn a_missing_existing_key_disables_service_payments_without_replacement() {
     let directory = Directory::new();
     let ledger_dir = Directory::new();
     let wallet = directory.wallet();
+    let network = create_ledger(&wallet, &ledger_dir.0);
     wallet
-        .create_test_ledger(&ledger_dir.0, Amount::from_units(1000))
-        .unwrap();
-    wallet
-        .connect(&ledger_dir.0, wallet.signing_address())
+        .connect(&ledger_dir.0, network, wallet.signing_address())
         .unwrap();
     fs::remove_file(directory.0.join("wallet.key")).unwrap();
     assert!(!wallet.status().unwrap().key_available);

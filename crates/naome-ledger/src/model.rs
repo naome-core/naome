@@ -1,11 +1,11 @@
-//! Canonical transaction identities and integer-only test-coin values.
+//! Canonical transaction identities and integer-only coin values.
 use crate::{Error, MAX_ITEMS};
-use naome_wallet::{Address, TestLedgerSignature, WalletKey};
+use naome_wallet::{Address, LedgerSignature, WalletKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 use std::{fmt, str::FromStr};
 
-/// An exact number of indivisible test-coin units. Zero is a valid balance.
+/// An exact number of indivisible coin units. Zero is a valid balance.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Amount(u64);
@@ -41,9 +41,7 @@ impl FromStr for Amount {
             || !text.bytes().all(|b| b.is_ascii_digit())
             || (text.len() > 1 && text.starts_with('0'))
         {
-            return Err(Error::Invalid(
-                "amount must be canonical whole test-coin units",
-            ));
+            return Err(Error::Invalid("amount must be canonical whole coin units"));
         }
         text.parse().map(Self).map_err(|_| Error::AmountOverflow)
     }
@@ -92,7 +90,7 @@ macro_rules! digest_id {
 }
 digest_id!(
     NetworkId,
-    "The identity of one explicit test genesis, never a production network."
+    "The identity of the network's canonical genesis, including its initial allocation."
 );
 digest_id!(
     TransactionId,
@@ -114,40 +112,35 @@ pub struct Output {
     pub amount: Amount,
 }
 
-/// Explicit, value-free bootstrap allocations for one isolated test ledger.
+/// The canonical genesis adopted by a network, including any initial allocations.
+///
+/// Applications must obtain this contract from the selected network, not from
+/// an untrusted peer. Changing an allocation changes the network identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TestGenesis {
+pub struct Genesis {
     pub version: u8,
-    pub instance: [u8; 32],
+    pub chain_id: [u8; 32],
     pub outputs: Vec<Output>,
 }
-impl TestGenesis {
-    pub fn random(outputs: Vec<Output>) -> Result<Self, Error> {
-        let mut instance = [0; 32];
-        getrandom::fill(&mut instance)
-            .map_err(|_| Error::Invalid("test-ledger randomness unavailable"))?;
-        let genesis = Self {
-            version: 1,
-            instance,
-            outputs,
-        };
-        genesis.validate()?;
-        Ok(genesis)
-    }
+impl Genesis {
     pub fn network(&self) -> Result<NetworkId, Error> {
         self.validate()?;
-        let mut bytes = b"naome:test-ledger-genesis:v1\0".to_vec();
+        let mut bytes = b"naome:ledger-genesis:v1\0".to_vec();
         bytes.push(self.version);
-        bytes.extend_from_slice(&self.instance);
+        bytes.extend_from_slice(&self.chain_id);
         encode_outputs(&mut bytes, &self.outputs);
         Ok(NetworkId(Sha256::digest(bytes).into()))
     }
     pub(crate) fn validate(&self) -> Result<Amount, Error> {
         if self.version != 1 {
-            return Err(Error::Invalid("unsupported test genesis version"));
+            return Err(Error::Invalid("unsupported genesis version"));
         }
-        output_sum(&self.outputs)
+        if self.outputs.is_empty() {
+            Ok(Amount::default())
+        } else {
+            output_sum(&self.outputs)
+        }
     }
 }
 
@@ -178,7 +171,7 @@ pub struct SignedTransaction {
     pub network: NetworkId,
     pub signer: Address,
     pub operation: Operation,
-    pub signature: TestLedgerSignature,
+    pub signature: LedgerSignature,
 }
 impl SignedTransaction {
     pub fn sign(network: NetworkId, operation: Operation, key: &WalletKey) -> Result<Self, Error> {
@@ -189,7 +182,7 @@ impl SignedTransaction {
             network,
             signer,
             operation,
-            signature: key.sign_test_ledger(&digest),
+            signature: key.sign_ledger(&digest),
         })
     }
     pub fn id(&self) -> Result<TransactionId, Error> {
@@ -229,9 +222,9 @@ fn signing_digest(
     operation: &Operation,
 ) -> Result<[u8; 32], Error> {
     if version != 1 {
-        return Err(Error::Invalid("unsupported test transaction version"));
+        return Err(Error::Invalid("unsupported transaction version"));
     }
-    let mut bytes = b"naome:test-ledger-transaction:v1\0".to_vec();
+    let mut bytes = b"naome:ledger-transaction:v1\0".to_vec();
     bytes.push(version);
     bytes.extend_from_slice(network.as_bytes());
     bytes.extend_from_slice(signer.as_bytes());

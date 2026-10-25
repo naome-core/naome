@@ -1,7 +1,5 @@
 //! Exclusive local custody of a bounded-record, fully replayed SQLite journal.
-use crate::{
-    Error, MAX_RECORD_BYTES, NetworkId, SignedTransaction, State, TestGenesis, TransactionId,
-};
+use crate::{Error, Genesis, MAX_RECORD_BYTES, NetworkId, SignedTransaction, State, TransactionId};
 use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,10 +9,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DATABASE: &str = "test-ledger.sqlite3";
-const PENDING: &str = ".test-ledger-incoming.sqlite3";
-const RECEIPT: &str = "test-ledger.json";
-const APPLICATION: i64 = 0x4e414f54;
+const DATABASE: &str = "ledger.sqlite3";
+const PENDING: &str = ".ledger-incoming.sqlite3";
+const RECEIPT: &str = "ledger.json";
+const APPLICATION: i64 = 0x4e414f4c;
 const META: &str = "CREATE TABLE metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), genesis BLOB NOT NULL, active INTEGER NOT NULL CHECK(active IN (0,1)), committed_count INTEGER NOT NULL CHECK(committed_count>=0), head BLOB NOT NULL CHECK(length(head)=32)) STRICT";
 const EVENTS: &str = "CREATE TABLE events (sequence INTEGER PRIMARY KEY CHECK(sequence>0), id BLOB NOT NULL UNIQUE CHECK(length(id)=32), payload BLOB NOT NULL) STRICT";
 
@@ -44,8 +42,8 @@ pub struct Ledger {
     _lock: DirectoryLock,
 }
 impl Ledger {
-    /// Explicitly creates worthless test coins. An established ledger is never reset.
-    pub fn create(directory: &Path, genesis: &TestGenesis) -> Result<Self, Error> {
+    /// Initializes the selected network's canonical genesis; never resets an established ledger.
+    pub fn create(directory: &Path, genesis: &Genesis) -> Result<Self, Error> {
         let bytes = record(genesis)?;
         let _ = State::new(genesis)?;
         let (directory, lock) = lock_directory(directory, true)?;
@@ -54,7 +52,7 @@ impl Ledger {
         let receipt = directory.join(RECEIPT);
         if receipt.try_exists()? {
             return Err(Error::Invalid(
-                "test ledger already initialized; open it instead",
+                "ledger already initialized; open it instead",
             ));
         }
         if !database.try_exists()? {
@@ -78,9 +76,7 @@ impl Ledger {
             let connection = connect(&pending)?;
             let (stored, active, count, _) = metadata(&connection)?;
             if active || count != 0 || stored != *genesis {
-                return Err(Error::Invalid(
-                    "incomplete test ledger has a different genesis",
-                ));
+                return Err(Error::Invalid("incomplete ledger has a different genesis"));
             }
             drop(connection);
             fs::rename(&pending, &database)?;
@@ -89,29 +85,33 @@ impl Ledger {
         let connection = connect(&database)?;
         let (stored, active, count, _) = metadata(&connection)?;
         if active || count != 0 || stored != *genesis {
-            return Err(Error::Invalid("existing test ledger cannot be recreated"));
+            return Err(Error::Invalid("existing ledger cannot be recreated"));
         }
-        Self::load(directory, connection, lock)
+        Self::load(directory, connection, lock, genesis.network()?)
     }
     /// Opens existing state without creating a missing ledger or issuing new coins.
-    pub fn open(directory: &Path) -> Result<Self, Error> {
+    pub fn open(directory: &Path, expected_network: NetworkId) -> Result<Self, Error> {
         let (directory, lock) = lock_directory(directory, false)?;
         if !directory.join(DATABASE).try_exists()? {
             return Err(Error::Invalid(
-                "test ledger database is missing; restore its backup",
+                "ledger database is missing; restore its backup",
             ));
         }
         let connection = connect(&directory.join(DATABASE))?;
-        Self::load(directory, connection, lock)
+        Self::load(directory, connection, lock, expected_network)
     }
     fn load(
         directory: PathBuf,
         mut connection: Connection,
         lock: DirectoryLock,
+        expected_network: NetworkId,
     ) -> Result<Self, Error> {
         let (genesis, active, count, head) = metadata(&connection)?;
         let mut state = State::new(&genesis)?;
         let network = state.network();
+        if network != expected_network {
+            return Err(Error::WrongNetwork);
+        }
         let mut statement=connection.prepare("SELECT sequence,id,length(payload),CASE WHEN length(payload)<=?1 THEN payload END FROM events ORDER BY sequence")?;
         let mut rows = statement.query([MAX_RECORD_BYTES as i64])?;
         while let Some(row) = rows.next()? {
@@ -119,7 +119,7 @@ impl Ledger {
             if sequence
                 != i64::try_from(state.transaction_count() + 1).map_err(|_| Error::Capacity)?
             {
-                return Err(Error::Invalid("test ledger journal sequence gap"));
+                return Err(Error::Invalid("ledger journal sequence gap"));
             }
             let id: Vec<u8> = row.get(1)?;
             let length: i64 = row.get(2)?;
@@ -129,29 +129,29 @@ impl Ledger {
             let bytes: Vec<u8> = row.get(3)?;
             let transaction: SignedTransaction = serde_json::from_slice(&bytes)?;
             if record(&transaction)? != bytes {
-                return Err(Error::Invalid("noncanonical test ledger record"));
+                return Err(Error::Invalid("noncanonical ledger record"));
             }
             let verified = state.apply(&transaction)?;
             if id.as_slice() != verified.as_bytes() {
-                return Err(Error::Invalid("test ledger transaction identity mismatch"));
+                return Err(Error::Invalid("ledger transaction identity mismatch"));
             }
         }
         drop(rows);
         drop(statement);
         if state.transaction_count() != count || state.journal_root().as_slice() != head {
-            return Err(Error::Invalid("test ledger committed journal mismatch"));
+            return Err(Error::Invalid("ledger committed journal mismatch"));
         }
         let receipt = directory.join(RECEIPT);
         if receipt.try_exists()? {
             let bytes = read_file(&receipt, 256)?;
             let stored: Receipt = serde_json::from_slice(&bytes)?;
             if stored.version != 1 || stored.network != network {
-                return Err(Error::Invalid("test ledger identity receipt mismatch"));
+                return Err(Error::Invalid("ledger identity receipt mismatch"));
             }
         } else {
             if active || count != 0 {
                 return Err(Error::Invalid(
-                    "established test ledger identity receipt is missing",
+                    "established ledger identity receipt is missing",
                 ));
             }
             write_new(
@@ -165,7 +165,7 @@ impl Ledger {
         }
         if !active {
             if count != 0 {
-                return Err(Error::Invalid("inactive test ledger contains transactions"));
+                return Err(Error::Invalid("inactive ledger contains transactions"));
             }
             let transaction = connection.transaction()?;
             transaction.execute("UPDATE metadata SET active=1 WHERE singleton=1", [])?;
@@ -192,7 +192,7 @@ impl Ledger {
         owned(&metadata)?;
         if (metadata.dev(), metadata.ino()) != self.generation {
             return Err(Error::Invalid(
-                "test ledger database was replaced; reopen before use",
+                "ledger database was replaced; reopen before use",
             ));
         }
         Ok(&self.state)
@@ -234,16 +234,16 @@ impl Ledger {
     }
 }
 
-fn metadata(connection: &Connection) -> Result<(TestGenesis, bool, u64, Vec<u8>), Error> {
+fn metadata(connection: &Connection) -> Result<(Genesis, bool, u64, Vec<u8>), Error> {
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if application != APPLICATION || version != 1 {
-        return Err(Error::Invalid("unsupported test ledger database format"));
+        return Err(Error::Invalid("unsupported ledger database format"));
     }
     let integrity: String = connection.pragma_query_value(None, "quick_check", |row| row.get(0))?;
     if integrity != "ok" {
-        return Err(Error::Invalid("test ledger integrity check failed"));
+        return Err(Error::Invalid("ledger integrity check failed"));
     }
     let mut statement = connection
         .prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name")?;
@@ -251,11 +251,11 @@ fn metadata(connection: &Connection) -> Result<(TestGenesis, bool, u64, Vec<u8>)
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     if schema != [EVENTS.to_string(), META.to_string()] {
-        return Err(Error::Invalid("test ledger schema mismatch"));
+        return Err(Error::Invalid("ledger schema mismatch"));
     }
     let rows: i64 = connection.query_row("SELECT count(*) FROM metadata", [], |row| row.get(0))?;
     if rows != 1 {
-        return Err(Error::Invalid("test ledger metadata row count"));
+        return Err(Error::Invalid("ledger metadata row count"));
     }
     let (length,bytes,active,count,head):(i64,Option<Vec<u8>>,i64,i64,Vec<u8>)=connection.query_row("SELECT length(genesis),CASE WHEN length(genesis)<=?1 THEN genesis END,active,committed_count,head FROM metadata WHERE singleton=1",[MAX_RECORD_BYTES as i64],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
     if length < 0
@@ -264,12 +264,12 @@ fn metadata(connection: &Connection) -> Result<(TestGenesis, bool, u64, Vec<u8>)
         || ![0, 1].contains(&active)
         || head.len() != 32
     {
-        return Err(Error::Invalid("invalid test ledger metadata"));
+        return Err(Error::Invalid("invalid ledger metadata"));
     }
     let bytes = bytes.ok_or(Error::Capacity)?;
-    let genesis: TestGenesis = serde_json::from_slice(&bytes)?;
+    let genesis: Genesis = serde_json::from_slice(&bytes)?;
     if record(&genesis)? != bytes {
-        return Err(Error::Invalid("noncanonical test genesis record"));
+        return Err(Error::Invalid("noncanonical genesis record"));
     }
     Ok((genesis, active == 1, count as u64, head))
 }
@@ -302,7 +302,7 @@ fn lock_directory(directory: &Path, create: bool) -> Result<(PathBuf, DirectoryL
     let directory = fs::canonicalize(directory)?;
     let metadata = fs::metadata(&directory)?;
     if !metadata.is_dir() || metadata.uid() != nix::unistd::geteuid().as_raw() {
-        return Err(Error::Invalid("test ledger requires an owned directory"));
+        return Err(Error::Invalid("ledger requires an owned directory"));
     }
     if create
         && fs::read_dir(&directory)?.any(|entry| {
@@ -311,21 +311,21 @@ fn lock_directory(directory: &Path, create: bool) -> Result<(PathBuf, DirectoryL
                     DATABASE,
                     PENDING,
                     RECEIPT,
-                    "test-ledger.lock",
-                    "test-ledger.sqlite3-journal",
-                    ".test-ledger-incoming.sqlite3-journal",
+                    "ledger.lock",
+                    "ledger.sqlite3-journal",
+                    ".ledger-incoming.sqlite3-journal",
                 ]
                 .contains(&entry.file_name().to_string_lossy().as_ref())
             })
         })
     {
-        return Err(Error::Invalid("test ledger requires a dedicated directory"));
+        return Err(Error::Invalid("ledger requires a dedicated directory"));
     }
     if create {
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
     }
     if fs::metadata(&directory)?.permissions().mode() & 0o077 != 0 {
-        return Err(Error::Invalid("test ledger directory must be owner-only"));
+        return Err(Error::Invalid("ledger directory must be owner-only"));
     }
     let file = OpenOptions::new()
         .read(true)
@@ -334,7 +334,7 @@ fn lock_directory(directory: &Path, create: bool) -> Result<(PathBuf, DirectoryL
         .truncate(false)
         .mode(0o600)
         .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
-        .open(directory.join("test-ledger.lock"))?;
+        .open(directory.join("ledger.lock"))?;
     owned(&file.metadata()?)?;
     match file.try_lock() {
         Ok(()) => {}
@@ -350,7 +350,7 @@ fn owned(metadata: &fs::Metadata) -> Result<(), Error> {
         || metadata.permissions().mode() & 0o077 != 0
     {
         return Err(Error::Invalid(
-            "test ledger requires one owner-only regular file",
+            "ledger requires one owner-only regular file",
         ));
     }
     Ok(())

@@ -1,4 +1,4 @@
-//! Public node-to-wallet association. Spending grants live in the test ledger.
+//! Public node-to-wallet association. Spending grants live in the ledger.
 use naome_ledger::NetworkId;
 use naome_wallet::Address;
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
 //! Existing wallet custody, node association, and direct internal payments.
 use super::connection::{self, Connection};
-use naome_ledger::{Amount, Ledger, NetworkId, Output, TestGenesis, TransactionId};
+use naome_ledger::{Amount, Ledger, NetworkId, TransactionId};
 use naome_wallet::{Address, WalletKey};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -18,21 +18,15 @@ pub enum WalletConnection {
 #[serde(deny_unknown_fields)]
 pub struct WalletStatus {
     pub signing_address: Address,
+    pub network: Option<NetworkId>,
     pub wallet_address: Option<Address>,
     pub connection: WalletConnection,
     pub key_available: bool,
 }
-/// The sole currency scope supported by the current wallet service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WalletFundsScope {
-    LocalTestCoins,
-}
-/// Fully rechecked local test-coin funds and individual node spending grants.
+/// Fully rechecked local coin funds and individual node spending grants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WalletFunds {
-    pub scope: WalletFundsScope,
     pub network: NetworkId,
     pub address: Address,
     pub available: Amount,
@@ -40,90 +34,54 @@ pub struct WalletFunds {
     pub authorized_nodes: Vec<Address>,
 }
 
-/// ## Internal wallet service and existing nodes
+/// # Internal wallet service
 ///
-/// The application-facing `naome_knowledge::NodeWallet` service uses the existing
-/// `wallet.key` and `wallet.json` files. There is no wallet or ledger CLI, including
-/// in the developer binary. The ordinary node CLI remains start, stop, status,
-/// interest, help, and version. Applications and autonomous tasks call the service
-/// methods directly.
+/// Applications and autonomous node tasks call this service directly. There is
+/// no wallet or ledger CLI. The ordinary CLI remains start, stop, status,
+/// interest, help, and version.
 ///
-/// Start each node once through the normal lifecycle. Opening `NodeWallet` then
-/// validates its existing key and receipt; it never creates or rotates a key.
-/// One node can have one persistent public wallet association. Several nodes may
-/// use the same owner's wallet. Each node keeps its own private key, and the owner
-/// signs the node's spending grant without copying the owner's main key.
-///
-/// A minimal integration sequence is:
+/// Open an existing node wallet after normal initialization. No key, coins, or
+/// genesis are created by this service. The chain owner initializes storage from
+/// its adopted genesis through `naome_ledger::Ledger`; the wallet must supply the
+/// selected network identity independently when connecting.
 ///
 /// ```no_run
-/// # fn example() -> Result<(), String> {
+/// # fn example(network: naome_ledger::NetworkId) -> Result<(), String> {
 /// use naome_knowledge::NodeWallet;
-/// use std::path::Path;
-/// let owner_node_directory=Path::new("/nodes/owner");
-/// let first_node_directory=Path::new("/nodes/first");
-/// let second_node_directory=Path::new("/nodes/second");
-/// let test_ledger_directory=Path::new("/test-ledgers/example");
 /// use naome_ledger::Amount;
-///
-/// let owner = NodeWallet::open(owner_node_directory)?;
-/// let first = NodeWallet::open(first_node_directory)?;
-/// let second = NodeWallet::open(second_node_directory)?;
-///
-/// // Explicit test setup; ordinary startup never calls this method.
-/// owner.create_test_ledger(test_ledger_directory, Amount::from_units(1000))?;
-/// owner.connect(test_ledger_directory, owner.signing_address())?;
-///
-/// // User-authorized wallet association, suitable for a settings/application API.
+/// use std::path::Path;
+/// let owner = NodeWallet::open(Path::new("/nodes/owner"))?;
+/// let first = NodeWallet::open(Path::new("/nodes/first"))?;
+/// let second = NodeWallet::open(Path::new("/nodes/second"))?;
+/// let ledger = Path::new("/ledger");
+/// owner.connect(ledger, network, owner.signing_address())?;
 /// owner.authorize_node(first.signing_address())?;
 /// owner.authorize_node(second.signing_address())?;
-/// first.connect(test_ledger_directory, owner.signing_address())?;
-/// second.connect(test_ledger_directory, owner.signing_address())?;
-///
-/// // Called directly by the system's authorized purchase/work policy.
+/// first.connect(ledger, network, owner.signing_address())?;
+/// second.connect(ledger, network, owner.signing_address())?;
 /// first.pay(first.signing_address(), Amount::from_units(300))?;
 /// let funds = second.funds()?;
-/// assert_eq!(funds.available.units(), 700);
-///
 /// owner.revoke_node(first.signing_address())?;
 /// first.disconnect()?;
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// Every authorized node may spend the entire available shared balance. There is
-/// no per-node allowance or automatic increase in rights. Delegated nodes cannot authorize
-/// other nodes. The owner can revoke one node while leaving all other grants
-/// active. `disconnect` durably revokes a delegate's own grant before removing its
-/// public association; it requires the ledger to be available. An owner disconnect
-/// removes its local association while its main key retains ownership. A revoked
-/// node requires a fresh owner grant before reconnecting. Regranting does not
-/// revive old prepared payments.
+/// Each authorized node may spend the entire available balance. The owner signs
+/// separate node grants without copying its main key. Delegated nodes cannot
+/// authorize other nodes; revocation disables future admission, and a regrant
+/// does not revive payments signed under the earlier grant epoch.
 ///
-/// A payment to the associated wallet address increases that wallet's funds;
-/// there is no special self-credit operation. Work rewards and autonomous purchase
-/// selection still require their own agreed protocol and economic rules. This
-/// change supplies the internal authorization, payment, and bookkeeping services,
-/// not an automatic research market or production currency.
+/// `funds()` fully verifies the selected network's journal and current grants.
+/// A busy, missing, or corrupt ledger is an error, never a zero balance. Passive
+/// node status reads only bounded custody/association metadata; a configured
+/// association is not evidence that its spending grant is still active.
 ///
-/// `NodeWallet::funds` fully replays and verifies the local test journal, returning
-/// its network, available units, current spending authorization, and authorized
-/// node addresses. Its scope is always `local_test_coins`. Errors such as a busy
-/// or unavailable ledger remain errors and are never rendered as a zero balance.
-/// Amounts are whole indivisible test units, with no NAO conversion.
-///
-/// Passive `naome status` uses bounded local metadata only: signing address,
-/// configured wallet address, association state, and key availability. A configured
-/// association does not assert that its grant is still active. Financial views
-/// use `funds()` to verify the grant and balance. Full history replay is deliberately
-/// kept outside latency-sensitive start/stop/status control and resource-governor
-/// operation. The node has no implicit test genesis, mint, reward, or payment step.
-///
-/// The current test backend uses one dedicated local ledger directory, with short
-/// exclusive ownership per service operation. It does not synchronize independent
-/// machines or qualify network filesystems. Do not place the ledger inside a node
-/// directory or copy its SQLite files while it is open. The SDK and state-transition
-/// contracts leave network ordering and consensus as a separate implementation.
+/// The current storage adapter is local and exclusive per operation. Independent
+/// hosts require the network's accepted-order/replication layer; no network
+/// filesystem or distributed settlement qualification is claimed. Test fixtures
+/// exercise this same production path with their own genesis/network identity.
+/// Work reward and purchase policies remain separate system responsibilities.
 ///
 /// The internal wallet interface for applications and autonomous node services.
 ///
@@ -182,38 +140,24 @@ impl NodeWallet {
     }
     fn connected(&self) -> Result<(Connection, Ledger), String> {
         let connection =
-            connection::read(&self.directory)?.ok_or("wallet is not connected to a test ledger")?;
+            connection::read(&self.directory)?.ok_or("wallet is not connected to a ledger")?;
         if connection.signer != self.signer {
             return Err("node wallet signing identity changed".into());
         }
-        let ledger = Ledger::open(&connection.ledger).map_err(fail)?;
-        if ledger.state().map_err(fail)?.network() != connection.network {
-            return Err("wallet connection network mismatch".into());
-        }
+        let ledger = Ledger::open(&connection.ledger, connection.network).map_err(fail)?;
         Ok((connection, ledger))
     }
-    /// Explicit test bootstrap only. Node startup never calls this method.
-    pub fn create_test_ledger(
+    /// Associates the node after the wallet owner has granted its signing key access.
+    pub fn connect(
         &self,
         directory: &Path,
-        amount: Amount,
-    ) -> Result<NetworkId, String> {
-        let _lock = self.lock()?;
-        let key = self.key()?;
-        let genesis = TestGenesis::random(vec![Output {
-            address: key.address(),
-            amount,
-        }])
-        .map_err(fail)?;
-        let ledger = Ledger::create(directory, &genesis).map_err(fail)?;
-        Ok(ledger.state().map_err(fail)?.network())
-    }
-    /// Associates the node after the wallet owner has granted its signing key access.
-    pub fn connect(&self, directory: &Path, wallet: Address) -> Result<(), String> {
+        expected_network: NetworkId,
+        wallet: Address,
+    ) -> Result<(), String> {
         let _lock = self.lock()?;
         let _key = self.key()?;
         let path = std::fs::canonicalize(directory).map_err(|error| error.to_string())?;
-        let ledger = Ledger::open(&path).map_err(fail)?;
+        let ledger = Ledger::open(&path, expected_network).map_err(fail)?;
         let state = ledger.state().map_err(fail)?;
         if state.spending_authority(wallet, self.signer).is_none() {
             return Err("wallet must first authorize this node's signing address".into());
@@ -235,7 +179,6 @@ impl NodeWallet {
         let (connection, ledger) = self.connected()?;
         let state = ledger.state().map_err(fail)?;
         Ok(WalletFunds {
-            scope: WalletFundsScope::LocalTestCoins,
             network: state.network(),
             address: connection.wallet,
             available: state.balance(connection.wallet).map_err(fail)?,
@@ -246,8 +189,9 @@ impl NodeWallet {
             authorized_nodes: state.authorized_nodes(connection.wallet),
         })
     }
-    /// Pays automatically when called by an authorized application policy.
-    /// This test ledger has no work-purchase or reward policy of its own.
+    /// Applies a payment to the locally selected order under the caller's policy.
+    /// This does not establish network finality. Distributed deployment requires
+    /// the network ordering layer; work-purchase and reward policies are separate.
     pub fn pay(&self, recipient: Address, amount: Amount) -> Result<TransactionId, String> {
         let _lock = self.lock()?;
         let key = self.key()?;
@@ -303,13 +247,18 @@ impl NodeWallet {
 
 pub(crate) fn observe(directory: &Path) -> Option<WalletStatus> {
     let identity = super::identity(directory).ok()??;
-    let (wallet_address, state) = match connection::read(directory) {
-        Ok(Some(connection)) => (Some(connection.wallet), WalletConnection::Connected),
-        Ok(None) => (Some(identity.address), WalletConnection::Local),
-        Err(_) => (None, WalletConnection::Unavailable),
+    let (wallet_address, network, state) = match connection::read(directory) {
+        Ok(Some(connection)) => (
+            Some(connection.wallet),
+            Some(connection.network),
+            WalletConnection::Connected,
+        ),
+        Ok(None) => (Some(identity.address), None, WalletConnection::Local),
+        Err(_) => (None, None, WalletConnection::Unavailable),
     };
     Some(WalletStatus {
         signing_address: identity.address,
+        network,
         wallet_address,
         connection: state,
         key_available: super::key(directory).is_ok(),

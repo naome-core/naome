@@ -20,8 +20,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{fmt, str::FromStr};
 use zeroize::Zeroizing;
 
-mod test_ledger;
-pub use test_ledger::TestLedgerSignature;
+mod ledger;
+pub use ledger::LedgerSignature;
 
 const DOMAIN: &[u8] = b"naome:wallet-key-ownership:v1\0";
 const AUDIENCE_MAX_BYTES: usize = 256;
@@ -64,12 +64,12 @@ impl WalletKey {
         Zeroizing::new(self.key.to_keypair_bytes())
     }
 
-    /// Signs a canonical test-ledger transaction digest in its own domain.
+    /// Signs a canonical ledger transaction digest in its own domain.
     ///
-    /// Callers must show and authorize the transaction before asking for its
-    /// signature. This cannot authorize production currency or key-control proofs.
-    pub fn sign_test_ledger(&self, digest: &[u8; 32]) -> TestLedgerSignature {
-        test_ledger::sign(&self.key, digest)
+    /// Callers must validate the transaction and enforce their authorized spending
+    /// policy before requesting its signature. The expected network is part of that digest; this cannot authorize key-control proofs.
+    pub fn sign_ledger(&self, digest: &[u8; 32]) -> LedgerSignature {
+        ledger::sign(&self.key, digest)
     }
 
     /// Returns the public receiving address for this key.

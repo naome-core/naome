@@ -1,4 +1,4 @@
-use crate::{Amount, Output, TestGenesis};
+use crate::{Amount, Genesis, Output};
 use naome_wallet::WalletKey;
 use std::{
     path::PathBuf,
@@ -13,10 +13,10 @@ pub(crate) fn key() -> WalletKey {
     .unwrap();
     WalletKey::from_keypair_bytes(&bytes.try_into().unwrap()).unwrap()
 }
-pub(crate) fn genesis() -> TestGenesis {
-    TestGenesis {
+pub(crate) fn genesis() -> Genesis {
+    Genesis {
         version: 1,
-        instance: [7; 32],
+        chain_id: [7; 32],
         outputs: vec![Output {
             address: key().address(),
             amount: Amount::from_units(1000),
@@ -31,7 +31,7 @@ impl Directory {
             std::fs::canonicalize(std::env::temp_dir())
                 .unwrap()
                 .join(format!(
-                    "naome-test-ledger-{}-{}",
+                    "naome-ledger-{}-{}",
                     std::process::id(),
                     NEXT.fetch_add(1, Ordering::Relaxed)
                 )),

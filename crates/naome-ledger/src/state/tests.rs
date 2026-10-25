@@ -239,3 +239,24 @@ fn the_journal_root_commits_to_order_even_for_independent_payments() {
     assert_eq!(forward.supply(), reverse.supply());
     assert_ne!(forward.journal_root(), reverse.journal_root());
 }
+
+#[test]
+fn fixture_coins_and_signatures_cannot_be_admitted_under_a_different_network_genesis() {
+    let owner = key();
+    let fixture = genesis();
+    let mut another = fixture.clone();
+    another.chain_id = [99; 32];
+    let fixture_state = State::new(&fixture).unwrap();
+    let payment = fixture_state
+        .payment(
+            owner.address(),
+            &owner,
+            owner.address(),
+            Amount::from_units(100),
+        )
+        .unwrap();
+    let mut other_state = State::new(&another).unwrap();
+    let original = other_state.clone();
+    assert_eq!(other_state.apply(&payment), Err(Error::WrongNetwork));
+    assert_eq!(other_state, original);
+}

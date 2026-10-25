@@ -8,6 +8,7 @@ async fn maximum_escaped_owner_text_fits_bounded_control_frames() {
     let status = Status {
         wallet: Some(crate::WalletStatus {
             signing_address: naome_wallet::WalletKey::generate().unwrap().address(),
+            network: Some(naome_ledger::NetworkId::from_bytes([7; 32])),
             wallet_address: Some(naome_wallet::WalletKey::generate().unwrap().address()),
             connection: crate::WalletConnection::Connected,
             key_available: true,

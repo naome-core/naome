@@ -158,7 +158,7 @@ pub(crate) fn key(directory: &Path) -> Result<WalletKey, String> {
 mod connection;
 mod service;
 pub(crate) use service::observe;
-pub use service::{NodeWallet, WalletConnection, WalletFunds, WalletFundsScope, WalletStatus};
+pub use service::{NodeWallet, WalletConnection, WalletFunds, WalletStatus};
 
 #[cfg(test)]
 mod tests;

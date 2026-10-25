@@ -47,7 +47,7 @@ fn canonical_network_and_payment_ids_have_independently_encoded_vectors() {
     // Expected digests are independently encoded from the documented byte layout.
     assert_eq!(
         genesis.network().unwrap().to_string(),
-        "ce282829d4937072cffd4add77e716d18668c493de40c49fc02e691199a7a3c1"
+        "6c8bef4bc1626c8570c631bec0f2c5d2e4c108e5d235d6f8ac9e520726ea5259"
     );
     let state = State::new(&genesis).unwrap();
     let payment = state
@@ -60,7 +60,7 @@ fn canonical_network_and_payment_ids_have_independently_encoded_vectors() {
         .unwrap();
     assert_eq!(
         payment.id().unwrap().to_string(),
-        "2711716562333e5949b0461386d13afccf1ca66c4a413e195af595d28805f43f"
+        "0d95b571cffc0612e28876549de7564fb2f536b79ab227fcf6565d9fa01364a3"
     );
     let encoded = serde_json::to_vec(&payment).unwrap();
     assert_eq!(
@@ -127,5 +127,5 @@ fn record_shapes_are_bounded_and_do_not_accept_extra_fields_or_zero_outputs() {
     }
     let mut value = serde_json::to_value(genesis()).unwrap();
     value["mint"] = serde_json::json!(100);
-    assert!(serde_json::from_value::<TestGenesis>(value).is_err());
+    assert!(serde_json::from_value::<Genesis>(value).is_err());
 }

@@ -179,6 +179,9 @@ fn human(command: &str, status: &Status, color: bool) -> String {
         )
         .expect("String write");
         writeln!(output, "  Signing address  {}", wallet.signing_address).expect("String write");
+        if let Some(network) = wallet.network {
+            writeln!(output, "  Ledger network   {network}").expect("String write");
+        }
         let connection = match wallet.connection {
             crate::WalletConnection::Local => "local wallet",
             crate::WalletConnection::Connected => {

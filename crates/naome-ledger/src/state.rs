@@ -1,7 +1,7 @@
 //! The deterministic state transition owner. Validation never mutates state.
 use crate::{
-    Amount, Error, MAX_ITEMS, NetworkId, Operation, OutPoint, Output, SignedTransaction,
-    TestGenesis, TransactionId,
+    Amount, Error, Genesis, MAX_ITEMS, NetworkId, Operation, OutPoint, Output, SignedTransaction,
+    TransactionId,
 };
 use naome_wallet::{Address, WalletKey};
 use sha2::{Digest, Sha256};
@@ -27,7 +27,7 @@ pub(crate) struct Checked {
     operation: Operation,
 }
 impl State {
-    pub fn new(genesis: &TestGenesis) -> Result<Self, Error> {
+    pub fn new(genesis: &Genesis) -> Result<Self, Error> {
         let supply = genesis.validate()?;
         let network = genesis.network()?;
         let utxos = genesis
@@ -68,7 +68,7 @@ impl State {
     }
     pub(crate) fn next_journal_root(&self, id: TransactionId) -> [u8; 32] {
         let mut hash = Sha256::new();
-        hash.update(b"naome:test-ledger-journal:v1\0");
+        hash.update(b"naome:ledger-journal:v1\0");
         hash.update(self.journal_root);
         hash.update(id.as_bytes());
         hash.finalize().into()

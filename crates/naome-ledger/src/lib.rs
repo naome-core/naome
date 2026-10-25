@@ -1,16 +1,21 @@
-//! # NAOME local test-coin ledger
+//! # NAOME ledger core
 //!
 //! `naome-ledger` owns integer coin amounts, canonical signed transactions,
 //! UTXO validation, revocable node spending rights, and a durable local journal.
 //! It depends on `naome-wallet`, not on the gossip node or mathematical proof
 //! packages. The node supplies its existing wallet custody and internal service adapter.
 //!
-//! This is an isolated test ledger with worthless test coins. It does not issue
-//! NAO, pay for work, implement mining, replicate balances, or choose a shared
-//! transaction order across independent machines. Its initialization allocations
-//! are explicit test fixtures, not a production issuance rule. A later production
-//! protocol must choose consensus, finality, storage proofs, and issuance rules;
-//! it must use a distinct signature and network domain.
+//! This is the shared currency validation and bookkeeping core. It applies the
+//! selected network's canonical genesis and a caller-supplied accepted transaction
+//! order. Opening an existing ledger requires the independently configured network
+//! identity. Changing a genesis allocation or chain identifier changes that
+//! identity, so fixture-network balances cannot become production-network coins.
+//!
+//! There is no runtime test mode, random genesis, wallet faucet, or implicit
+//! startup allocation. Tests alone supply artificial allocations in isolated
+//! genesis fixtures, using the same signatures, validation, and storage path.
+//! A network launch still requires an adopted genesis, issuance/work-reward rules,
+//! replication, and consensus/finality; this core does not choose those policies.
 //!
 //! ## Validation contract
 //!
@@ -22,7 +27,7 @@
 //!   node, with the exact current grant epoch.
 //! - Only an owner key can grant access. An owner can revoke any of its node keys;
 //!   a node can revoke itself. Each access change uses the next owner sequence.
-//! - Every signature binds version, test network, signing address, operation,
+//! - Every signature binds version, network, signing address, operation,
 //!   consumed outputs, and created outputs or the complete access change.
 //!   Ownership challenges cannot authorize payments.
 //! - Validation runs before mutation. Rejections leave both balances and the
@@ -37,12 +42,12 @@
 //! identities are computed from the following binary layout, independent of JSON
 //! field order or whitespace.
 //!
-//! A network ID is SHA-256 of `naome:test-ledger-genesis:v1\0`, version `u8`,
-//! instance nonce `[u8;32]`, output count `u16`, then each address and amount `u64`.
+//! A network ID is SHA-256 of `naome:ledger-genesis:v1\0`, version `u8`,
+//! chain identifier `[u8;32]`, output count `u16`, then each address and amount `u64`.
 //! Genesis outputs become outpoints `(network_digest, output_index_u32)`.
 //!
 //! A transaction ID/signing digest is SHA-256 of
-//! `naome:test-ledger-transaction:v1\0`, version `u8`, network ID `[u8;32]`, signer
+//! `naome:ledger-transaction:v1\0`, version `u8`, network ID `[u8;32]`, signer
 //! address, then one operation:
 //!
 //! - Payment tag `0`: owner address, grant epoch `u64` (zero for the owner key),
@@ -51,13 +56,13 @@
 //! - Access tag `1`: owner address, delegate address, sequence `u64`, enabled byte
 //!   (`0` or `1`).
 //!
-//! The wallet signs `naome:test-ledger-signature:v1\0` followed by that digest,
+//! The wallet signs `naome:ledger-signature:v1\0` followed by that digest,
 //! using strict Ed25519 verification. Signatures are canonical lower-case hex;
 //! transaction and network IDs are 32-byte lower-case hex. Every `\0` above means
 //! one zero byte. Current format version is 1; other versions are rejected.
 //!
 //! The journal starts at the network ID. Each admitted transaction updates its
-//! root to SHA-256 of `naome:test-ledger-journal:v1\0`, previous root `[u8;32]`, and
+//! root to SHA-256 of `naome:ledger-journal:v1\0`, previous root `[u8;32]`, and
 //! transaction ID `[u8;32]`. The stored count and root bind the complete order.
 //!
 //! ## Persistence and limits
@@ -94,7 +99,7 @@ mod state;
 mod store;
 
 pub use model::{
-    Amount, NetworkId, Operation, OutPoint, Output, SignedTransaction, TestGenesis, TransactionId,
+    Amount, Genesis, NetworkId, Operation, OutPoint, Output, SignedTransaction, TransactionId,
 };
 pub use state::State;
 #[cfg(unix)]
@@ -127,20 +132,18 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid(message) => f.write_str(message),
-            Self::WrongNetwork => f.write_str("test-ledger network mismatch"),
-            Self::InvalidSignature => f.write_str("invalid test-ledger signature"),
+            Self::WrongNetwork => f.write_str("ledger network mismatch"),
+            Self::InvalidSignature => f.write_str("invalid ledger signature"),
             Self::DuplicateInput => f.write_str("duplicate transaction input"),
             Self::MissingInput => f.write_str("input is missing or already spent"),
             Self::Unauthorized => f.write_str("wallet has not authorized this spending key"),
             Self::InvalidSequence => f.write_str("stale wallet authorization sequence"),
             Self::ValueMismatch => f.write_str("input and output values must match exactly"),
-            Self::AmountOverflow => f.write_str("test-coin amount overflow or insufficient funds"),
-            Self::Capacity => f.write_str("test-ledger operation capacity"),
-            Self::Busy => f.write_str("test ledger is already in use"),
-            Self::RecoveryRequired => {
-                f.write_str("test-ledger commit unconfirmed; reopen before use")
-            }
-            Self::Storage(message) => write!(f, "test-ledger storage: {message}"),
+            Self::AmountOverflow => f.write_str("coin amount overflow or insufficient funds"),
+            Self::Capacity => f.write_str("ledger operation capacity"),
+            Self::Busy => f.write_str("ledger is already in use"),
+            Self::RecoveryRequired => f.write_str("ledger commit unconfirmed; reopen before use"),
+            Self::Storage(message) => write!(f, "ledger storage: {message}"),
         }
     }
 }

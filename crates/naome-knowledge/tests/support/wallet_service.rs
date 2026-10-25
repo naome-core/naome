@@ -31,21 +31,29 @@ pub(super) fn run(path: &Path) {
     let owner = NodeWallet::open(&input.directories[0]).unwrap();
     let first = NodeWallet::open(&input.directories[1]).unwrap();
     let second = NodeWallet::open(&input.directories[2]).unwrap();
+    // Isolated fixture allocations use the production ledger path and a separate network.
+    let genesis = naome_ledger::Genesis {
+        version: 1,
+        chain_id: [2; 32],
+        outputs: vec![naome_ledger::Output {
+            address: owner.signing_address(),
+            amount: Amount::from_units(1000),
+        }],
+    };
+    let network = genesis.network().unwrap();
     if input.phase == "initial" {
+        drop(naome_ledger::Ledger::create(&input.ledger, &genesis).unwrap());
         owner
-            .create_test_ledger(&input.ledger, Amount::from_units(1000))
-            .unwrap();
-        owner
-            .connect(&input.ledger, owner.signing_address())
+            .connect(&input.ledger, network, owner.signing_address())
             .unwrap();
         assert!(
             first
-                .connect(&input.ledger, owner.signing_address())
+                .connect(&input.ledger, network, owner.signing_address())
                 .is_err()
         );
         for node in [&first, &second] {
             owner.authorize_node(node.signing_address()).unwrap();
-            node.connect(&input.ledger, owner.signing_address())
+            node.connect(&input.ledger, network, owner.signing_address())
                 .unwrap();
         }
         assert!(first.authorize_node(owner.signing_address()).is_err());
@@ -64,7 +72,7 @@ pub(super) fn run(path: &Path) {
             assert_eq!(wallet.wallet_address, Some(owner.signing_address()));
         }
         // Passive node observation must not contend for, or replay, the ledger.
-        let locked = naome_ledger::Ledger::open(&input.ledger).unwrap();
+        let locked = naome_ledger::Ledger::open(&input.ledger, network).unwrap();
         assert!(status(&input, 1).running);
         drop(locked);
     } else {
@@ -85,7 +93,7 @@ pub(super) fn run(path: &Path) {
         );
         assert!(
             first
-                .connect(&input.ledger, owner.signing_address())
+                .connect(&input.ledger, network, owner.signing_address())
                 .is_err()
         );
         // The remaining authorized node can spend the entire available balance.
@@ -96,7 +104,7 @@ pub(super) fn run(path: &Path) {
         second.disconnect().unwrap();
         assert!(owner.funds().unwrap().authorized_nodes.is_empty());
         first
-            .connect(&input.ledger, first.signing_address())
+            .connect(&input.ledger, network, first.signing_address())
             .unwrap();
         assert_eq!(first.funds().unwrap().available.units(), 1000);
     }

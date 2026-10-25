@@ -33,6 +33,7 @@ def wallet_status(directory):
     connection = Path(directory) / "wallet-connection.json"
     linked = json.loads(connection.read_text()) if connection.exists() else None
     return {"signing_address": identity["address"],
+            "network": linked["network"] if linked else None,
             "wallet_address": linked["wallet"] if linked else identity["address"],
             "connection": "connected" if linked else "local",
             "key_available": (Path(directory) / "wallet.key").is_file()}

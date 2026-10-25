@@ -2,7 +2,7 @@
 name = "naome-wallet"
 version.workspace = true
 edition.workspace = true
-description = "Independent wallet keys, addresses, and proofs of key control for NAOME."
+description = "Independent wallet keys, addresses, key-control proofs, and payment authorization for NAOME."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

@@ -171,10 +171,10 @@ fn keypair_import_preserves_custody_and_rejects_mismatched_public_keys() {
 }
 
 #[test]
-fn test_ledger_signatures_are_bound_to_the_digest_key_and_separate_domain() {
+fn ledger_signatures_are_bound_to_the_digest_key_and_separate_domain() {
     let key = WalletKey::from_keypair_bytes(&key().to_keypair_bytes()).unwrap();
     let digest = [42; 32];
-    let signature = key.sign_test_ledger(&digest);
+    let signature = key.sign_ledger(&digest);
     signature.verify(key.address(), &digest).unwrap();
     assert!(signature.verify(key.address(), &[43; 32]).is_err());
     assert!(
@@ -183,11 +183,11 @@ fn test_ledger_signatures_are_bound_to_the_digest_key_and_separate_domain() {
             .is_err()
     );
     let ownership = key.prove(challenge()).unwrap();
-    let forged: TestLedgerSignature =
+    let forged: LedgerSignature =
         serde_json::from_value(serde_json::json!(ownership.signature)).unwrap();
     assert!(forged.verify(key.address(), &digest).is_err());
     let encoded = serde_json::to_value(signature).unwrap();
-    let upper: TestLedgerSignature =
+    let upper: LedgerSignature =
         serde_json::from_value(serde_json::json!(encoded.as_str().unwrap().to_uppercase()))
             .unwrap();
     assert!(upper.verify(key.address(), &digest).is_err());
