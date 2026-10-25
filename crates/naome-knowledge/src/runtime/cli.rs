@@ -15,6 +15,9 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
             "NAOME checked-knowledge node\n\n\
              Usage:\n  naome start\n  naome stop\n  naome status\n  \
              naome interest <text>\n  naome resources [history [after]]\n  \
+             naome wallet address\n  naome wallet challenge <audience>\n  \
+             naome wallet prove <challenge.json>\n  \
+             naome wallet verify <address> <challenge.json> <proof.json>\n  \
              naome --version\n\n\
              Place --json before a command for machine output.\n\
              NAOME_NODE_DIR selects the local node directory.\n\

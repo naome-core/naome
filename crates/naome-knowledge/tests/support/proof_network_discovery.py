@@ -335,7 +335,7 @@ class DiscoveryDriver(Driver):
         if errors:
             self.summary["result"] = "fail"
         self.summary["artifacts"] = {str(path):digest(path) for path in sorted(self.output.rglob("*"))
-            if path.is_file() and path.name not in ["summary.json", "identity.key", "knowledge.lock"]}
+            if path.is_file() and path.name not in ["summary.json", "identity.key", "wallet.key", ".wallet-key-incoming", "knowledge.lock"]}
         (self.output / "summary.json").write_text(json.dumps(self.summary, indent=2) + "\n")
         if os.environ.get("GITHUB_ACTIONS") == "true":
             archive = self.output.parent / f"{self.mode}-ci-{self.summary['profile']}-{os.getpid()}.zip"
@@ -343,7 +343,7 @@ class DiscoveryDriver(Driver):
                 paths = [self.output / "summary.json"] + [Path(name) for name in self.summary["artifacts"]]
                 for path in sorted(paths):
                     assert path.is_relative_to(self.output)
-                    assert path.name not in ["identity.key", "knowledge.lock"]
+                    assert path.name not in ["identity.key", "wallet.key", ".wallet-key-incoming", "knowledge.lock"]
                     bundle.write(path, str(path.relative_to(self.output)))
 
 

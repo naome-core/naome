@@ -136,6 +136,12 @@ fn ordinary_owner_interest_is_exact_durable_and_serialized() {
     run_autonomous("interest");
 }
 
+#[cfg(unix)]
+#[test]
+fn ordinary_wallet_proves_key_control_and_preserves_custody_across_restart() {
+    run_autonomous("wallet");
+}
+
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
 #[test]
 fn automatic_resource_pause_preserves_provider_budgets_and_control() {
@@ -199,6 +205,7 @@ fn run_autonomous(mode: &str) {
     command
         .arg(root.join(match mode {
             "interest" => "crates/naome-knowledge/tests/support/owner_interest.py",
+            "wallet" => "crates/naome-knowledge/tests/support/wallet.py",
             "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
             "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
