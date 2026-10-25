@@ -2377,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "naome-authoring"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "naome-checker",
  "naome-foundation",
@@ -2388,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "naome-checker"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "naome-foundation",
  "naome-proof",
@@ -2400,11 +2400,11 @@ dependencies = [
 
 [[package]]
 name = "naome-foundation"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "naome-knowledge"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "libp2p",
  "lz4_flex",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "naome-proof"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "naome-foundation",
  "serde",
