@@ -1,3 +1,4 @@
+use super::adaptive::{self, Observed, Selection, Snapshot};
 use super::*;
 
 #[test]
@@ -150,4 +151,32 @@ fn simultaneous_disk_preparations_share_custody_and_release_it() {
         assert!(DiskLease::acquire(&directory.0, 800).is_ok());
         drop(second);
     });
+}
+
+pub(crate) fn snapshot(paused: bool) -> Snapshot {
+    let mut snapshot = Snapshot::derive(
+        Selection::default(),
+        Observed {
+            memory_total: 8 << 30,
+            memory_limit: 8 << 30,
+            memory_available: 6 << 30,
+            process_rss: 16 << 20,
+            cpu_millis: 8000,
+            disk_available: 1 << 30,
+            ..Observed::default()
+        },
+        512 << 20,
+    )
+    .unwrap();
+    if paused {
+        snapshot.budget.paused = Some("sustained external CPU pressure".into());
+        snapshot.budget.concurrency = 0;
+        snapshot.budget.batch_steps = 0;
+        snapshot.budget.network_requests = 1;
+    }
+    snapshot
+}
+
+pub(crate) fn budget(paused: bool) {
+    adaptive::publish(snapshot(paused));
 }

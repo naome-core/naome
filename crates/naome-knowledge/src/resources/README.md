@@ -94,6 +94,12 @@ subprocess probes have both output and wall-clock bounds and retain custody of
 a timed-out child until reaping is confirmed. One unreaped probe prevents more
 helpers from accumulating.
 
+The capacity table in `resources.rs` marks the fields that can form an
+`OperatingLimits` value. This private type exposes only active working sets;
+format, authority, durable allowance and custody ceilings remain on the installed
+`Limits`. Both representations derive their values from that same table, with
+no second configuration format or copied defaults.
+
 `operating.rs` projects the live budget onto local working sets. Caches share a
 conservative capacity-weighted target, including retained generations and program
 evaluators; mandatory small SQLite/codec buffers remain covered by the process

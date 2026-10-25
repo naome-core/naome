@@ -1,8 +1,43 @@
 //! One projection from the live budget to bounded local working sets. Capacity
 //! and format validation deliberately do not call this projection.
-use super::{Limits, adaptive::Budget};
+use super::{Limits, OperatingLimits, adaptive::Budget};
 
-pub(super) fn derive(capacity: &Limits, budget: &Budget) -> Limits {
+// The existing capacity table marks the work fields. Consume two entries per
+// step so the complete policy remains below Rust's default macro depth.
+macro_rules! operating_fields {
+    (@select [$($field:ident: $ty:ty;)*]) => {
+        /// Process-local working sets only; format, authority and custody
+        /// ceilings are available exclusively from the installed Limits.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub(crate) struct OperatingLimits { $(pub(crate) $field: $ty,)* }
+        impl OperatingLimits {
+            fn at_capacity(capacity: &Limits) -> Self {
+                Self { $($field: capacity.$field,)* }
+            }
+        }
+    };
+    (@select [$($selected:tt)*] work $a:ident: $ta:ty; work $b:ident: $tb:ty; $($rest:tt)*) => {
+        operating::operating_fields!(@select [$($selected)* $a: $ta; $b: $tb;] $($rest)*);
+    };
+    (@select [$($selected:tt)*] work $a:ident: $ta:ty; capacity $b:ident: $tb:ty; $($rest:tt)*) => {
+        operating::operating_fields!(@select [$($selected)* $a: $ta;] $($rest)*);
+    };
+    (@select [$($selected:tt)*] capacity $a:ident: $ta:ty; work $b:ident: $tb:ty; $($rest:tt)*) => {
+        operating::operating_fields!(@select [$($selected)* $b: $tb;] $($rest)*);
+    };
+    (@select [$($selected:tt)*] capacity $a:ident: $ta:ty; capacity $b:ident: $tb:ty; $($rest:tt)*) => {
+        operating::operating_fields!(@select [$($selected)*] $($rest)*);
+    };
+    (@select [$($selected:tt)*] work $a:ident: $ta:ty;) => {
+        operating::operating_fields!(@select [$($selected)* $a: $ta;]);
+    };
+    (@select [$($selected:tt)*] capacity $a:ident: $ta:ty;) => {
+        operating::operating_fields!(@select [$($selected)*]);
+    };
+}
+pub(super) use operating_fields;
+
+pub(super) fn derive(capacity: &Limits, budget: &Budget) -> OperatingLimits {
     derive_with_statistics(capacity, budget, super::feedback::statistics())
 }
 
@@ -10,8 +45,8 @@ pub(super) fn derive_with_statistics(
     capacity: &Limits,
     budget: &Budget,
     statistics: super::feedback::Statistics,
-) -> Limits {
-    let mut work = capacity.clone();
+) -> OperatingLimits {
+    let mut work = OperatingLimits::at_capacity(capacity);
     let memory = usize::try_from(budget.memory_bytes).unwrap_or(usize::MAX);
     let batch = budget.batch_steps.max(1);
     let slots = budget.concurrency.max(1);
@@ -39,13 +74,14 @@ pub(super) fn derive_with_statistics(
     pages!(
         pending_page,
         replay_page,
-        id_page,
-        inventory_page,
         status_page,
         question_page,
         terminal_job_page,
         compaction_records
     );
+    // ID and inventory pages are bounded metadata batches, not checker
+    // quanta. Keep them at configured size while respecting live memory.
+    work.id_page = capacity.id_page.min(memory / 32).max(1);
     macro_rules! queues { ($($field:ident),+ $(,)?) => { $(work.$field = capacity.$field.min(slots.saturating_add(batch));)+ }; }
     queues!(
         transport_events,
@@ -69,23 +105,19 @@ pub(super) fn derive_with_statistics(
         application_queries,
         dht_parallelism
     );
-    work.active_job_bytes = capacity.active_job_bytes.min(memory / 8).max(1);
-    work.batch_objects = capacity.batch_objects.min(batch).max(1);
-    work.batch_bytes = capacity.batch_bytes.min(memory / 8).max(1);
     work.compaction_bytes = capacity
         .compaction_bytes
         .min(memory / 8)
         .max(naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES);
-    work.fetches = capacity
-        .fetches
-        .min(batch.max(budget.network_requests))
+    // Wanted proof IDs are a bounded admission queue, not CPU work or
+    // simultaneous requests. Keep enough room for one configured inventory
+    // page; the shared adaptive request budget limits network concurrency.
+    work.fetches = capacity.fetches.min(memory / 512).max(1);
+    work.inventory_page = capacity
+        .inventory_page
+        .min(work.fetches)
+        .min(work.id_page)
         .max(1);
-    work.flights = capacity.flights.min(budget.network_requests);
-    work.flights_per_peer = capacity.flights_per_peer.min(work.flights.max(1));
-    work.exchange_streams = capacity.exchange_streams.min(work.flights.max(1));
-    work.inbound_streams = capacity
-        .inbound_streams
-        .min(work.flights.saturating_add(slots).max(1));
     let quantum = capacity.transport_busy_grace;
     let check_nanos = statistics.check.nanos / statistics.check.units.max(1);
     let compact_nanos = statistics.compact.nanos / statistics.compact.units.max(1);
@@ -145,7 +177,6 @@ pub(super) fn derive_with_statistics(
         .max(quantum);
     // Existing buffers/requests retain their admission. Smaller limits only
     // pace new work; callers must never truncate a retained row to fit them.
-    work.resident_jobs = capacity.resident_jobs;
     work
 }
 

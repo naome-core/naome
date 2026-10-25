@@ -13,7 +13,7 @@ extract_cargo_lints(
 rust_library(
     name = "naome_knowledge",
     # Cargo.toml is authoritative; the CI build contract checks this mirror.
-    version = "0.1.0",
+    version = "0.1.0-alpha.1",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
     compile_data = glob(

@@ -5,6 +5,10 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - docs/releases/**
       - .github/workflows/release*.yml
       - tools/release/**
       - tools/ci/test_release*.py

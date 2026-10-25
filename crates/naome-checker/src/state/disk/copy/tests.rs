@@ -188,7 +188,7 @@ fn partial_failed_and_unrelated_copies_cannot_supply_roots() {
             _ => {
                 // Damage a nested row only after the top-level maps were
                 // authenticated, so this specifically tests bucket work.
-                while cursor.phase < 9 {
+                while matches!(cursor.phase, Phase::Map(_)) {
                     cursor.advance(budget).unwrap();
                 }
                 let (_, record) = state.outgoing.entries().next().unwrap().unwrap();
@@ -217,4 +217,71 @@ fn partial_failed_and_unrelated_copies_cannot_supply_roots() {
     }
     let other = DiskArtifactState::new(Arc::new(MemoryStorage::default()));
     assert!(cursor.finish(&other).is_err());
+}
+
+#[test]
+fn graph_statement_membership_reads_are_part_of_each_copy_quantum() {
+    let (state, source) = populated();
+    let program = super::super::tests::checked_program(true);
+    let mut registration = state.begin_program_registration(&program).unwrap();
+    while !registration.complete() {
+        registration.advance(&program, 17).unwrap();
+    }
+    let state = registration.finish().unwrap();
+    assert!(maps(&state).iter().all(|map| map.root().is_some()));
+    // Entries and public bucket queries are independent of the copy cursor.
+    let expected = maps(&state).map(|map| map.entries().collect::<Result<Vec<_>, _>>().unwrap());
+    let mut buckets = Vec::new();
+    for kind in [
+        crate::context::BucketKind::Outgoing,
+        crate::context::BucketKind::Deductions,
+        crate::context::BucketKind::Instances,
+    ] {
+        for entry in state.index(kind).entries() {
+            let (target, _) = entry.unwrap();
+            let target = StatementId::from_bytes(target);
+            let expected = state
+                .bucket(kind, target)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            buckets.push((kind, target, expected));
+        }
+    }
+    let mut copy = state.begin_copy(Arc::new(MemoryStorage::default()));
+    let budget = DiskCopyBudget {
+        records: 1,
+        bytes: CHECKER_MAX_FORMULA_WORK_BYTES,
+    };
+    while !copy.complete() {
+        let before = observed(&source);
+        let work = copy.advance(budget).unwrap();
+        let after = observed(&source);
+        assert_eq!(
+            (after.0 - before.0, after.1 - before.1),
+            (work.records, work.bytes)
+        );
+        assert!(work.records <= budget.records && work.bytes <= budget.bytes);
+    }
+    let copied = copy.finish(&state).unwrap();
+    source.bytes.lock().unwrap().clear();
+    assert_eq!(
+        maps(&copied).map(|map| map.entries().collect::<Result<Vec<_>, _>>().unwrap()),
+        expected
+    );
+    for (kind, target, expected) in buckets {
+        assert_eq!(
+            copied
+                .bucket(kind, target)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            expected
+        );
+    }
+    assert!(
+        copied
+            .contains_proof(program.manifest().proof_id())
+            .unwrap()
+    );
 }

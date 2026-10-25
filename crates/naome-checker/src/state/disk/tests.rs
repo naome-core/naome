@@ -1,6 +1,8 @@
 use super::*;
+use crate::program::{CheckedProgram, Engine};
 use naome_foundation::ZfcAxiom;
-use naome_proof::ProofCertificate;
+use naome_proof::{ProofCertificate, program::Command};
+use rusqlite::Connection;
 use std::{collections::BTreeMap, sync::Mutex};
 
 #[derive(Default)]
@@ -140,4 +142,51 @@ fn copy_rejects_malformed_statement_records_and_formula_identity_corruption() {
                 .contains(&ContextError::Corrupt)
         );
     }
+}
+
+pub(super) fn checked_program(deep: bool) -> CheckedProgram {
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    if deep {
+        let mut root = engine
+            .append(&Command::Equal { left: 0, right: 0 })
+            .unwrap();
+        for _ in 0..300 {
+            root = engine
+                .append(&Command::Implies {
+                    antecedent: root,
+                    consequent: root,
+                })
+                .unwrap();
+        }
+        let theorem = engine
+            .append(&Command::Simplification {
+                antecedent: root,
+                consequent: root,
+            })
+            .unwrap();
+        let closed = engine
+            .append(&Command::Generalization {
+                premise: theorem,
+                variable: 0,
+            })
+            .unwrap();
+        engine.append(&Command::Seal { proof: closed }).unwrap();
+    } else {
+        engine
+            .append_group(&[
+                Command::Reflexivity { variable: 0 },
+                Command::Generalization {
+                    premise: 0,
+                    variable: 0,
+                },
+                Command::Seal { proof: 1 },
+            ])
+            .unwrap();
+    }
+    while engine
+        .advance(256, 32768, &crate::ArtifactState::new())
+        .unwrap()
+    {}
+    while !engine.prepare_export(256).unwrap() {}
+    engine.checked().unwrap()
 }

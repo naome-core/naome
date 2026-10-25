@@ -53,9 +53,9 @@ impl Default for ResourceProfile {
 // One table owns defaults, optional operator overrides and resolved limits.
 // Scaled fields follow process memory; fixed fields are per-operation defaults.
 macro_rules! resource_policy {
-    (scaled {$($scaled:ident: $sty:ty = $svalue:expr;)*}
-     fixed {$($fixed:ident: $fty:ty = $fvalue:expr;)*}
-     timers {$($timer:ident, $milliseconds:ident = $tvalue:expr;)*}) => {
+    (scaled {$($scaled_scope:ident $scaled:ident: $sty:ty = $svalue:expr;)*}
+     fixed {$($fixed_scope:ident $fixed:ident: $fty:ty = $fvalue:expr;)*}
+     timers {$($timer_scope:ident $timer:ident, $milliseconds:ident = $tvalue:expr;)*}) => {
         #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
         #[serde(default, deny_unknown_fields)]
         pub struct Tuning {
@@ -72,6 +72,12 @@ macro_rules! resource_policy {
             $(pub $scaled: $sty,)*
             $(pub $fixed: $fty,)*
             $(pub $timer: Duration,)*
+        }
+        operating::operating_fields! {
+            @select []
+            $($scaled_scope $scaled: $sty;)*
+            $($fixed_scope $fixed: $fty;)*
+            $($timer_scope $timer: Duration;)*
         }
         /// Reference defaults; all active allocations use limits().
         pub const DEFAULT: Limits = Limits {
@@ -106,150 +112,150 @@ macro_rules! resource_policy {
 }
 resource_policy! {
     scaled {
-        registry_index_cache_bytes: usize = 4 * 1024 * 1024;
-        checked_index_cache_bytes: usize = 4 * 1024 * 1024;
-        checkpoint_cache_bytes: usize = 2 * 1024 * 1024;
-        catalog_cache_bytes: usize = 8 * 1024 * 1024;
-        pending_page: usize = 128;
-        checked_cache_bytes: usize = 32 * 1024 * 1024;
-        batch_objects: usize = 4096;
-        batch_bytes: usize = 64 * 1024 * 1024;
-        replay_page: usize = 64;
-        id_page: usize = 128;
-        configured_peers: usize = 16;
-        network_config_bytes: usize = 524_288;
-        fetches: usize = 128;
-        flights: usize = 16;
-        flights_per_peer: usize = 2;
-        command_bytes: usize = 524_288;
-        inventory_page: usize = 64;
-        status_page: usize = 64;
-        transport_events: usize = 64;
-        contacts: usize = 16;
-        addresses_per_contact: usize = 4;
-        application_queries: usize = 2;
-        dht_parallelism: usize = 2;
-        dht_replication: usize = 8;
-        dht_bucket_size: usize = 8;
-        discovery_interfaces:usize = 8;
-        bootstrap_peers: usize = 4;
-        relay_peers: usize = 2;
-        relay_circuits: usize = 16;
-        relay_reservations: usize = 16;
-        relay_circuits_per_peer: usize = 4;
-        queued_metadata: usize = 8;
-        closure_objects: usize = 128;
-        closure_bytes: usize = 512 * 1024;
-        closure_steps: usize = 4096;
-        interest_decisions: usize = 4;
-        question_page: usize = 128;
-        question_commands: usize = 8;
-        finding_admissions: usize = 4;
-        job_commands: usize = 32;
-        active_job_bytes: usize = 32 * 1024 * 1024;
-        queued_jobs_per_role: usize = 8;
-        terminal_job_page: usize = 32;
-        provider_stream_bytes: usize = 4 * 1024 * 1024;
+        work registry_index_cache_bytes: usize = 4 * 1024 * 1024;
+        work checked_index_cache_bytes: usize = 4 * 1024 * 1024;
+        work checkpoint_cache_bytes: usize = 2 * 1024 * 1024;
+        work catalog_cache_bytes: usize = 8 * 1024 * 1024;
+        work pending_page: usize = 128;
+        work checked_cache_bytes: usize = 32 * 1024 * 1024;
+        capacity batch_objects: usize = 4096;
+        capacity batch_bytes: usize = 64 * 1024 * 1024;
+        work replay_page: usize = 64;
+        work id_page: usize = 128;
+        capacity configured_peers: usize = 16;
+        capacity network_config_bytes: usize = 524_288;
+        work fetches: usize = 128;
+        capacity flights: usize = 16;
+        capacity flights_per_peer: usize = 2;
+        capacity command_bytes: usize = 524_288;
+        work inventory_page: usize = 64;
+        work status_page: usize = 64;
+        work transport_events: usize = 64;
+        capacity contacts: usize = 16;
+        capacity addresses_per_contact: usize = 4;
+        work application_queries: usize = 2;
+        work dht_parallelism: usize = 2;
+        capacity dht_replication: usize = 8;
+        capacity dht_bucket_size: usize = 8;
+        capacity discovery_interfaces:usize = 8;
+        capacity bootstrap_peers: usize = 4;
+        capacity relay_peers: usize = 2;
+        capacity relay_circuits: usize = 16;
+        capacity relay_reservations: usize = 16;
+        capacity relay_circuits_per_peer: usize = 4;
+        work queued_metadata: usize = 8;
+        capacity closure_objects: usize = 128;
+        capacity closure_bytes: usize = 512 * 1024;
+        capacity closure_steps: usize = 4096;
+        work interest_decisions: usize = 4;
+        work question_page: usize = 128;
+        work question_commands: usize = 8;
+        work finding_admissions: usize = 4;
+        work job_commands: usize = 32;
+        capacity active_job_bytes: usize = 32 * 1024 * 1024;
+        work queued_jobs_per_role: usize = 8;
+        work terminal_job_page: usize = 32;
+        capacity provider_stream_bytes: usize = 4 * 1024 * 1024;
     }
     fixed {
-        disk_reserve_bytes: u64 = 128 * 1024 * 1024;
-        diagnostic_bytes: usize = 4096;
-        dht_packet_bytes: usize = 4096;
-        relay_request_burst: usize = 4;
-        relay_reservations_per_peer: usize = 1;
-        failure_detail_bytes: usize = 512;
-        supervisor_commands: usize = 8;
-        provider_events: usize = 16;
-        developer_objects: usize = 8;
-        developer_questions: usize = 128;
-        retained_generations: usize = 4;
-        compaction_bytes: usize = naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
-        compaction_records: usize = 128;
-        checker_cache_bytes: usize = 2 * 1024 * 1024;
-        question_cache_bytes: usize = 256 * 1024;
-        checker_cache_entries: usize = 64;
-        owner_text_bytes: usize = 1024;
-        request_burst: usize = 8;
-        wanted_attempts: usize = 16;
-        gossip_packet_bytes: usize = 1024;
-        producer_bytes: usize = 65_536;
-        producer_sources: usize = 32;
-        exchange_streams: usize = 4;
-        inbound_streams: usize = 16;
-        identify_protocol_bytes: usize = 256;
-        identify_protocols: usize = 32;
-        identify_addresses: usize = 16;
-        replay_guard_bytes: usize = 384 * 1024 * 1024;
-        upgrade_connections_per_peer: u32 = 3;
-        connections_per_peer: u32 = 2;
-        established_connections: u32 = 32;
-        pending_connections: u32 = 16;
-        cli_commands: usize = 8;
-        control_clients: usize = 8;
-        inbound_frames: usize = 32;
-        proof_bytes: usize = 65_536;
-        proof_dependencies: usize = 32;
-        address_bytes: usize = 512;
-        relay_circuit_bytes: u64 = 8 * 1024 * 1024;
-        closure_work_bytes: usize = 128 * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
-        solving_jobs: usize = 2;
-        publications: usize = 4;
-        publication_retries: u32 = 8;
-        waiters_per_job: usize = 4;
-        log_segment_bytes: u64 = 1024 * 1024;
-        assessment_formula_nodes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_nodes;
-        assessment_dependencies:usize = naome_checker::question::AssessmentLimits::MAXIMUM.dependencies;
-        assessment_operations:usize = naome_checker::question::AssessmentLimits::MAXIMUM.operations;
-        assessment_work_bytes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_work_bytes;
-        assessment_certificate_steps:usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_steps;
-        assessment_certificate_bytes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_bytes;
-        job_work_units:u32 = 4096;
+        capacity disk_reserve_bytes: u64 = 128 * 1024 * 1024;
+        capacity diagnostic_bytes: usize = 4096;
+        capacity dht_packet_bytes: usize = 4096;
+        capacity relay_request_burst: usize = 4;
+        capacity relay_reservations_per_peer: usize = 1;
+        capacity failure_detail_bytes: usize = 512;
+        work supervisor_commands: usize = 8;
+        work provider_events: usize = 16;
+        capacity developer_objects: usize = 8;
+        capacity developer_questions: usize = 128;
+        capacity retained_generations: usize = 4;
+        work compaction_bytes: usize = naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
+        work compaction_records: usize = 128;
+        work checker_cache_bytes: usize = 2 * 1024 * 1024;
+        work question_cache_bytes: usize = 256 * 1024;
+        work checker_cache_entries: usize = 64;
+        capacity owner_text_bytes: usize = 1024;
+        capacity request_burst: usize = 8;
+        capacity wanted_attempts: usize = 16;
+        capacity gossip_packet_bytes: usize = 1024;
+        capacity producer_bytes: usize = 65_536;
+        capacity producer_sources: usize = 32;
+        capacity exchange_streams: usize = 4;
+        capacity inbound_streams: usize = 16;
+        capacity identify_protocol_bytes: usize = 256;
+        capacity identify_protocols: usize = 32;
+        capacity identify_addresses: usize = 16;
+        capacity replay_guard_bytes: usize = 384 * 1024 * 1024;
+        capacity upgrade_connections_per_peer: u32 = 3;
+        capacity connections_per_peer: u32 = 2;
+        capacity established_connections: u32 = 32;
+        capacity pending_connections: u32 = 16;
+        work cli_commands: usize = 8;
+        work control_clients: usize = 8;
+        work inbound_frames: usize = 32;
+        capacity proof_bytes: usize = 65_536;
+        capacity proof_dependencies: usize = 32;
+        capacity address_bytes: usize = 512;
+        capacity relay_circuit_bytes: u64 = 8 * 1024 * 1024;
+        capacity closure_work_bytes: usize = 128 * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
+        work solving_jobs: usize = 2;
+        work publications: usize = 4;
+        capacity publication_retries: u32 = 8;
+        work waiters_per_job: usize = 4;
+        capacity log_segment_bytes: u64 = 1024 * 1024;
+        capacity assessment_formula_nodes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_nodes;
+        capacity assessment_dependencies:usize = naome_checker::question::AssessmentLimits::MAXIMUM.dependencies;
+        capacity assessment_operations:usize = naome_checker::question::AssessmentLimits::MAXIMUM.operations;
+        capacity assessment_work_bytes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.formula_work_bytes;
+        capacity assessment_certificate_steps:usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_steps;
+        capacity assessment_certificate_bytes:usize = naome_checker::question::AssessmentLimits::MAXIMUM.certificate_bytes;
+        capacity job_work_units:u32 = 4096;
     }
     timers {
-        transport_busy_grace, transport_busy_grace_ms = Duration::from_millis(10);
-        custody_poll_interval, custody_poll_interval_ms = Duration::from_millis(10);
-        replay_guard_timeout, replay_guard_timeout_ms = Duration::from_secs(1800);
-        replay_guard_freshness, replay_guard_freshness_ms = Duration::from_secs(2);
-        finding_interval, finding_interval_ms = Duration::from_secs(5);
-        solving_interval, solving_interval_ms = Duration::from_secs(1);
-        job_horizon, job_horizon_ms = Duration::from_secs(24*60*60);
-        request_rate_window, request_rate_window_ms = Duration::from_secs(1);
-        relay_rate_window, relay_rate_window_ms = Duration::from_secs(2);
-        publication_backoff, publication_backoff_ms = Duration::from_secs(1);
-        lifecycle_poll_interval, lifecycle_poll_interval_ms = Duration::from_millis(50);
-        lifecycle_abort_timeout, lifecycle_abort_timeout_ms = Duration::from_secs(10);
-        detach_poll_interval, detach_poll_interval_ms = Duration::from_millis(5);
-        detach_confirm_timeout, detach_confirm_timeout_ms = Duration::from_millis(150);
-        cleanup_poll_interval, cleanup_poll_interval_ms = Duration::from_millis(20);
-        supervisor_cleanup_timeout, supervisor_cleanup_timeout_ms = Duration::from_secs(1);
-        supervisor_poll_interval, supervisor_poll_interval_ms = Duration::from_millis(50);
-        provider_drain_timeout, provider_drain_timeout_ms = Duration::from_secs(3);
-        provider_announce_interval, provider_announce_interval_ms = Duration::from_secs(10);
-        profile_poll_interval, profile_poll_interval_ms = Duration::from_secs(1);
-        production_interval, production_interval_ms = Duration::from_secs(1);
-        gossip_heartbeat, gossip_heartbeat_ms = Duration::from_secs(1);
-        idle_connection_timeout, idle_connection_timeout_ms = Duration::from_secs(60);
-        job_flush_interval, job_flush_interval_ms = Duration::from_secs(30);
-        job_tick_interval, job_tick_interval_ms = Duration::from_secs(1);
-        tick_interval, tick_interval_ms = Duration::from_millis(250);
-        sqlite_busy_timeout, sqlite_busy_timeout_ms = Duration::from_millis(100);
-        pending_retry, pending_retry_ms = Duration::from_secs(30);
-        request_timeout, request_timeout_ms = Duration::from_secs(5);
-        reconcile_interval, reconcile_interval_ms = Duration::from_secs(2);
-        automatic_request_interval, automatic_request_interval_ms = Duration::from_millis(150);
-        contact_ttl, contact_ttl_ms = Duration::from_secs(30);
-        identify_timeout, identify_timeout_ms = Duration::from_secs(10);
-        discovery_interval, discovery_interval_ms = Duration::from_secs(5);
-        query_timeout, query_timeout_ms = Duration::from_secs(10);
-        provider_ttl, provider_ttl_ms = Duration::from_secs(30);
-        mdns_ttl, mdns_ttl_ms = Duration::from_secs(20);
-        relay_circuit_duration, relay_circuit_duration_ms = Duration::from_secs(120);
-        root_timeout, root_timeout_ms = Duration::from_secs(60);
-        interest_timeout, interest_timeout_ms = Duration::from_secs(30);
-        control_timeout, control_timeout_ms = Duration::from_secs(2);
-        control_request_timeout, control_request_timeout_ms = Duration::from_secs(1);
-        lifecycle_timeout, lifecycle_timeout_ms = Duration::from_secs(15);
-        startup_timeout, startup_timeout_ms = Duration::from_secs(1800);
+        capacity transport_busy_grace, transport_busy_grace_ms = Duration::from_millis(10);
+        capacity custody_poll_interval, custody_poll_interval_ms = Duration::from_millis(10);
+        capacity replay_guard_timeout, replay_guard_timeout_ms = Duration::from_secs(1800);
+        capacity replay_guard_freshness, replay_guard_freshness_ms = Duration::from_secs(2);
+        work finding_interval, finding_interval_ms = Duration::from_secs(5);
+        work solving_interval, solving_interval_ms = Duration::from_secs(1);
+        capacity job_horizon, job_horizon_ms = Duration::from_secs(24*60*60);
+        capacity request_rate_window, request_rate_window_ms = Duration::from_secs(1);
+        capacity relay_rate_window, relay_rate_window_ms = Duration::from_secs(2);
+        capacity publication_backoff, publication_backoff_ms = Duration::from_secs(1);
+        capacity lifecycle_poll_interval, lifecycle_poll_interval_ms = Duration::from_millis(50);
+        capacity lifecycle_abort_timeout, lifecycle_abort_timeout_ms = Duration::from_secs(10);
+        capacity detach_poll_interval, detach_poll_interval_ms = Duration::from_millis(5);
+        capacity detach_confirm_timeout, detach_confirm_timeout_ms = Duration::from_millis(150);
+        capacity cleanup_poll_interval, cleanup_poll_interval_ms = Duration::from_millis(20);
+        capacity supervisor_cleanup_timeout, supervisor_cleanup_timeout_ms = Duration::from_secs(1);
+        capacity supervisor_poll_interval, supervisor_poll_interval_ms = Duration::from_millis(50);
+        capacity provider_drain_timeout, provider_drain_timeout_ms = Duration::from_secs(3);
+        capacity provider_announce_interval, provider_announce_interval_ms = Duration::from_secs(10);
+        capacity profile_poll_interval, profile_poll_interval_ms = Duration::from_secs(1);
+        work production_interval, production_interval_ms = Duration::from_secs(1);
+        capacity gossip_heartbeat, gossip_heartbeat_ms = Duration::from_secs(1);
+        capacity idle_connection_timeout, idle_connection_timeout_ms = Duration::from_secs(60);
+        capacity job_flush_interval, job_flush_interval_ms = Duration::from_secs(30);
+        work job_tick_interval, job_tick_interval_ms = Duration::from_secs(1);
+        work tick_interval, tick_interval_ms = Duration::from_millis(250);
+        capacity sqlite_busy_timeout, sqlite_busy_timeout_ms = Duration::from_millis(100);
+        capacity pending_retry, pending_retry_ms = Duration::from_secs(30);
+        capacity request_timeout, request_timeout_ms = Duration::from_secs(5);
+        capacity reconcile_interval, reconcile_interval_ms = Duration::from_secs(2);
+        capacity automatic_request_interval, automatic_request_interval_ms = Duration::from_millis(150);
+        capacity contact_ttl, contact_ttl_ms = Duration::from_secs(30);
+        capacity identify_timeout, identify_timeout_ms = Duration::from_secs(10);
+        capacity discovery_interval, discovery_interval_ms = Duration::from_secs(5);
+        capacity query_timeout, query_timeout_ms = Duration::from_secs(10);
+        capacity provider_ttl, provider_ttl_ms = Duration::from_secs(30);
+        capacity mdns_ttl, mdns_ttl_ms = Duration::from_secs(20);
+        capacity relay_circuit_duration, relay_circuit_duration_ms = Duration::from_secs(120);
+        capacity root_timeout, root_timeout_ms = Duration::from_secs(60);
+        capacity interest_timeout, interest_timeout_ms = Duration::from_secs(30);
+        capacity control_timeout, control_timeout_ms = Duration::from_secs(2);
+        capacity control_request_timeout, control_request_timeout_ms = Duration::from_secs(1);
+        capacity lifecycle_timeout, lifecycle_timeout_ms = Duration::from_secs(15);
+        capacity startup_timeout, startup_timeout_ms = Duration::from_secs(1800);
     }
 }
 static LIMITS: OnceLock<Limits> = OnceLock::new();
@@ -359,7 +365,7 @@ fn initialize(directory: &std::path::Path) -> Result<&'static Limits, String> {
 
 /// Live work admission below the installed capacity. Stored formats, external
 /// custody and already admitted leases always use their owning fixed contracts.
-pub(crate) fn active_limits() -> Arc<Limits> {
+pub(crate) fn active_limits() -> Arc<OperatingLimits> {
     adaptive::operating_limits()
 }
 
@@ -859,4 +865,4 @@ pub fn memory_usage() -> (usize, usize) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

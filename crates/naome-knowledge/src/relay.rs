@@ -1,7 +1,10 @@
 //! Operator-run relay infrastructure. This service routes encrypted circuits
 //! and discovery hints; it neither owns a proof graph nor checks/adopts proofs.
 
-use crate::{discovery, network};
+use crate::{
+    discovery, network,
+    quota::{Quota, Rate},
+};
 use libp2p::{
     Multiaddr, PeerId, SwarmBuilder, connection_limits,
     futures::StreamExt,
@@ -41,25 +44,23 @@ struct Behaviour {
 fn rate_limiter() -> Box<dyn relay::RateLimiter> {
     // The default library limiter retains one bucket per historical identity.
     // Use an explicit count and short finite window for this bounded service.
-    let buckets = Arc::new(Mutex::new(BTreeMap::<PeerId, (Instant, usize)>::new()));
+    let buckets = Arc::new(Mutex::new(BTreeMap::<PeerId, Quota>::new()));
+    let rate = Rate {
+        burst: crate::resources::limits().relay_request_burst,
+        period: crate::resources::limits().relay_rate_window,
+    };
     Box::new(move |peer, _: &Multiaddr, now: Instant| {
         let mut buckets = buckets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        buckets.retain(|_, (since, _)| {
-            now.duration_since(*since) < crate::resources::limits().relay_rate_window
-        });
+        buckets.retain(|_, quota| !quota.expired(now, rate));
         if buckets.len() >= crate::resources::limits().contacts && !buckets.contains_key(&peer) {
             return false;
         }
-        let (_, tokens) = buckets
+        buckets
             .entry(peer)
-            .or_insert((now, crate::resources::limits().relay_request_burst));
-        if *tokens == 0 {
-            return false;
-        }
-        *tokens -= 1;
-        true
+            .or_insert_with(|| Quota::new(now))
+            .try_take(now, rate)
     })
 }
 

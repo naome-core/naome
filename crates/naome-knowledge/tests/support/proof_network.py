@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import socket
@@ -217,6 +218,7 @@ class Node:
     def __init__(self, driver, index, directory, identity, port):
         self.driver, self.index, self.directory = driver, index, directory
         self.identity, self.port = identity, port
+        self.resource_config = None
         self.process = None
         self.events, self.responses = [], {}
         self.condition = threading.Condition()
@@ -251,8 +253,11 @@ class Node:
             interest_path.write_text(json.dumps({"questions": interest}, indent=2) + "\n")
             command.extend(["--question-interest-file", str(interest_path)])
             selector = {"kind": "exact-questions", "file_sha256": digest(interest_path), "count": len(interest)}
+        env = os.environ.copy()
+        if self.resource_config is not None:
+            env["NAOME_RESOURCE_CONFIG"] = str(self.resource_config)
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE if command_input else subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, text=True, bufsize=1)
+                                        stderr=subprocess.PIPE, text=True, bufsize=1, env=env)
         self.driver.summary["commands"].append({"command": command, "pid": self.process.pid})
         self.driver.summary["processes"].append({"node": self.index, "generation": self.generation,
                                                "pid": self.process.pid, "peer_id": self.identity,
@@ -510,6 +515,15 @@ class Driver:
         reservations = []
         try:
             self.summary["node_count"] = 2
+            # Keep the ten-page protocol scenario stable across hardware
+            # calibrations. The default capacity advertises 64 IDs per page.
+            resource_config = self.output / "inventory-resource-config.json"
+            resource_config.write_text(json.dumps({
+                "version": 1,
+                "memory_bytes": 512 * 1024 * 1024,
+                "workers": [1, 2, 2, 2],
+                "tuning": {"id_page": 128, "inventory_page": 64, "fetches": 128},
+            }, indent=2) + "\n")
             for index in range(2):
                 directory = self.output / f"node-{index}"
                 identity = self.init_identity(directory)
@@ -517,6 +531,7 @@ class Driver:
                 reservation.bind(("127.0.0.1", 0))
                 reservations.append(reservation)
                 self.nodes.append(Node(self, index, directory, identity, reservation.getsockname()[1]))
+                self.nodes[-1].resource_config = resource_config
             reservations[0].close()
             self.nodes[0].start()
             self.nodes[0].command("links", peers=[])
