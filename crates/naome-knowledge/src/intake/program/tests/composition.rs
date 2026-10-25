@@ -1,5 +1,7 @@
 use super::*;
-use crate::{network, object::ProofTransfer};
+#[cfg(feature = "system-tests")]
+use crate::network;
+use crate::object::ProofTransfer;
 use std::{path::PathBuf, sync::atomic::AtomicU64};
 
 struct Directory(PathBuf);
@@ -120,8 +122,25 @@ async fn program_root_fetches_large_lemmas_and_publishes_the_whole_checked_closu
     let sender = Directory::new();
     let receiver = Directory::new();
     let (source, manifests, metadata) = populated(&sender.0);
-    let root = manifests[2].proof_id();
-    let mut graph = Graph::open(&receiver.0).unwrap();
+    receive(
+        &source,
+        &receiver.0,
+        metadata,
+        manifests.iter().map(Manifest::proof_id).collect(),
+        2,
+    )
+    .await;
+}
+
+async fn receive(
+    source: &Graph,
+    directory: &std::path::Path,
+    metadata: ProgramMetadata,
+    expected: BTreeSet<ProofId>,
+    depth: usize,
+) {
+    let root = metadata.manifest.proof_id();
+    let mut graph = Graph::open(directory).unwrap();
     let mut questions = LocalQuestions::new(Some(accepting as fn(_) -> _));
     let peer = PeerId::random();
     let mut intake = Intake::default();
@@ -162,6 +181,7 @@ async fn program_root_fetches_large_lemmas_and_publishes_the_whole_checked_closu
                     .enqueue_program_helper(peer, root, metadata, &graph)
                     .unwrap(),
                 ProofTransfer::Certificate(object) => {
+                    fetched.insert(id);
                     intake.payload(peer, root, id, object, &graph).unwrap()
                 }
             }
@@ -184,7 +204,6 @@ async fn program_root_fetches_large_lemmas_and_publishes_the_whole_checked_closu
                 .unwrap();
         }
     }
-    let expected: BTreeSet<_> = manifests.iter().map(Manifest::proof_id).collect();
     assert_eq!(
         accepted
             .expect("finite compositional checking must finish")
@@ -199,12 +218,12 @@ async fn program_root_fetches_large_lemmas_and_publishes_the_whole_checked_closu
             .checked_context()
             .proof_dependency_depth(root)
             .unwrap(),
-        Some(2)
+        Some(depth)
     );
     let content_root = graph.content_root();
     drop(intake);
     drop(graph);
-    let replayed = Graph::open(&receiver.0).unwrap();
+    let replayed = Graph::open(directory).unwrap();
     assert_eq!(replayed.content_root(), content_root);
     assert_eq!(
         replayed.ids().into_iter().collect::<BTreeSet<_>>(),
@@ -215,8 +234,89 @@ async fn program_root_fetches_large_lemmas_and_publishes_the_whole_checked_closu
             .checked_context()
             .proof_dependency_depth(root)
             .unwrap(),
-        Some(2)
+        Some(depth)
     );
+}
+
+#[tokio::test]
+async fn program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_private_closure() {
+    const CASE: &str = "intake::program::tests::composition::program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_private_closure";
+    if isolated(CASE) {
+        return;
+    }
+    let sender = Directory::new();
+    let receiver = Directory::new();
+    let mut source = Graph::open(&sender.0).unwrap();
+    let (_, admission) = source
+        .produce("goal=all(x0,eq(x0,x0)) proof: p0=refl(x0) p1=gen(p0,x0) return p1")
+        .unwrap();
+    assert_eq!(admission.status, "accepted");
+    let certificate = admission.id;
+    let mut work =
+        crate::proof_work::Work::open(&sender.0.join("mixed-implication.sqlite3")).unwrap();
+    work.append_group(&[
+        Command::Equal { left: 0, right: 0 },
+        Command::Separation {
+            predicate: 0,
+            element: 0,
+            source: 1,
+            result: 2,
+        },
+        Command::ProofReference {
+            proof_id: *certificate.as_bytes(),
+        },
+        Command::Simplification {
+            antecedent: 1,
+            consequent: 2,
+        },
+        Command::ModusPonens {
+            premise: 1,
+            implication: 3,
+        },
+        Command::Seal { proof: 4 },
+    ])
+    .unwrap();
+    while work.advance(&budget(), source.checked_context()).unwrap() {}
+    while !work.prepare_export(&budget()).unwrap() {}
+    let proof = work.into_checked().unwrap();
+    let implication = proof.proof().unwrap().manifest().proof_id();
+    publish(&mut source, &proof);
+    drop(proof);
+    let mut work =
+        crate::proof_work::Work::open(&sender.0.join("mixed-composition.sqlite3")).unwrap();
+    work.append_group(&[
+        Command::ProofReference {
+            proof_id: *certificate.as_bytes(),
+        },
+        Command::ProofReference {
+            proof_id: *implication.as_bytes(),
+        },
+        Command::ModusPonens {
+            premise: 0,
+            implication: 1,
+        },
+        Command::Seal { proof: 2 },
+    ])
+    .unwrap();
+    while work.advance(&budget(), source.checked_context()).unwrap() {}
+    while !work.prepare_export(&budget()).unwrap() {}
+    let proof = work.into_checked().unwrap();
+    let root = proof.proof().unwrap().manifest().proof_id();
+    publish(&mut source, &proof);
+    drop(proof);
+    let crate::object::ProofDescription::Program(metadata) =
+        source.description(root).unwrap().unwrap()
+    else {
+        panic!("program root description");
+    };
+    receive(
+        &source,
+        &receiver.0,
+        metadata,
+        [certificate, implication, root].into_iter().collect(),
+        3,
+    )
+    .await;
 }
 
 #[cfg(feature = "system-tests")]
