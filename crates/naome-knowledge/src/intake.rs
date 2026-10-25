@@ -2,7 +2,7 @@
 use crate::{
     Envelope, Graph,
     graph::CheckedBatch,
-    object::{Candidate, Metadata, id_bytes},
+    object::Metadata,
     question::{FormalContext, LocalQuestions, QuestionAssessment},
 };
 use libp2p::PeerId;
@@ -19,8 +19,12 @@ use std::{
 use tokio::sync::oneshot;
 
 mod certificate;
+mod closure;
+use closure::Closure;
 mod managed;
 mod program;
+mod selection;
+use selection::{Selection, SelectionStage};
 mod transfer;
 use transfer::TransferGrant;
 #[cfg(test)]
@@ -34,40 +38,23 @@ struct Description {
 }
 
 enum Phase {
-    Initial(oneshot::Receiver<QuestionAssessment>),
+    Initial,
     Fetch,
-    Final(oneshot::Receiver<QuestionAssessment>, Box<CheckedBatch>),
+    Final(Box<CheckedBatch>),
 }
 
 /// Private grant binds a root, peer, derived source and selected original
 /// question to the complete local assessment, positive interest and lifetime.
 struct ApprovedRoot {
     description: Description,
-    question: CompiledQuestion,
-    initial: Option<QuestionAssessment>,
+    selection: Selection,
     phase: Phase,
-    needed: BTreeSet<ProofId>,
-    staged: BTreeMap<ProofId, Candidate>,
-    helpers: program::Helpers,
-    bytes: usize,
-    steps: usize,
-    checker_work: usize,
-    final_assessment: Option<QuestionAssessment>,
+    closure: Closure,
 }
 
 impl ApprovedRoot {
     fn fetching(&self) -> bool {
-        matches!(self.phase, Phase::Fetch) && self.initial.is_some()
-    }
-    fn member_count(&self) -> usize {
-        self.staged
-            .keys()
-            .copied()
-            .chain(self.needed.iter().copied())
-            .chain(self.helpers.members())
-            .chain(std::iter::once(self.description.transfer.root()))
-            .collect::<BTreeSet<_>>()
-            .len()
+        matches!(self.phase, Phase::Fetch) && self.selection.ready(SelectionStage::Initial)
     }
 }
 
@@ -105,10 +92,10 @@ impl Intake {
         }
         self.active
             .as_ref()
-            .is_some_and(|root| root.needed.is_empty())
+            .is_some_and(|root| root.closure.needed().next().is_none())
             || self.waiting.iter().any(|w| match &w.phase {
-                managed::Phase::Initial(reply) | managed::Phase::Final { reply, .. } => {
-                    !reply.is_empty()
+                managed::Phase::Initial | managed::Phase::Final { .. } => {
+                    w.selection.boundary_ready()
                 }
                 managed::Phase::Refresh { ready, .. } => *ready,
             })
@@ -141,7 +128,7 @@ impl Intake {
         peer: PeerId,
         metadata: Metadata,
         graph: &Graph,
-    ) -> Result<&'static str, String> {
+    ) -> Result<&'static str, crate::Error> {
         self.enqueue_with_grant(peer, metadata, graph, None)
     }
     pub(crate) fn enqueue_with_grant(
@@ -150,14 +137,14 @@ impl Intake {
         metadata: Metadata,
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
-    ) -> Result<&'static str, String> {
+    ) -> Result<&'static str, crate::Error> {
         let (id, statement, question) = metadata.compile()?;
         if graph.contains(id)? {
             return Ok("duplicate");
         }
         if let Some(root) = &mut self.active
             && root.description.transfer.root() == id
-            && !root.helpers.is_empty()
+            && root.closure.has_programs()
         {
             if root.description.statement != statement || root.description.question != question {
                 return Err("refreshed parent metadata differs".into());
@@ -220,13 +207,8 @@ impl Intake {
                 matches!(root.phase, Phase::Fetch) && root.description.transfer.live(Instant::now())
             })
             .map(|root| {
-                root.needed
-                    .iter()
-                    .copied()
-                    .filter(|id| !root.helpers.contains(*id))
-                    .chain(root.helpers.needed())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
+                root.closure
+                    .needed()
                     .map(|id| {
                         (
                             root.description.transfer.peer(),
@@ -250,9 +232,7 @@ impl Intake {
                         .description
                         .transfer
                         .authorizes(peer, root_id, Instant::now())
-                    && (root.needed.contains(&id)
-                        || root.helpers.needs(id)
-                        || root.helpers.contains(id))
+                    && (root.closure.needs(id) || root.closure.contains(id))
             })
     }
 
@@ -280,54 +260,8 @@ impl Intake {
             return Err("unrequested proof payload".into());
         }
         let root = self.active.as_mut().ok_or("unrequested proof payload")?;
-        let (bytes, steps) = certificate::resources(&object)?;
-        let (helper_count, helper_bytes, helper_steps) = root.helpers.certificate_usage();
-        if root.staged.len() + helper_count >= crate::resources::limits().closure_objects
-            || root.bytes + helper_bytes + bytes > crate::resources::limits().closure_bytes
-            || root.checker_work
-                + (helper_count + 1) * naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES
-                > crate::resources::limits().closure_work_bytes
-        {
-            return Err("staged closure resource capacity".into());
-        }
-        if root.steps + helper_steps + steps > crate::resources::limits().closure_steps {
-            return Err("staged closure step work limit".into());
-        }
-        if root.helpers.needs(expected) {
-            return root.helpers.certificate_payload(expected, object, graph);
-        }
-        if !root.description.transfer.live(Instant::now()) {
-            return Err("expired proof fetch grant".into());
-        }
-        if !root.needed.contains(&expected) || id_bytes(&object.proof_id)? != *expected.as_bytes() {
-            return Err("unrequested or mismatched proof payload".into());
-        }
-        // The shared certificate header charge precedes decoding and allocation.
-        let candidate = object.prepare()?;
-        if !root.description.transfer.live(Instant::now()) {
-            return Err("expired proof staging grant".into());
-        }
-        if candidate.id == root_id && candidate.statement != root.description.statement {
-            return Err("root statement differs from approved metadata".into());
-        }
-        root.bytes += bytes;
-        root.steps += steps;
-        root.checker_work += naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
-        root.needed.remove(&expected);
-        for dependency in &candidate.dependencies {
-            if !graph.contains(*dependency)?
-                && !root.staged.contains_key(dependency)
-                && !root.helpers.contains(*dependency)
-                && *dependency != expected
-            {
-                root.needed.insert(*dependency);
-            }
-        }
-        root.staged.insert(expected, candidate);
-        if root.member_count() > crate::resources::limits().closure_objects {
-            return Err("staged closure dependency capacity".into());
-        }
-        Ok(())
+        root.closure
+            .certificate_payload(expected, object, graph, &root.description.transfer)
     }
 
     pub(crate) fn abort(&mut self, root_id: ProofId) {
@@ -367,11 +301,9 @@ impl Intake {
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
     {
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|root| root.member_count() > crate::resources::limits().closure_objects)
-        {
+        if self.active.as_ref().is_some_and(|root| {
+            root.closure.member_count() > crate::resources::limits().closure_objects
+        }) {
             let root = self.active.take().expect("overloaded closure");
             return Progress::Skipped(
                 root.description.transfer.root(),
@@ -407,23 +339,22 @@ impl Intake {
                     "queued root intake deadline".into(),
                 );
             }
-            let (question, receiver) = questions.begin_exchange(
+            let mut selection =
+                Selection::new(description.transfer.root(), description.question.clone());
+            let started = selection.begin(
+                SelectionStage::Initial,
                 graph,
-                description.question.clone(),
+                questions,
                 description.transfer.deadline(),
             );
+            if let Err(error) = started {
+                return Progress::Skipped(description.transfer.root(), error);
+            }
             self.active = Some(ApprovedRoot {
+                closure: Closure::new(description.transfer.root(), Some(description.statement)),
                 description,
-                question,
-                initial: None,
-                phase: Phase::Initial(receiver),
-                needed: BTreeSet::new(),
-                staged: BTreeMap::new(),
-                helpers: program::Helpers::default(),
-                bytes: 0,
-                steps: 0,
-                checker_work: 0,
-                final_assessment: None,
+                selection,
+                phase: Phase::Initial,
             });
         }
         let Some(mut root) = self.active.take() else {
@@ -432,7 +363,7 @@ impl Intake {
         let id = root.description.transfer.root();
         let operation = (|| -> Result<Option<Vec<ProofId>>, crate::Error> {
             if !root.description.transfer.live(now) {
-                if root.helpers.is_empty() {
+                if !root.closure.has_programs() {
                     return Err("root intake deadline".into());
                 } else {
                     return Ok(None);
@@ -440,93 +371,60 @@ impl Intake {
             }
             if matches!(root.phase, Phase::Fetch)
                 && root
-                    .initial
-                    .as_ref()
+                    .selection
+                    .selected()
                     .is_some_and(|assessment| assessment.formal_context() != context)
             {
-                let current = questions.refresh_exchange(
-                    graph,
-                    &root.question,
-                    root.initial.as_ref().expect("approved root"),
-                )?;
-                root.initial = Some(current);
+                root.selection.prepare(graph, questions)?;
             }
             match &mut root.phase {
-                Phase::Initial(receiver) => match receiver.try_recv() {
-                    Ok(assessment) => {
-                        if !questions.exchange_eligible(&root.question, &assessment) {
-                            return Err(format!(
-                                "question declined: {:?}/{:?}",
-                                assessment.prefilter.reason, assessment.interest
-                            )
-                            .into());
-                        }
-                        root.initial = Some(assessment);
-                        root.needed.insert(id); // Parent first; no advertised helper list.
+                Phase::Initial => {
+                    root.selection.poll(graph, questions)?;
+                    if root.selection.ready(SelectionStage::Initial) {
+                        root.closure.require_root(graph)?;
                         root.phase = Phase::Fetch;
                     }
-                    Err(oneshot::error::TryRecvError::Empty) => {}
-                    Err(_) => return Err("question assessment cancelled".into()),
-                },
-                Phase::Fetch if root.needed.is_empty() => {
-                    if !root.helpers.ready() {
-                        return Ok(None);
-                    }
-                    let batch = graph.prepare_batch_after(
-                        id,
-                        std::mem::take(&mut root.staged),
-                        &root.question,
-                        root.helpers.take_prefix(),
-                    )?;
-                    if questions.available() {
-                        if !root.description.transfer.live(Instant::now()) {
-                            return Err("root validation deadline".into());
-                        }
-                        let (selected, receiver) = questions.begin_exchange(
-                            graph,
-                            root.question.clone(),
-                            root.description.transfer.deadline(),
-                        );
-                        if selected != root.question {
-                            return Err("question provenance changed".into());
-                        }
-                        root.phase = Phase::Final(receiver, Box::new(batch));
-                    } else {
-                        return Err("question receiving capacity".into());
-                    }
                 }
-                Phase::Final(receiver, _) => match receiver.try_recv() {
-                    Ok(assessment) => {
-                        if !questions.exchange_eligible(
-                            &root.question,
-                            root.initial.as_ref().expect("approved root"),
-                        ) || !questions.exchange_eligible(&root.question, &assessment)
-                        {
-                            return Err("stale or declined final interest".into());
-                        }
-                        let delta =
-                            questions.prepare_exchange(graph, &root.question, &assessment)?;
-                        if !root.description.transfer.live(Instant::now()) {
-                            return Err("root commit deadline".into());
-                        }
-                        let Phase::Final(_, batch) =
-                            std::mem::replace(&mut root.phase, Phase::Fetch)
+                Phase::Fetch if root.closure.certificate_ready() => {
+                    if !root.selection.ready(SelectionStage::Final) && !questions.available_peer() {
+                        return Err(crate::Error::ExecutionLimit);
+                    }
+                    let batch = root
+                        .closure
+                        .prepare_certificates(graph, root.selection.question())?;
+                    if root.selection.ready(SelectionStage::Final) {
+                        root.closure.invalidate_prefix();
+                        return root
+                            .selection
+                            .publish(graph, questions, &root.description.transfer, batch)
+                            .map(Some);
+                    }
+                    root.description.transfer.check(Instant::now())?;
+                    if !root.selection.begin(
+                        SelectionStage::Final,
+                        graph,
+                        questions,
+                        root.description.transfer.deadline(),
+                    )? {
+                        return Err(crate::Error::ExecutionLimit);
+                    }
+                    root.phase = Phase::Final(Box::new(batch));
+                }
+                Phase::Final(_) => {
+                    root.selection.poll(graph, questions)?;
+                    if root.selection.ready(SelectionStage::Final) {
+                        let Phase::Final(batch) = std::mem::replace(&mut root.phase, Phase::Fetch)
                         else {
                             unreachable!()
                         };
-                        let admitted = questions.publish_exchange(
-                            graph,
-                            id,
-                            *batch,
-                            delta,
-                            root.description.transfer.capability(),
-                            root.description.transfer.deadline(),
-                        )?;
-                        return Ok(Some(admitted));
+                        root.closure.invalidate_prefix();
+                        return root
+                            .selection
+                            .publish(graph, questions, &root.description.transfer, *batch)
+                            .map(Some);
                     }
-                    Err(oneshot::error::TryRecvError::Empty) => {}
-                    Err(_) => return Err("final question assessment cancelled".into()),
-                },
+                }
+
                 _ => {}
             }
             Ok(None)
@@ -537,7 +435,12 @@ impl Intake {
                 self.active = Some(root);
                 Progress::Waiting
             }
+            Err(error) if error.retryable() => {
+                self.active = Some(root);
+                Progress::Waiting
+            }
             Err(error) => {
+                graph.program_failure(&error);
                 self.decline(&root.description, context, now);
                 Progress::Skipped(id, error)
             }

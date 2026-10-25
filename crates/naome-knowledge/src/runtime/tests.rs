@@ -502,6 +502,69 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
     );
 }
 
+#[test]
+fn established_node_receipt_prevents_wallet_replacement_after_both_wallet_files_are_lost() {
+    let directory = Directory::new();
+    initialize(&directory.0).unwrap();
+    let wallet = crate::wallet::identity(&directory.0).unwrap().unwrap();
+    let key = fs::read(directory.0.join("wallet.key")).unwrap();
+    let receipt = fs::read(directory.0.join("identity.json")).unwrap();
+    fs::remove_file(directory.0.join("wallet.key")).unwrap();
+    fs::remove_file(directory.0.join("wallet.json")).unwrap();
+    assert!(
+        initialize(&directory.0)
+            .unwrap_err()
+            .contains("refusing to replace")
+    );
+    assert!(!directory.0.join("wallet.key").exists());
+    assert!(!directory.0.join("wallet.json").exists());
+    assert_eq!(
+        fs::read(directory.0.join("identity.json")).unwrap(),
+        receipt
+    );
+    fs::write(directory.0.join("wallet.key"), &key).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(
+        directory.0.join("wallet.key"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    initialize(&directory.0).unwrap();
+    assert_eq!(
+        crate::wallet::identity(&directory.0).unwrap().unwrap(),
+        wallet
+    );
+    assert_eq!(fs::read(directory.0.join("wallet.key")).unwrap(), key);
+}
+
+#[test]
+fn interrupted_node_receipt_publication_retains_the_original_wallet_and_rejects_replacement() {
+    let directory = Directory::new();
+    let identity = crate::wallet::initialize(&directory.0).unwrap();
+    let key = fs::read(directory.0.join("wallet.key")).unwrap();
+    write_new(
+        &directory.0.join(".identity-receipt-incoming"),
+        b"{\"version\":",
+    )
+    .unwrap();
+    initialize(&directory.0).unwrap();
+    assert_eq!(wallet_anchor(&directory.0).unwrap(), Some(identity.address));
+    assert_eq!(fs::read(directory.0.join("wallet.key")).unwrap(), key);
+    assert!(!directory.0.join(".identity-receipt-incoming").exists());
+    let other = Directory::new();
+    crate::wallet::initialize(&other.0).unwrap();
+    for name in ["wallet.key", "wallet.json"] {
+        fs::copy(other.0.join(name), directory.0.join(name)).unwrap();
+    }
+    assert!(crate::NodeWallet::open(&directory.0).is_err());
+    assert!(
+        initialize(&directory.0)
+            .unwrap_err()
+            .contains("initialized node receipt")
+    );
+    assert_eq!(wallet_anchor(&directory.0).unwrap(), Some(identity.address));
+}
+
 #[tokio::test]
 async fn uncertain_owner_cannot_supply_a_profile_but_stop_still_works() {
     let directory = Directory::new();

@@ -75,7 +75,7 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
             })?;
         if json {
             let result = serde_json::json!({
-                "schema_version": 2, "ok": true, "kind": "question",
+                "schema_version": 1, "ok": true, "kind": "question",
                 "source_hash": hex(question.source_hash()),
                 "resolution_id": hex(question.resolution_id()),
                 "negation_parity": question.negation_parity(),
@@ -96,7 +96,7 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
     if json {
         let result = match &artifact {
             CompiledArtifact::Proof(proof) => serde_json::json!({
-                "schema_version": 2, "ok": true, "kind": "proof",
+                "schema_version": 1, "ok": true, "kind": "proof",
                 "statement_id": hex(proof.statement_id().as_bytes()),
                 "derivation_id": hex(proof.derivation_id().as_bytes()),
                 "proof_id": hex(proof.proof_id().as_bytes()),
@@ -104,7 +104,7 @@ fn run(arguments: &[OsString], output: &mut impl Write) -> Result<(), CliError> 
                 "canonical_proof": hex(proof.canonical_proof_bytes()),
             }),
             CompiledArtifact::Definition(definition) => serde_json::json!({
-                "schema_version": 2, "ok": true, "kind": "definition",
+                "schema_version": 1, "ok": true, "kind": "definition",
                 "definition_id": hex(definition.definition_id().as_bytes()),
                 "artifact_id": hex(definition.artifact_id().as_bytes()),
                 "canonical_definition": hex(definition.canonical_definition_bytes()),
@@ -325,7 +325,7 @@ fn error_json(error: &CliError) -> serde_json::Value {
         Some(error.to_string())
     };
     serde_json::json!({
-        "schema_version": 2, "ok": false, "phase": phase,
+        "schema_version": 1, "ok": false, "phase": phase,
         "diagnostic": details,
         "message": message,
     })

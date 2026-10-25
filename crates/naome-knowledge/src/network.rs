@@ -1966,7 +1966,9 @@ impl Node {
                             "rejected"
                         };
                         emit(json!({"event":event,"error":error}));
-                        Body::Error { reason: error }
+                        Body::Error {
+                            reason: error.to_string(),
+                        }
                     }
                 }
             }
@@ -2163,10 +2165,16 @@ impl Node {
                         .payload(peer, expected_root, id, object, &self.graph)
                 };
                 if let Err(error) = result {
-                    self.intake.abort(expected_root);
-                    emit(
-                        json!({"event":"proof_skipped", "id":hex(expected_root.as_bytes()),"error":error}),
-                    );
+                    self.graph.program_failure(&error);
+                    if !error.retryable() {
+                        self.intake.abort(expected_root);
+                    }
+                    let event = if error.retryable() {
+                        "proof_deferred"
+                    } else {
+                        "proof_skipped"
+                    };
+                    emit(json!({"event":event, "id":hex(expected_root.as_bytes()),"error":error}));
                 }
             }
             (Flight::Offer { .. }, Body::Receipt { status }) => {

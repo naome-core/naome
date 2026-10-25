@@ -10,6 +10,7 @@ use naome_proof::{
 
 use crate::{CheckedDefinition, CheckedProof, question::index::KnowledgeIndex};
 
+pub(crate) mod copy;
 mod disk;
 pub(crate) mod disk_map;
 pub(crate) mod persistent_map;

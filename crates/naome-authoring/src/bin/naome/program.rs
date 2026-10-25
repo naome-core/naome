@@ -97,7 +97,7 @@ impl ProgramError {
                 serde_json::json!({"commands":commands,"checked_commands":checked_commands,"requires_final_seal":true}),
             ),
         };
-        serde_json::json!({"schema_version":2,"ok":false,"phase":phase,"diagnostic":{"code":code,"message":self.to_string(),"proof":proof,"details":details},"message":null})
+        serde_json::json!({"schema_version":1,"ok":false,"phase":phase,"diagnostic":{"code":code,"message":self.to_string(),"proof":proof,"details":details},"message":null})
     }
 }
 
@@ -186,7 +186,7 @@ pub(super) fn run(path: &Path, json: bool, output: &mut impl Write) -> Result<()
     while !engine.prepare_export(512).map_err(&check_error)? {}
     let checked = engine.checked().map_err(check_error)?;
     if json {
-        writeln!(output,"{}",serde_json::json!({"schema_version":2,"ok":true,"kind":"program","proof_id":hex(checked.manifest().proof_id().as_bytes()),"statement_id":hex(checked.manifest().statement_id().as_bytes()),"derivation_id":hex(checked.manifest().derivation_id().as_bytes()),"manifest":checked.manifest()}))
+        writeln!(output,"{}",serde_json::json!({"schema_version":1,"ok":true,"kind":"program","proof_id":hex(checked.manifest().proof_id().as_bytes()),"statement_id":hex(checked.manifest().statement_id().as_bytes()),"derivation_id":hex(checked.manifest().derivation_id().as_bytes()),"manifest":checked.manifest()}))
     } else { (|| -> io::Result<()> {
         write_hex_line(output,"proof_id",checked.manifest().proof_id().as_bytes())?;
         write_hex_line(output,"statement_id",checked.manifest().statement_id().as_bytes())?;

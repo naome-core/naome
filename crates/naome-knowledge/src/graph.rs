@@ -256,7 +256,9 @@ impl Graph {
                     return Err("durable replay order is incomplete".into());
                 }
                 if let Some(manifest) = record.program()? {
-                    graph.replay_program(&manifest, observe)?;
+                    graph
+                        .replay_program(&manifest, observe)
+                        .map_err(crate::Error::storage)?;
                     graph.bytes = graph
                         .bytes
                         .checked_add(record.bytes.len())
@@ -268,7 +270,7 @@ impl Graph {
                     after = ordinal;
                     continue;
                 }
-                let candidate = record.prepare_retained()?;
+                let candidate = graph.cold(record.prepare_retained())?;
                 graph.bytes = graph
                     .bytes
                     .checked_add(candidate.normal.canonical_bytes().len())
@@ -288,7 +290,7 @@ impl Graph {
                 if !ready {
                     return Err("durable graph has missing or cyclic dependencies".into());
                 }
-                let (context, growth) = graph.check_candidate(candidate)?;
+                let (context, growth) = graph.cold(graph.check_candidate(candidate))?;
                 graph.context = context;
                 graph.context_bytes = graph
                     .context_bytes

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     hex,
-    object::content_id,
+    object::{content_id, id_bytes},
     question::{AdmissionOutcome, Command},
     store::BatchCut,
 };
@@ -277,7 +277,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
         if count == crate::resources::limits().closure_steps {
             intake.payload(peer, id, id, object, &graph).unwrap();
             assert_eq!(
-                intake.active.as_ref().unwrap().steps,
+                intake.active.as_ref().unwrap().closure.certificate_steps(),
                 crate::resources::limits().closure_steps
             );
             intake.advance(&mut graph, &mut questions);
@@ -294,7 +294,7 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
                     .unwrap_err()
                     .contains("step work limit")
             );
-            assert!(intake.active.as_ref().unwrap().staged.is_empty());
+            assert!(intake.active.as_ref().unwrap().closure.certificate_count() == 0);
             intake.abort(id);
             assert_eq!(graph.content_root(), before);
             assert!(graph.pending_ids().unwrap().is_empty());
@@ -750,11 +750,11 @@ async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_d
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     approve(&mut intake, &mut questions, &mut graph).await;
     let approved = intake.active.as_ref().unwrap();
-    assert_eq!(approved.question, original);
-    assert!(approved.initial.as_ref().unwrap().novelty().is_none());
+    assert_eq!(*approved.selection.question(), original);
+    assert!(approved.selection.initial().unwrap().novelty().is_none());
     assert_eq!(historical, receipt);
     assert_ne!(
-        approved.initial.as_ref().unwrap().prefilter.policy,
+        approved.selection.initial().unwrap().prefilter.policy,
         receipt.policy()
     );
     let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
@@ -872,13 +872,21 @@ async fn final_interest_batch_prepared_before_copy_attach_never_reaches_persiste
     graph.test_batch_cut(BatchCut::BeforeWrite);
     assert!(graph.test_compaction_step(1).unwrap());
     interest(&mut questions, &graph).await;
-    match intake.advance(&mut graph, &mut questions) {
-        Progress::Skipped(id, error) => {
-            assert_eq!(id, root);
-            assert_eq!(error, crate::Error::StaleAuthority);
-        }
-        _ => panic!("a pre-attach held batch must be stale"),
-    }
+    assert!(matches!(
+        intake.advance(&mut graph, &mut questions),
+        Progress::Waiting
+    ));
+    let retained = intake
+        .active
+        .as_ref()
+        .expect("stale publication is deferred");
+    assert!(matches!(retained.phase, Phase::Fetch));
+    assert!(retained.selection.ready(SelectionStage::Final));
+    assert_eq!(
+        retained.closure.certificate_count(),
+        2,
+        "retry retains inputs, never the stale checked batch"
+    );
     assert!(
         graph.storage_error().is_none(),
         "persistence cut was never reached"
@@ -938,4 +946,5 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
     }
 }
 
+mod retry;
 mod staging;

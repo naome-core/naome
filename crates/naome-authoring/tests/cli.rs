@@ -502,7 +502,7 @@ mod developer_cli {
             assert!(output.status.success(), "{output:?}");
             assert!(output.stderr.is_empty());
             let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(json["schema_version"], 2);
+            assert_eq!(json["schema_version"], 1);
             assert_eq!(json["ok"], true);
             if command == "question" {
                 let question = CompiledQuestion::compile(source).unwrap();
@@ -609,7 +609,7 @@ mod developer_cli {
             assert_eq!(output.status.code(), Some(1));
             assert!(output.stdout.is_empty());
             let value: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-            assert_eq!(value["schema_version"], 2);
+            assert_eq!(value["schema_version"], 1);
             assert_eq!(
                 value["diagnostic"]["proof"]["failure"]["code"],
                 "mp.expected_implication"

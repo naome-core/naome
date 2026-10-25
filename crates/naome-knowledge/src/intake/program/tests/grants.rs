@@ -11,14 +11,7 @@ fn expired_primary_program_response_cannot_extend_durable_input() {
     graph.ownership().start_program(&manifest).unwrap();
     let mut programs = Programs {
         active: Some(Root {
-            authority: QuestionAuthority {
-                question: metadata.question().unwrap().unwrap(),
-                assessment: None,
-                pending: None,
-                until: Instant::now(),
-                finalized: false,
-                pending_final: false,
-            },
+            authority: Selection::new(id, metadata.question().unwrap().unwrap()),
             offer: Offer {
                 metadata,
                 transfer: TransferGrant::new(peer, id, None),
@@ -27,7 +20,7 @@ fn expired_primary_program_response_cannot_extend_durable_input() {
             refresh: false,
             allowed: true,
             budget: Observer::fixed_for_test(crate::resources::tests::snapshot(false)),
-            helpers: Helpers::default(),
+            closure: Closure::new(id, None),
             scanned: 0,
             input_complete: false,
         }),
@@ -74,13 +67,10 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_interes
     let original_until = Instant::now() + std::time::Duration::from_secs(30);
     let mut intake = Intake::default();
     intake.programs.active = Some(Root {
-        authority: QuestionAuthority {
-            question: metadata.question().unwrap().unwrap(),
-            assessment: None,
-            pending: None,
-            until: original_until,
-            finalized: false,
-            pending_final: false,
+        authority: {
+            let mut selection = Selection::new(id, metadata.question().unwrap().unwrap());
+            selection.set_until(original_until);
+            selection
         },
         offer: Offer {
             metadata: metadata.clone(),
@@ -90,7 +80,7 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_interes
         refresh: false,
         allowed: true,
         budget: Observer::fixed_for_test(crate::resources::tests::snapshot(false)),
-        helpers: Helpers::default(),
+        closure: Closure::new(id, None),
         scanned: 0,
         input_complete: false,
     });
@@ -135,7 +125,7 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_interes
         "metadata_refreshed"
     );
     assert_eq!(
-        intake.programs.active.as_ref().unwrap().authority.until,
+        intake.programs.active.as_ref().unwrap().authority.until(),
         original_until
     );
     assert!(

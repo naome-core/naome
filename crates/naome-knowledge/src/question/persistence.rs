@@ -283,7 +283,9 @@ impl Persistence {
             return Err("question backlog identity differs".into());
         }
         self.header.backlog_cursor = Some(sequence);
-        self.checkpoint.commit(&self.header, vec![])?;
+        self.checkpoint
+            .commit(&self.header, vec![])
+            .map_err(crate::Error::from)?;
         Ok(Some(question))
     }
     pub(super) fn settle_backlog(&mut self, resolution: &Identity) -> Result<(), String> {
@@ -306,7 +308,7 @@ impl Persistence {
                     },
                 ],
             )
-            .map_err(String::from)
+            .map_err(|error| crate::Error::from(error).to_string())
     }
     /// An outbox entry precedes the proof commit. Recovery decides its outcome
     /// from the rechecked graph, never from a persisted success flag.
@@ -436,7 +438,7 @@ impl Persistence {
         }
         self.checkpoint
             .commit(&self.header, updates)
-            .map_err(String::from)
+            .map_err(|error| crate::Error::from(error).to_string())
     }
     pub(super) fn delivered(
         &mut self,
@@ -464,7 +466,7 @@ impl Persistence {
         };
         self.checkpoint
             .commit(&self.header, std::mem::take(&mut updates))
-            .map_err(String::from)
+            .map_err(|error| crate::Error::from(error).to_string())
     }
 }
 fn validate_entry(key: &str, entry: &Entry) -> Result<CompiledQuestion, String> {
