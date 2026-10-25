@@ -8,8 +8,9 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
-      - docs/releases/**
       - .github/workflows/release*.yml
+      - .github/workflows/full-cargo.yml
+      - .github/workflows/rust-tests.yml
       - tools/release/**
       - tools/ci/test_release*.py
       - tools/ci/audit_dependencies.py
@@ -72,6 +73,12 @@ jobs:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-musl
       version: ${{ needs.prepare.outputs.version }}
+
+  qualification:
+    name: Full source qualification
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && github.repository == 'naome-core/naome' }}
+    needs: prepare
+    uses: ./.github/workflows/full-cargo.yml
 
   audit:
     name: Qualify dependencies against RustSec
@@ -148,7 +155,7 @@ jobs:
   attest:
     name: Attest verified release bytes
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && github.repository == 'naome-core/naome' }}
-    needs: [verify, audit]
+    needs: [verify, audit, qualification]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

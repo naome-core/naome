@@ -21,7 +21,7 @@ class GitHub:
         token_name = "RELEASE_POLICY_TOKEN" if policy_read else "GH_TOKEN"
         token = os.environ.get(token_name)
         if not token:
-            raise ValueError(f"missing {token_name}; see docs/releases/README.md")
+            raise ValueError(f"missing {token_name}; RELEASE_POLICY_TOKEN requires a fine-grained token restricted to {REPOSITORY} with Administration:read and Metadata:read")
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                    "Authorization": f"Bearer {token}"}
         if upload is not None:

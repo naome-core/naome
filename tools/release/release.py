@@ -9,8 +9,9 @@ import tomllib
 from pathlib import Path
 
 from github import GitHub
+from installation import instructions
 from package import assemble, build_package, digest, verify_assets
-from policy import REPOSITORY, ROOT, check_publication, check_source, identity
+from policy import REPOSITORY, ROOT, check_publication, check_request, check_source, identity
 
 
 def context():
@@ -31,15 +32,21 @@ def publication_context():
 
 
 def notes(release):
-    path = ROOT / "docs/releases" / f"{release['version']}.md"
-    text = path.read_text().strip()
-    if not text.startswith(f"# {release['tag']}\n") or len(text.splitlines()) < 3:
+    entries = tomllib.loads((ROOT / "tools/release/notes.toml").read_text()).get("releases", {})
+    entry = entries.get(release["version"])
+    sections = {"features": "Features and downloads", "qualification": "Qualification",
+                "data": "Data and upgrades", "limitations": "Known limitations"}
+    if (not isinstance(entry, dict) or set(entry) != {"summary", *sections}
+            or not isinstance(entry["summary"], str) or not entry["summary"].strip()
+            or any(not isinstance(entry[key], list) or not entry[key]
+                   or any(not isinstance(value, str) or not value.strip() for value in entry[key]) for key in sections)):
         raise ValueError("publication requires reviewed version-specific release notes")
-    return text
+    return f"# {release['tag']}\n\n{entry['summary']}\n\n" + "\n\n".join(
+        f"## {title}\n\n" + "\n".join(f"- {value}" for value in entry[key]) for key, title in sections.items())
 
 
 def prepare(version, publish):
-    sha, _ = context()
+    sha, run_id = context()
     if publish:
         publication_context()
         if not version:
@@ -48,7 +55,7 @@ def prepare(version, publish):
     release = identity(version)
     if publish:
         notes(release)
-        check_publication(GitHub(), release, sha)
+        check_request(GitHub(), release, sha, resume_marker=f"<!-- naome-release:{run_id}:{sha} -->")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"version={version}\n")
     print(f"Validated {'publication' if publish else 'candidate build'} of {release['tag']} at {sha}")
@@ -85,11 +92,11 @@ def publish(directory, version):
     require_current_audit(directory)
     marker = f"<!-- naome-release:{run_id}:{sha} -->"
     api = GitHub()
-    qualifications, draft = check_publication(api, release, sha, resume_marker=marker)
+    qualifications, draft = check_publication(api, release, sha, run_id, resume_marker=marker)
     body = notes(release) + f"\n\nSource: `{sha}`.\n\n"
     body += "\n".join(f"- [{name}]({run['url']}) (attempt {run['attempt']})" for name, run in qualifications.items())
     body += f"\n\nBuild and provenance: https://github.com/{REPOSITORY}/actions/runs/{run_id}\n\n"
-    body += "See [download verification and installation](https://github.com/" + REPOSITORY + f"/blob/{sha}/tools/release/DOWNLOAD.md).\n\n{marker}\n"
+    body += f"## Verification and installation\n\n```text\n{instructions(version, sha)}```\n\n{marker}\n"
     if draft is None:
         draft = api.request("/releases", method="POST", body={"tag_name": release["tag"], "target_commitish": sha,
                             "name": f"NAOME {release['tag']}", "body": body, "draft": True, "prerelease": release["prerelease"]})
@@ -111,11 +118,11 @@ def publish(directory, version):
         asset_matches(asset, directory / asset["name"], hashes[asset["name"]])
     # Repeat the live gate after all uploads. Only an owned unpublished draft
     # may be resumed; no asset is replaced and no published release is edited.
-    check_publication(api, release, sha, resume_marker=marker)
+    check_publication(api, release, sha, run_id, resume_marker=marker)
     tag_path = f"/git/ref/tags/{release['tag']}"
     if api.get(tag_path, missing=True) is None:
         api.request("/git/refs", method="POST", body={"ref": f"refs/tags/{release['tag']}", "sha": sha})
-    check_publication(api, release, sha, resume_marker=marker)
+    check_publication(api, release, sha, run_id, resume_marker=marker)
     require_current_audit(directory)
     result = api.request(f"/releases/{release_id}", method="PATCH", body={"draft": False, "body": body,
                          "prerelease": release["prerelease"], "make_latest": "false" if release["prerelease"] else "true"})
