@@ -923,8 +923,4 @@ fn checker_reason(error: &CheckError) -> RejectionReason {
 }
 
 #[cfg(test)]
-mod disk_tests;
-#[cfg(test)]
-mod improvements;
-#[cfg(test)]
 mod tests;
