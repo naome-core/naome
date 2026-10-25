@@ -83,7 +83,7 @@ pub(super) fn derive(capacity: &Limits, budget: &Budget) -> Limits {
     let check_nanos = statistics.check.nanos / statistics.check.units.max(1);
     let compact_nanos = statistics.compact.nanos / statistics.compact.units.max(1);
     if compact_nanos > 0 {
-        work.compaction_records = capacity
+        work.compaction_records = work
             .compaction_records
             .min((quantum.as_nanos() / u128::from(compact_nanos)).max(1) as usize);
     }

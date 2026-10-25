@@ -85,10 +85,10 @@ impl Tree {
                 None => {
                     let node = load(id)?;
                     if self.cache_limit > 0 {
-                        if self.cache.len() >= self.cache_limit {
-                            if let Some(oldest) = self.order.pop_front() {
-                                self.cache.remove(&oldest);
-                            }
+                        if self.cache.len() >= self.cache_limit
+                            && let Some(oldest) = self.order.pop_front()
+                        {
+                            self.cache.remove(&oldest);
                         }
                         self.cache.insert(id, node);
                         self.order.push_back(id);

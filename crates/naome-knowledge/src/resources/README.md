@@ -9,7 +9,9 @@ owners. Hardware observations never grant proof or publication authority.
 
 Native startup observes the node's filesystem, usable CPU quota, memory limits and
 available memory. `calibration.rs` derives one process capacity, provider lane
-allocation, cache ceilings, queue capacities and local page sizes. Coupled values
+allocation, cache ceilings, queue capacities and local page sizes. The soft descriptor limit and already open files bound
+provider lanes and socket capacity, while preserving a separate descriptor
+reserve for control, SQLite generations, shutdown and recovery. Coupled values
 are validated together before constructing a node. Arithmetic uses wide
 intermediates, including on large-memory hosts. Hardware that cannot preserve
 the checker allowance and existing replay reserves is rejected explicitly.
@@ -44,7 +46,8 @@ latency, cache lookups and provider backlog at their existing owning boundaries.
 These observations are process-local scheduling evidence, not durable proof
 facts. `adaptive/governor.rs` combines fresh observations with this feedback.
 Expensive work reduces the execution quantum; faster work permits gradual
-growth. Cache misses can increase the cache target within available memory.
+growth. Observed cache reuse together with misses can increase the cache target within
+available memory; one-pass streams do not cause unbounded growth.
 Pressure reduces admission immediately. Sampling frequency includes its own
 observed cost and remains bounded by existing control/freshness deadlines.
 

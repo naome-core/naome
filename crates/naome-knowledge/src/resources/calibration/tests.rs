@@ -45,3 +45,22 @@ fn hardware_capacities_fit_small_large_and_fractional_cpu_hosts() {
 fn unavailable_reserves_are_explicit_instead_of_overcommitting() {
     assert!(capacity(&host(256 * MIB as u64, 1000)).is_err());
 }
+
+#[test]
+fn descriptor_shortage_reduces_lanes_and_sockets_before_opening_the_node() {
+    let observed = host(32 * 1024 * MIB as u64, 64_000);
+    let small = capacity_with_descriptors(&observed, 128)
+        .unwrap()
+        .resolve()
+        .unwrap();
+    let large = capacity_with_descriptors(&observed, 4096)
+        .unwrap()
+        .resolve()
+        .unwrap();
+    assert!(small.workers.iter().sum::<usize>() * DESCRIPTORS_PER_WORKER <= 64);
+    assert!(small.established_connections <= 16);
+    assert!(small.discovery_interfaces <= small.workers[0]);
+    assert!(large.workers[0] > small.workers[0]);
+    assert!(large.established_connections > small.established_connections);
+    assert!(capacity_with_descriptors(&observed, 127).is_err());
+}

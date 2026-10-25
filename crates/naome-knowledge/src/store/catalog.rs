@@ -148,7 +148,7 @@ impl Catalog {
         }
         let connection = open_connection(path)?;
         verify_version(&connection)?;
-        configure(&connection)?;
+        let cache_bytes = configure(&connection)?;
         verify_schema(&connection)?;
         read_meta(&connection, Some(database_id))?;
         Ok(Self {
@@ -156,7 +156,7 @@ impl Catalog {
             database_id,
             validated_data_version: Cell::new(None),
             replay_summary: Cell::new(None),
-            cache_budget: Cell::new(crate::resources::limits().catalog_cache_bytes),
+            cache_budget: Cell::new(cache_bytes),
         })
     }
 
@@ -194,7 +194,7 @@ impl Catalog {
         if application != 0 || version != 0 || objects != 0 {
             return Err("catalog initialization stage is not empty".into());
         }
-        configure(&connection)?;
+        let cache_bytes = configure(&connection)?;
         initialize_schema(&connection, database_id)?;
         #[cfg(unix)]
         {
@@ -213,7 +213,7 @@ impl Catalog {
             database_id,
             validated_data_version: Cell::new(None),
             replay_summary: Cell::new(None),
-            cache_budget: Cell::new(crate::resources::limits().catalog_cache_bytes),
+            cache_budget: Cell::new(cache_bytes),
         })
     }
 
@@ -690,9 +690,9 @@ fn open_connection(path: &Path) -> Result<Connection, crate::Error> {
     Ok(connection)
 }
 
-fn configure(connection: &Connection) -> Result<(), crate::Error> {
-    crate::storage::sqlite_common(connection, crate::resources::limits().catalog_cache_bytes)
-        .map_err(sql_error)?;
+fn configure(connection: &Connection) -> Result<usize, crate::Error> {
+    let cache_bytes = crate::resources::active_limits().catalog_cache_bytes;
+    crate::storage::sqlite_common(connection, cache_bytes).map_err(sql_error)?;
     connection
         .execute_batch(
             "PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA foreign_keys=ON;",
@@ -713,8 +713,7 @@ fn configure(connection: &Connection) -> Result<(), crate::Error> {
         ("foreign_keys", 1),
         (
             "cache_size",
-            crate::storage::sqlite_cache_kib(crate::resources::active_limits().catalog_cache_bytes)
-                .map_err(sql_error)?,
+            crate::storage::sqlite_cache_kib(cache_bytes).map_err(sql_error)?,
         ),
         ("temp_store", 1),
         ("mmap_size", 0),
@@ -741,7 +740,7 @@ fn configure(connection: &Connection) -> Result<(), crate::Error> {
             return Err("catalog fullfsync differs".into());
         }
     }
-    Ok(())
+    Ok(cache_bytes)
 }
 
 fn verify_version(connection: &Connection) -> Result<(), crate::Error> {

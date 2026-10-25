@@ -1,5 +1,6 @@
 use super::*;
 mod lifecycle;
+mod resource_calibration;
 use std::time::Duration;
 use std::{
     fs,

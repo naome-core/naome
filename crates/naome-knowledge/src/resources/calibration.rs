@@ -4,6 +4,41 @@ use super::adaptive::Observed;
 use super::{CHECKER_RESERVE, DEFAULT, MIB, ResourceProfile, Tuning};
 
 pub(super) fn capacity(observed: &Observed) -> Result<ResourceProfile, String> {
+    capacity_with_descriptors(observed, descriptor_budget()?)
+}
+
+// Preserve descriptors for the state owner's SQLite generations, control,
+// shutdown and recovery. Provider lanes receive only half the remaining pool;
+// the other half covers connections, listeners and proof-work files.
+const DESCRIPTOR_RESERVE: usize = 64;
+const DESCRIPTORS_PER_WORKER: usize = 8;
+
+fn descriptor_budget() -> Result<usize, String> {
+    use nix::sys::resource::{Resource, getrlimit};
+    let (limit, _) = getrlimit(Resource::RLIMIT_NOFILE).map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    let directory = "/proc/self/fd";
+    #[cfg(not(target_os = "linux"))]
+    let directory = "/dev/fd";
+    let occupied = std::fs::read_dir(directory)
+        .map_err(|error| format!("descriptor observation: {error}"))?
+        .count();
+    Ok(usize::try_from(limit)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(occupied)
+        .saturating_sub(DESCRIPTOR_RESERVE))
+}
+
+fn capacity_with_descriptors(
+    observed: &Observed,
+    descriptors: usize,
+) -> Result<ResourceProfile, String> {
+    if descriptors < DESCRIPTOR_RESERVE * 2 {
+        return Err(
+            "available descriptors cannot preserve provider, transport and recovery reserves"
+                .into(),
+        );
+    }
     let reserve = (observed
         .memory_limit
         .saturating_sub(observed.memory_available)
@@ -30,7 +65,9 @@ pub(super) fn capacity(observed: &Observed) -> Result<ResourceProfile, String> {
         .map_err(|_| "CPU capacity width")?
         .max(1);
     let worker_bytes = DEFAULT.provider_stream_bytes * 4;
-    let slots = available_cores.min((working / worker_bytes / 4).max(1));
+    let slots = available_cores
+        .min((working / worker_bytes / 4).max(1))
+        .min(descriptors / 2 / (4 * DESCRIPTORS_PER_WORKER));
     let cores = slots;
     let pages = (working / DEFAULT.proof_bytes / 64).max(1);
     let wire_page = (DEFAULT.proof_bytes * 2 / 128).max(1);
@@ -73,7 +110,7 @@ pub(super) fn capacity(observed: &Observed) -> Result<ResourceProfile, String> {
         dht_parallelism: Some(cores.min(peers)),
         dht_replication: Some(DEFAULT.dht_replication),
         dht_bucket_size: Some(DEFAULT.dht_bucket_size),
-        discovery_interfaces: Some(peers),
+        discovery_interfaces: Some(cores.min(peers)),
         bootstrap_peers: Some(DEFAULT.bootstrap_peers),
         relay_peers: Some(DEFAULT.relay_peers),
         relay_circuits: Some(cores.saturating_mul(DEFAULT.relay_circuits)),
@@ -98,7 +135,9 @@ pub(super) fn capacity(observed: &Observed) -> Result<ResourceProfile, String> {
         compaction_bytes: Some(DEFAULT.compaction_bytes.max(unit)),
         publications: Some(cores),
         waiters_per_job: Some(cores),
-        established_connections: Some(u32::try_from(peers).unwrap_or(u32::MAX)),
+        established_connections: Some(
+            u32::try_from(peers.min(descriptors / 2 / 4)).unwrap_or(u32::MAX),
+        ),
         pending_connections: Some(u32::try_from(cores.saturating_mul(2)).unwrap_or(u32::MAX)),
         exchange_streams: Some(cores.saturating_mul(2)),
         inbound_streams: Some(cores.saturating_mul(4)),
