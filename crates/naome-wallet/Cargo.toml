@@ -1,0 +1,22 @@
+[package]
+name = "naome-wallet"
+version.workspace = true
+edition.workspace = true
+description = "Independent wallet keys, addresses, and proofs of key control for NAOME."
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bech32 = "0.11.1"
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
+hex = "0.4.3"
+serde = { version = "1", features = ["derive"] }
+zeroize = "1.9.1"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

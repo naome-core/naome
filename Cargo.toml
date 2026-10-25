@@ -8,6 +8,7 @@ members = [
     "crates/naome-foundation",
     "crates/naome-knowledge",
     "crates/naome-proof",
+    "crates/naome-wallet",
 ]
 resolver = "3"
 

@@ -846,7 +846,7 @@ fn initialize(directory: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?,
         )?;
     }
-    crate::wallet::store::initialize(directory)?;
+    crate::wallet::initialize(directory)?;
     File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())?;

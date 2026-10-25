@@ -41,6 +41,8 @@ been measured.
 ## Wallet identity and key control
 
 The first successful node initialization creates an independent Ed25519 wallet.
+The standalone [`naome-wallet`](../naome-wallet) crate owns keys, addresses, and
+key-control proofs; this node owns private-file custody, recovery, and the CLI.
 `naome wallet address` reports its checksummed, lower-case Bech32m `nao` address;
 `naome --json wallet address` reports the public identity receipt. No name,
 identity document, registration service, or central account issuer is involved.
