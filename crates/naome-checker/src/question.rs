@@ -697,43 +697,19 @@ fn evaluate(
             return Err((reason, "Q07_ELEMENTARY_CERTIFICATE"));
         }
     }
-    // First-discovery filtering must not revoke previously admitted work when
-    // a stronger finite rule set discovers equivalences after an upgrade.
-    if question.registered_record.is_none() && !snapshot.questions.is_empty() {
-        equivalence::reserve_key(question.formula, work)?;
-        let key = equivalence::key(question.formula).map_err(context_failure)?;
-        work.index()?;
-        for record in snapshot
-            .questions
-            .records_for(key)
-            .map_err(context_failure)?
-        {
-            let record = record.map_err(context_failure)?;
-            work.index()?;
-            work.formula(encoded.len() + AssessmentLimits::MAXIMUM.formula_nodes, 64)?;
-            let related = snapshot
-                .questions
-                .get(&record)
-                .map_err(context_failure)?
-                .ok_or((RejectionReason::InvalidRegistry, "Q02_EQUIVALENCE_INDEX"))?;
-            if let Some(forward) =
-                equivalence::prove(question.formula, &related, snapshot.artifacts, work)?
-            {
-                let backward =
-                    equivalence::prove(&related, question.formula, snapshot.artifacts, work)?
-                        .ok_or((
-                            RejectionReason::InvalidEvidence,
-                            "Q05_ELEMENTARY_EQUIVALENCE",
-                        ))?;
-                decision.related_record = Some(record);
-                decision.equivalence = Some([forward, backward]);
-                return Err((
-                    RejectionReason::ProvenEquivalent,
-                    "Q05_ELEMENTARY_EQUIVALENCE",
-                ));
-            }
+    let incomplete_equivalence = match equivalence::assess(question, snapshot, work) {
+        Ok(Some(evidence)) => {
+            decision.related_record = Some(evidence.record);
+            decision.equivalence = Some(evidence.certificates);
+            return Err((
+                RejectionReason::ProvenEquivalent,
+                "Q05_ELEMENTARY_EQUIVALENCE",
+            ));
         }
-    }
+        Ok(None) => None,
+        Err(error @ (RejectionReason::ExecutionLimit, _)) => Some(error),
+        Err(error) => return Err(error),
+    };
     if let Some((orientation, witness)) = deduction::derive_answers(
         [question.formula, &negative],
         snapshot.artifacts,
@@ -850,6 +826,11 @@ fn evaluate(
         decision.supporting_witness = witness.original_proofs().get(1).copied();
         decision.deduction = Some(witness);
         return Err((targets[orientation].2, "Q07_CHECKED_INSTANTIATED_CLOSURE"));
+    }
+    // A complete checked answer is decisive even when a different candidate
+    // could not finish. Incomplete mandatory checks still prohibit PASS.
+    if let Some(error) = incomplete_equivalence {
+        return Err(error);
     }
     Ok(())
 }

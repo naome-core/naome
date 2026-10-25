@@ -97,15 +97,19 @@ async fn measure_prefilter_node_api() {
         .collect();
     let evaluations = 2048;
     let started = Instant::now();
-    for index in 0..evaluations {
-        let result = handle
-            .assess(inputs[index % inputs.len()].clone())
-            .await
-            .unwrap();
-        assert!(result.prefilter.passed());
-        assert_eq!(result.interest, InterestAssessment::Assessed(true));
-        black_box(result);
-    }
+    tokio::time::timeout(Duration::from_secs(30), async {
+        for index in 0..evaluations {
+            let result = handle
+                .assess(inputs[index % inputs.len()].clone())
+                .await
+                .unwrap();
+            assert!(result.prefilter.passed());
+            assert_eq!(result.interest, InterestAssessment::Assessed(true));
+            black_box(result);
+        }
+    })
+    .await
+    .expect("the bounded local API workload must finish within 30 seconds");
     let elapsed_ns = started.elapsed().as_nanos();
     assert_eq!(handle.context().await.unwrap(), initial);
     assert_eq!(initial.registered_questions, 0);

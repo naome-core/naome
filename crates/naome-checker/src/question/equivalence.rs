@@ -162,6 +162,54 @@ pub(super) fn reserve_key(formula: &Formula, work: &mut Work) -> Result<(), Fail
     )
 }
 
+pub(super) struct ProvenEquivalence {
+    pub(super) record: Identity,
+    pub(super) certificates: [DeductionWitness; 2],
+}
+
+pub(super) fn assess(
+    question: &AssessmentQuestion<'_>,
+    snapshot: &KnowledgeSnapshot<'_>,
+    work: &mut Work,
+) -> Result<Option<ProvenEquivalence>, Failure> {
+    // First-discovery filtering must not revoke previously admitted work when
+    // a stronger finite rule set discovers equivalences after an upgrade.
+    if question.registered_record.is_some() || snapshot.questions.is_empty() {
+        return Ok(None);
+    }
+    reserve_key(question.formula, work)?;
+    let key = key(question.formula).map_err(context_failure)?;
+    work.index()?;
+    for record in snapshot
+        .questions
+        .records_for(key)
+        .map_err(context_failure)?
+    {
+        let record = record.map_err(context_failure)?;
+        work.index()?;
+        work.formula(
+            length(question.formula)? + AssessmentLimits::MAXIMUM.formula_nodes,
+            64,
+        )?;
+        let related = snapshot
+            .questions
+            .get(&record)
+            .map_err(context_failure)?
+            .ok_or((RejectionReason::InvalidRegistry, "Q02_EQUIVALENCE_INDEX"))?;
+        if let Some(forward) = prove(question.formula, &related, snapshot.artifacts, work)? {
+            let backward = prove(&related, question.formula, snapshot.artifacts, work)?.ok_or((
+                RejectionReason::InvalidEvidence,
+                "Q05_ELEMENTARY_EQUIVALENCE",
+            ))?;
+            return Ok(Some(ProvenEquivalence {
+                record,
+                certificates: [forward, backward],
+            }));
+        }
+    }
+    Ok(None)
+}
+
 /// Synthesizes one direction only for the declared finite structural rules.
 /// The complete certificate is checked again against the actual receiver.
 pub(super) fn prove(

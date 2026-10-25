@@ -159,3 +159,83 @@ fn stronger_first_discovery_rules_do_not_revoke_preexisting_owned_unanswered_wor
         assert!(decision.novelty().is_none());
     }
 }
+
+#[test]
+fn an_expensive_equivalence_candidate_cannot_hide_a_short_checked_answer() {
+    let (mut state, n) = fixtures::budget_case(0, false);
+    let x = FreeVariable::new(0);
+    let e = Formula::for_all(x, Formula::equal(x, x));
+    let a = Formula::for_all(FreeVariable::new(17), e.clone());
+    let question = Formula::implies(a.clone(), n.clone());
+    let premise = n.view().negated().unwrap().to_owned();
+    let related = Formula::implies(premise, Formula::negate(a.clone()));
+    let proof_id = |formula: &Formula| {
+        crate::ContextView::statement_header(
+            &state,
+            statement_id(&formula.encode_canonical().unwrap()),
+        )
+        .unwrap()
+        .unwrap()
+        .proof_id()
+    };
+    let certificate = ProofCertificate::new(vec![
+        ProofStep::ProofReference {
+            proof_id: proof_id(&e),
+        },
+        ProofStep::ProofReference {
+            proof_id: proof_id(&Formula::implies(e.clone(), n.clone())),
+        },
+        ProofStep::ModusPonens {
+            premise: 0,
+            implication: 1,
+        },
+        ProofStep::Simplification {
+            antecedent: n.into(),
+            consequent: a.into(),
+        },
+        ProofStep::ModusPonens {
+            premise: 2,
+            implication: 3,
+        },
+        ProofStep::Simplification {
+            antecedent: question.clone().into(),
+            consequent: e.into(),
+        },
+        ProofStep::ModusPonens {
+            premise: 4,
+            implication: 5,
+        },
+    ])
+    .unwrap();
+    let checked = normalize_and_check_with_state(certificate, &state).unwrap();
+    state.register_proof(checked).unwrap();
+    let mut policy = PrefilterPolicy::default();
+    policy.limits.certificate_steps = 52;
+    let request = AssessmentQuestion::new(
+        FOUNDATION_ID,
+        &question,
+        b"answer before incomplete equivalence",
+        &[],
+        None,
+    )
+    .unwrap();
+    let mut registry = QuestionRegistry::new();
+    let without_candidate = assess_question(
+        &request,
+        &KnowledgeSnapshot::new([8; 32], &state, &registry),
+        &policy,
+    );
+    assert_eq!(without_candidate.reason, Some(RejectionReason::KnownProof));
+    registry
+        .insert(RegisteredQuestion::new([1; 32], &related).unwrap())
+        .unwrap();
+    let result = assess_question(
+        &request,
+        &KnowledgeSnapshot::new([8; 32], &state, &registry),
+        &policy,
+    );
+    assert_eq!(result.reason, Some(RejectionReason::KnownProof));
+    assert_eq!(result.rule, "Q04_CHECKED_MP_CLOSURE");
+    assert!(result.equivalence.is_none());
+    assert!(result.novelty().is_none());
+}
