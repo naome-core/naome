@@ -159,6 +159,7 @@ resource_policy! {
         compaction_bytes: usize = naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES;
         compaction_records: usize = 128;
         checker_cache_bytes: usize = 2 * 1024 * 1024;
+        question_cache_bytes: usize = 256 * 1024;
         checker_cache_entries: usize = 64;
         owner_text_bytes: usize = 1024;
         request_burst: usize = 8;
@@ -584,6 +585,7 @@ impl Limits {
             .and_then(|n| n.checked_add(self.catalog_cache_bytes))
             .and_then(|n| n.checked_add(self.checkpoint_cache_bytes.checked_mul(3)?))
             .and_then(|n| n.checked_add(self.checker_cache_bytes))
+            .and_then(|n| n.checked_add(self.question_cache_bytes))
             .and_then(|n| n.checked_add(self.checked_cache_bytes / 4))
             .ok_or("index cache allocation overflow")?;
         let queued_commands = self
@@ -682,6 +684,7 @@ impl Limits {
             + self.catalog_cache_bytes
             + 3 * self.checkpoint_cache_bytes
             + self.checker_cache_bytes
+            + self.question_cache_bytes
             + self.checked_cache_bytes / 4
     }
     fn allocation_budget(&self) -> usize {
