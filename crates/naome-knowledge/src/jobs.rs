@@ -5,6 +5,7 @@
 //! Immutable inputs and reservations precede execution; acknowledged terminal
 //! records may be compacted, but obligation budgets and sequence IDs survive.
 
+mod allowance;
 mod journal;
 mod process;
 mod program;

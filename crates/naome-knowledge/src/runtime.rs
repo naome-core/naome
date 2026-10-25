@@ -252,6 +252,7 @@ pub(crate) struct Control {
     listener: UnixListener,
     directory: PathBuf,
     endpoint: Endpoint,
+    socket_identity: (u64, u64),
     stopping: tokio::sync::watch::Sender<bool>,
     pub(crate) computation: std::sync::Arc<crate::resources::Computation>,
     owner: std::sync::Arc<Mutex<OwnerState>>,
@@ -333,7 +334,7 @@ impl Control {
     /// Called only after Graph::open owns and revalidates this directory.
     pub(crate) fn bind(directory: &Path, startup: Option<Startup>) -> Result<Self, String> {
         let token = std::env::var(DAEMON_NONCE).map_err(|_| "missing internal launch nonce")?;
-        let mut control = Self::bind_token(directory, token)?;
+        let mut control = Self::prepare(directory, token)?;
         control.startup = startup;
         Ok(control)
     }
@@ -366,7 +367,14 @@ impl Control {
         }
     }
 
+    #[cfg(test)]
     fn bind_token(directory: &Path, token: String) -> Result<Self, String> {
+        let control = Self::prepare(directory, token)?;
+        control.publish()?;
+        Ok(control)
+    }
+
+    fn prepare(directory: &Path, token: String) -> Result<Self, String> {
         if token.len() != 64 || crate::unhex(&token)?.len() != 32 {
             return Err("invalid internal launch nonce".into());
         }
@@ -384,28 +392,19 @@ impl Control {
         let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
             .map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(&socket).map_err(|error| error.to_string())?;
+        let socket_identity = (metadata.dev(), metadata.ino());
         let endpoint = Endpoint {
             version: 1,
             token,
             pid: std::process::id(),
             socket,
         };
-        let temporary = directory.join(".control-incoming");
-        if temporary.exists() {
-            fs::remove_file(&temporary).map_err(|error| error.to_string())?;
-        }
-        write_new(
-            &temporary,
-            &serde_json::to_vec(&endpoint).map_err(|error| error.to_string())?,
-        )?;
-        fs::rename(temporary, directory.join("control.json")).map_err(|error| error.to_string())?;
-        File::open(&directory)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| error.to_string())?;
         Ok(Self {
             listener,
             directory,
             endpoint,
+            socket_identity,
             stopping: tokio::sync::watch::channel(false).0,
             computation: std::sync::Arc::default(),
             owner: std::sync::Arc::new(Mutex::new(OwnerState {
@@ -416,6 +415,25 @@ impl Control {
             ownership: None,
             startup: None,
         })
+    }
+
+    /// Advertise the listener only after fallible startup state validation. A
+    /// failed initializer must report its error before the parent aborts it on
+    /// a control connection that closed without a response.
+    pub(crate) fn publish(&self) -> Result<(), String> {
+        let temporary = self.directory.join(".control-incoming");
+        if temporary.exists() {
+            fs::remove_file(&temporary).map_err(|error| error.to_string())?;
+        }
+        write_new(
+            &temporary,
+            &serde_json::to_vec(&self.endpoint).map_err(|error| error.to_string())?,
+        )?;
+        fs::rename(temporary, self.directory.join("control.json"))
+            .map_err(|error| error.to_string())?;
+        File::open(&self.directory)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())
     }
 
     /// A profile snapshot for same-owner consumers, with validated format,
@@ -590,6 +608,10 @@ impl Drop for Control {
             .is_some_and(|endpoint| endpoint.token == self.endpoint.token)
         {
             let _ = fs::remove_file(self.directory.join("control.json"));
+        }
+        if fs::symlink_metadata(&self.endpoint.socket)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.socket_identity)
+        {
             let _ = fs::remove_file(&self.endpoint.socket);
         }
     }

@@ -351,8 +351,9 @@ impl Disk {
                     && record.settings.recovery == RecoveryPolicy::HoldInFlight
                 {
                     State::InDoubt
-                } else if now >= record.expires_ms
-                    || record.spent_ms >= record.settings.limits.horizon_ms
+                } else if record
+                    .allowance(journal.accounts.get(&record.input.account_key()), now)
+                    .time_expired()
                 {
                     State::Expired
                 } else if super::provider::resumable(record)
@@ -434,10 +435,18 @@ impl Disk {
         Ok(())
     }
 
-    pub(super) fn save(&mut self, journal: &mut Journal) -> Result<(), String> {
-        journal.remember_holds()?;
-        if journal.encoded_active_len()? > crate::resources::limits().active_job_bytes {
-            return Err("active journal byte capacity".into());
+    pub(super) fn save(&mut self, journal: &mut Journal) -> Result<(), crate::Error> {
+        journal
+            .remember_holds()
+            .map_err(crate::Error::CorruptStorage)?;
+        if journal
+            .encoded_active_len()
+            .map_err(crate::Error::CorruptStorage)?
+            > crate::resources::limits().active_job_bytes
+        {
+            return Err(crate::Error::CorruptStorage(
+                "active journal byte capacity".into(),
+            ));
         }
         let mut updates = journal
             .records
@@ -453,14 +462,20 @@ impl Disk {
             let history = format!("{id:020}");
             if self
                 .checkpoint
-                .get::<u64>("history", &history, 32)?
+                .get::<u64>("history", &history, 32)
+                .map_err(crate::Error::CorruptStorage)?
                 .is_none()
             {
                 updates.push(crate::checkpoint::Update::put("history", history, id)?);
             }
             let key = super::request_key(&record.input, &record.binding, record.settings);
             if record.acknowledged {
-                if self.checkpoint.get::<u64>("request", &key, 64)? == Some(*id) {
+                if self
+                    .checkpoint
+                    .get::<u64>("request", &key, 64)
+                    .map_err(crate::Error::CorruptStorage)?
+                    == Some(*id)
+                {
                     updates.push(crate::checkpoint::Update::Remove {
                         kind: "request",
                         key,
@@ -659,7 +674,7 @@ impl Disk {
                 &journal.header(),
                 vec![crate::checkpoint::Update::put("program", key, &records)?],
             )
-            .map_err(crate::Error::UncertainDurability)
+            .map_err(crate::Error::from)
     }
     pub(super) fn directory(&self) -> &Path {
         self.path.parent().expect("canonical research parent")

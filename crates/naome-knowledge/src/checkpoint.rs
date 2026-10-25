@@ -10,12 +10,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod commit;
+pub(crate) use commit::CommitError;
 #[cfg(test)]
-thread_local! { static FAIL_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-#[cfg(test)]
-pub(crate) fn fail_next_commit() {
-    FAIL_COMMIT.with(|value| value.set(true));
-}
+pub(crate) use commit::{fail_after_commit, fail_next_commit};
 
 const APPLICATION_ID: i64 = 0x4e414f4a;
 pub(crate) const MAX_ROW: usize = 64 * 1024 * 1024;
@@ -68,6 +66,7 @@ pub(crate) struct Checkpoint {
     connection: Connection,
     domain: &'static str,
     data_version: i64,
+    uncertain: Option<String>,
     #[cfg(test)]
     pub(crate) last_write: (usize, usize),
 }
@@ -121,6 +120,7 @@ impl Checkpoint {
             connection,
             domain,
             data_version,
+            uncertain: None,
             #[cfg(test)]
             last_write: (0, 0),
         };
@@ -217,6 +217,11 @@ impl Checkpoint {
         self.path.parent().expect("canonical checkpoint parent")
     }
     fn ensure_generation(&self) -> Result<(), String> {
+        if let Some(error) = &self.uncertain {
+            return Err(format!(
+                "checkpoint requires replay after an uncertain write: {error}"
+            ));
+        }
         let current = owned(&self.path)?;
         if current.dev() != self.identity.dev() || current.ino() != self.identity.ino() {
             return Err("transactional checkpoint file was replaced".into());
@@ -401,6 +406,7 @@ impl Checkpoint {
         Ok(())
     }
     pub(crate) fn require_kinds(&self, kinds: &[&str]) -> Result<(), String> {
+        self.ensure_generation()?;
         let mut statement = self
             .connection
             .prepare("SELECT DISTINCT kind FROM entries")
@@ -414,57 +420,9 @@ impl Checkpoint {
         }
         Ok(())
     }
-    pub(crate) fn commit(
-        &mut self,
-        header: &impl Serialize,
-        updates: Vec<Update>,
-    ) -> Result<(), String> {
-        #[cfg(test)]
-        if FAIL_COMMIT.with(|value| value.replace(false)) {
-            return Err("injected checkpoint write failure".into());
-        }
-        self.ensure_generation()?;
-        let payload = encode(header)?;
-        if payload.len() > MAX_HEADER {
-            return Err("checkpoint header capacity".into());
-        }
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql)?;
-        if version_of(&transaction)? != self.data_version {
-            return Err("transactional checkpoint changed outside its owner".into());
-        }
-        apply(&transaction, self.domain, &updates)?;
-        transaction
-            .execute(
-                "UPDATE checkpoint SET header = ?1, digest = ?2 WHERE singleton = 1",
-                params![
-                    payload,
-                    digest(self.domain, "header", "1", &payload).as_slice()
-                ],
-            )
-            .map_err(sql)?;
-        transaction.commit().map_err(sql)?;
-        #[cfg(test)]
-        {
-            self.last_write = (
-                updates.len() + 1,
-                payload.len()
-                    + updates
-                        .iter()
-                        .map(|u| match u {
-                            Update::Put { payload, .. } => payload.len(),
-                            _ => 0,
-                        })
-                        .sum::<usize>(),
-            );
-        }
-        Ok(())
-    }
 }
 
-fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<(), String> {
+fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<(), crate::Error> {
     for update in updates {
         match update {
             Update::Put { kind, key, payload } => {
@@ -474,7 +432,7 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
                     || key.len() > 128
                     || payload.len() > MAX_ROW
                 {
-                    return Err("checkpoint record capacity".into());
+                    return Err(crate::Error::InputLimit("checkpoint record capacity"));
                 }
                 let existing: bool = connection
                     .query_row(
@@ -482,11 +440,11 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
                         params![kind, key],
                         |r| r.get(0),
                     )
-                    .map_err(sql)?;
+                    .map_err(commit::write_error)?;
                 connection.execute("INSERT INTO entries(kind,key,payload,digest) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,key) DO UPDATE SET payload=excluded.payload,digest=excluded.digest",
-                    params![kind, key, payload, digest(domain, kind, key, payload).as_slice()]).map_err(sql)?;
+                    params![kind, key, payload, digest(domain, kind, key, payload).as_slice()]).map_err(commit::write_error)?;
                 if !existing {
-                    connection.execute("UPDATE checkpoint SET entry_count = entry_count + 1 WHERE singleton = 1", []).map_err(sql)?;
+                    connection.execute("UPDATE checkpoint SET entry_count = entry_count + 1 WHERE singleton = 1", []).map_err(commit::write_error)?;
                 }
             }
             Update::Remove { kind, key } => {
@@ -495,13 +453,13 @@ fn apply(connection: &Connection, domain: &str, updates: &[Update]) -> Result<()
                         "DELETE FROM entries WHERE kind = ?1 AND key = ?2",
                         params![kind, key],
                     )
-                    .map_err(sql)?;
+                    .map_err(commit::write_error)?;
                 connection
                     .execute(
                         "UPDATE checkpoint SET entry_count = entry_count - ?1 WHERE singleton = 1",
                         params![i64::try_from(removed).map_err(|_| "checkpoint removal width")?],
                     )
-                    .map_err(sql)?;
+                    .map_err(commit::write_error)?;
             }
         }
     }

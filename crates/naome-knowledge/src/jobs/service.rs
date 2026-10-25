@@ -284,8 +284,8 @@ impl Owner {
                                 self.save()
                             })();
                             let failure=result.as_ref().err().cloned();
-                            let _=reply.send(result);
-                            if let Some(error)=failure{return Err(error);}
+                            let _=reply.send(result.map_err(String::from));
+                            if let Some(error)=failure{return Err(String::from(error));}
                         },
                     }
                 },
@@ -415,17 +415,28 @@ impl Owner {
         Ok(())
     }
 
-    fn save(&mut self) -> Result<(), String> {
-        let now = wall_ms()?;
+    fn save(&mut self) -> Result<(), crate::Error> {
+        let now = wall_ms().map_err(crate::Error::CorruptStorage)?;
         if now < self.journal.observed_ms {
-            return Err("research clock moved backwards; no fresh allowance".into());
+            return Err(crate::Error::CorruptStorage(
+                "research clock moved backwards; no fresh allowance".into(),
+            ));
         }
         self.journal.observed_ms = now;
-        self.journal.remember_holds()?;
-        if !self.compact_bytes(0)? {
-            return Err("research reserved result byte capacity".into());
+        self.journal
+            .remember_holds()
+            .map_err(crate::Error::CorruptStorage)?;
+        if !self
+            .compact_bytes(0)
+            .map_err(crate::Error::CorruptStorage)?
+        {
+            return Err(crate::Error::CorruptStorage(
+                "research reserved result byte capacity".into(),
+            ));
         }
-        self.journal.validate_delta(self.settings)?;
+        self.journal
+            .validate_delta(self.settings)
+            .map_err(crate::Error::CorruptStorage)?;
         self.disk.save(&mut self.journal)?;
         self.flushed = Instant::now();
         Ok(())
@@ -444,7 +455,7 @@ impl Owner {
         );
         self.journal.remember_holds()?;
         self.journal.validate_delta(self.settings)?;
-        self.disk.save(&mut self.journal)
+        self.disk.save(&mut self.journal).map_err(String::from)
     }
 
     fn submit(
@@ -580,10 +591,7 @@ impl Owner {
             expires_ms = account.expires_ms;
             spent_ms = account.spent_ms;
             reserved_units = account.reserved_units;
-            if now >= expires_ms
-                || spent_ms >= settings.limits.horizon_ms
-                || reserved_units >= settings.limits.work_units
-            {
+            if !account.allowance(now).can_reserve() {
                 reject_state(
                     reply,
                     binding,
@@ -681,18 +689,9 @@ impl Owner {
         if record.state != State::Running || next != record.checkpoint + 1 {
             return Err("research reservation lifecycle differs".into());
         }
-        let account_exhausted = self
-            .journal
-            .accounts
-            .get(&record.input.account_key())
-            .is_some_and(|a| {
-                a.spent_ms >= a.settings.limits.horizon_ms
-                    || a.reserved_units >= a.settings.limits.work_units
-            });
-        if account_exhausted
-            || now >= record.expires_ms
-            || record.spent_ms >= record.settings.limits.horizon_ms
-            || record.reserved_units >= record.settings.limits.work_units
+        if !record
+            .allowance(self.journal.accounts.get(&record.input.account_key()), now)
+            .can_reserve()
         {
             record.state = State::Expired;
             record.result = None;
@@ -750,28 +749,11 @@ impl Owner {
                     .records
                     .get_mut(&id)
                     .ok_or("queued research job absent")?;
-                let mut remaining_ms = record.expires_ms.saturating_sub(now).min(
-                    record
-                        .settings
-                        .limits
-                        .horizon_ms
-                        .saturating_sub(record.spent_ms),
-                );
-                let mut units_exhausted =
-                    record.reserved_units >= record.settings.limits.work_units;
-                if let Some(account) = self.journal.accounts.get(&record.input.account_key()) {
-                    remaining_ms = remaining_ms.min(
-                        account
-                            .settings
-                            .limits
-                            .horizon_ms
-                            .saturating_sub(account.spent_ms),
-                    );
-                    units_exhausted |= account.reserved_units >= account.settings.limits.work_units;
-                }
+                let allowance =
+                    record.allowance(self.journal.accounts.get(&record.input.account_key()), now);
                 let finalizing = super::provider::complete(record, record.checkpoint)
                     && record.settings.recovery == RecoveryPolicy::DeterministicCheckpoint;
-                if remaining_ms == 0 || units_exhausted && !finalizing {
+                if allowance.time_expired() || allowance.remaining_units == 0 && !finalizing {
                     record.state = State::Expired;
                     self.save()?;
                     self.deliver(id);
@@ -792,7 +774,7 @@ impl Owner {
                 self.tasks.push(Box::pin(async move {
                     let outcome = std::panic::AssertUnwindSafe(process::run(
                         source,
-                        remaining_ms,
+                        allowance.remaining_ms,
                         events,
                         receiver,
                         slot,
@@ -841,8 +823,9 @@ impl Owner {
                 .records
                 .get_mut(&id)
                 .expect("research reconciliation identity");
-            let expired =
-                now >= record.expires_ms || record.spent_ms >= record.settings.limits.horizon_ms;
+            let expired = record
+                .allowance(self.journal.accounts.get(&record.input.account_key()), now)
+                .time_expired();
             if cancelled || expired {
                 record.state = if expired {
                     State::Expired
@@ -979,7 +962,7 @@ impl Owner {
         }
         let saved = self.save();
         if let Err(error) = saved {
-            failure = Some(append_failure(failure.take(), &error));
+            failure = Some(append_failure(failure.take(), &error.to_string()));
         }
         for (id, running) in std::mem::take(&mut self.running) {
             self.clocks.insert(id, running.clock);
@@ -1036,7 +1019,7 @@ impl Owner {
         }
         self.waiters.clear();
         if let Err(error) = self.save() {
-            failure = Some(append_failure(failure.take(), &error));
+            failure = Some(append_failure(failure.take(), &error.to_string()));
             if self
                 .journal
                 .records
@@ -1088,12 +1071,12 @@ fn allowance_expired(journal: &Journal, id: u64) -> Result<bool, String> {
         .records
         .get(&id)
         .ok_or("completion research identity absent")?;
-    Ok(wall_ms()? >= record.expires_ms
-        || record.spent_ms >= record.settings.limits.horizon_ms
-        || journal
-            .accounts
-            .get(&record.input.account_key())
-            .is_some_and(|a| a.spent_ms >= a.settings.limits.horizon_ms))
+    Ok(record
+        .allowance(
+            journal.accounts.get(&record.input.account_key()),
+            wall_ms()?,
+        )
+        .time_expired())
 }
 fn append_failure(previous: Option<String>, next: &str) -> String {
     previous.map_or_else(|| next.to_owned(), |old| format!("{old}; cleanup: {next}"))
