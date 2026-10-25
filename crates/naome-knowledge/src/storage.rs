@@ -99,12 +99,30 @@ pub(crate) fn sqlite_common(
     connection.busy_timeout(crate::resources::limits().sqlite_busy_timeout)?;
     connection
         .execute_batch("PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA trusted_schema=OFF;")?;
-    connection.pragma_update(
-        None,
-        "cache_size",
-        -i64::try_from((cache_bytes / 1024).max(1))
-            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
-    )
+    connection.pragma_update(None, "cache_size", sqlite_cache_kib(cache_bytes)?)
+}
+
+pub(crate) fn sqlite_cache_kib(bytes: usize) -> rusqlite::Result<i64> {
+    i64::try_from((bytes / 1024).max(1))
+        .map(|kib| -kib)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
+/// Only volatile cache policy changes here. Journaling, synchronization, schema
+/// trust and integrity checks remain owned by each persistence implementation.
+pub(crate) fn sqlite_adapt(
+    connection: &rusqlite::Connection,
+    bytes: usize,
+) -> rusqlite::Result<()> {
+    let desired = sqlite_cache_kib(bytes)?;
+    let current: i64 = connection.pragma_query_value(None, "cache_size", |row| row.get(0))?;
+    if desired != current {
+        connection.pragma_update(None, "cache_size", desired)?;
+        if desired > current {
+            connection.execute_batch("PRAGMA shrink_memory")?;
+        }
+    }
+    Ok(())
 }
 
 /// The exact inode and physical write generation owned by a serialized store.

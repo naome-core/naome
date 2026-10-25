@@ -57,7 +57,7 @@ pub fn routing_contract() -> Value {
             "protocol":"/naome/knowledge/5", "topic":"naome-knowledge-v5",
             "interest":"Explicit local positive selection before root fetch and before commit",
             "metadata":"Newly derived resolution obligation; no recovered original source or proof bytes",
-            "limits":{"active_roots":1,"queued_metadata":crate::resources::limits().queued_metadata,
+            "limits":{"active_roots":1,"queued_metadata":crate::resources::active_limits().queued_metadata,
                 "closure_objects":crate::resources::limits().closure_objects,"closure_bytes":crate::resources::limits().closure_bytes,
                 "closure_steps":crate::resources::limits().closure_steps,"checker_work_bytes":crate::resources::limits().closure_work_bytes,
                 "root_lifetime_seconds":crate::resources::limits().root_timeout.as_secs(),"outgoing_request_burst_per_peer":crate::resources::limits().request_burst,"outgoing_request_refill_ms":crate::resources::limits().request_rate_window.as_millis()}
@@ -74,7 +74,7 @@ pub fn routing_contract() -> Value {
             "mdns_ttl_seconds":crate::resources::limits().mdns_ttl.as_secs(),
             "discovery_interval_seconds":crate::resources::limits().discovery_interval.as_secs(),
             "provider_records":crate::resources::limits().contacts,"provider_ttl_seconds":crate::resources::limits().provider_ttl.as_secs(),
-            "application_queries":crate::resources::limits().application_queries,
+            "application_queries":crate::resources::active_limits().application_queries,
             "query_timeout_seconds":crate::resources::limits().query_timeout.as_secs(),
             "established_connections":crate::resources::limits().established_connections,"connections_per_peer":crate::resources::limits().connections_per_peer,"connections_per_peer_with_upgrade":crate::resources::limits().upgrade_connections_per_peer
         },
@@ -125,24 +125,29 @@ fn description_supplier(
 
 enum Flight {
     Inventory {
+        started: Instant,
         peer: PeerId,
         known: Option<[u8; 32]>,
         after: Option<[u8; 32]>,
         pages: usize,
     },
     Get {
+        started: Instant,
         root: ProofId,
         id: ProofId,
         peer: PeerId,
     },
     Describe {
+        started: Instant,
         id: ProofId,
         peer: PeerId,
     },
     Offer {
         peer: PeerId,
+        started: Instant,
     },
     Program {
+        started: Instant,
         root: ProofId,
         id: ProofId,
         start: u64,
@@ -202,7 +207,7 @@ pub(crate) async fn run_autonomous(
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
-    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
+    let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
     run_inner(
         config,
@@ -243,7 +248,7 @@ pub async fn run_with_interest(
     let (handle, admin, inbox) = crate::question::channel();
     drop(handle);
     drop(admin);
-    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
+    let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     // Preserve the existing CLI input reader only for the CLI-oriented wrapper.
     std::thread::spawn(move || read_commands(sender));
     run_inner(
@@ -274,7 +279,7 @@ where
     F: Fn(naome_authoring::CompiledQuestion) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
 {
-    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
+    let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
     run_inner(config, test_controls, inbox, Some(interest), commands, None).await
 }
@@ -287,7 +292,7 @@ pub async fn run_with_questions_without_interest(
     test_controls: bool,
     inbox: crate::question::QuestionInbox,
 ) -> Result<(), String> {
-    let (sender, commands) = mpsc::channel(crate::resources::limits().cli_commands);
+    let (sender, commands) = mpsc::channel(crate::resources::active_limits().cli_commands);
     drop(sender);
     run_inner(
         config,
@@ -320,7 +325,7 @@ where
             let outcome = (|| {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(1)
-                    .max_blocking_threads(crate::resources::limits().control_clients)
+                    .max_blocking_threads(crate::resources::active_limits().control_clients)
                     .thread_name("naome-transport")
                     .enable_all()
                     .build()
@@ -381,6 +386,14 @@ where
     }
     if let Some(startup) = &startup {
         startup.phase("begin");
+    }
+    if autonomy.is_some() {
+        let snapshot = crate::resources::adaptive::Snapshot::derive(
+            crate::resources::adaptive::load(&config.directory)?,
+            crate::resources::adaptive::sample(&config.directory)?,
+            crate::resources::limits().memory_bytes as u64,
+        )?;
+        crate::resources::adaptive::publish(snapshot);
     }
     let graph = Graph::open(&config.directory)?;
     if let Some(startup) = &startup {
@@ -576,7 +589,7 @@ where
         test_objects: BTreeMap::new(),
         test_controls,
         producer_sources: config.producer_sources.into(),
-        next_production: Instant::now() + crate::resources::limits().production_interval,
+        next_production: Instant::now() + crate::resources::active_limits().production_interval,
     };
     let mut tick = tokio::time::interval(crate::resources::limits().tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -624,6 +637,8 @@ where
     let outcome:Result<(),String>=worker::while_polled(owner_busy, async {
     loop {
         if let Some(resources)=&mut resources {resources.refresh()?;}
+        let period = crate::resources::active_limits().tick_interval;
+        if tick.period() != period { tick = tokio::time::interval(period); tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); }
         // Read the validated owner epoch before polling any final admission.
         // An error invalidates old selection; stop remains available.
         if let Some(control)=&control
@@ -638,6 +653,7 @@ where
         ));
         // A cold peer may stay quiet after its response. Wake at the next
         // paced request deadline instead of quantizing reads to the tick.
+        crate::resources::feedback::network_backlog(node.wanted.len().saturating_add(node.flights.len()));
         let request_now = Instant::now();
         let automatic_wake = node
             .next_automatic_request
@@ -851,7 +867,7 @@ fn inventory_response(
     if limit == 0 {
         return Err("inventory page limit must be positive".into());
     }
-    let limit = limit.min(crate::resources::limits().inventory_page);
+    let limit = limit.min(crate::resources::active_limits().inventory_page);
     let ids: Vec<_> = graph
         .ids_page(after.map(ProofId::from_bytes), limit)?
         .into_iter()
@@ -978,7 +994,7 @@ impl Node {
                 | Flight::Get { peer, .. }
                 | Flight::Describe { peer, .. }
                 | Flight::Program { peer, .. }
-                | Flight::Offer { peer } => *peer == target,
+                | Flight::Offer { peer, .. } => *peer == target,
             })
             .count()
     }
@@ -1065,8 +1081,8 @@ impl Node {
                         .transpose()?;
                     let ids = self
                         .graph
-                        .ids_page(after, crate::resources::limits().status_page)?;
-                    let next_after = (ids.len() == crate::resources::limits().status_page)
+                        .ids_page(after, crate::resources::active_limits().status_page)?;
+                    let next_after = (ids.len() == crate::resources::active_limits().status_page)
                         .then(|| ids.last().map(|id| hex(id.as_bytes())))
                         .flatten();
                     Ok(
@@ -1269,7 +1285,13 @@ impl Node {
                         .behaviour_mut()
                         .exchange
                         .send_request(&peer, frame);
-                    self.flights.insert(id, Flight::Offer { peer });
+                    self.flights.insert(
+                        id,
+                        Flight::Offer {
+                            started: Instant::now(),
+                            peer,
+                        },
+                    );
                     self.charge_outgoing(peer, now);
                     Ok(json!({"sent":true}))
                 }
@@ -1293,7 +1315,7 @@ impl Node {
             && now >= self.next_production
             && let Some(source) = self.producer_sources.pop_front()
         {
-            self.next_production = now + crate::resources::limits().production_interval;
+            self.next_production = now + crate::resources::active_limits().production_interval;
             let result = self
                 .graph
                 .produce(&source)
@@ -1380,7 +1402,14 @@ impl Node {
                     .behaviour_mut()
                     .exchange
                     .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
-                self.flights.insert(request, Flight::Describe { id, peer });
+                self.flights.insert(
+                    request,
+                    Flight::Describe {
+                        started: Instant::now(),
+                        id,
+                        peer,
+                    },
+                );
                 self.charge_automatic_request(peer, now);
                 self.charge_outgoing(peer, now);
             }
@@ -1405,6 +1434,7 @@ impl Node {
                 self.flights.insert(
                     request,
                     Flight::Program {
+                        started: Instant::now(),
                         root,
                         id,
                         start,
@@ -1429,7 +1459,14 @@ impl Node {
                     .behaviour_mut()
                     .exchange
                     .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
-                self.flights.insert(request, Flight::Describe { id, peer });
+                self.flights.insert(
+                    request,
+                    Flight::Describe {
+                        started: Instant::now(),
+                        id,
+                        peer,
+                    },
+                );
                 self.charge_automatic_request(peer, now);
                 self.charge_outgoing(peer, now);
             }
@@ -1441,7 +1478,7 @@ impl Node {
                 && !self.flights.values().any(|flight| matches!(flight, Flight::Get { root:r, id:i, .. } if *r == root && *i == id))
             {
                 let request = self.swarm.request_granted(peer, Frame::new(Body::Get { root: *root.as_bytes(), id: *id.as_bytes() }), self.swarm.grant(peer, root));
-                self.flights.insert(request, Flight::Get { root, id, peer });
+                self.flights.insert(request, Flight::Get { started: Instant::now(), root, id, peer });
                 self.charge_automatic_request(peer, now);
                 self.charge_outgoing(peer, now);
             }
@@ -1511,7 +1548,14 @@ impl Node {
                 .behaviour_mut()
                 .exchange
                 .send_request(&peer, Frame::new(Body::Describe { id: *id.as_bytes() }));
-            self.flights.insert(request, Flight::Describe { id, peer });
+            self.flights.insert(
+                request,
+                Flight::Describe {
+                    started: Instant::now(),
+                    id,
+                    peer,
+                },
+            );
             self.charge_automatic_request(peer, now);
             self.charge_outgoing(peer, now);
             remaining -= 1;
@@ -1531,12 +1575,13 @@ impl Node {
             Frame::new(Body::Inventory {
                 known,
                 after,
-                limit: crate::resources::limits().inventory_page,
+                limit: crate::resources::active_limits().inventory_page,
             }),
         );
         self.flights.insert(
             id,
             Flight::Inventory {
+                started: Instant::now(),
                 peer,
                 known,
                 after,
@@ -1775,6 +1820,18 @@ impl Node {
                         "object_id":body_id(&response.message.body),"root_id":body_root(&response.message.body),"position":body_position(&response.message.body)}),
                     );
                     if let Some(flight) = self.flights.remove(&request_id) {
+                        let started = match &flight {
+                            Flight::Inventory { started, .. }
+                            | Flight::Get { started, .. }
+                            | Flight::Describe { started, .. }
+                            | Flight::Offer { started, .. }
+                            | Flight::Program { started, .. } => *started,
+                        };
+                        crate::resources::feedback::record(
+                            crate::resources::feedback::Kind::Network,
+                            1,
+                            started.elapsed(),
+                        );
                         if self.enabled.contains(&peer)
                             && response.message.compatibility == crate::compatibility()
                         {
@@ -1793,6 +1850,7 @@ impl Node {
                     request_id, error, ..
                 },
             )) => {
+                crate::resources::feedback::network_failure();
                 if let Some(Flight::Program { id, peer, .. }) = self.flights.get(&request_id) {
                     self.intake.program_failed(*peer, *id);
                 }
@@ -1952,7 +2010,7 @@ impl Node {
             | Flight::Get { peer, .. }
             | Flight::Describe { peer, .. }
             | Flight::Program { peer, .. }
-            | Flight::Offer { peer } => *peer,
+            | Flight::Offer { peer, .. } => *peer,
         };
         if peer != expected_peer {
             emit(json!({"event":"rejected", "error":"response peer mismatch"}));

@@ -230,6 +230,9 @@ enum Report {
     },
     Resources {
         snapshot: Option<crate::resources::adaptive::Snapshot>,
+        capacity_bytes: usize,
+        workers: [usize; 4],
+        feedback: crate::resources::feedback::Statistics,
     },
 }
 
@@ -508,6 +511,9 @@ impl Control {
             report: if resources {
                 Report::Resources {
                     snapshot: crate::resources::adaptive::current(),
+                    capacity_bytes: crate::resources::limits().memory_bytes,
+                    workers: crate::resources::limits().workers,
+                    feedback: crate::resources::feedback::statistics(),
                 }
             } else {
                 Report::Status {
@@ -1200,7 +1206,13 @@ async fn wait_for_stop(
 
 /// Ordinary CLI exposes lifecycle, status and exact local owner interest text.
 pub async fn execute() -> Result<(), String> {
-    crate::resources::initialize_from_environment()?;
+    if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
+        && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
+    {
+        crate::resources::initialize_for(&directory()?)?;
+    } else {
+        crate::resources::initialize_from_environment()?;
+    }
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let plain = if arguments.first().is_some_and(|a| a == "--json") {
         &arguments[1..]
@@ -1295,9 +1307,15 @@ async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), Strin
     let active = if directory.exists() {
         match request_response(&directory, Operation::Resources, None).await? {
             Some(Response {
-                report: Report::Resources { snapshot },
+                report:
+                    Report::Resources {
+                        snapshot,
+                        capacity_bytes,
+                        workers,
+                        feedback,
+                    },
                 ..
-            }) => snapshot,
+            }) => Some((snapshot, capacity_bytes, workers, feedback)),
             None => None,
             _ => return Err("unexpected resource response type".into()),
         }
@@ -1314,6 +1332,6 @@ async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), Strin
         adaptive::sample(location)?,
         crate::resources::limits().memory_bytes as u64,
     )?;
-    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"limits":crate::resources::limits(),"configured":configured,"active":active,"caller_observation":proposed,"memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
+    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"caller_capacity":crate::resources::limits(),"configured":configured,"active":active.as_ref().and_then(|report|report.0.as_ref()),"installed_capacity":active.as_ref().map(|report|serde_json::json!({"memory_bytes":report.1,"workers":report.2})),"feedback":active.as_ref().map(|report|report.3),"caller_observation":proposed,"caller_memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
     Ok(())
 }

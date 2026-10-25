@@ -1,5 +1,6 @@
 use super::*;
 mod replay_validation;
+mod resource_calibration;
 use crate::Graph;
 use naome_proof::{ProofCertificate, ProofStep, StatementId};
 use std::{

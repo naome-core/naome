@@ -57,7 +57,7 @@ impl CheckedStorage {
                     .map_err(|e| e.to_string())?;
                 cache.buffering = None;
                 cache.trim(crate::resources::adaptive::cache(
-                    crate::resources::limits().checked_cache_bytes,
+                    crate::resources::active_limits().checked_cache_bytes,
                 ));
             }
             #[cfg(test)]
@@ -96,8 +96,9 @@ impl CheckedStorage {
             .len()
             .checked_add(CACHE_ENTRY_BYTES)
             .ok_or(ContextError::Limit)?;
-        let limit =
-            crate::resources::adaptive::cache(crate::resources::limits().checked_cache_bytes);
+        let limit = crate::resources::adaptive::cache(
+            crate::resources::active_limits().checked_cache_bytes,
+        );
         cache.trim(limit);
         if cache.charged > limit {
             self.flush_buffered(cache, false)?;

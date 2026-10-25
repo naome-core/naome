@@ -223,7 +223,7 @@ impl Transport {
             epoch: Arc::new(AtomicU64::new(0)),
             grants: Arc::new(Mutex::new(PeerGrants::default())),
         };
-        let (send, events) = mpsc::channel(crate::resources::limits().transport_events);
+        let (send, events) = mpsc::channel(crate::resources::active_limits().transport_events);
         let (stop, mut halted) = oneshot::channel();
         let driver = shared.clone();
         let lifetime = TransportLifetime(driver.epoch.clone());
@@ -467,7 +467,7 @@ impl Controls {
                         match deadline { Some(until) => tokio::time::sleep_until(until).await,
                             None => std::future::pending().await }
                     }, if stopping => return Ok(()),
-                    stream = control.accept(), if !stopping && pending.len() < crate::resources::limits().control_clients => {
+                    stream = control.accept(), if !stopping && pending.len() < crate::resources::active_limits().control_clients => {
                         let stream = stream?;
                         let control = control.clone();
                         let count = status.count.load(Ordering::Acquire);

@@ -47,7 +47,9 @@ pub(crate) struct CheckedWork {
 impl CheckedWork {
     pub(crate) fn restrict_cache(&mut self, bytes: u64) -> Result<(), crate::Error> {
         self.proof()?;
-        self.proof.restrict_cache(bytes).map_err(crate::Error::from)
+        self.proof
+            .restrict_cache(crate::resources::program_cache(bytes))
+            .map_err(crate::Error::from)
     }
     pub(crate) fn proof(&self) -> Result<&CheckedProgram, crate::Error> {
         let metadata = crate::storage::owned_file(&self.path)?;
@@ -175,7 +177,14 @@ impl Work {
                 }
             };
             pending.push(command);
-            if pending.len() >= crate::resources::adaptive::batch(64).max(1) {
+            if pending.len()
+                >= crate::resources::adaptive::batch(
+                    crate::resources::active_limits()
+                        .compaction_records
+                        .min(naome_proof::program::CHUNK_RECORDS),
+                )
+                .max(1)
+            {
                 self.append_group(&pending)?;
                 count += pending.len() as u64;
                 pending.clear();
@@ -213,9 +222,11 @@ impl Work {
         {
             return Err("invalid effective cache budget".into());
         }
-        let cache = budget.cache_bytes.min(
-            crate::resources::adaptive::current()
-                .map_or(budget.cache_bytes, |active| active.budget.cache_bytes),
+        let cache = crate::resources::program_cache(
+            budget.cache_bytes.min(
+                crate::resources::adaptive::current()
+                    .map_or(budget.cache_bytes, |active| active.budget.cache_bytes),
+            ),
         );
         self.restrict_cache(cache)?;
         if budget.paused.is_some() || budget.batch_steps == 0 {
@@ -233,9 +244,16 @@ impl Work {
             self.directory(),
             (budget.batch_steps as u64).saturating_mul(16 * 1024),
         )?;
-        self.engine
-            .advance(crate::resources::adaptive::batch(budget.batch_steps), cache)
-            .map_err(crate::Error::from)
+        let started = std::time::Instant::now();
+        let result = self
+            .engine
+            .advance(crate::resources::adaptive::batch(budget.batch_steps), cache);
+        crate::resources::feedback::record(
+            crate::resources::feedback::Kind::Check,
+            self.engine.last_quantum_steps(),
+            started.elapsed(),
+        );
+        result.map_err(crate::Error::from)
     }
     pub fn status(&self) -> Result<Status, crate::Error> {
         self.live()?;
@@ -255,7 +273,8 @@ impl Work {
     }
     pub(crate) fn prepare_export(&mut self, budget: &Budget) -> Result<bool, crate::Error> {
         self.live()?;
-        self.engine.advance(0, budget.cache_bytes)?;
+        self.engine
+            .advance(0, crate::resources::program_cache(budget.cache_bytes))?;
         if budget.paused.is_some() || budget.batch_steps == 0 {
             return Ok(false);
         }

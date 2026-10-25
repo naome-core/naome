@@ -106,7 +106,9 @@ pub(crate) struct Codec {
 impl Default for Codec {
     fn default() -> Self {
         Self {
-            budget: Arc::new(Semaphore::new(crate::resources::limits().inbound_frames)),
+            budget: Arc::new(Semaphore::new(
+                crate::resources::active_limits().inbound_frames,
+            )),
         }
     }
 }
@@ -292,7 +294,7 @@ mod tests {
         let codec = Codec::default();
         let other = codec.clone();
         let mut retained = Vec::new();
-        for _ in 0..crate::resources::limits().inbound_frames {
+        for _ in 0..crate::resources::active_limits().inbound_frames {
             retained.push(codec.read(&mut Cursor::new(encoded())).await.unwrap());
         }
         assert!(

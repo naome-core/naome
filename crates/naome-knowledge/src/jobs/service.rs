@@ -45,7 +45,7 @@ impl Service {
                 .cloned()
                 .collect(),
         };
-        let (sender, receiver) = mpsc::channel(crate::resources::limits().job_commands);
+        let (sender, receiver) = mpsc::channel(crate::resources::active_limits().job_commands);
         let client = Client { sender };
         let (halt, stop) = oneshot::channel();
         let (receipt, stopped) = oneshot::channel();
@@ -60,7 +60,7 @@ impl Service {
                         .build()
                         .map_err(|e| e.to_string())?;
                     let (events, progress) =
-                        mpsc::channel(crate::resources::limits().provider_events);
+                        mpsc::channel(crate::resources::active_limits().provider_events);
                     runtime.block_on(
                         Owner::new(disk, journal, settings).run(receiver, stop, events, progress),
                     )
@@ -200,6 +200,11 @@ impl Owner {
         let mut tick = tokio::time::interval(crate::resources::limits().job_tick_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            let period = crate::resources::active_limits().job_tick_interval;
+            if tick.period() != period {
+                tick = tokio::time::interval(period);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            }
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
@@ -385,6 +390,13 @@ impl Owner {
                 Err(error) => record.failure = Some(failure_detail(&error)),
             }
         }
+        if matches!(record.input, Input::Find { .. }) && record.state == State::Complete {
+            match record.result {
+                Some(Output::Question(_)) => crate::resources::feedback::finding_result(true),
+                Some(Output::NoCandidate) => crate::resources::feedback::finding_result(false),
+                _ => {}
+            }
+        }
         if self
             .waiters
             .get(&id)
@@ -487,7 +499,7 @@ impl Owner {
         {
             let waiters = self.waiters.entry(record.id).or_default();
             waiters.retain(|reply| !reply.is_closed());
-            if waiters.len() >= crate::resources::limits().waiters_per_job {
+            if waiters.len() >= crate::resources::active_limits().waiters_per_job {
                 reject(reply, binding, "research duplicate waiter capacity");
             } else {
                 waiters.push(reply);
@@ -534,7 +546,8 @@ impl Owner {
             })
             .count();
         if self.journal.records.len() >= crate::resources::limits().resident_jobs
-            || queued >= crate::resources::limits().queued_jobs_per_role + lanes()[input.lane()]
+            || queued
+                >= crate::resources::active_limits().queued_jobs_per_role + lanes()[input.lane()]
         {
             reject(reply, binding, "research role queue capacity");
             return Ok(());
@@ -700,6 +713,14 @@ impl Owner {
     }
 
     fn schedule(&mut self, events: &mpsc::Sender<process::Event>) -> Result<(), String> {
+        crate::resources::feedback::jobs(
+            self.journal
+                .records
+                .values()
+                .filter(|record| matches!(record.state, State::Queued | State::Suspended))
+                .count(),
+            self.running.len(),
+        );
         for offset in 0..lanes().len() {
             let lane = (self.next_lane + offset) % lanes().len();
             let active = self
@@ -891,7 +912,7 @@ impl Owner {
             .collect::<Vec<_>>();
         let remove = terminal
             .len()
-            .saturating_sub(crate::resources::limits().terminal_job_page);
+            .saturating_sub(crate::resources::active_limits().terminal_job_page);
         for id in terminal
             .into_iter()
             .filter(|id| !self.journal.records.changed(id))

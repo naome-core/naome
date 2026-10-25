@@ -183,10 +183,10 @@ impl Persistence {
                 .page(
                     "question",
                     after,
-                    crate::resources::limits().question_page,
+                    crate::resources::active_limits().question_page,
                     crate::resources::limits()
                         .active_job_bytes
-                        .min(crate::resources::limits().checked_cache_bytes),
+                        .min(crate::resources::active_limits().checked_cache_bytes),
                 )?
                 .into_iter()
                 .map(|(key, bytes)| {
@@ -349,7 +349,7 @@ impl Persistence {
             .page(
                 "publication",
                 None,
-                crate::resources::limits().publications,
+                crate::resources::active_limits().publications,
                 crate::resources::limits().active_job_bytes,
             )?
             .into_iter()
@@ -575,7 +575,7 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
         let mut persistence = Persistence::open(&directory, PrefilterPolicy::default()).unwrap();
         for chunk in (phase * BATCH..(phase + 1) * BATCH)
             .collect::<Vec<_>>()
-            .chunks(crate::resources::limits().question_page)
+            .chunks(crate::resources::active_limits().question_page)
         {
             let mut updates = Vec::new();
             for index in chunk {
@@ -614,8 +614,8 @@ fn thousands_of_question_records_replay_with_bounded_memory_and_persistent_fifo_
         questions.attach_persistence(&directory).unwrap();
         let replay_seconds = replay.elapsed().as_secs_f64();
         assert_eq!(questions.registry.len(), (phase + 1) * BATCH);
-        assert!(questions.known.len() <= crate::resources::limits().question_page);
-        assert!(questions.admitted.len() <= crate::resources::limits().question_page);
+        assert!(questions.known.len() <= crate::resources::active_limits().question_page);
+        assert!(questions.admitted.len() <= crate::resources::active_limits().question_page);
         let persistence = questions.persistence.as_mut().unwrap();
         for index in phase * 16..(phase + 1) * 16 {
             assert_eq!(

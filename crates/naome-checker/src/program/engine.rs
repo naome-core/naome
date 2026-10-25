@@ -55,6 +55,7 @@ pub struct Engine {
     active: Option<Evaluation>,
     accepted: Option<u64>,
     cache_budget: u64,
+    last_quantum_steps: usize,
     export: Option<Export>,
     finalization: Option<Finalization>,
 }
@@ -413,6 +414,7 @@ impl Engine {
             active: None,
             accepted: None,
             cache_budget: 0,
+            last_quantum_steps: 0,
             export: None,
             finalization: None,
         })
@@ -494,6 +496,7 @@ impl Engine {
     /// Advances at most one adaptive quantum. A shortage is a recoverable pause,
     /// never a mathematical rejection and never a permanent size exclusion.
     pub fn advance(&mut self, steps: usize, cache_bytes: u64) -> Result<bool, Error> {
+        self.last_quantum_steps = 0;
         self.live()?;
         if cache_bytes < 4096 {
             return Err("invalid effective cache budget".into());
@@ -543,6 +546,12 @@ impl Engine {
             }
         }
     }
+    /// Operations actually executed by the most recent quantum, including a
+    /// failed quantum. This observation grants no mathematical authority.
+    pub fn last_quantum_steps(&self) -> usize {
+        self.last_quantum_steps
+    }
+
     fn advance_batch(&mut self, steps: usize) -> Result<bool, Error> {
         let mut progress = false;
         for _ in 0..steps {
@@ -586,6 +595,7 @@ impl Engine {
                     .connection
                     .execute_batch("DELETE FROM verified; DELETE FROM stack;"))?;
             }
+            self.last_quantum_steps += 1;
             let mut active = self.active.take().expect("active command");
             if let Some(value) = self.operation(&mut active)? {
                 active.registers.push(value);

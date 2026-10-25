@@ -92,7 +92,7 @@ impl Intake {
         self.declined.retain(|_, (before, old_policy, until)| {
             *before == snapshot && *old_policy == policy && *until > now
         });
-        if self.waiting.len() < crate::resources::limits().interest_decisions
+        if self.waiting.len() < crate::resources::active_limits().interest_decisions
             && questions.available_peer()
             && let Some(description) = self.queue.pop_front()
         {
@@ -271,7 +271,7 @@ impl Intake {
             // Checked staging is deliberately dropped while final interest may
             // take days. One later metadata refresh and refetch is necessary.
             drop(batch);
-            if self.waiting.len() >= crate::resources::limits().interest_decisions
+            if self.waiting.len() >= crate::resources::active_limits().interest_decisions
                 || !questions.available_peer()
             {
                 return Err("final decision queue capacity".into());

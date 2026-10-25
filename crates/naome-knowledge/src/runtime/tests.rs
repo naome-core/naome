@@ -42,6 +42,9 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
         token: "a".repeat(64),
         report: Report::Resources {
             snapshot: Some(snapshot.clone()),
+            capacity_bytes: crate::resources::limits().memory_bytes,
+            workers: crate::resources::limits().workers,
+            feedback: crate::resources::feedback::Statistics::default(),
         },
     };
     let (mut sender, mut receiver) = UnixStream::pair().unwrap();
@@ -52,6 +55,7 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
     written.unwrap();
     let Report::Resources {
         snapshot: Some(read),
+        ..
     } = read.unwrap().report
     else {
         panic!("resource report expected");

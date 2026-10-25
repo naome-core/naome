@@ -6,7 +6,9 @@ use rusqlite::{
 };
 use sha2::{Digest, Sha256};
 use std::{cell::Cell, collections::BTreeMap, fs, path::Path, time::Instant};
+mod digest;
 pub(super) mod program;
+use digest::CommitDigest;
 
 #[cfg(test)]
 std::thread_local! { static SET_SCANS: Cell<usize> = const { Cell::new(0) }; static PAYLOAD_READS: Cell<usize> = const { Cell::new(0) }; }
@@ -134,6 +136,7 @@ pub(super) struct Catalog {
     database_id: [u8; 32],
     validated_data_version: Cell<Option<i64>>,
     replay_summary: Cell<Option<Summary>>,
+    cache_budget: Cell<usize>,
 }
 
 impl Catalog {
@@ -152,6 +155,7 @@ impl Catalog {
             database_id,
             validated_data_version: Cell::new(None),
             replay_summary: Cell::new(None),
+            cache_budget: Cell::new(crate::resources::limits().catalog_cache_bytes),
         })
     }
 
@@ -208,6 +212,7 @@ impl Catalog {
             database_id,
             validated_data_version: Cell::new(None),
             replay_summary: Cell::new(None),
+            cache_budget: Cell::new(crate::resources::limits().catalog_cache_bytes),
         })
     }
 
@@ -236,7 +241,7 @@ impl Catalog {
     /// Validate the complete catalog with bounded owned records. This establishes
     /// storage integrity only; Graph still rechecks every proof mathematically.
     pub(super) fn summary(&self) -> Result<Summary, crate::Error> {
-        let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
+        let transaction = self.begin(TransactionBehavior::Deferred)?;
         let summary = validate_catalog(&transaction, self.database_id)?;
         let version = self.check_data_version(&transaction)?;
         transaction.commit().map_err(sql_error)?;
@@ -250,9 +255,9 @@ impl Catalog {
         after: u64,
         limit: usize,
     ) -> Result<Vec<(u64, BinaryProof)>, crate::Error> {
-        page_limit(limit, crate::resources::limits().replay_page)?;
+        page_limit(limit, crate::resources::active_limits().replay_page)?;
         let after_sql = i64::try_from(after).map_err(|_| "catalog replay cursor width")?;
-        let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
+        let transaction = self.begin(TransactionBehavior::Deferred)?;
         let meta = read_meta(&transaction, Some(self.database_id))?;
         self.require_validated_version(&transaction)?;
         let after_count = usize::try_from(after).map_err(|_| "catalog replay cursor width")?;
@@ -287,8 +292,10 @@ impl Catalog {
         }
         let mut objects = Vec::with_capacity(keys.len());
         for (ordinal, id) in keys {
-            let record = read_record(&transaction, id, ReadAdmission::Work)?
-                .ok_or("catalog replay proof disappeared")?;
+            let record = match read_record(&transaction, id, ReadAdmission::Work) {
+                Err(crate::Error::MemoryOverload { .. }) if !objects.is_empty() => break,
+                result => result?.ok_or("catalog replay proof disappeared")?,
+            };
             if record.replay_order != ordinal {
                 return Err("catalog replay proof order differs".into());
             }
@@ -304,8 +311,8 @@ impl Catalog {
         limit: usize,
         expected: Summary,
     ) -> Result<Vec<ProofId>, crate::Error> {
-        page_limit(limit, crate::resources::limits().id_page)?;
-        let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
+        page_limit(limit, crate::resources::active_limits().id_page)?;
+        let transaction = self.begin(TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
         // Every stored key is a 32-byte BLOB; the empty BLOB sorts before all
@@ -338,7 +345,7 @@ impl Catalog {
         id: ProofId,
         expected: Summary,
     ) -> Result<Option<BinaryProof>, crate::Error> {
-        let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
+        let transaction = self.begin(TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
         let record = read_record(&transaction, *id.as_bytes(), ReadAdmission::Work)?;
@@ -349,7 +356,7 @@ impl Catalog {
     pub(super) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, crate::Error> {
         // Complete validation/replay establishes this connection's generation.
         // Foreign SQLite writes invalidate it before any metadata-only answer.
-        let transaction = begin(&self.connection, TransactionBehavior::Deferred)?;
+        let transaction = self.begin(TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
         let present = transaction
@@ -365,7 +372,7 @@ impl Catalog {
 
     /// The enclosing Graph calls this only after complete mathematical replay.
     pub(super) fn activate(&self, root: [u8; 32]) -> Result<(), crate::Error> {
-        let transaction = begin(&self.connection, TransactionBehavior::Immediate)?;
+        let transaction = self.begin(TransactionBehavior::Immediate)?;
         // Replay reads the same exclusively owned canonical generation. Reuse
         // its complete integrity result, never a persisted checked-state flag.
         let version = self.check_data_version(&transaction)?;
@@ -417,7 +424,7 @@ impl Catalog {
         let root = *root.as_bytes();
         let commit = commit_digest(root, prepared.values().map(|object| &object.member))?;
         fail_at(cut, BatchCut::BeforeWrite)?;
-        let transaction = begin(&self.connection, TransactionBehavior::Immediate)?;
+        let transaction = self.begin(TransactionBehavior::Immediate)?;
         let meta = read_meta(&transaction, Some(self.database_id))?;
         check_expected_summary(&meta, expected)?;
         // BEGIN IMMEDIATE excludes another writer while this generation is
@@ -455,6 +462,15 @@ impl Catalog {
         // restart must replay the complete committed transaction.
         fail_at(cut, BatchCut::AfterCommit)?;
         Ok(summary)
+    }
+
+    fn begin(&self, behavior: TransactionBehavior) -> Result<Transaction<'_>, crate::Error> {
+        let bytes = crate::resources::active_limits().catalog_cache_bytes;
+        if self.cache_budget.get() != bytes {
+            crate::storage::sqlite_adapt(&self.connection, bytes).map_err(sql_error)?;
+            self.cache_budget.set(bytes);
+        }
+        begin(&self.connection, behavior)
     }
 
     fn meta(&self) -> Result<Meta, crate::Error> {
@@ -688,10 +704,18 @@ fn configure(connection: &Connection) -> Result<(), crate::Error> {
     for (name, expected) in [
         ("synchronous", 3),
         ("foreign_keys", 1),
-        ("cache_size", -8192),
+        (
+            "cache_size",
+            crate::storage::sqlite_cache_kib(crate::resources::active_limits().catalog_cache_bytes)
+                .map_err(sql_error)?,
+        ),
         ("temp_store", 1),
         ("mmap_size", 0),
-        ("busy_timeout", 100),
+        (
+            "busy_timeout",
+            i64::try_from(crate::resources::limits().sqlite_busy_timeout.as_millis())
+                .map_err(|_| "catalog busy timeout width")?,
+        ),
         ("trusted_schema", 0),
     ] {
         let actual: i64 = connection
@@ -1255,10 +1279,16 @@ fn verify_commit(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(sql_error)?;
-    let members = read_members(connection, commit)?;
+    let mut expected = objects.keys();
+    let members = visit_members(connection, commit, |member| {
+        if expected.next() != Some(&member) {
+            return Err("existing catalog commit membership differs".into());
+        }
+        Ok(())
+    })?;
     if key(stored_root)? != root
         || usize::try_from(stored_count).ok() != Some(objects.len())
-        || members != objects.keys().copied().collect::<Vec<_>>()
+        || members != objects.len()
         || !objects.contains_key(&root)
     {
         return Err("existing catalog commit membership differs".into());
@@ -1311,7 +1341,13 @@ fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 3
     Ok(dependencies)
 }
 
-fn read_members(connection: &Connection, commit: [u8; 32]) -> Result<Vec<[u8; 32]>, crate::Error> {
+/// Visit a complete stored commit with one member and payload resident at a time.
+/// Admission budgets may shrink after a commit; they never redefine its format.
+fn visit_members(
+    connection: &Connection,
+    commit: [u8; 32],
+    mut visit: impl FnMut([u8; 32]) -> Result<(), crate::Error>,
+) -> Result<usize, crate::Error> {
     let mut statement = connection
         .prepare_cached(
             "SELECT substr(proof_id,1,33) FROM members WHERE commit_id = ?1 ORDER BY proof_id",
@@ -1320,17 +1356,21 @@ fn read_members(connection: &Connection, commit: [u8; 32]) -> Result<Vec<[u8; 32
     let mut rows = statement
         .query(params![commit.as_slice()])
         .map_err(sql_error)?;
-    let mut members = Vec::new();
+    let mut previous = None;
+    let mut count = 0usize;
     while let Some(row) = rows.next().map_err(sql_error)? {
         let id = key(row.get(0).map_err(sql_error)?)?;
-        if members.len() >= crate::resources::limits().batch_objects
-            || members.last().is_some_and(|previous| *previous >= id)
-        {
-            return Err("catalog membership ordering or count differs".into());
+        if previous.is_some_and(|previous| previous >= id) {
+            return Err("catalog membership ordering differs".into());
         }
-        members.push(id);
+        count = count
+            .checked_add(1)
+            .ok_or("catalog membership count overflow")?;
+        u32::try_from(count).map_err(|_| "catalog commit count width")?;
+        visit(id)?;
+        previous = Some(id);
     }
-    Ok(members)
+    Ok(count)
 }
 
 fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
@@ -1341,13 +1381,10 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
     while let Some(row) = rows.next().map_err(sql_error)? {
         let id = key(row.get(0).map_err(sql_error)?)?;
         let root = key(row.get(1).map_err(sql_error)?)?;
-        let count: i64 = row.get(2).map_err(sql_error)?;
-        let members = read_members(connection, id)?;
-        if usize::try_from(count).ok() != Some(members.len()) || !members.contains(&root) {
-            return Err("catalog commit root or member count differs".into());
-        }
-        let mut bound = Vec::with_capacity(members.len());
-        for member in members {
+        let count = usize::try_from(row.get::<_, i64>(2).map_err(sql_error)?)
+            .map_err(|_| "catalog commit count width")?;
+        let mut digest = CommitDigest::new(root, count)?;
+        visit_members(connection, id, |member| {
             let record = read_record(connection, member, ReadAdmission::Work)?
                 .ok_or("missing catalog commit proof")?;
             if let Some(manifest) = record.object.program()? {
@@ -1358,9 +1395,9 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
             if record.origin != id {
                 return Err("catalog proof belongs to a different originating commit".into());
             }
-            bound.push(record.member);
-        }
-        if commit_digest(root, bound.iter())? != id {
+            digest.push(&record.member)
+        })?;
+        if digest.finish()? != id {
             return Err("catalog commit digest differs".into());
         }
     }
@@ -1369,61 +1406,13 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
 
 fn commit_digest<'a>(
     root: [u8; 32],
-    members: impl Iterator<Item = &'a Member>,
+    members: impl ExactSizeIterator<Item = &'a Member>,
 ) -> Result<[u8; 32], crate::Error> {
-    let members: Vec<_> = members.collect();
-    if members.is_empty()
-        || members.len() > crate::resources::limits().batch_objects
-        || !members.iter().any(|member| member.id == root)
-    {
-        return Err("invalid catalog commit membership".into());
-    }
-    let mut hash = Sha256::new();
-    hash.update(b"naome:knowledge:catalog-commit:v1\0");
-    hash.update(root);
-    hash.update(
-        u32::try_from(members.len())
-            .map_err(|_| "catalog commit count width")?
-            .to_be_bytes(),
-    );
-    let mut previous = None;
-    let mut bytes = 0usize;
+    let mut digest = CommitDigest::new(root, members.len())?;
     for member in members {
-        if previous.is_some_and(|id| id >= member.id) {
-            return Err("catalog commit members are not uniquely sorted".into());
-        }
-        hash.update(member.id);
-        hash.update(member.statement);
-        hash.update(member.compatibility);
-        if member.length == 0
-            || member.length > naome_proof::CERTIFICATE_MAX_BYTES
-            || member.dependencies.len() > naome_proof::CERTIFICATE_MAX_STEPS
-        {
-            return Err("catalog commit member width differs".into());
-        }
-        bytes = bytes
-            .checked_add(member.length)
-            .ok_or("catalog batch byte overflow")?;
-        if bytes > crate::resources::limits().batch_bytes {
-            return Err("catalog batch byte capacity".into());
-        }
-        hash.update(
-            u32::try_from(member.length)
-                .map_err(|_| "catalog payload width")?
-                .to_be_bytes(),
-        );
-        hash.update(member.digest);
-        hash.update(
-            u32::try_from(member.dependencies.len())
-                .map_err(|_| "catalog dependency width")?
-                .to_be_bytes(),
-        );
-        for dependency in &member.dependencies {
-            hash.update(dependency);
-        }
-        previous = Some(member.id);
+        digest.push(member)?;
     }
-    Ok(hash.finalize().into())
+    digest.finish()
 }
 
 fn verify_foreign_keys(connection: &Connection) -> Result<(), crate::Error> {

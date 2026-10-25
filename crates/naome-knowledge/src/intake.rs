@@ -95,7 +95,7 @@ impl Intake {
             })
     }
     pub(crate) fn description_capacity(&self) -> usize {
-        crate::resources::limits()
+        crate::resources::active_limits()
             .queued_metadata
             .saturating_sub(self.queue.len() + self.programs.queued())
     }
@@ -183,7 +183,7 @@ impl Intake {
         {
             return Ok("declined");
         }
-        if self.queue.len() >= crate::resources::limits().queued_metadata {
+        if self.queue.len() >= crate::resources::active_limits().queued_metadata {
             return Err("description queue capacity".into());
         }
         self.queue.push_back(Description {

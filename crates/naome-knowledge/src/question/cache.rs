@@ -40,7 +40,9 @@ impl DecisionCache {
         let position = self.entries.iter().position(|entry| {
             entry.decision.input == request.input_id()
                 && entry.decision.matches_inputs(request, snapshot, policy)
-        })?;
+        });
+        crate::resources::feedback::cache(position.is_some());
+        let position = position?;
         let entry = self.entries.remove(position).expect("located cache entry");
         let decision = entry.decision.clone();
         self.entries.push_back(entry);

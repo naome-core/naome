@@ -34,7 +34,7 @@ impl Node {
             | Flight::Program { peer: owner, .. }
             | Flight::Get { peer: owner, .. }
             | Flight::Describe { peer: owner, .. }
-            | Flight::Offer { peer: owner } => *owner != peer,
+            | Flight::Offer { peer: owner, .. } => *owner != peer,
         });
         let _ = self.swarm.disconnect_peer_id(peer);
         emit(json!({"event":"contact_expired", "peer":peer.to_string()}));
