@@ -88,10 +88,11 @@ async fn connected(client: &mut Swarm<Behaviour>, server: PeerId, address: Multi
 }
 
 async fn request(client: &mut Swarm<Behaviour>, server: PeerId, body: Body) -> Body {
-    let id = client
-        .behaviour_mut()
-        .exchange
-        .send_request(&server, Frame::new(body));
+    let body = serde_json::to_value(body).unwrap();
+    let mut id = client.behaviour_mut().exchange.send_request(
+        &server,
+        Frame::new(serde_json::from_value(body.clone()).unwrap()),
+    );
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event = client.select_next_some().await;
@@ -107,6 +108,25 @@ async fn request(client: &mut Swarm<Behaviour>, server: PeerId, body: Body) -> B
             )) = event
             {
                 if request_id == id {
+                    if let Body::Error { reason } = &response.message.body {
+                        let delay = match reason.as_str() {
+                            "peer disabled" | "node state owner busy" => {
+                                Some(crate::resources::limits().transport_busy_grace)
+                            }
+                            "peer rate limit" => {
+                                Some(crate::resources::limits().request_rate_window)
+                            }
+                            _ => None,
+                        };
+                        if let Some(delay) = delay {
+                            tokio::time::sleep(delay).await;
+                            id = client.behaviour_mut().exchange.send_request(
+                                &server,
+                                Frame::new(serde_json::from_value(body.clone()).unwrap()),
+                            );
+                            continue;
+                        }
+                    }
                     return response.message.body;
                 }
             } else {
@@ -213,19 +233,20 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
     assert_eq!(gate.state(), crate::resources::ComputationState::Paused);
     connected(&mut late, server, address).await;
 
-    let Body::ProgramDescription {
-        root: None,
-        metadata,
-    } = request(
+    let description = request(
         &mut late,
         server,
         Body::Describe {
             id: *manifest.proof_id().as_bytes(),
         },
     )
-    .await
+    .await;
+    let Body::ProgramDescription {
+        root: None,
+        metadata,
+    } = description
     else {
-        panic!("checked program metadata must remain available");
+        panic!("checked program metadata must remain available: {description:?}");
     };
     assert_eq!(metadata.manifest, manifest);
     let mut verifier =

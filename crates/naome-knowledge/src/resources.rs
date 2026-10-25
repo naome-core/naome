@@ -177,6 +177,8 @@ resource_policy! {
         exchange_streams: usize = 4;
         inbound_streams: usize = 16;
         identify_protocol_bytes: usize = 256;
+        identify_protocols: usize = 32;
+        identify_addresses: usize = 16;
         replay_guard_bytes: usize = 384 * 1024 * 1024;
         upgrade_connections_per_peer: u32 = 3;
         connections_per_peer: u32 = 2;
@@ -512,6 +514,8 @@ impl Limits {
             .map_err(|_| "checker read cache exceeds its byte budget")?;
         for count in [
             self.inbound_frames,
+            self.identify_protocols,
+            self.identify_addresses,
             self.control_clients,
             self.cli_commands,
             self.pending_page,
@@ -700,6 +704,11 @@ impl Limits {
             || self.command_bytes < 6 * self.owner_text_bytes + 512
         {
             return Err("inconsistent resource limits or unsupported canonical proof size".into());
+        }
+        if self.identify_protocols > DEFAULT.identify_protocols
+            || self.identify_addresses > DEFAULT.identify_addresses
+        {
+            return Err("identify parser safeguards may only be reduced".into());
         }
         let maximum = naome_checker::question::AssessmentLimits::MAXIMUM;
         for (value, max) in [

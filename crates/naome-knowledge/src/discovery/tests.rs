@@ -279,3 +279,44 @@ fn identify_must_bind_the_authenticated_key_and_exact_proof_namespace() {
     );
     assert!(book.lock().contacts[&peer].compatible);
 }
+
+#[test]
+fn identify_parser_boundaries_do_not_depend_on_transport_work_capacity() {
+    let key = identity::Keypair::generate_ed25519();
+    let peer = key.public().to_peer_id();
+    let mut info = identify::Info {
+        public_key: key.public(),
+        protocol_version: protocol_version(false),
+        signed_peer_record: None,
+        agent_version: "fixture".into(),
+        listen_addrs: vec![
+            "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
+            crate::resources::DEFAULT.identify_addresses
+        ],
+        protocols: vec![crate::wire::PROTOCOL; crate::resources::DEFAULT.identify_protocols],
+        observed_addr: "/ip4/127.0.0.1/tcp/4321".parse().unwrap(),
+    };
+    assert_eq!(
+        identified_kind(peer, &info, false, &BTreeSet::new()),
+        Some((true, false))
+    );
+    info.protocols.push(crate::wire::PROTOCOL);
+    assert!(identified_kind(peer, &info, false, &BTreeSet::new()).is_none());
+    info.protocols.pop();
+    info.listen_addrs
+        .push("/ip4/127.0.0.1/tcp/5678".parse().unwrap());
+    assert!(identified_kind(peer, &info, false, &BTreeSet::new()).is_none());
+    let mut profile = crate::resources::ResourceProfile::default();
+    profile.tuning.inbound_frames = Some(1);
+    profile.tuning.inbound_streams = Some(1);
+    profile.tuning.exchange_streams = Some(1);
+    let limits = profile.resolve().unwrap();
+    assert_eq!(
+        limits.identify_protocols,
+        crate::resources::DEFAULT.identify_protocols
+    );
+    assert_eq!(
+        limits.identify_addresses,
+        crate::resources::DEFAULT.identify_addresses
+    );
+}

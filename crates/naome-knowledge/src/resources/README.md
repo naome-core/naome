@@ -78,6 +78,8 @@ The existing `Computation` gate tracks draining work from this same live budget;
 it owns no second pause flag. Compute concurrency and quanta become zero while
 a single bounded network request remains possible. Memory leases still enforce
 actual headroom and the immutable shared capacity.
+Identify protocol/address vector bounds remain at their original protection
+ceilings (32/16), independently of adaptive transport queues and stream counts.
 In-flight responses are checked against the installed admitted format bounds,
 not a newly reduced page size. The serialized state owner remains singular.
 

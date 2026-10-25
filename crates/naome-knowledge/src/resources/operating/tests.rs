@@ -27,4 +27,6 @@ fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {
     assert_eq!(work.replay_guard_bytes, capacity.replay_guard_bytes);
     assert_eq!(work.request_burst, capacity.request_burst);
     assert_eq!(work.workers, capacity.workers);
+    assert_eq!(work.identify_protocols, capacity.identify_protocols);
+    assert_eq!(work.identify_addresses, capacity.identify_addresses);
 }

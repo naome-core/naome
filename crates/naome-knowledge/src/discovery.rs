@@ -75,8 +75,8 @@ pub(crate) fn identified_kind(
             .any(|protocol| protocol.as_ref() == crate::wire::PROTOCOL.as_ref());
     let relay = info.protocol_version == protocol_version(true) && relays.contains(&peer_id);
     let valid = info.public_key.to_peer_id() == peer_id
-        && info.listen_addrs.len() <= crate::resources::limits().inbound_streams
-        && info.protocols.len() <= crate::resources::active_limits().inbound_frames
+        && info.listen_addrs.len() <= crate::resources::limits().identify_addresses
+        && info.protocols.len() <= crate::resources::limits().identify_protocols
         && info.protocols.iter().all(|protocol| {
             protocol.as_ref().len() <= crate::resources::limits().identify_protocol_bytes
         })
