@@ -725,8 +725,9 @@ impl Owner {
             running[self.journal.records[id].input.lane()] += 1;
         }
         crate::resources::feedback::jobs(queued, running);
+        let first_lane = self.next_lane;
         for offset in 0..lanes().len() {
-            let lane = (self.next_lane + offset) % lanes().len();
+            let lane = (first_lane + offset) % lanes().len();
             let active = self
                 .running
                 .keys()
@@ -807,9 +808,10 @@ impl Owner {
                     });
                     (id, outcome)
                 }));
+                // Busy events must not consume another role's next turn.
+                self.next_lane = (lane + 1) % lanes().len();
             }
         }
-        self.next_lane = (self.next_lane + 1) % lanes().len();
         Ok(())
     }
 

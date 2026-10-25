@@ -1,6 +1,7 @@
 use super::*;
 mod allowance;
 mod checkpoint;
+mod fairness;
 mod lifecycle;
 mod resource_calibration;
 use std::time::Duration;
