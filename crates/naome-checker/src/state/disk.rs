@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::{borrow::Cow, sync::Arc};
 
 mod copy;
+mod pending;
 mod program;
 pub use copy::{DiskArtifactCopy, DiskCopyBudget, DiskCopyProgress};
 pub use program::ProgramRegistration;
@@ -36,6 +37,20 @@ pub struct DiskArtifactState {
     instances: DiskMap,
     program_nodes: DiskMap,
     read_cache: crate::ReadCacheLimits,
+}
+
+fn maps(state: &DiskArtifactState) -> [&DiskMap; 9] {
+    [
+        &state.proofs,
+        &state.derivations,
+        &state.statements,
+        &state.artifacts,
+        &state.witnesses,
+        &state.outgoing,
+        &state.deductions,
+        &state.instances,
+        &state.program_nodes,
+    ]
 }
 
 impl DiskArtifactState {

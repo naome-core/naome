@@ -234,10 +234,27 @@ impl Walk {
         if self.failed {
             return Err(ContextError::Corrupt);
         }
-        let Some(pending) = self.pending.pop() else {
-            return Ok(None);
-        };
+        self.step_selected(&mut |_| Ok(true))
+    }
+
+    /// A storage frontier may prune an already materialized immutable subtree.
+    /// This only enumerates records of existing live roots; it creates no roots.
+    pub(crate) fn step_selected(
+        &mut self,
+        select: &mut impl FnMut([u8; 32]) -> Result<bool, ContextError>,
+    ) -> Result<Option<Visit>, ContextError> {
+        if self.failed {
+            return Err(ContextError::Corrupt);
+        }
         let result = (|| {
+            let pending = loop {
+                let Some(pending) = self.pending.pop() else {
+                    return Ok(None);
+                };
+                if select(pending.root.address)? {
+                    break pending;
+                }
+            };
             let node = load_node_inner(self.storage.as_ref(), pending)?;
             let bytes = node.encode();
             let entry = match node {
