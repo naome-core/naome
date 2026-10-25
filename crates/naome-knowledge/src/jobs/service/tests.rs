@@ -32,7 +32,10 @@ fn fixture(units: u32) -> (Directory, Owner) {
     let mut settings = Settings::default();
     settings.solving.limits.work_units = units;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    (directory, Owner::new(disk, journal, settings))
+    (
+        directory,
+        Owner::new(disk, journal, settings, Arc::default()),
+    )
 }
 
 #[cfg(feature = "developer-tools")]
@@ -43,7 +46,7 @@ fn streamed_candidate_groups_keep_original_reservations_and_survive_restart() {
     let mut settings = Settings::default();
     settings.solving.mock.program_units = 3;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
     let _ticket = submit(&mut owner, 1);
     owner.journal.records.get_mut(&1).unwrap().state = State::Running;
     owner.reserve(1, 1).unwrap();
@@ -292,7 +295,7 @@ fn uncertain_running_recovery_is_held_even_after_its_original_horizon() {
     let mut settings = Settings::default();
     settings.solving.recovery = RecoveryPolicy::HoldInFlight;
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
     let _receipt = submit(&mut owner, 1);
     let record = owner.journal.records.get_mut(&1).unwrap();
     record.state = State::Running;
@@ -574,7 +577,8 @@ fn bounded_kernel_slots_are_independent_and_never_reused_while_held() {
 #[test]
 fn dropping_service_joins_the_owner_even_without_explicit_shutdown() {
     let directory = Directory::new();
-    let (service, client, _) = Service::open(&directory.0, Settings::default(), 0).unwrap();
+    let (service, client, _) =
+        Service::open(&directory.0, Settings::default(), 0, Arc::default()).unwrap();
     drop(service);
     assert!(client.sender.is_closed());
 }
@@ -747,7 +751,7 @@ fn thousands_of_obligations_keep_only_retained_accounts_across_process_restarts(
         let mut settings = Settings::default();
         settings.solving.limits.work_units = 2;
         let (disk, state) = Disk::open(&directory, settings, 0).unwrap();
-        let mut owner = Owner::new(disk, state, settings);
+        let mut owner = Owner::new(disk, state, settings, Arc::default());
         assert!(owner.journal.accounts.len() <= owner.journal.records.len());
         // Archived history is exhausted, and rejected lookups never become resident.
         let active = owner.journal.accounts.len();
@@ -939,7 +943,7 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
         .id,
         1
     );
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
     let id = submit_find(&mut owner, total as u64);
     assert!(id >= end);
 }
@@ -960,7 +964,7 @@ fn narrower_new_job_defaults_preserve_original_budget_accounts_and_retry_allowan
     settings.solving.limits.work_units = 1;
     drop(owner);
     let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    let mut owner = Owner::new(disk, journal, settings);
+    let mut owner = Owner::new(disk, journal, settings, Arc::default());
     let _retry = submit(&mut owner, 2);
     let retry = &owner.journal.records[&2];
     assert_eq!(retry.settings, original.settings);
