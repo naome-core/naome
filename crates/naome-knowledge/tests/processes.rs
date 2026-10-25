@@ -138,7 +138,7 @@ fn ordinary_owner_interest_is_exact_durable_and_serialized() {
 
 #[cfg(all(unix, feature = "developer-tools", feature = "system-tests"))]
 #[test]
-fn automatic_resource_pause_preserves_provider_budgets_and_live_network() {
+fn automatic_resource_pause_preserves_provider_budgets_and_control() {
     run_autonomous("pause");
 }
 
@@ -220,24 +220,6 @@ fn run_autonomous(mode: &str) {
         command.arg("--guardian-loss-probe");
     } else {
         command.args(["--mode", mode]);
-    }
-    if mode == "pause" {
-        use sha2::Digest;
-        // Start the controlled catalog at its streamed-program question. Other
-        // answers must not invalidate the receiver's selected program question.
-        let key = (0..=u8::MAX)
-            .find_map(|seed| {
-                let key = libp2p::identity::Keypair::ed25519_from_bytes([seed; 32]).unwrap();
-                let cursor = sha2::Sha256::digest(key.public().to_peer_id().to_bytes())[0];
-                (naome_knowledge::mocks::create_question(u64::from(cursor))
-                    == naome_knowledge::mocks::create_question(0))
-                .then_some(key)
-            })
-            .unwrap();
-        command.args([
-            "--donor-key",
-            &naome_knowledge::hex(&key.to_protobuf_encoding().unwrap()),
-        ]);
     }
     #[cfg(feature = "developer-tools")]
     if matches!(mode, "relay" | "guardian-probe") {

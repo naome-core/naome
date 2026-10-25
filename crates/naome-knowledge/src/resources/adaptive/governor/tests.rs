@@ -68,7 +68,7 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             512 * MIB,
             stats,
             Pressure {
-                memory: true,
+                memory: Some(true),
                 ..Pressure::default()
             },
             now + Duration::from_secs(3),
@@ -82,7 +82,10 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             hardware(),
             512 * MIB,
             stats,
-            Pressure::default(),
+            Pressure {
+                memory: Some(false),
+                ..Pressure::default()
+            },
             now + Duration::from_secs(4),
         )
         .unwrap();
@@ -93,7 +96,10 @@ fn measured_expensive_quanta_shrink_and_observed_fast_work_grows_gradually() {
             hardware(),
             512 * MIB,
             stats,
-            Pressure::default(),
+            Pressure {
+                memory: Some(false),
+                ..Pressure::default()
+            },
             now + Duration::from_secs(34),
         )
         .unwrap();
@@ -425,4 +431,72 @@ fn observation_failure_applies_new_smaller_owner_ceilings_without_freshness_or_c
     assert_eq!(stale.budget.concurrency, 0);
     assert_eq!(stale.budget.batch_steps, 0);
     assert_eq!(stale.budget.network_requests, 1);
+}
+
+#[test]
+fn a_missing_memory_pressure_signal_cannot_clear_a_previously_asserted_warning() {
+    let mut governor = Governor::default();
+    let now = Instant::now();
+    governor
+        .update(
+            Selection::default(),
+            hardware(),
+            512 * MIB,
+            Statistics::default(),
+            Pressure {
+                memory: Some(true),
+                ..Pressure::default()
+            },
+            now,
+        )
+        .unwrap();
+    assert!(
+        governor
+            .update(
+                Selection::default(),
+                hardware(),
+                512 * MIB,
+                Statistics::default(),
+                Pressure::default(),
+                now + Duration::from_secs(60)
+            )
+            .unwrap()
+            .budget
+            .paused
+            .is_some()
+    );
+    let clear = Pressure {
+        memory: Some(false),
+        ..Pressure::default()
+    };
+    assert!(
+        governor
+            .update(
+                Selection::default(),
+                hardware(),
+                512 * MIB,
+                Statistics::default(),
+                clear,
+                now + Duration::from_secs(61)
+            )
+            .unwrap()
+            .budget
+            .paused
+            .is_some()
+    );
+    assert!(
+        governor
+            .update(
+                Selection::default(),
+                hardware(),
+                512 * MIB,
+                Statistics::default(),
+                clear,
+                now + Duration::from_secs(91)
+            )
+            .unwrap()
+            .budget
+            .paused
+            .is_none()
+    );
 }

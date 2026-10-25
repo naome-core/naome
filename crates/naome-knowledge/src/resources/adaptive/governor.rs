@@ -105,7 +105,7 @@ impl Governor {
                     .saturating_sub(previous.cache_misses);
                 let cache = before.budget.cache_bytes;
                 next.budget.cache_bytes =
-                    if hits > 0 && misses > hits && !pressure.memory && !pressure.io {
+                    if hits > 0 && misses > hits && pressure.memory != Some(true) && !pressure.io {
                         cache.saturating_add((cache / 4).max(4096))
                     } else {
                         cache
@@ -148,7 +148,8 @@ impl Governor {
                     self.network_latency = average;
                 }
             }
-            let constrained = pressure.memory || pressure.io || next.budget.paused.is_some();
+            let constrained =
+                pressure.memory == Some(true) || pressure.io || next.budget.paused.is_some();
             self.stable = if constrained || next.selection != before.selection {
                 0
             } else {
@@ -168,7 +169,7 @@ impl Governor {
                     .network_requests
                     .min((before.budget.network_requests / 2).max(1));
             }
-            if pressure.memory {
+            if pressure.memory == Some(true) {
                 next.budget.paused = Some("operating system memory pressure".into());
             }
         }
@@ -184,7 +185,7 @@ impl Governor {
         {
             next.budget.paused = Some("node process tree memory pressure".into());
         }
-        if pressure.memory {
+        if pressure.memory == Some(true) {
             next.budget.paused = Some("operating system memory pressure".into());
             next.budget.cache_bytes = (next.budget.cache_bytes / 2).max(4096);
         }

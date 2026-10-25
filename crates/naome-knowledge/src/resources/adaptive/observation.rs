@@ -11,7 +11,7 @@ mod probe;
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Pressure {
     pub cpu: Option<cpu::Load>,
-    pub memory: bool,
+    pub memory: Option<bool>,
     pub io: bool,
     pub low_power: Option<bool>,
     pub thermal: Option<bool>,
@@ -97,7 +97,7 @@ pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
         pressure.memory = read_optional(Path::new("/proc/pressure/memory"))?
             .as_deref()
             .and_then(|text| psi(text, "full"))
-            .is_some_and(|percent| percent >= 5.0);
+            .map(|percent| percent >= 5.0);
         pressure.io = read_optional(Path::new("/proc/pressure/io"))?
             .as_deref()
             .and_then(|text| psi(text, "some"))
@@ -112,8 +112,7 @@ pub(crate) fn sample_node(directory: &Path) -> Result<Sample, String> {
             deadline,
         )
         .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .is_some_and(|level| matches!(level, 2 | 4));
+        .and_then(|value| mac_memory(&value));
     }
     let stats = nix::sys::statvfs::statvfs(directory).map_err(|error| error.to_string())?;
     observed.disk_available = (u128::from(stats.blocks_available())
@@ -154,6 +153,15 @@ fn psi(text: &str, kind: &str) -> Option<f64> {
         .parse::<f64>()
         .ok()?;
     (percent.is_finite() && (0.0..=100.0).contains(&percent)).then_some(percent)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn mac_memory(value: &str) -> Option<bool> {
+    match value.trim() {
+        "1" => Some(false),
+        "2" | "4" => Some(true),
+        _ => None,
+    }
 }
 
 fn process_tree(text: &str, root: u32) -> Result<(u64, u64, u64), String> {

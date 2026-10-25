@@ -11,6 +11,7 @@ pub(super) struct Pause {
     high_since: Option<Instant>,
     clear_since: Option<Instant>,
     needs_cpu: bool,
+    needs_memory: bool,
     needs_power: bool,
     needs_thermal: bool,
 }
@@ -48,6 +49,7 @@ impl Pause {
             }
         });
         self.needs_cpu |= cpu_pressure;
+        self.needs_memory |= pressure.memory == Some(true);
         self.needs_power |= pressure.low_power == Some(true);
         self.needs_thermal |= pressure.thermal == Some(true);
         if let Some(reason) = trigger {
@@ -69,6 +71,7 @@ impl Pause {
                         .disk_reserve_bytes
                         .saturating_add(2 * MIB)
                         .saturating_add(disk_margin)
+                && (!self.needs_memory || pressure.memory == Some(false))
                 && (!self.needs_cpu
                     || pressure
                         .cpu
@@ -80,6 +83,7 @@ impl Pause {
                     self.reason = None;
                     self.clear_since = None;
                     self.needs_cpu = false;
+                    self.needs_memory = false;
                     self.needs_power = false;
                     self.needs_thermal = false;
                 }

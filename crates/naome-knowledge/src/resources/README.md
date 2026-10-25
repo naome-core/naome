@@ -53,7 +53,7 @@ Native CPU deltas subtract the node process tree over the same interval; load
 average is diagnostic only. External host CPU above 85% for ten seconds pauses
 computation; recovery requires CPU below 60% and thirty seconds of clear
 conditions with memory and disk headroom. These are stability-policy starting
-values, not measured optimal thresholds. Unsupported energy/thermal sensors
+values, not measured optimal thresholds. Unsupported OS pressure, energy or thermal sensors
 remain unknown; a previously asserted condition must be confirmed clear before
 resumption. Linux uses firmware thermal trip points; macOS uses the OS warning.
 A transient hardware observation failure closes new work using the last valid

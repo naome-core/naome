@@ -34,3 +34,13 @@ fn psi_requires_a_valid_full_stall_measurement_instead_of_any_old_partial_stall(
     assert_eq!(psi("full avg10=5.00 avg60=1.00 total=5", "full"), Some(5.0));
     assert_eq!(psi("full avg10=NaN", "full"), None);
 }
+
+#[test]
+fn native_memory_warning_parser_preserves_unsupported_and_failed_queries_as_unknown() {
+    assert_eq!(mac_memory("1\n"), Some(false));
+    assert_eq!(mac_memory("2"), Some(true));
+    assert_eq!(mac_memory("4"), Some(true));
+    for text in ["", "0", "3", "sysctl: unknown oid", "1 2"] {
+        assert_eq!(mac_memory(text), None);
+    }
+}
