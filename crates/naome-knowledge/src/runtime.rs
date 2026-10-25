@@ -260,6 +260,19 @@ pub(crate) struct Control {
     startup: Option<Startup>,
 }
 
+impl crate::publication::LocalAuthority for Control {
+    fn check_selection(&self, expected: Option<[u8; 32]>) -> Result<(), crate::Error> {
+        if self.stopping() {
+            return Err(crate::Error::StaleAuthority);
+        }
+        let selection = self.selection().map_err(|_| crate::Error::StaleAuthority)?;
+        if Some(selection) != expected {
+            return Err(crate::Error::StaleAuthority);
+        }
+        Ok(())
+    }
+}
+
 struct OwnerState {
     text: String,
     recovery_error: Option<String>,

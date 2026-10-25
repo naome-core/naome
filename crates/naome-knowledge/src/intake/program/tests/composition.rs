@@ -128,6 +128,27 @@ async fn program_root_fetches_large_lemmas_and_publishes_the_whole_checked_closu
         metadata,
         manifests.iter().map(Manifest::proof_id).collect(),
         2,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_composed_program_retains_its_checked_lemmas_across_pressure_and_graph_growth() {
+    const CASE: &str = "intake::program::tests::composition::a_composed_program_retains_its_checked_lemmas_across_pressure_and_graph_growth";
+    if isolated(CASE) {
+        return;
+    }
+    let sender = Directory::new();
+    let receiver = Directory::new();
+    let (source, manifests, metadata) = populated(&sender.0);
+    receive(
+        &source,
+        &receiver.0,
+        metadata,
+        manifests.iter().map(Manifest::proof_id).collect(),
+        2,
+        true,
     )
     .await;
 }
@@ -138,6 +159,7 @@ async fn receive(
     metadata: ProgramMetadata,
     expected: BTreeSet<ProofId>,
     depth: usize,
+    rebind: bool,
 ) {
     let root = metadata.manifest.proof_id();
     let mut graph = Graph::open(directory).unwrap();
@@ -152,7 +174,23 @@ async fn receive(
     );
     let mut fetched = BTreeSet::new();
     let mut accepted = None;
+    let mut unrelated = None;
+    let mut pressured = false;
     for _ in 0..5000 {
+        if rebind
+            && !pressured
+            && intake.programs.active.as_ref().is_some_and(|root| {
+                matches!(&root.stage, Stage::Prepare(prepared) if prepared.pending())
+                    && root.helpers.ready()
+                    && !root.helpers.is_empty()
+            })
+        {
+            let retained = crate::resources::with_disk_available(0, || {
+                intake.advance(&mut graph, &mut questions)
+            });
+            assert!(matches!(retained, Progress::Waiting));
+            pressured = true;
+        }
         match intake.advance(&mut graph, &mut questions) {
             Progress::Accepted(ids) => {
                 accepted = Some(ids);
@@ -161,9 +199,20 @@ async fn receive(
             Progress::Skipped(_, error) => panic!("composition rejected: {error}"),
             Progress::Waiting => {}
         }
+        if rebind
+            && unrelated.is_none()
+            && intake.programs.active.as_ref().is_some_and(
+                |root| matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready()),
+            )
+        {
+            let (_, admission) = graph
+                .produce("goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q")
+                .unwrap();
+            unrelated = Some(admission.id);
+        }
         assert_eq!(
             graph.accepted_count(),
-            0,
+            usize::from(unrelated.is_some()),
             "necessary helpers cannot be published before their selected parent"
         );
         if !questions.available() {
@@ -212,7 +261,18 @@ async fn receive(
         expected
     );
     assert_eq!(fetched, expected);
-    assert_eq!(graph.accepted_count(), 3);
+    assert_eq!(
+        unrelated.is_some(),
+        rebind,
+        "the final checked closure must encounter a changed predecessor"
+    );
+    assert_eq!(
+        pressured, rebind,
+        "registration must encounter real disk admission pressure"
+    );
+    let mut all_expected = expected.clone();
+    all_expected.extend(unrelated);
+    assert_eq!(graph.accepted_count(), all_expected.len());
     assert_eq!(
         graph
             .checked_context()
@@ -227,7 +287,7 @@ async fn receive(
     assert_eq!(replayed.content_root(), content_root);
     assert_eq!(
         replayed.ids().into_iter().collect::<BTreeSet<_>>(),
-        expected
+        all_expected
     );
     assert_eq!(
         replayed
@@ -315,6 +375,7 @@ async fn program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_p
         metadata,
         [certificate, implication, root].into_iter().collect(),
         3,
+        false,
     )
     .await;
 }

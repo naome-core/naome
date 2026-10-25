@@ -15,6 +15,11 @@ pub const RECORD_BYTES: usize = 4096;
 pub const CHUNK_RECORDS: usize = 1024;
 pub const CHUNK_BYTES: usize = 32 * 1024;
 
+mod stream;
+pub use stream::{
+    ChunkReader, MANIFEST_BYTES, Prefix, PreparedRecord, Progress, decode_command, encode_command,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Chunk {

@@ -1,5 +1,6 @@
 use crate::Envelope;
 use crate::object::{Candidate, Metadata, id_bytes};
+use crate::publication::{CommitGuard, PeerGrant, STALE_COMMIT};
 use crate::store::{Store, Summary};
 use naome_checker::{
     ContextView, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, check_normal_form_with_state,
@@ -16,6 +17,8 @@ use std::{
 
 mod batch;
 mod pending;
+mod preparation;
+use preparation::{Preparation, Stamp};
 pub(crate) mod program;
 mod storage;
 pub(crate) use batch::CheckedBatch;
@@ -30,73 +33,6 @@ pub struct Ingest {
 }
 
 type PendingResolution = (Vec<ProofId>, Vec<(ProofId, String)>);
-
-pub(crate) const STALE_COMMIT: crate::Error = crate::Error::StaleAuthority;
-
-/// A concrete peer/root authorization, independent of other peer traffic.
-#[derive(Clone, Debug)]
-pub(crate) struct PeerGrant(pub(crate) Arc<std::sync::atomic::AtomicBool>);
-impl PeerGrant {
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
-    }
-    pub(crate) fn check(&self) -> Result<(), crate::Error> {
-        if self.0.load(std::sync::atomic::Ordering::Acquire) {
-            Ok(())
-        } else {
-            Err(STALE_COMMIT)
-        }
-    }
-}
-
-/// Revocable operation authority, checked again inside the durable transaction.
-/// It contains no mathematical state and cannot grant checked membership.
-#[derive(Clone)]
-pub(crate) struct CommitGuard {
-    epoch: Arc<std::sync::atomic::AtomicU64>,
-    expected: u64,
-    control: Option<Arc<crate::runtime::Control>>,
-    selection: Option<[u8; 32]>,
-    peer: Option<PeerGrant>,
-}
-impl CommitGuard {
-    pub(crate) fn new(
-        epoch: Arc<std::sync::atomic::AtomicU64>,
-        expected: u64,
-        control: Option<Arc<crate::runtime::Control>>,
-        selection: Option<[u8; 32]>,
-    ) -> Self {
-        Self {
-            epoch,
-            expected,
-            control,
-            selection,
-            peer: None,
-        }
-    }
-    fn with_peer(mut self, peer: PeerGrant) -> Self {
-        self.peer = Some(peer);
-        self
-    }
-    pub(crate) fn check(&self) -> Result<(), crate::Error> {
-        use std::sync::atomic::Ordering;
-        if let Some(peer) = &self.peer {
-            peer.check()?;
-        }
-        if self.expected == u64::MAX || self.epoch.load(Ordering::Acquire) != self.expected {
-            return Err(STALE_COMMIT);
-        }
-        if let Some(control) = &self.control
-            && (control.stopping() || control.selection().ok() != self.selection)
-        {
-            return Err(STALE_COMMIT);
-        }
-        if self.epoch.load(Ordering::Acquire) != self.expected {
-            return Err(STALE_COMMIT);
-        }
-        Ok(())
-    }
-}
 
 /// The sole acceptance owner for this operating path. Checked state is private.
 pub struct Graph {
@@ -565,7 +501,7 @@ impl Graph {
         if source.len() > crate::resources::limits().proof_bytes {
             return Err("producer source byte limit".into());
         }
-        let _disk = self.reserve_publication(source.len(), 1)?;
+        let disk = self.reserve_publication(source.len(), 1)?;
         let checked = self
             .compile_source(source, &self.context)?
             .into_checked_proof();
@@ -589,8 +525,7 @@ impl Graph {
                 },
             ));
         }
-        let growth = self.registration_growth(&checked)?;
-        self.publish_checked(checked, record, growth)?;
+        self.publish_checked(checked, record, disk)?;
         let (mut admitted, rejected) = self.resolve_pending()?;
         admitted.insert(0, id);
         Ok((
@@ -809,16 +744,17 @@ impl Graph {
         if checked.proof_id() != candidate.id || checked.statement_id() != candidate.statement {
             return Err("checked identity mismatch".into());
         }
-        let growth = self.registration_growth(&checked)?;
+        let growth = self.registration_growth(&self.context, &checked)?;
         Ok((checked, growth))
     }
 
     fn registration_growth(
         &self,
+        context: &DiskArtifactState,
         checked: &naome_checker::CheckedProof,
     ) -> Result<usize, crate::Error> {
         let growth = if self.cold(
-            self.context
+            context
                 .contains_statement(checked.statement_id())
                 .map_err(crate::Error::from),
         )? {
@@ -881,39 +817,40 @@ impl Graph {
 
     fn admit(&mut self, candidate: Candidate) -> Result<(), crate::Error> {
         self.publication_current()?;
-        let _disk = self.reserve_publication(candidate.bytes.len(), 1)?;
+        let disk = self.reserve_publication(candidate.bytes.len(), 1)?;
         let record = candidate.record();
-        let (checked, growth) = self.checked_registration(candidate)?;
-        self.publish_checked(checked, record, growth)
+        let checked = self.check_normal(candidate.normal, &self.context)?;
+        self.publish_checked(checked, record, disk)
     }
 
     fn publish_checked(
         &mut self,
         checked: naome_checker::CheckedProof,
         record: crate::object::BinaryProof,
-        growth: usize,
+        disk: crate::resources::DiskLease,
     ) -> Result<(), crate::Error> {
         self.publication_current()?;
-        let context_bytes = self
-            .context_bytes
-            .checked_add(growth)
-            .ok_or("checked context byte overflow")?;
+        let id = record.id;
+        let stamp = Stamp::capture(self)?;
+        let mut preparation = Preparation::reserved(self, None, stamp, disk);
+        let registration = preparation.check_certificate(self, checked, record)?;
         let source = self.checked_storage.clone();
         // The phase guard records every setup failure, including native close
         // errors. Do not overwrite that cleanup evidence through cold().
         let phase = source
             .admission_phase()
             .map_err(|error| format!("storage halted: {error}"))?;
-        let context = self.registered_context(checked)?;
+        preparation.register_certificate(self, registration)?;
+        let batch = preparation.finish(self, id)?;
         let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
         let persisted = self.store.persist_binary_batch(
-            record.id,
-            std::iter::once(&record),
+            id,
+            batch.entries.iter().map(|(_, record)| record),
             self.fixed_summary(),
             None,
             crate::corpus::root(
                 self.count.checked_add(1).ok_or("accepted count overflow")?,
-                context.proof_set_fingerprint(),
+                batch.context.proof_set_fingerprint(),
             )?,
             self.commit_guard.as_ref(),
         );
@@ -926,13 +863,13 @@ impl Graph {
         let summary = self.cold(persisted)?;
         // All fallible preparation precedes the durable transaction. Afterwards
         // publish only fixed roots and scalars; no catalog/context read can fail.
-        self.context = context;
-        self.context_bytes = context_bytes;
+        self.context = batch.context;
+        self.context_bytes = batch.context_bytes;
         self.count = summary.count;
         self.bytes = summary.bytes;
         self.root = summary.root;
         phase.published(&mut gates);
-        let wake = self.backlog()?.accepted(record.id);
+        let wake = self.backlog()?.accepted(id);
         self.cold(wake)?;
         Ok(())
     }

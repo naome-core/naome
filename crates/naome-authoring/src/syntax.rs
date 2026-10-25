@@ -1,5 +1,7 @@
 //! The single source vocabulary and lexical trivia. Source bytes are never rewritten.
 
+pub(crate) mod formula;
+
 pub(crate) fn word_at(source: &str, offset: usize, expected: &str) -> bool {
     let remainder = &source[offset..];
     remainder.starts_with(expected)
@@ -10,10 +12,7 @@ pub(crate) fn word_at(source: &str, offset: usize, expected: &str) -> bool {
 }
 
 pub(crate) fn is_formula_operator(name: &str) -> bool {
-    matches!(
-        name,
-        "eq" | "mem" | "ne" | "not" | "imp" | "all" | "ex" | "and" | "or" | "iff"
-    )
+    formula::Operator::parse(name).is_some()
 }
 
 pub(crate) fn is_reserved_binding_name(name: &str) -> bool {

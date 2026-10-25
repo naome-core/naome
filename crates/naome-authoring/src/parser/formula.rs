@@ -46,49 +46,7 @@ impl<'source> Parser<'source> {
         depth: u32,
         context: FormulaContext,
     ) -> Result<ParsedFormula, CompileError> {
-        let formula_offset = self.next_offset();
-        let operator_offset = formula_offset;
-        let operator = self.name()?;
-        let offset_after_name = self.offset;
-        self.skip_trivia();
-        let opening_parenthesis_offset = self.offset;
-        let has_call = self.byte() == Some(b'(');
-        self.offset = offset_after_name;
-        if !has_call && !self.reserved_binding_name(operator) {
-            return self.parsed_formula_binding_reference(
-                operator_offset,
-                operator,
-                depth,
-                context,
-            );
-        }
-        self.charge_formula_nodes(context, 1, formula_offset)?;
-        if depth > FORMULA_MAX_DEPTH {
-            return Err(CompileError::FormulaDepthLimitExceeded {
-                offset: formula_offset,
-                maximum: FORMULA_MAX_DEPTH,
-            });
-        }
-        if has_call {
-            self.offset = opening_parenthesis_offset + 1;
-        } else {
-            self.punctuation('(')?;
-        }
-        let parsed = match operator {
-            "eq" => self.parse_equal(formula_offset, depth, context, false),
-            "mem" => self.parse_member(formula_offset, depth, context),
-            "ne" => self.parse_equal(formula_offset, depth, context, true),
-            "not" => self.parse_not(operator_offset, depth, context),
-            "imp" => self.parse_implies(operator_offset, depth, context),
-            "all" => self.parse_quantified(operator_offset, depth, context, false),
-            "and" => self.parse_conjunction(operator_offset, depth, context),
-            "or" => self.parse_disjunction(operator_offset, depth, context),
-            "iff" => self.parse_biconditional(operator_offset, depth, context),
-            "ex" => self.parse_quantified(operator_offset, depth, context, true),
-            _ => self.parse_defined_relation(operator_offset, operator, context, depth),
-        }?;
-        self.call_end()?;
-        Ok(parsed)
+        syntax::formula::parse(self, depth as usize, context)
     }
 
     fn parse_equal(
@@ -359,191 +317,6 @@ impl<'source> Parser<'source> {
         })
     }
 
-    fn parse_not(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-    ) -> Result<ParsedFormula, CompileError> {
-        let body = self.parsed_formula(depth + 1, context)?;
-        let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes], offset)?;
-        let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
-        self.check_expanded_depth(offset, depth, expanded_depth)?;
-        Ok(ParsedFormula {
-            formula: DefinedFormula::negate(body.formula),
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
-    fn parse_implies(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-    ) -> Result<ParsedFormula, CompileError> {
-        let antecedent = self.parsed_formula(depth + 1, context)?;
-        self.punctuation(',')?;
-        let consequent = self.parsed_formula(depth + 1, context)?;
-        let (nodes, height) = syntax::binary_shape(
-            "imp",
-            (
-                antecedent.expanded_nodes as usize,
-                antecedent.expanded_depth as usize,
-            ),
-            (
-                consequent.expanded_nodes as usize,
-                consequent.expanded_depth as usize,
-            ),
-        )
-        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
-        let expanded_nodes =
-            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
-        let expanded_depth =
-            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
-        self.check_expanded_depth(offset, depth, expanded_depth)?;
-        Ok(ParsedFormula {
-            formula: DefinedFormula::implies(antecedent.formula, consequent.formula),
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
-    fn parse_quantified(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-        existential: bool,
-    ) -> Result<ParsedFormula, CompileError> {
-        let variables = syntax::binders(self.source, &mut self.offset, &mut self.variables)
-            .map_err(|error| match error {
-                syntax::BinderError::Name(offset) => CompileError::Syntax {
-                    offset,
-                    expected: "a name",
-                },
-                syntax::BinderError::Comma(offset) => CompileError::Syntax {
-                    offset,
-                    expected: "`,`",
-                },
-                syntax::BinderError::Depth | syntax::BinderError::Overflow => {
-                    CompileError::FormulaDepthLimitExceeded {
-                        offset,
-                        maximum: FORMULA_MAX_DEPTH,
-                    }
-                }
-            })?;
-        self.punctuation(',')?;
-        let extra = u32::try_from(variables.len()).expect("bounded binder list fits u32")
-            * if existential { 3 } else { 1 };
-        self.check_expanded_depth(offset, depth, extra + 1)?;
-        self.charge_formula_nodes(context, extra - 1, offset)?;
-        let body = self.parsed_formula(depth + extra, context)?;
-        let expanded_nodes =
-            self.checked_node_sum(context, &[extra, body.expanded_nodes], offset)?;
-        let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, extra)?;
-        self.check_expanded_depth(offset, depth, expanded_depth)?;
-        let mut formula = body.formula;
-        for variable in variables.into_iter().rev() {
-            formula = if existential {
-                DefinedFormula::exists(variable, formula)
-            } else {
-                DefinedFormula::for_all(variable, formula)
-            };
-        }
-        Ok(ParsedFormula {
-            formula,
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
-    fn parse_conjunction(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-    ) -> Result<ParsedFormula, CompileError> {
-        let left = self.parsed_formula(depth + 1, context)?;
-        self.punctuation(',')?;
-        let right = self.parsed_formula(depth + 1, context)?;
-        let (nodes, height) = syntax::binary_shape(
-            "and",
-            (left.expanded_nodes as usize, left.expanded_depth as usize),
-            (right.expanded_nodes as usize, right.expanded_depth as usize),
-        )
-        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
-        let expanded_nodes =
-            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
-        let expanded_depth =
-            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
-        self.check_derived_expansion(offset, depth, context, expanded_depth, 2)?;
-        Ok(ParsedFormula {
-            formula: DefinedFormula::conjunction(left.formula, right.formula),
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
-    fn parse_disjunction(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-    ) -> Result<ParsedFormula, CompileError> {
-        let left = self.parsed_formula(depth + 1, context)?;
-        self.punctuation(',')?;
-        let right = self.parsed_formula(depth + 1, context)?;
-        let (nodes, height) = syntax::binary_shape(
-            "or",
-            (left.expanded_nodes as usize, left.expanded_depth as usize),
-            (right.expanded_nodes as usize, right.expanded_depth as usize),
-        )
-        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
-        let expanded_nodes =
-            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
-        let expanded_depth =
-            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
-        self.check_derived_expansion(offset, depth, context, expanded_depth, 1)?;
-        Ok(ParsedFormula {
-            formula: DefinedFormula::disjunction(left.formula, right.formula),
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
-    fn parse_biconditional(
-        &mut self,
-        offset: usize,
-        depth: u32,
-        context: FormulaContext,
-    ) -> Result<ParsedFormula, CompileError> {
-        let left = self.parsed_formula(depth + 1, context)?;
-        self.punctuation(',')?;
-        let right = self.parsed_formula(depth + 1, context)?;
-        let (nodes, height) = syntax::binary_shape(
-            "iff",
-            (left.expanded_nodes as usize, left.expanded_depth as usize),
-            (right.expanded_nodes as usize, right.expanded_depth as usize),
-        )
-        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
-        let expanded_nodes =
-            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
-        let expanded_depth =
-            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
-        let additional_nodes = self.checked_node_sum(
-            context,
-            &[4, left.expanded_nodes, right.expanded_nodes],
-            offset,
-        )?;
-        self.check_derived_expansion(offset, depth, context, expanded_depth, additional_nodes)?;
-        Ok(ParsedFormula {
-            formula: DefinedFormula::biconditional(left.formula, right.formula),
-            expanded_nodes,
-            expanded_depth,
-        })
-    }
-
     fn check_derived_expansion(
         &mut self,
         operator_offset: usize,
@@ -643,5 +416,204 @@ impl<'source> Parser<'source> {
                 },
             },
         }
+    }
+}
+
+impl<'source> syntax::formula::FormulaBuilder<'source> for Parser<'source> {
+    type Parsed = ParsedFormula;
+    type Error = CompileError;
+    type Mode = FormulaContext;
+    fn start(
+        &mut self,
+        depth: usize,
+        context: FormulaContext,
+    ) -> Result<syntax::formula::Start<'source, ParsedFormula>, CompileError> {
+        let depth = depth as u32;
+        let formula_offset = self.next_offset();
+        let operator = self.name()?;
+        let offset_after_name = self.offset;
+        self.skip_trivia();
+        let opening_parenthesis_offset = self.offset;
+        let has_call = self.byte() == Some(b'(');
+        self.offset = offset_after_name;
+        if !has_call && !self.reserved_binding_name(operator) {
+            return self
+                .parsed_formula_binding_reference(formula_offset, operator, depth, context)
+                .map(syntax::formula::Start::Value);
+        }
+        self.charge_formula_nodes(context, 1, formula_offset)?;
+        if depth > FORMULA_MAX_DEPTH {
+            return Err(CompileError::FormulaDepthLimitExceeded {
+                offset: formula_offset,
+                maximum: FORMULA_MAX_DEPTH,
+            });
+        }
+        if has_call {
+            self.offset = opening_parenthesis_offset + 1;
+        } else {
+            self.punctuation('(')?;
+        }
+        Ok(syntax::formula::Start::Call {
+            name: operator,
+            offset: formula_offset,
+        })
+    }
+    fn atom(
+        &mut self,
+        op: syntax::formula::Operator,
+        offset: usize,
+        depth: usize,
+        context: FormulaContext,
+    ) -> Result<ParsedFormula, CompileError> {
+        use syntax::formula::Operator;
+        match op {
+            Operator::Equal => self.parse_equal(offset, depth as u32, context, false),
+            Operator::Unequal => self.parse_equal(offset, depth as u32, context, true),
+            Operator::Member => self.parse_member(offset, depth as u32, context),
+            _ => unreachable!(),
+        }
+    }
+    fn binders(&mut self, offset: usize) -> Result<Vec<FreeVariable>, CompileError> {
+        syntax::binders(self.source, &mut self.offset, &mut self.variables).map_err(|error| {
+            match error {
+                syntax::BinderError::Name(offset) => CompileError::Syntax {
+                    offset,
+                    expected: "a name",
+                },
+                syntax::BinderError::Comma(offset) => CompileError::Syntax {
+                    offset,
+                    expected: "`,`",
+                },
+                syntax::BinderError::Depth | syntax::BinderError::Overflow => {
+                    CompileError::FormulaDepthLimitExceeded {
+                        offset,
+                        maximum: FORMULA_MAX_DEPTH,
+                    }
+                }
+            }
+        })
+    }
+    fn quantified_depth(
+        &mut self,
+        op: syntax::formula::Operator,
+        count: usize,
+        offset: usize,
+        depth: usize,
+        context: FormulaContext,
+    ) -> Result<usize, CompileError> {
+        let extra = count as u32
+            * if op == syntax::formula::Operator::Exists {
+                3
+            } else {
+                1
+            };
+        self.check_expanded_depth(offset, depth as u32, extra + 1)?;
+        self.charge_formula_nodes(context, extra - 1, offset)?;
+        Ok(depth + extra as usize)
+    }
+    fn quantified(
+        &mut self,
+        op: syntax::formula::Operator,
+        variables: Vec<FreeVariable>,
+        body: ParsedFormula,
+        offset: usize,
+        depth: usize,
+        context: FormulaContext,
+    ) -> Result<ParsedFormula, CompileError> {
+        let existential = op == syntax::formula::Operator::Exists;
+        let extra = variables.len() as u32 * if existential { 3 } else { 1 };
+        let expanded_nodes =
+            self.checked_node_sum(context, &[extra, body.expanded_nodes], offset)?;
+        let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, extra)?;
+        self.check_expanded_depth(offset, depth as u32, expanded_depth)?;
+        let mut formula = body.formula;
+        for variable in variables.into_iter().rev() {
+            formula = if existential {
+                DefinedFormula::exists(variable, formula)
+            } else {
+                DefinedFormula::for_all(variable, formula)
+            };
+        }
+        Ok(ParsedFormula {
+            formula,
+            expanded_nodes,
+            expanded_depth,
+        })
+    }
+    fn negated(
+        &mut self,
+        body: ParsedFormula,
+        offset: usize,
+        depth: usize,
+        context: FormulaContext,
+    ) -> Result<ParsedFormula, CompileError> {
+        let expanded_nodes = self.checked_node_sum(context, &[1, body.expanded_nodes], offset)?;
+        let expanded_depth = self.checked_depth_add(offset, body.expanded_depth, 1)?;
+        self.check_expanded_depth(offset, depth as u32, expanded_depth)?;
+        Ok(ParsedFormula {
+            formula: DefinedFormula::negate(body.formula),
+            expanded_nodes,
+            expanded_depth,
+        })
+    }
+    fn binary(
+        &mut self,
+        op: syntax::formula::Operator,
+        [left, right]: [ParsedFormula; 2],
+        offset: usize,
+        depth: usize,
+        context: FormulaContext,
+    ) -> Result<ParsedFormula, CompileError> {
+        use syntax::formula::Operator;
+        let (nodes, height) = syntax::binary_shape(
+            op.name(),
+            (left.expanded_nodes as usize, left.expanded_depth as usize),
+            (right.expanded_nodes as usize, right.expanded_depth as usize),
+        )
+        .ok_or_else(|| Self::formula_node_limit(context, offset))?;
+        let expanded_nodes =
+            u32::try_from(nodes).map_err(|_| Self::formula_node_limit(context, offset))?;
+        let expanded_depth =
+            u32::try_from(height).map_err(|_| Self::formula_node_limit(context, offset))?;
+        let additional = match op {
+            Operator::And => 2,
+            Operator::Or => 1,
+            Operator::Iff => self.checked_node_sum(
+                context,
+                &[4, left.expanded_nodes, right.expanded_nodes],
+                offset,
+            )?,
+            Operator::Implies => 0,
+            _ => unreachable!(),
+        };
+        self.check_derived_expansion(offset, depth as u32, context, expanded_depth, additional)?;
+        let formula = match op {
+            Operator::Implies => DefinedFormula::implies(left.formula, right.formula),
+            Operator::And => DefinedFormula::conjunction(left.formula, right.formula),
+            Operator::Or => DefinedFormula::disjunction(left.formula, right.formula),
+            Operator::Iff => DefinedFormula::biconditional(left.formula, right.formula),
+            _ => unreachable!(),
+        };
+        Ok(ParsedFormula {
+            formula,
+            expanded_nodes,
+            expanded_depth,
+        })
+    }
+    fn extension(
+        &mut self,
+        name: &'source str,
+        offset: usize,
+        depth: usize,
+        context: FormulaContext,
+    ) -> Result<ParsedFormula, CompileError> {
+        self.parse_defined_relation(offset, name, context, depth as u32)
+    }
+    fn comma(&mut self) -> Result<(), CompileError> {
+        self.punctuation(',')
+    }
+    fn finish(&mut self, parsed: ParsedFormula, _: usize) -> Result<ParsedFormula, CompileError> {
+        self.call_end()?;
+        Ok(parsed)
     }
 }

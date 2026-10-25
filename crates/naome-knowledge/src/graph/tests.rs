@@ -446,11 +446,11 @@ fn generation_compaction_preserves_cold_snapshots_and_rejects_old_prepared_batch
     assert!(old.contains_proof(parent_id).unwrap());
     assert_eq!(graph.context.snapshot_id(), before);
     assert_eq!(graph.object(parent_id).unwrap(), Some(parent));
-    assert!(
+    assert_eq!(
         graph
             .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
-            .unwrap_err()
-            .contains("generation changed")
+            .unwrap_err(),
+        crate::Error::StaleAuthority,
     );
     assert_eq!(graph.accepted_count(), 1);
     assert!(graph.storage_error().is_none());
@@ -507,11 +507,11 @@ fn pre_attach_batch_is_stale_before_canonical_write_while_generation_is_unchange
     assert!(Arc::ptr_eq(&storage, &graph.checked_storage));
     assert_eq!(graph.context.snapshot_id(), snapshot);
     assert_ne!(storage.copy_epoch().unwrap(), epoch);
-    assert!(
+    assert_eq!(
         graph
             .commit_batch(root, batch, Instant::now() + Duration::from_secs(60))
-            .unwrap_err()
-            .contains("generation changed")
+            .unwrap_err(),
+        crate::Error::StaleAuthority,
     );
     assert_eq!(graph.accepted_count(), 1);
     assert_eq!(graph.content_root(), corpus);

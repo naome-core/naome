@@ -7,7 +7,7 @@ mod helpers;
 #[cfg(test)]
 mod tests;
 use crate::{
-    graph::program::{ProgramAdmission, ProgramBudget, ProgramCheck},
+    graph::program::{PreparedProgram, ProgramAdmission, ProgramBudget, ProgramCheck},
     object::ProgramMetadata,
     proof_work::CheckedWork,
 };
@@ -25,7 +25,7 @@ pub(super) struct Programs {
 struct Offer {
     peer: PeerId,
     metadata: ProgramMetadata,
-    grant: Option<crate::graph::PeerGrant>,
+    grant: Option<crate::publication::PeerGrant>,
 }
 struct Root {
     offer: Offer,
@@ -50,17 +50,7 @@ struct QuestionAuthority {
 enum Stage {
     Fetch,
     Check(Box<ProgramCheck>),
-    Prepare {
-        proof: Box<CheckedWork>,
-    },
-    Register {
-        proof: Box<CheckedWork>,
-        admission: Box<ProgramAdmission>,
-    },
-    Ready {
-        proof: Box<CheckedWork>,
-        batch: Box<CheckedBatch>,
-    },
+    Prepare(Box<PreparedProgram>),
 }
 impl QuestionAuthority {
     fn refresh<F, Fut>(
@@ -171,11 +161,8 @@ impl Programs {
     fn busy(&self) -> bool {
         self.active.as_ref().is_some_and(|root| {
             root.allowed
-                && (matches!(
-                    root.stage,
-                    Stage::Check(_) | Stage::Prepare { .. } | Stage::Register { .. }
-                ) || root.input_complete
-                    && root.scanned < root.offer.metadata.manifest.commands
+                && (matches!(root.stage, Stage::Check(_) | Stage::Prepare(_))
+                    || root.input_complete && root.scanned < root.offer.metadata.manifest.commands
                     || root.helpers.busy())
         })
     }
@@ -184,7 +171,7 @@ impl Programs {
         peer: PeerId,
         metadata: ProgramMetadata,
         graph: &Graph,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<&'static str, crate::Error> {
         let id = metadata.manifest.proof_id();
         if graph.contains(id)? {
@@ -372,7 +359,7 @@ impl Programs {
                 id,
                 graph,
                 questions,
-                matches!(root.stage, Stage::Ready { .. }),
+                matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready()),
             )?;
             if !root.allowed {
                 return Ok(None);
@@ -381,13 +368,19 @@ impl Programs {
             let cache = root.helpers.cache_share(snapshot.budget.cache_bytes)?;
             match &mut root.stage {
                 Stage::Check(check) => check.restrict_cache(cache)?,
-                Stage::Prepare { proof }
-                | Stage::Register { proof, .. }
-                | Stage::Ready { proof, .. } => proof.restrict_cache(cache)?,
+                Stage::Prepare(prepared) => prepared.restrict_cache(cache)?,
                 Stage::Fetch => {}
             }
-            if snapshot.budget.paused.is_some() && !matches!(root.stage, Stage::Ready { .. }) {
+            if snapshot.budget.paused.is_some()
+                && !matches!(&root.stage, Stage::Prepare(prepared) if prepared.ready())
+            {
                 return Ok(None);
+            }
+            if let Stage::Prepare(prepared) = &mut root.stage
+                && !prepared.current(graph)?
+            {
+                prepared.invalidate();
+                root.helpers.invalidate_prefix();
             }
             root.helpers.advance(graph)?;
             if root.helpers.member_count() + 1 > crate::resources::limits().closure_objects {
@@ -433,59 +426,32 @@ impl Programs {
                             .question
                             .classify_checked_program(proof.proof()?)
                             .map_err(crate::Error::from)?;
-                        root.stage = Stage::Prepare {
-                            proof: Box::new(proof),
-                        };
+                        root.stage = Stage::Prepare(Box::new(PreparedProgram::new(proof)));
                     }
                 }
-                Stage::Prepare { proof } => {
-                    let admission =
-                        graph.begin_program_admission_after(proof, root.helpers.take_prefix())?;
-                    let Stage::Prepare { proof } = std::mem::replace(&mut root.stage, Stage::Fetch)
-                    else {
-                        unreachable!()
+                Stage::Prepare(prepared) => {
+                    let was_ready = prepared.ready();
+                    let prefix = if prepared.pending() {
+                        root.helpers.take_prefix()
+                    } else {
+                        None
                     };
-                    root.stage = Stage::Register {
-                        proof,
-                        admission: Box::new(admission),
-                    };
-                }
-                Stage::Register { proof, admission } => {
-                    match admission.advance(graph, proof, snapshot.budget.batch_steps.max(1)) {
-                        Ok(true) => {
-                            let Stage::Register { proof, admission } =
-                                std::mem::replace(&mut root.stage, Stage::Fetch)
-                            else {
-                                unreachable!()
-                            };
-                            let batch = admission.finish(graph, &proof)?;
-                            root.stage = Stage::Ready {
-                                proof,
-                                batch: Box::new(batch),
-                            };
-                        }
-                        Ok(false) => {}
-                        Err(crate::Error::StaleAuthority) => {
+                    let complete = match prepared.advance_after(
+                        graph,
+                        snapshot.budget.batch_steps.max(1),
+                        prefix,
+                    ) {
+                        Ok(complete) => complete,
+                        Err(error) => {
+                            prepared.invalidate();
                             root.helpers.invalidate_prefix();
-                            let Stage::Register { proof, .. } =
-                                std::mem::replace(&mut root.stage, Stage::Fetch)
-                            else {
-                                unreachable!()
-                            };
-                            root.stage = Stage::Prepare { proof };
+                            return Err(error);
                         }
-                        Err(error) => return Err(error),
-                    }
-                }
-                Stage::Ready { proof: _, batch } => {
-                    if !graph.batch_current(batch)? {
+                    };
+                    if prepared.pending() {
                         root.helpers.invalidate_prefix();
-                        let Stage::Ready { proof, .. } =
-                            std::mem::replace(&mut root.stage, Stage::Fetch)
-                        else {
-                            unreachable!()
-                        };
-                        root.stage = Stage::Prepare { proof };
+                    }
+                    if !complete || !was_ready {
                         return Ok(None);
                     }
                     if root.refresh
@@ -499,11 +465,7 @@ impl Programs {
                     {
                         return Ok(None);
                     }
-                    let Stage::Ready { batch, .. } =
-                        std::mem::replace(&mut root.stage, Stage::Fetch)
-                    else {
-                        unreachable!()
-                    };
+                    let batch = prepared.take_batch().ok_or("program batch absent")?;
                     let deadline = Instant::now() + crate::resources::limits().root_timeout;
                     let assessment = root
                         .authority
@@ -515,7 +477,7 @@ impl Programs {
                     let admitted = questions.publish_exchange(
                         graph,
                         id,
-                        *batch,
+                        batch,
                         delta,
                         root.offer.grant.clone(),
                         deadline,
@@ -555,7 +517,7 @@ impl Intake {
         peer: PeerId,
         metadata: ProgramMetadata,
         graph: &Graph,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<&'static str, crate::Error> {
         if self.programs.helper_contains(metadata.manifest.proof_id())
             || self

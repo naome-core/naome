@@ -326,7 +326,13 @@ impl Helpers {
         }
         if let Some(id) = next_certificate {
             let proof = self.certificates[&id].clone().prepare()?;
-            self.prefix = Some(graph.prepare_helper_after(proof, self.prefix.take())?);
+            self.prefix = match graph.prepare_helper_after(proof, self.prefix.take()) {
+                Ok(prefix) => Some(prefix),
+                Err(error) => {
+                    self.invalidate_prefix();
+                    return Err(error);
+                }
+            };
             self.registered.insert(id);
             return Ok(vec![id]);
         }
@@ -362,13 +368,17 @@ impl Helpers {
                 }
                 return Ok(Vec::new());
             }
-            self.registration = Some((
-                id,
-                graph.begin_program_admission_after(
-                    helper.checked.as_ref().expect("checked cited program"),
-                    self.prefix.take(),
-                )?,
-            ));
+            let admission = graph.begin_program_admission_after(
+                helper.checked.as_ref().expect("checked cited program"),
+                self.prefix.take(),
+            );
+            match admission {
+                Ok(admission) => self.registration = Some((id, admission)),
+                Err(error) => {
+                    self.invalidate_prefix();
+                    return Err(error);
+                }
+            }
         }
         if self.registration.is_none()
             && self.needed.is_empty()

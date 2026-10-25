@@ -430,7 +430,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     let mut controls = worker::Controls::spawn(Some(control.clone()), status);
     let (started, observed) = std::sync::mpsc::channel();
     let (release, wait) = std::sync::mpsc::channel();
-    graph.set_commit_guard(crate::graph::CommitGuard::new(
+    graph.set_commit_guard(crate::publication::CommitGuard::new(
         Arc::new(AtomicU64::new(0)),
         0,
         Some(control.clone()),
@@ -573,7 +573,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
     let (result, count, fault) = tokio::task::spawn_blocking(move || owner.join().unwrap())
         .await
         .unwrap();
-    assert_eq!(result.unwrap_err(), crate::graph::STALE_COMMIT);
+    assert_eq!(result.unwrap_err(), crate::publication::STALE_COMMIT);
     assert_eq!(count, 0);
     assert_eq!(fault, None);
     controls.shutdown().await.unwrap();
@@ -597,7 +597,7 @@ async fn transport_queue_failure_permanently_revokes_publication() {
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
         .unwrap();
     let (shared, events, mut transport) = worker::Transport::spawn(swarm, primary_listener);
-    let guard = crate::graph::CommitGuard::new(shared.epoch.clone(), 0, None, None);
+    let guard = crate::publication::CommitGuard::new(shared.epoch.clone(), 0, None, None);
     drop(events);
     tokio::time::timeout(Duration::from_secs(2), async {
         while shared.epoch.load(Ordering::Acquire) == 0 {
@@ -612,9 +612,13 @@ async fn transport_queue_failure_permanently_revokes_publication() {
             .unwrap()
             .is_err()
     );
-    assert_eq!(guard.check().unwrap_err(), crate::graph::STALE_COMMIT);
+    assert_eq!(guard.check().unwrap_err(), crate::publication::STALE_COMMIT);
     let terminal = shared.epoch.load(Ordering::Acquire);
     assert_eq!(terminal, u64::MAX);
-    let later_guard = crate::graph::CommitGuard::new(shared.epoch.clone(), terminal, None, None);
-    assert_eq!(later_guard.check().unwrap_err(), crate::graph::STALE_COMMIT);
+    let later_guard =
+        crate::publication::CommitGuard::new(shared.epoch.clone(), terminal, None, None);
+    assert_eq!(
+        later_guard.check().unwrap_err(),
+        crate::publication::STALE_COMMIT
+    );
 }
