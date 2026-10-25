@@ -1,0 +1,5 @@
+# Inventory tools install with --locked; none run in a publication job.
+cargo-about = "0.9.2"
+cargo-cyclonedx = "0.5.9"
+# cargo-audit's upstream executable also has per-host checksums in tools/ci.
+cargo-audit = "0.22.2"

@@ -1250,6 +1250,11 @@ async fn wait_for_stop(
 
 /// Ordinary CLI exposes lifecycle, passive observation and local owner interest.
 pub async fn execute() -> Result<(), String> {
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if let Some(output) = cli::information(&arguments) {
+        println!("{output}");
+        return Ok(());
+    }
     if std::env::var_os("NAOME_EFFECTIVE_RESOURCES").is_none()
         && std::env::var_os("NAOME_RESOURCE_CONFIG").is_none()
     {
@@ -1257,7 +1262,6 @@ pub async fn execute() -> Result<(), String> {
     } else {
         crate::resources::initialize_from_environment()?;
     }
-    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let plain = if arguments.first().is_some_and(|a| a == "--json") {
         &arguments[1..]
     } else {
