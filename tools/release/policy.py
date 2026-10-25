@@ -54,7 +54,7 @@ def successful_run(runs, workflow, sha):
     return {"id": run["id"], "attempt": run["run_attempt"], "url": run["html_url"]}
 
 
-def check_publication(api, release, sha, *, resume_marker=None):
+def check_request(api, release, sha, *, resume_marker=None):
     repository = api.get("")
     if repository["full_name"] != REPOSITORY or repository["default_branch"] != "main" or repository["private"]:
         raise ValueError("publication requires the canonical public repository and main branch")
@@ -79,10 +79,8 @@ def check_publication(api, release, sha, *, resume_marker=None):
             raise ValueError("main rulesets must be active without bypass actors")
     if api.get("/immutable-releases").get("enabled") is not True:
         raise ValueError("enable GitHub immutable releases before publishing (Settings > General > Releases)")
-    qualifications = {}
-    for workflow in ("ci.yml", "full-cargo.yml"):
-        runs = api.pages(f"/actions/workflows/{workflow}/runs?branch=main&event=push&head_sha={sha}", "workflow_runs")
-        qualifications[workflow] = successful_run(runs, workflow, sha)
+    runs = api.pages(f"/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha={sha}", "workflow_runs")
+    qualifications = {"ci.yml": successful_run(runs, "ci.yml", sha)}
     existing = None
     for previous in api.pages("/releases"):
         if previous["tag_name"] == release["tag"]:
@@ -97,4 +95,41 @@ def check_publication(api, release, sha, *, resume_marker=None):
     tag = api.get(f"/git/ref/tags/{release['tag']}", missing=True)
     if tag and not (existing and tag["object"]["type"] == "commit" and tag["object"]["sha"] == sha):
         raise ValueError("release tag already exists or does not match the owned draft")
+    return qualifications, existing
+
+
+def check_publication(api, release, sha, run_id, *, resume_marker=None):
+    qualifications, existing = check_request(api, release, sha, resume_marker=resume_marker)
+    if not str(run_id).isdecimal():
+        raise ValueError("invalid full qualification run identity")
+    run = api.get(f"/actions/runs/{run_id}")
+    if (str(run.get("id")) != str(run_id) or run.get("head_sha") != sha
+            or run.get("path") != ".github/workflows/release.yml"
+            or run.get("event") != "workflow_dispatch" or run.get("head_branch") != "main"
+            or run.get("head_repository", {}).get("full_name") != REPOSITORY
+            or (run.get("status"), run.get("conclusion")) not in {
+                ("in_progress", None), ("completed", "success")}):
+        raise ValueError("full qualification must belong to this canonical main release run")
+    prefix = "Full source qualification / "
+    expected = {
+        f"{prefix}Cargo ({platform}, {profile}) / Full workspace": runner
+        for platform, runner in (("Linux x86_64", "ubuntu-24.04"), ("macOS ARM64", "macos-15"))
+        for profile in ("test", "release")
+    }
+    expected[prefix + "Full Cargo results"] = "ubuntu-24.04"
+    jobs = list(api.pages(f"/actions/runs/{run_id}/jobs?filter=latest", "jobs"))
+    evidence = []
+    for name, runner in expected.items():
+        selected = [job for job in jobs if job.get("name") == name]
+        if len(selected) != 1:
+            raise ValueError(f"missing or duplicate full qualification job: {name}")
+        job = selected[0]
+        if (job.get("head_sha") != sha or str(job.get("run_id")) != str(run_id)
+                or job.get("status") != "completed" or job.get("conclusion") != "success"
+                or job.get("labels") != [runner]):
+            raise ValueError(f"full qualification job has not succeeded on its standard runner: {name}")
+        evidence.append({"id": job["id"], "name": name, "url": job["html_url"]})
+    qualifications["full-cargo.yml"] = {
+        "id": run["id"], "attempt": run["run_attempt"], "url": run["html_url"], "jobs": evidence,
+    }
     return qualifications, existing

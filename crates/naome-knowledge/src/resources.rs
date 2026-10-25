@@ -1,7 +1,13 @@
 //! Canonical startup capacity, live work admission and resource custody.
 //! Native startup calibrates capacity once; explicit owner profiles remain
 //! ceilings. Live budgets may shrink without redefining stored/protocol formats.
-//! See `resources/README.md` for the ownership and calibration contract.
+//! The native owner retains one observation controller through checked startup
+//! replay and the live loop. Missing initial telemetry cannot create a budget.
+//! Pressure closes new computation while existing leases drain and bounded
+//! control remains available within installed memory and disk capacity.
+//! Provider feedback measures work; it never renews durable job identity,
+//! reservations, work allowances or absolute deadlines. Mathematical validity,
+//! protocol formats, persistence and process custody retain their own owners.
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 pub mod adaptive;

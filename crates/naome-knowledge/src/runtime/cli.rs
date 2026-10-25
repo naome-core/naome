@@ -16,8 +16,25 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              Usage:\n  naome start\n  naome stop\n  naome status\n  \
              naome interest <text>\n  naome --help\n  naome --version\n\n\
              Place --json before a command for machine output.\n\
-             NAOME_NODE_DIR selects the local node directory.\n\
-             Resource budgets adapt automatically."
+             \nData and configuration:\n\
+             NAOME_NODE_DIR selects an isolated node directory. The default is\n\
+             $XDG_DATA_HOME/naome, or $HOME/.local/share/naome. First start creates\n\
+             config.json. Stop and back up the entire directory before updating.\n\
+             Pre-release software supports current formats without legacy migration.\n\
+             \nAutomatic computation:\n\
+             Budgets adapt automatically. Status reports running, pausing, paused\n\
+             or stopped computation and its reason. Pressure closes new computation;\n\
+             admitted work drains without new time or work allowances. Bounded\n\
+             discovery, checked-proof serving and lifecycle control remain active.\n\
+             No unchecked proof is admitted. Network allocations retain memory limits.\n\
+             \nNetworking and privacy:\n\
+             The checked graph is public to compatible peers: do not store secrets.\n\
+             mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\
+             peers as a client. Discovery reveals identities and reachable addresses.\n\
+             Noise authenticates transport; it does not hide addresses or timing.\n\
+             config.json discovery.internet, discovery.dht and discovery.mdns control\n\
+             discovery. Set internet=false for an isolated DHT with its own bootstrap\n\
+             peers. Keep allow_private_addresses disabled for public operation."
                 .into(),
         ),
         _ => None,
