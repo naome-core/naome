@@ -649,7 +649,7 @@ where
                 }
             }
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(
-            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
+            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));
         // A cold peer may stay quiet after its response. Wake at the next
         // paced request deadline instead of quantizing reads to the tick.
@@ -674,7 +674,7 @@ where
                 let event = event.ok_or("proof transport stopped or exceeded its event capacity")?;
                 node.transport_epoch = event.epoch;
                 node.graph.set_commit_guard(crate::publication::CommitGuard::new(
-                    node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
+                    node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
                 ));
                 node.event(event.event, event.grant)?;
                 published.ready.store(node.ready, Ordering::Release);
@@ -732,7 +732,7 @@ where
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
                 && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(
-            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
+            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).selection,
         ));
         node.graph.maintain_checked_storage()?;
         questions.maintain_registry()?;

@@ -295,28 +295,13 @@ fn live_limit(capacity: usize, limit: impl FnOnce(&Budget) -> usize) -> usize {
 
 pub fn load(directory: &Path) -> Result<Selection, String> {
     let path = directory.join("resource-profile.json");
-    let file = match fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(&path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Selection::default()),
-        Err(e) => return Err(e.to_string()),
+    let Some(bytes) = crate::storage::read_owned(&path, 4096)? else {
+        return Ok(Selection::default());
     };
-    crate::storage::owned_file(&path)?;
-    let mut bytes = Vec::new();
-    file.take(4097)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > 4096 {
-        return Err("resource selection capacity".into());
-    }
     let selection: Selection = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     selection.validate()?;
     Ok(selection)
 }
-use std::os::unix::fs::OpenOptionsExt;
 pub fn save(directory: &Path, selection: &Selection) -> Result<(), String> {
     selection.validate()?;
     fs::create_dir_all(directory).map_err(|e| e.to_string())?;
