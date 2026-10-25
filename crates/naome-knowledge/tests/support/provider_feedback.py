@@ -14,6 +14,22 @@ from proof_network import digest
 ROLES = ("finding", "solving", "local_interest", "peer_interest")
 
 
+def observe_budgets(previous, state):
+    assert state and state["records"]
+    for record in state["records"].values():
+        assert record["settings"]["limits"] == {"horizon_ms": 60000, "work_units": 64}, record
+        assert record["expires_ms"] == record["created_ms"] + 60000, record
+        assert 0 <= record["checkpoint"] <= record["settings"]["mock"]["steps"] == 2, record
+        assert record["checkpoint"] <= record["reserved_units"] <= 64, record
+        before = previous.get(record["id"])
+        if before is not None:
+            for field in ("input", "binding", "provider", "configuration", "settings", "created_ms", "expires_ms"):
+                assert record[field] == before[field], (field, before, record)
+            for field in ("checkpoint", "reserved_units", "spent_ms"):
+                assert record[field] >= before[field], (field, before, record)
+        previous[record["id"]] = record
+
+
 def feedback(trial, node):
     command = [str(trial.binary), "--json", "resources"]
     result = subprocess.run(command, stdin=subprocess.DEVNULL,
@@ -50,8 +66,13 @@ def run(trial):
     # recovery window. Wait for real admission without bypassing its sensors.
     trial.wait(lambda: all(trial.call(node, "status")["computation"] == "running"
                            for node in trial.nodes), maximum=40)
+    budgets = {node.index: {} for node in trial.nodes}
 
     def observed():
+        for node in trial.nodes:
+            state = journal(node)
+            if state and state["records"]:
+                observe_budgets(budgets[node.index], state)
         reports = [feedback(trial, node) for node in trial.nodes]
         selected = {role: next((report[role] for report in reports
                                 if report[role]["completed"] > 0), None) for role in ROLES}
@@ -70,15 +91,10 @@ def run(trial):
         assert report["work"]["cpu_nanos"] > 0, (role, report)
     trial.wait(lambda: source.ids() & receiver.ids(), maximum=20)
     for node in trial.nodes:
-        state = journal(node)
-        assert state and state["records"]
-        for record in state["records"].values():
-            assert record["settings"]["limits"] == {"horizon_ms": 60000, "work_units": 64}, record
-            assert record["expires_ms"] == record["created_ms"] + 60000, record
-            assert record["checkpoint"] <= record["reserved_units"] <= 64, record
-            assert record["reserved_units"] <= 2, record
+        observe_budgets(budgets[node.index], journal(node))
         assert trial.call(node, "status")["running"]
     trial.summary.update(result="pass", provider_feedback=reports,
+        observed_job_budgets={index: len(records) for index, records in budgets.items()},
         claim="real isolated provider workers report all phases and roles to the node owner; telemetry does not change durable job limits or proof admission")
 
 
