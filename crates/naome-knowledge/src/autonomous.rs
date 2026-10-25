@@ -361,7 +361,10 @@ impl Autonomous {
                         "formal_rule":result.assessment.prefilter.rule,
                         "interest":format!("{:?}",result.assessment.interest)}),
                     );
-                    if matches!(result.outcome, question::AdmissionOutcome::Admitted(_)) {
+                    let admitted =
+                        matches!(result.outcome, question::AdmissionOutcome::Admitted(_));
+                    crate::resources::feedback::finding_result(admitted);
+                    if admitted {
                         self.retain(pending.question);
                     }
                     self.acknowledge(pending.job);

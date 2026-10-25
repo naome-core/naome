@@ -399,13 +399,6 @@ impl Owner {
                 Err(error) => record.failure = Some(failure_detail(&error)),
             }
         }
-        if matches!(record.input, Input::Find { .. }) && record.state == State::Complete {
-            match record.result {
-                Some(Output::Question(_)) => crate::resources::feedback::finding_result(true),
-                Some(Output::NoCandidate) => crate::resources::feedback::finding_result(false),
-                _ => {}
-            }
-        }
         if self
             .waiters
             .get(&id)

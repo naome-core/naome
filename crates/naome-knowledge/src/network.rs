@@ -28,7 +28,9 @@ use tokio::sync::mpsc;
 mod command;
 mod exchange;
 mod inventory;
+mod program_read;
 use inventory::response as inventory_response;
+use program_read::ProgramRead;
 mod worker;
 use std::sync::{Arc, atomic::Ordering};
 
@@ -151,9 +153,7 @@ enum Flight {
     },
     Program {
         started: Instant,
-        root: ProofId,
-        id: ProofId,
-        start: u64,
+        read: ProgramRead,
         peer: PeerId,
     },
 }
@@ -1421,16 +1421,18 @@ impl Node {
             Ok(Some((peer, root, id, start, limit)))
                 if self.request_ready(peer, now)
                     && self.automatic_request_ready(peer, now)
-                    && !self.flights.values().any(
-                        |flight| matches!(flight,Flight::Program{id:requested,..}if *requested==id),
-                    ) =>
+                    && !self
+                        .flights
+                        .values()
+                        .any(|flight| matches!(flight,Flight::Program{read,..}if read.id==id)) =>
             {
-                let frame = Frame::new(Body::ProgramGet {
-                    root: *root.as_bytes(),
-                    id: *id.as_bytes(),
+                let read = ProgramRead {
+                    root,
+                    id,
                     start,
                     limit,
-                });
+                };
+                let frame = Frame::new(read.body());
                 let request = self
                     .swarm
                     .request_granted(peer, frame, self.swarm.grant(peer, root));
@@ -1438,9 +1440,7 @@ impl Node {
                     request,
                     Flight::Program {
                         started: Instant::now(),
-                        root,
-                        id,
-                        start,
+                        read,
                         peer,
                     },
                 );
@@ -1824,8 +1824,8 @@ impl Node {
                 },
             )) => {
                 crate::resources::feedback::network_failure();
-                if let Some(Flight::Program { id, peer, .. }) = self.flights.get(&request_id) {
-                    self.intake.program_failed(*peer, *id);
+                if let Some(Flight::Program { read, peer, .. }) = self.flights.get(&request_id) {
+                    self.intake.program_failed(*peer, read.id);
                 }
                 if let Some(Flight::Get { root, .. }) = self.flights.remove(&request_id) {
                     self.intake.abort(root);
@@ -2059,19 +2059,10 @@ impl Node {
                     emit(json!({"event":"rejected","error":error.to_string()}));
                 }
             }
-            (
-                Flight::Program {
-                    root: expected_root,
-                    id: expected_id,
-                    start,
-                    ..
-                },
-                Body::ProgramData { root, id, chunk },
-            ) => {
-                let result = if root != *expected_root.as_bytes()
-                    || id != *expected_id.as_bytes()
-                    || chunk.start != start
-                {
+            (Flight::Program { read, .. }, Body::ProgramData { root, id, chunk }) => {
+                let expected_root = read.root;
+                let expected_id = read.id;
+                let result = if !read.matches_reply(root, id, &chunk) {
                     Err(crate::Error::InvalidInput(
                         "program response scope mismatch".into(),
                     ))
@@ -2092,7 +2083,8 @@ impl Node {
                     );
                 }
             }
-            (Flight::Program { id, .. }, body) => {
+            (Flight::Program { read, .. }, body) => {
+                let id = read.id;
                 self.intake.program_failed(peer, id);
                 let error = match body {
                     Body::Error { reason } => reason,
