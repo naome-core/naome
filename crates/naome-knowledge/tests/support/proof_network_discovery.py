@@ -33,7 +33,7 @@ class Relay(Node):
     def start(self):
         self.generation += 1
         path = self.driver.output / "relay.config.json"
-        config = {"directory": str(self.directory), "listen": f"/ip4/127.0.0.1/tcp/{self.port}"}
+        config = {"directory": str(self.directory), "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "allow_private_addresses": True}
         path.write_text(json.dumps(config, indent=2) + "\n")
         command = [str(self.driver.binary), "relay", str(path)]
         self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -75,6 +75,7 @@ class DiscoveryDriver(Driver):
     def settings(self, node):
         relay_mode = self.mode in ["relay", "upgrade"]
         config = {"mdns": self.mode == "mdns", "dht": self.mode != "mdns",
+                  "internet": False, "allow_private_addresses": True,
                   "bootstrap": [], "relays": [], "hole_punch": self.mode == "upgrade",
                   "relay_only": relay_mode, "external_addresses": []}
         if relay_mode:
@@ -185,6 +186,42 @@ class DiscoveryDriver(Driver):
         self.summary["accepted_ids"] = sorted(initial)
         self.summary["content_root"] = self.summary["scenarios"]["restart_rediscovery_and_catchup"]["root"]
 
+    def hostile(self):
+        for index in range(10):
+            self.init_node(index)
+        victim, honest = self.nodes[:2]
+        endpoint = lambda node: {"id": node.identity, "address": f"/ip4/127.0.0.1/tcp/{node.port}"}
+        victim.start(network_config={"peers": [endpoint(honest)],
+            "discovery": {"mdns": True, "dht": False, "internet": False}})
+        for attacker in self.nodes[2:]:
+            attacker.start(network_config={"peers": [endpoint(victim)],
+                "discovery": {"mdns": False, "dht": False, "internet": False}})
+        attacker_ids = {node.identity for node in self.nodes[2:]}
+        until = min(self.deadline, time.monotonic() + 20)
+        witnessed = False
+        while time.monotonic() < until:
+            status = victim.command("status")
+            connected = attacker_ids.intersection(status["connected"])
+            assert len(connected) <= 4, "rotating identities exceeded the default network-group limit"
+            witnessed = bool(connected) and any(event.get("event") == "incoming_connection_failed"
+                and "network group peer limit" in event.get("detail", "") for event in victim.events)
+            if witnessed:
+                break
+            time.sleep(0.1)
+        assert witnessed, "authenticated hostile identities never reached the admission boundary"
+        honest.start(network_config={"peers": [endpoint(victim)],
+            "discovery": {"mdns": False, "dht": False, "internet": False}})
+        expected = [self.produce(0, 61, "victim-proof")["proof_id"],
+                    self.produce(1, 62, "honest-proof")["proof_id"]]
+        self.convergence("honest_exchange_under_identity_pressure", [0, 1], expected, time.monotonic(), timeout=30)
+        assert len(attacker_ids.intersection(victim.command("status")["connected"])) <= 4
+        assert all(node.process.poll() is None for node in self.nodes)
+        self.assert_caps()
+        self.summary["scenarios"]["authenticated_identity_flood"] = {"result": "pass",
+            "distinct_attacker_keys": len(attacker_ids), "default_network_group_limit": 4,
+            "trusted_outbound_peer_connected": honest.identity in victim.command("status")["connected"]}
+        assert self.summary["scenarios"]["authenticated_identity_flood"]["trusted_outbound_peer_connected"]
+
     def circuit(self):
         directory = self.output / "relay"
         identity = self.init_identity(directory)
@@ -216,6 +253,13 @@ class DiscoveryDriver(Driver):
             assert any("CircuitReqAccepted" in event.get("detail", "") for event in self.relay.events)
             self.summary["scenarios"]["proof_payload_requires_relay_circuit"] = {
                 "result":"pass", "direct_proof_connections":0, "hole_punch_enabled":False, "transfers":transfers}
+            self.relay.stop()
+            fresh = self.produce(0, 63, "relay-outage-proof")["proof_id"]
+            assert all(node.process.poll() is None for node in self.nodes)
+            self.relay.start()
+            expected.append(fresh)
+            self.convergence("relay_outage_recovery_without_node_exit", range(2), expected,
+                             time.monotonic(), timeout=45)
         else:
             deadline = min(self.deadline, time.monotonic() + 30)
             while time.monotonic() < deadline:
@@ -286,12 +330,14 @@ def main():
     parser.add_argument("--binary", required=True, type=Path, help="developer-tools naome-knowledge-dev executable")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--profile", required=True)
-    parser.add_argument("--mode", required=True, choices=["mdns", "dht", "relay", "upgrade"])
+    parser.add_argument("--mode", required=True, choices=["mdns", "dht", "relay", "upgrade", "hostile"])
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
     driver = DiscoveryDriver(args.binary, args.output, args.timeout, args.profile, args.mode)
     try:
-        if args.mode in ["mdns", "dht"]:
+        if args.mode == "hostile":
+            driver.hostile()
+        elif args.mode in ["mdns", "dht"]:
             driver.discovery()
         else:
             driver.circuit()

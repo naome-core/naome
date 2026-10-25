@@ -272,7 +272,8 @@ impl Transport {
                 {
                     let swarm = driver.swarm.lock().expect("transport lock");
                     let book = swarm.behaviour().gate.0.lock();
-                    discovery::identified_kind(*peer_id, info, false, &book.relays).is_none()
+                    discovery::identified_kind(*peer_id, info, false, &book.relays, book.internet)
+                        .is_none()
                 } else {
                     false
                 };
@@ -289,6 +290,32 @@ impl Transport {
                         .lock()
                         .expect("peer grant lock")
                         .revoke_peer(*peer_id);
+                }
+                // Provider addresses live in the active Kademlia query. Start
+                // a normal dial while that query is still alive, before the
+                // state owner's bounded handoff can outlive those addresses.
+                // Native behaviours supply addresses; the final TCP filter and
+                // Noise admission apply exactly as for every other connection.
+                if let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
+                    discovery::BehaviourEvent::Kad(libp2p::kad::Event::OutboundQueryProgressed {
+                        result:
+                            libp2p::kad::QueryResult::GetProviders(Ok(
+                                libp2p::kad::GetProvidersOk::FoundProviders { key, providers },
+                            )),
+                        ..
+                    }),
+                )) = &event
+                    && *key == discovery::provider_key()
+                {
+                    driver.with(|swarm| {
+                        if swarm.behaviour().gate.0.lock().internet {
+                            for peer in providers.iter().take(crate::resources::limits().contacts) {
+                                let _ = swarm.dial(
+                                    libp2p::swarm::dial_opts::DialOpts::peer_id(*peer).build(),
+                                );
+                            }
+                        }
+                    });
                 }
                 if revokes {
                     driver
@@ -356,12 +383,46 @@ impl Transport {
                     _ => None,
                 };
                 let epoch = driver.epoch.load(Ordering::Acquire);
-                send.try_send(TransportEvent {
+                let handoff = TransportEvent {
                     event,
                     epoch,
                     grant,
-                })
-                .map_err(|_| "bounded transport event queue exhausted")?;
+                };
+                match send.try_send(handoff) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        return Err("transport state owner unavailable".into());
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(handoff)) => {
+                        match handoff {
+                            TransportEvent {
+                                event:
+                                    SwarmEvent::Behaviour(BehaviourEvent::Exchange(
+                                        request_response::Event::Message {
+                                            message:
+                                                request_response::Message::Request { channel, .. },
+                                            ..
+                                        },
+                                    )),
+                                ..
+                            } => {
+                                let _ = driver.behaviour_mut().exchange.send_response(
+                                    channel,
+                                    Frame::new(Body::Error {
+                                        reason: "node state owner busy".into(),
+                                    }),
+                                );
+                            }
+                            // Retain one bounded critical event. Backpressure
+                            // preserves response/disconnect ordering and grants;
+                            // remote event pressure must not terminate the node.
+                            handoff => tokio::select! {
+                                result = send.send(handoff) => result.map_err(|_| "transport state owner unavailable")?,
+                                _ = &mut halted => return Ok(()),
+                            },
+                        }
+                    }
+                }
             }
         });
         (

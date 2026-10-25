@@ -1,6 +1,15 @@
 use super::*;
 use kad::store::RecordStore;
 
+fn local_config() -> Config {
+    Config {
+        internet: false,
+        allow_private_addresses: true,
+        dht: false,
+        ..Default::default()
+    }
+}
+
 fn peer() -> PeerId {
     identity::Keypair::generate_ed25519().public().to_peer_id()
 }
@@ -8,7 +17,7 @@ fn peer() -> PeerId {
 #[test]
 fn contact_and_address_caps_expire_hints_without_expiring_pinned_or_live_peers() {
     let now = Instant::now();
-    let mut book = Book::new(peer(), true, &Config::default());
+    let mut book = Book::new(peer(), true, &local_config());
     let pinned = peer();
     book.pin(pinned, &"/ip4/127.0.0.1/tcp/10000".parse().unwrap(), false)
         .unwrap();
@@ -74,7 +83,7 @@ fn routing_hints_reject_wrong_targets_zero_ports_multihop_and_unknown_relays() {
 fn static_and_circuit_policies_apply_at_authenticated_connection_admission() {
     let target = peer();
     let address: Multiaddr = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
-    let mut book = Book::new(peer(), false, &Config::default());
+    let mut book = Book::new(peer(), false, &local_config());
     assert!(book.accepts_endpoint(target, &address).is_err());
     book.pin(target, &address, false).unwrap();
     assert!(book.accepts_endpoint(target, &address).is_ok());
@@ -193,7 +202,7 @@ fn provider_store_scopes_keys_caps_entries_and_bounds_addresses_and_expiry() {
 fn repeated_stale_hints_do_not_renew_contacts_and_retirement_has_bounded_backoff() {
     let now = Instant::now();
     let target = peer();
-    let mut book = Book::new(peer(), true, &Config::default());
+    let mut book = Book::new(peer(), true, &local_config());
     let address = "/ip4/127.0.0.1/tcp/1234".parse().unwrap();
     book.hint(target, &address, now).unwrap();
     book.hint(

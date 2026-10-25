@@ -5,9 +5,8 @@ use crate::{discovery, network};
 use libp2p::{
     Multiaddr, PeerId, SwarmBuilder, connection_limits,
     futures::StreamExt,
-    identity, noise, relay,
+    identity, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -27,6 +26,8 @@ struct Config {
     listen: String,
     #[serde(default)]
     external_addresses: Vec<String>,
+    #[serde(default)]
+    allow_private_addresses: bool,
 }
 
 #[derive(NetworkBehaviour)]
@@ -92,6 +93,8 @@ pub async fn run(path: &Path) -> Result<(), String> {
     let settings = discovery::Config {
         mdns: false,
         dht: true,
+        internet: false,
+        allow_private_addresses: config.allow_private_addresses,
         hole_punch: false,
         ..Default::default()
     };
@@ -126,15 +129,10 @@ pub async fn run(path: &Path) -> Result<(), String> {
             circuit_src_rate_limiters: vec![rate_limiter()],
         },
     );
+    let tcp_book = book.clone();
     let mut swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
-        .with_tcp(
-            tcp::Config::default().nodelay(true),
-            noise::Config::new,
-            network::yamux_config,
-        )
-        .map_err(|error| error.to_string())?
-        .with_dns()
+        .with_other_transport(move |key| network::transport::tcp(key, tcp_book))
         .map_err(|error| error.to_string())?
         .with_behaviour(|_| Behaviour {
             gate: discovery::Gate(book.clone()),

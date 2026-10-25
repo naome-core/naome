@@ -1,4 +1,5 @@
 use super::*;
+use libp2p::tcp;
 use naome_authoring::CompiledQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -341,6 +342,52 @@ fn isolated_transport() -> Swarm<Behaviour> {
         })
         .unwrap()
         .build()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inbound_connection_flood_backpressures_and_recovers_without_halting() {
+    let mut swarm = isolated_transport();
+    let listener = swarm
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let (_shared, mut events, mut transport) = worker::Transport::spawn(swarm, listener);
+    let ready = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let SwarmEvent::NewListenAddr { address, .. } = ready.event else {
+        panic!("listener readiness required")
+    };
+    let libp2p::multiaddr::Protocol::Tcp(port) = address.iter().nth(1).unwrap() else {
+        panic!("TCP listener required")
+    };
+    // Deliberately leave the state owner stopped while remote sockets produce
+    // more real events than the complete bounded handoff can hold.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for _ in 0..crate::resources::limits().transport_events * 2 {
+            drop(
+                tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .unwrap(),
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // The former overflow path closed the channel at its capacity. Receiving
+    // beyond that capacity proves that polling recovers after backpressure.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for _ in 0..crate::resources::limits().transport_events + 8 {
+            events
+                .recv()
+                .await
+                .expect("remote pressure must not terminate transport");
+        }
+    })
+    .await
+    .unwrap();
+    transport.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

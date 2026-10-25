@@ -1295,7 +1295,7 @@ pub async fn execute() -> Result<(), String> {
     if matches!(command, "pause" | "resume") && !directory.exists() {
         return Err("node is not running; start it before pause or resume".into());
     }
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    crate::storage::private_directory(&directory)?;
     let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
     let _lock = operation_lock(&directory).await?;
     let status = match command {
