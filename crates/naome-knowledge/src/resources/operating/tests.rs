@@ -88,3 +88,30 @@ fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {
     assert_eq!(installed.identify_protocols, capacity.identify_protocols);
     assert_eq!(installed.identify_addresses, capacity.identify_addresses);
 }
+
+#[test]
+fn small_compute_batches_preserve_bounded_inventory_admission() {
+    let capacity = crate::resources::ResourceProfile::default()
+        .resolve()
+        .unwrap();
+    let budget = Budget {
+        memory_bytes: capacity.memory_bytes as u64,
+        concurrency: 1,
+        cache_bytes: capacity.checked_cache_bytes as u64,
+        batch_steps: 1,
+        network_requests: 1,
+        yield_ms: 0,
+        paused: None,
+    };
+
+    let work = derive(&capacity, &budget);
+
+    assert_eq!(work.id_page, capacity.id_page);
+    assert_eq!(work.inventory_page, capacity.inventory_page);
+    assert_eq!(work.fetches, capacity.fetches);
+    assert_eq!(work.flights, 1);
+    assert!(work.inventory_page <= work.fetches);
+    assert!(work.inventory_page <= work.id_page);
+    assert!(work.fetches <= budget.memory_bytes as usize / 512);
+    assert!(work.id_page <= budget.memory_bytes as usize / 32);
+}

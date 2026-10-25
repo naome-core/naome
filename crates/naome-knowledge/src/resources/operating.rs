@@ -74,13 +74,14 @@ fn derive_with_statistics(
     pages!(
         pending_page,
         replay_page,
-        id_page,
-        inventory_page,
         status_page,
         question_page,
         terminal_job_page,
         compaction_records
     );
+    // ID and inventory pages are bounded metadata batches, not checker
+    // quanta. Keep them at configured size while respecting live memory.
+    work.id_page = capacity.id_page.min(memory / 32).max(1);
     macro_rules! queues { ($($field:ident),+ $(,)?) => { $(work.$field = capacity.$field.min(slots.saturating_add(batch));)+ }; }
     queues!(
         transport_events,
@@ -108,9 +109,14 @@ fn derive_with_statistics(
         .compaction_bytes
         .min(memory / 8)
         .max(naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES);
-    work.fetches = capacity
-        .fetches
-        .min(batch.max(budget.network_requests))
+    // Wanted proof IDs are a bounded admission queue, not CPU work or
+    // simultaneous requests. Keep enough room for one configured inventory
+    // page; the separate flight budget below limits network concurrency.
+    work.fetches = capacity.fetches.min(memory / 512).max(1);
+    work.inventory_page = capacity
+        .inventory_page
+        .min(work.fetches)
+        .min(work.id_page)
         .max(1);
     let quantum = capacity.transport_busy_grace;
     let check_nanos = statistics.check.nanos / statistics.check.units.max(1);
