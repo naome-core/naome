@@ -20,7 +20,7 @@ pub(super) struct Waiting {
     pub description: Description,
     question: CompiledQuestion,
     pub phase: Phase,
-    context: (Identity, Identity),
+    context: FormalContext,
     until: Instant,
 }
 
@@ -48,11 +48,10 @@ impl Intake {
             .collect()
     }
 
-    fn decline(
+    pub(super) fn decline(
         &mut self,
         description: &Description,
-        snapshot: Identity,
-        policy: Identity,
+        formal: FormalContext,
         now: Instant,
     ) {
         if self.declined.len() < crate::resources::limits().fetches {
@@ -63,11 +62,10 @@ impl Intake {
                     description.statement,
                     *description.question.source_hash(),
                 ),
-                (
-                    snapshot,
-                    policy,
-                    now + crate::resources::limits().pending_retry,
-                ),
+                DeclineContext {
+                    formal,
+                    until: now + crate::resources::limits().pending_retry,
+                },
             );
         }
     }
@@ -88,12 +86,11 @@ impl Intake {
             .as_ref()
             .is_none_or(|(_, previous)| *previous != revision);
         if context_changed {
-            self.managed_context = Some((questions.context_key(graph), revision));
+            self.managed_context = Some((questions.formal_context(graph), revision));
         }
-        let ((snapshot, policy), _) = self.managed_context.expect("current managed context");
-        self.declined.retain(|_, (before, old_policy, until)| {
-            *before == snapshot && *old_policy == policy && *until > now
-        });
+        let (context, _) = self.managed_context.expect("current managed context");
+        self.declined
+            .retain(|_, declined| declined.formal == context && declined.until > now);
         if self.waiting.len() < crate::resources::active_limits().interest_decisions
             && questions.available_peer()
             && let Some(description) = self.queue.pop_front()
@@ -118,7 +115,7 @@ impl Intake {
                 description,
                 question,
                 phase: Phase::Initial(reply),
-                context: (snapshot, policy),
+                context,
                 until,
             });
         }
@@ -251,12 +248,7 @@ impl Intake {
                 Ok(Some(_)) => {}
                 Ok(None) => self.waiting.push_back(waiting),
                 Err(error) => {
-                    self.decline(
-                        &waiting.description,
-                        waiting.context.0,
-                        waiting.context.1,
-                        now,
-                    );
+                    self.decline(&waiting.description, waiting.context, now);
                     return Progress::Skipped(id, error);
                 }
             }
@@ -338,7 +330,7 @@ impl Intake {
                 return Err("original question provenance changed".into());
             }
             let initial = root.initial.take().ok_or("initial decision absent")?;
-            let context = (initial.prefilter.snapshot, initial.prefilter.policy);
+            let context = initial.formal_context();
             self.waiting.push_back(Waiting {
                 description: root.description.clone(),
                 question,
@@ -364,9 +356,9 @@ impl Intake {
                     .final_assessment
                     .as_ref()
                     .or(root.initial.as_ref())
-                    .map(|assessment| (assessment.prefilter.snapshot, assessment.prefilter.policy))
-                    .unwrap_or((snapshot, policy));
-                self.decline(&root.description, context.0, context.1, now);
+                    .map(QuestionAssessment::formal_context)
+                    .unwrap_or(context);
+                self.decline(&root.description, context, now);
                 Progress::Skipped(id, error)
             }
         }

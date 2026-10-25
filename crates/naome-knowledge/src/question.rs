@@ -28,7 +28,10 @@ use crate::Graph;
 // Worst-case JSON escaping of one protocol-bounded source plus its receipt.
 const QUESTION_ENTRY_MAX_BYTES: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 2048;
 mod cache;
+mod context;
 mod persistence;
+use context::InterestContext;
+pub(crate) use context::{FormalContext, Revision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterestAssessment {
@@ -52,17 +55,13 @@ pub struct QuestionAssessment {
     pub selection: Option<Identity>,
     // A positive provider result binds the exact question and selection inputs,
     // independently of the snapshot used by the mandatory formal checks.
-    selected: Option<InterestSelection>,
-}
-
-#[derive(Clone, Debug)]
-struct InterestSelection {
-    source: Identity,
-    policy: Identity,
-    owner: Identity,
+    selected: Option<InterestContext>,
 }
 
 impl QuestionAssessment {
+    pub(crate) fn formal_context(&self) -> FormalContext {
+        FormalContext::of(&self.prefilter)
+    }
     /// First discovery within the bound complete local world and finite rules.
     /// Interest failure or nonselection does not change this formal result.
     pub fn novelty(&self) -> Option<&NodeLocalNovelty> {
@@ -312,7 +311,7 @@ struct Pending {
     future: Pin<Box<dyn Future<Output = ProviderResult> + Send>>,
     job: Option<u64>,
     peer: bool,
-    selection: Option<Identity>,
+    interest_context: Option<InterestContext>,
 }
 
 struct ProviderResult {
@@ -342,8 +341,6 @@ impl Drop for RegistryCompaction {
         self.source.end_mirror(&self.target);
     }
 }
-
-pub(crate) type Revision = (usize, usize, Identity, Option<Identity>);
 
 pub(crate) struct LocalQuestions<F> {
     registry: QuestionRegistry,
@@ -652,7 +649,7 @@ where
                     prefilter: pending.prefilter,
                     interest: InterestAssessment::Stale,
                     submitted_negation_parity: pending.question.negation_parity(),
-                    selection: pending.selection,
+                    selection: pending.interest_context.map(|context| context.owner),
                     selected: None,
                 },
                 AdmissionOutcome::NotInserted,
@@ -684,16 +681,26 @@ where
         )
     }
 
-    pub(crate) fn context_key(&self, graph: &Graph) -> (Identity, Identity) {
-        (self.snapshot(graph).identity(), self.policy.identity())
+    pub(crate) fn formal_context(&self, graph: &Graph) -> FormalContext {
+        FormalContext {
+            snapshot: self.snapshot(graph).identity(),
+            policy: self.policy.identity(),
+        }
     }
     pub(crate) fn revision(&self, graph: &Graph) -> Revision {
-        (
-            graph.accepted_count(),
-            self.registry.len(),
-            self.policy.identity(),
-            self.selection,
-        )
+        Revision {
+            checked_proofs: graph.accepted_count(),
+            registered_questions: self.registry.len(),
+            policy: self.policy.identity(),
+            selection: self.selection,
+        }
+    }
+    fn interest_context(&self, question: &CompiledQuestion) -> Option<InterestContext> {
+        Some(InterestContext {
+            source: *question.source_hash(),
+            policy: self.policy.identity(),
+            owner: self.selection?,
+        })
     }
     #[cfg(test)]
     pub(crate) fn computation_count(&self) -> usize {
@@ -871,11 +878,7 @@ where
             && self.selection.is_some()
             && assessment.selection == self.selection
             && assessment.interest == InterestAssessment::Assessed(true)
-            && assessment.selected.as_ref().is_some_and(|selected| {
-                selected.source == *question.source_hash()
-                    && selected.policy == self.policy.identity()
-                    && Some(selected.owner) == self.selection
-            })
+            && assessment.selected == self.interest_context(question)
             && (assessment.novelty().is_some() || self.exchange_record(question).is_some())
     }
 
@@ -908,7 +911,7 @@ where
         graph: &Graph,
         question: &CompiledQuestion,
         assessment: &QuestionAssessment,
-    ) -> Result<QuestionDelta, String> {
+    ) -> Result<QuestionDelta, crate::Error> {
         let record = self.exchange_record(question);
         let fresh = self
             .refresh_exchange(graph, question, assessment)?
@@ -917,7 +920,7 @@ where
         let mut inserted = None;
         if record.is_none() {
             if !self.registry_capacity(question) {
-                return Err("question registry receiving capacity".into());
+                return Err(crate::Error::ExecutionLimit);
             }
             if fresh.novelty().is_none() {
                 return Err("missing fresh node-local novelty".into());
@@ -1100,7 +1103,8 @@ where
                     (*purpose, root.map(|id| crate::hex(id.as_bytes())))
                 }
             };
-            let binding = crate::jobs::Binding::new(prefilter.snapshot, prefilter.policy)
+            let binding = FormalContext::of(&prefilter)
+                .binding()
                 .with_selection(self.selection.expect("available selection epoch"));
             let request = crate::jobs::Input::Interest {
                 question: question.source().to_owned(),
@@ -1164,6 +1168,7 @@ where
             return;
         };
         self.next_pending = next;
+        let interest_context = self.interest_context(&question);
         self.pending.insert(
             id,
             Pending {
@@ -1173,7 +1178,7 @@ where
                 future,
                 job: None,
                 peer,
-                selection: self.selection,
+                interest_context,
             },
         );
     }
@@ -1285,20 +1290,18 @@ where
         } else {
             self.evaluate(graph, &pending.question, !pending.reply.admission())
         };
-        let interest = if pending.selection != self.selection || self.selection.is_none() {
+        let interest = if pending.interest_context.is_none()
+            || pending.interest_context != self.interest_context(&pending.question)
+        {
+            if pending.prefilter.policy != prefilter.policy {
+                prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
+            }
             InterestAssessment::Stale
-        } else if pending.prefilter.policy == prefilter.policy {
-            interest
         } else {
-            prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
-            InterestAssessment::Stale
+            interest
         };
         let selected = if prefilter.passed() && interest == InterestAssessment::Assessed(true) {
-            self.selection.map(|owner| InterestSelection {
-                source: *pending.question.source_hash(),
-                policy: prefilter.policy,
-                owner,
-            })
+            pending.interest_context
         } else {
             None
         };
@@ -1355,7 +1358,7 @@ where
                 prefilter,
                 interest,
                 submitted_negation_parity: pending.question.negation_parity(),
-                selection: pending.selection,
+                selection: pending.interest_context.map(|context| context.owner),
                 selected,
             },
             outcome,

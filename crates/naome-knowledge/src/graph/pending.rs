@@ -7,7 +7,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
     version: u8,
@@ -180,8 +180,8 @@ impl PendingStore {
             return Err("dependency cycle".into());
         }
         let sequence = format!("{:020}", self.header.next);
-        self.header.next = self
-            .header
+        let mut header = self.header.clone();
+        header.next = header
             .next
             .checked_add(1)
             .ok_or("proof backlog FIFO exhausted")?;
@@ -196,9 +196,8 @@ impl PendingStore {
         for dependency in &starts {
             updates.push(Update::put("edge", format!("{id}{dependency}"), &true)?);
         }
-        self.checkpoint
-            .commit(&self.header, updates)
-            .map_err(crate::Error::UncertainDurability)?;
+        self.checkpoint.commit(&header, updates)?;
+        self.header = header;
         if self.scheduled {
             self.schedule_one(&sequence, &candidate.dependencies, context)?;
         }

@@ -738,12 +738,12 @@ impl Autonomous {
             if let Some(question) = self.unanswered.pop_front() {
                 let decision = questions.generation_decision(graph, &question);
                 if decision.passed() {
-                    let (snapshot, policy) = questions.context_key(graph);
+                    let context = questions.formal_context(graph);
                     match self.client.submit(
                         jobs::Input::Solve {
                             question: question.source().to_owned(),
                         },
-                        jobs::Binding::new(snapshot, policy),
+                        context.binding(),
                     ) {
                         Ok(ticket) => {
                             self.solving.insert(
@@ -780,11 +780,8 @@ impl Autonomous {
                     return accepted;
                 };
                 self.cursor = next;
-                let (snapshot, policy) = questions.context_key(graph);
-                (
-                    jobs::Input::Find { cursor },
-                    jobs::Binding::new(snapshot, policy),
-                )
+                let context = questions.formal_context(graph);
+                (jobs::Input::Find { cursor }, context.binding())
             };
             if let Ok(ticket) = self.client.submit(input, binding) {
                 self.finding = Some(Finding { ticket });

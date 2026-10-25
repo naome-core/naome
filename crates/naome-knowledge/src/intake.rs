@@ -3,7 +3,7 @@ use crate::{
     Envelope, Graph,
     graph::CheckedBatch,
     object::{Candidate, Metadata, id_bytes},
-    question::{LocalQuestions, QuestionAssessment},
+    question::{FormalContext, LocalQuestions, QuestionAssessment},
 };
 use libp2p::PeerId;
 use naome_authoring::CompiledQuestion;
@@ -70,7 +70,10 @@ impl ApprovedRoot {
 }
 
 type DeclinedDescriptionKey = (PeerId, ProofId, StatementId, Identity);
-type DeclineContext = (Identity, Identity, Instant);
+struct DeclineContext {
+    formal: FormalContext,
+    until: Instant,
+}
 
 #[derive(Default)]
 pub(crate) struct Intake {
@@ -78,7 +81,7 @@ pub(crate) struct Intake {
     active: Option<ApprovedRoot>,
     declined: BTreeMap<DeclinedDescriptionKey, DeclineContext>,
     waiting: VecDeque<managed::Waiting>,
-    managed_context: Option<((Identity, Identity), crate::question::Revision)>,
+    managed_context: Option<(FormalContext, crate::question::Revision)>,
     programs: program::Programs,
 }
 
@@ -405,10 +408,9 @@ impl Intake {
             return self.advance_managed(graph, questions);
         }
         let now = Instant::now();
-        let (snapshot, policy) = questions.context_key(graph);
-        self.declined.retain(|_, (before, old_policy, until)| {
-            *before == snapshot && *old_policy == policy && *until > now
-        });
+        let context = questions.formal_context(graph);
+        self.declined
+            .retain(|_, declined| declined.formal == context && declined.until > now);
         if self.active.is_none()
             && questions.available()
             && let Some(description) = self.queue.pop_front()
@@ -452,10 +454,10 @@ impl Intake {
                 }
             }
             if matches!(root.phase, Phase::Fetch)
-                && root.initial.as_ref().is_some_and(|assessment| {
-                    assessment.prefilter.snapshot != snapshot
-                        || assessment.prefilter.policy != policy
-                })
+                && root
+                    .initial
+                    .as_ref()
+                    .is_some_and(|assessment| assessment.formal_context() != context)
             {
                 let current = questions.refresh_exchange(
                     graph,
@@ -554,21 +556,7 @@ impl Intake {
                 Progress::Waiting
             }
             Err(error) => {
-                if self.declined.len() < crate::resources::limits().fetches {
-                    self.declined.insert(
-                        (
-                            root.description.peer,
-                            id,
-                            root.description.statement,
-                            *root.description.question.source_hash(),
-                        ),
-                        (
-                            snapshot,
-                            policy,
-                            now + crate::resources::limits().pending_retry,
-                        ),
-                    );
-                }
+                self.decline(&root.description, context, now);
                 Progress::Skipped(id, error)
             }
         }

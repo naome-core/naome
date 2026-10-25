@@ -1,5 +1,6 @@
 use super::*;
 use rusqlite::{Connection, OpenFlags, params};
+use std::os::unix::fs::OpenOptionsExt;
 use std::{fs::File, os::unix::fs::MetadataExt, path::PathBuf, time::Instant};
 fn sql<T>(r: rusqlite::Result<T>) -> Result<T, String> {
     r.map_err(|e| e.to_string())

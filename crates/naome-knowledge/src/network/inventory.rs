@@ -52,6 +52,7 @@ fn valid_page(
         || request.limit == 0
         || ids.len() as u64 > (snapshot.count - position).min(request.limit as u64)
         || (ids.is_empty() && position < snapshot.count)
+        || ids.len() > crate::resources::limits().inventory_page
         || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
     {
         return false;
