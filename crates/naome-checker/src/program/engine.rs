@@ -526,9 +526,6 @@ impl Engine {
                     return Err("program input hash mismatch".into());
                 }
                 let command: Command = decode_command(&bytes)?;
-                if serde_json::to_vec(&command).map_err(|e| e.to_string())? != bytes {
-                    return Err("noncanonical stored program command".into());
-                }
                 let plan = checker::prepare(&command, self.cursor, self)?;
                 let mut operations = Vec::new();
                 for (predicate, from, to) in plan.absent {
