@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from check_internet import verify
+from wait_internet_builds import BUILD, JOBS, built
 
 
 class InternetReceiptTests(unittest.TestCase):
@@ -54,6 +55,28 @@ class InternetReceiptTests(unittest.TestCase):
             mutate(reports)
             with self.subTest(case=index), self.assertRaises(AssertionError):
                 self.check(reports)
+
+
+class InternetReadinessTests(unittest.TestCase):
+    def jobs(self):
+        return [{"name": name, "conclusion": None, "steps": [
+            {"name": BUILD, "status": "completed", "conclusion": "success"}]} for name in sorted(JOBS)]
+
+    def test_both_independent_builds_are_required_before_network_testing(self):
+        jobs = self.jobs()
+        self.assertTrue(built(jobs))
+        self.assertFalse(built(jobs[:1]))
+        jobs[1]["steps"][0].update(status="in_progress", conclusion=None)
+        self.assertFalse(built(jobs))
+
+    def test_failed_skipped_or_cancelled_participant_cannot_satisfy_readiness(self):
+        for conclusion in ["failure", "skipped", "cancelled", "timed_out"]:
+            for target in ["job", "build"]:
+                jobs = self.jobs()
+                item = jobs[1] if target == "job" else jobs[1]["steps"][0]
+                item["conclusion"] = conclusion
+                with self.subTest(conclusion=conclusion, target=target), self.assertRaises(RuntimeError):
+                    built(jobs)
 
 
 if __name__ == "__main__":

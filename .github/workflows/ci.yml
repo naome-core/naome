@@ -103,12 +103,19 @@ jobs:
             participant: 1
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build the matching public-network test configuration
         run: cargo test -p naome-knowledge --profile test --all-targets --all-features --locked --no-run
+      - name: Wait until both physical hosts have built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/wait_internet_builds.py
       - name: Discover the other physical host without its identity or address
         run: >-
           python3 crates/naome-knowledge/tests/support/internet_discovery.py
