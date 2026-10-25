@@ -617,67 +617,67 @@ impl Autonomous {
                     }
                 }
             }
-            if let Some(assessment) = pending.assessment.take() {
-                if questions.exchange_eligible(&pending.question, &assessment) {
-                    let current = pending
-                        .batch
-                        .as_ref()
-                        .map(|(_, batch)| graph.batch_current(batch))
-                        .transpose();
-                    match current {
-                        Ok(Some(true)) => {
-                            let outcome = (|| -> Result<Vec<ProofId>, crate::Error> {
-                                let delta = questions.prepare_exchange(
-                                    graph,
-                                    &pending.question,
-                                    &assessment,
-                                )?;
-                                let (root, batch) =
-                                    pending.batch.take().expect("current checked candidate");
-                                questions.publish_exchange(
-                                    graph,
-                                    root,
-                                    batch,
-                                    delta,
-                                    None,
-                                    pending.expires,
-                                )
-                            })();
-                            match outcome {
-                                Ok(ids) => {
-                                    accepted.extend(ids);
-                                    let job = pending.job;
-                                    drop(pending);
-                                    self.acknowledge(job);
-                                    continue;
+            if let Some(assessment) = pending.assessment.take()
+                && questions.exchange_eligible(&pending.question, &assessment)
+            {
+                let current = pending
+                    .batch
+                    .as_ref()
+                    .map(|(_, batch)| graph.batch_current(batch))
+                    .transpose();
+                match current {
+                    Ok(Some(true)) => {
+                        let outcome = (|| -> Result<Vec<ProofId>, crate::Error> {
+                            let delta = questions.prepare_exchange(
+                                graph,
+                                &pending.question,
+                                &assessment,
+                            )?;
+                            let (root, batch) =
+                                pending.batch.take().expect("current checked candidate");
+                            questions.publish_exchange(
+                                graph,
+                                root,
+                                batch,
+                                delta,
+                                None,
+                                pending.expires,
+                            )
+                        })();
+                        match outcome {
+                            Ok(ids) => {
+                                accepted.extend(ids);
+                                let job = pending.job;
+                                drop(pending);
+                                self.acknowledge(job);
+                                continue;
+                            }
+                            Err(error) => {
+                                pending.batch = None;
+                                emit(json!({"event":"proof_candidate_deferred","error":error}));
+                                if let Some(error) =
+                                    questions.storage_error().or_else(|| graph.storage_error())
+                                {
+                                    self.error = Some(error);
+                                    return accepted;
                                 }
-                                Err(error) => {
-                                    pending.batch = None;
-                                    emit(json!({"event":"proof_candidate_deferred","error":error}));
-                                    if let Some(error) =
-                                        questions.storage_error().or_else(|| graph.storage_error())
-                                    {
-                                        self.error = Some(error);
-                                        return accepted;
-                                    }
-                                    pending.retry =
-                                        now + crate::resources::limits().publication_backoff;
-                                }
+                                pending.retry =
+                                    now + crate::resources::limits().publication_backoff;
                             }
                         }
-                        Ok(_) => {
-                            // Rebuild the mathematical delta against current roots;
-                            // unrelated graph growth cannot spend another interest job.
-                            pending.batch = None;
-                            pending.retry = now;
-                        }
-                        Err(error) => {
-                            self.error = Some(error.to_string());
-                            return accepted;
-                        }
                     }
-                    pending.assessment = Some(assessment);
+                    Ok(_) => {
+                        // Rebuild the mathematical delta against current roots;
+                        // unrelated graph growth cannot spend another interest job.
+                        pending.batch = None;
+                        pending.retry = now;
+                    }
+                    Err(error) => {
+                        self.error = Some(error.to_string());
+                        return accepted;
+                    }
                 }
+                pending.assessment = Some(assessment);
             }
             if pending.attempts >= crate::resources::limits().publication_retries {
                 self.acknowledge(pending.job);
