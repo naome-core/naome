@@ -1172,6 +1172,8 @@ def main():
             for event in sender.logs()[sender.event_offset:]))
         assert sum(event.get("event") == "starting" for event in sender.logs()[sender.event_offset:]) == 1, "concurrent start created more than one runtime owner"
         trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
+        expected = {"running": True, "accepted_proofs": 3, "interest": ""}
+
         def converged():
             own, remote = sender.ids(), receiver.ids()
             if len(own) != 3 or own != remote or any(node.ids() != own for node in trial.nodes):
@@ -1179,6 +1181,10 @@ def main():
             remote_accepted = {event["id"] for event in receiver.logs()
                 if event.get("event") == "accepted" and event.get("source") == "fetch"}
             if not own.issubset(remote_accepted):
+                return False
+            # Durable admission precedes publication of the passive status snapshot.
+            # Wait for both observations within the existing convergence deadline.
+            if any(trial.call(node, "status") != expected for node in trial.nodes):
                 return False
             return own
         accepted = trial.wait(converged, maximum=40 if args.mode != "direct" else 20)
@@ -1207,7 +1213,6 @@ def main():
             assert not any(event.get("event") == "connected" and event.get("peer") == sender.peer
                 and event.get("relayed") is False for event in receiver.logs()), "relay-only qualification used a direct shortcut"
             trial.summary["relayed_connection_ids"] = sorted(connections)
-        expected = {"running": True, "accepted_proofs": 3, "interest": ""}
         assert all(trial.call(node, "status") == expected for node in trial.nodes)
         trial.summary["accepted_ids"] = sorted(accepted)
         trial.summary["scenarios"][f"scheduled_mock_generation_real_validation_and_{args.mode}_exchange"] = {
