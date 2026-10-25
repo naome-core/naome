@@ -37,7 +37,7 @@ pub(crate) fn read(directory: &Path) -> Result<Option<Connection>, String> {
         .transpose()
 }
 
-/// The caller holds the node lifecycle lock and has checked the ledger grant.
+/// The caller holds the wallet association lock and has checked the ledger grant.
 pub(crate) fn save(directory: &Path, connection: &Connection) -> Result<(), String> {
     if let Some(existing) = read(directory)? {
         if existing == *connection {

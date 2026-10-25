@@ -38,8 +38,18 @@ def run(trial):
     finally:
         key_path.write_bytes(key)
         key_path.chmod(0o600)
+    receipt.unlink()
+    key_path.unlink()
+    trial.call(node, "start", success=False)
+    assert not key_path.exists() and not receipt.exists(), "established wallet was silently replaced"
+    key_path.write_bytes(key)
+    key_path.chmod(0o600)
+    node.start()
+    assert json.loads(receipt.read_text()) == identity
+    assert key_path.read_bytes() == key
+    node.stop()
     trial.summary["node_count"] = 1
-    trial.summary["claim"] = "ordinary startup preserves independent wallet custody across restart and rejects a missing established key"
+    trial.summary["claim"] = "ordinary startup preserves independent wallet custody across restart and rejects loss of the established key and both wallet files"
     trial.summary["scenarios"]["wallet_custody_restart_and_loss"] = {"result": "pass"}
 
 

@@ -2419,6 +2419,7 @@ dependencies = [
  "naome-foundation",
  "naome-ledger",
  "naome-proof",
+ "naome-storage",
  "naome-wallet",
  "nix",
  "rusqlite",
@@ -2436,6 +2437,7 @@ name = "naome-ledger"
 version = "0.1.0-alpha.1"
 dependencies = [
  "hex",
+ "naome-storage",
  "naome-wallet",
  "nix",
  "rusqlite",
@@ -2452,6 +2454,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+]
+
+[[package]]
+name = "naome-storage"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "rusqlite",
 ]
 
 [[package]]

@@ -17,7 +17,7 @@ rust_library(
     edition = "2024",
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = ["//crates/naome-wallet:naome_wallet"] + all_crate_deps(normal = True),
+    deps = ["//crates/naome-wallet:naome_wallet", "//crates/naome-storage:naome_storage"] + all_crate_deps(normal = True),
 )
 
 rust_test(

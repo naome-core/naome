@@ -1,5 +1,5 @@
 use naome_knowledge::{NodeWallet, WalletConnection, runtime::Status};
-use naome_ledger::Amount;
+use naome_ledger::{Amount, Ledger};
 use serde::Deserialize;
 use std::{
     path::{Path, PathBuf},
@@ -42,28 +42,35 @@ pub(super) fn run(path: &Path) {
     };
     let network = genesis.network().unwrap();
     if input.phase == "initial" {
-        drop(naome_ledger::Ledger::create(&input.ledger, &genesis).unwrap());
-        owner
-            .connect(&input.ledger, network, owner.signing_address())
-            .unwrap();
+        let ledger = Ledger::create(&input.ledger, &genesis).unwrap();
+        owner.connect(&ledger, owner.signing_address()).unwrap();
+    }
+    let mut ledger = owner
+        .open_ledger(network, &naome_ledger::Control::default())
+        .unwrap();
+    if input.phase == "initial" {
+        owner.connect(&ledger, owner.signing_address()).unwrap();
+        assert!(first.connect(&ledger, owner.signing_address()).is_err());
+        for node in [&first, &second] {
+            owner
+                .authorize_node(&mut ledger, node.signing_address())
+                .unwrap();
+            node.connect(&ledger, owner.signing_address()).unwrap();
+        }
         assert!(
             first
-                .connect(&input.ledger, network, owner.signing_address())
+                .authorize_node(&mut ledger, owner.signing_address())
                 .is_err()
         );
-        for node in [&first, &second] {
-            owner.authorize_node(node.signing_address()).unwrap();
-            node.connect(&input.ledger, network, owner.signing_address())
-                .unwrap();
-        }
-        assert!(first.authorize_node(owner.signing_address()).is_err());
-        first
-            .pay(first.signing_address(), Amount::from_units(300))
+        let request = first
+            .prepare_payment(&ledger, first.signing_address(), Amount::from_units(300))
             .unwrap();
-        second
-            .pay(first.signing_address(), Amount::from_units(200))
+        first.submit_payment(&mut ledger, request).unwrap();
+        let request = second
+            .prepare_payment(&ledger, first.signing_address(), Amount::from_units(200))
             .unwrap();
-        assert_eq!(owner.funds().unwrap().available.units(), 500);
+        second.submit_payment(&mut ledger, request).unwrap();
+        assert_eq!(owner.funds(&ledger).unwrap().available.units(), 500);
         for index in 0..3 {
             let report = status(&input, index);
             assert!(report.running);
@@ -72,40 +79,41 @@ pub(super) fn run(path: &Path) {
             assert_eq!(wallet.wallet_address, Some(owner.signing_address()));
         }
         // Passive node observation must not contend for, or replay, the ledger.
-        let locked = naome_ledger::Ledger::open(&input.ledger, network).unwrap();
+        assert!(matches!(
+            Ledger::open(&input.ledger, network),
+            Err(naome_ledger::Error::Busy)
+        ));
         assert!(status(&input, 1).running);
-        drop(locked);
     } else {
         assert_eq!(input.phase, "restarted");
-        assert_eq!(owner.funds().unwrap().available.units(), 500);
-        assert!(first.funds().unwrap().can_spend && second.funds().unwrap().can_spend);
-        owner.revoke_node(first.signing_address()).unwrap();
-        assert!(!first.funds().unwrap().can_spend);
+        assert_eq!(owner.funds(&ledger).unwrap().available.units(), 500);
+        assert!(
+            first.funds(&ledger).unwrap().can_spend && second.funds(&ledger).unwrap().can_spend
+        );
+        owner
+            .revoke_node(&mut ledger, first.signing_address())
+            .unwrap();
+        assert!(!first.funds(&ledger).unwrap().can_spend);
         assert!(
             first
-                .pay(first.signing_address(), Amount::from_units(1))
+                .prepare_payment(&ledger, first.signing_address(), Amount::from_units(1))
                 .is_err()
         );
-        first.disconnect().unwrap();
+        first.disconnect(&mut ledger).unwrap();
         assert_eq!(
             status(&input, 1).wallet.unwrap().connection,
             WalletConnection::Local
         );
-        assert!(
-            first
-                .connect(&input.ledger, network, owner.signing_address())
-                .is_err()
-        );
+        assert!(first.connect(&ledger, owner.signing_address()).is_err());
         // The remaining authorized node can spend the entire available balance.
-        second
-            .pay(first.signing_address(), Amount::from_units(500))
+        let request = second
+            .prepare_payment(&ledger, first.signing_address(), Amount::from_units(500))
             .unwrap();
-        assert_eq!(owner.funds().unwrap().available.units(), 0);
-        second.disconnect().unwrap();
-        assert!(owner.funds().unwrap().authorized_nodes.is_empty());
-        first
-            .connect(&input.ledger, network, first.signing_address())
-            .unwrap();
-        assert_eq!(first.funds().unwrap().available.units(), 1000);
+        second.submit_payment(&mut ledger, request).unwrap();
+        assert_eq!(owner.funds(&ledger).unwrap().available.units(), 0);
+        second.disconnect(&mut ledger).unwrap();
+        assert!(owner.funds(&ledger).unwrap().authorized_nodes.is_empty());
+        first.connect(&ledger, first.signing_address()).unwrap();
+        assert_eq!(first.funds(&ledger).unwrap().available.units(), 1000);
     }
 }

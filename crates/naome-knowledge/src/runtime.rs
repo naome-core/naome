@@ -212,6 +212,23 @@ struct Endpoint {
 struct IdentityReceipt {
     version: u8,
     peer_id: String,
+    wallet_address: naome_wallet::Address,
+}
+
+fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, String> {
+    crate::storage::read_owned(&directory.join("identity.json"), 1024)?
+        .map(|bytes| {
+            let receipt: IdentityReceipt =
+                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            if receipt.version != 2 {
+                return Err("unsupported node identity receipt version".into());
+            }
+            Ok(receipt)
+        })
+        .transpose()
+}
+pub(crate) fn wallet_anchor(directory: &Path) -> Result<Option<naome_wallet::Address>, String> {
+    Ok(identity_receipt(directory)?.map(|receipt| receipt.wallet_address))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -751,25 +768,36 @@ fn initialize(directory: &Path) -> Result<(), String> {
     let key =
         identity::Keypair::from_protobuf_encoding(&crate::store::read_bounded(&key_path, 1024)?)
             .map_err(|error| error.to_string())?;
-    let expected = IdentityReceipt {
-        version: 1,
-        peer_id: key.public().to_peer_id().to_string(),
-    };
-    if receipt_path.exists() {
-        let receipt: IdentityReceipt =
-            serde_json::from_slice(&crate::store::read_bounded(&receipt_path, 1024)?)
-                .map_err(|error| error.to_string())?;
-        if receipt != expected {
-            return Err("existing node identity does not match its initialized identity".into());
-        }
-    } else {
-        if previously_started {
-            return Err("existing node identity receipt is missing".into());
+    let peer_id = key.public().to_peer_id().to_string();
+    let receipt = identity_receipt(directory)?;
+    if receipt
+        .as_ref()
+        .is_some_and(|receipt| receipt.peer_id != peer_id)
+    {
+        return Err("existing node identity does not match its initialized identity".into());
+    }
+    if receipt.is_none() && previously_started {
+        return Err("existing node identity receipt is missing".into());
+    }
+    let wallet = crate::wallet::initialize(directory)?;
+    if receipt.is_none() {
+        let incoming = directory.join(".identity-receipt-incoming");
+        if crate::storage::read_owned(&incoming, 1024)?.is_some() {
+            fs::remove_file(&incoming).map_err(|error| error.to_string())?;
         }
         write_new(
-            &receipt_path,
-            &serde_json::to_vec(&expected).map_err(|error| error.to_string())?,
+            &incoming,
+            &serde_json::to_vec(&IdentityReceipt {
+                version: 2,
+                peer_id,
+                wallet_address: wallet.address,
+            })
+            .map_err(|error| error.to_string())?,
         )?;
+        fs::rename(&incoming, &receipt_path).map_err(|error| error.to_string())?;
+        File::open(directory)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())?;
     }
     let config = directory.join("config.json");
     if !config.exists() {
@@ -782,7 +810,6 @@ fn initialize(directory: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?,
         )?;
     }
-    crate::wallet::initialize(directory)?;
     File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())?;
