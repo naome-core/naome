@@ -2,52 +2,17 @@
 use super::*;
 use crate::{
     proof_work::{CheckedWork, Work},
-    resources::adaptive::{self, Snapshot},
+    resources::adaptive::Observer,
 };
 use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Chunk, Manifest};
 use std::time::Duration;
-
-pub(crate) struct ProgramBudget {
-    snapshot: Option<Snapshot>,
-    next: Instant,
-    governor: adaptive::Governor,
-}
-impl Default for ProgramBudget {
-    fn default() -> Self {
-        Self {
-            snapshot: None,
-            next: Instant::now(),
-            governor: adaptive::Governor::default(),
-        }
-    }
-}
-impl ProgramBudget {
-    pub(crate) fn refresh(&mut self, directory: &Path) -> Result<&Snapshot, crate::Error> {
-        if let Some(active) = adaptive::current() {
-            self.snapshot = Some(active);
-            return Ok(self.snapshot.as_ref().expect("active node budget"));
-        }
-        if Instant::now() >= self.next {
-            let sampled = Instant::now();
-            let snapshot = self.governor.observe(
-                adaptive::load(directory)?,
-                adaptive::sample_node(directory)?,
-                crate::resources::limits().memory_bytes as u64,
-            )?;
-            self.snapshot = Some(snapshot);
-            self.governor.sampled(sampled.elapsed());
-            self.next = Instant::now() + self.governor.interval();
-        }
-        Ok(self.snapshot.as_ref().expect("initial program budget"))
-    }
-}
 
 /// Input is restored in bounded groups before mathematical evaluation starts.
 /// No saved result or incoming manifest creates checked graph membership.
 pub(crate) struct ProgramCheck {
     manifest: Manifest,
     work: Option<Work>,
-    budget: ProgramBudget,
+    budget: Observer,
     cache_cap: u64,
 }
 impl ProgramCheck {
@@ -70,7 +35,7 @@ impl ProgramCheck {
         Ok(Self {
             manifest,
             work: Some(work),
-            budget: ProgramBudget::default(),
+            budget: Observer::default(),
             cache_cap: u64::MAX,
         })
     }
@@ -418,7 +383,7 @@ impl Graph {
             .context
             .begin_program_registration(proof.proof()?)
             .map_err(crate::Error::from)?;
-        let mut budget = ProgramBudget::default();
+        let mut budget = Observer::default();
         while !cursor.complete() {
             let snapshot = budget.refresh(self.store.directory())?;
             self.cold(self.checked_storage.adapt_cache())?;
@@ -453,6 +418,3 @@ fn program_context_bytes(
             .ok_or_else(|| "program formula graph width".into()),
     }
 }
-
-#[cfg(test)]
-mod tests;

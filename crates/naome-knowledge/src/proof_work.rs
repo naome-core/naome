@@ -30,7 +30,7 @@ impl Deref for Status {
 pub struct Work {
     engine: Engine,
     path: PathBuf,
-    _lock: File,
+    _lock: crate::storage::LockFile,
     identity: (u64, u64),
     last_budget: Option<Snapshot>,
     last_recorded_budget: Option<Snapshot>,
@@ -42,7 +42,7 @@ pub(crate) struct CheckedWork {
     proof: CheckedProgram,
     path: PathBuf,
     identity: (u64, u64),
-    _lock: File,
+    _lock: crate::storage::LockFile,
 }
 impl CheckedWork {
     pub(crate) fn restrict_cache(&mut self, bytes: u64) -> Result<(), crate::Error> {
@@ -75,17 +75,12 @@ impl Work {
             128 * 1024,
         )?;
         let lock_path = path.with_extension("proof-work.lock");
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-            .open(&lock_path)
-            .map_err(crate::Error::from)?;
-        crate::storage::owned_file(&lock_path)?;
-        lock.try_lock().map_err(|_| crate::Error::ExecutionLimit)?;
+        let lock = crate::storage::LockFile::open(&lock_path).map_err(crate::Error::from)?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(crate::Error::ExecutionLimit),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
         if !path.exists() {
             OpenOptions::new()
                 .create_new(true)

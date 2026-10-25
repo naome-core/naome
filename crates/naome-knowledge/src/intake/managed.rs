@@ -29,21 +29,19 @@ impl Intake {
         self.active
             .iter()
             .filter(|root| {
-                !root.helpers.is_empty()
-                    && (Instant::now().duration_since(root.description.created)
-                        >= crate::resources::limits().root_timeout / 2
-                        || root
-                            .description
-                            .grant
-                            .as_ref()
-                            .is_some_and(|grant| grant.check().is_err()))
+                !root.helpers.is_empty() && root.description.transfer.refresh_due(Instant::now())
             })
-            .map(|root| (root.description.peer, root.description.id))
+            .map(|root| {
+                (
+                    root.description.transfer.peer(),
+                    root.description.transfer.root(),
+                )
+            })
             .chain(
                 self.waiting
                     .iter()
                     .filter(|w| matches!(w.phase, Phase::Refresh { ready: false, .. }))
-                    .map(|w| (w.description.peer, w.description.id)),
+                    .map(|w| (w.description.transfer.peer(), w.description.transfer.root())),
             )
             .collect()
     }
@@ -57,8 +55,8 @@ impl Intake {
         if self.declined.len() < crate::resources::limits().fetches {
             self.declined.insert(
                 (
-                    description.peer,
-                    description.id,
+                    description.transfer.peer(),
+                    description.transfer.root(),
                     description.statement,
                     *description.question.source_hash(),
                 ),
@@ -95,11 +93,9 @@ impl Intake {
             && questions.available_peer()
             && let Some(description) = self.queue.pop_front()
         {
-            if now.saturating_duration_since(description.created)
-                >= crate::resources::limits().root_timeout
-            {
+            if !description.transfer.live(now) {
                 return Progress::Skipped(
-                    description.id,
+                    description.transfer.root(),
                     "queued metadata expired before research admission".into(),
                 );
             }
@@ -107,7 +103,7 @@ impl Intake {
             let (question, reply) = questions.begin_peer_exchange(
                 graph,
                 description.question.clone(),
-                description.id,
+                description.transfer.root(),
                 crate::jobs::Purpose::Initial,
                 until,
             );
@@ -125,7 +121,7 @@ impl Intake {
                 .waiting
                 .pop_front()
                 .expect("bounded metadata decision queue");
-            let id = waiting.description.id;
+            let id = waiting.description.transfer.root();
             let result = (|| -> Result<Option<Vec<ProofId>>, String> {
                 if graph.contains(id)? {
                     return Err("received answer makes pending metadata obsolete".into());
@@ -160,8 +156,7 @@ impl Intake {
                             .transpose()?;
                         if current.is_some_and(|current| {
                             !current
-                                || now.saturating_duration_since(waiting.description.created)
-                                    >= crate::resources::limits().root_timeout
+                                || !waiting.description.transfer.live(now)
                                 || !crate::resources::adaptive::work_available()
                         }) {
                             *batch = None;
@@ -179,11 +174,7 @@ impl Intake {
                                     &assessment,
                                 )?;
                                 if let Some(batch) = batch.take()
-                                    && waiting
-                                        .description
-                                        .grant
-                                        .as_ref()
-                                        .is_none_or(|grant| grant.check().is_ok())
+                                    && waiting.description.transfer.live(Instant::now())
                                 {
                                     return questions
                                         .publish_exchange(
@@ -191,9 +182,8 @@ impl Intake {
                                             id,
                                             *batch,
                                             delta,
-                                            waiting.description.grant.clone(),
-                                            waiting.description.created
-                                                + crate::resources::limits().root_timeout,
+                                            waiting.description.transfer.capability(),
+                                            waiting.description.transfer.deadline(),
                                         )
                                         .map(Some)
                                         .map_err(String::from);
@@ -218,9 +208,7 @@ impl Intake {
                             questions.prepare_exchange(graph, &waiting.question, selected)?;
                         }
                         if self.active.is_none() && *ready {
-                            if now.saturating_duration_since(waiting.description.created)
-                                >= crate::resources::limits().root_timeout
-                            {
+                            if !waiting.description.transfer.live(now) {
                                 return Err("refreshed metadata lease expired".into());
                             }
                             let root = ApprovedRoot {
@@ -257,11 +245,9 @@ impl Intake {
         let Some(mut root) = self.active.take() else {
             return Progress::Waiting;
         };
-        let id = root.description.id;
+        let id = root.description.transfer.root();
         let result = (|| -> Result<Option<Vec<ProofId>>, String> {
-            if now.saturating_duration_since(root.description.created)
-                >= crate::resources::limits().root_timeout
-            {
+            if !root.description.transfer.live(now) {
                 if root.helpers.is_empty() {
                     return Err("short proof grant expired".into());
                 } else {
@@ -290,9 +276,7 @@ impl Intake {
             )?;
             if let Some(assessment) = &root.final_assessment {
                 let delta = questions.prepare_exchange(graph, &root.question, assessment)?;
-                if Instant::now().saturating_duration_since(root.description.created)
-                    >= crate::resources::limits().root_timeout
-                {
+                if !root.description.transfer.live(Instant::now()) {
                     return Err("short commit grant expired".into());
                 }
                 let admitted = questions.publish_exchange(
@@ -300,8 +284,8 @@ impl Intake {
                     id,
                     batch,
                     delta,
-                    root.description.grant.clone(),
-                    root.description.created + crate::resources::limits().root_timeout,
+                    root.description.transfer.capability(),
+                    root.description.transfer.deadline(),
                 )?;
                 return Ok(Some(admitted));
             }

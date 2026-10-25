@@ -22,7 +22,7 @@ pub(in crate::intake) struct Helpers {
     prefix: Option<CheckedBatch>,
     registration: Option<(ProofId, ProgramAdmission)>,
     registered: BTreeSet<ProofId>,
-    budget: ProgramBudget,
+    budget: Observer,
 }
 impl Helpers {
     pub(in crate::intake) fn busy(&self) -> bool {
@@ -437,12 +437,7 @@ impl Intake {
             .or(root.initial.as_ref())
             .ok_or("cited program has no parent assessment")?;
         questions.prepare_exchange(graph, &root.question, assessment)?;
-        if let Some(grant) = &root.description.grant {
-            grant.check()?;
-        }
-        if Instant::now().duration_since(root.description.created)
-            >= crate::resources::limits().root_timeout
-        {
+        if !root.description.transfer.live(Instant::now()) {
             return Ok(());
         }
         for id in root.helpers.advance(graph)? {

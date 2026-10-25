@@ -59,6 +59,13 @@ resumption. Linux uses firmware thermal trip points; macOS uses the OS warning.
 A transient hardware observation failure closes new work using the last valid
 snapshot and retries without stopping the network or fabricating a fresh sample.
 
+`adaptive/observer.rs` owns the sampling schedule, last usable snapshot and
+telemetry-failure policy for both the history controller and standalone program
+work. The controller retains persistence and publication of the live node budget.
+Without an initial observation, program work remains retryable and cannot invent
+an admission budget; invalid profile settings remain a distinct configuration
+error.
+
 Sampling frequency includes its own
 observed cost and remains bounded by existing control/freshness deadlines. Native
 subprocess probes have both output and wall-clock bounds and retain custody of

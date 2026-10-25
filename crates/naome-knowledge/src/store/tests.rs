@@ -1,4 +1,5 @@
 use super::*;
+mod lock_files;
 mod replay_validation;
 mod resource_calibration;
 use crate::Graph;
@@ -46,7 +47,7 @@ fn directory_ownership_ends_with_its_last_owner_despite_inherited_descriptors() 
     let owner = std::sync::Arc::new(Store::open(&directory.0).unwrap());
     // A duplicate shares the open-file description, as a descriptor inherited
     // by a concurrently spawning child does before close-on-exec takes effect.
-    let inherited = owner._lock.0.try_clone().unwrap();
+    let inherited = owner._lock.0.file().try_clone().unwrap();
     let retained = owner.clone();
     drop(owner);
     assert!(Store::open(&directory.0).is_err());

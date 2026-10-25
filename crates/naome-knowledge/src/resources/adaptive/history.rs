@@ -10,26 +10,16 @@ const APPLICATION: i64 = 0x4e415242;
 pub(crate) struct Controller {
     directory: PathBuf,
     connection: Connection,
-    _lock: File,
+    _lock: crate::storage::LockFile,
     identity: (u64, u64),
     version: i64,
     last: Option<Snapshot>,
-    next: Instant,
-    governor: Governor,
+    observer: Observer,
 }
 impl Controller {
     pub(crate) fn open(directory: &Path) -> Result<Self, String> {
         let lock_path = directory.join(".resource-history.lock");
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-            .open(&lock_path)
-            .map_err(|e| e.to_string())?;
-        crate::storage::owned_file(&lock_path)?;
+        let lock = crate::storage::LockFile::open(&lock_path).map_err(|e| e.to_string())?;
         lock.try_lock()
             .map_err(|_| "resource history already owned")?;
         let path = directory.join("resource-history.sqlite3");
@@ -75,17 +65,15 @@ impl Controller {
             identity: (metadata.dev(), metadata.ino()),
             version,
             last: None,
-            next: Instant::now(),
-            governor: Governor::default(),
+            observer: Observer::default(),
         };
         owner.refresh()?;
         Ok(owner)
     }
     pub(crate) fn refresh(&mut self) -> Result<(), String> {
-        if Instant::now() < self.next {
+        if !self.observer.due(Instant::now()) {
             return Ok(());
         }
-        let sampled = Instant::now();
         let path = self.directory.join("resource-history.sqlite3");
         let metadata = crate::storage::owned_file(&path)?;
         let version: i64 = sql(self
@@ -94,26 +82,14 @@ impl Controller {
         if (metadata.dev(), metadata.ino()) != self.identity || version != self.version {
             return Err("resource history changed outside owner".into());
         }
-        let selection = load(&self.directory)?;
-        let (snapshot, valid) = match sample_node(&self.directory) {
-            Ok(sample) => (
-                self.governor.observe(
-                    selection,
-                    sample,
-                    super::super::limits().memory_bytes as u64,
-                )?,
-                true,
-            ),
-            Err(error) => (self.governor.unavailable(selection).ok_or(error)?, false),
+        let Some(snapshot) = self
+            .observer
+            .poll(&self.directory)
+            .map_err(|error| error.to_string())?
+            .cloned()
+        else {
+            return Ok(());
         };
-        self.governor.sampled(sampled.elapsed());
-        let interval = self.governor.interval();
-        self.next = Instant::now()
-            + if valid {
-                interval
-            } else {
-                interval.min(std::time::Duration::from_secs(1))
-            };
         let changed = self.last.as_ref().is_none_or(|last| {
             last.selection != snapshot.selection
                 || last.budget != snapshot.budget

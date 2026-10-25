@@ -89,8 +89,13 @@ async fn expired_staging_releases_payload_but_keeps_the_final_interest_result() 
         .payload(peer, id, id, object.clone(), &graph)
         .unwrap();
     intake.advance(&mut graph, &mut questions);
-    intake.waiting.front_mut().unwrap().description.created =
-        Instant::now() - crate::resources::limits().root_timeout;
+    intake
+        .waiting
+        .front_mut()
+        .unwrap()
+        .description
+        .transfer
+        .set_received_for_test(Instant::now() - crate::resources::limits().root_timeout);
     intake.advance(&mut graph, &mut questions);
     assert!(matches!(
         intake.waiting.front().unwrap().phase,
