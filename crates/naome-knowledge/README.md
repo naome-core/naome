@@ -37,3 +37,9 @@ The pause belongs to the current daemon. `start` on an already running paused
 node preserves the pause. `stop` ends the daemon; a later start, including after
 a crash, starts with computation enabled and revalidates persisted proofs through
 the existing startup path. `interest` remains available during a pause.
+
+Status also reports `proof_verification`. A live checked graph reports `checked`;
+a stopped node reports `not_run` and its `accepted_proofs` count describes recorded
+admissions without mathematical replay. Offline controls still check structural
+storage integrity. Every startup independently rechecks all admitted proofs before
+they can be used as checked knowledge.

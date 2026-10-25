@@ -4,11 +4,14 @@
 //! select its roots, truncate an index, or restore validity from a stored flag.
 
 use crate::ArtifactState;
+mod program;
 use naome_foundation::Formula;
 use naome_proof::{
     ArtifactId, DefinitionId, DefinitionKind, DefinitionResolver, DerivationId, ProofId,
     StatementId,
 };
+pub use program::ProgramSource;
+pub(crate) use program::{ProgramNodes, ProgramRepresentation};
 use std::{borrow::Cow, error::Error, fmt};
 
 /// Bounded parsed reads for one operation. This is an allocation policy, not a
@@ -133,6 +136,25 @@ pub trait ContextView: sealed::Sealed + DefinitionResolver {
     fn snapshot_id(&self) -> [u8; 32];
     fn contains_artifact(&self, id: ArtifactId) -> Result<bool, ContextError>;
     fn proof_header(&self, id: ProofId) -> Result<Option<ProofHeader>, ContextError>;
+    /// A sealed mathematical source for a program citation. Bounded formulas
+    /// use the existing canonical representation; disk contexts also supply
+    /// authenticated DAG nodes without materializing a large formula tree.
+    fn program_source(&self, id: ProofId) -> Result<Option<ProgramSource>, ContextError> {
+        let Some(header) = self.proof_header(id)? else {
+            return Ok(None);
+        };
+        if header.length > crate::CHECKER_MAX_FORMULA_WORK_BYTES {
+            return Err(ContextError::Limit);
+        }
+        let formula = self
+            .proof_formula(header, header.length)?
+            .ok_or(ContextError::Corrupt)?;
+        Ok(Some(ProgramSource::formula(
+            id,
+            header,
+            formula.into_owned(),
+        )))
+    }
     fn statement_header(&self, id: StatementId) -> Result<Option<StatementHeader>, ContextError>;
     fn statement_formula(
         &self,

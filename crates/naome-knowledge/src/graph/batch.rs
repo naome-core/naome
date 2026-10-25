@@ -11,9 +11,18 @@ pub(super) fn dependency_visits() -> usize {
 pub(crate) struct CheckedBatch {
     pub(super) context: DiskArtifactState,
     pub(super) entries: Vec<(ProofId, crate::object::BinaryProof)>,
+    // Bounded unpublished closure edges. Program references remain canonical
+    // commands rather than duplicated persistent catalog relations.
+    pub(super) edges: BTreeMap<ProofId, BTreeSet<ProofId>>,
     pub(super) stamp: Stamp,
     pub(super) context_bytes: usize,
     pub(super) _disk: crate::resources::DiskLease,
+}
+
+impl CheckedBatch {
+    pub(crate) fn context(&self) -> &DiskArtifactState {
+        &self.context
+    }
 }
 
 impl Graph {
@@ -132,9 +141,9 @@ impl Graph {
                 .map(|(id, candidate)| (*id, &candidate.dependencies))
                 .chain(prefix.iter().flat_map(|prefix| {
                     prefix
-                        .entries
+                        .edges
                         .iter()
-                        .map(|(id, record)| (*id, &record.dependencies))
+                        .map(|(id, dependencies)| (*id, dependencies))
                 })),
         )?;
         let mut preparation = Preparation::new(
@@ -201,6 +210,20 @@ impl Graph {
             return Err("missing or cyclic committed dependency closure".into());
         }
         preparation.finish(self, root)
+    }
+
+    /// Check a necessary certificate helper in the canonical private builder.
+    /// Its checked result cannot publish knowledge without the complete root.
+    pub(crate) fn prepare_helper_after(
+        &self,
+        candidate: Candidate,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<CheckedBatch, crate::Error> {
+        let record = candidate.record();
+        let mut preparation = Preparation::new(self, prefix, record.bytes.len(), 1)?;
+        let checked = self.check_normal(candidate.normal, preparation.context())?;
+        preparation.append_certificate(self, checked, record)?;
+        Ok(preparation.into_prefix())
     }
 
     /// Commit a prepared delta against its exact checked base, then publish

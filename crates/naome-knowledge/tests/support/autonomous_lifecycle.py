@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -75,7 +76,7 @@ class Trial:
         assert result.returncode == 0, f"{verb}: {result.stderr}"
         assert result.stderr == "", f"{verb}: {result.stderr}"
         value = json.loads(result.stdout)
-        assert set(value) == {"running", "computation", "accepted_proofs", "interest"}, value
+        assert set(value) == {"running", "accepted_proofs", "interest", "proof_verification", "computation"}, value
         assert isinstance(value["running"], bool), value
         assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value
         assert isinstance(value["interest"], str), value
@@ -121,7 +122,7 @@ class Trial:
                     "exit_code": process.returncode, "stdout": stdout.decode(), "stderr": stderr.decode()})
                 assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
                 status = json.loads(stdout)
-                assert set(status) == {"running", "computation", "accepted_proofs", "interest"}, status
+                assert set(status) == {"running", "accepted_proofs", "interest", "proof_verification", "computation"}, status
                 assert isinstance(status["running"], bool) and status["running"] is True, status
                 assert type(status["accepted_proofs"]) is int and status["accepted_proofs"] >= 0, status
                 assert isinstance(status["interest"], str), status
@@ -351,7 +352,7 @@ class Trial:
                 return None
             assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
             status = json.loads(stdout)
-            assert set(status) == {"running", "computation", "accepted_proofs", "interest"} and status["running"] is True, status
+            assert set(status) == {"running", "accepted_proofs", "interest", "proof_verification", "computation"} and status["running"] is True, status
             if record["pre_ready_capture"] and record["complete_pre_ready_resource_frames"]:
                 record["coverage"] = "COMPLETE_SAMPLED_PRE_READY_NATIVE_CUSTODY_ONLY"
             elif record["pre_ready_capture"]:
@@ -383,7 +384,8 @@ class Trial:
             try:
                 node.stop(cleanup=True)
             except Exception as error:
-                failures.append(str(error))
+                failures.append(f"{type(error).__name__}: {error}")
+                traceback.print_exc()
                 try:
                     node.emergency_cleanup()
                 except Exception as cleanup_error:
@@ -1115,22 +1117,22 @@ def main():
         sender, receiver = Node(trial, 0), Node(trial, 1)
         seed = Node(trial, 2) if args.mode == "dht" else None
         for node in trial.nodes:
-            assert trial.call(node, "status") == {"running": False, "computation": "stopped", "accepted_proofs": 0, "interest": ""}
-            assert node.start() == {"running": True, "computation": "running", "accepted_proofs": 0, "interest": ""}
+            assert trial.call(node, "status") == {"running": False, "accepted_proofs": 0, "interest": "", "proof_verification": "not_run", "computation": "stopped"}
+            assert node.start() == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running"}
             key = node.directory / "identity.key"
             assert key.exists(), "first start failed to initialize identity"
             node.identity_sha256 = digest(key)
             original = dict(node.process)
-            assert trial.call(node, "start") == {"running": True, "computation": "running", "accepted_proofs": 0, "interest": ""}
+            assert trial.call(node, "start") == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running"}
             assert process_identity(original["pid"]) == original, "duplicate start replaced the node owner"
             assert json.loads((node.directory / "control.json").read_text())["pid"] == original["pid"]
             alias = trial.output / f"alias-{node.index}"
             alias.symlink_to(node.directory, target_is_directory=True)
             alias_node = SimpleNamespace(directory=alias, index=node.index)
-            assert trial.call(alias_node, "status") == {"running": True, "computation": "running", "accepted_proofs": 0, "interest": ""}
-            assert trial.call(alias_node, "start") == {"running": True, "computation": "running", "accepted_proofs": 0, "interest": ""}
+            assert trial.call(alias_node, "status") == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running"}
+            assert trial.call(alias_node, "start") == {"running": True, "accepted_proofs": 0, "interest": "", "proof_verification": "checked", "computation": "running"}
             assert process_identity(original["pid"]) == original, "path alias created a second node owner"
-            assert trial.call(alias_node, "stop") == {"running": False, "computation": "stopped", "accepted_proofs": 0, "interest": ""}
+            assert trial.call(alias_node, "stop") == {"running": False, "accepted_proofs": 0, "interest": "", "proof_verification": "not_run", "computation": "stopped"}
             node.stop()
         trial.summary["scenarios"]["automatic_initialization_detached_start_and_single_owner"] = {"result": "pass"}
         for verb in ["run", "init", "relay", "contract", "proof", "question"]:
@@ -1207,7 +1209,7 @@ def main():
             assert not any(event.get("event") == "connected" and event.get("peer") == sender.peer
                 and event.get("relayed") is False for event in receiver.logs()), "relay-only qualification used a direct shortcut"
             trial.summary["relayed_connection_ids"] = sorted(connections)
-        expected = {"running": True, "computation": "running", "accepted_proofs": 3, "interest": ""}
+        expected = {"running": True, "accepted_proofs": 3, "interest": "", "proof_verification": "checked", "computation": "running"}
         assert all(trial.call(node, "status") == expected for node in trial.nodes)
         trial.summary["accepted_ids"] = sorted(accepted)
         trial.summary["scenarios"][f"scheduled_mock_generation_real_validation_and_{args.mode}_exchange"] = {
@@ -1218,7 +1220,7 @@ def main():
         assert all(trial.call(node, "status") == expected for node in trial.nodes)
         trial.summary["scenarios"]["repeated_catalog_outputs_do_not_inflate_accepted_count"] = {"result": "pass", "unique_proofs": 3}
         for node in trial.nodes:
-            assert node.stop() == {"running": False, "computation": "stopped", "accepted_proofs": 3, "interest": ""}
+            assert node.stop() == {"running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run", "computation": "stopped"}
             assert digest(node.directory / "identity.key") == node.identity_sha256
             node.config["runtime"]["question_interval_ms"] = 3600000
             node.write_config()
@@ -1229,18 +1231,29 @@ def main():
             node.stop()
         trial.summary["scenarios"]["restart_revalidates_persistent_proofs_and_preserves_identity"] = {"result": "pass", "unique_proofs": 3}
         member = sorted(accepted)[0]
-        original = replace_catalog_payload(receiver, member, b"\xff")
+        saved = bytes.fromhex(next(value["proof"] for value in stored_objects(receiver) if value["proof_id"] == member))
+        # Preserve SQL widths while invalidating the authenticated content.
+        original = replace_catalog_payload(receiver, member, bytes([saved[0] ^ 1]) + saved[1:])
         try:
-            trial.call(receiver, "status", success=False)
+            assert trial.call(receiver, "status") == {"running": False, "accepted_proofs": 3,
+                "interest": "", "proof_verification": "not_run", "computation": "stopped"}
+            offset = len(receiver.logs())
+            receiver.release_port()
+            trial.call(receiver, "start", success=False)
+            failures = [event for event in receiver.logs()[offset:] if event.get("event") == "fatal_error"]
+            assert len(failures) == 1 and "catalog" in failures[0].get("error", ""), failures
+            assert not any(event.get("event") == "ready" for event in receiver.logs()[offset:])
         finally:
             replace_catalog_payload(receiver, member, original)
-        assert trial.call(receiver, "status") == {"running": False, "computation": "stopped", "accepted_proofs": 3, "interest": ""}
-        trial.summary["scenarios"]["stopped_status_rejects_corrupt_persistent_data_without_an_optimistic_count"] = {"result": "pass"}
+            receiver.reserve_port()
+        assert trial.call(receiver, "status") == {"running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run", "computation": "stopped"}
+        trial.summary["scenarios"]["offline_status_reports_unverified_admissions_but_start_rejects_corrupt_payloads"] = {"result": "pass"}
         trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": "pass"}
         trial.summary["result"] = "pass"
     except Exception as error:
         trial.summary["result"] = "fail"
         trial.summary["error"] = str(error)
+        traceback.print_exc()
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)

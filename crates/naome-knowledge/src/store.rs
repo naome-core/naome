@@ -172,6 +172,17 @@ impl Store {
         catalog.summary()
     }
 
+    /// Read an explicitly unverified admission count under directory custody.
+    /// This neither replays proofs nor creates a checked catalog generation.
+    pub(crate) fn stored_count(&self) -> Result<usize, crate::Error> {
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
+        catalog.stored_count()
+    }
+
     pub(crate) fn replay_page(
         &self,
         after: u64,
@@ -197,6 +208,20 @@ impl Store {
             .map_err(|_| "proof catalog lock poisoned")?;
         self.ensure_database()?;
         catalog.ids_page(after, limit, expected)
+    }
+
+    pub(crate) fn inventory_page(
+        &self,
+        after: Option<crate::corpus::InventoryCursor>,
+        limit: usize,
+        expected: Summary,
+    ) -> Result<Option<crate::corpus::InventoryPage>, crate::Error> {
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| "proof catalog lock poisoned")?;
+        self.ensure_database()?;
+        catalog.inventory_page(after, limit, expected)
     }
 
     pub(crate) fn get_binary(

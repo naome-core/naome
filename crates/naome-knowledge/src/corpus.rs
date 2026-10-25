@@ -1,5 +1,29 @@
 use crate::compatibility;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// An immutable admission-order horizon. Roots are synchronization hints only;
+/// the catalog lineage prevents resuming a cursor against a replacement corpus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InventorySnapshot {
+    pub lineage: [u8; 32],
+    pub root: [u8; 32],
+    pub count: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InventoryCursor {
+    pub snapshot: InventorySnapshot,
+    pub after: u64,
+}
+
+pub(crate) struct InventoryPage {
+    pub snapshot: InventorySnapshot,
+    pub ids: Vec<naome_proof::ProofId>,
+    pub next: Option<InventoryCursor>,
+}
 
 /// The checked map maintains its key-only Patricia root incrementally. The
 /// fingerprint is an untrusted synchronization hint, never proof authority.

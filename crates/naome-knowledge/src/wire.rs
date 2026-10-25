@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/5");
+pub(crate) const PROTOCOL: StreamProtocol = StreamProtocol::new("/naome/knowledge/6");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +22,7 @@ pub(crate) struct Message {
 pub(crate) enum Body {
     Inventory {
         known: Option<[u8; 32]>,
-        after: Option<[u8; 32]>,
+        after: Option<crate::corpus::InventoryCursor>,
         limit: usize,
     },
     Describe {
@@ -39,10 +39,11 @@ pub(crate) enum Body {
         root: [u8; 32],
     },
     InventoryResult {
-        root: [u8; 32],
+        snapshot: crate::corpus::InventorySnapshot,
         ids: Vec<[u8; 32]>,
-        next: Option<[u8; 32]>,
+        next: Option<crate::corpus::InventoryCursor>,
     },
+    InventoryRestart,
     Description {
         metadata: Metadata,
     },
@@ -254,7 +255,7 @@ mod tests {
                 .is_err()
             );
         }
-        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/5");
+        assert_eq!(PROTOCOL.as_ref(), "/naome/knowledge/6");
     }
 
     #[tokio::test]

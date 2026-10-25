@@ -209,7 +209,7 @@ async fn rejected_unanswered_work_preserves_its_retry_and_independent_question_s
 }
 
 #[tokio::test]
-async fn stale_generated_closure_is_not_published_and_unanswered_work_retries_freshly() {
+async fn changed_graph_rebuilds_generated_closure_without_repeating_interest() {
     let mut graph = Graph::default();
     let mut questions = questions();
     let selected = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
@@ -255,15 +255,21 @@ async fn stale_generated_closure_is_not_published_and_unanswered_work_retries_fr
     assert_eq!(
         autonomous.publications.len(),
         1,
-        "bounded candidate survives for a fresh decision"
+        "bounded candidate and its positive interest survive for fresh checking"
     );
-    autonomous.publications.front_mut().unwrap().retry = Instant::now();
-    autonomous.advance(&mut graph, &mut questions);
-    let interest = tokio::time::timeout(Duration::from_secs(5), questions.completed())
-        .await
-        .unwrap();
-    questions.finish(&graph, interest);
+    assert!(
+        autonomous
+            .publications
+            .front()
+            .unwrap()
+            .assessment
+            .is_some()
+    );
     assert_eq!(autonomous.advance(&mut graph, &mut questions).len(), 1);
+    assert!(
+        questions.available(),
+        "no second provider decision after unrelated graph growth"
+    );
     assert_eq!(graph.ids().len(), 2);
     assert!(autonomous.publications.is_empty() && autonomous.unanswered.is_empty());
 }

@@ -9,7 +9,9 @@ use naome_proof::program::Command;
 
 mod engine;
 mod error;
-pub use engine::{APPLICATION_ID, CheckedProgram, Engine, Status};
+pub use engine::{
+    APPLICATION_ID, CheckedProgram, Engine, ProgramDependency, SCHEMA_VERSION, Status,
+};
 pub use error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,12 +35,17 @@ pub trait Context {
 }
 
 pub struct Plan<F> {
-    pub expression: Expression<F>,
+    pub construction: Construction<F>,
     pub proved: bool,
     pub seal: bool,
     /// Schema freshness is checked by a disk-backed substitution. Its result
     /// must equal its input; these are at most two fixed schema roles.
     pub absent: Vec<(F, u32, u32)>,
+}
+
+pub enum Construction<F> {
+    Formula(Expression<F>),
+    Reference(naome_proof::ProofId),
 }
 
 /// Derive a fixed-size construction recipe from previously checked results.
@@ -122,6 +129,14 @@ pub fn prepare<C: Context>(
         Command::Axiom { axiom } => {
             Expression::Input(context.fixed(&naome_foundation::ZfcAxiom::from(axiom).formula())?)
         }
+        Command::ProofReference { proof_id } => {
+            return Ok(Plan {
+                construction: Construction::Reference(naome_proof::ProofId::from_bytes(proof_id)),
+                proved: true,
+                seal: false,
+                absent,
+            });
+        }
         Command::Separation {
             predicate,
             element,
@@ -192,7 +207,7 @@ pub fn prepare<C: Context>(
         }
     };
     Ok(Plan {
-        expression,
+        construction: Construction::Formula(expression),
         proved: is_proved,
         seal,
         absent,
