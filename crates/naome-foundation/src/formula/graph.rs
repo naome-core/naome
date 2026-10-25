@@ -2,7 +2,7 @@
 //!
 //! Storage and scheduling belong to consumers. Foundation owns variable
 //! binding, structural properties and representation-independent recipes.
-use super::{Formula, Node as Tree, Variable as TreeVariable};
+use super::{Formula, FormulaView, Node as Tree, Variable as TreeVariable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variable {
@@ -137,5 +137,23 @@ impl Formula {
             emit(node)
         }
         walk(&self.0, &mut emit)
+    }
+}
+
+impl<'a> FormulaView<'a> {
+    /// Borrows one primitive node without copying its children. Bound indices
+    /// retain their enclosing scope; an inner view is not a standalone formula.
+    pub fn graph_node(self) -> Node<Self> {
+        let variable = |v| match v {
+            TreeVariable::Free(v) => Variable::Free(v.identifier()),
+            TreeVariable::Bound(v) => Variable::Bound(u64::from(v)),
+        };
+        match self.0 {
+            Tree::Equal(a, b) => Node::Equal(variable(*a), variable(*b)),
+            Tree::Member(a, b) => Node::Member(variable(*a), variable(*b)),
+            Tree::Not(a) => Node::Not(Self(a)),
+            Tree::Implies(a, b) => Node::Implies(Self(a), Self(b)),
+            Tree::ForAll(a) => Node::ForAll(Self(a)),
+        }
     }
 }

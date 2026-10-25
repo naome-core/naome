@@ -259,20 +259,20 @@ fn checked_proof_matches_exact_targets_with_original_negation_orientation() {
     let negative = compile("not(all(x,eq(x,x)))");
     let twice_negative = compile("not(not(all(x,eq(x,x))))");
     assert_eq!(
-        question.classify_checked_proof(&proof),
-        Ok(QuestionOutcome::Proved)
+        question.classify_checked_proof(&proof).unwrap(),
+        QuestionOutcome::Proved
     );
     assert_eq!(
-        alpha.classify_checked_proof(&proof),
-        Ok(QuestionOutcome::Proved)
+        alpha.classify_checked_proof(&proof).unwrap(),
+        QuestionOutcome::Proved
     );
     assert_eq!(
-        negative.classify_checked_proof(&proof),
-        Ok(QuestionOutcome::Refuted)
+        negative.classify_checked_proof(&proof).unwrap(),
+        QuestionOutcome::Refuted
     );
     assert_eq!(
-        twice_negative.classify_checked_proof(&proof),
-        Ok(QuestionOutcome::Proved)
+        twice_negative.classify_checked_proof(&proof).unwrap(),
+        QuestionOutcome::Proved
     );
 
     let unrelated = checked(include_str!(

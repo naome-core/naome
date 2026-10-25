@@ -49,6 +49,19 @@ impl<'source> Parser<'source> {
                     kind,
                 },
             );
+            self.binding_origins.insert(
+                name,
+                BindingOrigin {
+                    range: SourceRange::new(offset, self.offset).expect("source offsets fit"),
+                    kind: ExpansionKind::Definition,
+                    definition_id: Some(naome_checker::diagnostics::Digest(
+                        *definition_id.as_bytes(),
+                    )),
+                    proof_id: None,
+                    expansions: Vec::new(),
+                    expansions_complete: true,
+                },
+            );
             if self.peek_word("refs")
                 || self.peek_word("let")
                 || self.peek_word("goal")

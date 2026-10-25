@@ -32,6 +32,7 @@ fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     })
 }
 use format::{ChunkReader, command_hash, decode_command, encode_command};
+mod diagnostics;
 mod materialization;
 mod references;
 use materialization::{Finalization, Shape};
@@ -63,6 +64,9 @@ pub struct Engine {
     last_quantum_steps: usize,
     export: Option<Export>,
     finalization: Option<Finalization>,
+    context_snapshot: Option<[u8; 32]>,
+    context_consistent: bool,
+    reference_snapshot: Option<[u8; 32]>,
 }
 #[derive(Clone, Copy)]
 struct Export {
@@ -174,7 +178,12 @@ enum Operation {
     Bind(usize, u32),
     Vacuous(usize),
     Substitute(usize, u32, u32),
-    AssertEqual(usize, u64),
+    AssertEqual {
+        register: usize,
+        expected: u64,
+        variable: u32,
+        role: crate::diagnostics::OperandRole,
+    },
 }
 fn compile(expression: Expression<u64>, operations: &mut Vec<Operation>) -> usize {
     let operation = match expression {
@@ -401,6 +410,9 @@ impl Engine {
             last_quantum_steps: 0,
             export: None,
             finalization: None,
+            context_snapshot: None,
+            context_consistent: true,
+            reference_snapshot: None,
         })
     }
     fn live(&self) -> Result<(), Error> {
@@ -482,6 +494,27 @@ impl Engine {
         cache_bytes: u64,
         context: &dyn ContextView,
     ) -> Result<bool, Error> {
+        self.advance_impl(steps, cache_bytes, context, None)
+    }
+    /// Runs the ordinary bounded quantum and captures a requested fragment if
+    /// it encounters a proof failure. It does not retain or trust failed work.
+    pub fn advance_with_inspection(
+        &mut self,
+        steps: usize,
+        cache_bytes: u64,
+        context: &dyn ContextView,
+        query: &crate::diagnostics::FormulaQuery,
+    ) -> Result<bool, Error> {
+        query.validate().map_err(Error::Inspection)?;
+        self.advance_impl(steps, cache_bytes, context, Some(query))
+    }
+    fn advance_impl(
+        &mut self,
+        steps: usize,
+        cache_bytes: u64,
+        context: &dyn ContextView,
+        query: Option<&crate::diagnostics::FormulaQuery>,
+    ) -> Result<bool, Error> {
         self.last_quantum_steps = 0;
         self.live()?;
         if cache_bytes < 4096 {
@@ -515,9 +548,11 @@ impl Engine {
         if steps == 0 {
             return Ok(false);
         }
+        let snapshot = context.snapshot_id();
+        self.context_snapshot = Some(snapshot);
         let before = (self.cursor, self.checked_hash, self.accepted);
         sql(self.connection.execute_batch("BEGIN IMMEDIATE"))?;
-        let result = self.advance_batch(steps, context);
+        let result = self.advance_batch(steps, context, query);
         match result {
             Ok(progress) => match sql(self.connection.execute_batch("COMMIT")) {
                 Ok(()) => Ok(progress),
@@ -542,7 +577,12 @@ impl Engine {
         self.last_quantum_steps
     }
 
-    fn advance_batch(&mut self, steps: usize, context: &dyn ContextView) -> Result<bool, Error> {
+    fn advance_batch(
+        &mut self,
+        steps: usize,
+        context: &dyn ContextView,
+        query: Option<&crate::diagnostics::FormulaQuery>,
+    ) -> Result<bool, Error> {
         let mut progress = false;
         for _ in 0..steps {
             if self.active.is_none() {
@@ -558,14 +598,31 @@ impl Engine {
                     return Err("program input hash mismatch".into());
                 }
                 let command: Command = decode_command(&bytes)?;
-                let plan = checker::prepare(&command, self.cursor, self)?;
+                let plan = match checker::prepare(&command, self.cursor, self) {
+                    Ok(plan) => plan,
+                    Err(checker::PrepareError::Context(error)) => return Err(error),
+                    Err(checker::PrepareError::Check(failure)) => {
+                        return Err(Error::Check(Box::new(
+                            self.proof_diagnostic(&command, failure, context, query)?,
+                        )));
+                    }
+                };
                 let mut operations = Vec::new();
-                for (predicate, from, to) in plan.absent {
+                for freshness in plan.absent {
                     let input = operations.len();
-                    operations.push(Operation::Input(predicate));
+                    operations.push(Operation::Input(freshness.predicate));
                     let transformed = operations.len();
-                    operations.push(Operation::Substitute(input, from, to));
-                    operations.push(Operation::AssertEqual(transformed, predicate));
+                    operations.push(Operation::Substitute(
+                        input,
+                        freshness.variable,
+                        freshness.replacement,
+                    ));
+                    operations.push(Operation::AssertEqual {
+                        register: transformed,
+                        expected: freshness.predicate,
+                        variable: freshness.variable,
+                        role: freshness.role,
+                    });
                 }
                 match plan.construction {
                     checker::Construction::Formula(expression) => {
@@ -593,7 +650,7 @@ impl Engine {
             }
             self.last_quantum_steps += 1;
             let mut active = self.active.take().expect("active command");
-            if let Some(value) = self.operation(&mut active, context)? {
+            if let Some(value) = self.operation(&mut active, context, query)? {
                 active.registers.push(value);
                 active.position += 1;
                 active.restore_sequence = 0;
@@ -655,11 +712,12 @@ impl Engine {
         &mut self,
         evaluation: &mut Evaluation,
         context: &dyn ContextView,
+        query: Option<&crate::diagnostics::FormulaQuery>,
     ) -> Result<Option<u64>, Error> {
         let r = &evaluation.registers;
         let node = match evaluation.operations[evaluation.position] {
             Operation::Reference(proof) => {
-                return self.import_reference(evaluation, context, proof);
+                return self.import_reference(evaluation, context, proof, query);
             }
             Operation::Input(id) => {
                 self.load(id)?;
@@ -670,9 +728,20 @@ impl Engine {
             Operation::Not(a) => Node::Not(r[a]),
             Operation::Implies(a, b) => Node::Implies(r[a], r[b]),
             Operation::Vacuous(a) => Node::ForAll(r[a]),
-            Operation::AssertEqual(a, expected) => {
-                if r[a] != expected {
-                    return Err("schema freshness violation".into());
+            Operation::AssertEqual {
+                register,
+                expected,
+                variable,
+                role,
+            } => {
+                if r[register] != expected {
+                    let command = self.current_command()?;
+                    return Err(Error::Check(Box::new(self.proof_diagnostic(
+                        &command,
+                        crate::diagnostics::Failure::ForbiddenPredicateVariable { variable, role },
+                        context,
+                        query,
+                    )?)));
                 }
                 return Ok(Some(expected));
             }
@@ -1057,7 +1126,8 @@ impl Engine {
 }
 impl checker::Context for Engine {
     type Formula = u64;
-    fn previous(&self, index: u64) -> Result<Value<u64>, String> {
+    type Error = Error;
+    fn previous(&self, index: u64) -> Result<Value<u64>, Error> {
         let (formula, proved) = sql(self.connection.query_row(
             "SELECT node,proved FROM checked WHERE position=?1",
             [number(index)?],
@@ -1069,19 +1139,17 @@ impl checker::Context for Engine {
         }
         Ok(Value { formula, proved })
     }
-    fn implication(&self, formula: u64) -> Result<Option<(u64, u64)>, String> {
+    fn implication(&self, formula: u64) -> Result<Option<(u64, u64)>, Error> {
         Ok(match self.load(formula)?.0 {
             Node::Implies(a, b) => Some((a, b)),
             _ => None,
         })
     }
-    fn closed(&self, formula: u64) -> Result<bool, String> {
+    fn closed(&self, formula: u64) -> Result<bool, Error> {
         Ok(self.load(formula)?.2.closed())
     }
-    fn fixed(&mut self, formula: &Formula) -> Result<u64, String> {
-        formula
-            .fold_graph(|node| self.intern(node))
-            .map_err(String::from)
+    fn fixed(&mut self, formula: &Formula) -> Result<u64, Error> {
+        formula.fold_graph(|node| self.intern(node))
     }
 }
 

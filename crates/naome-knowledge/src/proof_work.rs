@@ -214,7 +214,55 @@ impl Work {
         budget: &Budget,
         context: &dyn naome_checker::ContextView,
     ) -> Result<bool, crate::Error> {
+        self.advance_impl(budget, context, None)
+    }
+    /// Uses the same resource admission, quantum feedback and rollback as
+    /// ordinary checking, capturing one bounded fragment before a failure.
+    pub fn advance_with_inspection(
+        &mut self,
+        budget: &Budget,
+        context: &dyn naome_checker::ContextView,
+        query: &naome_checker::diagnostics::FormulaQuery,
+    ) -> Result<bool, crate::Error> {
+        query
+            .validate()
+            .map_err(crate::Error::DiagnosticInspection)?;
+        self.advance_impl(budget, context, Some(query))
+    }
+    /// Reads only live, authenticated prefix state named by a bound diagnostic.
+    /// Reopening or rolling back may require the ordinary checker to replay.
+    pub fn inspect_formula(
+        &self,
+        diagnostic: &naome_checker::diagnostics::ProofDiagnostic,
+        query: &naome_checker::diagnostics::FormulaQuery,
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<naome_checker::diagnostics::FormulaFragment, crate::Error> {
         self.live()?;
+        query
+            .validate()
+            .map_err(crate::Error::DiagnosticInspection)?;
+        crate::resources::require_work_admission()?;
+        let _memory = crate::resources::MemoryLease::acquire(
+            query.maximum_nodes * 256 + query.path.len() * 64 + 1024,
+        )?;
+        self.engine
+            .inspect_formula(diagnostic, query, context)
+            .map_err(crate::Error::from)
+    }
+    fn advance_impl(
+        &mut self,
+        budget: &Budget,
+        context: &dyn naome_checker::ContextView,
+        query: Option<&naome_checker::diagnostics::FormulaQuery>,
+    ) -> Result<bool, crate::Error> {
+        self.live()?;
+        let _inspection_memory = query
+            .map(|query| {
+                crate::resources::MemoryLease::acquire(
+                    query.maximum_nodes * 256 + query.path.len() * 64 + 1024,
+                )
+            })
+            .transpose()?;
         if budget.cache_bytes < 4096
             || budget.cache_bytes > (budget.memory_bytes / 4).max(4096)
             || budget.cache_bytes > crate::resources::limits().memory_bytes as u64 / 4
@@ -244,11 +292,13 @@ impl Work {
             (budget.batch_steps as u64).saturating_mul(16 * 1024),
         )?;
         let started = std::time::Instant::now();
-        let result = self.engine.advance(
-            crate::resources::adaptive::batch(budget.batch_steps),
-            cache,
-            context,
-        );
+        let steps = crate::resources::adaptive::batch(budget.batch_steps);
+        let result = match query {
+            Some(query) => self
+                .engine
+                .advance_with_inspection(steps, cache, context, query),
+            None => self.engine.advance(steps, cache, context),
+        };
         crate::resources::feedback::record(
             crate::resources::feedback::Kind::Check,
             self.engine.last_quantum_steps(),

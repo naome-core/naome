@@ -260,7 +260,7 @@ impl Programs {
                         input_complete: false,
                     })
                 }
-                Err(error) => return Progress::Skipped(id, error.to_string()),
+                Err(error) => return Progress::Skipped(id, error),
             }
         }
         let Some(mut root) = self.active.take() else {
@@ -406,7 +406,7 @@ impl Programs {
                         Instant::now() + crate::resources::limits().pending_retry,
                     );
                 }
-                Progress::Skipped(id, error.to_string())
+                Progress::Skipped(id, error)
             }
         }
     }

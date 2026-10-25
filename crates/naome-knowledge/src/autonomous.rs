@@ -563,7 +563,7 @@ impl Autonomous {
                     }
                     Err(error) => {
                         emit(
-                            json!({"event":"proof_candidate_rejected","job":pending.job,"error":error.to_string()}),
+                            json!({"event":"proof_candidate_rejected","job":pending.job,"error":error}),
                         );
                         self.acknowledge(pending.job);
                         self.retain(pending.question);

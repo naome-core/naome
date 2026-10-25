@@ -346,12 +346,14 @@ fn mathematically_invalid_public_ingest_rejects_before_opening_or_halting_a_phas
         proof: hex(&bytes),
     };
     let _reset = probe(Fault::None);
-    assert!(
-        graph
-            .ingest(envelope, Instant::now())
-            .unwrap_err()
-            .contains("mathematically invalid")
+    let error = graph.ingest(envelope, Instant::now()).unwrap_err();
+    assert_eq!(
+        error.diagnostic().unwrap().failure,
+        naome_checker::diagnostics::Failure::ExpectedImplication {
+            operand: naome_checker::diagnostics::OperandRole::Implication
+        }
     );
+    assert!(!error.retryable() && !error.fatal());
     PROBE.with(|slot| {
         assert!(slot.borrow().inserts.is_empty());
         assert!(slot.borrow().boundaries.is_empty());

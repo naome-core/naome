@@ -1,6 +1,7 @@
 //! Mathematical authority for incrementally evaluated disk-backed programs.
 //! Storage never establishes proofhood: only an evaluated axiom or inference
 //! can produce a proved result. Reopening must recheck the committed prefix.
+use crate::diagnostics::{Failure, OperandRole};
 use naome_foundation::{
     Formula, FreeVariable,
     construction::{self as recipe, Expression},
@@ -25,13 +26,28 @@ pub type Implication<F> = (F, F);
 /// Formula handles denote structurally interned, well-formed roots.
 pub trait Context {
     type Formula: Copy + Eq;
-    fn previous(&self, index: u64) -> Result<Value<Self::Formula>, String>;
+    type Error;
+    fn previous(&self, index: u64) -> Result<Value<Self::Formula>, Self::Error>;
     fn implication(
         &self,
         formula: Self::Formula,
-    ) -> Result<Option<Implication<Self::Formula>>, String>;
-    fn closed(&self, formula: Self::Formula) -> Result<bool, String>;
-    fn fixed(&mut self, formula: &Formula) -> Result<Self::Formula, String>;
+    ) -> Result<Option<Implication<Self::Formula>>, Self::Error>;
+    fn closed(&self, formula: Self::Formula) -> Result<bool, Self::Error>;
+    fn fixed(&mut self, formula: &Formula) -> Result<Self::Formula, Self::Error>;
+}
+
+/// A rule failure remains separate from a storage/context access failure.
+#[derive(Debug)]
+pub enum PrepareError<E> {
+    Check(Failure),
+    Context(E),
+}
+
+pub struct Freshness<F> {
+    pub predicate: F,
+    pub variable: u32,
+    pub replacement: u32,
+    pub role: OperandRole,
 }
 
 pub struct Plan<F> {
@@ -40,7 +56,7 @@ pub struct Plan<F> {
     pub seal: bool,
     /// Schema freshness is checked by a disk-backed substitution. Its result
     /// must equal its input; these are at most two fixed schema roles.
-    pub absent: Vec<(F, u32, u32)>,
+    pub absent: Vec<Freshness<F>>,
 }
 
 pub enum Construction<F> {
@@ -53,19 +69,27 @@ pub fn prepare<C: Context>(
     command: &Command,
     position: u64,
     context: &mut C,
-) -> Result<Plan<C::Formula>, String> {
-    let previous = |index, proof: bool| -> Result<Value<C::Formula>, String> {
-        if index >= position {
-            return Err("program references must point strictly backward".into());
-        }
-        let value = context.previous(index)?;
-        if proof && !value.proved {
-            return Err("inference input is a formula, not a proved result".into());
-        }
-        Ok(value)
-    };
-    let formula = |index| previous(index, false).map(|v| v.formula);
-    let proved = |index| previous(index, true).map(|v| v.formula);
+) -> Result<Plan<C::Formula>, PrepareError<C::Error>> {
+    use OperandRole as R;
+    let previous =
+        |index, proof: bool, role| -> Result<Value<C::Formula>, PrepareError<C::Error>> {
+            if index >= position {
+                return Err(PrepareError::Check(Failure::ReferenceNotEarlier {
+                    operand: role,
+                    reference: index,
+                }));
+            }
+            let value = context.previous(index).map_err(PrepareError::Context)?;
+            if proof && !value.proved {
+                return Err(PrepareError::Check(Failure::InputNotProved {
+                    operand: role,
+                    reference: index,
+                }));
+            }
+            Ok(value)
+        };
+    let formula = |index, role| previous(index, false, role).map(|v| v.formula);
+    let proved = |index, role| previous(index, true, role).map(|v| v.formula);
     let variable = FreeVariable::new;
     let mut absent = Vec::new();
     let mut is_proved = true;
@@ -81,54 +105,71 @@ pub fn prepare<C: Context>(
         }
         Command::Not { formula: input } => {
             is_proved = false;
-            Expression::Input(formula(input)?).negate()
+            Expression::Input(formula(input, R::Formula)?).negate()
         }
         Command::Implies {
             antecedent,
             consequent,
         } => {
             is_proved = false;
-            Expression::Input(formula(antecedent)?).implies(Expression::Input(formula(consequent)?))
+            Expression::Input(formula(antecedent, R::Antecedent)?)
+                .implies(Expression::Input(formula(consequent, R::Consequent)?))
         }
         Command::ForAll { variable: v, body } => {
             is_proved = false;
-            Expression::Input(formula(body)?).for_all(variable(v))
+            Expression::Input(formula(body, R::Body)?).for_all(variable(v))
         }
         Command::Substitute { from, to, body } => {
             is_proved = false;
-            Expression::Input(formula(body)?).substitute(variable(from), variable(to))
+            Expression::Input(formula(body, R::Body)?).substitute(variable(from), variable(to))
         }
         Command::Simplification {
             antecedent,
             consequent,
-        } => recipe::simplification(formula(antecedent)?, formula(consequent)?),
+        } => recipe::simplification(
+            formula(antecedent, R::Antecedent)?,
+            formula(consequent, R::Consequent)?,
+        ),
         Command::Frege {
             first,
             second,
             third,
-        } => recipe::frege(formula(first)?, formula(second)?, formula(third)?),
+        } => recipe::frege(
+            formula(first, R::First)?,
+            formula(second, R::Second)?,
+            formula(third, R::Third)?,
+        ),
         Command::Contraposition {
             antecedent,
             consequent,
-        } => recipe::contraposition(formula(antecedent)?, formula(consequent)?),
+        } => recipe::contraposition(
+            formula(antecedent, R::Antecedent)?,
+            formula(consequent, R::Consequent)?,
+        ),
         Command::Distribution {
             variable: v,
             antecedent,
             consequent,
-        } => recipe::distribution(variable(v), formula(antecedent)?, formula(consequent)?),
-        Command::Vacuous { formula: input } => recipe::vacuous(formula(input)?),
+        } => recipe::distribution(
+            variable(v),
+            formula(antecedent, R::Antecedent)?,
+            formula(consequent, R::Consequent)?,
+        ),
+        Command::Vacuous { formula: input } => recipe::vacuous(formula(input, R::Formula)?),
         Command::Instantiation {
             variable: v,
             replacement,
             body,
-        } => recipe::instantiation(variable(v), variable(replacement), formula(body)?),
+        } => recipe::instantiation(variable(v), variable(replacement), formula(body, R::Body)?),
         Command::Reflexivity { variable: v } => Expression::Equal(variable(v), variable(v)),
         Command::Substitution { from, to, body } => {
-            recipe::substitution(variable(from), variable(to), formula(body)?)
+            recipe::substitution(variable(from), variable(to), formula(body, R::Body)?)
         }
-        Command::Axiom { axiom } => {
-            Expression::Input(context.fixed(&naome_foundation::ZfcAxiom::from(axiom).formula())?)
-        }
+        Command::Axiom { axiom } => Expression::Input(
+            context
+                .fixed(&naome_foundation::ZfcAxiom::from(axiom).formula())
+                .map_err(PrepareError::Context)?,
+        ),
         Command::ProofReference { proof_id } => {
             return Ok(Plan {
                 construction: Construction::Reference(naome_proof::ProofId::from_bytes(proof_id)),
@@ -143,9 +184,19 @@ pub fn prepare<C: Context>(
             source,
             result,
         } => {
-            distinct(&[element, source, result])?;
-            let predicate = formula(predicate)?;
-            absent.push((predicate, result, element));
+            distinct(&[
+                (R::Element, element),
+                (R::Source, source),
+                (R::Result, result),
+            ])
+            .map_err(PrepareError::Check)?;
+            let predicate = formula(predicate, R::Predicate)?;
+            absent.push(Freshness {
+                predicate,
+                variable: result,
+                replacement: element,
+                role: R::Result,
+            });
             recipe::separation(
                 predicate,
                 variable(element),
@@ -161,10 +212,27 @@ pub fn prepare<C: Context>(
             source,
             result,
         } => {
-            distinct(&[input, output, witness, source, result])?;
-            let predicate = formula(predicate)?;
-            absent.push((predicate, witness, input));
-            absent.push((predicate, result, input));
+            distinct(&[
+                (R::Input, input),
+                (R::Output, output),
+                (R::Witness, witness),
+                (R::Source, source),
+                (R::Result, result),
+            ])
+            .map_err(PrepareError::Check)?;
+            let predicate = formula(predicate, R::Predicate)?;
+            absent.push(Freshness {
+                predicate,
+                variable: witness,
+                replacement: input,
+                role: R::Witness,
+            });
+            absent.push(Freshness {
+                predicate,
+                variable: result,
+                replacement: input,
+                role: R::Result,
+            });
             recipe::replacement(
                 predicate,
                 variable(input),
@@ -178,29 +246,34 @@ pub fn prepare<C: Context>(
             premise,
             implication,
         } => {
-            let premise = proved(premise)?;
-            let implication = proved(implication)?;
-            let Some((antecedent, consequent)) = context.implication(implication)? else {
-                return Err("modus ponens requires an implication".into());
+            let premise = proved(premise, R::Premise)?;
+            let implication = proved(implication, R::Implication)?;
+            let Some((antecedent, consequent)) = context
+                .implication(implication)
+                .map_err(PrepareError::Context)?
+            else {
+                return Err(PrepareError::Check(Failure::ExpectedImplication {
+                    operand: R::Implication,
+                }));
             };
             if antecedent != premise {
-                return Err("modus ponens antecedent mismatch".into());
+                return Err(PrepareError::Check(Failure::AntecedentMismatch));
             }
             Expression::Input(consequent)
         }
         Command::Generalization {
             premise,
             variable: v,
-        } => Expression::Input(proved(premise)?).for_all(variable(v)),
+        } => Expression::Input(proved(premise, R::Premise)?).for_all(variable(v)),
         Command::Alias { input } => {
-            let value = previous(input, false)?;
+            let value = previous(input, false, R::Input)?;
             is_proved = value.proved;
             Expression::Input(value.formula)
         }
         Command::Seal { proof } => {
-            let conclusion = proved(proof)?;
-            if !context.closed(conclusion)? {
-                return Err("program conclusion is not closed".into());
+            let conclusion = proved(proof, R::Conclusion)?;
+            if !context.closed(conclusion).map_err(PrepareError::Context)? {
+                return Err(PrepareError::Check(Failure::OpenConclusion));
             }
             seal = true;
             Expression::Input(conclusion)
@@ -213,10 +286,17 @@ pub fn prepare<C: Context>(
         absent,
     })
 }
-fn distinct(variables: &[u32]) -> Result<(), String> {
-    for (i, v) in variables.iter().enumerate() {
-        if variables[..i].contains(v) {
-            return Err("schema role variables must be distinct".into());
+fn distinct(variables: &[(OperandRole, u32)]) -> Result<(), Failure> {
+    for (i, (_, variable)) in variables.iter().enumerate() {
+        if variables[..i].iter().any(|(_, other)| other == variable) {
+            return Err(Failure::RoleCollision {
+                variable: *variable,
+                roles: variables
+                    .iter()
+                    .filter(|(_, value)| value == variable)
+                    .map(|(role, _)| *role)
+                    .collect(),
+            });
         }
     }
     Ok(())

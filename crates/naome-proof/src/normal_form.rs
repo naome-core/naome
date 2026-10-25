@@ -12,7 +12,11 @@ pub(super) fn normalize(certificate: ProofCertificate) -> ProofCertificate {
 
 pub(super) fn normalize_with_step_origins(
     certificate: ProofCertificate,
-) -> (ProofCertificate, Vec<u32>) {
+) -> (
+    ProofCertificate,
+    Vec<u32>,
+    BTreeMap<FreeVariable, FreeVariable>,
+) {
     let mut source = certificate.steps.into_iter().map(Some).collect::<Vec<_>>();
     let mut normalized_indices = vec![UNNORMALIZED_STEP; source.len()];
     let mut normalized_steps = Vec::new();
@@ -73,6 +77,7 @@ pub(super) fn normalize_with_step_origins(
             steps: normalized_steps,
         },
         normalized_indices,
+        variables.normalized,
     )
 }
 

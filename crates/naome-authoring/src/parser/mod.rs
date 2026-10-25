@@ -1,6 +1,11 @@
 //! One parser state, compilation order, and variable allocation.
 
 use super::*;
+use crate::CompileErrorKind as CompileError;
+mod diagnostics;
+use naome_checker::diagnostics::{
+    ArgumentOrigin, ExpansionKind, ExpansionOrigin, OperandRole, SourceRange,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum FormulaContext {
@@ -37,10 +42,20 @@ struct DefinitionAlias {
     kind: DefinitionKind,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StepBinding {
     position: u32,
     span: SourceSpan,
+    arguments: Vec<ArgumentOrigin>,
+}
+
+struct BindingOrigin {
+    range: SourceRange,
+    kind: ExpansionKind,
+    definition_id: Option<naome_checker::diagnostics::Digest>,
+    proof_id: Option<naome_checker::diagnostics::Digest>,
+    expansions: Vec<ExpansionOrigin>,
+    expansions_complete: bool,
 }
 
 pub(super) struct Parser<'source> {
@@ -54,6 +69,11 @@ pub(super) struct Parser<'source> {
     formula_binding_nodes: usize,
     statement_nodes: usize,
     certificate_formula_nodes: usize,
+    pending_arguments: Vec<ArgumentOrigin>,
+    diagnostic_query: Option<naome_checker::diagnostics::FormulaQuery>,
+    binding_origins: HashMap<&'source str, BindingOrigin>,
+    pending_expansions: Vec<ExpansionOrigin>,
+    expansions_complete: bool,
 }
 
 impl<'source> Parser<'source> {
@@ -69,7 +89,17 @@ impl<'source> Parser<'source> {
             formula_binding_nodes: 0,
             statement_nodes: 0,
             certificate_formula_nodes: 0,
+            pending_arguments: Vec::new(),
+            diagnostic_query: None,
+            binding_origins: HashMap::new(),
+            pending_expansions: Vec::new(),
+            expansions_complete: true,
         }
+    }
+
+    pub(super) fn with_query(mut self, query: &naome_checker::diagnostics::FormulaQuery) -> Self {
+        self.diagnostic_query = Some(query.clone());
+        self
     }
 
     pub(super) fn compile(
@@ -153,6 +183,7 @@ impl<'source> Parser<'source> {
                 StepBinding {
                     position,
                     span: SourceSpan::new(name_offset, self.offset),
+                    arguments: std::mem::take(&mut self.pending_arguments),
                 },
             );
             proof_steps.push(step);
@@ -169,6 +200,9 @@ impl<'source> Parser<'source> {
             });
         }
         let step_bindings = std::mem::take(&mut self.steps);
+        let variable_names = self.variables.names().collect::<Vec<_>>();
+        let source_text = self.source;
+        let diagnostic_query = self.diagnostic_query.take();
         drop(self);
 
         let certificate =
@@ -178,26 +212,109 @@ impl<'source> Parser<'source> {
             })?;
         let (normal_form, step_origins) =
             certificate.into_unchecked_normal_form_with_step_origins();
-        let checked =
-            check_normal_form_with_state(normal_form, artifact_state).map_err(|source| {
-                let source_step = step_origins.source_step(source.step());
-                let origin = source_step.and_then(|position| {
-                    step_bindings
-                        .iter()
-                        .find(|(_, binding)| binding.position == position)
-                });
-                let span =
-                    origin.map_or(SourceSpan::point(proof_offset), |(_, binding)| binding.span);
-                CompileError::Check {
-                    span,
-                    source: Box::new(source),
-                }
-            })?;
-        drop(step_bindings);
-        drop(step_origins);
+        let checked = match &diagnostic_query {
+            Some(query) => {
+                naome_checker::check_normal_form_with_inspection(normal_form, artifact_state, query)
+            }
+            None => check_normal_form_with_state(normal_form, artifact_state),
+        }
+        .map_err(|mut source| {
+            diagnostics::attach_source(
+                source.diagnostic_mut(),
+                source_text,
+                &step_bindings,
+                &step_origins,
+                &variable_names,
+            );
+            source
+                .diagnostic_mut()
+                .bind_target(&statement)
+                .expect("parsed source target obeys formula limits");
+            source
+                .diagnostic_mut()
+                .target
+                .as_mut()
+                .expect("bound target")
+                .variable_namespace = naome_checker::diagnostics::VariableNamespace::Source;
+            source.diagnostic_mut().target_source_digest = source.diagnostic().input.source_digest;
+            source.diagnostic_mut().target_source =
+                SourceRange::new(statement_span.start(), statement_span.end());
+            if let Some(query) = &diagnostic_query
+                && query.operand == OperandRole::Target
+            {
+                source.diagnostic_mut().inspection =
+                    naome_checker::diagnostics::inspect_formula_value(&statement, query)
+                        .map(|mut fragment| {
+                            fragment.variable_namespace =
+                                naome_checker::diagnostics::VariableNamespace::Source;
+                            fragment
+                        })
+                        .ok();
+            }
+            let source_step = step_origins.source_step(source.step());
+            let origin = source_step.and_then(|position| {
+                step_bindings
+                    .iter()
+                    .find(|(_, binding)| binding.position == position)
+            });
+            let span = origin.map_or(SourceSpan::point(proof_offset), |(_, binding)| binding.span);
+            CompileError::Check {
+                span,
+                source: Box::new(source),
+            }
+        })?;
         if checked.conclusion() != &statement {
+            let mut diagnostic = naome_checker::diagnostics::target_mismatch(
+                checked.normal_form().certificate(),
+                artifact_state,
+                &statement,
+                checked.conclusion(),
+            )
+            .expect("parsed target and checked conclusion obey formula limits");
+            diagnostic
+                .target
+                .as_mut()
+                .expect("bound target")
+                .variable_namespace = naome_checker::diagnostics::VariableNamespace::Source;
+            diagnostic.target_source_digest = Some(naome_checker::diagnostics::Digest::of(
+                source_text.as_bytes(),
+            ));
+            diagnostic.target_source =
+                SourceRange::new(statement_span.start(), statement_span.end());
+            diagnostics::attach_source(
+                &mut diagnostic,
+                source_text,
+                &step_bindings,
+                &step_origins,
+                &variable_names,
+            );
+            if let Some(query) = &diagnostic_query {
+                diagnostic.inspection = match query.operand {
+                    OperandRole::Target => {
+                        naome_checker::diagnostics::inspect_formula_value(&statement, query)
+                            .map(|mut fragment| {
+                                fragment.variable_namespace =
+                                    naome_checker::diagnostics::VariableNamespace::Source;
+                                fragment
+                            })
+                            .ok()
+                    }
+                    OperandRole::Conclusion => naome_checker::diagnostics::inspect_formula_value(
+                        checked.conclusion(),
+                        query,
+                    )
+                    .map(|mut fragment| {
+                        fragment.variable_namespace =
+                            naome_checker::diagnostics::VariableNamespace::Input;
+                        fragment
+                    })
+                    .ok(),
+                    _ => None,
+                };
+            }
             return Err(CompileError::StatementMismatch {
                 span: statement_span,
+                diagnostic: std::sync::Arc::new(diagnostic),
                 comparison: Box::new(
                     naome_foundation::FormulaMismatch::between(&statement, checked.conclusion())
                         .expect("the statement and conclusion differ"),
@@ -241,7 +358,20 @@ impl<'source> Parser<'source> {
             });
         }
         self.punctuation('=')?;
+        self.pending_expansions.clear();
+        self.expansions_complete = true;
         let parsed = self.parsed_formula(1, FormulaContext::Binding)?;
+        self.binding_origins.insert(
+            name,
+            BindingOrigin {
+                range: SourceRange::new(name_offset, self.offset).expect("source offsets fit"),
+                kind: ExpansionKind::FormulaBinding,
+                definition_id: None,
+                proof_id: None,
+                expansions: std::mem::take(&mut self.pending_expansions),
+                expansions_complete: self.expansions_complete,
+            },
+        );
         self.formula_bindings.insert(name, parsed);
         Ok(())
     }

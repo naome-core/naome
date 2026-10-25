@@ -12,10 +12,10 @@ use naome_proof::{
 };
 
 use super::{
-    ArtifactState, ArtifactStateError, CHECKER_MAX_FORMULA_WORK_BYTES, CheckError,
-    DefinitionCheckError, IdentityMode, charge_formula_work, check, check_definition_with_state,
-    check_with_canonical_conclusion, last_uses, normalize_and_check,
-    normalize_and_check_definition_with_state, normalize_and_check_with_state, statement_id,
+    ArtifactState, ArtifactStateError, CHECKER_MAX_FORMULA_WORK_BYTES,
+    CheckErrorKind as CheckError, DefinitionCheckError, IdentityMode, charge_formula_work,
+    check_definition_with_state, last_uses, normalize_and_check_definition_with_state,
+    statement_id,
 };
 
 fn certificate(steps: Vec<ProofStep>) -> ProofCertificate {
@@ -187,4 +187,28 @@ fn identity_proof(variable: FreeVariable, reordered: bool) -> ProofCertificate {
         variable,
     });
     certificate(steps)
+}
+
+// Cause assertions continue to test exact rule and limit behavior; the public
+// report and serialization boundaries have separate diagnostic regressions.
+fn check(certificate: &ProofCertificate) -> Result<Formula, CheckError> {
+    super::check(certificate).map_err(super::CheckError::into_kind)
+}
+fn normalize_and_check(certificate: ProofCertificate) -> Result<super::CheckedProof, CheckError> {
+    super::normalize_and_check(certificate).map_err(super::CheckError::into_kind)
+}
+fn normalize_and_check_with_state(
+    certificate: ProofCertificate,
+    context: &dyn super::ContextView,
+) -> Result<super::CheckedProof, CheckError> {
+    super::normalize_and_check_with_state(certificate, context)
+        .map_err(super::CheckError::into_kind)
+}
+fn check_with_canonical_conclusion(
+    certificate: &ProofCertificate,
+    context: &dyn super::ContextView,
+    mode: IdentityMode,
+) -> Result<(Formula, Vec<u8>, Option<naome_proof::DerivationId>), CheckError> {
+    super::check_with_canonical_conclusion(certificate, context, mode)
+        .map_err(super::CheckError::into_kind)
 }

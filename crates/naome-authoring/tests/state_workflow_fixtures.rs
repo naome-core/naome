@@ -109,7 +109,7 @@ fn state_mvp_b_rechecks_from_exported_helper_bytes_without_original_store() {
         &independent,
     );
     assert!(
-        matches!(missing, Err(CheckError::UnknownProofReference { proof_id, .. }) if proof_id == helper.proof_id())
+        matches!(missing.as_ref().map_err(CheckError::kind), Err(naome_checker::CheckErrorKind::UnknownProofReference { proof_id, .. }) if *proof_id == helper.proof_id())
     );
     let checked_h = check_exact_bytes(&helper_bytes, &independent);
     assert_eq!(checked_h.proof_id(), helper.proof_id());

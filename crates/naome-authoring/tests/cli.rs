@@ -30,7 +30,7 @@ fn fixture(file: &str) -> String {
 }
 
 fn diagnostic(source: &str) -> CompileDiagnostic {
-    compile_artifact(source).unwrap_err().diagnostic(source)
+    compile_artifact(source).unwrap_err().diagnostic().clone()
 }
 
 fn assert_diagnostic(
@@ -589,6 +589,98 @@ mod developer_cli {
         let json: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
         assert_eq!(json["diagnostic"]["code"], "NAO0001");
         assert!(json["diagnostic"]["span"].is_null());
+    }
+
+    #[test]
+    fn json_source_and_program_failures_share_exact_mathematical_evidence() {
+        let source =
+            TemporarySource::new("goal=all(x,eq(x,x)) proof: a=refl(x) b=mp(a,a) return b");
+        let program = TemporarySource::named(
+            "commands.jsonl",
+            "{\"op\":\"reflexivity\",\"variable\":0}\n{\"op\":\"modus_ponens\",\"premise\":0,\"implication\":0}\n",
+        );
+        let mut reports = Vec::new();
+        for (command, file) in [("proof", &source), ("program", &program)] {
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args([command, "--json"])
+                .arg(&file.path)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            let value: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(value["schema_version"], 1);
+            assert_eq!(
+                value["diagnostic"]["proof"]["failure"]["code"],
+                "mp.expected_implication"
+            );
+            assert_eq!(value["diagnostic"]["proof"]["location"]["step"], 1);
+            reports.push(value["diagnostic"]["proof"].clone());
+        }
+        assert_eq!(reports[0]["failure"], reports[1]["failure"]);
+        assert_eq!(
+            reports[0]["operands"][0]["formula"]["root"],
+            reports[1]["operands"][0]["formula"]["root"]
+        );
+        assert_eq!(reports[0]["input"]["format"], "certificate");
+        assert_eq!(reports[1]["input"]["format"], "program");
+        assert!(reports[0]["input"]["source_digest"].is_string());
+    }
+
+    #[test]
+    fn program_cli_checks_complete_input_seals_and_bounded_json_records() {
+        for (source, expected) in [
+            (
+                "{\"op\":\"reflexivity\",\"variable\":0}\n{\"op\":\"generalization\",\"premise\":0,\"variable\":0}\n{\"op\":\"seal\",\"proof\":1}\n",
+                None,
+            ),
+            (
+                "{\"op\":\"reflexivity\",\"variable\":0}\n",
+                Some("program.incomplete"),
+            ),
+            (
+                "{\"op\":\"reflexivity\",\"variable\":0}\n{bad}\n",
+                Some("program.syntax"),
+            ),
+        ] {
+            let file = TemporarySource::named("program.jsonl", source);
+            let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+                .args(["program", "--json"])
+                .arg(&file.path)
+                .output()
+                .unwrap();
+            if let Some(code) = expected {
+                assert_eq!(output.status.code(), Some(1));
+                assert!(output.stdout.is_empty());
+                let value: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+                assert_eq!(value["diagnostic"]["code"], code);
+            } else {
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(value["kind"], "program");
+                assert_eq!(value["manifest"]["commands"], 3);
+                assert!(value["proof_id"].as_str().unwrap().len() == 64);
+            }
+        }
+        let file = TemporarySource::named(
+            "oversize.jsonl",
+            &format!("{}\n", " ".repeat(naome_proof::program::RECORD_BYTES + 1)),
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_naome-author"))
+            .args(["program", "--json"])
+            .arg(&file.path)
+            .output()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(value["diagnostic"]["code"], "program.command_byte_limit");
+        assert_eq!(
+            value["diagnostic"]["details"]["maximum"],
+            naome_proof::program::RECORD_BYTES
+        );
     }
 
     struct TemporarySource {

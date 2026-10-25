@@ -76,7 +76,7 @@ pub(crate) struct Intake {
 
 pub(crate) enum Progress {
     Waiting,
-    Skipped(ProofId, String),
+    Skipped(ProofId, crate::Error),
     Accepted(Vec<ProofId>),
 }
 
@@ -315,7 +315,7 @@ impl Intake {
         {
             graph.program_failure(&error);
             if let Some(root) = self.active.take() {
-                return Progress::Skipped(root.description.transfer.root(), error.to_string());
+                return Progress::Skipped(root.description.transfer.root(), error);
             }
         }
         match self.programs.advance(graph, questions) {
@@ -348,7 +348,7 @@ impl Intake {
                 description.transfer.deadline(),
             );
             if let Err(error) = started {
-                return Progress::Skipped(description.transfer.root(), error.to_string());
+                return Progress::Skipped(description.transfer.root(), error);
             }
             self.active = Some(ApprovedRoot {
                 closure: Closure::new(description.transfer.root(), Some(description.statement)),
@@ -442,7 +442,7 @@ impl Intake {
             Err(error) => {
                 graph.program_failure(&error);
                 self.decline(&root.description, context, now);
-                Progress::Skipped(id, error.to_string())
+                Progress::Skipped(id, error)
             }
         }
     }
