@@ -189,6 +189,9 @@ def observe_work(trial, node, name, predicate, maximum, slots):
 
 def roles(trial,probe):
     receiver,donor=Node(trial,0),Node(trial,1)
+    # Finding, the deliberately pending solver and an interest assessment each
+    # need a slot. Two admitted slots cannot guarantee this concurrent workload.
+    role_slots=3
     # Keep twenty finding units pending through the measured slot ramp. The
     # controlled wait leaves room for two finding/interest transitions before
     # the existing 15-second overlap oracle, including durable unit IPC.
@@ -206,7 +209,7 @@ def roles(trial,probe):
         state=journal(receiver)
         running={lane(record) for record in state['records'].values() if record['state']=='running'}
         return state if {0,1,2}.issubset(running) else None
-    overlap=observe_work(trial,receiver,'three_role_overlap',overlapping,15,3)
+    overlap=observe_work(trial,receiver,'three_role_overlap',overlapping,15,role_slots)
     cpu_jobs=probe.witness_cpu(receiver,respect_admission=True)
     trial.summary['native_receiver_cpu_work_observed']=bool(cpu_jobs)
     trial.summary['overlap']={'native_three_role_overlap_observed':bool(overlap),
@@ -215,7 +218,7 @@ def roles(trial,probe):
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
     observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
-        and event.get('interest')=='Assessed(true)' for event in receiver.logs())>=3,12,2)
+        and event.get('interest')=='Assessed(true)' for event in receiver.logs())>=3,12,role_slots)
     pending_solve=any(record['state']=='running' and lane(record)==1
         for record in journal(receiver)['records'].values())
     trial.summary['pending_local_solve_on_peer_start']=pending_solve
@@ -226,7 +229,7 @@ def roles(trial,probe):
         stored=receiver.ids()
         accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
         return len(stored)==3 and stored==donor.ids() and accepted==stored
-    delivered=observe_work(trial,receiver,'checked_peer_delivery',all_peer_answers,20,2)
+    delivered=observe_work(trial,receiver,'checked_peer_delivery',all_peer_answers,20,role_slots)
     if delivered and pending_solve:
         assert any(event.get('event')=='solve_cancelled_by_answer' for event in receiver.logs())
     if not delivered:
