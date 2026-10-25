@@ -19,6 +19,9 @@ pub type Identity = [u8; 32];
 
 mod deduction;
 mod elementary;
+mod equivalence;
+#[cfg(test)]
+mod fixtures;
 pub(crate) mod index;
 mod instantiation;
 mod registry;
@@ -58,9 +61,9 @@ impl AssessmentLimits {
     }
 }
 
-/// Rule set 3 adds elementary certificates and target-directed universal
-/// specialization to finite MP closure. Elementary certificates precede context
-/// search; Q05 requires both checked implications.
+/// Rule set 4 adds certified elementary equivalence and interleaves opposite
+/// closure searches within the same total budget. Every inferred equivalence
+/// retains separately checked certificates for both implications.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrefilterPolicy {
     pub revision: u64,
@@ -71,8 +74,8 @@ pub struct PrefilterPolicy {
 impl Default for PrefilterPolicy {
     fn default() -> Self {
         Self {
-            revision: 5,
-            rule_set: 3,
+            revision: 6,
+            rule_set: 4,
             limits: AssessmentLimits::MAXIMUM,
         }
     }
@@ -81,7 +84,7 @@ impl Default for PrefilterPolicy {
 impl PrefilterPolicy {
     pub fn identity(self) -> Identity {
         let mut digest = Sha256::new();
-        digest.update(b"naome:local-question-policy:v5\0");
+        digest.update(b"naome:local-question-policy:v6\0");
         digest.update(self.revision.to_le_bytes());
         digest.update(self.rule_set.to_le_bytes());
         for value in self.limits.values() {
@@ -92,7 +95,7 @@ impl PrefilterPolicy {
 
     fn valid(self) -> bool {
         self.revision != 0
-            && self.rule_set == 3
+            && self.rule_set == 4
             && self
                 .limits
                 .values()
@@ -115,6 +118,12 @@ pub struct AssessmentQuestion<'a> {
 }
 
 impl<'a> AssessmentQuestion<'a> {
+    /// Fingerprint of the complete parsed submission and its bound context.
+    /// Equality is a cache lookup hint, never admission authority.
+    pub const fn input_id(&self) -> Identity {
+        self.input
+    }
+
     /// Binds a complete bounded parsed submission before any policy evaluation.
     pub fn new(
         foundation: &'a str,
@@ -353,6 +362,8 @@ pub struct PrefilterDecision {
     pub related_record: Option<Identity>,
     /// Temporary checker-certified evidence, never registered as a new proof.
     pub deduction: Option<DeductionWitness>,
+    /// Checked question-to-record and record-to-question implications, in order.
+    pub equivalence: Option<[DeductionWitness; 2]>,
     novelty: Option<NodeLocalNovelty>,
 }
 
@@ -413,7 +424,8 @@ impl PrefilterDecision {
             && self.witness.is_none()
             && self.supporting_witness.is_none()
             && self.related_record.is_none()
-            && self.deduction.is_none())
+            && self.deduction.is_none()
+            && self.equivalence.is_none())
         .then_some(novelty)
     }
 
@@ -567,6 +579,7 @@ fn bound_decision(
         supporting_witness: None,
         related_record: None,
         deduction: None,
+        equivalence: None,
         novelty: None,
     }
 }
@@ -684,13 +697,53 @@ fn evaluate(
             return Err((reason, "Q07_ELEMENTARY_CERTIFICATE"));
         }
     }
-    for (target_id, target, reason) in targets {
-        if let Some(witness) = deduction::derive(target_id, target, snapshot.artifacts, work)? {
-            decision.witness = witness.original_proofs().first().copied();
-            decision.supporting_witness = witness.original_proofs().get(1).copied();
-            decision.deduction = Some(witness);
-            return Err((reason, "Q04_CHECKED_MP_CLOSURE"));
+    // First-discovery filtering must not revoke previously admitted work when
+    // a stronger finite rule set discovers equivalences after an upgrade.
+    if question.registered_record.is_none() && !snapshot.questions.is_empty() {
+        equivalence::reserve_key(question.formula, work)?;
+        let key = equivalence::key(question.formula).map_err(context_failure)?;
+        work.index()?;
+        for record in snapshot
+            .questions
+            .records_for(key)
+            .map_err(context_failure)?
+        {
+            let record = record.map_err(context_failure)?;
+            work.index()?;
+            work.formula(encoded.len() + AssessmentLimits::MAXIMUM.formula_nodes, 64)?;
+            let related = snapshot
+                .questions
+                .get(&record)
+                .map_err(context_failure)?
+                .ok_or((RejectionReason::InvalidRegistry, "Q02_EQUIVALENCE_INDEX"))?;
+            if let Some(forward) =
+                equivalence::prove(question.formula, &related, snapshot.artifacts, work)?
+            {
+                let backward =
+                    equivalence::prove(&related, question.formula, snapshot.artifacts, work)?
+                        .ok_or((
+                            RejectionReason::InvalidEvidence,
+                            "Q05_ELEMENTARY_EQUIVALENCE",
+                        ))?;
+                decision.related_record = Some(record);
+                decision.equivalence = Some([forward, backward]);
+                return Err((
+                    RejectionReason::ProvenEquivalent,
+                    "Q05_ELEMENTARY_EQUIVALENCE",
+                ));
+            }
         }
+    }
+    if let Some((orientation, witness)) = deduction::derive_answers(
+        [question.formula, &negative],
+        snapshot.artifacts,
+        work,
+        false,
+    )? {
+        decision.witness = witness.original_proofs().first().copied();
+        decision.supporting_witness = witness.original_proofs().get(1).copied();
+        decision.deduction = Some(witness);
+        return Err((targets[orientation].2, "Q04_CHECKED_MP_CLOSURE"));
     }
     for (target_id, target, _) in targets {
         work.index()?;
@@ -787,13 +840,16 @@ fn evaluate(
             }
         }
     }
-    for (_, target, reason) in targets {
-        if let Some(witness) = deduction::derive_instantiated(target, snapshot.artifacts, work)? {
-            decision.witness = witness.original_proofs().first().copied();
-            decision.supporting_witness = witness.original_proofs().get(1).copied();
-            decision.deduction = Some(witness);
-            return Err((reason, "Q07_CHECKED_INSTANTIATED_CLOSURE"));
-        }
+    if let Some((orientation, witness)) = deduction::derive_answers(
+        [question.formula, &negative],
+        snapshot.artifacts,
+        work,
+        true,
+    )? {
+        decision.witness = witness.original_proofs().first().copied();
+        decision.supporting_witness = witness.original_proofs().get(1).copied();
+        decision.deduction = Some(witness);
+        return Err((targets[orientation].2, "Q07_CHECKED_INSTANTIATED_CLOSURE"));
     }
     Ok(())
 }

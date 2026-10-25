@@ -117,6 +117,7 @@ impl DiskRegistry {
                 return Err(ContextError::Corrupt);
             }
             let statement = statement_id(bytes);
+            let equivalence = super::super::equivalence::key(entry.formula)?;
             let mut bucket = self.bucket(statement)?;
             if let Some(first) = bucket.entries().next() {
                 let (record, _) = first?;
@@ -138,6 +139,13 @@ impl DiskRegistry {
             encoded.extend_from_slice(&root.address);
             encoded.extend_from_slice(&root.fingerprint);
             next.statements.set(*statement.as_bytes(), &encoded)?;
+            let mut related = next.bucket(equivalence)?;
+            related.insert(entry.record, &[])?;
+            let root = related.root().ok_or(ContextError::Corrupt)?;
+            let mut encoded = Vec::with_capacity(64);
+            encoded.extend_from_slice(&root.address);
+            encoded.extend_from_slice(&root.fingerprint);
+            next.statements.set(*equivalence.as_bytes(), &encoded)?;
             next.contents.insert(content, &[])?;
             Ok(next)
         })();

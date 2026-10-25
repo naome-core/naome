@@ -630,7 +630,7 @@ async fn running_node_bounds_pending_interest_and_drops_it_on_cancel_and_stop() 
 }
 
 #[test]
-fn one_entry_prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() {
+fn prefilter_cache_reuses_both_outcomes_and_invalidates_all_context() {
     let mut graph = Graph::default();
     let mut local = LocalQuestions::new(Some(|_| async { Ok(true) }));
     let input = question(QUESTION);
@@ -1282,3 +1282,5 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
             .unwrap()
     );
 }
+
+mod equivalence;

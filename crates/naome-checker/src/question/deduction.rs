@@ -80,188 +80,67 @@ fn add_goal(
     Ok(id)
 }
 
+mod search;
+
+/// The same resumable search drives both ordinary and instantiated closure.
+/// An answer is sufficient for rejection; PASS requires both searches to finish.
+pub(super) fn derive_answers(
+    targets: [&Formula; 2],
+    artifacts: &dyn ContextView,
+    work: &mut Work,
+    instantiated: bool,
+) -> Result<Option<(usize, DeductionWitness)>, Failure> {
+    let mut searches = [
+        Some(search::Search::new(
+            targets[0],
+            artifacts,
+            instantiated,
+            work,
+        )?),
+        Some(search::Search::new(
+            targets[1],
+            artifacts,
+            instantiated,
+            work,
+        )?),
+    ];
+    let mut exhausted = false;
+    while searches.iter().any(Option::is_some) {
+        for (index, slot) in searches.iter_mut().enumerate() {
+            let Some(search) = slot else { continue };
+            match search.advance(work) {
+                Ok(search::Progress::Pending) => {}
+                Ok(search::Progress::Complete(Some(witness))) => return Ok(Some((index, witness))),
+                Ok(search::Progress::Complete(None)) => *slot = None,
+                Err((RejectionReason::ExecutionLimit, _)) => {
+                    // A failed large reservation may leave enough shared work
+                    // for the opposite target. No incomplete search issues PASS.
+                    exhausted = true;
+                    *slot = None;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    if exhausted { Err(LIMIT) } else { Ok(None) }
+}
+
+#[cfg(test)]
 pub(super) fn derive(
     target_id: StatementId,
     target: &Formula,
     artifacts: &dyn ContextView,
     work: &mut Work,
 ) -> Result<Option<DeductionWitness>, Failure> {
-    derive_plan(target_id, target, artifacts, work, false)?
-        .map(|plan| plan.finish(target, artifacts, work))
-        .transpose()
-}
-
-pub(super) fn derive_instantiated(
-    target: &Formula,
-    artifacts: &dyn ContextView,
-    work: &mut Work,
-) -> Result<Option<DeductionWitness>, Failure> {
-    let length = target.encode_canonical().map_err(|_| LIMIT)?.len();
-    work.formula(length, 8)?;
-    let mut opened = target.clone();
-    let mut variables = Vec::new();
-    for identifier in 0..super::instantiation::MAX_INSTANTIATIONS {
-        work.formula(length, 4)?;
-        let variable = FreeVariable::new(identifier as u32);
-        let Some(body) = opened.open_outer_universal(variable) else {
-            break;
-        };
-        variables.push(variable);
-        opened = body;
-    }
-    let id = statement_id(&opened.encode_canonical().map_err(|_| LIMIT)?);
-    let Some(mut plan) = derive_plan(id, &opened, artifacts, work, true)? else {
-        return Ok(None);
-    };
-    let mut root = u32::try_from(plan.steps.len() - 1).map_err(|_| LIMIT)?;
-    for variable in variables.into_iter().rev() {
-        root = plan.generalize(root, variable, work)?;
-    }
-    plan.finish(target, artifacts, work).map(Some)
-}
-
-fn derive_plan(
-    target_id: StatementId,
-    target: &Formula,
-    artifacts: &dyn ContextView,
-    work: &mut Work,
-    instantiated: bool,
-) -> Result<Option<Plan>, Failure> {
-    let target_length = target.encode_canonical().map_err(|_| LIMIT)?.len();
-    work.formula(target_length, 8)?;
-    let mut goals = BTreeMap::new();
-    let mut pending = BTreeSet::new();
-    if add_goal(
-        target.clone(),
-        target_length,
-        &mut goals,
-        &mut pending,
-        work,
-    )? != target_id
-    {
+    if statement_id(&target.encode_canonical().map_err(|_| LIMIT)?) != target_id {
         return Err(INVALID);
     }
-    let mut clauses = Vec::new();
-    // Reverse relevance is exhaustive. No question-node cap is applied to
-    // intermediate formulas; every checked consequent projection is indexed.
-    while let Some(goal_id) = pending.pop_first() {
-        work.index()?;
-        if let Some((proof, _)) = lookup_id(artifacts, goal_id, &goals[&goal_id].formula, work)? {
-            goals.get_mut(&goal_id).expect("queued goal").seed = Some(Source::Proof(proof));
-            continue;
-        }
-        if instantiated {
-            if let Some(plan) = super::elementary::plan(&goals[&goal_id].formula, work)? {
-                goals.get_mut(&goal_id).expect("queued goal").seed =
-                    Some(Source::Generated(plan.into_program()));
-                continue;
-            }
-            work.formula(goals[&goal_id].length, 8)?;
-            let key = super::instantiation::key(&goals[&goal_id].formula);
-            work.index()?;
-            for source in artifacts
-                .bucket(crate::context::BucketKind::Instances, key)
-                .map_err(context_failure)?
-            {
-                let source = source.map_err(context_failure)?;
-                let header = known(artifacts, source, work)?;
-                work.formula(header.length, 8)?;
-                let formula = load_formula(artifacts, source, header.length)?;
-                let Some(candidate) = super::instantiation::specialize(
-                    header.proof,
-                    &formula,
-                    &goals[&goal_id].formula,
-                    artifacts,
-                    work,
-                )?
-                else {
-                    continue;
-                };
-                if candidate.formula == goals[&goal_id].formula {
-                    goals.get_mut(&goal_id).expect("queued goal").seed =
-                        Some(Source::Generated(candidate.program));
-                    break;
-                }
-                add_clause(
-                    Source::Generated(candidate.program),
-                    &candidate.formula,
-                    goal_id,
-                    &mut goals,
-                    &mut pending,
-                    &mut clauses,
-                    work,
-                )?;
-            }
-            if goals[&goal_id].seed.is_some() {
-                continue;
-            }
-        }
-        work.index()?;
-        for source in artifacts
-            .bucket(crate::context::BucketKind::Deductions, goal_id)
-            .map_err(context_failure)?
-        {
-            let source = source.map_err(context_failure)?;
-            let header = known(artifacts, source, work)?;
-            let source_length = header.length;
-            work.formula(source_length, 8)?;
-            let source_formula = load_formula(artifacts, source, source_length)?;
-            add_clause(
-                Source::Proof(header.proof),
-                &source_formula,
-                goal_id,
-                &mut goals,
-                &mut pending,
-                &mut clauses,
-                work,
-            )?;
+    let mut search = search::Search::new(target, artifacts, false, work)?;
+    loop {
+        if let search::Progress::Complete(witness) = search.advance(work)? {
+            return Ok(witness);
         }
     }
-    work.charge(clauses.len().checked_mul(32).ok_or(LIMIT)?)
-        .map_err(|_| LIMIT)?;
-    let mut remaining = Vec::new();
-    let mut dependents: BTreeMap<StatementId, Vec<usize>> = BTreeMap::new();
-    for (index, clause) in clauses.iter().enumerate() {
-        remaining.push(clause.premises.len());
-        for premise in &clause.premises {
-            work.index()?;
-            dependents.entry(*premise).or_default().push(index);
-        }
-    }
-    let mut evidence = BTreeMap::new();
-    let mut ready = BTreeSet::new();
-    for (id, goal) in &goals {
-        if goal.seed.is_some() {
-            work.index()?;
-            evidence.insert(*id, Evidence::Seed(*id));
-            ready.insert(*id);
-        }
-    }
-    // Each repeated premise occurrence has one dependent entry, so a single
-    // established fact can discharge repeated antecedents without fake seeds.
-    while let Some(id) = ready.pop_first() {
-        work.index()?;
-        if let Some(waiting) = dependents.get(&id) {
-            for index in waiting {
-                work.charge(64).map_err(|_| LIMIT)?;
-                remaining[*index] = remaining[*index].checked_sub(1).ok_or(INVALID)?;
-                if remaining[*index] == 0 {
-                    let conclusion = clauses[*index].consequence;
-                    work.index()?;
-                    if let std::collections::btree_map::Entry::Vacant(entry) =
-                        evidence.entry(conclusion)
-                    {
-                        entry.insert(Evidence::Derived(*index));
-                        ready.insert(conclusion);
-                    }
-                }
-            }
-        }
-    }
-    if !evidence.contains_key(&target_id) {
-        return Ok(None);
-    }
-    materialize(target_id, artifacts, &goals, &clauses, &evidence, work).map(Some)
 }
 
 struct PlannedStep {
@@ -761,3 +640,6 @@ fn check_reserved(
         certificate: checked.normal_form().canonical_bytes().into(),
     })
 }
+
+#[cfg(test)]
+mod tests;
