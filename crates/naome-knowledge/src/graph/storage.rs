@@ -6,8 +6,9 @@ use naome_checker::{ContextError, ContextStorage, DiskArtifactState};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 mod admission;
 mod codec;
+mod startup;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -15,6 +16,13 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
+
+#[cfg(test)]
+thread_local! { static SQL_INSERTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(super) fn sql_inserts() -> usize {
+    SQL_INSERTS.with(std::cell::Cell::get)
+}
 
 const CACHE_ENTRY_BYTES: usize = 512;
 const PREFIX: &str = ".checked-context-";
@@ -34,9 +42,15 @@ thread_local! {
 thread_local! {
     static WRITE_TEST_DELAY:std::cell::RefCell<Option<(std::sync::mpsc::Sender<()>,std::sync::mpsc::Receiver<()>)>>=const{std::cell::RefCell::new(None)};
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntryState {
+    Persisted(u64),
+    Buffered,
+    Reachable,
+}
 struct CacheEntry {
     bytes: Vec<u8>,
-    persisted_generation: u64,
+    state: EntryState,
     clock: u64,
 }
 #[derive(Default)]
@@ -46,6 +60,8 @@ struct Cache {
     recency: BTreeMap<u64, [u8; 32]>,
     charged: usize,
     clock: u64,
+    buffering: Option<u64>,
+    pending: BTreeSet<[u8; 32]>,
 }
 struct Owner {
     lease: Arc<Store>,
@@ -139,12 +155,20 @@ impl CheckedStorage {
         if self.live_cache_budget.load(Ordering::Acquire) == budget {
             return Ok(());
         }
-        self.cache
-            .lock()
-            .map_err(|_| "checked cache lock poisoned")?
-            .trim(crate::resources::adaptive::cache(
-                crate::resources::limits().checked_cache_bytes,
-            ));
+        {
+            let mut cache = self
+                .cache
+                .lock()
+                .map_err(|_| "checked cache lock poisoned")?;
+            let limit =
+                crate::resources::adaptive::cache(crate::resources::limits().checked_cache_bytes);
+            cache.trim(limit);
+            if cache.charged > limit {
+                self.flush_buffered(&mut cache, false)
+                    .map_err(|e| e.to_string())?;
+                cache.trim(limit);
+            }
+        }
         let connection = self
             .connection
             .lock()
@@ -224,6 +248,15 @@ impl CheckedStorage {
         connection.execute_batch("BEGIN").map_err(|e| e.to_string())
     }
     pub(super) fn finish_write_phase(&self) -> Result<(), String> {
+        if self
+            .cache
+            .lock()
+            .map_err(|_| "checked cache lock poisoned")?
+            .buffering
+            .is_some()
+        {
+            return Err("startup buffer must finish before COMMIT".into());
+        }
         let connection_guard = self
             .connection
             .lock()
@@ -239,11 +272,17 @@ impl CheckedStorage {
     #[cfg(test)]
     pub(super) fn evict_cache(&self) {
         let mut cache = self.cache.lock().unwrap();
-        let closed = cache.closed;
-        *cache = Cache {
-            closed,
-            ..Cache::default()
-        };
+        if !cache.pending.is_empty() {
+            cache.trim(0);
+        } else {
+            let closed = cache.closed;
+            let buffering = cache.buffering;
+            *cache = Cache {
+                closed,
+                buffering,
+                ..Cache::default()
+            };
+        }
     }
     pub(super) fn open(
         lease: Arc<Store>,
@@ -277,6 +316,15 @@ impl CheckedStorage {
         )
     }
     pub(super) fn successor(&self) -> Result<Arc<Self>, String> {
+        if self
+            .cache
+            .lock()
+            .map_err(|_| "checked cache lock poisoned")?
+            .buffering
+            .is_some()
+        {
+            return Err("startup buffer has no published successor".into());
+        }
         Self::fresh(
             self.owner.clone(),
             self.cache.clone(),
@@ -530,15 +578,17 @@ impl CheckedStorage {
         Ok(bytes)
     }
     fn write_inner(&self, address: [u8; 32], bytes: &[u8]) -> Result<(), ContextError> {
-        let bound = codec::maximum_encoded(bytes.len())?;
         {
             let mut cache = self
                 .cache
                 .lock()
                 .map_err(|_| ContextError::Storage("checked cache lock poisoned".into()))?;
+            if self.buffer_write(&mut cache, address, bytes)? {
+                return Ok(());
+            }
             // Shared raw bytes prove a row only in their recorded generation.
             if let Some(entry) = cache.entries.get(&address)
-                && entry.persisted_generation == self.generation
+                && entry.state == EntryState::Persisted(self.generation)
             {
                 if entry.bytes != bytes {
                     return Err(ContextError::Corrupt);
@@ -552,37 +602,7 @@ impl CheckedStorage {
             .lock()
             .map_err(|_| ContextError::Storage("checked index lock poisoned".into()))?;
         let connection = connection_guard.open().map_err(ContextError::Storage)?;
-        let bound = i64::try_from(bound).map_err(|_| ContextError::Limit)?;
-        let encoded = codec::encode(bytes)?;
-        #[cfg(test)]
-        admission::test_insert_state(self.generation, connection.is_autocommit());
-        let inserted = connection
-            .prepare_cached(
-                "INSERT INTO nodes(address,payload) VALUES(?1,?2)
-                    ON CONFLICT(address) DO NOTHING",
-            )
-            .map_err(context_error)?
-            .execute(params![address.as_slice(), encoded])
-            .map_err(context_error)?;
-        match inserted {
-            0 => {
-                let previous: Option<Option<Vec<u8>>> = connection
-                    .prepare_cached("SELECT CASE WHEN length(payload)<=?2 THEN payload ELSE NULL END FROM nodes WHERE address=?1")
-                    .map_err(context_error)?
-                    .query_row(params![address.as_slice(), bound], |r| r.get(0))
-                    .optional().map_err(context_error)?;
-                let Some(Some(previous)) = previous else {
-                    return Err(ContextError::Corrupt);
-                };
-                let raw =
-                    codec::decode(&previous, bytes.len()).map_err(|_| ContextError::Corrupt)?;
-                if raw != bytes {
-                    return Err(ContextError::Corrupt);
-                }
-            }
-            1 => {}
-            _ => return Err(ContextError::Corrupt),
-        }
+        persist_record(connection, self.generation, address, bytes)?;
         drop(connection_guard);
         self.cache
             .lock()
@@ -596,6 +616,49 @@ impl CheckedStorage {
         }
         result
     }
+}
+
+fn persist_record(
+    connection: &Connection,
+    _generation: u64,
+    address: [u8; 32],
+    bytes: &[u8],
+) -> Result<(), ContextError> {
+    let bound = codec::maximum_encoded(bytes.len())?;
+    let bound = i64::try_from(bound).map_err(|_| ContextError::Limit)?;
+    let encoded = codec::encode(bytes)?;
+    #[cfg(test)]
+    {
+        SQL_INSERTS.with(|count| count.set(count.get() + 1));
+        admission::test_insert_state(_generation, connection.is_autocommit());
+    }
+    let inserted = connection
+        .prepare_cached(
+            "INSERT INTO nodes(address,payload) VALUES(?1,?2)
+                    ON CONFLICT(address) DO NOTHING",
+        )
+        .map_err(context_error)?
+        .execute(params![address.as_slice(), encoded])
+        .map_err(context_error)?;
+    match inserted {
+        0 => {
+            let previous: Option<Option<Vec<u8>>> = connection
+                    .prepare_cached("SELECT CASE WHEN length(payload)<=?2 THEN payload ELSE NULL END FROM nodes WHERE address=?1")
+                    .map_err(context_error)?
+                    .query_row(params![address.as_slice(), bound], |r| r.get(0))
+                    .optional().map_err(context_error)?;
+            let Some(Some(previous)) = previous else {
+                return Err(ContextError::Corrupt);
+            };
+            let raw = codec::decode(&previous, bytes.len()).map_err(|_| ContextError::Corrupt)?;
+            if raw != bytes {
+                return Err(ContextError::Corrupt);
+            }
+        }
+        1 => {}
+        _ => return Err(ContextError::Corrupt),
+    }
+    Ok(())
 }
 
 /// A destination for the unchanged authenticated copy traversal. A hot cached
@@ -687,6 +750,8 @@ impl ContextStorage for StartupMarker {
 }
 impl Cache {
     fn trim(&mut self, limit: usize) {
+        // Buffered records are pinned until a checked frontier or a pressure
+        // spill materializes them. Only persisted entries have LRU positions.
         while self.charged > limit {
             let Some((_, key)) = self.recency.pop_first() else {
                 break;
@@ -696,35 +761,56 @@ impl Cache {
             }
         }
     }
+    fn reset_clock(&mut self) {
+        self.clock = 0;
+        self.recency.clear();
+        for (address, entry) in &mut self.entries {
+            if matches!(entry.state, EntryState::Persisted(_)) {
+                self.clock += 1;
+                entry.clock = self.clock;
+                self.recency.insert(self.clock, *address);
+            }
+        }
+    }
     fn touch(&mut self, address: [u8; 32]) {
-        if self.clock == u64::MAX {
-            let Some(entry) = self.entries.remove(&address) else {
-                return;
-            };
-            self.recency.remove(&entry.clock);
-            self.charged -= entry.bytes.capacity() + CACHE_ENTRY_BYTES;
-            // Reuse the existing rollover clear while retaining this allocation.
-            self.insert(address, entry.bytes, entry.persisted_generation);
+        if self
+            .entries
+            .get(&address)
+            .is_none_or(|entry| !matches!(entry.state, EntryState::Persisted(_)))
+        {
             return;
         }
-        let Some(entry) = self.entries.get_mut(&address) else {
+        if self.clock == u64::MAX && self.pending.is_empty() {
+            let entry = self.entries.remove(&address).expect("cached record");
+            self.entries.clear();
+            self.recency.clear();
+            self.charged = 0;
+            self.clock = 0;
+            let EntryState::Persisted(generation) = entry.state else {
+                unreachable!()
+            };
+            self.insert(address, entry.bytes, generation);
             return;
-        };
+        }
+        if self.clock == u64::MAX {
+            self.reset_clock();
+        }
+        let entry = self.entries.get_mut(&address).expect("cached record");
         self.recency.remove(&entry.clock);
         self.clock += 1;
         entry.clock = self.clock;
         self.recency.insert(entry.clock, address);
     }
-
-    fn insert(&mut self, address: [u8; 32], bytes: Vec<u8>, persisted_generation: u64) {
-        // A cold read that started before a fatal abort may finish later. It
-        // must never repopulate provisional tags after the shared cache closes.
+    fn insert(&mut self, address: [u8; 32], bytes: Vec<u8>, generation: u64) {
         if self.closed {
             return;
         }
         if let Some(old) = self.entries.remove(&address) {
             self.recency.remove(&old.clock);
             self.charged -= old.bytes.capacity() + CACHE_ENTRY_BYTES;
+            if !matches!(old.state, EntryState::Persisted(_)) {
+                self.pending.remove(&address);
+            }
         }
         let charge = bytes.capacity().saturating_add(CACHE_ENTRY_BYTES);
         let limit =
@@ -734,11 +820,18 @@ impl Cache {
             return;
         }
         self.trim(limit - charge);
+        if self.charged > limit - charge {
+            return;
+        }
         if self.clock == u64::MAX {
-            self.entries.clear();
-            self.recency.clear();
-            self.charged = 0;
-            self.clock = 0;
+            if self.pending.is_empty() {
+                self.entries.clear();
+                self.recency.clear();
+                self.charged = 0;
+                self.clock = 0;
+            } else {
+                self.reset_clock();
+            }
         }
         self.clock += 1;
         self.charged += charge;
@@ -747,7 +840,7 @@ impl Cache {
             address,
             CacheEntry {
                 bytes,
-                persisted_generation,
+                state: EntryState::Persisted(generation),
                 clock: self.clock,
             },
         );

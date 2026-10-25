@@ -28,7 +28,7 @@ fn hot_reads_keep_owned_bytes_and_cached_allocation_generation_and_charge() {
         let entry = &cache.entries[&address];
         assert_eq!(entry.bytes.as_ptr(), pointer);
         assert_eq!(entry.bytes.capacity(), capacity);
-        assert_eq!(entry.persisted_generation, storage.generation);
+        assert_eq!(entry.state, EntryState::Persisted(storage.generation));
         assert_eq!(cache.charged, charged);
         assert!(cache.charged <= crate::resources::limits().checked_cache_bytes);
         cache.clock
@@ -87,7 +87,7 @@ fn hot_read_and_write_rollover_preserves_generation_charge_and_successor_persist
             assert_eq!(entry.clock, 1);
             assert_eq!(entry.bytes.as_ptr(), pointer);
             assert_eq!(entry.bytes.capacity(), capacity);
-            assert_eq!(entry.persisted_generation, storage.generation);
+            assert_eq!(entry.state, EntryState::Persisted(storage.generation));
             assert_eq!(cache.charged, capacity + CACHE_ENTRY_BYTES);
             assert!(cache.charged <= crate::resources::limits().checked_cache_bytes);
         }
