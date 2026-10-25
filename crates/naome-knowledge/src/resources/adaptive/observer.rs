@@ -1,5 +1,5 @@
-//! One local sampling lifecycle. History owns persistence; program consumers
-//! borrow an active node budget or retain this same conservative observer.
+//! One local sampling lifecycle. The native node publishes its live budget;
+//! program consumers borrow it or retain this same conservative observer.
 use super::*;
 use std::time::Instant;
 

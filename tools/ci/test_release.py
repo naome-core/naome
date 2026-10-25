@@ -425,18 +425,7 @@ class PackageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 package.verify_audit(broken)
 
-    def test_lifecycle_stops_its_node_after_a_failed_resource_check(self):
-        operations = []
-        def run(_json, command, *_arguments):
-            operations.append(command)
-            status = {"running": command != "stop", "computation": "stopped" if command == "stop" else "running", "proof_verification": "not_run" if command == "stop" else "checked", "interest": "Release smoke test"}
-            # Missing daemon resource diagnostics must still request shutdown.
-            return json.dumps(status)
-        with self.assertRaisesRegex(ValueError, "active resource budget"):
-            package.lifecycle(run, self.directory / "node")
-        self.assertEqual(operations, ["start", "status", "interest", "resources", "stop"])
-
-    def test_lifecycle_observes_resources_and_preserves_interest_after_shutdown(self):
+    def test_lifecycle_preserves_interest_and_automatic_computation_state_after_shutdown(self):
         for computation in ("running", "pausing", "paused"):
             with self.subTest(computation=computation):
                 operations = []
@@ -445,9 +434,6 @@ class PackageTests(unittest.TestCase):
                 def run(_json, command, *arguments):
                     nonlocal running, interest
                     operations.append(command)
-                    if command == "resources":
-                        return json.dumps({"installed_capacity": {"memory_bytes": 1024, "workers": [1, 1, 1, 1]},
-                                           "active": {"budget": {"memory_bytes": 512}}})
                     if command == "start":
                         running = True
                     elif command == "stop":
@@ -460,7 +446,7 @@ class PackageTests(unittest.TestCase):
                                        "computation_reason": "operating system memory pressure" if running and computation != "running" else None,
                                        "proof_verification": "checked" if running else "not_run", "interest": interest})
                 package.lifecycle(run, self.directory / computation)
-                self.assertEqual(operations, ["start", "status", "interest", "resources", "stop", "status"])
+                self.assertEqual(operations, ["start", "status", "interest", "stop", "status"])
                 self.assertFalse(running)
 
     def test_lifecycle_rejects_unchecked_or_inconsistent_computation_and_still_stops(self):

@@ -60,13 +60,6 @@ def lifecycle(run, directory):
             raise ValueError("extracted node is not ready with a valid computation state")
         if command("interest", "Release smoke test")["interest"] != "Release smoke test":
             raise ValueError("extracted node did not persist owner interest")
-        resources = command("resources")
-        capacity = resources.get("installed_capacity") or {}
-        budget = (resources.get("active") or {}).get("budget", {})
-        workers = capacity.get("workers", [])
-        if (capacity.get("memory_bytes", 0) <= 0 or len(workers) != 4 or any(worker <= 0 for worker in workers)
-                or not 0 < budget.get("memory_bytes", 0) <= capacity["memory_bytes"]):
-            raise ValueError("extracted node did not report its active resource budget within installed capacity")
     finally:
         stopped = command("stop")
         if stopped["running"] or stopped["computation"] != "stopped":
@@ -88,7 +81,7 @@ def smoke(binary, version, *, start=False):
         status = json.loads(run("--json", "status"))
         if any(status.get(key) != value for key, value in expected.items()) or node.exists():
             raise ValueError("packaged status must not create state or start a node")
-        for command in ("publish", "pause", "resume"):
+        for command in ("publish", "pause", "resume", "resources", "wallet"):
             rejected = subprocess.run([str(binary.resolve()), command], env=environment, capture_output=True, timeout=30)
             if rejected.returncode == 0 or node.exists():
                 raise ValueError("packaged product accepts an invalid command or creates state for a stopped node")

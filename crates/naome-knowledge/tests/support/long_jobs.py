@@ -16,6 +16,7 @@ import traceback
 
 from autonomous_lifecycle import (Node,Trial,digest,process_identity,process_group,
     process_cpu_sample,retain_evidence,write_receipt,wait_until)
+from resource_observation import latest
 
 
 def journal(node):
@@ -163,8 +164,11 @@ def observe_work(trial, node, name, predicate, maximum, slots):
     sample_at = 0
     while time.monotonic() < end:
         if time.monotonic() >= sample_at:
-            active = trial.call(node, 'resources')['active']
+            observation = latest(node)
+            assert observation is not None, 'live owner budget observation missing'
+            active = observation['snapshot']
             assert active and active['pid'] == node.process['pid'], active
+            assert 0 <= time.time() * 1000 - active['timestamp_ms'] < 5000, 'live owner budget observation is stale'
             budget = active['budget']
             assert type(budget['concurrency']) is int and budget['concurrency'] >= 0, budget
             assert budget['paused'] is None or (isinstance(budget['paused'], str) and budget['paused']), budget
@@ -212,6 +216,9 @@ def roles(trial,probe):
     # Wait for stable admitted obligations before introducing peer graph changes.
     observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
         and event.get('interest')=='Assessed(true)' for event in receiver.logs())>=3,12,2)
+    pending_solve=any(record['state']=='running' and lane(record)==1
+        for record in journal(receiver)['records'].values())
+    trial.summary['pending_local_solve_on_peer_start']=pending_solve
     donor.config['runtime']['question_interval_ms']=100
     donor.config['peers']=[{'id':receiver.peer,'address':f'/ip4/127.0.0.1/tcp/{receiver.port}'}]
     donor.write_config();donor.start()
@@ -220,9 +227,9 @@ def roles(trial,probe):
         accepted={event['id'] for event in receiver.logs() if event.get('event')=='accepted' and event.get('source')=='fetch'}
         return len(stored)==3 and stored==donor.ids() and accepted==stored
     delivered=observe_work(trial,receiver,'checked_peer_delivery',all_peer_answers,20,2)
-    if delivered:
+    if delivered and pending_solve:
         assert any(event.get('event')=='solve_cancelled_by_answer' for event in receiver.logs())
-    else:
+    if not delivered:
         assert any(event.get('event')=='identified' and event.get('peer')==donor.peer for event in receiver.logs()), \
             'resource-limited node did not authenticate its peer'
         assert any(event.get('peer')==donor.peer and event.get('event') in {'exchange_request','exchange_response'}
@@ -459,6 +466,7 @@ def main():
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--profile',required=True)
     parser.add_argument('--mode',choices=['roles','recovery','limits','faults','basic'],required=True)
     parser.add_argument('--timeout',type=float,default=90);args=parser.parse_args()
+    os.environ['NAOME_DEV_RESOURCE_OBSERVATIONS']='1'
     trial=Trial(args.binary,args.output,args.timeout,args.profile,'long-jobs-'+args.mode);probe=Probe(trial)
     if args.mode=='roles' and 'NAOME_RESOURCE_CONFIG' not in os.environ:
         # Pin the ordinary reference capacity. Three-slot admission is tested

@@ -2,7 +2,7 @@
 summary = "The first versioned alpha of the economy-free NAOME knowledge node."
 features = [
   "Mathematical proof, definition and question checking and authoring, checked proof exchange, automatic peer discovery and supervised autonomous computation.",
-  "Persistent local wallets provide addresses and ownership proofs; node lifecycle, networking and checked storage retain their own authority.",
+  "Persistent independent wallet keys remain a foundation; the public CLI provides automatic node lifecycle, status and exact owner interests without manual resource or wallet commands.",
   "Linux x86_64 static musl and macOS ARM64 packages contain the ordinary executable, license notices, installation instructions, CycloneDX inventory, lockfile and build identity. No developer tools, trained models, private configuration or existing state are bundled.",
   "Checksums, the exact RustSec audit, source and qualification metadata, and signed GitHub Actions provenance accompany the downloads.",
 ]

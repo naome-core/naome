@@ -78,17 +78,17 @@ class ResourceLifecycleTests(unittest.TestCase):
 
 
 class WorkWindowTests(unittest.TestCase):
-    def observe(self, capacity, *, predicate=None, deadline=90, pid=7):
+    def observe(self, capacity, *, predicate=None, deadline=90, pid=7, age=0):
         clock = Clock()
         self.clock = clock
-        def call(node, command):
-            self.assertEqual(command, "resources")
+        def observation(node):
             value = capacity(clock.now) if callable(capacity) else capacity
-            return {"active": {"pid": pid, "budget": {"concurrency": value,
+            return {"snapshot": {"pid": pid, "timestamp_ms": 10000 - age, "budget": {"concurrency": value,
                 "paused": "sustained external CPU pressure" if value == 0 else None}}}
-        trial = type("Trial", (), {"deadline": deadline, "summary": {}, "call": staticmethod(call)})()
+        trial = type("Trial", (), {"deadline": deadline, "summary": {}})()
         node = type("Node", (), {"process": {"pid": 7}})()
-        with patch("time.monotonic", side_effect=lambda: clock.now), patch("time.sleep", side_effect=clock.sleep):
+        with patch("time.monotonic", side_effect=lambda: clock.now), patch("time.sleep", side_effect=clock.sleep), \
+                patch("time.time", return_value=10), patch("long_jobs.latest", side_effect=observation):
             result = observe_work(trial, node, "overlap", predicate or (lambda: False), 15, 3)
         self.receipt = trial.summary["work_windows"]["overlap"]
         return result
@@ -113,6 +113,8 @@ class WorkWindowTests(unittest.TestCase):
             self.observe(2, pid=8)
         with self.assertRaisesRegex(AssertionError, "whole-trial deadline"):
             self.observe(2, deadline=7)
+        with self.assertRaisesRegex(AssertionError, "observation is stale"):
+            self.observe(2, age=5001)
 
     def test_predicate_failures_cannot_be_hidden_by_a_resource_constraint(self):
         def corrupt():
