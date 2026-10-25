@@ -12,7 +12,7 @@ mod checkpoint;
 mod corpus;
 mod discovery;
 mod error;
-pub use error::Error;
+pub use error::{CertificateFormatError, Error};
 mod graph;
 mod index_storage;
 mod intake;

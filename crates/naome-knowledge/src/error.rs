@@ -2,6 +2,13 @@
 use std::{error::Error as StdError, fmt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertificateFormatError {
+    pub message: String,
+    pub input_digest: naome_checker::diagnostics::Digest,
+    pub reason: naome_authoring::FormatFailure,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     MemoryOverload {
         requested: usize,
@@ -23,11 +30,7 @@ pub enum Error {
     },
     Compile(Box<naome_authoring::CompileDiagnostic>),
     DiagnosticInspection(naome_checker::diagnostics::InspectionError),
-    CertificateFormat {
-        message: String,
-        input_digest: naome_checker::diagnostics::Digest,
-        reason: naome_authoring::FormatFailure,
-    },
+    CertificateFormat(Box<CertificateFormatError>),
     /// Invalid data read from owned storage remains fatal while retaining the
     /// original structured diagnostic. It is never a candidate repair request.
     Stored(Box<Error>),
@@ -63,7 +66,7 @@ impl Error {
             Self::Proof { .. } => "proof.check",
             Self::Compile(_) => "source.compile",
             Self::DiagnosticInspection(_) => "diagnostic.inspection",
-            Self::CertificateFormat { .. } => "certificate.format",
+            Self::CertificateFormat(_) => "certificate.format",
             Self::Stored(_) => "storage.invalid_record",
             Self::CorruptStorage(_) => "storage.corrupt",
             Self::UncertainDurability(_) => "storage.uncertain_durability",
@@ -87,7 +90,7 @@ impl Error {
     pub(crate) fn storage(self) -> Self {
         match self {
             Self::InvalidInput(message) => Self::CorruptStorage(message),
-            error @ (Self::Proof { .. } | Self::Compile(_) | Self::CertificateFormat { .. })
+            error @ (Self::Proof { .. } | Self::Compile(_) | Self::CertificateFormat(_))
                 if !error.retryable() =>
             {
                 Self::Stored(Box::new(error))
@@ -115,10 +118,10 @@ impl Error {
     fn detail(&self) -> Option<&str> {
         match self {
             Self::Proof { message, .. }
-            | Self::CertificateFormat { message, .. }
             | Self::InvalidInput(message)
             | Self::CorruptStorage(message)
             | Self::UncertainDurability(message) => Some(message),
+            Self::CertificateFormat(error) => Some(&error.message),
             Self::Compile(diagnostic) => Some(diagnostic.message()),
             Self::Stored(error) => error.detail(),
             _ => None,
@@ -131,11 +134,7 @@ impl Error {
         &naome_authoring::FormatFailure,
     )> {
         match self {
-            Self::CertificateFormat {
-                input_digest,
-                reason,
-                ..
-            } => Some((*input_digest, reason)),
+            Self::CertificateFormat(error) => Some((error.input_digest, &error.reason)),
             Self::Stored(error) => error.format_error(),
             _ => None,
         }
@@ -173,7 +172,7 @@ impl fmt::Display for Error {
             Self::Proof { message, .. } => f.write_str(message),
             Self::Compile(diagnostic) => f.write_str(diagnostic.message()),
             Self::DiagnosticInspection(error) => error.fmt(f),
-            Self::CertificateFormat { message, .. } => f.write_str(message),
+            Self::CertificateFormat(error) => f.write_str(&error.message),
             Self::Stored(error) => write!(f, "storage halted: {error}"),
             Self::CorruptStorage(message) | Self::UncertainDurability(message) => {
                 write!(f, "storage halted: {message}")

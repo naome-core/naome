@@ -454,7 +454,13 @@ fn schema_freshness_is_checked_across_disk_traversals() {
     for _ in 0..100 {
         match work.advance(&budget(), &naome_checker::ArtifactState::new()) {
             Err(e) => {
-                assert!(e.contains("freshness"));
+                assert_eq!(
+                    e.diagnostic().unwrap().failure,
+                    naome_checker::diagnostics::Failure::ForbiddenPredicateVariable {
+                        variable: 2,
+                        role: naome_checker::diagnostics::OperandRole::Result,
+                    }
+                );
                 rejected = true;
                 break;
             }

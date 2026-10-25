@@ -280,11 +280,11 @@ fn prepare_candidate(
     memory: std::sync::Arc<crate::resources::MemoryLease>,
 ) -> Result<Candidate, crate::Error> {
     let certificate = ProofCertificate::from_canonical_bytes(&bytes).map_err(|error| {
-        crate::Error::CertificateFormat {
+        crate::Error::CertificateFormat(Box::new(crate::CertificateFormatError {
             message: format!("malformed certificate: {error}"),
             input_digest: naome_checker::diagnostics::Digest::of(&bytes),
             reason: naome_authoring::FormatFailure::from(&error),
-        }
+        }))
     })?;
     let normal = certificate.into_unchecked_normal_form();
     if normal.canonical_bytes() != bytes.as_ref() {
