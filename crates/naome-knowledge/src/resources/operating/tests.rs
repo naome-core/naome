@@ -1,4 +1,34 @@
 use super::*;
+use std::time::Duration;
+
+#[test]
+fn missing_check_feedback_preserves_configured_work_cadence() {
+    let mut capacity = crate::resources::ResourceProfile::default()
+        .resolve()
+        .unwrap();
+    capacity.finding_interval = Duration::from_secs(3);
+    capacity.solving_interval = Duration::from_secs(7);
+    capacity.production_interval = Duration::from_secs(9);
+    let budget = Budget {
+        memory_bytes: capacity.memory_bytes as u64,
+        concurrency: 1,
+        cache_bytes: 64 * 1024,
+        batch_steps: 4,
+        network_requests: 1,
+        yield_ms: 0,
+        paused: None,
+    };
+
+    let work = derive_with_statistics(
+        &capacity,
+        &budget,
+        crate::resources::feedback::Statistics::default(),
+    );
+
+    assert_eq!(work.finding_interval, capacity.finding_interval);
+    assert_eq!(work.solving_interval, capacity.solving_interval);
+    assert_eq!(work.production_interval, capacity.production_interval);
+}
 
 #[test]
 fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {

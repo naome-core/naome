@@ -3,6 +3,14 @@
 use super::{Limits, adaptive::Budget};
 
 pub(super) fn derive(capacity: &Limits, budget: &Budget) -> Limits {
+    derive_with_statistics(capacity, budget, super::feedback::statistics())
+}
+
+fn derive_with_statistics(
+    capacity: &Limits,
+    budget: &Budget,
+    statistics: super::feedback::Statistics,
+) -> Limits {
     let mut work = capacity.clone();
     let memory = usize::try_from(budget.memory_bytes).unwrap_or(usize::MAX);
     let batch = budget.batch_steps.max(1);
@@ -78,7 +86,6 @@ pub(super) fn derive(capacity: &Limits, budget: &Budget) -> Limits {
     work.inbound_streams = capacity
         .inbound_streams
         .min(work.flights.saturating_add(slots).max(1));
-    let statistics = super::feedback::statistics();
     let quantum = capacity.transport_busy_grace;
     let check_nanos = statistics.check.nanos / statistics.check.units.max(1);
     let compact_nanos = statistics.compact.nanos / statistics.compact.units.max(1);
@@ -87,28 +94,39 @@ pub(super) fn derive(capacity: &Limits, budget: &Budget) -> Limits {
             .compaction_records
             .min((quantum.as_nanos() / u128::from(compact_nanos)).max(1) as usize);
     }
-    let measured =
-        std::time::Duration::from_nanos(check_nanos.saturating_mul(batch as u64)).max(quantum);
+    // Check feedback is process-local, while autonomous work runs in child
+    // providers. Until this owner has a measurement, preserve the configured
+    // cadence instead of interpreting a zero sample as the minimum quantum.
+    let measured = (statistics.check.units > 0).then(|| {
+        std::time::Duration::from_nanos(check_nanos.saturating_mul(batch as u64)).max(quantum)
+    });
+    let base_interval = measured.unwrap_or(capacity.finding_interval);
     let busy = statistics.queued_jobs > 0 || statistics.running_jobs > 0;
     work.tick_interval = if busy {
-        measured.min(capacity.tick_interval)
+        base_interval.min(capacity.tick_interval)
     } else {
         capacity.tick_interval
     };
     work.job_tick_interval = if busy {
-        measured.min(capacity.job_tick_interval)
+        base_interval.min(capacity.job_tick_interval)
     } else {
         capacity.job_tick_interval
     };
-    work.finding_interval = measured
+    work.finding_interval = base_interval
         .saturating_mul(
             1u32.checked_shl(statistics.empty_finding_streak.min(31) as u32)
                 .unwrap_or(u32::MAX),
         )
         .min(capacity.finding_interval)
         .max(quantum);
-    work.solving_interval = measured.min(capacity.solving_interval).max(quantum);
-    work.production_interval = measured.min(capacity.production_interval).max(quantum);
+    work.solving_interval = measured
+        .unwrap_or(capacity.solving_interval)
+        .min(capacity.solving_interval)
+        .max(quantum);
+    work.production_interval = measured
+        .unwrap_or(capacity.production_interval)
+        .min(capacity.production_interval)
+        .max(quantum);
     // Existing buffers/requests retain their admission. Smaller limits only
     // pace new work; callers must never truncate a retained row to fit them.
     work.resident_jobs = capacity.resident_jobs;
