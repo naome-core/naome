@@ -19,6 +19,18 @@ override a newer failed or pending run. Missing evidence fails closed.
 PR checks alone never qualify a release. If `main` advances during packaging,
 publication stops; release its qualified new head instead.
 
+Manual candidates and publications also scan the complete `Cargo.lock` against
+a freshly fetched official RustSec database using a checksum-pinned
+`cargo-audit`. Known vulnerabilities and unsoundness advisories block publication;
+unmaintained/yanked notices remain visible in the report. No advisory ignore
+list, severity threshold, platform filter, stale-DB fallback, or automatic
+dependency fix is applied. The scan covers the conservative whole lockfile,
+including dependencies that might not be linked into the ordinary node; a
+finding needs assessment before claiming runtime exploitability. Fix source
+dependencies through their existing owners rather than suppressing a release
+failure. PR candidates exercise build/packaging without requiring an audit of
+unchanged source dependencies; they do not qualify a release.
+
 The workflow relies on the existing protected-main review and CI rules and on
 GitHub's authorization of workflow dispatches. People with repository write or
 administrative access, GitHub-hosted runners, the pinned Rust distribution,
@@ -43,7 +55,8 @@ which `GITHUB_TOKEN` cannot carry. Configure the repository Actions secret
 `RELEASE_POLICY_TOKEN` with a fine-grained token limited to this repository,
 **Administration: read only**, no write permissions, and an appropriate expiry.
 Rotate it before expiry. Only explicit main publication receives this credential;
-it is used exclusively to read `/immutable-releases`. All build jobs remain
+it is used exclusively to read `/immutable-releases` and full ruleset policies
+(including bypass actors, which GitHub hides from ordinary readers). All build jobs remain
 secret-free, and every other API call uses the job-scoped `GITHUB_TOKEN`.
 Missing or expired policy access stops publication; never substitute a broad
 personal write token. See the [GitHub API permission requirements](https://docs.github.com/en/rest/repos/repos#check-if-immutable-releases-are-enabled-for-a-repository).
@@ -90,8 +103,16 @@ and the gzip timestamp are deterministic for identical payloads. Different
 hosted compiler, linker, or SDK images can still produce different binary bytes;
 runner versions and the final binary digest are recorded.
 
+The SBOM describes Cargo's resolved dependency graph, including build dependencies
+and optional packages Cargo resolves even when they are not linked into the
+node. It is a conservative inventory, not binary reachability evidence.
+License collection independently selects the ordinary node's dependency graph.
+
 The final download set contains two target archives, `release.json`,
-`SHA256SUMS`, and `provenance.sigstore.json`. The provenance job signs the exact
+`SHA256SUMS`, `cargo-audit.json`, and `provenance.sigstore.json`. The security
+report records its database revision and binds the scan to the source lockfile
+digest; the publisher independently rejects failed or suppressed reports.
+The provenance job signs the exact
 payload and checksum bytes; its only write permission is attestations, with
 OIDC used for signing. A separate publisher verifies those signatures, source
 identity and all digests, uploads to a draft, checks server-side asset digests,

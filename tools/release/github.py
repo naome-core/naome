@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -12,8 +13,12 @@ class GitHub:
     def request(self, path, *, method="GET", body=None, missing=False, upload=None):
         url = f"https://api.github.com/repos/{REPOSITORY}{path}"
         # GitHub does not grant Administration:read to GITHUB_TOKEN. Use a
-        # separate read-only credential exclusively for this policy endpoint.
-        token_name = "RELEASE_POLICY_TOKEN" if path == "/immutable-releases" else "GH_TOKEN"
+        # separate read-only credential only for release policy and the full
+        # ruleset policy (including bypass actors, hidden from ordinary readers).
+        policy_read = path == "/immutable-releases" or re.fullmatch(r"/rulesets/[0-9]+", path)
+        if policy_read and method != "GET":
+            raise ValueError("release tooling cannot mutate repository protections")
+        token_name = "RELEASE_POLICY_TOKEN" if policy_read else "GH_TOKEN"
         token = os.environ.get(token_name)
         if not token:
             raise ValueError(f"missing {token_name}; see docs/releases/README.md")

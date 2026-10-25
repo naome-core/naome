@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import tarfile
@@ -73,6 +74,7 @@ def build_package(target, version, output, notices, sbom, system_licenses):
     metadata = {**release, "schema": 1, "repository": REPOSITORY, "commit": sha, "target": target,
                 "features": [], "profile": "release", "rust_toolchain": toolchain,
                 "rustc": subprocess.check_output(["rustc", "--version", "--verbose"], text=True).strip(),
+                "release_tools": tomllib.loads((ROOT / "tools/release/toolchain.toml").read_text()),
                 "cargo_lock_sha256": digest(ROOT / "Cargo.lock"), "binary_sha256": digest(binary),
                 "runner_image": {key: os.environ.get(key, "unknown") for key in ("ImageOS", "ImageVersion")},
                 "run_url": f"https://github.com/{REPOSITORY}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
@@ -137,10 +139,12 @@ def assemble(directory, version, sha, run_id):
 
 
 def verify_assets(directory, version, sha, run_id):
-    expected = {f"naome-{version}-{target}.tar.gz" for target in TARGETS} | {"release.json"}
+    expected = {f"naome-{version}-{target}.tar.gz" for target in TARGETS} | {"release.json", "cargo-audit.json"}
     actual = {path.name for path in directory.iterdir()}
     if actual != expected | {"SHA256SUMS", "provenance.sigstore.json"}:
         raise ValueError("final asset set differs from the release contract")
+    if any(path.is_symlink() or not path.is_file() for path in directory.iterdir()):
+        raise ValueError("irregular release asset")
     lines = (directory / "SHA256SUMS").read_text().splitlines()
     hashes = {}
     for line in lines:
@@ -148,8 +152,9 @@ def verify_assets(directory, version, sha, run_id):
         if name not in expected or name in hashes or checksum != digest(directory / name):
             raise ValueError("invalid, duplicate or mismatched release checksum")
         hashes[name] = checksum
-    if hashes.keys() != expected or any(path.is_symlink() or not path.is_file() for path in directory.iterdir()):
-        raise ValueError("missing checksum or irregular release asset")
+    if hashes.keys() != expected:
+        raise ValueError("missing checksum")
+    verify_audit(json.loads((directory / "cargo-audit.json").read_text()))
     manifest = json.loads((directory / "release.json").read_text())
     if manifest["commit"] != sha or manifest["version"] != version or manifest["run_id"] != str(run_id):
         raise ValueError("release manifest does not belong to this workflow")
@@ -157,3 +162,17 @@ def verify_assets(directory, version, sha, run_id):
     if sorted(manifest["builds"], key=lambda value: value["target"]) != sorted(builds, key=lambda value: value["target"]):
         raise ValueError("release manifest and packaged build identities disagree")
     return {path.name: digest(path) for path in directory.iterdir()}
+
+
+def verify_audit(report):
+    scanner = tomllib.loads((ROOT / "tools/release/toolchain.toml").read_text())["cargo-audit"]
+    if (report.get("naome") != {"cargo_lock_sha256": digest(ROOT / "Cargo.lock"), "scanner": f"cargo-audit {scanner}"}
+            or not re.fullmatch(r"[0-9a-f]{40}", report.get("database", {}).get("last-commit", ""))
+            or report.get("vulnerabilities") != {"found": False, "count": 0, "list": []}
+            or report.get("warnings", {}).get("unsound")
+            or report.get("settings", {}).get("ignore") != []
+            or "unsound" not in report["settings"].get("informational_warnings", [])
+            or report["settings"].get("severity") is not None
+            or report["settings"].get("target_arch") != []
+            or report["settings"].get("target_os") != []):
+        raise ValueError("missing, filtered, suppressed or failed RustSec qualification")

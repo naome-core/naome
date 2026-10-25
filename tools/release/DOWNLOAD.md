@@ -43,7 +43,10 @@ Sigstore verification material. Checksums detect corruption, while the signed
 provenance and immutable release bind the bytes to the official workflow and
 source. Verify `release.json` with the same attestation command if using its
 metadata in automation. `SHA256SUMS` covers both target archives and
-`release.json`; checking all its entries requires downloading both archives.
+`release.json` and `cargo-audit.json`; checking all its entries requires
+downloading both archives and both JSON files. The audit report records the
+RustSec database revision used for qualification. It covers the whole lockfile
+and is a point-in-time check, not a guarantee against undiscovered vulnerabilities.
 
 ## Install and operate
 
@@ -68,6 +71,8 @@ selects a separate directory. Run as your own user. Installing or replacing the
 binary does not require root and does not start the node. Keep the included
 license notices. `sbom.cdx.json`, `Cargo.lock`, and `build.json` describe the
 dependencies, ordinary build features, binary digest, source commit, and runner.
+The SBOM is conservative: it can include optional dependencies resolved by Cargo
+that are not linked into the executable.
 
 The macOS CLI has an ad-hoc signature checked during packaging. It is **not**
 Apple Developer ID signed or notarized. Browser downloads can therefore be

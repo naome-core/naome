@@ -8,6 +8,8 @@ on:
       - .github/workflows/release*.yml
       - tools/release/**
       - tools/ci/test_release*.py
+      - tools/ci/audit_dependencies.py
+      - tools/ci/pinned_tool.py
       - crates/naome-knowledge/src/runtime/cli.rs
       - crates/naome-knowledge/src/runtime/cli/**
   workflow_dispatch:
@@ -67,6 +69,31 @@ jobs:
       target: x86_64-unknown-linux-musl
       version: ${{ needs.prepare.outputs.version }}
 
+  audit:
+    name: Qualify dependencies against RustSec
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reject known vulnerabilities and unsound dependencies
+        run: python3 tools/ci/audit_dependencies.py
+      - name: Retain complete audit evidence, including rejected candidates
+        id: upload
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-audit
+          path: .local/release-audit/cargo-audit.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
   macos:
     needs: prepare
     uses: ./.github/workflows/release-build.yml
@@ -117,7 +144,7 @@ jobs:
   attest:
     name: Attest verified release bytes
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && github.repository == 'naome-core/naome' }}
-    needs: verify
+    needs: [verify, audit]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -131,6 +158,13 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact-id }}
           path: release
+      - name: Include the exact security qualification report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.audit.outputs.artifact-id }}
+          path: release
+      - name: Bind security evidence to the signed download set
+        run: (cd release && sha256sum cargo-audit.json >> SHA256SUMS)
       - name: Sign provenance for every downloadable payload and checksum file
         id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

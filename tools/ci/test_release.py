@@ -169,6 +169,9 @@ class QualificationTests(unittest.TestCase):
             with patch("urllib.request.urlopen", return_value=io.BytesIO(b"{}")) as opened:
                 GitHub().request("/releases", method="POST", body={"draft": True})
                 self.assertEqual(opened.call_args.args[0].get_header("Authorization"), "Bearer job-token")
+            for path in ["/immutable-releases", "/rulesets/123"]:
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    GitHub().request(path, method="PUT", body={})
 
 
 class PackageTests(unittest.TestCase):
@@ -197,6 +200,14 @@ class PackageTests(unittest.TestCase):
         for target in policy.TARGETS:
             self.make_archive(target)
         package.assemble(self.directory, VERSION, SHA, "42")
+        report = {"database": {"last-commit": "c" * 40}, "vulnerabilities": {"found": False, "count": 0, "list": []},
+                  "settings": {"ignore": [], "severity": None, "target_arch": [], "target_os": [], "informational_warnings": ["unmaintained", "unsound", "notice"]},
+                  "naome": {"cargo_lock_sha256": hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest(),
+                            "scanner": "cargo-audit " + tomllib.loads((ROOT / "tools/release/toolchain.toml").read_text())["cargo-audit"]}}
+        path = self.directory / "cargo-audit.json"
+        path.write_text(json.dumps(report))
+        with (self.directory / "SHA256SUMS").open("a") as output:
+            output.write(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  cargo-audit.json\n")
         (self.directory / "provenance.sigstore.json").write_text("signature fixture")
 
     def test_archive_is_deterministic_and_extracted_executable_works_without_state(self):
@@ -252,7 +263,7 @@ class PackageTests(unittest.TestCase):
 
     def test_final_asset_digests_and_workflow_identity_must_agree(self):
         self.complete_set()
-        self.assertEqual(len(package.verify_assets(self.directory, VERSION, SHA, "42")), 5)
+        self.assertEqual(len(package.verify_assets(self.directory, VERSION, SHA, "42")), 6)
         with self.assertRaises(ValueError):
             package.verify_assets(self.directory, VERSION, SHA, "43")
         path = self.directory / "SHA256SUMS"
@@ -267,7 +278,7 @@ class PackageTests(unittest.TestCase):
              patch.object(release, "attestations"), patch.object(release, "notes", return_value="Reviewed notes"), \
              patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(self.directory / "summary")}):
             release.publish(self.directory, VERSION)
-        self.assertEqual(len(api.assets), 5)
+        self.assertEqual(len(api.assets), 6)
         self.assertTrue(api.releases[0]["immutable"])
         self.assertFalse(api.releases[0]["draft"])
         self.assertEqual(api.releases[0]["make_latest"], "false" if "-" in VERSION else "true")
@@ -299,8 +310,24 @@ class PackageTests(unittest.TestCase):
                 release.publish(self.directory, VERSION)
             self.assertEqual(api.assets[0], uploaded)
             self.assertEqual(len(api.releases), 1)
-            self.assertEqual(len(api.assets), 5)
+            self.assertEqual(len(api.assets), 6)
             self.assertFalse(api.releases[0]["draft"])
+
+    def test_vulnerable_suppressed_filtered_or_foreign_lockfile_audit_cannot_publish(self):
+        self.complete_set()
+        report = json.loads((self.directory / "cargo-audit.json").read_text())
+        package.verify_audit(report)
+        for mutate in [lambda value: value["vulnerabilities"].update(found=True, count=1, list=[{"advisory": "vulnerable"}]),
+                       lambda value: value["settings"].update(ignore=["RUSTSEC-2026-0001"]),
+                       lambda value: value["settings"].update(informational_warnings=[]),
+                       lambda value: value["settings"].update(target_os=["linux"]),
+                       lambda value: value["naome"].update(cargo_lock_sha256="b" * 64),
+                       lambda value: value["database"].update({"last-commit": ""}),
+                       lambda value: value.update(warnings={"unsound": [{}]})]:
+            broken = copy.deepcopy(report)
+            mutate(broken)
+            with self.assertRaises(ValueError):
+                package.verify_audit(broken)
 
 
 if __name__ == "__main__":

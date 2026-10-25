@@ -1,11 +1,16 @@
 """Regression coverage for CI result gates and the shared Rust toolchain."""
 
 import ast
+import hashlib
+import io
 import pathlib
+import tarfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 from check_results import require_success
+from pinned_tool import executable
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -54,6 +59,36 @@ class BuildContractTests(unittest.TestCase):
         self.assertEqual({name for _, name in entries}, {f"bazel-{version}-linux-x86_64", f"bazel-{version}-darwin-arm64"})
         for digest, _ in entries:
             self.assertEqual(len(bytes.fromhex(digest)), 32)
+
+
+class PinnedToolTests(unittest.TestCase):
+    def payload(self, *, link=False):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w:gz") as archive:
+            entry = tarfile.TarInfo("tool")
+            if link:
+                entry.type, entry.linkname = tarfile.SYMTYPE, "/tmp/untrusted"
+                archive.addfile(entry)
+            else:
+                entry.size = 5
+                archive.addfile(entry, io.BytesIO(b"bytes"))
+        return output.getvalue()
+
+    def test_verified_executable_is_isolated_and_removed_after_use(self):
+        payload = self.payload()
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(payload)):
+            with executable("https://example.test/tool", hashlib.sha256(payload).hexdigest(), "tool") as path:
+                self.assertEqual(path.read_bytes(), b"bytes")
+                self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+            self.assertFalse(path.exists())
+
+    def test_modified_download_or_link_is_rejected_before_execution(self):
+        for link in [False, True]:
+            payload = self.payload(link=link)
+            expected = hashlib.sha256(payload).hexdigest() if link else "0" * 64
+            with self.subTest(link=link), patch("urllib.request.urlopen", return_value=io.BytesIO(payload)), self.assertRaises(ValueError):
+                with executable("https://example.test/tool", expected, "tool"):
+                    self.fail("untrusted executable was accepted")
 
 
 if __name__ == "__main__":
