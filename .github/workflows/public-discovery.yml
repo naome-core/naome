@@ -1,0 +1,82 @@
+name: Public discovery acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-discovery-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  internet:
+    name: Public discovery (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: Linux x86_64
+            participant: 0
+          - runner: macos-15
+            platform: macOS ARM64
+            participant: 1
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the matching public-network test configuration
+        run: cargo test -p naome-knowledge --profile test --all-targets --all-features --locked --no-run
+      - name: Wait until both physical hosts have built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/wait_internet_builds.py
+      - name: Discover the other physical host without its identity or address
+        run: >-
+          python3 crates/naome-knowledge/tests/support/internet_discovery.py
+          --binary target/debug/naome-knowledge-dev
+          --output .local/internet --profile test --timeout 720 --hold 30
+          --participant ${{ matrix.participant }}
+      - name: Retain public evidence without identity keys
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: internet-${{ matrix.participant }}
+          path: |
+            .local/internet/summary.json
+            .local/internet/*.stdout.jsonl
+            .local/internet/*.stderr.jsonl
+          if-no-files-found: error
+
+  internet_result:
+    name: Public discovery acceptance
+    if: ${{ always() }}
+    needs: internet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: internet-*
+          path: .local/internet-results
+      - name: Require both hosts and authenticate counterpart payload evidence
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 tools/ci/check_results.py internet
+          python3 tools/ci/check_internet.py .local/internet-results '${{ github.sha }}'
+

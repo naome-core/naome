@@ -4,7 +4,7 @@ import os
 import time
 import urllib.request
 
-JOBS = {"Public discovery (ubuntu-24.04)", "Public discovery (macos-15)"}
+JOBS = {"Public discovery (Linux x86_64)", "Public discovery (macOS ARM64)"}
 BUILD = "Build the matching public-network test configuration"
 
 

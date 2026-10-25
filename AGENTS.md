@@ -155,8 +155,15 @@ Rust dependency authority. Bazel's Rust pin must match `rust-toolchain.toml`.
 ### Full Cargo verification
 
 `Full Cargo CI` runs nightly at 01:17 UTC on `main`, without cancelling previous
-runs. It can also be dispatched manually; dispatching `CI` with
-`full_cargo=true` runs the same full matrix before a merge when needed. Every
+runs. Dispatch `Full Cargo CI` directly for an explicitly requested full matrix
+before a merge. Public two-host discovery is a separate manual
+`Public discovery acceptance` workflow. `CI` contains only the required fast
+checks; neither manual workflow creates skipped MR checks.
+
+`Release candidate` builds and verifies packages for relevant pull requests or
+manual requests. It shares the canonical package workflow with `Release` and
+has no signing or publication jobs. `Release` is exclusively a version-confirmed
+manual publication. Every
 publication runs this same complete matrix within its own `Release` workflow,
 on the exact source commit, before attestation and publication. The publisher
 independently requires all four matrix jobs and their result job to have
