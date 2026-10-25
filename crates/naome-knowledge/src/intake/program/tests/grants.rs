@@ -9,28 +9,30 @@ fn expired_primary_program_response_cannot_extend_durable_input() {
     let id = manifest.proof_id();
     let peer = PeerId::random();
     graph.ownership().start_program(&manifest).unwrap();
-    let mut programs = Programs::default();
-    programs.active = Some(Root {
-        authority: QuestionAuthority {
-            question: metadata.question().unwrap().unwrap(),
-            assessment: None,
-            pending: None,
-            until: Instant::now(),
-            finalized: false,
-            pending_final: false,
-        },
-        offer: Offer {
-            metadata,
-            transfer: TransferGrant::new(peer, id, None),
-        },
-        stage: Stage::Fetch,
-        refresh: false,
-        allowed: true,
-        budget: Observer::fixed_for_test(crate::resources::tests::snapshot(false)),
-        helpers: Helpers::default(),
-        scanned: 0,
-        input_complete: false,
-    });
+    let mut programs = Programs {
+        active: Some(Root {
+            authority: QuestionAuthority {
+                question: metadata.question().unwrap().unwrap(),
+                assessment: None,
+                pending: None,
+                until: Instant::now(),
+                finalized: false,
+                pending_final: false,
+            },
+            offer: Offer {
+                metadata,
+                transfer: TransferGrant::new(peer, id, None),
+            },
+            stage: Stage::Fetch,
+            refresh: false,
+            allowed: true,
+            budget: Observer::fixed_for_test(crate::resources::tests::snapshot(false)),
+            helpers: Helpers::default(),
+            scanned: 0,
+            input_complete: false,
+        }),
+        ..Programs::default()
+    };
     programs
         .active
         .as_mut()
