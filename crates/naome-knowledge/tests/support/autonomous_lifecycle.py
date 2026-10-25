@@ -1189,7 +1189,9 @@ def main():
             for event in sender.logs()[sender.event_offset:]))
         assert sum(event.get("event") == "starting" for event in sender.logs()[sender.event_offset:]) == 1, "concurrent start created more than one runtime owner"
         trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
-        expected = {"running": True, "accepted_proofs": 3, "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
+        def expected_status(node):
+            return {"wallet": wallet_status(node.directory), "running": True, "accepted_proofs": 3,
+                "interest": "", "proof_verification": "checked", "computation": "running", "computation_reason": None}
 
         def converged():
             own, remote = sender.ids(), receiver.ids()
@@ -1201,7 +1203,7 @@ def main():
                 return False
             # Durable admission precedes publication of the passive status snapshot.
             # Wait for both observations within the existing convergence deadline.
-            if any(trial.call(node, "status") != expected for node in trial.nodes):
+            if any(trial.call(node, "status") != expected_status(node) for node in trial.nodes):
                 return False
             return own
         accepted = trial.wait(converged, maximum=40 if args.mode != "direct" else 20)
@@ -1230,14 +1232,14 @@ def main():
             assert not any(event.get("event") == "connected" and event.get("peer") == sender.peer
                 and event.get("relayed") is False for event in receiver.logs()), "relay-only qualification used a direct shortcut"
             trial.summary["relayed_connection_ids"] = sorted(connections)
-        assert all(trial.call(node, "status") == expected for node in trial.nodes)
+        assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
         trial.summary["accepted_ids"] = sorted(accepted)
         trial.summary["scenarios"][f"scheduled_mock_generation_real_validation_and_{args.mode}_exchange"] = {
             "result": "pass", "root_proofs": 3, "receiver_generated_questions": 0,
             "receiver_accepted_source": "fetch", "mocked": ["question generation", "proof generation", "interest assessment"]}
         trial.wait(lambda: sum(event.get("event") == "question_generated" for event in sender.logs()) >= 6, maximum=5)
         assert sender.ids() == accepted and receiver.ids() == accepted
-        assert all(trial.call(node, "status") == expected for node in trial.nodes)
+        assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
         trial.summary["scenarios"]["repeated_catalog_outputs_do_not_inflate_accepted_count"] = {"result": "pass", "unique_proofs": 3}
         for node in trial.nodes:
             assert node.stop() == {"wallet": wallet_status(node.directory), "running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
@@ -1247,7 +1249,7 @@ def main():
             node.start()
             assert digest(node.directory / "identity.key") == node.identity_sha256
             assert node.ids() == accepted
-            assert trial.call(node, "status") == expected
+            assert trial.call(node, "status") == expected_status(node)
             node.stop()
         trial.summary["scenarios"]["restart_revalidates_persistent_proofs_and_preserves_identity"] = {"result": "pass", "unique_proofs": 3}
         member = sorted(accepted)[0]
