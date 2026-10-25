@@ -141,7 +141,11 @@ class QuestionDriver(DiscoveryDriver):
                 steps.append(f"p{index + 1} = gen(p{index},x{index})")
             result = sender.command("produce", source=f'goal = {formula} proof: ' + " ".join(steps) + " return p34")
             assert result["result"]["status"] == "accepted"
-            assert result["metadata"] is None and "question" in result["metadata_error"]
+            assert result["metadata"] is None, result
+            error = result["metadata_error"]
+            assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
+            assert error["message"] == "question limit exceeded: question target depth", error
+            assert error["retryable"] is False and error["fatal"] is False, error
             assert result["object"]["proof_id"] in sender.ids()
             self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": "pass", "accepted_id": result["object"]["proof_id"], "metadata_error": result["metadata_error"]}
         self.assert_caps()
