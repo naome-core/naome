@@ -160,6 +160,7 @@ struct InventoryProgress {
     pages: usize,
 }
 struct Node {
+    computation: Arc<crate::resources::Computation>,
     ready: bool,
     graph: Graph,
     swarm: worker::SharedSwarm,
@@ -553,6 +554,9 @@ where
     let (swarm, mut events, mut transport) = worker::Transport::spawn(swarm, primary_listener);
     let enabled = BTreeSet::new();
     let mut node = Node {
+        computation: control
+            .as_ref()
+            .map_or_else(Arc::default, |control| control.computation.clone()),
         ready: false,
         graph,
         swarm,
@@ -585,8 +589,12 @@ where
     let (mut research, mut autonomous, mut questions) = if let Some(intervals) = autonomy {
         use sha2::Digest;
         let cursor = sha2::Sha256::digest(own_id.to_bytes())[0] as u64;
-        let (service, client, recovery) =
-            crate::jobs::Service::open(&directory, intervals.jobs, cursor)?;
+        let (service, client, recovery) = crate::jobs::Service::open(
+            &directory,
+            intervals.jobs,
+            cursor,
+            node.computation.clone(),
+        )?;
         let questions = crate::question::LocalQuestions::<F>::managed(
             client.clone(),
             &directory,
@@ -608,6 +616,9 @@ where
         .store(node.graph.accepted_count(), Ordering::Release);
     let mut controls = worker::Controls::spawn(control.clone(), published.clone());
     let mut stop_watch = control.as_ref().map(|control| control.stop_watch());
+    let authority = control
+        .clone()
+        .map(|control| control as Arc<dyn crate::publication::LocalAuthority>);
     let mut stopping = false;
     let mut next_profile_check = Instant::now();
     let mut resources = control
@@ -624,6 +635,7 @@ where
     let outcome:Result<(),String>=worker::while_polled(owner_busy, async {
     loop {
         if let Some(resources)=&mut resources {resources.refresh()?;}
+        let work = node.computation.try_enter();
         // Read the validated owner epoch before polling any final admission.
         // An error invalidates old selection; stop remains available.
         if let Some(control)=&control
@@ -633,8 +645,8 @@ where
                 node.intake.invalidate_interest(); node.inventory_summaries.clear();
                 }
             }
-        node.graph.set_commit_guard(crate::graph::CommitGuard::new(
-            node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+        node.graph.set_commit_guard(crate::publication::CommitGuard::new(
+            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
         ));
         // A cold peer may stay quiet after its response. Wake at the next
         // paced request deadline instead of quantizing reads to the tick.
@@ -646,7 +658,7 @@ where
             .min()
             .copied();
         tokio::select! {
-            _=tokio::time::sleep(Duration::from_millis(crate::resources::adaptive::current().map_or(5,|snapshot|if snapshot.budget.paused.is_some(){250}else{snapshot.budget.yield_ms.max(1)}))),if (node.intake.program_busy()||autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::program_busy))&&!stopping=>{},
+            _=tokio::time::sleep(Duration::from_millis(crate::resources::adaptive::current().map_or(5,|snapshot|if snapshot.budget.paused.is_some(){250}else{snapshot.budget.yield_ms.max(1)}))),if work.is_some()&&(node.intake.program_busy()||autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::program_busy))&&!stopping=>{},
             _ = &mut cancel => break,
             _ = async {
                 if let Some(until) = automatic_wake {
@@ -658,8 +670,8 @@ where
             event = events.recv() => {
                 let event = event.ok_or("proof transport stopped or exceeded its event capacity")?;
                 node.transport_epoch = event.epoch;
-                node.graph.set_commit_guard(crate::graph::CommitGuard::new(
-                    node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+                node.graph.set_commit_guard(crate::publication::CommitGuard::new(
+                    node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
                 ));
                 node.event(event.event, event.grant)?;
                 published.ready.store(node.ready, Ordering::Release);
@@ -683,13 +695,13 @@ where
                 }
             },
             _ = tick.tick() => { node.tick(); },
-            command = inbox.receive(), if question_input_open && !stopping => {
+            command = inbox.receive(), if work.is_some() && question_input_open && !stopping => {
                 match command {
                     Some(command) => { if !questions.process(command, &node.graph) { break; } },
                     None => question_input_open = false,
                 }
             },
-            interest = questions.completed(),if !stopping => {
+            interest = questions.completed(),if work.is_some() && !stopping => {
                 if let Some(control)=&control
                     && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
                 questions.finish(&node.graph, interest);
@@ -709,12 +721,15 @@ where
         if stopping {
             break;
         }
+        if work.is_none() {
+            continue;
+        }
         if let Some(control)=&control
             && (control.selection_changed() || node.intake.selection_boundary_ready()
                 || autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::selection_boundary_ready))
                 && questions.select(control.selection().ok()){node.intake.invalidate_interest(); node.inventory_summaries.clear();}
-        node.graph.set_commit_guard(crate::graph::CommitGuard::new(
-            node.swarm.epoch.clone(), node.transport_epoch, control.clone(), questions.revision(&node.graph).3,
+        node.graph.set_commit_guard(crate::publication::CommitGuard::new(
+            node.swarm.epoch.clone(), node.transport_epoch, authority.clone(), questions.revision(&node.graph).3,
         ));
         node.graph.maintain_checked_storage()?;
         questions.maintain_registry()?;
@@ -1289,7 +1304,9 @@ impl Node {
     fn tick(&mut self) {
         let now = Instant::now();
         self.discovery_tick(now);
-        if crate::resources::adaptive::batch(1) > 0
+        let work = self.computation.try_enter();
+        if work.is_some()
+            && crate::resources::adaptive::batch(1) > 0
             && now >= self.next_production
             && let Some(source) = self.producer_sources.pop_front()
         {
@@ -1307,16 +1324,18 @@ impl Node {
                 Err(error) => emit(json!({"event":"producer_rejected", "error":error})),
             }
         }
-        match self.graph.resolve_pending() {
-            Ok((admitted, rejected)) => {
-                self.publish_admitted(&admitted, "local_backlog");
-                for (id, error) in rejected {
-                    emit(
-                        json!({"event":"rejected","id":hex(id.as_bytes()),"source":"local_backlog","error":error}),
-                    );
+        if work.is_some() {
+            match self.graph.resolve_pending() {
+                Ok((admitted, rejected)) => {
+                    self.publish_admitted(&admitted, "local_backlog");
+                    for (id, error) in rejected {
+                        emit(
+                            json!({"event":"rejected","id":hex(id.as_bytes()),"source":"local_backlog","error":error}),
+                        );
+                    }
                 }
+                Err(error) => emit(json!({"event":"proof_backlog_error","error":error})),
             }
-            Err(error) => emit(json!({"event":"proof_backlog_error","error":error})),
         }
         let wanted_before = self.wanted.len();
         self.wanted.retain(|_, wanted| {
@@ -1358,6 +1377,9 @@ impl Node {
     }
 
     fn requests(&mut self) {
+        let Some(_work) = self.computation.try_enter() else {
+            return;
+        };
         let now = Instant::now();
         for (preferred, id) in self.intake.program_refresh_needed() {
             let peer = std::iter::once(preferred)
@@ -1569,7 +1591,7 @@ impl Node {
     fn event(
         &mut self,
         event: SwarmEvent<BehaviourEvent>,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<(), String> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
@@ -1816,8 +1838,20 @@ impl Node {
         &mut self,
         peer: PeerId,
         body: Body,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<Body, String> {
+        let _work = if matches!(&body, Body::Offer { .. } | Body::ProgramOffer { .. }) {
+            match self.computation.try_enter() {
+                Some(work) => Some(work),
+                None => {
+                    return Ok(Body::Error {
+                        reason: "computation paused".into(),
+                    });
+                }
+            }
+        } else {
+            None
+        };
         let response = match body {
             Body::Inventory {
                 known,
@@ -1945,8 +1979,13 @@ impl Node {
         peer: PeerId,
         flight: Flight,
         body: Body,
-        grant: Option<crate::graph::PeerGrant>,
+        grant: Option<crate::publication::PeerGrant>,
     ) -> Result<(), String> {
+        // In-flight replies remain bounded by their original transport limits.
+        // Dropped payloads can be requested again; no unchecked input is adopted.
+        let Some(_work) = self.computation.try_enter() else {
+            return Ok(());
+        };
         let expected_peer = match &flight {
             Flight::Inventory { peer, .. }
             | Flight::Get { peer, .. }

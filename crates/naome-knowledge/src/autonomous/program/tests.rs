@@ -59,7 +59,11 @@ fn disk_pressure_at_work_creation_and_append_retains_the_completed_provider_cand
         assert!(error.retryable());
     });
     assert_eq!(
-        (generated.unit, generated.imported, generated.hash),
+        (
+            generated.unit,
+            generated.prefix.commands,
+            generated.prefix.hash
+        ),
         (1, 0, [0; 32])
     );
     assert_eq!(
@@ -73,7 +77,7 @@ fn disk_pressure_at_work_creation_and_append_retains_the_completed_provider_cand
             .unwrap()
             .is_none()
     );
-    assert_eq!((generated.unit, generated.imported), (2, 1));
+    assert_eq!((generated.unit, generated.prefix.commands), (2, 1));
     assert_eq!(
         generated.work.as_ref().unwrap().status().unwrap().commands,
         1

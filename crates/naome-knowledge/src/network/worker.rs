@@ -116,7 +116,7 @@ impl Drop for BehaviourGuard<'_> {
     }
 }
 impl SharedSwarm {
-    pub(super) fn grant(&self, peer: PeerId, root: ProofId) -> crate::graph::PeerGrant {
+    pub(super) fn grant(&self, peer: PeerId, root: ProofId) -> crate::publication::PeerGrant {
         let mut grants = self.grants.lock().expect("peer grant lock");
         grants.roots.retain(|_, lease| lease.strong_count() > 0);
         if let Some(lease) = grants
@@ -124,13 +124,13 @@ impl SharedSwarm {
             .get(&(peer, root))
             .and_then(std::sync::Weak::upgrade)
         {
-            return crate::graph::PeerGrant(lease);
+            return crate::publication::PeerGrant(lease);
         }
-        let grant = crate::graph::PeerGrant::new();
+        let grant = crate::publication::PeerGrant::new();
         grants.roots.insert((peer, root), Arc::downgrade(&grant.0));
         grant
     }
-    fn fresh_grant(&self, peer: PeerId, root: ProofId) -> crate::graph::PeerGrant {
+    fn fresh_grant(&self, peer: PeerId, root: ProofId) -> crate::publication::PeerGrant {
         {
             let mut grants = self.grants.lock().expect("peer grant lock");
             if grants
@@ -148,7 +148,7 @@ impl SharedSwarm {
         &self,
         peer: PeerId,
         frame: Frame,
-        grant: crate::graph::PeerGrant,
+        grant: crate::publication::PeerGrant,
     ) -> request_response::OutboundRequestId {
         self.with(|swarm| {
             let request = swarm.behaviour_mut().exchange.send_request(&peer, frame);
@@ -204,7 +204,7 @@ impl SharedSwarm {
 pub(super) struct TransportEvent {
     pub(super) event: SwarmEvent<BehaviourEvent>,
     pub(super) epoch: u64,
-    pub(super) grant: Option<crate::graph::PeerGrant>,
+    pub(super) grant: Option<crate::publication::PeerGrant>,
 }
 
 pub(super) struct Transport {

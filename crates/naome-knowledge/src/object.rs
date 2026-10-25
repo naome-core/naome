@@ -22,17 +22,8 @@ pub(crate) fn program_manifest(
     let body = bytes
         .strip_prefix(PROGRAM_MAGIC)
         .ok_or("unknown program payload format")?;
-    if body.len() > 2048 {
-        return Err("program manifest width".into());
-    }
-    let manifest: naome_proof::program::Manifest =
-        serde_json::from_slice(body).map_err(|e| e.to_string())?;
-    if manifest.commands == 0
-        || manifest.input_bytes == 0
-        || manifest.commands > i64::MAX as u64
-        || manifest.input_bytes > i64::MAX as u64
-        || serde_json::to_vec(&manifest).map_err(|e| e.to_string())? != body
-    {
+    let manifest = naome_proof::program::Manifest::from_canonical_bytes(body)?;
+    if manifest.commands > i64::MAX as u64 || manifest.input_bytes > i64::MAX as u64 {
         return Err("invalid canonical program manifest".into());
     }
     Ok(Some(manifest))
@@ -191,7 +182,7 @@ impl BinaryProof {
     ) -> Result<Self, crate::Error> {
         let manifest = proof.manifest();
         let mut bytes = PROGRAM_MAGIC.to_vec();
-        bytes.extend(serde_json::to_vec(manifest).map_err(|e| e.to_string())?);
+        bytes.extend(manifest.canonical_bytes()?);
         Ok(Self {
             id: manifest.proof_id(),
             statement: manifest.statement_id(),

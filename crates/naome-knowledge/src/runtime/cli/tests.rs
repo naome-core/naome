@@ -1,3 +1,4 @@
+mod computation;
 use super::*;
 
 #[test]
@@ -40,6 +41,7 @@ fn startup_handoff_is_explicit_and_cannot_change_other_operator_commands() {
 fn untrusted_interest_cannot_style_or_rewrite_operator_rows() {
     let status = Status {
         running: false,
+        computation: crate::resources::ComputationState::Stopped,
         accepted_proofs: 3,
         interest: "λ 🦀\n\r\t\x1b[32m\x1b]8;;link\x07\u{009b}2J\u{202e}x\n".into(),
     };

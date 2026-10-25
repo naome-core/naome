@@ -126,7 +126,7 @@ pub(super) struct Commit<'a> {
     pub deadline: Option<Instant>,
     pub cut: Option<BatchCut>,
     pub next_root: Option<[u8; 32]>,
-    pub guard: Option<&'a crate::graph::CommitGuard>,
+    pub guard: Option<&'a crate::publication::CommitGuard>,
 }
 
 pub(super) struct Catalog {

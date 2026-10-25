@@ -28,7 +28,7 @@ fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
         )
     })
 }
-use format::command_hash;
+use format::{ChunkReader, command_hash, decode_command, encode_command};
 mod materialization;
 use materialization::{Finalization, Shape};
 
@@ -193,13 +193,6 @@ impl Engine {
         maximum: usize,
     ) -> Result<format::Chunk, Error> {
         self.live()?;
-        if records == 0
-            || records > format::CHUNK_RECORDS
-            || maximum == 0
-            || maximum > format::CHUNK_BYTES
-        {
-            return Err("program chunk request capacity".into());
-        }
         let commands: u64 =
             sql(self
                 .connection
@@ -221,53 +214,30 @@ impl Engine {
         };
         let mut statement=sql(self.connection.prepare_cached("SELECT position,substr(command,1,4097),substr(hash,1,33) FROM input WHERE position>=?1 ORDER BY position LIMIT ?2"))?;
         let mut rows = sql(statement.query(params![number(start)?, records as i64]))?;
-        let mut chunk = format::Chunk {
-            start,
-            previous,
-            next: [0; 32],
-            records: Vec::new(),
-        };
-        let mut hash = previous;
-        let mut bytes = 0usize;
+        let mut reader = ChunkReader::new(start, previous, records, maximum)?;
         while let Some(row) = sql(rows.next())? {
             let position = sql(unsigned(row, 0))?;
             let encoded: Vec<u8> = sql(row.get(1))?;
             let stored: Vec<u8> = sql(row.get(2))?;
-            if position != start + chunk.records.len() as u64 || encoded.len() > RECORD_BYTES {
-                return Err("program record order or width differs".into());
-            }
-            if encoded.len() > maximum.saturating_sub(bytes) {
-                if chunk.records.is_empty() {
-                    return Err("program record exceeds chunk budget".into());
-                }
+            let stored = stored.try_into().map_err(|_| "program input hash width")?;
+            if !reader.push(position, &encoded, stored)? {
                 break;
             }
-            let command: Command = serde_json::from_slice(&encoded).map_err(|e| e.to_string())?;
-            if serde_json::to_vec(&command).map_err(|e| e.to_string())? != encoded {
-                return Err("noncanonical program command".into());
-            }
-            hash = command_hash(hash, &encoded);
-            if stored != hash {
-                return Err("program input hash mismatch".into());
-            }
-            bytes += encoded.len();
-            chunk.records.push(command);
         }
-        if start < commands && chunk.records.is_empty() {
-            return Err("program input prefix missing".into());
-        }
-        let end = start + chunk.records.len() as u64;
-        if end < commands {
+        let end = reader.end();
+        let next = if end < commands {
             let bytes: Vec<u8> = sql(self.connection.query_row(
                 "SELECT suffix FROM stream WHERE position=?1",
                 [number(end)?],
                 |row| row.get(0),
             ))?;
-            chunk.next = bytes
+            bytes
                 .try_into()
-                .map_err(|_| "program stream suffix width")?;
-        }
-        Ok(chunk)
+                .map_err(|_| "program stream suffix width")?
+        } else {
+            [0; 32]
+        };
+        reader.finish(commands, next).map_err(Into::into)
     }
     /// Build the export commitment, reachable-node index and bounded conclusion
     /// projection in quanta after mathematical replay. All derived state belongs
@@ -463,10 +433,7 @@ impl Engine {
         if sealed {
             return Err("proof program is sealed".into());
         }
-        let bytes = serde_json::to_vec(command).map_err(|e| e.to_string())?;
-        if bytes.len() > RECORD_BYTES {
-            return Err("proof command byte capacity".into());
-        }
+        let bytes = encode_command(command)?;
         let previous = previous.try_into().map_err(|_| "program hash corruption")?;
         let hash = command_hash(previous, &bytes);
         sql(self.connection.execute(
@@ -558,10 +525,7 @@ impl Engine {
                 if stored_hash != source_hash {
                     return Err("program input hash mismatch".into());
                 }
-                let command: Command = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                if serde_json::to_vec(&command).map_err(|e| e.to_string())? != bytes {
-                    return Err("noncanonical stored program command".into());
-                }
+                let command: Command = decode_command(&bytes)?;
                 let plan = checker::prepare(&command, self.cursor, self)?;
                 let mut operations = Vec::new();
                 for (predicate, from, to) in plan.absent {

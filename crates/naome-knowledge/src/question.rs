@@ -895,7 +895,7 @@ where
         root: naome_proof::ProofId,
         batch: crate::graph::CheckedBatch,
         delta: QuestionDelta,
-        peer: Option<crate::graph::PeerGrant>,
+        peer: Option<crate::publication::PeerGrant>,
         deadline: Instant,
     ) -> Result<Vec<naome_proof::ProofId>, crate::Error> {
         if let (Some(persistence), Some(question)) = (&mut self.persistence, &delta.question)

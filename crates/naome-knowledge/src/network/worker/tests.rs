@@ -3,8 +3,8 @@ use super::*;
 fn peer_and_request_revocation_leave_unrelated_roots_and_node_lifetime_valid() {
     let peer_a = PeerId::random();
     let peer_b = PeerId::random();
-    let root_a = crate::graph::PeerGrant::new();
-    let root_b = crate::graph::PeerGrant::new();
+    let root_a = crate::publication::PeerGrant::new();
+    let root_b = crate::publication::PeerGrant::new();
     let mut grants = PeerGrants::default();
     grants.roots.insert(
         (peer_a, ProofId::from_bytes([1; 32])),
@@ -15,7 +15,7 @@ fn peer_and_request_revocation_leave_unrelated_roots_and_node_lifetime_valid() {
         Arc::downgrade(&root_b.0),
     );
     let lifetime = Arc::new(AtomicU64::new(0));
-    let local = crate::graph::CommitGuard::new(lifetime.clone(), 0, None, None);
+    let local = crate::publication::CommitGuard::new(lifetime.clone(), 0, None, None);
     grants.revoke_peer(peer_b);
     assert!(root_a.check().is_ok());
     assert_eq!(root_b.check().unwrap_err(), crate::Error::StaleAuthority);

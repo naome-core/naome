@@ -406,13 +406,77 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn quantified(
+    fn formula(&mut self, depth: usize) -> Result<Parsed, QuestionError> {
+        syntax::formula::parse(self, depth, ())
+    }
+}
+
+impl<'a> syntax::formula::FormulaBuilder<'a> for Parser<'a> {
+    type Parsed = Parsed;
+    type Error = QuestionError;
+    type Mode = ();
+    fn start(
         &mut self,
-        existential: bool,
-        source_depth: usize,
+        depth: usize,
+        _: (),
+    ) -> Result<syntax::formula::Start<'a, Parsed>, QuestionError> {
+        self.bounded(0, depth)?;
+        let operator = self.name()?;
+        let operator_offset = self.token_offset;
+        let name_end = self.offset;
+        self.trivia();
+        if self.byte() != Some(b'(') {
+            self.offset = name_end;
+            let binding = self
+                .bindings
+                .get(operator)
+                .ok_or(QuestionError::Invalid("question unknown formula binding"))?;
+            self.bounded(binding.nodes, depth - 1 + binding.depth)?;
+            return Ok(syntax::formula::Start::Value(Parsed {
+                formula: binding.formula.clone(),
+                nodes: binding.nodes,
+                depth: binding.depth,
+            }));
+        }
+        self.punctuation(b'(')?;
+        Ok(syntax::formula::Start::Call {
+            name: operator,
+            offset: operator_offset,
+        })
+    }
+    fn atom(
+        &mut self,
+        op: syntax::formula::Operator,
+        _: usize,
+        _: usize,
+        _: (),
     ) -> Result<Parsed, QuestionError> {
-        let variables = syntax::binders(self.source, &mut self.offset, &mut self.variables)
-            .map_err(|error| match error {
+        use syntax::formula::Operator;
+        let left = self.variable()?;
+        self.punctuation(b',')?;
+        let right = self.variable()?;
+        let formula = if op == Operator::Member {
+            Formula::member(left, right)
+        } else {
+            Formula::equal(left, right)
+        };
+        Ok(if op == Operator::Unequal {
+            Parsed {
+                formula: Formula::negate(formula),
+                nodes: 2,
+                depth: 2,
+            }
+        } else {
+            Parsed {
+                formula,
+                nodes: 1,
+                depth: 1,
+            }
+        })
+    }
+    fn binders(&mut self, _: usize) -> Result<Vec<FreeVariable>, QuestionError> {
+        syntax::binders(self.source, &mut self.offset, &mut self.variables).map_err(|error| {
+            match error {
                 syntax::BinderError::Name(offset) => {
                     self.token_offset = offset;
                     QuestionError::Invalid("question expected name")
@@ -423,11 +487,37 @@ impl<'a> Parser<'a> {
                 }
                 syntax::BinderError::Depth => QuestionError::Limit("question expansion depth"),
                 syntax::BinderError::Overflow => QuestionError::Overflow,
-            })?;
-        self.punctuation(b',')?;
+            }
+        })
+    }
+    fn quantified_depth(
+        &mut self,
+        op: syntax::formula::Operator,
+        count: usize,
+        _: usize,
+        depth: usize,
+        _: (),
+    ) -> Result<usize, QuestionError> {
+        let extra = count
+            * if op == syntax::formula::Operator::Exists {
+                3
+            } else {
+                1
+            };
+        self.bounded(extra + 1, depth + extra)?;
+        Ok(depth + extra)
+    }
+    fn quantified(
+        &mut self,
+        op: syntax::formula::Operator,
+        variables: Vec<FreeVariable>,
+        body: Parsed,
+        _: usize,
+        source_depth: usize,
+        _: (),
+    ) -> Result<Parsed, QuestionError> {
+        let existential = op == syntax::formula::Operator::Exists;
         let extra = variables.len() * if existential { 3 } else { 1 };
-        self.bounded(extra + 1, source_depth + extra)?;
-        let body = self.formula(source_depth + extra)?;
         let nodes = body.nodes + extra;
         let depth = body.depth + extra;
         self.bounded(nodes, source_depth - 1 + depth)?;
@@ -445,96 +535,68 @@ impl<'a> Parser<'a> {
             depth,
         })
     }
-
-    fn formula(&mut self, source_depth: usize) -> Result<Parsed, QuestionError> {
-        self.bounded(0, source_depth)?;
-        let operator = self.name()?;
-        let operator_offset = self.token_offset;
-        let name_end = self.offset;
-        self.trivia();
-        if self.byte() != Some(b'(') {
-            self.offset = name_end;
-            let binding = self
-                .bindings
-                .get(operator)
-                .ok_or(QuestionError::Invalid("question unknown formula binding"))?;
-            self.bounded(binding.nodes, source_depth - 1 + binding.depth)?;
-            return Ok(Parsed {
-                formula: binding.formula.clone(),
-                nodes: binding.nodes,
-                depth: binding.depth,
-            });
-        }
-        self.punctuation(b'(')?;
-        let parsed = match operator {
-            "eq" | "mem" | "ne" => {
-                let left = self.variable()?;
-                self.punctuation(b',')?;
-                let right = self.variable()?;
-                let formula = if operator == "mem" {
-                    Formula::member(left, right)
-                } else {
-                    Formula::equal(left, right)
-                };
-                if operator == "ne" {
-                    Parsed {
-                        formula: Formula::negate(formula),
-                        nodes: 2,
-                        depth: 2,
-                    }
-                } else {
-                    Parsed {
-                        formula,
-                        nodes: 1,
-                        depth: 1,
-                    }
-                }
-            }
-            "all" | "ex" => self.quantified(operator == "ex", source_depth)?,
-            "not" => {
-                let body = self.formula(source_depth + 1)?;
-                let nodes = body.nodes + 1;
-                let depth = body.depth + 1;
-                self.bounded(nodes, source_depth - 1 + depth)?;
-                Parsed {
-                    formula: Formula::negate(body.formula),
-                    nodes,
-                    depth,
-                }
-            }
-            "imp" | "and" | "or" | "iff" => {
-                let left = self.formula(source_depth + 1)?;
-                self.punctuation(b',')?;
-                let right = self.formula(source_depth + 1)?;
-                let (nodes, depth) = syntax::binary_shape(
-                    operator,
-                    (left.nodes, left.depth),
-                    (right.nodes, right.depth),
-                )
-                .ok_or(QuestionError::Overflow)?;
-                // Preflight expanded size BEFORE constructors such as iff clone
-                // their children. Exponential source expansion stays bounded.
-                self.bounded(nodes, source_depth - 1 + depth)?;
-                let formula = match operator {
-                    "imp" => Formula::implies(left.formula, right.formula),
-                    "and" => Formula::conjunction(left.formula, right.formula),
-                    "or" => Formula::disjunction(left.formula, right.formula),
-                    _ => Formula::biconditional(left.formula, right.formula),
-                };
-                Parsed {
-                    formula,
-                    nodes,
-                    depth,
-                }
-            }
-            _ => {
-                self.token_offset = operator_offset;
-                return Err(QuestionError::Invalid(
-                    "question unknown formula or unapproved reference",
-                ));
-            }
+    fn negated(
+        &mut self,
+        body: Parsed,
+        _: usize,
+        source_depth: usize,
+        _: (),
+    ) -> Result<Parsed, QuestionError> {
+        let nodes = body.nodes + 1;
+        let depth = body.depth + 1;
+        self.bounded(nodes, source_depth - 1 + depth)?;
+        Ok(Parsed {
+            formula: Formula::negate(body.formula),
+            nodes,
+            depth,
+        })
+    }
+    fn binary(
+        &mut self,
+        op: syntax::formula::Operator,
+        [left, right]: [Parsed; 2],
+        _: usize,
+        source_depth: usize,
+        _: (),
+    ) -> Result<Parsed, QuestionError> {
+        use syntax::formula::Operator;
+        let (nodes, depth) = syntax::binary_shape(
+            op.name(),
+            (left.nodes, left.depth),
+            (right.nodes, right.depth),
+        )
+        .ok_or(QuestionError::Overflow)?;
+        self.bounded(nodes, source_depth - 1 + depth)?;
+        let formula = match op {
+            Operator::Implies => Formula::implies(left.formula, right.formula),
+            Operator::And => Formula::conjunction(left.formula, right.formula),
+            Operator::Or => Formula::disjunction(left.formula, right.formula),
+            Operator::Iff => Formula::biconditional(left.formula, right.formula),
+            _ => unreachable!(),
         };
-        self.bounded(parsed.nodes, source_depth - 1 + parsed.depth)?;
+        Ok(Parsed {
+            formula,
+            nodes,
+            depth,
+        })
+    }
+    fn extension(
+        &mut self,
+        _: &'a str,
+        offset: usize,
+        _: usize,
+        _: (),
+    ) -> Result<Parsed, QuestionError> {
+        self.token_offset = offset;
+        Err(QuestionError::Invalid(
+            "question unknown formula or unapproved reference",
+        ))
+    }
+    fn comma(&mut self) -> Result<(), QuestionError> {
+        self.punctuation(b',')
+    }
+    fn finish(&mut self, parsed: Parsed, depth: usize) -> Result<Parsed, QuestionError> {
+        self.bounded(parsed.nodes, depth - 1 + parsed.depth)?;
         self.trivia();
         if self.byte() == Some(b',') {
             self.offset += 1;
