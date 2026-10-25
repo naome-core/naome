@@ -44,6 +44,7 @@ pub(crate) struct ProgramCheck {
     manifest: Manifest,
     work: Option<Work>,
     budget: ProgramBudget,
+    cache_cap: u64,
 }
 impl ProgramCheck {
     pub(crate) fn open(graph: &Graph, manifest: Manifest) -> Result<Self, crate::Error> {
@@ -66,20 +67,27 @@ impl ProgramCheck {
             manifest,
             work: Some(work),
             budget: ProgramBudget::default(),
+            cache_cap: u64::MAX,
         })
     }
     pub(crate) fn restrict_cache(&mut self, bytes: u64) -> Result<(), crate::Error> {
+        self.cache_cap = bytes;
         if let Some(work) = &mut self.work {
             work.restrict_cache(bytes)?;
         }
         Ok(())
     }
-    pub(crate) fn advance(&mut self, graph: &Graph) -> Result<Option<CheckedWork>, crate::Error> {
-        let snapshot = self.budget.refresh(graph.store.directory())?;
+    pub(crate) fn advance(
+        &mut self,
+        graph: &Graph,
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<Option<CheckedWork>, crate::Error> {
+        let mut snapshot = self.budget.refresh(graph.store.directory())?.clone();
+        snapshot.budget.cache_bytes = snapshot.budget.cache_bytes.min(self.cache_cap);
         let work = self.work.as_mut().ok_or("program check already consumed")?;
-        work.record_budget(snapshot)?;
+        work.record_budget(&snapshot)?;
         if snapshot.budget.paused.is_some() {
-            work.advance(&snapshot.budget)?;
+            work.advance(&snapshot.budget, context)?;
             return Ok(None);
         }
         let status = work.status()?;
@@ -107,7 +115,7 @@ impl ProgramCheck {
         {
             return Err("work input differs from complete manifest".into());
         }
-        let progress = work.advance(&snapshot.budget)?;
+        let progress = work.advance(&snapshot.budget, context)?;
         if work.status()?.fully_checked {
             if !work.prepare_export(&snapshot.budget)? {
                 return Ok(None);
@@ -161,7 +169,31 @@ impl PreparedProgram {
             }
         }
     }
+    pub(crate) fn current(&self, graph: &Graph) -> Result<bool, crate::Error> {
+        match &self.registration {
+            Registration::Pending => Ok(true),
+            Registration::Active(admission) => admission.preparation.stamp().current(graph),
+            Registration::Ready(batch) => graph.batch_current(batch),
+        }
+    }
+    pub(crate) fn invalidate(&mut self) {
+        self.registration = Registration::Pending;
+    }
+    pub(crate) fn pending(&self) -> bool {
+        matches!(self.registration, Registration::Pending)
+    }
     pub(crate) fn advance(&mut self, graph: &Graph, records: usize) -> Result<bool, crate::Error> {
+        self.advance_after(graph, records, None)
+    }
+    pub(crate) fn advance_after(
+        &mut self,
+        graph: &Graph,
+        records: usize,
+        prefix: Option<CheckedBatch>,
+    ) -> Result<bool, crate::Error> {
+        if prefix.is_some() && !self.pending() {
+            return Err("program registration already owns its prefix".into());
+        }
         if let Registration::Ready(batch) = &self.registration {
             if graph.batch_current(batch)? {
                 return Ok(true);
@@ -169,8 +201,11 @@ impl PreparedProgram {
             self.registration = Registration::Pending;
         }
         if matches!(self.registration, Registration::Pending) {
-            self.registration =
-                Registration::Active(Box::new(graph.begin_program_admission(&self.proof)?));
+            let admission = match prefix {
+                Some(prefix) => graph.begin_program_admission_after(&self.proof, Some(prefix))?,
+                None => graph.begin_program_admission(&self.proof)?,
+            };
+            self.registration = Registration::Active(Box::new(admission));
         }
         let Registration::Active(admission) = &mut self.registration else {
             unreachable!()
@@ -239,12 +274,27 @@ impl ProgramAdmission {
     ) -> Result<CheckedBatch, crate::Error> {
         self.current(graph)?;
         let checked = proof.proof()?;
-        let growth = program_context_bytes(checked)?;
+        let growth = if graph.cold(
+            self.preparation
+                .context()
+                .contains_statement(checked.manifest().statement_id()),
+        )? {
+            0
+        } else {
+            program_context_bytes(checked)?
+        };
+        let mut dependencies = std::collections::BTreeSet::new();
+        for id in self.preparation.ids() {
+            if checked.references_proof(id)? {
+                dependencies.insert(id);
+            }
+        }
         let context = self.cursor.finish().map_err(crate::Error::from)?;
         self.preparation.append_program(
             graph,
             context,
             crate::object::BinaryProof::from_program(checked)?,
+            dependencies,
             growth,
         )?;
         Ok(self.preparation.into_prefix())
@@ -355,7 +405,7 @@ impl Graph {
         let mut check = ProgramCheck::open(self, manifest.clone())?;
         let proof = loop {
             self.cold(self.checked_storage.adapt_cache())?;
-            if let Some(proof) = check.advance(self)? {
+            if let Some(proof) = check.advance(self, &self.context)? {
                 break proof;
             }
             std::thread::sleep(Duration::from_millis(1));

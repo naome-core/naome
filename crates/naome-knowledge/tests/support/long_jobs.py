@@ -12,6 +12,7 @@ import hashlib
 import subprocess
 import sys
 import time
+import traceback
 
 from autonomous_lifecycle import (Node,Trial,digest,process_identity,process_group,
     process_cpu_sample,retain_evidence,write_receipt,wait_until)
@@ -248,7 +249,7 @@ def limits(trial,probe):
     expired=trial.wait(lambda:next((r for r in journal(node)['records'].values() if r['state']=='expired'),None),maximum=5)
     assert expired['reserved_units']==2 and expired['checkpoint']==2
     assert not node.ids();probe.observe(node);node.stop();probe.ended()
-    def rejected_start(case,expected,status_must_reject=False):
+    def rejected_start(case,expected):
         # A stopped Node reserves its former listen port. Release our fixture
         # socket so the intended research-state rejection cannot be masked by
         # an earlier transport bind failure.
@@ -259,12 +260,9 @@ def limits(trial,probe):
             failures=[e for e in events if e.get('event')=='fatal_error']
             assert len(failures)==1 and expected in failures[0].get('error',''),(case,failures)
             assert not any(e.get('event') in {'research_started','research_worker','research_descendant'} for e in events)
-            if status_must_reject:
-                trial.call(node,'status',success=False)
-                assert expected in trial.summary['commands'][-1]['stderr']
-                assert not (node.directory/'control.json').exists()
-            else:
-                assert not trial.call(node,'status')['running']
+            recorded=trial.call(node,'status')
+            assert not recorded['running'] and recorded['proof_verification']=='not_run'
+            assert not (node.directory/'control.json').exists()
             trial.summary.setdefault('startup_rejections',[]).append({'case':case,
                 'expected_error':expected,'fatal_error':failures[0]['error'],'research_process_started':False})
         finally:
@@ -295,7 +293,7 @@ def limits(trial,probe):
     try:rejected_start('missing_slot','research slot-0 unavailable:')
     finally:restore_state(lambda:saved.rename(slot))
     research=node.directory/'research';backup=node.directory/'saved-research';research.rename(backup)
-    try:rejected_start('missing_research_directory','established research directory is missing; no fresh allowance',status_must_reject=True)
+    try:rejected_start('missing_research_directory','established research directory is missing; no fresh allowance')
     finally:restore_state(lambda:backup.rename(research))
     write_receipt(trial.output/'research-startup-rejection-witness.json',trial.summary['startup_rejections'])
     trial.summary['scenarios']['malformed_failed_wrong_target_budget_and_corrupt_missing_recovery']={'result':'pass'}
@@ -415,7 +413,7 @@ def main():
     try:
         globals()[args.mode](trial,probe);trial.summary['result']='pass'
     except Exception as error:
-        trial.summary.update(result='fail',error=str(error))
+        trial.summary.update(result='fail',error=str(error));traceback.print_exc()
     finally:
         for node in trial.nodes:
             try:probe.observe(node)

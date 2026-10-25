@@ -10,8 +10,8 @@ mod tests;
 
 pub const CODEC_ID: &str = "naome:proof-codec:v0";
 pub const CHECKER_ID: &str = "naome:zfc-checker:v0";
-pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program:v2";
-const PROGRAM_MAGIC: &[u8] = b"\xffNAOP1\0";
+pub const GRAPH_POLICY_ID: &str = "naome:knowledge:proof-program:v3";
+const PROGRAM_MAGIC: &[u8] = b"\xffNAOP2\0";
 
 pub(crate) fn program_manifest(
     bytes: &[u8],
@@ -142,6 +142,8 @@ pub(crate) struct BinaryProof {
     pub id: ProofId,
     pub statement: StatementId,
     pub bytes: std::sync::Arc<[u8]>,
+    // Certificate references only. Program citations belong to their canonical
+    // authenticated command stream and are rechecked incrementally on replay.
     pub dependencies: BTreeSet<ProofId>,
     pub _memory: Option<std::sync::Arc<crate::resources::MemoryLease>>,
 }

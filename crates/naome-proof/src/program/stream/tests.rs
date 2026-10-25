@@ -13,7 +13,7 @@ fn fixture() -> (Manifest, Chunk, Progress) {
     let manifest = Manifest {
         commands: 3,
         input_bytes: 104,
-        program_hash: digest("39479ee383360f349661afd7e1105bcc76c88e37b5b6fcd2914fa571c797e64f"),
+        program_hash: digest("ede14e89907d1ef7ad7c3bfd777d6b342b8613d3ea3b7fd796d6010ea24f62ab"),
         stream_root: digest("f98475d4b5eb410c33f270c9907f5aa5c10a71c5426581e503cf9295a84f203d"),
         conclusion: [17; 32],
         statement: [23; 32],
@@ -56,7 +56,7 @@ fn fixed_command_bytes_and_both_commitments_remain_exact() {
     );
     assert_eq!(
         records[0].hash,
-        digest("bb4390fe2808fe5ee3fd64e957255bf4b4f4e7420e6dc6c65240f01c53ef1a32")
+        digest("b6ffaa5838f9f5dcd611bf7b0da664781e000cbed18a719fd4083af845738587")
     );
     assert_eq!(
         records[1].suffix,

@@ -49,7 +49,7 @@ fn new_questions() -> Questions {
 }
 
 #[tokio::test]
-async fn stale_managed_interest_does_not_decline_the_new_graph_context() {
+async fn managed_interest_survives_unrelated_graph_growth_without_provider_retry() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
@@ -74,15 +74,22 @@ async fn stale_managed_interest_does_not_decline_the_new_graph_context() {
     questions.finish(&graph, completed);
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
-        Progress::Skipped(_, _)
+        Progress::Waiting
     ));
-    assert!(intake.needed().is_empty());
-    intake.advance(&mut graph, &mut questions);
-    assert_eq!(
-        intake.enqueue(peer, metadata, &graph).unwrap(),
-        "queued",
-        "old positive selection cannot blacklist a fresh context"
+    assert!(
+        owner.requests().is_empty(),
+        "unrelated graph growth does not rerun interest"
     );
+    assert_eq!(
+        intake.enqueue(peer, metadata.clone(), &graph).unwrap(),
+        "metadata_refreshed"
+    );
+    assert!(matches!(
+        intake.advance(&mut graph, &mut questions),
+        Progress::Waiting
+    ));
+    let id = ProofId::from_bytes(id_bytes(&metadata.proof_id).unwrap());
+    assert_eq!(intake.needed(), [(peer, id, id)]);
 }
 
 async fn interest<F, Fut>(questions: &mut LocalQuestions<F>, graph: &Graph)
@@ -336,7 +343,7 @@ async fn absent_false_error_and_timeout_interest_never_authorize_payloads() {
 }
 
 #[tokio::test]
-async fn changed_context_and_expired_grants_cannot_fetch_or_stage_proofs() {
+async fn unrelated_context_refreshes_formal_checks_but_expired_grants_cannot_fetch_or_stage() {
     let (object, metadata) = fixture(2);
     let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
     let peer = PeerId::random();
@@ -349,9 +356,9 @@ async fn changed_context_and_expired_grants_cannot_fetch_or_stage_proofs() {
     interest(&mut questions, &graph).await;
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
-        Progress::Skipped(..)
+        Progress::Waiting
     ));
-    assert!(intake.needed().is_empty());
+    assert_eq!(intake.needed(), [(peer, id, id)]);
     let mut intake = Intake::default();
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     approve(&mut intake, &mut questions, &mut graph).await;
@@ -921,3 +928,5 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
         assert!(Graph::open(&directory.0).is_err());
     }
 }
+
+mod staging;

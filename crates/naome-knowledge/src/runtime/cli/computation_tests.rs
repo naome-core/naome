@@ -12,6 +12,7 @@ fn pause_and_resume_are_lifecycle_commands_with_explicit_json_output() {
             running: true,
             computation: crate::resources::ComputationState::Paused,
             accepted_proofs: 3,
+            proof_verification: super::super::ProofVerification::Checked,
             interest: String::new(),
         };
         let rendered = human(command, &status, false);

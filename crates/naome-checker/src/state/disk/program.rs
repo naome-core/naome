@@ -10,6 +10,9 @@ pub struct ProgramRegistration {
     manifest: Manifest,
     after: u64,
     nodes_complete: bool,
+    after_dependency: Option<ProofId>,
+    dependencies_complete: bool,
+    depth: usize,
     complete: bool,
 }
 impl DiskArtifactState {
@@ -31,6 +34,9 @@ impl DiskArtifactState {
             manifest: manifest.clone(),
             after: 0,
             nodes_complete: proof.conclusion().is_some(),
+            after_dependency: None,
+            dependencies_complete: false,
+            depth: 1,
             complete: false,
         })
     }
@@ -130,6 +136,51 @@ impl ProgramRegistration {
         if self.complete {
             return Ok(());
         }
+        if !self.dependencies_complete {
+            let limit = records.min(4096);
+            let dependencies = proof
+                .dependencies_after(self.after_dependency, limit)
+                .map_err(|error| {
+                    ArtifactStateError::Context(if error.resource_shortage() {
+                        ContextError::Limit
+                    } else {
+                        ContextError::Storage(error.to_string())
+                    })
+                })?;
+            for dependency in &dependencies {
+                let header = self
+                    .next
+                    .proof_header(dependency.proof)
+                    .map_err(ArtifactStateError::Context)?
+                    .ok_or(ArtifactStateError::MissingProofDependency {
+                        proof_id: dependency.proof,
+                    })?;
+                if header.statement != dependency.statement
+                    || header.derivation != dependency.derivation
+                {
+                    return Err(ArtifactStateError::ProofIdentityCollision {
+                        proof_id: dependency.proof,
+                    });
+                }
+                let depth = self
+                    .next
+                    .proof_dependency_depth(dependency.proof)
+                    .map_err(ArtifactStateError::Context)?
+                    .ok_or(ArtifactStateError::MissingProofDependency {
+                        proof_id: dependency.proof,
+                    })?;
+                self.depth = self.depth.max(
+                    depth
+                        .checked_add(1)
+                        .ok_or(ArtifactStateError::Context(ContextError::Limit))?,
+                );
+                self.after_dependency = Some(dependency.proof);
+            }
+            self.dependencies_complete = dependencies.len() < limit;
+            if !dependencies.is_empty() || !self.dependencies_complete {
+                return Ok(());
+            }
+        }
         if !self.nodes_complete {
             let mut nodes = proof.nodes_after(self.after);
             for _ in 0..records {
@@ -183,7 +234,7 @@ impl ProgramRegistration {
             self.manifest.proof_id(),
             self.manifest.derivation_id(),
             self.manifest.statement_id(),
-            1,
+            self.depth,
             &record,
             proof.conclusion(),
         )?;

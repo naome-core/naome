@@ -54,7 +54,7 @@ fn a_checked_program_rebinds_registration_after_graph_and_copy_changes_before_pu
         paused: None,
     };
     for _ in 0..128 {
-        work.advance(&budget).unwrap();
+        work.advance(&budget, graph.checked_context()).unwrap();
         if work.status().unwrap().fully_checked {
             break;
         }

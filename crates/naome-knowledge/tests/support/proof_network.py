@@ -42,7 +42,7 @@ def proof_id(statement, proof):
 
 
 def program_id(manifest):
-    framed=b"naome:program-proof:v1\0"+b"naome:zfc"
+    framed=b"naome:program-proof:v2\0"+b"naome:zfc"
     framed+=manifest['commands'].to_bytes(8,'big')+manifest['input_bytes'].to_bytes(8,'big')
     for field in ['program_hash','stream_root','conclusion','statement']:
         framed+=bytes(manifest[field])
@@ -58,7 +58,7 @@ def verify_program_input(catalog,manifest):
     for position,command,chain in catalog.execute('SELECT position,command,hash FROM program_input WHERE id=? ORDER BY position',(identity,)):
         assert position==count and 0<len(command)<=4096
         assert json.dumps(json.loads(command),separators=(',',':')).encode()==command
-        previous=hashlib.sha256(b'naome:proof-program:v1'+previous+len(command).to_bytes(8,'big')+command).digest()
+        previous=hashlib.sha256(b'naome:proof-program:v2'+previous+len(command).to_bytes(8,'big')+command).digest()
         assert chain==previous
         count+=1;size+=len(command)
     assert (count,size,previous)==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']))
@@ -146,7 +146,15 @@ def stored_objects(node):
         identity, state, root, count, total = catalog.execute(
             "SELECT database_id,state,corpus_root,corpus_count,payload_bytes FROM meta WHERE singleton=1"
         ).fetchone()
-        assert identity == format_bytes[40:] and state == "active"
+        assert identity == format_bytes[40:]
+        if state == "initializing":
+            # Offline controls may create an unverified empty catalog. It has
+            # no admitted set until the first successful checked graph opens.
+            assert root is None and count == total == 0
+            for table in ["proofs", "commits", "members", "dependencies"]:
+                assert catalog.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+            return []
+        assert state == "active"
         rows = catalog.execute(
             "SELECT id,statement,compatibility,payload,payload_length,payload_digest,origin_commit,replay_order FROM proofs ORDER BY id"
         ).fetchall()
@@ -162,7 +170,7 @@ def stored_objects(node):
             assert 1 <= len(payload) == length <= 65536 and hashlib.sha256(payload).digest() == checksum
             object = {"proof_id": id.hex(), "statement_id": statement.hex(),
                 "compatibility": compatibility.hex(), "proof": payload.hex()}
-            if payload.startswith(b'\xffNAOP1\0'):
+            if payload.startswith(b'\xffNAOP2\0'):
                 manifest=json.loads(payload[7:])
                 assert program_id(manifest)==object['proof_id'] and bytes(manifest['statement'])==statement
                 verify_program_input(catalog,manifest)

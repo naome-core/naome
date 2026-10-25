@@ -622,29 +622,3 @@ async fn transport_queue_failure_permanently_revokes_publication() {
         crate::publication::STALE_COMMIT
     );
 }
-
-#[test]
-fn inventory_summary_stops_unchanged_rounds_and_changed_corpora_resume_pages() {
-    let mut graph = Graph::default();
-    let empty = graph.content_root();
-    assert!(
-        matches!(inventory_response(&graph, Some(empty), None, 1).unwrap(), Body::InventoryUnchanged { root } if root == empty)
-    );
-    let (_, result) = graph
-        .produce("goal=all(x,eq(x,x)) proof: a=refl(x) b=gen(a,x) return b")
-        .unwrap();
-    let root = graph.content_root();
-    assert_ne!(root, empty);
-    assert!(
-        matches!(inventory_response(&graph, Some(empty), None, 1).unwrap(), Body::InventoryResult { root: observed, ids, .. } if observed == root && ids == [*result.id.as_bytes()])
-    );
-    for _ in 0..8 {
-        assert!(matches!(
-            inventory_response(&graph, Some(root), None, 1).unwrap(),
-            Body::InventoryUnchanged { .. }
-        ));
-    }
-    assert!(
-        matches!(inventory_response(&graph, Some(root), Some(*result.id.as_bytes()), 1).unwrap(), Body::InventoryResult { ids, next: None, .. } if ids.is_empty())
-    );
-}

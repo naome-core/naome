@@ -30,7 +30,10 @@ fn shared(levels: usize, unused: u32) -> Engine {
     });
     commands.push(Command::Seal { proof: closed });
     engine.append_group(&commands).unwrap();
-    while engine.advance(256, 32768).unwrap() {}
+    while engine
+        .advance(256, 32768, &crate::ArtifactState::new())
+        .unwrap()
+    {}
     engine
 }
 
@@ -75,12 +78,12 @@ fn oversized_shared_conclusion_exports_only_its_reachable_dag_in_bounded_quanta(
         }
         assert!(known.contains(&proof.manifest().conclusion));
         if unused == 0 {
-            // Golden identity captured from the unchanged main before optimization.
+            // Current-format golden independently reconstructed from command, DAG, and identity hash domains.
             assert_eq!(
                 *proof.manifest().proof_id().as_bytes(),
                 [
-                    23, 233, 251, 175, 10, 34, 14, 167, 28, 220, 220, 18, 176, 185, 32, 23, 173,
-                    117, 242, 247, 139, 126, 81, 60, 213, 218, 193, 142, 64, 217, 60, 30
+                    41, 141, 35, 58, 132, 56, 102, 251, 121, 214, 22, 200, 131, 192, 181, 218, 33,
+                    121, 84, 1, 179, 16, 70, 246, 169, 241, 79, 106, 142, 188, 132, 128
                 ]
             );
             assert_eq!(
@@ -101,7 +104,9 @@ fn incremental_tree_projection_preserves_foundation_formula_and_golden_identity(
     while !engine.prepare_export(7).unwrap() {
         quanta += 1;
         if quanta == 20 {
-            engine.advance(0, 4096).unwrap();
+            engine
+                .advance(0, 4096, &crate::ArtifactState::new())
+                .unwrap();
             let tree = engine
                 .finalization
                 .as_ref()
@@ -128,8 +133,8 @@ fn incremental_tree_projection_preserves_foundation_formula_and_golden_identity(
     assert_eq!(
         *proof.manifest().proof_id().as_bytes(),
         [
-            226, 55, 235, 202, 33, 198, 103, 110, 55, 241, 8, 139, 208, 127, 141, 8, 227, 203, 212,
-            87, 220, 160, 222, 138, 8, 235, 161, 42, 114, 6, 67, 0
+            248, 194, 122, 199, 182, 226, 150, 220, 193, 151, 250, 161, 83, 2, 119, 222, 246, 48,
+            178, 18, 240, 11, 56, 71, 174, 211, 63, 193, 242, 104, 88, 109
         ]
     );
 }

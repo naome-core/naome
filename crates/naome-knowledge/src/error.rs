@@ -119,6 +119,7 @@ impl From<naome_checker::program::Error> for Error {
             naome_checker::program::Error::Storage(error) => {
                 Self::CorruptStorage(error.to_string())
             }
+            naome_checker::program::Error::Context(error) => error.into(),
         }
     }
 }
