@@ -8,6 +8,7 @@ import errno
 import pty
 import select
 import time
+import traceback
 from pathlib import Path
 import signal
 import subprocess
@@ -231,6 +232,7 @@ def main():
     except Exception as error:
         trial.summary["result"] = "fail"
         trial.summary["error"] = str(error)
+        traceback.print_exc()
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, "interest", args.profile)

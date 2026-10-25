@@ -146,7 +146,15 @@ def stored_objects(node):
         identity, state, root, count, total = catalog.execute(
             "SELECT database_id,state,corpus_root,corpus_count,payload_bytes FROM meta WHERE singleton=1"
         ).fetchone()
-        assert identity == format_bytes[40:] and state == "active"
+        assert identity == format_bytes[40:]
+        if state == "initializing":
+            # Offline controls may create an unverified empty catalog. It has
+            # no admitted set until the first successful checked graph opens.
+            assert root is None and count == total == 0
+            for table in ["proofs", "commits", "members", "dependencies"]:
+                assert catalog.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+            return []
+        assert state == "active"
         rows = catalog.execute(
             "SELECT id,statement,compatibility,payload,payload_length,payload_digest,origin_commit,replay_order FROM proofs ORDER BY id"
         ).fetchall()

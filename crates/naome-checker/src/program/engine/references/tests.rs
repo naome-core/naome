@@ -43,7 +43,28 @@ impl ContextStorage for Storage {
 
 fn finish(mut engine: Engine, context: &dyn ContextView) -> CheckedProgram {
     while engine.advance(97, 32768, context).unwrap() {}
-    while !engine.prepare_export(97).unwrap() {}
+    loop {
+        match engine.prepare_export(97) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(error) => {
+                let integrity = |schema: &str| {
+                    engine.connection.query_row(
+                        &format!("PRAGMA {schema}.quick_check"),
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                };
+                panic!(
+                    "export failed: {error:?}; sqlite={}; status={:?}; main={:?}; temp={:?}",
+                    rusqlite::version(),
+                    engine.status(),
+                    integrity("main"),
+                    integrity("temp")
+                );
+            }
+        }
+    }
     engine.checked().unwrap()
 }
 
@@ -95,6 +116,15 @@ fn large_proof(implication: bool) -> CheckedProgram {
 
 #[test]
 fn programs_compose_large_checked_lemmas_into_a_small_conclusion_in_bounded_quanta() {
+    compose(false);
+}
+
+#[test]
+fn cache_reductions_and_growth_preserve_live_citations_and_export() {
+    compose(true);
+}
+
+fn compose(changing_budget: bool) {
     let mut state = DiskArtifactState::new(Arc::new(Storage::default()));
     let premise = large_proof(false);
     let implication = large_proof(true);
@@ -120,7 +150,12 @@ fn programs_compose_large_checked_lemmas_into_a_small_conclusion_in_bounded_quan
     let mut steps = 0;
     loop {
         let before = engine.status().unwrap().formula_nodes;
-        let progressed = engine.advance(1, 4096, &state).unwrap();
+        let cache = if changing_budget && steps % 16 >= 8 {
+            32768
+        } else {
+            4096
+        };
+        let progressed = engine.advance(1, cache, &state).unwrap();
         assert!(
             engine.status().unwrap().formula_nodes - before <= 1,
             "one quantum cannot materialize the whole cited DAG"

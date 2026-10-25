@@ -161,6 +161,7 @@ struct Evaluation {
     restore_sequence: i64,
     restoring: bool,
     reference: Option<ProgramSource>,
+    reference_depth: u64,
 }
 enum Operation {
     Reference(ProofId),
@@ -407,14 +408,15 @@ impl Engine {
         if version != i64::from(SCHEMA_VERSION) {
             return Err("unsupported proof work version".into());
         }
-        sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
+        // The minimum evaluator budget splits into sub-page cache allowances.
+        // Small temporary pages keep its disk-backed cache from rounding to zero.
+        sql(connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp.page_size=512;
             CREATE TEMP TABLE checked(position INTEGER PRIMARY KEY, node INTEGER NOT NULL, proved INTEGER NOT NULL);
             CREATE TEMP TABLE authenticated_node(id INTEGER PRIMARY KEY, hash BLOB NOT NULL, free INTEGER NOT NULL, required INTEGER NOT NULL, nodes INTEGER NOT NULL, bytes INTEGER NOT NULL, depth INTEGER NOT NULL);
             CREATE TEMP TABLE verified(source INTEGER NOT NULL, depth INTEGER NOT NULL, result INTEGER NOT NULL, PRIMARY KEY(source,depth)) WITHOUT ROWID;
             CREATE TEMP TABLE stack(sequence INTEGER PRIMARY KEY, source INTEGER NOT NULL, depth INTEGER NOT NULL);"))?;
         sql(connection.execute_batch("CREATE TEMP TABLE stream(position INTEGER PRIMARY KEY,suffix BLOB NOT NULL CHECK(length(suffix)=32)); CREATE TEMP TABLE export_pending(id INTEGER PRIMARY KEY); CREATE TEMP TABLE export_node(id INTEGER PRIMARY KEY);"))?;
         sql(connection.execute_batch("CREATE TEMP TABLE checked_reference(proof BLOB PRIMARY KEY CHECK(length(proof)=32), statement BLOB NOT NULL CHECK(length(statement)=32), derivation BLOB NOT NULL CHECK(length(derivation)=32)) WITHOUT ROWID;
-            CREATE TEMP TABLE reference_imported(address BLOB PRIMARY KEY CHECK(length(address)=32), node INTEGER NOT NULL) WITHOUT ROWID;
             CREATE TEMP TABLE reference_pending(sequence INTEGER PRIMARY KEY,address BLOB NOT NULL CHECK(length(address)=32));"))?;
         let data_version = sql(connection.pragma_query_value(None, "data_version", |r| r.get(0)))?;
         Ok(Self {
@@ -526,7 +528,11 @@ impl Engine {
             sql(self
                 .connection
                 .pragma_update(Some("temp"), "cache_size", kib))?;
-            sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
+            // A growing allowance needs no eviction. Preserve the live temp
+            // evaluator while still trimming on initialization and every cut.
+            if self.cache_budget == 0 || cache_bytes < self.cache_budget {
+                sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
+            }
             if let Some(tree) = self
                 .finalization
                 .as_mut()
@@ -606,10 +612,11 @@ impl Engine {
                     restore_sequence: 0,
                     restoring: true,
                     reference: None,
+                    reference_depth: 0,
                 });
-                sql(self.connection.execute_batch(
-                    "DELETE FROM verified; DELETE FROM stack; DELETE FROM reference_pending;",
-                ))?;
+                sql(self
+                    .connection
+                    .execute_batch("DELETE FROM verified; DELETE FROM stack;"))?;
             }
             let mut active = self.active.take().expect("active command");
             if let Some(value) = self.operation(&mut active, context)? {

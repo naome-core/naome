@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -383,7 +384,8 @@ class Trial:
             try:
                 node.stop(cleanup=True)
             except Exception as error:
-                failures.append(str(error))
+                failures.append(f"{type(error).__name__}: {error}")
+                traceback.print_exc()
                 try:
                     node.emergency_cleanup()
                 except Exception as cleanup_error:
@@ -1229,18 +1231,29 @@ def main():
             node.stop()
         trial.summary["scenarios"]["restart_revalidates_persistent_proofs_and_preserves_identity"] = {"result": "pass", "unique_proofs": 3}
         member = sorted(accepted)[0]
-        original = replace_catalog_payload(receiver, member, b"\xff")
+        saved = bytes.fromhex(next(value["proof"] for value in stored_objects(receiver) if value["proof_id"] == member))
+        # Preserve SQL widths while invalidating the authenticated content.
+        original = replace_catalog_payload(receiver, member, bytes([saved[0] ^ 1]) + saved[1:])
         try:
-            trial.call(receiver, "status", success=False)
+            assert trial.call(receiver, "status") == {"running": False, "accepted_proofs": 3,
+                "interest": "", "proof_verification": "not_run"}
+            offset = len(receiver.logs())
+            receiver.release_port()
+            trial.call(receiver, "start", success=False)
+            failures = [event for event in receiver.logs()[offset:] if event.get("event") == "fatal_error"]
+            assert len(failures) == 1 and "catalog" in failures[0].get("error", ""), failures
+            assert not any(event.get("event") == "ready" for event in receiver.logs()[offset:])
         finally:
             replace_catalog_payload(receiver, member, original)
+            receiver.reserve_port()
         assert trial.call(receiver, "status") == {"running": False, "accepted_proofs": 3, "interest": "", "proof_verification": "not_run"}
-        trial.summary["scenarios"]["stopped_status_rejects_corrupt_persistent_data_without_an_optimistic_count"] = {"result": "pass"}
+        trial.summary["scenarios"]["offline_status_reports_unverified_admissions_but_start_rejects_corrupt_payloads"] = {"result": "pass"}
         trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": "pass"}
         trial.summary["result"] = "pass"
     except Exception as error:
         trial.summary["result"] = "fail"
         trial.summary["error"] = str(error)
+        traceback.print_exc()
     finally:
         trial.close()
         retain_evidence(trial.output, trial.summary, args.mode, args.profile)

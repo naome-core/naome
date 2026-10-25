@@ -89,7 +89,7 @@ impl Engine {
                 Some(checker::Context::fixed(self, formula)?)
             }
             ProgramRepresentation::Graph { root, nodes } => {
-                self.import_node(*root, nodes.as_ref())?
+                self.import_node(*root, nodes.as_ref(), &mut evaluation.reference_depth)?
             }
         };
         if let Some(node) = node {
@@ -122,48 +122,55 @@ impl Engine {
         let id = sql(self
             .connection
             .query_row(
-                "SELECT node FROM reference_imported WHERE address=?1",
+                "SELECT id FROM node WHERE hash=?1",
                 [address.as_slice()],
                 |row| unsigned(row, 0),
             )
             .optional())?;
-        if let Some(id) = id
-            && self.load(id)?.1 != address
-        {
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        // The canonical hash index is reusable only after this evaluator has
+        // authenticated the node. Persisted nodes alone never restore trust.
+        if self.authenticated(id)?.is_none() {
+            return Ok(None);
+        }
+        if self.load(id)?.1 != address {
             return Err(crate::ContextError::Corrupt.into());
         }
-        Ok(id)
+        Ok(Some(id))
     }
 
     fn import_node(
         &mut self,
         root: [u8; 32],
         nodes: &dyn ProgramNodes,
+        depth: &mut u64,
     ) -> Result<Option<u64>, Error> {
         if let Some(id) = self.imported(root)? {
             return Ok(Some(id));
         }
-        let top: Option<(i64, Vec<u8>)> = sql(self
-            .connection
-            .query_row(
-                "SELECT sequence,address FROM reference_pending ORDER BY sequence DESC LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional())?;
-        let Some((sequence, address)) = top else {
-            sql(self.connection.execute(
-                "INSERT INTO reference_pending(address) VALUES(?1)",
-                [root.as_slice()],
-            ))?;
-            return Ok(None);
+        // Reuse disk slots beneath a live, volatile stack cursor. Popping never
+        // frees temp pages; stale slots above this cursor carry no authority.
+        let push = |connection: &Connection, position: u64, address: [u8; 32]| {
+            sql(connection.execute(
+                "INSERT INTO reference_pending VALUES(?1,?2) ON CONFLICT(sequence) DO UPDATE SET address=excluded.address",
+                params![number(position)?, address.as_slice()],
+            )).map(|_| ())
         };
-        let address: [u8; 32] = address.try_into().map_err(|_| "reference node width")?;
+        if *depth == 0 {
+            push(&self.connection, 1, root)?;
+            *depth = 1;
+            return Ok(None);
+        }
+        let bytes: Vec<u8> = sql(self.connection.query_row(
+            "SELECT address FROM reference_pending WHERE sequence=?1",
+            [number(*depth)?],
+            |row| row.get(0),
+        ))?;
+        let address: [u8; 32] = bytes.try_into().map_err(|_| "reference node width")?;
         if self.imported(address)?.is_some() {
-            sql(self.connection.execute(
-                "DELETE FROM reference_pending WHERE sequence=?1",
-                [sequence],
-            ))?;
+            *depth -= 1;
             return Ok(None);
         }
         let (node, properties) = nodes.read(address)?;
@@ -171,10 +178,11 @@ impl Engine {
         for (i, child) in node.children().into_iter().enumerate() {
             if let Some(child) = child {
                 let Some(id) = self.imported(child)? else {
-                    sql(self.connection.execute(
-                        "INSERT INTO reference_pending(address) VALUES(?1)",
-                        [child.as_slice()],
-                    ))?;
+                    let next = depth
+                        .checked_add(1)
+                        .ok_or("reference stack address exhausted")?;
+                    push(&self.connection, next, child)?;
+                    *depth = next;
                     return Ok(None);
                 };
                 children[i] = Some(id);
@@ -190,14 +198,7 @@ impl Engine {
         if self.load(id)? != (local, address, properties) {
             return Err(crate::ContextError::Corrupt.into());
         }
-        sql(self.connection.execute(
-            "INSERT INTO reference_imported VALUES(?1,?2)",
-            params![address.as_slice(), number(id)?],
-        ))?;
-        sql(self.connection.execute(
-            "DELETE FROM reference_pending WHERE sequence=?1",
-            [sequence],
-        ))?;
+        *depth -= 1;
         Ok(None)
     }
 }
