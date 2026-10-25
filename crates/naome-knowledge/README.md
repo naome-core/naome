@@ -1,5 +1,8 @@
 # Node lifecycle and computation
 
+See [networking and security](NETWORKING.md) for automatic Internet discovery,
+encrypted transport, public graph visibility and trust boundaries.
+
 `naome start` starts the node. `naome pause` closes admission for productive
 computation while keeping gossip, discovery, peering and bounded delivery of
 already checked proofs available. `naome resume` opens computation admission

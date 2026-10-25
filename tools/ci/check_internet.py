@@ -4,7 +4,7 @@ import pathlib
 import sys
 
 
-def verify(root):
+def verify(root, expected_revision=None):
     reports = [json.loads(path.read_text()) for path in pathlib.Path(root).glob("*/summary.json")]
     assert len(reports) == 2, "both host receipts are required"
     reports.sort(key=lambda report: report["participant"])
@@ -12,6 +12,9 @@ def verify(root):
     assert {report["environment"]["system"] for report in reports} == {"Linux", "Darwin"}
     assert len({report["environment"]["node"] for report in reports}) == 2
     assert len({report["revision"] for report in reports}) == 1
+    assert all(report["revision"] for report in reports)
+    if expected_revision is not None:
+        assert reports[0]["revision"] == expected_revision, "receipts must match the dispatched commit"
     for index, report in enumerate(reports):
         other = reports[1 - index]
         assert report["result"] == "pass" and not report["dirty"]
@@ -19,6 +22,9 @@ def verify(root):
         assert report["participant_roster_injected"] is False and report["node_count"] == 1
         assert len(report["peer_ids"]) == 1
         assert report["peer_ids"][0] != other["peer_ids"][0]
+        assert report["own_proof_id"] != other["own_proof_id"]
+        assert set(report["expected_ids"]) == {report["own_proof_id"], other["own_proof_id"]}
+        assert len(report["processes"]) == 1 and len(report["public_connections"]) == 1
         for process in report["processes"]:
             config = process["network_config"]
             assert config["peers"] == []
@@ -32,4 +38,4 @@ def verify(root):
 
 
 if __name__ == "__main__":
-    print(json.dumps(verify(sys.argv[1])))
+    print(json.dumps(verify(sys.argv[1], sys.argv[2])))

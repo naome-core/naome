@@ -61,6 +61,10 @@ impl Node {
                 drop(book);
                 if compatible && !infrastructure && enabled {
                     self.enabled.insert(peer);
+                } else {
+                    self.enabled.remove(&peer);
+                    self.intake.disconnected(peer);
+                    self.outgoing.remove(&peer);
                 }
                 for address in &addresses {
                     if compatible
@@ -89,6 +93,11 @@ impl Node {
     }
 
     pub(super) fn discovery_tick(&mut self, now: Instant) {
+        {
+            let book = self.discovery.book.lock();
+            self.next_relay_attempt
+                .retain(|peer, _| book.contacts.contains_key(peer));
+        }
         let removed: Vec<_> = self.discovery.book.lock().removed.drain(..).collect();
         for peer in removed {
             self.forget_contact(peer);

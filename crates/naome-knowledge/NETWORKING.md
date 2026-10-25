@@ -53,8 +53,9 @@ accepted. Relays and DHT hints confer no proof-admission authority.
 Authenticated connections are bounded by observed IPv4 /24 or IPv6 /64 origin,
 with additional handshake-rate limits. Incoming identities cannot consume the
 outbound contact reserve. Unreachable hints can be replaced by authenticated
-connections. Unpinned connections have finite leases; pinned infrastructure is
-retained. These measures limit inexpensive identity churn and persistent slot
+connections. Unpinned proof connections have finite leases; pinned infrastructure
+and the bounded set of selected relays follow their connection and reservation
+lifecycles. These measures limit inexpensive identity churn and persistent slot
 occupation. They do not establish complete Sybil resistance against an attacker
 controlling many independent networks or all available bootstrap infrastructure.
 

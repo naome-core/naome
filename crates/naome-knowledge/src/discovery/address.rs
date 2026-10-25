@@ -98,6 +98,14 @@ impl Book {
         now: Instant,
     ) -> Result<bool, String> {
         let address = self.route(address, peer)?;
+        if !self.allow_private_addresses
+            && !ip(&address).is_some_and(|ip| match ip {
+                IpAddr::V4(ip) => ip.is_private() || public_ip(ip.into()),
+                IpAddr::V6(ip) => ip.is_unique_local() || public_ip(ip.into()),
+            })
+        {
+            return Err("LAN discovery requires a safe literal endpoint".into());
+        }
         let contact = self.admit(peer, now)?;
         if contact.addresses.len() >= crate::resources::limits().addresses_per_contact
             && !contact.addresses.contains(&address)

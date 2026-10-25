@@ -93,3 +93,47 @@ fn live_unpinned_identities_have_a_finite_lease_and_handshake_churn_is_bounded()
     book.closed_connection(connection(1));
     assert!(!book.contacts[&remote].connected);
 }
+
+#[test]
+fn public_routing_connections_are_transient_until_authenticated_protocol_admission() {
+    let mut book = Book::new(peer(), true, &Config::default());
+    let now = Instant::now();
+    let router = peer();
+    let address = "/ip4/8.8.8.1/tcp/4001".parse().unwrap();
+    book.admit_connection(connection(1), router, &address, true, now)
+        .unwrap();
+    assert!(book.contacts.is_empty());
+    assert_eq!(book.admission.connections.len(), 1);
+    book.closed_connection(connection(1));
+    assert!(book.admission.connections.is_empty());
+    assert!(book.contacts.is_empty());
+}
+
+#[test]
+fn circuit_endpoint_is_never_saved_as_the_proof_peers_direct_address() {
+    let mut book = Book::new(peer(), true, &Config::default());
+    let now = Instant::now();
+    let remote = peer();
+    let relay = peer();
+    book.retain_authenticated(remote, now).unwrap();
+    let address = format!("/ip4/8.8.8.1/tcp/4001/p2p/{relay}/p2p-circuit/p2p/{remote}")
+        .parse()
+        .unwrap();
+    book.admit_connection(connection(1), remote, &address, true, now)
+        .unwrap();
+    assert!(book.contacts[&remote].addresses.is_empty());
+    assert!(book.contacts[&remote].connected);
+}
+
+#[test]
+fn selected_relays_survive_proof_leases_until_their_reservation_is_retired() {
+    let mut book = Book::new(peer(), true, &Config::default());
+    let now = Instant::now();
+    let relay = peer();
+    book.retain_authenticated(relay, now).unwrap();
+    book.relays.insert(relay);
+    let deadline = now + crate::resources::limits().contact_ttl * 4;
+    assert!(book.expired(deadline).is_empty());
+    book.relays.remove(&relay);
+    assert_eq!(book.expired(deadline), [relay]);
+}

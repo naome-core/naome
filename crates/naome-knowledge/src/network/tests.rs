@@ -344,6 +344,38 @@ fn isolated_transport() -> Swarm<Behaviour> {
         .build()
 }
 
+#[tokio::test]
+async fn changing_from_proof_peer_to_public_router_revokes_existing_publication_grants() {
+    let mut swarm = isolated_transport();
+    let listener = swarm
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let (shared, _events, mut transport) = worker::Transport::spawn(swarm, listener);
+    let remote = identity::Keypair::generate_ed25519();
+    let peer = remote.public().to_peer_id();
+    let grant = shared.grant(peer, ProofId::from_bytes([31; 32]));
+    let other = shared.grant(PeerId::random(), ProofId::from_bytes([32; 32]));
+    let mut info = libp2p::identify::Info {
+        public_key: remote.public(),
+        protocol_version: discovery::protocol_version(false),
+        signed_peer_record: None,
+        agent_version: "fixture".into(),
+        listen_addrs: vec!["/ip4/8.8.8.1/tcp/4001".parse().unwrap()],
+        protocols: vec![
+            PROTOCOL,
+            libp2p::swarm::StreamProtocol::new("/ipfs/kad/1.0.0"),
+        ],
+        observed_addr: "/ip4/9.9.9.1/tcp/4001".parse().unwrap(),
+    };
+    shared.revoke_on_identify(peer, &info);
+    assert!(grant.check().is_ok());
+    info.protocol_version = "public-router".into();
+    shared.revoke_on_identify(peer, &info);
+    assert_eq!(grant.check().unwrap_err(), crate::Error::StaleAuthority);
+    assert!(other.check().is_ok());
+    transport.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inbound_connection_flood_backpressures_and_recovers_without_halting() {
     let mut swarm = isolated_transport();

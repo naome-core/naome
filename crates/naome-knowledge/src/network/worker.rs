@@ -116,6 +116,20 @@ impl Drop for BehaviourGuard<'_> {
     }
 }
 impl SharedSwarm {
+    pub(super) fn revoke_on_identify(&self, peer: PeerId, info: &libp2p::identify::Info) {
+        let proof_peer = {
+            let swarm = self.swarm.lock().expect("transport lock");
+            let book = swarm.behaviour().gate.0.lock();
+            discovery::identified_kind(peer, info, false, &book.relays, book.internet)
+                .is_some_and(|(proof, _)| proof)
+        };
+        if !proof_peer {
+            self.grants
+                .lock()
+                .expect("peer grant lock")
+                .revoke_peer(peer);
+        }
+    }
     pub(super) fn grant(&self, peer: PeerId, root: ProofId) -> crate::publication::PeerGrant {
         let mut grants = self.grants.lock().expect("peer grant lock");
         grants.roots.retain(|_, lease| lease.strong_count() > 0);
@@ -262,7 +276,7 @@ impl Transport {
                         _ => {}
                     }
                 }
-                let incompatible = if let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
+                if let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
                     discovery::BehaviourEvent::Identify(libp2p::identify::Event::Received {
                         peer_id,
                         info,
@@ -270,26 +284,7 @@ impl Transport {
                     }),
                 )) = &event
                 {
-                    let swarm = driver.swarm.lock().expect("transport lock");
-                    let book = swarm.behaviour().gate.0.lock();
-                    discovery::identified_kind(*peer_id, info, false, &book.relays, book.internet)
-                        .is_none()
-                } else {
-                    false
-                };
-                if incompatible
-                    && let SwarmEvent::Behaviour(BehaviourEvent::Discovery(
-                        discovery::BehaviourEvent::Identify(libp2p::identify::Event::Received {
-                            peer_id,
-                            ..
-                        }),
-                    )) = &event
-                {
-                    driver
-                        .grants
-                        .lock()
-                        .expect("peer grant lock")
-                        .revoke_peer(*peer_id);
+                    driver.revoke_on_identify(*peer_id, info);
                 }
                 // Provider addresses live in the active Kademlia query. Start
                 // a normal dial while that query is still alive, before the

@@ -145,7 +145,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           python3 tools/ci/check_results.py internet
-          python3 tools/ci/check_internet.py .local/internet-results
+          python3 tools/ci/check_internet.py .local/internet-results '${{ github.sha }}'
 
   linux:
     name: Rust platform (Linux x86_64)

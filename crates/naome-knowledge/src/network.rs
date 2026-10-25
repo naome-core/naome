@@ -94,13 +94,14 @@ pub fn routing_contract() -> Value {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    gate: discovery::Gate,
+    limits: connection_limits::Behaviour,
     allowed: Toggle<allow_block_list::Behaviour<allow_block_list::AllowedPeers>>,
     discovery: discovery::Behaviour,
     relay: relay::client::Behaviour,
-    limits: connection_limits::Behaviour,
     gossip: gossipsub::Behaviour,
     exchange: exchange::Exchange,
+    // Admission records are committed only after every other behaviour accepts.
+    gate: discovery::Gate,
 }
 
 struct Wanted {

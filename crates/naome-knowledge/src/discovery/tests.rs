@@ -288,3 +288,41 @@ fn identify_must_bind_the_authenticated_key_and_exact_proof_namespace() {
     );
     assert!(book.lock().contacts[&peer].compatible);
 }
+
+#[test]
+fn public_dht_protocol_does_not_authorize_proof_exchange() {
+    let remote = identity::Keypair::generate_ed25519();
+    let peer = remote.public().to_peer_id();
+    let mut info = identify::Info {
+        public_key: remote.public(),
+        protocol_version: "public-router".into(),
+        signed_peer_record: None,
+        agent_version: "fixture".into(),
+        listen_addrs: vec!["/ip4/8.8.8.1/tcp/4001".parse().unwrap()],
+        protocols: vec![StreamProtocol::new(internet::PROTOCOL)],
+        observed_addr: "/ip4/9.9.9.1/tcp/4001".parse().unwrap(),
+    };
+    assert_eq!(
+        identified_kind(peer, &info, false, &BTreeSet::new(), true),
+        Some((false, true))
+    );
+    assert_eq!(
+        identified_kind(peer, &info, false, &BTreeSet::new(), false),
+        None
+    );
+    info.protocols.push(crate::wire::PROTOCOL);
+    assert_eq!(
+        identified_kind(peer, &info, false, &BTreeSet::new(), true),
+        Some((false, true))
+    );
+    info.protocol_version = protocol_version(false);
+    assert_eq!(
+        identified_kind(peer, &info, false, &BTreeSet::new(), true),
+        Some((true, false))
+    );
+    info.public_key = identity::Keypair::generate_ed25519().public();
+    assert_eq!(
+        identified_kind(peer, &info, false, &BTreeSet::new(), true),
+        None
+    );
+}

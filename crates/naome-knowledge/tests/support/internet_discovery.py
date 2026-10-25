@@ -6,7 +6,24 @@ from pathlib import Path
 import time
 import traceback
 
-from proof_network import Driver, Node, source
+from proof_network import Driver, Node, content_root, source
+
+
+def public_convergence(driver, expected, timeout):
+    """Public peers may contribute additional valid proofs while we are testing."""
+    started = time.monotonic()
+    deadline = min(driver.deadline - 5, started + timeout)
+    while time.monotonic() < deadline:
+        statuses = [node.status_snapshot() for node in driver.nodes]
+        if all(set(expected).issubset(status["ids"]) and not status["pending"]
+               and status["root"] == content_root(driver.summary["contract"]["compatibility"], status["ids"])
+               for status in statuses):
+            driver.summary["scenarios"]["public_discovery_and_checked_exchange"] = {
+                "result": "pass", "required_ids": expected, "statuses": statuses,
+                "all_node_seconds": time.monotonic() - started}
+            return
+        time.sleep(1)
+    raise AssertionError("public participants did not independently admit both expected proofs")
 
 
 def main():
@@ -35,8 +52,7 @@ def main():
         for participant, node in zip(participants, driver.nodes):
             result = node.command("produce", source=source(700 + participant))
             assert result["object"]["proof_id"] == expected[participant]
-        driver.convergence("public_discovery_and_checked_exchange", range(len(driver.nodes)), expected,
-                           time.monotonic(), timeout=args.timeout - 20, interval=1)
+        public_convergence(driver, expected, args.timeout - 20)
         for node in driver.nodes:
             assert any(event.get("event") == "accepted" and event.get("source") == "fetch" for event in node.events)
             assert any(event.get("event") == "identified" and event.get("proof_peer") is True for event in node.events)
