@@ -15,13 +15,23 @@ use std::{
 
 const APPLICATION_ID: u32 = 0x4e415149;
 
+struct IndexLease(crate::storage::LockFile);
+impl Drop for IndexLease {
+    fn drop(&mut self) {
+        // The final index generation ends its ownership explicitly. A helper
+        // spawn may still hold a temporary inherited descriptor at this point.
+        // Physical worker-slot handoff retains its separate descriptor policy.
+        let _ = self.0.file().unlock();
+    }
+}
+
 pub(crate) struct IndexStorage {
     connection: Mutex<Option<Connection>>,
     path: PathBuf,
     identity: (u64, u64),
     version: i64,
     error: Mutex<Option<String>>,
-    _lease: Arc<crate::storage::LockFile>,
+    _lease: Arc<IndexLease>,
     label: String,
     mirror: Mutex<Option<Arc<Self>>>,
 }
@@ -45,13 +55,9 @@ impl IndexStorage {
                 fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
             }
         }
-        Self::fresh(&root, label, Arc::new(lease))
+        Self::fresh(&root, label, Arc::new(IndexLease(lease)))
     }
-    fn fresh(
-        root: &Path,
-        label: &str,
-        lease: Arc<crate::storage::LockFile>,
-    ) -> Result<Arc<Self>, String> {
+    fn fresh(root: &Path, label: &str, lease: Arc<IndexLease>) -> Result<Arc<Self>, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let prefix = format!(".disposable-{label}-");
         let sequence = NEXT

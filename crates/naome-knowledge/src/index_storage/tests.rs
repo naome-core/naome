@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn only_the_last_generation_releases_ownership_despite_an_inherited_descriptor() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let storage = IndexStorage::open(&directory.0, "questions").unwrap();
+    // A concurrent spawn can temporarily inherit a CLOEXEC descriptor. That
+    // descriptor is not a live disposable-index generation or a worker lease.
+    let inherited = storage._lease.0.file().try_clone().unwrap();
+    let successor = storage.successor().unwrap();
+    drop(storage);
+    assert!(
+        IndexStorage::open(&directory.0, "questions")
+            .err()
+            .unwrap()
+            .contains("already owned")
+    );
+    successor.write([1; 32], b"still owned").unwrap();
+    drop(successor);
+    let reopened = IndexStorage::open(&directory.0, "questions").unwrap();
+    reopened.write([2; 32], b"new owner").unwrap();
+    assert!(inherited.metadata().unwrap().is_file());
+}
+
+#[test]
 fn startup_prunes_only_marked_generations_and_preserves_unrelated_files() {
     let directory = crate::checkpoint::tests::Directory::new();
     let storage = IndexStorage::open(&directory.0, "questions").unwrap();

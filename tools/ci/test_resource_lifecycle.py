@@ -8,6 +8,7 @@ SUPPORT = pathlib.Path(__file__).resolve().parents[2] / "crates/naome-knowledge/
 sys.path.insert(0, str(SUPPORT))
 from autonomous_lifecycle import Trial
 from automatic_computation import memory_recovery
+from proof_network_discovery import contact_retired
 
 
 class Clock:
@@ -64,6 +65,23 @@ class ResourceLifecycleTests(unittest.TestCase):
                                 ({"admission": True}, "paused node published")):
             with self.subTest(change=change), self.assertRaisesRegex(AssertionError, message):
                 self.recover("sustained external CPU pressure", 70, **change)
+
+
+class ContactRetirementTests(unittest.TestCase):
+    def test_a_peer_never_observed_in_this_process_is_already_absent(self):
+        self.assertTrue(contact_retired({"contacts": []}, [], "stale", False))
+        self.assertFalse(contact_retired({"contacts": []}, [], "stale", True))
+
+    def test_an_expiration_event_never_excuses_a_current_contact(self):
+        events = [{"event": "contact_expired", "peer": "stale"}]
+        for known in (False, True):
+            self.assertFalse(contact_retired({"contacts": [{"peer": "stale"}]}, events, "stale", known))
+
+    def test_an_observed_contact_requires_its_own_expiration_event(self):
+        self.assertFalse(contact_retired({"contacts": []}, [
+            {"event": "contact_expired", "peer": "other"}], "stale", True))
+        self.assertTrue(contact_retired({"contacts": []}, [
+            {"event": "contact_expired", "peer": "stale"}], "stale", True))
 
 
 if __name__ == "__main__":

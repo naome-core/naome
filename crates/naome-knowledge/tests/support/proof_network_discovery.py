@@ -18,6 +18,12 @@ from proof_network import Driver, Node, digest, source
 
 USED_PORTS = set()
 
+
+def contact_retired(status, events, peer, was_known):
+    return peer not in {contact["peer"] for contact in status["contacts"]} and (not was_known or any(
+        event.get("event") == "contact_expired" and event.get("peer") == peer for event in events))
+
+
 def port():
     for _ in range(32):
         with socket.socket() as reservation:
@@ -165,24 +171,40 @@ class DiscoveryDriver(Driver):
         # A disappearing unpinned contact must be retired even while old DHT
         # or multicast hints are still in flight; repeated hints cannot renew it.
         stale = self.nodes[2]
-        stale.stop()
         stale_peer = stale.identity
+        active_nodes = [self.nodes[index] for index in [0, 1, 3]]
+        event_offsets = {active.index: len(active.events) for active in active_nodes}
+        initially_known = {active.index for active in active_nodes if stale_peer in {
+            contact["peer"] for contact in active.command("status")["contacts"]}}
+        assert initially_known, "retirement requires an observed unpinned contact"
+        observed = set(initially_known)
+        stale.stop()
         deadline = min(self.deadline, time.monotonic() + 45)
         retired = set()
         while time.monotonic() < deadline:
             self.assert_caps()
-            for active in [self.nodes[index] for index in [0, 1, 3]]:
+            # A restarted participant need not rediscover every overlay peer.
+            # Require real expiry for contacts observed in this process, and
+            # current absence everywhere; never latch a past absence as proof.
+            retired = set()
+            for active in active_nodes:
                 status = active.command("status")
-                if stale_peer not in {contact["peer"] for contact in status["contacts"]}:
-                    if any(event.get("event") == "contact_expired" and event.get("peer") == stale_peer for event in active.events):
-                        retired.add(active.index)
+                if stale_peer in {contact["peer"] for contact in status["contacts"]}:
+                    observed.add(active.index)
+                if contact_retired(status, active.events[event_offsets[active.index]:],
+                                   stale_peer, active.index in observed):
+                    retired.add(active.index)
             if retired == {0, 1, 3}:
                 break
             time.sleep(0.5)
         assert retired == {0, 1, 3}, f"stale contact not retired on all active nodes: {sorted(retired)}"
         self.summary["scenarios"]["disappearing_contact_retirement"] = {"result":"pass", "peer":stale_peer,
-            "active_nodes":sorted(retired), "deadline_seconds":45, "hint_ttl_seconds":30}
+            "active_nodes":sorted(retired), "initially_known_on":sorted(initially_known),
+            "observed_contact_on":sorted(observed), "deadline_seconds":45, "hint_ttl_seconds":30}
         self.convergence("retained_graph_after_contact_retirement", [0, 1, 3], initial, time.monotonic(), timeout=5)
+        for active in active_nodes:
+            assert contact_retired(active.command("status"), active.events[event_offsets[active.index]:], stale_peer,
+                active.index in observed), "retired contact returned during graph verification"
         self.summary["accepted_ids"] = sorted(initial)
         self.summary["content_root"] = self.summary["scenarios"]["restart_rediscovery_and_catchup"]["root"]
 
