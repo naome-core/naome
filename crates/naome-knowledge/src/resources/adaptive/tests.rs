@@ -226,8 +226,8 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
         2
     );
     assert!(
-        exchange(&control, &endpoint, json!("resources"), 2).await["report"]["snapshot"]["budget"]
-            ["paused"]
+        exchange(&control, &endpoint, json!("status"), 2).await["report"]["status"]
+            ["computation_reason"]
             .is_string()
     );
     publish(Snapshot::derive(selection(128 * MIB), hardware(), 512 * MIB).unwrap());

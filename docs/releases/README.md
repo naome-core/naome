@@ -97,7 +97,7 @@ linkage and the macOS architecture/ad-hoc signature. Both original and extracted
 executables pass version/help/stopped-status smoke checks without creating node
 state. The extracted binary additionally starts a real node with isolated
 temporary state, a loopback listener, and discovery disabled; it checks status,
-interest persistence, resource diagnostics and confirmed shutdown. Automatic
+interest persistence and confirmed shutdown. Automatic
 computation pauses require a reported reason; readiness is independent of
 whether the host currently permits computation. Ordinary resource
 budgets remain in force. The full matrix qualifies the source; package smoke

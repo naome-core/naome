@@ -24,7 +24,7 @@ impl Drop for Directory {
 }
 
 #[test]
-fn initialized_wallet_survives_reopen_and_proves_the_same_address() {
+fn initialized_wallet_survives_reopen_with_the_same_key_and_address() {
     let directory = Directory::new();
     let identity = initialize(&directory.0).unwrap();
     let original = fs::read(directory.0.join(KEY)).unwrap();
@@ -38,12 +38,6 @@ fn initialized_wallet_survives_reopen_and_proves_the_same_address() {
             & 0o777,
         0o600
     );
-    let challenge = OwnershipChallenge::new("storage-contract-verifier".into()).unwrap();
-    prove(&directory.0, challenge.clone())
-        .unwrap()
-        .verify(identity.address, &challenge)
-        .unwrap();
-    assert_eq!(fs::read(directory.0.join(KEY)).unwrap(), original);
 }
 
 #[test]

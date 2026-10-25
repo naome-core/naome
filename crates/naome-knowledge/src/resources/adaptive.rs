@@ -9,16 +9,16 @@
 //! it does not require the operating system's RSS to fall synchronously.
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, target_os = "linux"))]
-use std::io::Read;
+use std::{fs, io::Read};
 use std::{
-    fs,
     path::Path,
     sync::{Arc, OnceLock, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 const MIB: u64 = 1024 * 1024;
+mod controller;
 mod governor;
-pub(crate) mod history;
+pub(crate) use controller::Controller;
 mod observation;
 mod observer;
 pub(crate) use governor::Governor;
@@ -365,27 +365,6 @@ pub fn load(directory: &Path) -> Result<Selection, String> {
     let selection: Selection = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     selection.validate()?;
     Ok(selection)
-}
-pub fn save(directory: &Path, selection: &Selection) -> Result<(), String> {
-    selection.validate()?;
-    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let path = directory.join("resource-profile.json");
-    if path.exists() {
-        crate::storage::owned_file(&path)?;
-    }
-    let temporary = directory.join(format!(
-        ".resource-profile-{}-{}.tmp",
-        std::process::id(),
-        now_ms()?
-    ));
-    crate::storage::write_marker(
-        &temporary,
-        &serde_json::to_vec(selection).map_err(|e| e.to_string())?,
-    )?;
-    fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
-    fs::File::open(directory)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())
 }
 pub fn sample(directory: &Path) -> Result<Observed, String> {
     observation::sample(directory)
