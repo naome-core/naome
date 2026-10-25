@@ -1,25 +1,26 @@
 //! Ordinary nodes construct and exchange large programs without manual proof control.
 use std::{
     fs,
-    path::PathBuf,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-fn directory(label: &str) -> PathBuf {
+fn name(label: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
+    format!(
         "naome-{label}-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
+    )
 }
 
 #[cfg(all(unix, feature = "developer-tools"))]
 #[test]
 fn autonomous_program_transfer_resumes_after_receiver_crash_and_rechecks_on_restart() {
-    let output = directory("program-replication");
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let output = root
+        .join("../../.local/proof-network")
+        .join(name("program-replication"));
     let result = Command::new("python3")
         .arg(root.join("tests/support/program_replication.py"))
         .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
@@ -47,7 +48,7 @@ fn autonomous_program_transfer_resumes_after_receiver_crash_and_rechecks_on_rest
 
 #[test]
 fn ordinary_cli_exposes_no_manual_proof_or_resource_mutation() {
-    let directory = directory("autonomous-only-cli");
+    let directory = std::env::temp_dir().join(name("autonomous-only-cli"));
     fs::create_dir(&directory).unwrap();
     let work = directory.join("manual.sqlite3");
     for args in [

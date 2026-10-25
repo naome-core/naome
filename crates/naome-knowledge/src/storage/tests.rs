@@ -60,3 +60,36 @@ fn owned_reads_reject_directories_symbolic_links_and_shared_inodes() {
     assert!(read_owned(&path, 32).is_err());
     assert!(read_owned(&alias, 32).is_err());
 }
+
+#[test]
+fn configuration_snapshot_survives_atomic_replacement_without_relaxing_store_ownership() {
+    let directory = Directory::new();
+    let path = directory.0.join("profile");
+    write_marker(&path, b"old").unwrap();
+    let snapshot = File::open(&path).unwrap();
+    let strict = File::open(&path).unwrap();
+    let incoming = directory.0.join("incoming");
+    write_marker(&incoming, b"new").unwrap();
+    fs::rename(incoming, &path).unwrap();
+
+    assert_eq!(snapshot.metadata().unwrap().nlink(), 0);
+    assert!(read_descriptor(strict, 3, InputLinks::One).is_err());
+    assert_eq!(
+        read_descriptor(snapshot, 3, InputLinks::Snapshot).unwrap(),
+        b"old"
+    );
+    assert_eq!(
+        read_owned_snapshot(&path, 3).unwrap(),
+        Some(b"new".to_vec())
+    );
+    assert!(read_owned_snapshot(&path, 2).is_err());
+    assert!(owned_file(&path).is_ok());
+    let alias = directory.0.join("alias");
+    fs::hard_link(&path, &alias).unwrap();
+    assert!(read_owned_snapshot(&path, 3).is_err());
+    assert!(read_owned_snapshot(&alias, 3).is_err());
+    fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink(&path, &alias).unwrap();
+    assert!(read_owned_snapshot(&alias, 3).is_err());
+    assert!(read_owned_snapshot(&directory.0, 3).is_err());
+}

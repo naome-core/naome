@@ -71,6 +71,22 @@ pub(crate) fn write_marker(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Read one bounded local input after validating the opened descriptor. Opening
 /// special files must not wait for another process before their type is known.
 pub(crate) fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
+    read_input(path, limit, InputLinks::One)
+}
+
+/// Mutable configuration may be replaced after opening. Its opened generation
+/// remains a coherent owned snapshot, even after the old directory entry is gone.
+pub(crate) fn read_owned_snapshot(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
+    read_input(path, limit, InputLinks::Snapshot)
+}
+
+#[derive(Clone, Copy)]
+enum InputLinks {
+    One,
+    Snapshot,
+}
+
+fn read_input(path: &Path, limit: usize, links: InputLinks) -> Result<Option<Vec<u8>>, String> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
@@ -80,8 +96,12 @@ pub(crate) fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, S
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
+    read_descriptor(file, limit, links).map(Some)
+}
+
+fn read_descriptor(file: File, limit: usize, links: InputLinks) -> Result<Vec<u8>, String> {
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    require_owned(&metadata)?;
+    require_input_owned(&metadata, links)?;
     let mut bytes = Vec::new();
     let maximum = u64::try_from(limit)
         .ok()
@@ -93,7 +113,7 @@ pub(crate) fn read_owned(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, S
     if bytes.len() > limit {
         return Err("local input byte capacity".into());
     }
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, String> {
@@ -102,10 +122,17 @@ pub(crate) fn owned_file(path: &Path) -> Result<fs::Metadata, String> {
     Ok(metadata)
 }
 fn require_owned(metadata: &fs::Metadata) -> Result<(), String> {
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-    {
+    require_input_owned(metadata, InputLinks::One)
+}
+
+fn require_input_owned(metadata: &fs::Metadata, links: InputLinks) -> Result<(), String> {
+    let links_valid = match links {
+        InputLinks::One => metadata.nlink() == 1,
+        // Atomic replacement can unlink this already-open generation. It has
+        // no pathname aliases; multiple hard links remain invalid.
+        InputLinks::Snapshot => metadata.nlink() <= 1,
+    };
+    if !metadata.is_file() || !links_valid || metadata.uid() != nix::unistd::geteuid().as_raw() {
         return Err("local store must be one owned regular file".into());
     }
     Ok(())

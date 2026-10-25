@@ -153,6 +153,21 @@ async fn a_composed_program_retains_its_checked_lemmas_across_pressure_and_graph
     .await;
 }
 
+fn work_selection() -> crate::resources::adaptive::Selection {
+    use crate::resources::adaptive::{Custom, Profile, Selection};
+    let work = budget();
+    Selection {
+        profile: Profile::Custom,
+        custom: Some(Custom {
+            memory_bytes: crate::resources::limits().memory_bytes as u64,
+            concurrency: work.concurrency,
+            cache_bytes: crate::resources::limits().checked_cache_bytes as u64,
+            batch_steps: work.batch_steps,
+            network_requests: work.network_requests,
+        }),
+    }
+}
+
 async fn receive(
     source: &Graph,
     directory: &std::path::Path,
@@ -161,7 +176,7 @@ async fn receive(
     depth: usize,
     rebind: bool,
 ) {
-    use crate::resources::adaptive::{self, Custom, Profile, Selection, Snapshot};
+    use crate::resources::adaptive::{self, Snapshot};
     // These isolated mathematical/atomic-publication cases count calls using
     // the shared work fixture's quantum, rather than host load or recovery time.
     // Native governor recovery has separate coverage; real memory and disk
@@ -169,16 +184,7 @@ async fn receive(
     let work = budget();
     let capacity = crate::resources::limits().memory_bytes as u64;
     let snapshot = Snapshot::derive(
-        Selection {
-            profile: Profile::Custom,
-            custom: Some(Custom {
-                memory_bytes: capacity,
-                concurrency: work.concurrency,
-                cache_bytes: crate::resources::limits().checked_cache_bytes as u64,
-                batch_steps: work.batch_steps,
-                network_requests: work.network_requests,
-            }),
-        },
+        work_selection(),
         adaptive::sample(directory).unwrap(),
         capacity,
     )
@@ -465,6 +471,16 @@ async fn real_nodes_exchange_a_program_with_large_lemma_dependencies_and_reverif
     let (graph, manifests, _) = populated(&sender.0);
     let expected_root = graph.content_root();
     drop(graph);
+    // Pin the embedding's work quantum while retaining native observations,
+    // pressure pauses, memory leases and the existing transport deadline.
+    let selection = work_selection();
+    for directory in [&sender.0, &receiver.0] {
+        std::fs::write(
+            directory.join("resource-profile.json"),
+            serde_json::to_vec(&selection).unwrap(),
+        )
+        .unwrap();
+    }
     let identity = |directory: &std::path::Path| {
         let key = libp2p::identity::Keypair::generate_ed25519();
         std::fs::write(
@@ -536,7 +552,10 @@ async fn real_nodes_exchange_a_program_with_large_lemma_dependencies_and_reverif
         .unwrap()
         .unwrap();
     drop((sender_handle, receiver_handle));
-    reached.expect("actual transport must fetch and compose large cited lemmas");
+    assert!(
+        reached.is_ok(),
+        "actual transport must fetch and compose large cited lemmas: {reached:?}; selection={selection:?}",
+    );
     let replayed = Graph::open(&receiver.0).unwrap();
     assert_eq!(replayed.content_root(), expected_root);
     assert_eq!(
