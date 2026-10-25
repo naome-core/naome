@@ -1,6 +1,19 @@
 use super::*;
 use std::time::Duration;
 
+fn isolated(test: &str) -> bool {
+    if std::env::var("NAOME_OPERATING_LIMITS_TEST").as_deref() == Ok(test) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env("NAOME_OPERATING_LIMITS_TEST", test)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    true
+}
+
 #[test]
 fn missing_check_feedback_preserves_configured_work_cadence() {
     let mut capacity = crate::resources::ResourceProfile::default()
@@ -32,14 +45,9 @@ fn missing_check_feedback_preserves_configured_work_cadence() {
 
 #[test]
 fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {
-    const TEST: &str = "resources::operating::tests::smaller_live_budgets_reduce_work_without_redefining_formats_or_custody";
-    if std::env::var_os("NAOME_OPERATING_LIMITS_TEST").is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture"])
-            .env("NAOME_OPERATING_LIMITS_TEST", "1")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
+    if isolated(
+        "resources::operating::tests::smaller_live_budgets_reduce_work_without_redefining_formats_or_custody",
+    ) {
         return;
     }
     let capacity = crate::resources::limits().clone();
@@ -52,20 +60,7 @@ fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {
         yield_ms: 0,
         paused: None,
     };
-    let mut snapshot = super::super::adaptive::Snapshot::derive(
-        super::super::adaptive::Selection::default(),
-        super::super::adaptive::Observed {
-            memory_total: 8 << 30,
-            memory_limit: 8 << 30,
-            memory_available: 6 << 30,
-            process_rss: 16 << 20,
-            cpu_millis: 8000,
-            disk_available: 1 << 30,
-            ..Default::default()
-        },
-        capacity.memory_bytes as u64,
-    )
-    .unwrap();
+    let mut snapshot = super::super::tests::snapshot(false);
     snapshot.budget = budget;
     super::super::adaptive::publish(snapshot);
     let work = super::super::active_limits();
@@ -91,6 +86,11 @@ fn smaller_live_budgets_reduce_work_without_redefining_formats_or_custody() {
 
 #[test]
 fn small_compute_batches_preserve_bounded_inventory_admission() {
+    if isolated(
+        "resources::operating::tests::small_compute_batches_preserve_bounded_inventory_admission",
+    ) {
+        return;
+    }
     let capacity = crate::resources::ResourceProfile::default()
         .resolve()
         .unwrap();
@@ -104,12 +104,15 @@ fn small_compute_batches_preserve_bounded_inventory_admission() {
         paused: None,
     };
 
-    let work = derive(&capacity, &budget);
+    let mut snapshot = super::super::tests::snapshot(false);
+    snapshot.budget = budget.clone();
+    super::super::adaptive::publish(snapshot);
+    let work = super::super::active_limits();
 
     assert_eq!(work.id_page, capacity.id_page);
     assert_eq!(work.inventory_page, capacity.inventory_page);
     assert_eq!(work.fetches, capacity.fetches);
-    assert_eq!(work.flights, 1);
+    assert_eq!(super::super::adaptive::network(capacity.flights), 1);
     assert!(work.inventory_page <= work.fetches);
     assert!(work.inventory_page <= work.id_page);
     assert!(work.fetches <= budget.memory_bytes as usize / 512);

@@ -111,7 +111,7 @@ fn derive_with_statistics(
         .max(naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES);
     // Wanted proof IDs are a bounded admission queue, not CPU work or
     // simultaneous requests. Keep enough room for one configured inventory
-    // page; the separate flight budget below limits network concurrency.
+    // page; the shared adaptive request budget limits network concurrency.
     work.fetches = capacity.fetches.min(memory / 512).max(1);
     work.inventory_page = capacity
         .inventory_page
