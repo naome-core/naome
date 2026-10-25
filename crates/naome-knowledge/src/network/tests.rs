@@ -1,4 +1,5 @@
 use super::*;
+use libp2p::tcp;
 use naome_authoring::CompiledQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -341,6 +342,84 @@ fn isolated_transport() -> Swarm<Behaviour> {
         })
         .unwrap()
         .build()
+}
+
+#[tokio::test]
+async fn changing_from_proof_peer_to_public_router_revokes_existing_publication_grants() {
+    let mut swarm = isolated_transport();
+    let listener = swarm
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let (shared, _events, mut transport) = worker::Transport::spawn(swarm, listener);
+    let remote = identity::Keypair::generate_ed25519();
+    let peer = remote.public().to_peer_id();
+    let grant = shared.grant(peer, ProofId::from_bytes([31; 32]));
+    let other = shared.grant(PeerId::random(), ProofId::from_bytes([32; 32]));
+    let mut info = libp2p::identify::Info {
+        public_key: remote.public(),
+        protocol_version: discovery::protocol_version(false),
+        signed_peer_record: None,
+        agent_version: "fixture".into(),
+        listen_addrs: vec!["/ip4/8.8.8.1/tcp/4001".parse().unwrap()],
+        protocols: vec![
+            PROTOCOL,
+            libp2p::swarm::StreamProtocol::new("/ipfs/kad/1.0.0"),
+        ],
+        observed_addr: "/ip4/9.9.9.1/tcp/4001".parse().unwrap(),
+    };
+    shared.revoke_on_identify(peer, &info);
+    assert!(grant.check().is_ok());
+    info.protocol_version = "public-router".into();
+    shared.revoke_on_identify(peer, &info);
+    assert_eq!(grant.check().unwrap_err(), crate::Error::StaleAuthority);
+    assert!(other.check().is_ok());
+    transport.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inbound_connection_flood_backpressures_and_recovers_without_halting() {
+    let mut swarm = isolated_transport();
+    let listener = swarm
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    let (_shared, mut events, mut transport) = worker::Transport::spawn(swarm, listener);
+    let ready = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let SwarmEvent::NewListenAddr { address, .. } = ready.event else {
+        panic!("listener readiness required")
+    };
+    let libp2p::multiaddr::Protocol::Tcp(port) = address.iter().nth(1).unwrap() else {
+        panic!("TCP listener required")
+    };
+    // Deliberately leave the state owner stopped while remote sockets produce
+    // more real events than the complete bounded handoff can hold.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for _ in 0..crate::resources::limits().transport_events * 2 {
+            drop(
+                tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .unwrap(),
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // The former overflow path closed the channel at its capacity. Receiving
+    // beyond that capacity proves that polling recovers after backpressure.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for _ in 0..crate::resources::limits().transport_events + 8 {
+            events
+                .recv()
+                .await
+                .expect("remote pressure must not terminate transport");
+        }
+    })
+    .await
+    .unwrap();
+    transport.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

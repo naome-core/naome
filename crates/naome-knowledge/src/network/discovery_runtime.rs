@@ -28,6 +28,10 @@ impl Node {
         self.next_automatic_request.remove(&peer);
         self.buckets.remove(&peer);
         self.outgoing.remove(&peer);
+        self.next_relay_attempt.remove(&peer);
+        if let Some(listener) = self.relay_listeners.remove(&peer) {
+            self.swarm.remove_listener(listener);
+        }
         self.intake.disconnected(peer);
         self.flights.retain(|_, flight| match flight {
             Flight::Inventory { peer: owner, .. }
@@ -57,6 +61,10 @@ impl Node {
                 drop(book);
                 if compatible && !infrastructure && enabled {
                     self.enabled.insert(peer);
+                } else {
+                    self.enabled.remove(&peer);
+                    self.intake.disconnected(peer);
+                    self.outgoing.remove(&peer);
                 }
                 for address in &addresses {
                     if compatible
@@ -85,6 +93,42 @@ impl Node {
     }
 
     pub(super) fn discovery_tick(&mut self, now: Instant) {
+        {
+            let book = self.discovery.book.lock();
+            self.next_relay_attempt
+                .retain(|peer, _| book.contacts.contains_key(peer));
+        }
+        let removed: Vec<_> = self.discovery.book.lock().removed.drain(..).collect();
+        for peer in removed {
+            self.forget_contact(peer);
+        }
+        if self.discovery.config.internet {
+            let mut book = self.discovery.book.lock();
+            let candidates: Vec<_> = book
+                .contacts
+                .iter()
+                .filter_map(|(peer, contact)| {
+                    (contact.connected
+                        && contact.compatible
+                        && contact.relay_service
+                        && !book.relays.contains(peer)
+                        && self
+                            .next_relay_attempt
+                            .get(peer)
+                            .is_none_or(|until| *until <= now)
+                        && contact.addresses.iter().any(|address| {
+                            !discovery::is_relayed(address) && discovery::public_address(address)
+                        }))
+                    .then_some(*peer)
+                })
+                .collect();
+            for peer in candidates {
+                if book.relays.len() >= crate::resources::limits().relay_peers {
+                    break;
+                }
+                book.relays.insert(peer);
+            }
+        }
         self.discovery
             .tick(&mut self.swarm.behaviour_mut().discovery);
         let expired = self.discovery.book.lock().expired(now);
@@ -180,5 +224,24 @@ impl Node {
                 ),
             }
         }
+    }
+
+    pub(super) fn relay_failed(&mut self, peer: PeerId) {
+        self.relay_listeners.remove(&peer);
+        let public = self.discovery.config.internet
+            && !self
+                .discovery
+                .book
+                .lock()
+                .contacts
+                .get(&peer)
+                .is_some_and(|contact| contact.pinned);
+        let delay = if public {
+            self.discovery.book.lock().relays.remove(&peer);
+            crate::resources::limits().contact_ttl
+        } else {
+            crate::resources::limits().reconcile_interval
+        };
+        self.next_relay_attempt.insert(peer, Instant::now() + delay);
     }
 }

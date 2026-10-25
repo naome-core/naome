@@ -1,5 +1,4 @@
 use crate::{Envelope, object::Metadata};
-use async_trait::async_trait;
 use libp2p::{
     StreamProtocol,
     futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -187,7 +186,6 @@ fn invalid(error: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
-#[async_trait]
 impl request_response::Codec for Codec {
     type Protocol = StreamProtocol;
     type Request = Frame;

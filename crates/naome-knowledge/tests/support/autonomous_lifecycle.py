@@ -771,7 +771,7 @@ class Relay:
         reservation.bind(("127.0.0.1", 0))
         self.port = reservation.getsockname()[1]
         config = trial.output / "relay.config.json"
-        config.write_text(json.dumps({"directory": str(directory), "listen": f"/ip4/127.0.0.1/tcp/{self.port}"}) + "\n")
+        config.write_text(json.dumps({"directory": str(directory), "listen": f"/ip4/127.0.0.1/tcp/{self.port}", "allow_private_addresses": True}) + "\n")
         self.log = (trial.output / "relay.log").open("w")
         reservation.close()
         self.process = subprocess.Popen([str(binary), "relay", str(config)], stdin=subprocess.DEVNULL,
@@ -1147,14 +1147,14 @@ def main():
                 node.config["discovery"] = {"mdns": True, "dht": False}
         elif args.mode == "dht":
             for node in trial.nodes:
-                node.config["discovery"] = {"mdns": False, "dht": True,
+                node.config["discovery"] = {"mdns": False, "dht": True, "internet": False, "allow_private_addresses": True,
                     "external_addresses": [f"/ip4/127.0.0.1/tcp/{node.port}"],
                     "bootstrap": [] if node is seed else [{"id": seed.peer, "address": f"/ip4/127.0.0.1/tcp/{seed.port}"}]}
         elif args.mode == "relay":
             relay = Relay(trial, args.relay_binary.resolve())
             endpoint = {"id": relay.peer, "address": f"/ip4/127.0.0.1/tcp/{relay.port}"}
             for node in trial.nodes:
-                node.config["discovery"] = {"mdns": False, "dht": True,
+                node.config["discovery"] = {"mdns": False, "dht": True, "internet": False, "allow_private_addresses": True,
                     "bootstrap": [endpoint], "relays": [endpoint],
                     "relay_only": True, "hole_punch": False}
         sender.config["runtime"]["question_interval_ms"] = 100

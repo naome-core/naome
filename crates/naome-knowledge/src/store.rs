@@ -71,7 +71,7 @@ impl Store {
         &self.directory
     }
     pub fn open(directory: &Path) -> Result<Self, crate::Error> {
-        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        crate::storage::private_directory(directory)?;
         let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
         let directory = directory.as_path();
         let lock = OpenOptions::new()

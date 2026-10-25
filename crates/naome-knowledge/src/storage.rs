@@ -2,9 +2,22 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
+
+/// Node state contains the identity key and private local owner preferences.
+/// Tighten only the owned node directory, without changing parent directories.
+pub(crate) fn private_directory(directory: &Path) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+    let metadata = fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() || metadata.uid() != nix::unistd::geteuid().as_raw() {
+        return Err("node state must be one owned directory".into());
+    }
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+        .map_err(|error| error.to_string())
+}
 
 pub(crate) fn research_directory(directory: &Path) -> Result<PathBuf, String> {
     let path = directory.join("research");
