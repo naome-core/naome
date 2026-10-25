@@ -187,6 +187,8 @@ pub enum ProofVerification {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
+    /// Bounded custody and association metadata; verified funds are read through
+    /// the internal [`crate::NodeWallet::funds`] service outside node control.
     pub wallet: Option<crate::WalletStatus>,
     pub running: bool,
     pub computation: crate::resources::ComputationState,

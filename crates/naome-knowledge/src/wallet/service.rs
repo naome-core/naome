@@ -1,88 +1,4 @@
-//! ## Internal wallet service and existing nodes
-//!
-//! The application-facing `naome_knowledge::NodeWallet` service uses the existing
-//! `wallet.key` and `wallet.json` files. There is no wallet or ledger CLI, including
-//! in the developer binary. The ordinary node CLI remains start, stop, status,
-//! interest, help, and version. Applications and autonomous tasks call the service
-//! methods directly.
-//!
-//! Start each node once through the normal lifecycle. Opening `NodeWallet` then
-//! validates its existing key and receipt; it never creates or rotates a key.
-//! One node can have one persistent public wallet association. Several nodes may
-//! use the same owner's wallet. Each node keeps its own private key, and the owner
-//! signs the node's spending grant without copying the owner's main key.
-//!
-//! A minimal integration sequence is:
-//!
-//! ```no_run
-//! # fn example() -> Result<(), String> {
-//! use naome_knowledge::NodeWallet;
-//! use std::path::Path;
-//! let owner_node_directory=Path::new("/nodes/owner");
-//! let first_node_directory=Path::new("/nodes/first");
-//! let second_node_directory=Path::new("/nodes/second");
-//! let test_ledger_directory=Path::new("/test-ledgers/example");
-//! use naome_ledger::Amount;
-//!
-//! let owner = NodeWallet::open(owner_node_directory)?;
-//! let first = NodeWallet::open(first_node_directory)?;
-//! let second = NodeWallet::open(second_node_directory)?;
-//!
-//! // Explicit test setup; ordinary startup never calls this method.
-//! owner.create_test_ledger(test_ledger_directory, Amount::from_units(1000))?;
-//! owner.connect(test_ledger_directory, owner.signing_address())?;
-//!
-//! // User-authorized wallet association, suitable for a settings/application API.
-//! owner.authorize_node(first.signing_address())?;
-//! owner.authorize_node(second.signing_address())?;
-//! first.connect(test_ledger_directory, owner.signing_address())?;
-//! second.connect(test_ledger_directory, owner.signing_address())?;
-//!
-//! // Called directly by the system's authorized purchase/work policy.
-//! first.pay(first.signing_address(), Amount::from_units(300))?;
-//! let funds = second.funds()?;
-//! assert_eq!(funds.available.units(), 700);
-//!
-//! owner.revoke_node(first.signing_address())?;
-//! first.disconnect()?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Every authorized node may spend the entire available shared balance. There is
-//! no per-node allowance or automatic increase in rights. Delegated nodes cannot authorize
-//! other nodes. The owner can revoke one node while leaving all other grants
-//! active. `disconnect` durably revokes a delegate's own grant before removing its
-//! public association; it requires the ledger to be available. An owner disconnect
-//! removes its local association while its main key retains ownership. A revoked
-//! node requires a fresh owner grant before reconnecting. Regranting does not
-//! revive old prepared payments.
-//!
-//! A payment to the associated wallet address increases that wallet's funds;
-//! there is no special self-credit operation. Work rewards and autonomous purchase
-//! selection still require their own agreed protocol and economic rules. This
-//! change supplies the internal authorization, payment, and bookkeeping services,
-//! not an automatic research market or production currency.
-//!
-//! `NodeWallet::funds` fully replays and verifies the local test journal, returning
-//! its network, available units, current spending authorization, and authorized
-//! node addresses. Its scope is always `local_test_coins`. Errors such as a busy
-//! or unavailable ledger remain errors and are never rendered as a zero balance.
-//! Amounts are whole indivisible test units, with no NAO conversion.
-//!
-//! Passive `naome status` uses bounded local metadata only: signing address,
-//! configured wallet address, association state, and key availability. A configured
-//! association does not assert that its grant is still active. Financial views
-//! use `funds()` to verify the grant and balance. Full history replay is deliberately
-//! kept outside latency-sensitive start/stop/status control and resource-governor
-//! operation. The node has no implicit test genesis, mint, reward, or payment step.
-//!
-//! The current test backend uses one dedicated local ledger directory, with short
-//! exclusive ownership per service operation. It does not synchronize independent
-//! machines or qualify network filesystems. Do not place the ledger inside a node
-//! directory or copy its SQLite files while it is open. The SDK and state-transition
-//! contracts leave network ordering and consensus as a separate implementation.
-
+//! Existing wallet custody, node association, and direct internal payments.
 use super::connection::{self, Connection};
 use naome_ledger::{Amount, Ledger, NetworkId, Output, TestGenesis, TransactionId};
 use naome_wallet::{Address, WalletKey};
@@ -124,6 +40,91 @@ pub struct WalletFunds {
     pub authorized_nodes: Vec<Address>,
 }
 
+/// ## Internal wallet service and existing nodes
+///
+/// The application-facing `naome_knowledge::NodeWallet` service uses the existing
+/// `wallet.key` and `wallet.json` files. There is no wallet or ledger CLI, including
+/// in the developer binary. The ordinary node CLI remains start, stop, status,
+/// interest, help, and version. Applications and autonomous tasks call the service
+/// methods directly.
+///
+/// Start each node once through the normal lifecycle. Opening `NodeWallet` then
+/// validates its existing key and receipt; it never creates or rotates a key.
+/// One node can have one persistent public wallet association. Several nodes may
+/// use the same owner's wallet. Each node keeps its own private key, and the owner
+/// signs the node's spending grant without copying the owner's main key.
+///
+/// A minimal integration sequence is:
+///
+/// ```no_run
+/// # fn example() -> Result<(), String> {
+/// use naome_knowledge::NodeWallet;
+/// use std::path::Path;
+/// let owner_node_directory=Path::new("/nodes/owner");
+/// let first_node_directory=Path::new("/nodes/first");
+/// let second_node_directory=Path::new("/nodes/second");
+/// let test_ledger_directory=Path::new("/test-ledgers/example");
+/// use naome_ledger::Amount;
+///
+/// let owner = NodeWallet::open(owner_node_directory)?;
+/// let first = NodeWallet::open(first_node_directory)?;
+/// let second = NodeWallet::open(second_node_directory)?;
+///
+/// // Explicit test setup; ordinary startup never calls this method.
+/// owner.create_test_ledger(test_ledger_directory, Amount::from_units(1000))?;
+/// owner.connect(test_ledger_directory, owner.signing_address())?;
+///
+/// // User-authorized wallet association, suitable for a settings/application API.
+/// owner.authorize_node(first.signing_address())?;
+/// owner.authorize_node(second.signing_address())?;
+/// first.connect(test_ledger_directory, owner.signing_address())?;
+/// second.connect(test_ledger_directory, owner.signing_address())?;
+///
+/// // Called directly by the system's authorized purchase/work policy.
+/// first.pay(first.signing_address(), Amount::from_units(300))?;
+/// let funds = second.funds()?;
+/// assert_eq!(funds.available.units(), 700);
+///
+/// owner.revoke_node(first.signing_address())?;
+/// first.disconnect()?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Every authorized node may spend the entire available shared balance. There is
+/// no per-node allowance or automatic increase in rights. Delegated nodes cannot authorize
+/// other nodes. The owner can revoke one node while leaving all other grants
+/// active. `disconnect` durably revokes a delegate's own grant before removing its
+/// public association; it requires the ledger to be available. An owner disconnect
+/// removes its local association while its main key retains ownership. A revoked
+/// node requires a fresh owner grant before reconnecting. Regranting does not
+/// revive old prepared payments.
+///
+/// A payment to the associated wallet address increases that wallet's funds;
+/// there is no special self-credit operation. Work rewards and autonomous purchase
+/// selection still require their own agreed protocol and economic rules. This
+/// change supplies the internal authorization, payment, and bookkeeping services,
+/// not an automatic research market or production currency.
+///
+/// `NodeWallet::funds` fully replays and verifies the local test journal, returning
+/// its network, available units, current spending authorization, and authorized
+/// node addresses. Its scope is always `local_test_coins`. Errors such as a busy
+/// or unavailable ledger remain errors and are never rendered as a zero balance.
+/// Amounts are whole indivisible test units, with no NAO conversion.
+///
+/// Passive `naome status` uses bounded local metadata only: signing address,
+/// configured wallet address, association state, and key availability. A configured
+/// association does not assert that its grant is still active. Financial views
+/// use `funds()` to verify the grant and balance. Full history replay is deliberately
+/// kept outside latency-sensitive start/stop/status control and resource-governor
+/// operation. The node has no implicit test genesis, mint, reward, or payment step.
+///
+/// The current test backend uses one dedicated local ledger directory, with short
+/// exclusive ownership per service operation. It does not synchronize independent
+/// machines or qualify network filesystems. Do not place the ledger inside a node
+/// directory or copy its SQLite files while it is open. The SDK and state-transition
+/// contracts leave network ordering and consensus as a separate implementation.
+///
 /// The internal wallet interface for applications and autonomous node services.
 ///
 /// Opening does not create a key or coins. Each payment loads the existing key,

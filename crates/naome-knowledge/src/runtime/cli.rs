@@ -178,11 +178,11 @@ fn human(command: &str, status: &Status, color: bool) -> String {
                 .map_or_else(|| "unavailable".into(), |address| address.to_string())
         )
         .expect("String write");
-        writeln!(output, "  Node signing key {}", wallet.signing_address).expect("String write");
+        writeln!(output, "  Signing address  {}", wallet.signing_address).expect("String write");
         let connection = match wallet.connection {
             crate::WalletConnection::Local => "local wallet",
             crate::WalletConnection::Connected => {
-                "connected; funds and grants are checked by the wallet service"
+                "connected; spending authorization is checked when paying"
             }
             crate::WalletConnection::Unavailable => "association unavailable",
         };
