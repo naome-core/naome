@@ -7,6 +7,7 @@ use crate::{
     corpus::{InventoryCursor, InventorySnapshot},
     discovery, hex,
     object::{Metadata, id_bytes},
+    quota::{Quota, Rate},
     wire::{Body, Codec, Frame, PROTOCOL},
 };
 use libp2p::{
@@ -162,10 +163,6 @@ enum Flight {
         peer: PeerId,
     },
 }
-struct Bucket {
-    tokens: usize,
-    reset: Instant,
-}
 #[derive(Clone, Copy, Default)]
 struct InventoryProgress {
     after: Option<InventoryCursor>,
@@ -191,8 +188,8 @@ struct Node {
     inventory_progress: BTreeMap<PeerId, InventoryProgress>,
     inventory_summaries: BTreeMap<PeerId, ([u8; 32], [u8; 32])>,
     next_automatic_request: BTreeMap<PeerId, Instant>,
-    buckets: BTreeMap<PeerId, Bucket>,
-    outgoing: BTreeMap<PeerId, Bucket>,
+    buckets: BTreeMap<PeerId, Quota>,
+    outgoing: BTreeMap<PeerId, Quota>,
     intake: crate::intake::Intake,
     test_objects: BTreeMap<ProofId, (Metadata, Option<Envelope>)>,
     test_controls: bool,
@@ -1356,24 +1353,23 @@ impl Node {
         }
     }
 
-    fn outgoing_ready(&self, peer: PeerId, now: Instant) -> bool {
-        self.outgoing.get(&peer).is_none_or(|bucket| {
-            bucket.tokens > 0
-                || now.duration_since(bucket.reset)
-                    >= crate::resources::limits().request_rate_window
-        })
-    }
-
-    fn charge_outgoing(&mut self, peer: PeerId, now: Instant) {
-        let bucket = self.outgoing.entry(peer).or_insert(Bucket {
-            tokens: crate::resources::limits().request_burst,
-            reset: now,
-        });
-        if now.duration_since(bucket.reset) >= crate::resources::limits().request_rate_window {
-            bucket.tokens = crate::resources::limits().request_burst;
-            bucket.reset = now;
+    fn request_rate() -> Rate {
+        Rate {
+            burst: crate::resources::limits().request_burst,
+            period: crate::resources::limits().request_rate_window,
         }
-        bucket.tokens -= 1;
+    }
+    fn outgoing_ready(&self, peer: PeerId, now: Instant) -> bool {
+        self.outgoing
+            .get(&peer)
+            .is_none_or(|quota| quota.available(now, Self::request_rate()))
+    }
+    fn charge_outgoing(&mut self, peer: PeerId, now: Instant) {
+        let quota = self.outgoing.entry(peer).or_insert_with(|| Quota::new(now));
+        assert!(
+            quota.try_take(now, Self::request_rate()),
+            "outgoing request requires rate admission"
+        );
     }
 
     fn request_ready(&self, peer: PeerId, now: Instant) -> bool {
@@ -1575,19 +1571,10 @@ impl Node {
 
     fn charge(&mut self, peer: PeerId) -> bool {
         let now = Instant::now();
-        let bucket = self.buckets.entry(peer).or_insert(Bucket {
-            tokens: crate::resources::limits().request_burst,
-            reset: now,
-        });
-        if now.duration_since(bucket.reset) >= crate::resources::limits().request_rate_window {
-            bucket.tokens = crate::resources::limits().request_burst;
-            bucket.reset = now;
-        }
-        if bucket.tokens == 0 {
-            return false;
-        }
-        bucket.tokens -= 1;
-        true
+        self.buckets
+            .entry(peer)
+            .or_insert_with(|| Quota::new(now))
+            .try_take(now, Self::request_rate())
     }
 
     fn event(

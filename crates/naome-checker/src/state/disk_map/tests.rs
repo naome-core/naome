@@ -376,7 +376,11 @@ fn cursor_seeks_authenticated_ranges_and_copy_retains_every_reachable_node() {
     map.insert(middle, b"middle").unwrap();
     map.insert(last, b"last").unwrap();
     let target = Arc::new(MemoryStorage::default());
-    let copied = map.copy_to(target).unwrap();
+    let mut walk = map.walk();
+    while let Some(visit) = walk.step().unwrap() {
+        target.write(visit.address, &visit.bytes).unwrap();
+    }
+    let copied = DiskMap::from_root(target, map.root());
     assert_eq!(copied.root(), map.root());
     assert_eq!(
         copied.entries().collect::<Result<Vec<_>, _>>().unwrap(),
@@ -390,6 +394,15 @@ fn cursor_seeks_authenticated_ranges_and_copy_retains_every_reachable_node() {
         vec![(last, b"last".to_vec())]
     );
     assert!(map.get(&first).is_err());
-    assert!(map.copy_to(Arc::new(MemoryStorage::default())).is_err());
+    let mut walk = map.walk();
+    let error = loop {
+        match walk.step() {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("missing reachable node was accepted"),
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(error, ContextError::Storage("missing node".into()));
+    assert!(!walk.complete());
     assert_eq!(copied.get(&first).unwrap(), Some(b"first".to_vec()));
 }

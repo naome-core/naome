@@ -1,5 +1,6 @@
 //! Bound identity churn by observed network origin and reserve outbound capacity.
 use super::*;
+use crate::quota::{Quota, Rate};
 use libp2p::swarm::ConnectionId;
 use std::net::IpAddr;
 
@@ -27,7 +28,7 @@ fn group(address: &Multiaddr) -> Option<Group> {
 #[derive(Default)]
 pub(super) struct Admission {
     connections: BTreeMap<ConnectionId, (PeerId, Group, bool)>,
-    attempts: BTreeMap<Group, (Instant, usize)>,
+    attempts: BTreeMap<Group, Quota>,
 }
 
 impl Book {
@@ -48,19 +49,26 @@ impl Book {
                 Err("incoming TCP endpoint required".into())
             };
         };
-        self.admission.attempts.retain(|_, (since, _)| {
-            now.duration_since(*since) < crate::resources::limits().request_rate_window
-        });
+        let rate = Rate {
+            burst: crate::resources::limits().request_burst,
+            period: crate::resources::limits().request_rate_window,
+        };
+        self.admission
+            .attempts
+            .retain(|_, quota| !quota.expired(now, rate));
         if self.admission.attempts.len() >= crate::resources::limits().contacts
             && !self.admission.attempts.contains_key(&group)
         {
             return Err("handshake rate table capacity".into());
         }
-        let (_, used) = self.admission.attempts.entry(group).or_insert((now, 0));
-        if *used >= crate::resources::limits().request_burst {
+        let quota = self
+            .admission
+            .attempts
+            .entry(group)
+            .or_insert_with(|| Quota::new(now));
+        if !quota.try_take(now, rate) {
             return Err("network handshake rate limit".into());
         }
-        *used += 1;
         Ok(())
     }
 

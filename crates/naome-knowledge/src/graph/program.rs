@@ -453,3 +453,6 @@ fn program_context_bytes(
             .ok_or_else(|| "program formula graph width".into()),
     }
 }
+
+#[cfg(test)]
+mod tests;

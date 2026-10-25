@@ -25,6 +25,7 @@ mod object;
 pub mod proof_work;
 mod publication;
 pub mod question;
+mod quota;
 pub mod relay;
 pub mod resources;
 #[cfg(unix)]

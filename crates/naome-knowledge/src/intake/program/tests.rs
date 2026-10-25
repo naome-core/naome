@@ -292,6 +292,8 @@ async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph()
     ) {
         return;
     }
+    // Native pressure is exercised by governor/process tests. This case owns
+    // the exact pause-before-input boundary and subsequent mathematical error.
     let commands = [
         Command::Equal { left: 0, right: 0 },
         Command::Seal { proof: 0 },
@@ -334,6 +336,22 @@ async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph()
             None,
         )
         .unwrap();
+    assert!(matches!(
+        intake.advance(&mut graph, &mut questions),
+        Progress::Waiting
+    ));
+    let completed = questions.completed().await;
+    questions.finish(&graph, completed);
+    intake.programs.active.as_mut().unwrap().budget =
+        ProgramBudget::fixed_for_test(crate::resources::tests::snapshot(true));
+    assert!(matches!(
+        intake.advance(&mut graph, &mut questions),
+        Progress::Waiting
+    ));
+    assert!(intake.programs.active.as_ref().unwrap().allowed);
+    assert!(intake.program_request(&graph).unwrap().is_none());
+    assert!(graph.ownership().program_progress(&manifest).is_err());
+    crate::resources::tests::budget(false);
     for _ in 0..1000 {
         match intake.advance(&mut graph, &mut questions) {
             Progress::Skipped(rejected, _) => {
