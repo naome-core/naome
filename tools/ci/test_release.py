@@ -278,7 +278,7 @@ class PackageTests(unittest.TestCase):
         self.complete_set()
         api = Repository()
         with patch.object(release, "publication_context", return_value=(SHA, "42")), patch.object(release, "GitHub", return_value=api), \
-             patch.object(release, "attestations"), patch.object(release, "notes", return_value="Reviewed notes"), \
+             patch.object(release, "attestations"), patch.object(release, "require_current_audit"), patch.object(release, "notes", return_value="Reviewed notes"), \
              patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(self.directory / "summary")}):
             release.publish(self.directory, VERSION)
         self.assertEqual(len(api.assets), 6)
@@ -297,7 +297,7 @@ class PackageTests(unittest.TestCase):
         api = Repository()
         api.fail_upload = 1
         with patch.object(release, "publication_context", return_value=(SHA, "42")), patch.object(release, "GitHub", return_value=api), \
-             patch.object(release, "attestations"), patch.object(release, "notes", return_value="Reviewed notes"), \
+             patch.object(release, "attestations"), patch.object(release, "require_current_audit"), patch.object(release, "notes", return_value="Reviewed notes"), \
              patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(self.directory.parent / "unused-release-summary")}):
             with self.assertRaises(RuntimeError):
                 release.publish(self.directory, VERSION)
@@ -342,6 +342,13 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pausing computation"):
             package.lifecycle(run, self.directory / "node")
         self.assertEqual(operations, ["start", "status", "interest", "pause", "stop"])
+
+    def test_resuming_a_release_rejects_an_outdated_security_database(self):
+        self.complete_set()
+        with patch.object(release.subprocess, "check_output", return_value="c" * 40 + "\tHEAD\n"):
+            release.require_current_audit(self.directory)
+        with patch.object(release.subprocess, "check_output", return_value="d" * 40 + "\tHEAD\n"), self.assertRaisesRegex(ValueError, "RustSec database changed"):
+            release.require_current_audit(self.directory)
 
 
 if __name__ == "__main__":

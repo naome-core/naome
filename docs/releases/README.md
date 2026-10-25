@@ -31,6 +31,10 @@ dependencies through their existing owners rather than suppressing a release
 failure. PR candidates exercise build/packaging without requiring an audit of
 unchanged source dependencies; they do not qualify a release.
 
+The publisher compares the audit's database revision with the official database
+HEAD before staging and immediately before publication. A newer database blocks
+publication until fresh qualification is obtained, including on a resumed run.
+
 The workflow relies on the existing protected-main review and CI rules and on
 GitHub's authorization of workflow dispatches. People with repository write or
 administrative access, GitHub-hosted runners, the pinned Rust distribution,
@@ -143,7 +147,7 @@ bytes must match exactly; nothing is replaced. A failed or ambiguously completed
 mutation is not automatically retried. A published version makes a rerun fail
 closed; verify that release rather than trying to republish it.
 
-If artifacts expired, `main` moved, or the draft cannot be reconciled, an
+If artifacts expired, `main` moved, the advisory database changed, or the draft cannot be reconciled, an
 authorized maintainer must inspect and remove only the unpublished draft and
 its unused tag before retrying. Never delete a published release as a retry
 strategy. Release revocation/incident handling remains an explicit maintainer

@@ -2,6 +2,7 @@
 """Prepare, package, verify, and publish an immutable NAOME release."""
 
 import argparse
+import json
 import os
 import subprocess
 import tomllib
@@ -69,11 +70,19 @@ def asset_matches(asset, path, checksum):
         raise ValueError(f"uploaded asset differs from verified bytes: {path.name}")
 
 
+def require_current_audit(directory):
+    recorded = json.loads((directory / "cargo-audit.json").read_text())["database"]["last-commit"]
+    remote = subprocess.check_output(["git", "ls-remote", "https://github.com/RustSec/advisory-db.git", "HEAD"], text=True, timeout=60).split()
+    if remote != [recorded, "HEAD"]:
+        raise ValueError("RustSec database changed since the audit; obtain fresh security qualification before publishing")
+
+
 def publish(directory, version):
     sha, run_id = publication_context()
     release = identity(version)
     hashes = verify_assets(directory, version, sha, run_id)
     attestations(directory, sha)
+    require_current_audit(directory)
     marker = f"<!-- naome-release:{run_id}:{sha} -->"
     api = GitHub()
     qualifications, draft = check_publication(api, release, sha, resume_marker=marker)
@@ -107,6 +116,7 @@ def publish(directory, version):
     if api.get(tag_path, missing=True) is None:
         api.request("/git/refs", method="POST", body={"ref": f"refs/tags/{release['tag']}", "sha": sha})
     check_publication(api, release, sha, resume_marker=marker)
+    require_current_audit(directory)
     result = api.request(f"/releases/{release_id}", method="PATCH", body={"draft": False, "body": body,
                          "prerelease": release["prerelease"], "make_latest": "false" if release["prerelease"] else "true"})
     if result.get("immutable") is not True or result.get("draft") is not False or api.get(tag_path)["object"]["sha"] != sha:
