@@ -21,7 +21,7 @@ enum WaitingStep {
 }
 enum ActiveStep {
     Waiting,
-    Final(CheckedBatch, Instant),
+    Final(Box<CheckedBatch>, Instant),
     Published(Vec<ProofId>),
 }
 
@@ -255,7 +255,7 @@ impl Intake {
             {
                 return Err(crate::Error::ExecutionLimit);
             }
-            Ok(ActiveStep::Final(batch, until))
+            Ok(ActiveStep::Final(Box::new(batch), until))
         })();
         match result {
             Ok(ActiveStep::Published(ids)) => Progress::Accepted(ids),
@@ -263,9 +263,7 @@ impl Intake {
                 self.waiting.push_back(Waiting {
                     description: root.description,
                     selection: root.selection,
-                    phase: Phase::Final {
-                        batch: Some(Box::new(batch)),
-                    },
+                    phase: Phase::Final { batch: Some(batch) },
                     context,
                     until,
                 });
