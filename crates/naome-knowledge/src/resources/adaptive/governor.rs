@@ -56,8 +56,9 @@ impl Governor {
             let cpu_available = available.div_ceil(1000).max(1) as usize;
             if next.selection.profile != Profile::Custom && next.selection.profile != Profile::Light
             {
-                let demand =
-                    statistics.queued_jobs > 0 || statistics.check.units > previous.check.units;
+                let demand = statistics.queued_jobs > 0
+                    || statistics.running_jobs > 0
+                    || statistics.check.units > previous.check.units;
                 let target = if demand {
                     statistics
                         .providers

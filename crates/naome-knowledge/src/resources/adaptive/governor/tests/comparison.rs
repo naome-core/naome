@@ -168,11 +168,11 @@ fn replay(profile: Profile, cpu_millis: u64, cpu_percent: u64, feedback: bool) -
             assert!(budget.concurrency <= 2);
         }
         let work = operating::derive_with_statistics(limits, budget, stats);
-        assert_eq!(work.job_work_units, limits.job_work_units);
-        assert_eq!(work.job_horizon, limits.job_horizon);
-        assert_eq!(work.proof_bytes, limits.proof_bytes);
-        assert_eq!(work.request_burst, limits.request_burst);
-        assert_eq!(work.replay_guard_bytes, limits.replay_guard_bytes);
+        // OperatingLimits contains no format, obligation or custody fields;
+        // original job allowances stay with the independent queue oracle.
+        assert!(work.finding_interval >= limits.transport_busy_grace);
+        assert!(work.finding_interval <= limits.finding_interval);
+        assert!(work.solving_interval <= limits.solving_interval);
         while running.len() < budget.concurrency {
             let Some(index) = queued.iter().position(|job| {
                 now >= next[job.role] && running_roles[job.role] < limits.workers[job.role] as u64
@@ -330,5 +330,63 @@ fn role_costs_cannot_override_pressure_memory_or_owner_modes() {
             )
             .unwrap();
         assert!(memory.budget.concurrency <= 1);
+    }
+}
+
+#[test]
+fn known_running_io_work_does_not_flap_back_to_cpu_only_concurrency_between_arrivals() {
+    for profile in [Profile::Dynamic, Profile::Heavy] {
+        let mut observed = hardware();
+        observed.cpu_millis = 1000;
+        let start = Instant::now();
+        let mut governor = Governor::default();
+        let mut stats = calibrated(10);
+        stats.queued_jobs = 10;
+        stats.providers.solving.queued = 10;
+        let mut last = 0;
+        for second in 0..10 {
+            last = governor
+                .update(
+                    selection(profile),
+                    observed.clone(),
+                    512 * MIB,
+                    stats,
+                    Pressure::default(),
+                    start + Duration::from_secs(second),
+                )
+                .unwrap()
+                .budget
+                .concurrency;
+        }
+        assert!(last > 1);
+        stats.queued_jobs = 0;
+        stats.providers.solving.queued = 0;
+        stats.running_jobs = 2;
+        stats.providers.solving.running = 2;
+        let running = governor
+            .update(
+                selection(profile),
+                observed.clone(),
+                512 * MIB,
+                stats,
+                Pressure::default(),
+                start + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert!(running.budget.concurrency >= last);
+        stats.providers.peer_interest.cpu_nanos = None;
+        stats.providers.peer_interest.queued = 1;
+        stats.queued_jobs = 1;
+        let unknown = governor
+            .update(
+                selection(profile),
+                observed,
+                512 * MIB,
+                stats,
+                Pressure::default(),
+                start + Duration::from_secs(11),
+            )
+            .unwrap();
+        assert_eq!(unknown.budget.concurrency, 1);
     }
 }

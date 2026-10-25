@@ -93,3 +93,22 @@ fn failed_work_and_forged_time_cannot_authorize_checkpoint_or_result() {
     );
     assert!(!attempt.finished());
 }
+
+#[test]
+fn phase_times_must_fit_the_same_owned_attempt_without_overlapping_claims() {
+    let mut attempt = Attempt::new(Role::Finding);
+    attempt.started = Instant::now() - Duration::from_secs(1);
+    let measured = Sample {
+        elapsed_nanos: 600_000_000,
+        ..sample(true)
+    };
+    attempt
+        .observe(Phase::Setup, measured, None, false)
+        .unwrap();
+    assert!(
+        attempt
+            .observe(Phase::Unit { unit: 1 }, measured, Some(1), false)
+            .is_err()
+    );
+    assert!(!attempt.unit_ready(1));
+}

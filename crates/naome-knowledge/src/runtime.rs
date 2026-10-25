@@ -250,7 +250,7 @@ enum Report {
         snapshot: Option<Box<crate::resources::adaptive::Snapshot>>,
         capacity_bytes: usize,
         workers: [usize; 4],
-        feedback: crate::resources::feedback::Statistics,
+        feedback: Box<crate::resources::feedback::Statistics>,
     },
 }
 
@@ -570,7 +570,7 @@ impl Control {
                     snapshot: crate::resources::adaptive::current().map(Box::new),
                     capacity_bytes: crate::resources::limits().memory_bytes,
                     workers: crate::resources::limits().workers,
-                    feedback: crate::resources::feedback::statistics(),
+                    feedback: Box::new(crate::resources::feedback::statistics()),
                 }
             } else {
                 Report::Status {
@@ -1442,6 +1442,6 @@ async fn resources_command(arguments: &[std::ffi::OsString]) -> Result<(), Strin
         adaptive::sample(location)?,
         crate::resources::limits().memory_bytes as u64,
     )?;
-    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"caller_capacity":crate::resources::limits(),"configured":configured,"active":active.as_ref().and_then(|report|report.0.as_ref()),"installed_capacity":active.as_ref().map(|report|serde_json::json!({"memory_bytes":report.1,"workers":report.2})),"feedback":active.as_ref().map(|report|report.3),"caller_observation":proposed,"caller_memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
+    println!("{}",serde_json::to_string_pretty(&serde_json::json!({"version":crate::resources::PROFILE_VERSION,"caller_capacity":crate::resources::limits(),"configured":configured,"active":active.as_ref().and_then(|report|report.0.as_ref()),"installed_capacity":active.as_ref().map(|report|serde_json::json!({"memory_bytes":report.1,"workers":report.2})),"feedback":active.as_ref().map(|report|report.3.as_ref()),"caller_observation":proposed,"caller_memory_charge":crate::resources::memory_usage()})).map_err(|e|e.to_string())?);
     Ok(())
 }

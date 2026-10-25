@@ -67,7 +67,7 @@ async fn maximum_escaped_owner_text_and_resource_reports_have_independent_frames
             snapshot: Some(Box::new(snapshot.clone())),
             capacity_bytes: crate::resources::limits().memory_bytes,
             workers: crate::resources::limits().workers,
-            feedback,
+            feedback: Box::new(feedback),
         },
     };
     assert!(

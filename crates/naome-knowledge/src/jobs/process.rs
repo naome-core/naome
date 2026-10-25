@@ -119,6 +119,11 @@ pub(super) struct Outcome {
     pub result: Result<Output, String>,
 }
 
+struct OwnedAttempt {
+    disposition: std::sync::Mutex<Option<State>>,
+    feedback: feedback::Attempt,
+}
+
 pub(super) async fn run(
     record: Record,
     remaining_ms: u64,
@@ -127,8 +132,10 @@ pub(super) async fn run(
     slot: std::fs::File,
     computation: crate::resources::ComputationPermit,
 ) -> Outcome {
-    let mut feedback = feedback::Attempt::new(record.input.feedback_role());
-    let state = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut attempt = OwnedAttempt {
+        disposition: std::sync::Mutex::new(None),
+        feedback: feedback::Attempt::new(record.input.feedback_role()),
+    };
     let result = run_owned(
         record,
         remaining_ms,
@@ -136,11 +143,11 @@ pub(super) async fn run(
         cancel,
         slot,
         computation,
-        state.clone(),
-        &mut feedback,
+        &mut attempt,
     )
     .await;
-    let state = state
+    let state = attempt
+        .disposition
         .lock()
         .expect("provider disposition owner")
         .unwrap_or(if result.is_ok() {
@@ -148,7 +155,7 @@ pub(super) async fn run(
         } else {
             State::Failed
         });
-    feedback.finish(state);
+    attempt.feedback.finish(state);
     Outcome { state, result }
 }
 
@@ -159,9 +166,10 @@ async fn run_owned(
     mut cancel: oneshot::Receiver<()>,
     slot: std::fs::File,
     permit: crate::resources::ComputationPermit,
-    disposition: std::sync::Arc<std::sync::Mutex<Option<State>>>,
-    feedback: &mut feedback::Attempt,
+    attempt: &mut OwnedAttempt,
 ) -> Result<Output, String> {
+    let disposition = &attempt.disposition;
+    let feedback = &mut attempt.feedback;
     let remaining_ms = remaining_ms.min(record.expires_ms.saturating_sub(wall_ms()?));
     if remaining_ms == 0 {
         *disposition.lock().expect("provider disposition owner") = Some(State::Expired);

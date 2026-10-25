@@ -8,15 +8,20 @@ from pathlib import Path
 
 from autonomous_lifecycle import Node, Trial, write_receipt
 from long_jobs import job_settings, journal
+from proof_network import digest
 
 
 ROLES = ("finding", "solving", "local_interest", "peer_interest")
 
 
 def feedback(trial, node):
-    result = subprocess.run([str(trial.binary), "--json", "resources"],
+    command = [str(trial.binary), "--json", "resources"]
+    result = subprocess.run(command, stdin=subprocess.DEVNULL,
         env={**os.environ, "NAOME_NODE_DIR": str(node.directory)},
-        capture_output=True, text=True, timeout=trial.remaining(10), check=True)
+        capture_output=True, text=True, timeout=trial.remaining(10))
+    trial.summary["commands"].append({"node": node.index, "command": command,
+        "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
+    assert result.returncode == 0, result.stderr
     assert not result.stderr, result.stderr
     report = json.loads(result.stdout)
     assert report["installed_capacity"]["memory_bytes"] > 0
@@ -24,6 +29,7 @@ def feedback(trial, node):
 
 
 def run(trial):
+    trial.summary["provider_feedback_driver_sha256"] = digest(__file__)
     source, receiver = (Node(trial, index) for index in range(2))
     settings = job_settings(**{role: {"steps": 2, "step_ms": 15, "cpu_ms": 10,
                                     "horizon_ms": 60000, "work_units": 64}

@@ -231,9 +231,7 @@ impl Providers {
             if provider.queued == 0 && provider.running == 0 {
                 continue;
             }
-            let Some(cpu) = provider.cpu_nanos else {
-                return None;
-            };
+            let cpu = provider.cpu_nanos?;
             let active = u128::from(provider.active_nanos);
             if provider.completed == 0 || active < quantum.as_nanos() {
                 return None;
