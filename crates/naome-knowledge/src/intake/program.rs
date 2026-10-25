@@ -466,6 +466,9 @@ impl Programs {
                         return Ok(None);
                     }
                     let batch = prepared.take_batch().ok_or("program batch absent")?;
+                    // The transferred batch owns the prefix. If preparation or
+                    // publication defers, rebuild it from the checked helpers.
+                    root.helpers.invalidate_prefix();
                     let deadline = Instant::now() + crate::resources::limits().root_timeout;
                     let assessment = root
                         .authority
