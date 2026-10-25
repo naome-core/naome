@@ -49,7 +49,7 @@ naome interest 'Your exact interest text'
 naome stop
 
 Run as your own user. Installation does not start the node and needs no root.
-The CLI help explains configuration, discovery, resource pauses and wallets.
+The CLI help explains configuration, discovery and automatic computation.
 Keep the included license notices. Cargo.lock, sbom.cdx.json and build.json
 record dependencies, source, features, binary digest and build environment.
 The CycloneDX inventory can include resolved optional dependencies not linked
