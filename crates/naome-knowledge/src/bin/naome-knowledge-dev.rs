@@ -58,7 +58,7 @@ async fn execute() -> Result<(), String> {
                     "request_timeout_seconds":naome_knowledge::resources::limits().request_timeout.as_secs(),"reconcile_seconds":naome_knowledge::resources::limits().reconcile_interval.as_secs()}}));
             Ok(())
         },
-        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] [--question-interest all | --question-interest-file <questions.json>] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status (optional after ProofId; ids, next_after, accepted_proofs), produce, ingest, object, describe, links, announce, offer, stop\npeer proof exchange requires an explicit positive question interest selector".into()),
+        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] [--question-interest all | --question-interest-file <questions.json>] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status (optional after ProofId; ids, next_after, status_page_ids, accepted_proofs), produce, ingest, object, describe, links, announce, offer, stop\npeer proof exchange requires an explicit positive question interest selector".into()),
     }
 }
 

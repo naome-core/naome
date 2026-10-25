@@ -328,12 +328,14 @@ class Node:
     def status_snapshot(self, timeout=10):
         """Explicit complete-ID oracle assembled from bounded keyset responses."""
         deadline = min(self.driver.deadline, time.monotonic() + timeout)
-        limit = self.driver.summary["contract"]["limits"]["status_page_ids"]
+        maximum = self.driver.summary["contract"]["limits"]["status_page_ids"]
         while time.monotonic() < deadline:
             first = self.command("status")
             count, root = first["accepted_proofs"], first["root"]
             page, ids, after = first, [], None
             while True:
+                limit = page["status_page_ids"]
+                assert type(limit) is int and 0 < limit <= maximum, "status page limit exceeds contract"
                 values = page["ids"]
                 assert len(values) <= limit and values == sorted(set(values)), "bounded monotonic status page"
                 assert not values or after is None or values[0] > after, "status cursor must advance"
