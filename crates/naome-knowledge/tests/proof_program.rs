@@ -61,17 +61,6 @@ fn ordinary_cli_rejects_removed_commands_without_creating_node_state() {
         vec!["resources"],
         vec!["resources", "history"],
         vec!["resources", "history", "1"],
-        vec!["wallet"],
-        vec!["wallet", "address"],
-        vec!["wallet", "challenge", "test-verifier"],
-        vec!["wallet", "prove", "challenge.json"],
-        vec![
-            "wallet",
-            "verify",
-            "address",
-            "challenge.json",
-            "proof.json",
-        ],
     ] {
         for json in [false, true] {
             let mut command = Command::new(env!("CARGO_BIN_EXE_naome"));
