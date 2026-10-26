@@ -1,0 +1,239 @@
+{
+  "backend": "Burn 0.22.1 CPU Flex; fresh deterministic random initialization; no imported checkpoints",
+  "base_commit": "b1275e44ef98fa124333e959be28a1a81fc63df7",
+  "binary_sha256": "dce312b47a353a0d38d61605b0380c3f89ae3a35397cf2eea4f5f0d1262c5fa0",
+  "candidate_updates_per_completed_cycle": 250,
+  "cleanup": {
+    "all_owned_groups_empty": true,
+    "errors": []
+  },
+  "limits": [
+    "No retained learning gain: both completed candidates rejected; incumbent models retain zero updates.",
+    "Peer conversion reconstructs a supported native trace for an already checked goal; no general translation of arbitrary peer proof steps.",
+    "Original TRAIN-only sealed curriculum: 1308 learning, 232 development, 241 internal evaluation excluded; original external heldouts excluded.",
+    "No general existential witness or ZFC proof search, automatic learned definitions or functions, failed-attempt lemma extraction, or model gossip.",
+    "Interest assessment remains the existing placeholder; no semantic quality qualification.",
+    "One-host loopback, macOS ARM64 CPU only; no hosted CI, full Cargo matrix, physical multi-host or production deployment qualification."
+  ],
+  "nodes": [
+    {
+      "accepted_mathematical_proofs": 4,
+      "learning": {
+        "accepted": 4,
+        "attempted": 4,
+        "local_examples": 4,
+        "model": {
+          "model": null,
+          "optimizer": null,
+          "seed": 336103165253,
+          "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
+          "updates": 0
+        },
+        "peer_cursor": 4,
+        "peer_examples": 0,
+        "promotions": 0,
+        "rejections": 1,
+        "trained": 1
+      },
+      "node": "node-0",
+      "peer_dispositions": [],
+      "training_jobs": [
+        {
+          "checkpoint": 0,
+          "created_ms": 1793030081676,
+          "expires_ms": 1793116481676,
+          "id": 305,
+          "reserved_units": 0,
+          "spent_ms": 935,
+          "state": "suspended"
+        },
+        {
+          "checkpoint": 38,
+          "created_ms": 1793029974518,
+          "expires_ms": 1793116374518,
+          "id": 42,
+          "reserved_units": 38,
+          "spent_ms": 107853,
+          "state": "complete"
+        }
+      ]
+    },
+    {
+      "accepted_mathematical_proofs": 4,
+      "learning": {
+        "accepted": 2,
+        "attempted": 2,
+        "local_examples": 0,
+        "model": {
+          "model": null,
+          "optimizer": null,
+          "seed": 336103165253,
+          "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
+          "updates": 0
+        },
+        "peer_cursor": 4,
+        "peer_examples": 2,
+        "promotions": 0,
+        "rejections": 1,
+        "trained": 1
+      },
+      "node": "node-1",
+      "peer_dispositions": [
+        {
+          "Learned": {
+            "conversion_job": 7,
+            "trace_proof": "0076e47a8b3715a4e01cbcf52c6bd22433cb5810df9c7c9a4b53e6e460d21186"
+          }
+        },
+        {
+          "Unsupported": {
+            "reason": "certificate_capacity"
+          }
+        },
+        {
+          "Learned": {
+            "conversion_job": 3,
+            "trace_proof": "8aca9aa626299d060bd6922f730770073e9fe6c7b66a7bd57d5f4f754a4d0896"
+          }
+        },
+        {
+          "Unsupported": {
+            "reason": "search_budget"
+          }
+        }
+      ],
+      "training_jobs": [
+        {
+          "checkpoint": 8,
+          "created_ms": 1793030052921,
+          "expires_ms": 1793116452921,
+          "id": 11,
+          "reserved_units": 9,
+          "spent_ms": 29535,
+          "state": "suspended"
+        },
+        {
+          "checkpoint": 38,
+          "created_ms": 1793029978484,
+          "expires_ms": 1793116378484,
+          "id": 4,
+          "reserved_units": 38,
+          "spent_ms": 74876,
+          "state": "complete"
+        }
+      ]
+    }
+  ],
+  "parameters": 1003361,
+  "qualification": {
+    "0": {
+      "anchor_regression": false,
+      "candidate_score": 2,
+      "diagnostic": "no_development_gain_rejected",
+      "incumbent_score": 2,
+      "io_bytes": 313351168,
+      "job": 42,
+      "model": {
+        "model": null,
+        "optimizer": null,
+        "seed": 336103165253,
+        "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
+        "updates": 0
+      }
+    },
+    "1": {
+      "anchor_regression": false,
+      "candidate_score": 2,
+      "diagnostic": "no_development_gain_rejected",
+      "incumbent_score": 2,
+      "io_bytes": 313344616,
+      "job": 4,
+      "model": {
+        "model": null,
+        "optimizer": null,
+        "seed": 336103165253,
+        "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
+        "updates": 0
+      }
+    }
+  },
+  "resource_screen": {
+    "batch": 16,
+    "maximum_candidates": 16,
+    "maximum_graph_nodes": 256,
+    "os_hard_rss_limit": false,
+    "peak_process_rss_bytes": 204718080,
+    "two_model_and_adam_lifetimes": true,
+    "work_reservation_bytes": 805306368
+  },
+  "runtime_evidence": ".local/proof-network/autonomous-native-19180-1793029964836838000",
+  "scope": "First opt-in native node proof-learning integration; local qualification only",
+  "source_commit": "db9513fd5d6a8dacdf00969c6a77bf69316c134a",
+  "validation": {
+    "bazel_mr_build": "pass",
+    "bazel_mr_tests": {
+      "failed": 0,
+      "targets_passed": 14
+    },
+    "ci_contracts": {
+      "passed": 62
+    },
+    "clippy": "release all-targets -D warnings: pass",
+    "format_and_repository_file_policy": "pass",
+    "knowledge_release_library": {
+      "failed": 0,
+      "ignored": 6,
+      "passed": 423
+    },
+    "native_loopback_process": "pass; 118.59 seconds; checkpoints, peer origin, pause, restart, qualification and full cleanup",
+    "ordinary_default_process": "pass; 13.72 seconds",
+    "rustsec": {
+      "database_commit": "a78282a1414d6c28cc228c4eae3570451affb0dc",
+      "informational_warnings": {
+        "unmaintained": [
+          {
+            "advisory": {
+              "aliases": [],
+              "categories": [],
+              "collection": "crates",
+              "cvss": null,
+              "date": "2024-10-07",
+              "description": "The creator of the crate `paste` has stated in the [`README.md`](https://github.com/dtolnay/paste/blob/master/README.md) \nthat this project is not longer maintained as well as archived the repository\n\n## Possible Alternative(s)\n\n- [`pastey`]: a fork of paste and is aimed to be a drop-in replacement with additional features for paste crate\n- [`with_builtin_macros`]: crate providing a [superset of `paste`'s functionality including general `macro_rules!` eager expansions](https://docs.rs/with_builtin_macros/0.1.0/with_builtin_macros/macro.with_eager_expansions.html)  and `concat!`/`concat_idents!` macros\n\n[`pastey`]: https://crates.io/crates/pastey\n[`with_builtin_macros`]: https://crates.io/crates/with_builtin_macros",
+              "expect-deleted": false,
+              "id": "RUSTSEC-2024-0436",
+              "informational": "unmaintained",
+              "keywords": [],
+              "license": "CC0-1.0",
+              "package": "paste",
+              "references": [],
+              "related": [],
+              "source": null,
+              "title": "paste - no longer maintained",
+              "url": "https://github.com/dtolnay/paste",
+              "withdrawn": null
+            },
+            "affected": null,
+            "kind": "unmaintained",
+            "package": {
+              "checksum": "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a",
+              "name": "paste",
+              "replace": null,
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "1.0.15"
+            },
+            "versions": {
+              "patched": [],
+              "unaffected": []
+            }
+          }
+        ]
+      },
+      "known_vulnerabilities": 0
+    },
+    "workspace_doctests": {
+      "failed": 0,
+      "passed": 7
+    },
+    "workspace_documentation": "all-features --locked -D warnings: pass"
+  }
+}
