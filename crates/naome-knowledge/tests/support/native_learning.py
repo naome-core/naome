@@ -12,7 +12,22 @@ from automatic_computation import pressure, state
 
 
 def snapshot(node):
-    with sqlite3.connect((node.directory / "research/jobs.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
+    try:
+        return read_snapshot(node)
+    except sqlite3.OperationalError as error:
+        if "locked" in str(error).lower() or "busy" in str(error).lower():
+            return None
+        raise
+
+
+def observe(node):
+    return node.trial.wait(lambda: snapshot(node), maximum=5)
+
+
+def read_snapshot(node):
+    # The observer yields to the canonical writer; the original trial deadline
+    # still bounds every retry and no production reservation is changed.
+    with sqlite3.connect((node.directory / "research/jobs.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=0.01) as db:
         db.execute("BEGIN")
         learning_raw = db.execute("SELECT payload FROM entries WHERE kind='learning' AND key='current'").fetchone()[0]
         record_rows = db.execute("SELECT key,payload FROM entries WHERE kind='record'").fetchall()
@@ -26,7 +41,8 @@ def snapshot(node):
 def training(node):
     failures=[e for e in node.logs()[node.event_offset:] if e.get("event")=="fatal_error"]
     assert not failures, failures
-    return [r for r in snapshot(node)["records"].values() if r["input"]["role"] == "train"]
+    current=snapshot(node)
+    return [r for r in current["records"].values() if r["input"]["role"] == "train"] if current else []
 
 
 def checkpoint_identity(record):
@@ -37,6 +53,8 @@ def verify_blobs(node, record):
     candidate = record["native"]["progress"]["candidate"]
     assert candidate and candidate["updates"] >= 10
     result = {}
+    output=node.trial.output / "checkpoints" / f"node-{node.index}"
+    output.mkdir(parents=True,exist_ok=True)
     with sqlite3.connect((node.directory / "research/jobs.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
         db.execute("BEGIN")
         for name in ("model", "optimizer"):
@@ -44,7 +62,9 @@ def verify_blobs(node, record):
             rows = db.execute("SELECT payload FROM entries WHERE kind='model' AND key LIKE ? ORDER BY key", (blob["sha256"] + ":%",)).fetchall()
             payload = b"".join(row[0] for row in rows)
             assert len(payload) == blob["bytes"] and hashlib.sha256(payload).hexdigest() == blob["sha256"]
+            (output / f"{name}.bpk").write_bytes(payload)
             result[name] = blob
+    write_receipt(output / "manifest.json", {"status":"candidate_at_resource_pause_not_promoted", "job":checkpoint_identity(record), "checkpoint":candidate, "blobs":result})
     return result
 
 
@@ -55,7 +75,7 @@ def run(trial):
         node.config["discovery"] = {"mdns": False, "dht": False, "internet": False}
         node.write_config()
         node.start()
-        initial = snapshot(node)["learning"]
+        initial = observe(node)["learning"]
         assert initial["accepted"] == initial["model"]["updates"] == 0
         assert initial["model"]["model"] is initial["model"]["optimizer"] is None
         assert not initial["replay"] and not node.ids()
@@ -70,6 +90,8 @@ def run(trial):
 
     def own_and_peer():
         own, peer = snapshot(a), snapshot(b)
+        if own is None or peer is None:
+            return None
         if own["learning"]["local_examples"] and peer["learning"]["peer_examples"]:
             assert peer["learning"]["local_examples"] == 0
             learned = [r for r in peer["peer_receipts"].values() if "Learned" in r["status"]]
@@ -89,7 +111,7 @@ def run(trial):
         end = min(trial.deadline, time.monotonic() + 10)
         previous = None
         while time.monotonic() < end:
-            current = snapshot(node)["records"][record["id"]]
+            current = observe(node)["records"][record["id"]]
             frozen = (current["checkpoint"], current["reserved_units"], current["native"]["io_bytes"])
             if frozen == previous:
                 break
@@ -102,7 +124,7 @@ def run(trial):
         accepted = node.ids()
         for _ in range(3):
             assert state(trial, node, "paused")
-            now = snapshot(node)["records"][current["id"]]
+            now = observe(node)["records"][current["id"]]
             assert (now["checkpoint"], now["reserved_units"], now["native"]["io_bytes"]) == frozen
             assert node.ids() == accepted
         retained[node.index] = {"record": current, "blobs": blobs, "accepted": sorted(accepted)}
@@ -115,7 +137,7 @@ def run(trial):
     for node in trial.nodes:
         node.start()
         original = retained[node.index]["record"]
-        restored = snapshot(node)["records"][original["id"]]
+        restored = observe(node)["records"][original["id"]]
         assert checkpoint_identity(restored) == checkpoint_identity(original)
         assert restored["checkpoint"] >= original["checkpoint"]
         assert restored["reserved_units"] >= original["reserved_units"]
@@ -130,7 +152,7 @@ def run(trial):
         progress = completed["native"]["progress"]
         assert progress["candidate"] is None
         assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected"}
-        assert snapshot(node)["learning"]["accepted"] > 0
+        assert observe(node)["learning"]["accepted"] > 0
         assert checkpoint_identity(completed) == checkpoint_identity(original)
         if progress["diagnostic"] != "candidate_promoted":
             assert progress["state"]["model"] == completed["native"]["base"]["model"], "rejection must restore the exact model AND Adam pair"
