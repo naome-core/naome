@@ -508,7 +508,7 @@
           "FILE:@@//crates/naome-checker/Cargo.toml 1d87041ee983b2e22bf9cea5ec0247c2e63913c246010890b05300fde51a50bd",
           "FILE:@@//crates/naome-foundation/Cargo.toml 4523e1f4400afbedc6cda3e7130ae0555d999710177201cb4b5a79561f57efba",
           "FILE:@@//crates/naome-proof/Cargo.toml 576def3d9ac3c3780f87b10fa9d992b892ecf322e272b658f45c7b064090b8f2",
-          "FILE:@@//crates/naome-knowledge/Cargo.toml 727cc5fd68ed2304e994e531759507ee2ecbc88c4ab9e413e2c3e0c56d8a8ebc",
+          "FILE:@@//crates/naome-knowledge/Cargo.toml 4d067fd03aadd72599dc84e7781619cc2ad980408a1176b75ff71324a3c838a0",
           "FILE:@@//crates/naome-storage/Cargo.toml 828c829ff9ed5672171a41ec0acdad79f372e1a81e5d4f2a58c5a350877ecfa2"
         ],
         "generatedRepoSpecs": {
