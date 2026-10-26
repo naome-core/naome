@@ -40,4 +40,22 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
     ],
 )
-use_repo(crate, "crates")
+use_repo(
+    crate,
+    "crates",
+    "crates__burn-autodiff-0.22.1",
+    "crates__burn-backend-0.22.1",
+    "crates__burn-backend-extension-0.22.1",
+    "crates__burn-flex-0.22.1",
+    "crates__paste-1.0.15",
+)
+
+# Cargo's excluded path patch is mirrored from this checkout on every host.
+# Override crate_universe's machine-specific local_crate_mirror path.
+new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
+new_local_repository(
+    name = "burn_dispatch_local",
+    build_file = "//vendor/burn-dispatch:BUILD.bazel",
+    path = "vendor/burn-dispatch",
+)
+override_repo(crate, **{"crates__burn-dispatch-0.22.1": "burn_dispatch_local"})
