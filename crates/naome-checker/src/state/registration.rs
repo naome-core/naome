@@ -35,7 +35,11 @@ pub(super) fn validate(
             });
         }
         for definition_id in step.definition_references() {
-            if state.definition_kind(definition_id).is_none() {
+            if state
+                .definition_kind(definition_id)
+                .map_err(access)?
+                .is_none()
+            {
                 return Err(ArtifactStateError::MissingDefinitionDependency { definition_id });
             }
         }
@@ -72,6 +76,48 @@ fn same_statement(
         return Err(ArtifactStateError::StatementIdentityCollision {
             statement_id: proof.statement_id,
         });
+    }
+    Ok(())
+}
+
+/// Validate definitions identically in resident and disk-backed contexts.
+pub(super) fn validate_definition(
+    state: &impl ContextView,
+    definition: &crate::CheckedDefinition,
+) -> Result<(), ArtifactStateError> {
+    let access = ArtifactStateError::Context;
+    if let Some(kind) = state
+        .definition_kind(definition.definition_id)
+        .map_err(access)?
+    {
+        let existing = state
+            .resolve_definition(definition.definition_id)
+            .map_err(|error| access(error.into()))?
+            .ok_or_else(|| access(ContextError::Corrupt))?;
+        return if kind == definition.certificate.kind()
+            && existing.body() == definition.certificate.body()
+        {
+            Err(ArtifactStateError::DuplicateDefinition {
+                definition_id: definition.definition_id,
+            })
+        } else {
+            Err(ArtifactStateError::DefinitionIdentityCollision {
+                definition_id: definition.definition_id,
+            })
+        };
+    }
+    if let Some(obligation) = &definition.obligation {
+        let selected = state
+            .statement_formula(obligation.statement_id, CHECKER_MAX_FORMULA_WORK_BYTES)
+            .map_err(access)?
+            .ok_or(ArtifactStateError::MissingDefinitionObligation {
+                statement_id: obligation.statement_id,
+            })?;
+        if *selected != obligation.conclusion {
+            return Err(ArtifactStateError::StatementIdentityCollision {
+                statement_id: obligation.statement_id,
+            });
+        }
     }
     Ok(())
 }

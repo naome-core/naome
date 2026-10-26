@@ -18,7 +18,7 @@ class ProgramObservationTests(unittest.TestCase):
             node = SimpleNamespace(directory=pathlib.Path(directory))
             with sqlite3.connect(node.directory / "proof-corpus.sqlite3") as writer:
                 writer.executescript("CREATE TABLE programs(id BLOB,manifest TEXT,received INTEGER);"
-                                     "CREATE TABLE proofs(id BLOB);")
+                                     "CREATE TABLE artifacts(id BLOB);")
                 writer.execute("INSERT INTO programs VALUES(?,?,?)", (b"proof", json.dumps({"commands": 4}), 2))
                 writer.commit()
                 writer.execute("BEGIN EXCLUSIVE")
@@ -27,7 +27,7 @@ class ProgramObservationTests(unittest.TestCase):
                 self.assertEqual(program_rows(node), [{"id": b"proof".hex(), "manifest": {"commands": 4},
                                                       "received": 2, "published": False}])
                 writer.execute("UPDATE programs SET received=4")
-                writer.execute("INSERT INTO proofs VALUES(?)", (b"proof",))
+                writer.execute("INSERT INTO artifacts VALUES(?)", (b"proof",))
                 writer.commit()
                 self.assertTrue(program_rows(node)[0]["published"])
 

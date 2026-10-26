@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::persistent_map::PersistentMap;
+use naome_proof::ProofId;
 #[test]
 fn streamed_sorted_keys_match_every_patricia_prefix_with_bounded_state() {
     let mut keys = vec![[0; 32], [255; 32]];
@@ -13,16 +14,16 @@ fn streamed_sorted_keys_match_every_patricia_prefix_with_bounded_state() {
     }
     keys.sort();
     keys.dedup();
-    let mut stream = ProofSetFingerprint::default();
+    let mut stream = SetFingerprint::default();
     let mut memory = PersistentMap::new();
     assert_eq!(stream.clone().finish(), memory.fingerprint());
     for key in keys {
         let id = ProofId::from_bytes(key);
-        stream.push(id).unwrap();
+        stream.push(*id.as_bytes()).unwrap();
         memory.insert(id, ());
         assert_eq!(stream.clone().finish(), memory.fingerprint());
         assert!(stream.pending.len() <= 256);
     }
-    assert!(stream.push(ProofId::from_bytes([255; 32])).is_err());
-    assert!(stream.push(ProofId::from_bytes([0; 32])).is_err());
+    assert!(stream.push([255; 32]).is_err());
+    assert!(stream.push([0; 32]).is_err());
 }

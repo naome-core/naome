@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(feature = "system-tests")]
 use crate::network;
-use crate::object::ProofTransfer;
+use crate::object::ArtifactTransfer;
 use std::{path::PathBuf, sync::atomic::AtomicU64};
 
 struct Directory(PathBuf);
@@ -105,7 +105,7 @@ fn populated(path: &std::path::Path) -> (Graph, [Manifest; 3], ProgramMetadata) 
     publish(&mut graph, &checked);
     drop(checked);
     let crate::object::ProofDescription::Program(metadata) =
-        graph.description(third.proof_id()).unwrap().unwrap()
+        graph.description(third.artifact_id()).unwrap().unwrap()
     else {
         panic!("program root description");
     };
@@ -126,7 +126,7 @@ async fn program_root_fetches_large_lemmas_and_publishes_the_whole_checked_closu
         &source,
         &receiver.0,
         metadata,
-        manifests.iter().map(Manifest::proof_id).collect(),
+        manifests.iter().map(Manifest::artifact_id).collect(),
         2,
         false,
     )
@@ -146,7 +146,7 @@ async fn a_composed_program_retains_its_checked_lemmas_across_pressure_and_graph
         &source,
         &receiver.0,
         metadata,
-        manifests.iter().map(Manifest::proof_id).collect(),
+        manifests.iter().map(Manifest::artifact_id).collect(),
         2,
         true,
     )
@@ -206,7 +206,7 @@ fn startup_replay_refreshes_the_owner_budget_between_program_quanta() {
     assert_eq!(replayed.accepted_count(), 3);
     let work = directory.0.join(".program-work").join(format!(
         "{}.sqlite3",
-        crate::hex(manifests[0].proof_id().as_bytes())
+        crate::hex(manifests[0].artifact_id().as_bytes())
     ));
     let connection =
         rusqlite::Connection::open_with_flags(work, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -236,7 +236,7 @@ async fn receive(
     source: &Graph,
     directory: &std::path::Path,
     metadata: ProgramMetadata,
-    expected: BTreeSet<ProofId>,
+    expected: BTreeSet<ArtifactId>,
     depth: usize,
     rebind: bool,
 ) {
@@ -255,7 +255,7 @@ async fn receive(
     .unwrap();
     assert!(snapshot.budget.paused.is_none(), "{snapshot:?}");
     adaptive::publish(snapshot.clone());
-    let root = metadata.manifest.proof_id();
+    let root = metadata.manifest.artifact_id();
     let mut graph = Graph::open(directory).unwrap();
     let mut questions = LocalQuestions::new(Some(accepting as fn(_) -> _));
     let peer = PeerId::random();
@@ -356,10 +356,10 @@ async fn receive(
                 .unwrap()
                 .expect("necessary source proof")
             {
-                ProofTransfer::Program(metadata) => intake
+                ArtifactTransfer::Program(metadata) => intake
                     .enqueue_program_helper(peer, root, metadata, &graph)
                     .unwrap(),
-                ProofTransfer::Certificate(object) => {
+                ArtifactTransfer::Certificate(object) => {
                     fetched.insert(id);
                     intake.payload(peer, root, id, object, &graph).unwrap()
                 }
@@ -419,7 +419,7 @@ async fn receive(
     assert_eq!(
         graph
             .checked_context()
-            .proof_dependency_depth(root)
+            .artifact_proof_dependency_depth(root)
             .unwrap(),
         Some(depth)
     );
@@ -435,7 +435,7 @@ async fn receive(
     assert_eq!(
         replayed
             .checked_context()
-            .proof_dependency_depth(root)
+            .artifact_proof_dependency_depth(root)
             .unwrap(),
         Some(depth)
     );
@@ -466,7 +466,12 @@ async fn program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_p
             result: 2,
         },
         Command::ProofReference {
-            proof_id: *certificate.as_bytes(),
+            proof_id: *source
+                .checked_context()
+                .artifact_proof_id(certificate)
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
         },
         Command::Simplification {
             antecedent: 1,
@@ -482,17 +487,27 @@ async fn program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_p
     while work.advance(&budget(), source.checked_context()).unwrap() {}
     while !work.prepare_export(&budget()).unwrap() {}
     let proof = work.into_checked().unwrap();
-    let implication = proof.proof().unwrap().manifest().proof_id();
+    let implication = proof.proof().unwrap().manifest().artifact_id();
     publish(&mut source, &proof);
     drop(proof);
     let mut work =
         crate::proof_work::Work::open(&sender.0.join("mixed-composition.sqlite3")).unwrap();
     work.append_group(&[
         Command::ProofReference {
-            proof_id: *certificate.as_bytes(),
+            proof_id: *source
+                .checked_context()
+                .artifact_proof_id(certificate)
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
         },
         Command::ProofReference {
-            proof_id: *implication.as_bytes(),
+            proof_id: *source
+                .checked_context()
+                .artifact_proof_id(implication)
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
         },
         Command::ModusPonens {
             premise: 0,
@@ -504,7 +519,7 @@ async fn program_roots_fetch_mixed_certificate_and_program_dependencies_as_one_p
     while work.advance(&budget(), source.checked_context()).unwrap() {}
     while !work.prepare_export(&budget()).unwrap() {}
     let proof = work.into_checked().unwrap();
-    let root = proof.proof().unwrap().manifest().proof_id();
+    let root = proof.proof().unwrap().manifest().artifact_id();
     publish(&mut source, &proof);
     drop(proof);
     let crate::object::ProofDescription::Program(metadata) =
@@ -591,7 +606,7 @@ async fn real_nodes_exchange_a_program_with_large_lemma_dependencies_and_reverif
     ));
     let reached = tokio::time::timeout(std::time::Duration::from_secs(45), async {
         loop {
-            let count = receiver_handle.context().await.unwrap().checked_proofs;
+            let count = receiver_handle.context().await.unwrap().checked_artifacts;
             assert!(
                 count == 0 || count == 3,
                 "transport cannot publish a partial necessary closure"
@@ -624,10 +639,13 @@ async fn real_nodes_exchange_a_program_with_large_lemma_dependencies_and_reverif
     assert_eq!(replayed.content_root(), expected_root);
     assert_eq!(
         replayed.ids().into_iter().collect::<BTreeSet<_>>(),
-        manifests.iter().map(Manifest::proof_id).collect()
+        manifests.iter().map(Manifest::artifact_id).collect()
     );
     drop(replayed);
-    crate::store::corrupt_payload(&receiver.0, &crate::hex(manifests[0].proof_id().as_bytes()));
+    crate::store::corrupt_payload(
+        &receiver.0,
+        &crate::hex(manifests[0].artifact_id().as_bytes()),
+    );
     assert!(
         Graph::open(&receiver.0).is_err(),
         "restart must authenticate every cited lemma again"

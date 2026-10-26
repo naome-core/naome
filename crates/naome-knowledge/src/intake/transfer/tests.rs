@@ -8,13 +8,13 @@ impl TransferGrant {
 #[test]
 fn traffic_scope_expiry_refresh_and_revocation_are_one_contract() {
     let peer = PeerId::random();
-    let root = ProofId::from_bytes([1; 32]);
+    let root = ArtifactId::from_bytes([1; 32]);
     let capability = PeerGrant::new();
     let grant = TransferGrant::new(peer, root, Some(capability.clone()));
     let received = grant.received;
     assert!(grant.authorizes(peer, root, received));
     assert!(!grant.authorizes(PeerId::random(), root, received));
-    assert!(!grant.authorizes(peer, ProofId::from_bytes([2; 32]), received));
+    assert!(!grant.authorizes(peer, ArtifactId::from_bytes([2; 32]), received));
     assert!(!grant.refresh_due(received));
     assert!(grant.refresh_due(received + crate::resources::limits().root_timeout / 2));
     assert!(grant.live(grant.deadline() - std::time::Duration::from_nanos(1)));

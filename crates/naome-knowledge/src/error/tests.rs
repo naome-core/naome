@@ -42,9 +42,10 @@ fn source_and_certificate_api_errors_preserve_the_report_through_json_serializat
     .into_unchecked_normal_form();
     let envelope = Envelope {
         compatibility: hex(&crate::compatibility()),
-        proof_id: hex(crate::object::content_id(statement, normal.canonical_bytes()).as_bytes()),
-        statement_id: hex(statement.as_bytes()),
-        proof: hex(normal.canonical_bytes()),
+        artifact_id: hex(crate::object::content_id(statement, normal.canonical_bytes()).as_bytes()),
+        statement_id: Some(hex(statement.as_bytes())),
+        payload: format!("00{}", hex(normal.canonical_bytes())),
+        obligation_proof: None,
     };
     let error = graph
         .ingest(envelope, std::time::Instant::now())
@@ -89,9 +90,10 @@ fn malformed_certificate_bytes_and_owned_storage_keep_distinct_typed_outcomes() 
     .unwrap();
     let envelope = Envelope {
         compatibility: hex(&crate::compatibility()),
-        proof_id: hex(crate::object::content_id(statement, &bytes).as_bytes()),
-        statement_id: hex(statement.as_bytes()),
-        proof: hex(&bytes),
+        artifact_id: hex(crate::object::content_id(statement, &bytes).as_bytes()),
+        statement_id: Some(hex(statement.as_bytes())),
+        payload: format!("00{}", hex(&bytes)),
+        obligation_proof: None,
     };
     let error = Graph::default()
         .ingest(envelope, std::time::Instant::now())

@@ -24,7 +24,7 @@ import threading
 import time
 import traceback
 
-from proof_network import Driver, Node, content_root, proof_id
+from proof_network import Driver, Node, content_root, artifact_id
 
 COUNT, FIRST = 4096, 8100
 LARGE_COUNT = 12288
@@ -66,7 +66,7 @@ def fixture(index, count=COUNT):
     foundation = b"naome:zfc"
     statement = hashlib.sha256(b"naome:statement\0" + len(foundation).to_bytes(4, "big")
                                + foundation + len(conclusion).to_bytes(4, "big") + conclusion).hexdigest()
-    return source, canonical, conclusion, statement, proof_id(statement, canonical.hex())
+    return source, canonical, conclusion, statement, artifact_id(statement, "00" + canonical.hex())
 
 
 class EventTail(deque):
@@ -302,7 +302,7 @@ def main():
                 driver.check_deadline()
                 source, canonical, conclusion, statement, identifier = fixture(index, args.count)
                 assert len(source.encode()) <= SOURCE_LIMIT
-                row = {"sequence": sequence, "index": index, "proof_id": identifier,
+                row = {"sequence": sequence, "index": index, "artifact_id": identifier,
                        "statement_id": statement, "proof_bytes": len(canonical),
                        "conclusion_bytes": len(conclusion), "roundtrip_ns": None, "validated": False}
                 call_error = None
@@ -317,10 +317,10 @@ def main():
                         row["roundtrip_ns"] = duration
                     assert result["result"] == {"status": "accepted", "id": identifier}
                     envelope = result["object"]
-                    assert set(envelope) == {"proof_id", "statement_id", "compatibility", "proof"}
-                    assert envelope["proof_id"] == identifier and envelope["statement_id"] == statement
+                    assert set(envelope) == {"artifact_id", "statement_id", "compatibility", "payload", "obligation_proof"}
+                    assert envelope["artifact_id"] == identifier and envelope["statement_id"] == statement
                     assert envelope["compatibility"] == compatibility
-                    assert bytes.fromhex(envelope["proof"]) == canonical
+                    assert bytes.fromhex(envelope["payload"]) == b"\0" + canonical
                     assert result["metadata"] is None, result
                     error = result["metadata_error"]
                     assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
@@ -402,7 +402,7 @@ def main():
         status = node.status_snapshot()
         expected_root = content_root(compatibility, identifiers)
         assert status["ids"] == sorted(identifiers)
-        assert status["accepted_proofs"] == args.count and status["root"] == expected_root
+        assert status["accepted_artifacts"] == args.count and status["root"] == expected_root
         driver.summary.update({"accepted_count": completed, "canonical_payload_bytes": payload,
                                "root": expected_root, "complete_ids_verified": True,
                                "first_generation_start": first_start, "first_generation_handoff": handoff,

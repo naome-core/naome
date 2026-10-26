@@ -132,7 +132,7 @@ fn publish(graph: &mut Graph, proof: &CheckedWork) {
     let batch = admission.finish(graph, proof).unwrap();
     graph
         .commit_batch(
-            manifest.proof_id(),
+            manifest.artifact_id(),
             batch,
             Instant::now() + std::time::Duration::from_secs(60),
         )
@@ -150,9 +150,12 @@ fn typed_program_description_and_transfer_preserve_manifest_and_avoid_duplicate_
     let proof = source(&graph);
     publish(&mut graph, &proof);
     let manifest = proof.proof().unwrap().manifest().clone();
+    let envelope = graph.object(manifest.artifact_id()).unwrap().unwrap();
+    assert_eq!(envelope.proof_id().unwrap(), Some(manifest.proof_id()));
+    assert_eq!(envelope.definition_id().unwrap(), None);
     let before = crate::store::manifest_reads();
     let Some(crate::object::ProofDescription::Program(description)) =
-        graph.description(manifest.proof_id()).unwrap()
+        graph.description(manifest.artifact_id()).unwrap()
     else {
         panic!("program description missing")
     };
@@ -160,8 +163,8 @@ fn typed_program_description_and_transfer_preserve_manifest_and_avoid_duplicate_
     assert_eq!(description.manifest, manifest);
     assert!(description.question().unwrap().is_some());
     let before = crate::store::manifest_reads();
-    let Some(crate::object::ProofTransfer::Program(transfer)) =
-        graph.transfer(manifest.proof_id()).unwrap()
+    let Some(crate::object::ArtifactTransfer::Program(transfer)) =
+        graph.transfer(manifest.artifact_id()).unwrap()
     else {
         panic!("program transfer missing")
     };
@@ -169,7 +172,7 @@ fn typed_program_description_and_transfer_preserve_manifest_and_avoid_duplicate_
     assert_eq!(transfer, description);
     assert!(
         graph
-            .description(ProofId::from_bytes([0; 32]))
+            .description(ArtifactId::from_bytes([0; 32]))
             .unwrap()
             .is_none()
     );
@@ -182,7 +185,7 @@ fn measure_program_description() {
     let mut graph = Graph::default();
     let proof = source(&graph);
     publish(&mut graph, &proof);
-    let id = proof.proof().unwrap().manifest().proof_id();
+    let id = proof.proof().unwrap().manifest().artifact_id();
     let before = crate::store::manifest_reads();
     let start = Instant::now();
     let mut digest = [0; 32];
@@ -219,7 +222,7 @@ fn published_program_survives_catalog_validation_and_fresh_mathematical_replay()
     let mut graph = Graph::open(&directory).unwrap();
     let proof = source(&graph);
     publish(&mut graph, &proof);
-    let id = proof.proof().unwrap().manifest().proof_id();
+    let id = proof.proof().unwrap().manifest().artifact_id();
     let root = graph.content_root();
     drop(proof);
     drop(graph);
@@ -228,7 +231,11 @@ fn published_program_survives_catalog_validation_and_fresh_mathematical_replay()
     assert_eq!(reopened.accepted_count(), 1);
     assert_eq!(reopened.content_root(), root);
     assert_eq!(
-        reopened.program_manifest(id).unwrap().unwrap().proof_id(),
+        reopened
+            .program_manifest(id)
+            .unwrap()
+            .unwrap()
+            .artifact_id(),
         id
     );
     drop(reopened);
@@ -263,7 +270,7 @@ async fn receive_program(pause_once: bool) {
     let producer = Graph::default();
     let source = source(&producer);
     let metadata = metadata(&source);
-    let id = metadata.manifest.proof_id();
+    let id = metadata.manifest.artifact_id();
     let peer = PeerId::random();
     let mut receiver = Graph::default();
     let mut questions = LocalQuestions::new(Some(accepting as fn(_) -> _));
@@ -422,7 +429,7 @@ async fn authenticated_but_mathematically_invalid_input_never_enters_the_graph()
         conclusion: naome_proof::program::formula_hash(question.positive_target()),
         statement: *statement.as_bytes(),
     };
-    let id = manifest.proof_id();
+    let id = manifest.artifact_id();
     let peer = PeerId::random();
     let mut graph = Graph::default();
     let mut questions = LocalQuestions::new(Some(accepting as fn(_) -> _));
@@ -500,13 +507,13 @@ async fn cited_program_and_parent_commit_together_and_final_decline_publishes_ne
         let mut producer = Graph::default();
         let proof = source(&producer);
         publish(&mut producer, &proof);
-        let helper = proof.proof().unwrap().manifest().proof_id();
+        let helper = proof.proof().unwrap().manifest().artifact_id();
         let statement = CompiledQuestion::compile(&question_source())
             .unwrap()
             .positive_target()
             .to_source();
-        let parent=producer.author(&format!("goal = imp(all(y,mem(y,y)),{statement}) proof: p0 = cite(\"{}\") p1 = simp({statement},all(y,mem(y,y))) p2 = mp(p0,p1) return p2",crate::hex(helper.as_bytes()))).unwrap();
-        let root = ProofId::from_bytes(crate::object::id_bytes(&parent.proof_id).unwrap());
+        let parent=producer.author(&format!("goal = imp(all(y,mem(y,y)),{statement}) proof: p0 = cite(\"{}\") p1 = simp({statement},all(y,mem(y,y))) p2 = mp(p0,p1) return p2",crate::hex(proof.proof().unwrap().manifest().proof_id().as_bytes()))).unwrap();
+        let root = ArtifactId::from_bytes(crate::object::id_bytes(&parent.artifact_id).unwrap());
         producer.ingest(parent.clone(), Instant::now()).unwrap();
         let mut receiver = Graph::default();
         let mut intake = Intake::default();

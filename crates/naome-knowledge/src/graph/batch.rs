@@ -10,10 +10,10 @@ pub(super) fn dependency_visits() -> usize {
 /// A complete checked delta, prepared without publishing staged knowledge.
 pub(crate) struct CheckedBatch {
     pub(super) context: DiskArtifactState,
-    pub(super) entries: Vec<(ProofId, crate::object::BinaryProof)>,
+    pub(super) entries: Vec<(ArtifactId, crate::object::BinaryArtifact)>,
     // Bounded unpublished closure edges. Program references remain canonical
     // commands rather than duplicated persistent catalog relations.
-    pub(super) edges: BTreeMap<ProofId, BTreeSet<ProofId>>,
+    pub(super) edges: BTreeMap<ArtifactId, BTreeSet<ArtifactId>>,
     pub(super) stamp: Stamp,
     pub(super) context_bytes: usize,
     pub(super) _disk: crate::resources::DiskLease,
@@ -34,7 +34,7 @@ impl Graph {
         source: &str,
         helpers: &[String],
         question: &CompiledQuestion,
-    ) -> Result<(ProofId, CheckedBatch), crate::Error> {
+    ) -> Result<(ArtifactId, CheckedBatch), crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
         // Capture before helper preparation can write immutable staged nodes.
@@ -66,13 +66,17 @@ impl Graph {
             .chain(std::iter::once(source))
             .enumerate()
         {
-            let checked = self
-                .compile_source(source, preparation.context())?
-                .into_checked_proof();
-            let record = crate::object::BinaryProof::from_checked(&checked)?;
+            let checked =
+                CheckedArtifact::from_compiled(self.compile_source(source, preparation.context())?);
+            let record = checked.record(preparation.context())?;
             let id = record.id;
             steps = steps
-                .checked_add(checked.normal_form().certificate().steps().len())
+                .checked_add(match &checked {
+                    CheckedArtifact::Proof(proof) => {
+                        proof.normal_form().certificate().steps().len()
+                    }
+                    CheckedArtifact::Definition(_) => 1,
+                })
                 .ok_or("generated checker work overflow")?;
             bytes = bytes
                 .checked_add(record.bytes.len())
@@ -87,10 +91,10 @@ impl Graph {
             // its actual cited closure; no unrelated checked helper is admitted.
             if position == helpers.len() {
                 question
-                    .classify_checked_proof(&checked)
+                    .classify_checked_proof(checked.proof()?)
                     .map_err(crate::Error::from)?;
             }
-            preparation.append_certificate(self, checked, record)?;
+            preparation.append_artifact(self, checked, record)?;
         }
         let root = root.ok_or("missing generated root")?;
         Ok((root, preparation.finish(self, root)?))
@@ -106,8 +110,8 @@ impl Graph {
     #[cfg(test)]
     pub(crate) fn prepare_batch(
         &self,
-        root: ProofId,
-        candidates: BTreeMap<ProofId, Candidate>,
+        root: ArtifactId,
+        candidates: BTreeMap<ArtifactId, Candidate>,
         question: &CompiledQuestion,
     ) -> Result<CheckedBatch, crate::Error> {
         self.ensure_live()?;
@@ -117,8 +121,8 @@ impl Graph {
 
     pub(crate) fn prepare_batch_after(
         &self,
-        root: ProofId,
-        mut candidates: BTreeMap<ProofId, Candidate>,
+        root: ArtifactId,
+        mut candidates: BTreeMap<ArtifactId, Candidate>,
         question: &CompiledQuestion,
         prefix: Option<CheckedBatch>,
     ) -> Result<CheckedBatch, crate::Error> {
@@ -158,7 +162,7 @@ impl Graph {
         // Resolve internal edges once. Only dependencies outside this batch
         // need an authenticated lookup in the fixed predecessor context.
         let mut waiting = BTreeMap::new();
-        let mut dependents: BTreeMap<ProofId, Vec<ProofId>> = BTreeMap::new();
+        let mut dependents: BTreeMap<ArtifactId, Vec<ArtifactId>> = BTreeMap::new();
         let mut external = BTreeSet::new();
         let mut ready = BTreeSet::new();
         for (id, candidate) in &candidates {
@@ -173,7 +177,7 @@ impl Graph {
                     && !self.cold(
                         preparation
                             .context()
-                            .contains_proof(*dependency)
+                            .contains_artifact(*dependency)
                             .map_err(crate::Error::from),
                     )?
                 {
@@ -188,16 +192,13 @@ impl Graph {
         while let Some(id) = ready.pop_first() {
             let candidate = candidates.remove(&id).expect("selected staged object");
             let record = candidate.record();
-            let checked = self.check_normal(candidate.normal, preparation.context())?;
-            if checked.proof_id() != id || checked.statement_id() != candidate.statement {
-                return Err("checked identity mismatch".into());
-            }
+            let checked = self.check_artifact(candidate, preparation.context())?;
             if id == root {
                 question
-                    .classify_checked_proof(&checked)
+                    .classify_checked_proof(checked.proof()?)
                     .map_err(crate::Error::from)?;
             }
-            preparation.append_certificate(self, checked, record)?;
+            preparation.append_artifact(self, checked, record)?;
             for dependent in dependents.remove(&id).unwrap_or_default() {
                 let remaining = waiting.get_mut(&dependent).expect("batch dependency");
                 *remaining -= 1;
@@ -221,8 +222,8 @@ impl Graph {
     ) -> Result<CheckedBatch, crate::Error> {
         let record = candidate.record();
         let mut preparation = Preparation::new(self, prefix, record.bytes.len(), 1)?;
-        let checked = self.check_normal(candidate.normal, preparation.context())?;
-        preparation.append_certificate(self, checked, record)?;
+        let checked = self.check_artifact(candidate, preparation.context())?;
+        preparation.append_artifact(self, checked, record)?;
         Ok(preparation.into_prefix())
     }
 
@@ -231,20 +232,20 @@ impl Graph {
     #[cfg(test)]
     pub(crate) fn commit_batch(
         &mut self,
-        root: ProofId,
+        root: ArtifactId,
         batch: CheckedBatch,
         deadline: Instant,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.commit_batch_granted(root, batch, deadline, None)
     }
 
     pub(crate) fn commit_batch_granted(
         &mut self,
-        root: ProofId,
+        root: ArtifactId,
         batch: CheckedBatch,
         deadline: Instant,
         peer: Option<PeerGrant>,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.ensure_live()?;
         self.publication_current()?;
         let guard = peer
@@ -280,7 +281,7 @@ impl Graph {
                 self.count
                     .checked_add(batch.entries.len())
                     .ok_or("accepted count overflow")?,
-                batch.context.proof_set_fingerprint(),
+                batch.context.artifact_set_fingerprint(),
             )?,
             guard.as_ref(),
         );

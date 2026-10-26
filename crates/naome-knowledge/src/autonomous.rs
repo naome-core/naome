@@ -2,7 +2,7 @@
 use crate::{Graph, jobs, network::emit, question};
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::Identity;
-use naome_proof::ProofId;
+use naome_proof::ArtifactId;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -84,7 +84,7 @@ impl Candidate {
         graph: &Graph,
         client: &jobs::Client,
         question: &CompiledQuestion,
-    ) -> Result<Option<(ProofId, crate::graph::CheckedBatch)>, crate::Error> {
+    ) -> Result<Option<(ArtifactId, crate::graph::CheckedBatch)>, crate::Error> {
         match self {
             Self::Certificate { source, helpers } => {
                 graph.prepare_generated(source, helpers, question).map(Some)
@@ -97,7 +97,7 @@ struct Publication {
     question: CompiledQuestion,
     job: u64,
     candidate: Candidate,
-    batch: Option<(ProofId, crate::graph::CheckedBatch)>,
+    batch: Option<(ArtifactId, crate::graph::CheckedBatch)>,
     announced: bool,
     assessment: Option<question::QuestionAssessment>,
     reply: Option<oneshot::Receiver<question::QuestionAssessment>>,
@@ -241,7 +241,7 @@ impl Autonomous {
         &mut self,
         graph: &mut Graph,
         questions: &mut question::LocalQuestions<F>,
-    ) -> Vec<ProofId>
+    ) -> Vec<ArtifactId>
     where
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,
@@ -639,7 +639,7 @@ impl Autonomous {
                     .transpose();
                 match current {
                     Ok(Some(true)) => {
-                        let outcome = (|| -> Result<Vec<ProofId>, crate::Error> {
+                        let outcome = (|| -> Result<Vec<ArtifactId>, crate::Error> {
                             let delta = questions.prepare_exchange(
                                 graph,
                                 &pending.question,

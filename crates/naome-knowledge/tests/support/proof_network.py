@@ -42,6 +42,35 @@ def proof_id(statement, proof):
     ).hexdigest()
 
 
+def artifact_id(statement, payload):
+    data = bytes.fromhex(payload)
+    if data[0] == 0:
+        identity = bytes.fromhex(proof_id(statement, data[1:].hex()))
+        domain = b"naome:artifact:proof:v0\0"
+    elif data[0] == 1:
+        certificate = data[1:]
+        foundation = b"naome:zfc"
+        framed = len(foundation).to_bytes(4,"big") + foundation + len(certificate).to_bytes(4,"big") + certificate
+        identity = hashlib.sha256(b"naome:definition:v1\0" + framed).digest()
+        domain = b"naome:artifact:definition:v1\0"
+    else:
+        raise AssertionError("unknown artifact type")
+    return hashlib.sha256(domain + identity).hexdigest()
+
+
+def citation_id(object):
+    return proof_id(object["statement_id"], object["payload"][2:])
+
+
+def proof_metadata(object, question):
+    return {"artifact_id": object["artifact_id"], "proof_id": citation_id(object),
+            "statement_id": object["statement_id"], "question": question}
+
+
+def program_artifact_id(manifest):
+    return hashlib.sha256(b"naome:artifact:proof:v0\0" + bytes.fromhex(program_id(manifest))).hexdigest()
+
+
 def program_id(manifest):
     framed=b"naome:program-proof\0"+b"naome:zfc"
     framed+=manifest['commands'].to_bytes(8,'big')+manifest['input_bytes'].to_bytes(8,'big')
@@ -51,7 +80,7 @@ def program_id(manifest):
 
 
 def verify_program_input(catalog,manifest):
-    identity=bytes.fromhex(program_id(manifest))
+    identity=bytes.fromhex(program_artifact_id(manifest))
     saved=catalog.execute('SELECT manifest,received,input_bytes,hash,remaining FROM programs WHERE id=?',(identity,)).fetchone()
     assert saved is not None and json.loads(saved[0])==manifest
     assert saved[1:]==(manifest['commands'],manifest['input_bytes'],bytes(manifest['program_hash']),bytes(32))
@@ -135,13 +164,13 @@ def stored_objects(node):
         assert catalog.execute("PRAGMA foreign_key_check").fetchall() == []
         assert [row[0] for row in catalog.execute(
             "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-        )] == ["commits", "dependencies", "members", "meta", "program_input", "programs", "proofs"], "current catalog schema required"
+        )] == ["artifacts", "commits", "dependencies", "members", "meta", "program_input", "programs"], "current catalog schema required"
         assert catalog.execute(
             "SELECT name,tbl_name FROM sqlite_schema WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ).fetchall() == [
+            ("artifacts_by_origin_commit", "artifacts"),
             ("commits_by_root", "commits"),
             ("dependencies_by_target", "dependencies"),
-            ("proofs_by_origin_commit", "proofs"),
         ], "foreign-key child indexes required"
         identity, state, root, count, total = catalog.execute(
             "SELECT database_id,state,corpus_root,corpus_count,payload_bytes FROM meta WHERE singleton=1"
@@ -151,54 +180,58 @@ def stored_objects(node):
             # Offline controls may create an unverified empty catalog. It has
             # no admitted set until the first successful checked graph opens.
             assert root is None and count == total == 0
-            for table in ["proofs", "commits", "members", "dependencies"]:
+            for table in ["artifacts", "commits", "members", "dependencies"]:
                 assert catalog.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
             return []
         assert state == "active"
         rows = catalog.execute(
-            "SELECT id,statement,compatibility,payload,payload_length,payload_digest,origin_commit,replay_order FROM proofs ORDER BY id"
+            "SELECT id,statement,compatibility,payload,payload_length,payload_digest,origin_commit,replay_order,obligation FROM artifacts ORDER BY id"
         ).fetchall()
         assert len(rows) == count
-        ordinals = {row[0]: row[-1] for row in rows}
+        ordinals = {row[0]: row[7] for row in rows}
         assert sorted(ordinals.values()) == list(range(1, count + 1)), "complete replay order required"
         objects = []
         by_id = {}
         payload_bytes = 0
-        for id, statement, compatibility, payload, length, checksum, commit, ordinal in rows:
-            assert len(id) == len(statement) == len(compatibility) == len(checksum) == len(commit) == 32
+        for id, statement, compatibility, payload, length, checksum, commit, ordinal, obligation in rows:
+            assert len(id) == len(compatibility) == len(checksum) == len(commit) == 32
             assert compatibility == format_bytes[8:40]
             assert 1 <= len(payload) == length <= 65536 and hashlib.sha256(payload).digest() == checksum
-            object = {"proof_id": id.hex(), "statement_id": statement.hex(),
-                "compatibility": compatibility.hex(), "proof": payload.hex()}
+            object = {"artifact_id": id.hex(), "statement_id": statement.hex() if statement is not None else None,
+                "obligation_proof": obligation.hex() if obligation is not None else None,
+                "compatibility": compatibility.hex(), "payload": payload.hex()}
             if payload.startswith(b'\xffNAOP\0'):
                 manifest=json.loads(payload[len(b'\xffNAOP\0'):])
-                assert program_id(manifest)==object['proof_id'] and bytes(manifest['statement'])==statement
+                assert program_artifact_id(manifest)==object['artifact_id'] and bytes(manifest['statement'])==statement
                 verify_program_input(catalog,manifest)
                 object['program_manifest']=manifest
             else:
-                assert proof_id(object["statement_id"], object["proof"]) == object["proof_id"]
+                assert artifact_id(object["statement_id"], object["payload"]) == object["artifact_id"]
             objects.append(object)
-            by_id[id] = (statement, compatibility, length, checksum, commit)
+            by_id[id] = (statement, compatibility, length, checksum, commit, obligation)
             payload_bytes += length
         assert len(by_id) == count and payload_bytes == total
-        assert bytes.fromhex(content_root(format_bytes[8:40].hex(), [object["proof_id"] for object in objects])) == root
+        assert bytes.fromhex(content_root(format_bytes[8:40].hex(), [object["artifact_id"] for object in objects])) == root
         represented = set()
         for commit, batch_root, members in catalog.execute("SELECT id,root,member_count FROM commits ORDER BY id"):
-            ids = [row[0] for row in catalog.execute("SELECT proof_id FROM members WHERE commit_id=? ORDER BY proof_id", (commit,))]
+            ids = [row[0] for row in catalog.execute("SELECT artifact_id FROM members WHERE commit_id=? ORDER BY artifact_id", (commit,))]
             assert 1 <= len(ids) == members <= 4096 and batch_root in ids
             assert sum(by_id[id][2] for id in ids) <= 64 * 1024 * 1024, "per-commit payload bound"
             framed = b"naome:knowledge:catalog-commit:v1\0" + batch_root + len(ids).to_bytes(4, "big")
             for id in ids:
                 assert id in by_id and id not in represented
                 represented.add(id)
-                statement, compatibility, length, checksum, origin = by_id[id]
+                statement, compatibility, length, checksum, origin, obligation = by_id[id]
                 assert origin == commit
-                dependencies = catalog.execute("SELECT ordinal,target FROM dependencies WHERE proof_id=? ORDER BY ordinal", (id,)).fetchall()
+                dependencies = catalog.execute("SELECT ordinal,target FROM dependencies WHERE artifact_id=? ORDER BY ordinal", (id,)).fetchall()
                 assert [ordinal for ordinal, _ in dependencies] == list(range(len(dependencies)))
                 targets = [target for _, target in dependencies]
                 assert targets == sorted(set(targets)) and len(targets) <= 32
                 assert all(target in by_id and ordinals[target] < ordinals[id] for target in targets), "dependency precedes replay consumer"
-                framed += id + statement + compatibility + length.to_bytes(4, "big") + checksum
+                framed += id
+                for optional in [statement, obligation]:
+                    framed += bytes([optional is not None]) + (optional or b"")
+                framed += compatibility + length.to_bytes(4, "big") + checksum
                 framed += len(targets).to_bytes(4, "big") + b"".join(targets)
             assert hashlib.sha256(framed).digest() == commit
         assert represented == set(by_id), "every immutable payload belongs to one complete commit"
@@ -208,8 +241,8 @@ def stored_objects(node):
 def replace_catalog_payload(node, id, payload):
     with sqlite3.connect(node.directory / "proof-corpus.sqlite3") as catalog:
         catalog.execute("PRAGMA ignore_check_constraints=ON")
-        original = catalog.execute("SELECT payload FROM proofs WHERE id=?", (bytes.fromhex(id),)).fetchone()[0]
-        assert catalog.execute("UPDATE proofs SET payload=? WHERE id=?", (payload, bytes.fromhex(id))).rowcount == 1
+        original = catalog.execute("SELECT payload FROM artifacts WHERE id=?", (bytes.fromhex(id),)).fetchone()[0]
+        assert catalog.execute("UPDATE artifacts SET payload=? WHERE id=?", (payload, bytes.fromhex(id))).rowcount == 1
         return original
 
 
@@ -335,7 +368,7 @@ class Node:
         maximum = self.driver.summary["contract"]["limits"]["status_page_ids"]
         while time.monotonic() < deadline:
             first = self.command("status")
-            count, root = first["accepted_proofs"], first["root"]
+            count, root = first["accepted_artifacts"], first["root"]
             page, ids, after = first, [], None
             while True:
                 limit = page["status_page_ids"]
@@ -343,7 +376,7 @@ class Node:
                 values = page["ids"]
                 assert len(values) <= limit and values == sorted(set(values)), "bounded monotonic status page"
                 assert not values or after is None or values[0] > after, "status cursor must advance"
-                if page["accepted_proofs"] != count or page["root"] != root:
+                if page["accepted_artifacts"] != count or page["root"] != root:
                     break  # Accepted state changed between requests; restart.
                 ids.extend(values)
                 assert len(ids) <= count, "status page exceeds accepted count"
@@ -471,7 +504,7 @@ class Driver:
                 status = node.command("status")
                 # Read the complete ID oracle once the bounded status can match it.
                 # Repeated full scans during catch-up compete with the transfer itself.
-                if status["accepted_proofs"] != len(expected) or status["root"] != root or status["pending"]:
+                if status["accepted_artifacts"] != len(expected) or status["root"] != root or status["pending"]:
                     times.pop(str(index), None)
                     final.pop(str(index), None)
                     continue
@@ -490,17 +523,17 @@ class Driver:
                 print(f"{name}: all {len(indices)} nodes converged in {result['all_node_seconds']:.3f}s", flush=True)
                 return
             time.sleep(interval)
-        counts = {str(index): self.nodes[index].command("status")["accepted_proofs"] for index in indices}
+        counts = {str(index): self.nodes[index].command("status")["accepted_artifacts"] for index in indices}
         raise AssertionError(f"{name}: all-node convergence timeout; accepted_counts={counts}")
 
     def retain_proof(self, label, object):
-        assert proof_id(object["statement_id"], object["proof"]) == object["proof_id"]
+        assert artifact_id(object["statement_id"], object["payload"]) == object["artifact_id"]
         assert object["compatibility"] == self.summary["contract"]["compatibility"]
         path = self.output / f"{label}.envelope.json"
         path.write_text(json.dumps(object, indent=2) + "\n")
-        self.summary["proofs"][label] = {"proof_id": object["proof_id"], "statement_id": object["statement_id"],
+        self.summary["proofs"][label] = {"artifact_id": object["artifact_id"], "statement_id": object["statement_id"],
                                            "path": str(path), "sha256": digest(path)}
-        return object["proof_id"]
+        return object["artifact_id"]
 
     def produce(self, node, depth, label):
         result = self.nodes[node].command("produce", source=source(depth))
@@ -540,12 +573,12 @@ class Driver:
                     self.check_deadline()
                     result = self.nodes[0].command("produce", source=inventory_source(depth, used))
                     assert result["result"]["status"] == "accepted"
-                    ids.append(result["object"]["proof_id"])
+                    ids.append(result["object"]["artifact_id"])
             assert len(ids) == len(set(ids)) == 595
             reservations[1].close()
             self.nodes[1].start()
             self.nodes[1].command("links", peers=[])
-            assert self.nodes[1].command("status")["accepted_proofs"] == 0
+            assert self.nodes[1].command("status")["accepted_artifacts"] == 0
             started = time.monotonic()
             self.topology([[0, 1]])
             self.convergence("ten_page_inventory_complete_content_catchup", range(2), ids,
@@ -599,11 +632,11 @@ class Driver:
             escaped_source += "#" + "\u0001" * (65536 - len(escaped_source.encode()) - 2) + "\n"
             escaped_result = self.nodes[0].command("produce", source=escaped_source)
             assert escaped_result["result"]["status"] == "duplicate"
-            assert escaped_result["object"]["proof_id"] == initial[0]
+            assert escaped_result["object"]["artifact_id"] == initial[0]
             self.summary["scenarios"]["full_source_with_worst_case_command_escaping"] = {
                 "result": "pass", "source_bytes": len(escaped_source.encode()),
                 "json_source_bytes": len(json.dumps(escaped_source).encode()),
-                "proof_id": initial[0], "status": "duplicate",
+                "artifact_id": initial[0], "status": "duplicate",
             }
             started = time.monotonic()
             self.topology([[0, 1, 2, 3]])
@@ -615,7 +648,7 @@ class Driver:
             parent = self.produce(0, 7, "delayed-parent")
             premise = question_source(source(7)).split("goal = ")[1]
             b = "all(z,mem(z,z))"
-            child_source = f'goal = imp({b},{premise})\nproof: p0 = cite("{parent["proof_id"]}") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2'
+            child_source = f'goal = imp({b},{premise})\nproof: p0 = cite("{citation_id(parent)}") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2'
             compiled_child = self.nodes[0].command("produce", source=child_source)
             child = compiled_child["object"]
             metadata = compiled_child["metadata"]
@@ -628,10 +661,10 @@ class Driver:
             assert len(stored_objects(self.nodes[3])) == len(initial)
             self.summary["scenarios"]["dependent_before_parent"] = {"result": "pass", "isolated_failed_closure": status, "no_orphan": True}
             started = time.monotonic()
-            parent_metadata = self.nodes[0].command("describe", id=parent["proof_id"])["metadata"]
+            parent_metadata = self.nodes[0].command("describe", id=parent["artifact_id"])["metadata"]
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=parent_metadata, object=parent)
             self.nodes[1].command("test_offer", peer=self.nodes[3].identity, metadata=metadata, object=child)
-            union = initial + [parent["proof_id"], child["proof_id"]]
+            union = initial + [parent["artifact_id"], child["artifact_id"]]
             self.convergence("dependency_resolution", [1, 3], union, started)
             self.topology([[0, 1, 2, 3]])
             self.convergence("dependency_all_node_union", range(4), union, time.monotonic())
@@ -639,10 +672,10 @@ class Driver:
             self.topology([[0, 1], [2, 3]])
             left = self.produce(0, 8, "partition-left")
             right = self.produce(2, 9, "partition-right")
-            self.convergence("partition_left", [0, 1], union + [left["proof_id"]], time.monotonic())
-            self.convergence("partition_right", [2, 3], union + [right["proof_id"]], time.monotonic())
-            assert right["proof_id"] not in self.nodes[0].ids()
-            assert left["proof_id"] not in self.nodes[2].ids()
+            self.convergence("partition_left", [0, 1], union + [left["artifact_id"]], time.monotonic())
+            self.convergence("partition_right", [2, 3], union + [right["artifact_id"]], time.monotonic())
+            assert right["artifact_id"] not in self.nodes[0].ids()
+            assert left["artifact_id"] not in self.nodes[2].ids()
 
             # Each malformed payload uses a distinct unresolved question and
             # real metadata approval/Get, never a full-payload Offer.
@@ -653,16 +686,16 @@ class Driver:
                 object = self.nodes[0].command("test_compile", source=proof_source)["object"]
                 q = question_source(proof_source)
                 if label == "malformed":
-                    object["proof"] = "00000001ff"
+                    object["payload"] = "0000000001ff"
                     expected_error = "malformed certificate"
                 elif label == "claimed_id":
-                    object["proof_id"] = "00" * 32
-                    expected_error = "claimed proof ID mismatch"
+                    object["artifact_id"] = "00" * 32
+                    expected_error = "claimed artifact ID mismatch"
                 elif label == "compatibility":
                     object["compatibility"] = "00" * 32
                     expected_error = "compatibility mismatch"
                 elif label == "mathematical":
-                    object["proof"] = "00000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
+                    object["payload"] = "0000000004" + "0600000000" + "210000000000000000" + "210000000100000001" + "200000000100000002"
                     expected_error = "mp.expected_implication"
                 else:
                     unrelated_source = source(60)
@@ -671,8 +704,8 @@ class Driver:
                     q = question_source(unrelated_source)
                     expected_error = "checked identity mismatch"
                 if label != "claimed_id":
-                    object["proof_id"] = proof_id(object["statement_id"], object["proof"])
-                metadata = {"proof_id": object["proof_id"], "statement_id": object["statement_id"], "question": q}
+                    object["artifact_id"] = artifact_id(object["statement_id"], object["payload"])
+                metadata = proof_metadata(object, q)
                 offset = len(self.nodes[1].events)
                 self.nodes[0].command("test_offer", peer=self.nodes[1].identity, metadata=metadata, object=object)
                 event = self.nodes[1].wait_event(lambda event: event.get("event") == "proof_skipped" and (
@@ -685,27 +718,27 @@ class Driver:
                 time.sleep(0.2)
             offset = len(self.nodes[0].events)
             self.nodes[0].command("test_offer", peer=self.nodes[1].identity,
-                                 metadata=self.nodes[0].command("describe", id=left["proof_id"])["metadata"],
+                                 metadata=self.nodes[0].command("describe", id=left["artifact_id"])["metadata"],
                                  test_compatibility="00" * 32)
             self.nodes[0].wait_event(lambda event: event.get("event") == "peer_error" and event.get("error") == "compatibility mismatch", since=offset)
             self.summary["scenarios"]["reject_transport_compatibility"] = {"result": "pass"}
             for _ in range(3):
                 offset = len(self.nodes[0].events)
-                self.nodes[0].command("offer", peer=self.nodes[1].identity, id=left["proof_id"])
+                self.nodes[0].command("offer", peer=self.nodes[1].identity, id=left["artifact_id"])
                 self.nodes[0].wait_event(lambda event: event.get("event") == "offer_result" and event.get("status") == "duplicate", since=offset)
-                self.nodes[0].command("announce", id=left["proof_id"])
+                self.nodes[0].command("announce", id=left["artifact_id"])
                 time.sleep(0.2)
             status = self.nodes[1].status_snapshot()
             assert status["root"] == baseline["root"] and status["ids"] == baseline["ids"]
             self.summary["scenarios"]["duplicate_delivery_and_announcements"] = {"result": "pass", "deliveries": 3, "announcements": 3, "unchanged_root": status["root"]}
             started = time.monotonic()
             self.topology([[0, 1, 2, 3]])
-            union += [left["proof_id"], right["proof_id"]]
+            union += [left["artifact_id"], right["artifact_id"]]
             self.convergence("partition_reconnection_union", range(4), union, started)
 
             self.nodes[2].stop()
             new = self.produce(0, 10, "while-offline")
-            union.append(new["proof_id"])
+            union.append(new["artifact_id"])
             self.convergence("offline_remaining_nodes", [0, 1, 3], union, time.monotonic())
             started = time.monotonic()
             self.nodes[2].start()

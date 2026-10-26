@@ -137,6 +137,17 @@ impl ArtifactId {
     }
 }
 
+impl From<ProofId> for ArtifactId {
+    fn from(id: ProofId) -> Self {
+        Self::from_proof_id(id)
+    }
+}
+impl From<DefinitionId> for ArtifactId {
+    fn from(id: DefinitionId) -> Self {
+        Self::from_definition_id(id)
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

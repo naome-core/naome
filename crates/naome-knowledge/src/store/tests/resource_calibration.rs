@@ -32,7 +32,7 @@ fn configured_sqlite_budgets_open_and_reopen_the_real_catalog() {
     drop(graph);
     let graph = Graph::open(&directory.0).unwrap();
     assert_eq!(graph.content_root(), root);
-    assert_eq!(graph.get(&object.proof_id).unwrap(), Some(object));
+    assert_eq!(graph.get(&object.artifact_id).unwrap(), Some(object));
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn stored_commits_survive_smaller_admission_budgets_without_skipping_validation(
     store
         .finish_replay(Graph::default().content_root())
         .unwrap();
-    let root = ProofId::from_bytes(crate::object::id_bytes(&child.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(crate::object::id_bytes(&child.artifact_id).unwrap());
     store
         .persist_batch(root, [&parent, &child].into_iter())
         .unwrap();

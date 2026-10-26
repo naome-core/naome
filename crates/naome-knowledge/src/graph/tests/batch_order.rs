@@ -4,8 +4,9 @@ use super::*;
 fn typed_certificate_projection_preserves_exact_envelope_and_derived_question() {
     let mut graph = Graph::default();
     let object = introduce(&mut graph);
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
-    let Some(crate::object::ProofTransfer::Certificate(transferred)) = graph.transfer(id).unwrap()
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+    let Some(crate::object::ArtifactTransfer::Certificate(transferred)) =
+        graph.transfer(id).unwrap()
     else {
         panic!("certificate transfer missing")
     };
@@ -19,7 +20,7 @@ fn typed_certificate_projection_preserves_exact_envelope_and_derived_question() 
     assert_eq!(described, id);
     assert_eq!(
         statement.as_bytes(),
-        &id_bytes(&object.statement_id).unwrap()
+        &id_bytes(object.statement_id.as_deref().unwrap()).unwrap()
     );
     assert_eq!(
         question.resolution_id(),
@@ -38,7 +39,7 @@ fn reverse_arrival_dependency_chain_is_checked_once_and_published_atomically() {
         producer.ingest(next.clone(), Instant::now()).unwrap();
         objects.push(next);
     }
-    let root = ProofId::from_bytes(id_bytes(&objects.last().unwrap().proof_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&objects.last().unwrap().artifact_id).unwrap());
     let mut receiver = Graph::default();
     let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
     let candidates = objects
@@ -61,7 +62,7 @@ fn reverse_arrival_dependency_chain_is_checked_once_and_published_atomically() {
     assert_eq!(admitted.len(), 32);
     assert_eq!(receiver.content_root(), producer.content_root());
     for object in objects {
-        let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+        let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
         assert_eq!(receiver.object(id).unwrap(), Some(object));
     }
 }
@@ -82,7 +83,7 @@ fn measure_dependency_batch_and_startup() {
         // Keep this original owner for the bounded batch fixtures; reopening
         // measures a separate directory so ownership never overlaps.
         let question = naome_authoring::CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
-        let root = ProofId::from_bytes(id_bytes(&objects.last().unwrap().proof_id).unwrap());
+        let root = ArtifactId::from_bytes(id_bytes(&objects.last().unwrap().artifact_id).unwrap());
         for repeat in 0..3 {
             let receiver = Graph::default();
             let candidates = objects

@@ -56,9 +56,9 @@ def stop_and_reap_direct_child(trial, node, child, record):
         assert stop.returncode == 0, f"stop: {stderr}"
         assert stderr == "", f"stop: {stderr}"
         value = json.loads(stdout)
-        assert set(value) == {"running", "accepted_proofs", "interest", "proof_verification", "computation", "computation_reason"}, value
+        assert set(value) == {"running", "accepted_artifacts", "interest", "artifact_verification", "computation", "computation_reason"}, value
         assert isinstance(value["running"], bool), value
-        assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value
+        assert type(value["accepted_artifacts"]) is int and value["accepted_artifacts"] >= 0, value
         assert isinstance(value["interest"], str), value
         assert value["running"] is False, "internal stop CLI reported running"
         record["stop_cli"]["status"] = value

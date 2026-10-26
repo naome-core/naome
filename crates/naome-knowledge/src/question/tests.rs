@@ -38,7 +38,7 @@ async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
     let (_, peer) = local.begin_peer_exchange(
         &graph,
         question(SOLVED),
-        naome_proof::ProofId::from_bytes([1; 32]),
+        naome_proof::ArtifactId::from_bytes([1; 32]),
         crate::jobs::Purpose::Initial,
         Instant::now() + Duration::from_secs(3600),
     );
@@ -262,7 +262,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
             async { Ok(true) }
         },
     ));
-    assert_eq!(context(&handle).await.checked_proofs, 1);
+    assert_eq!(context(&handle).await.checked_artifacts, 1);
     let proved = handle.admit_question(question(SOLVED)).await.unwrap();
     assert_eq!(
         proved.assessment.prefilter.reason,
@@ -415,7 +415,7 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
         commands,
         None,
     ));
-    assert_eq!(context(&handle).await.checked_proofs, 0);
+    assert_eq!(context(&handle).await.checked_artifacts, 0);
     let readonly_client = handle.clone();
     let readonly =
         tokio::spawn(async move { readonly_client.assess(question(SOLVED)).await.unwrap() });
@@ -444,7 +444,7 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
-        while context(&handle).await.checked_proofs != 1 {
+        while context(&handle).await.checked_artifacts != 1 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -755,8 +755,29 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let target = question(QUESTION);
-    let late = graph.author(PROOF).unwrap();
-    let late_id = late.proof_id.clone();
+    let mut late = graph.author(PROOF).unwrap();
+    let solved = question(SOLVED).core().to_source();
+    let mut source = PROOF.trim_end_matches("return p0").to_owned();
+    let mut premise = 0;
+    // Choose a late address from a bounded family of proofs of the same theorem.
+    // Artifact addresses have their own ordering, independently of ProofId.
+    for group in 0..16 {
+        let step = 1 + group * 3;
+        source.push_str(&format!(
+            " p{step}=simp({solved},{solved}) p{}=mp(p{premise},p{step}) p{}=mp(p{premise},p{})",
+            step + 1,
+            step + 2,
+            step + 1
+        ));
+        premise = step + 2;
+        let candidate = graph
+            .author(&format!("{source} return p{premise}"))
+            .unwrap();
+        if candidate.artifact_id > late.artifact_id {
+            late = candidate;
+        }
+    }
+    let late_id = late.artifact_id.clone();
     let mut index = 0;
     while graph.accepted_count() < 1025 {
         assert!(index < 2048, "finite unique checked source family");
@@ -773,7 +794,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
             target.core().to_source()
         );
         let envelope = graph.author(&source).unwrap();
-        if envelope.proof_id < late_id {
+        if envelope.artifact_id < late_id {
             graph.ingest(envelope, Instant::now()).unwrap();
         }
     }
@@ -800,7 +821,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        initial.checked_proofs, 1026,
+        initial.checked_artifacts, 1026,
         "real startup recovered and rechecked the entire durable graph"
     );
     let solved = handle.assess(question(SOLVED)).await.unwrap();
@@ -905,7 +926,7 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
     assert_eq!(rejected.assessment.interest, InterestAssessment::NotRun);
     let after = context(&handle).await;
     assert_eq!(after.registered_questions, 1);
-    assert_eq!(after.checked_proofs, 0);
+    assert_eq!(after.checked_artifacts, 0);
     let receipt = admitted[0];
     assert_eq!(receipt.record(), *input.source_hash());
     assert_eq!(receipt.input(), readonly.prefilter.input);
@@ -1016,11 +1037,11 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
 #[tokio::test]
 async fn running_node_multistep_admission_rechecks_original_proofs_and_certificate_budget() {
     use naome_foundation::{Formula, FreeVariable};
-    use naome_proof::{ProofCertificate, ProofId, ProofStep};
+    use naome_proof::{ProofCertificate, ProofStep};
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let seed = graph.author(PROOF).unwrap();
-    let seed_id = seed.proof_id.clone();
+    let seed_id = crate::hex(seed.proof_id().unwrap().unwrap().as_bytes());
     graph.ingest(seed, Instant::now()).unwrap();
     let p = question(SOLVED).core().clone();
     let q = Formula::for_all(FreeVariable::new(1), p.clone());
@@ -1033,7 +1054,7 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
             antecedent.to_source()
         );
         let envelope = graph.author(&source).unwrap();
-        ids.push(envelope.proof_id.clone());
+        ids.push(crate::hex(envelope.proof_id().unwrap().unwrap().as_bytes()));
         graph.ingest(envelope, Instant::now()).unwrap();
     }
     let root = graph.content_root();
@@ -1051,7 +1072,7 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
         },
     ));
     let before = context(&handle).await;
-    assert_eq!(before.checked_proofs, 3);
+    assert_eq!(before.checked_artifacts, 3);
     let source = format!("goal = {}", r.to_source());
     let result = handle.admit_question(question(&source)).await.unwrap();
     assert_eq!(
@@ -1076,7 +1097,9 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
     );
     let mut expected: Vec<_> = ids
         .iter()
-        .map(|id| ProofId::from_bytes(crate::object::unhex(id).unwrap().try_into().unwrap()))
+        .map(|id| {
+            naome_proof::ProofId::from_bytes(crate::object::unhex(id).unwrap().try_into().unwrap())
+        })
         .collect();
     expected.sort();
     assert_eq!(witness.original_proofs(), expected);

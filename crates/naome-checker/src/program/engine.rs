@@ -372,6 +372,7 @@ impl Engine {
             CREATE TEMP TABLE stack(sequence INTEGER PRIMARY KEY, source INTEGER NOT NULL, depth INTEGER NOT NULL);"))?;
         sql(connection.execute_batch("CREATE TEMP TABLE stream(position INTEGER PRIMARY KEY,suffix BLOB NOT NULL CHECK(length(suffix)=32)); CREATE TEMP TABLE export_pending(id INTEGER PRIMARY KEY); CREATE TEMP TABLE export_node(id INTEGER PRIMARY KEY);"))?;
         sql(connection.execute_batch("CREATE TEMP TABLE checked_reference(proof BLOB PRIMARY KEY CHECK(length(proof)=32), statement BLOB NOT NULL CHECK(length(statement)=32), derivation BLOB NOT NULL CHECK(length(derivation)=32)) WITHOUT ROWID;
+            CREATE TEMP TABLE checked_definition(id BLOB PRIMARY KEY CHECK(length(id)=32)) WITHOUT ROWID;
             CREATE TEMP TABLE reference_pending(sequence INTEGER PRIMARY KEY,address BLOB NOT NULL CHECK(length(address)=32));"))?;
         let data_version = sql(connection.pragma_query_value(None, "data_version", |r| r.get(0)))?;
         Ok(Self {
@@ -600,6 +601,39 @@ impl Engine {
                     });
                 }
                 match plan.construction {
+                    checker::Construction::Definition(definition_id, arguments) => {
+                        self.observe_reference_context(context);
+                        let formula = naome_proof::DefinedFormula::defined_relation(
+                            definition_id,
+                            arguments
+                                .into_iter()
+                                .map(naome_foundation::FreeVariable::new),
+                        );
+                        let expanded = match formula
+                            .expand_with_node_limit(context, naome_foundation::FORMULA_MAX_NODES)
+                        {
+                            Ok((formula, _)) => formula,
+                            Err(naome_proof::DefinitionExpansionError::Access(source)) => {
+                                return Err(crate::ContextError::from(source).into());
+                            }
+                            Err(source) => {
+                                return Err(Error::Check(Box::new(self.proof_diagnostic(
+                                    &command,
+                                    crate::diagnostics::Failure::Expansion {
+                                        reason: (&source).into(),
+                                    },
+                                    context,
+                                    query,
+                                )?)));
+                            }
+                        };
+                        let node = checker::Context::fixed(self, &expanded)?;
+                        sql(self.connection.execute(
+                            "INSERT OR IGNORE INTO checked_definition VALUES(?1)",
+                            [definition_id.as_bytes().as_slice()],
+                        ))?;
+                        operations.push(Operation::Input(node));
+                    }
                     checker::Construction::Formula(expression) => {
                         compile(expression, &mut operations);
                     }

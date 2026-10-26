@@ -105,7 +105,7 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
     let child = producer
         .author(&format!(
             "goal=all(x,eq(x,x)) proof: p0=cite(\"{}\") return p0",
-            parent.proof_id
+            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap();
     let directory = crate::checkpoint::tests::Directory::new();
@@ -222,7 +222,7 @@ async fn live_pause_defers_ready_backlog_and_question_work_but_preserves_commit_
         response
     }
     assert_eq!(
-        exchange(&control, &endpoint, json!("status"), 2).await["report"]["status"]["accepted_proofs"],
+        exchange(&control, &endpoint, json!("status"), 2).await["report"]["status"]["accepted_artifacts"],
         2
     );
     assert!(

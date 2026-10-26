@@ -8,7 +8,7 @@ use crate::{
 use libp2p::PeerId;
 use naome_authoring::CompiledQuestion;
 use naome_checker::question::Identity;
-use naome_proof::{ProofId, StatementId};
+use naome_proof::{ArtifactId, StatementId};
 #[cfg(test)]
 use std::time::Duration;
 use std::{
@@ -58,7 +58,7 @@ impl ApprovedRoot {
     }
 }
 
-type DeclinedDescriptionKey = (PeerId, ProofId, StatementId, Identity);
+type DeclinedDescriptionKey = (PeerId, ArtifactId, StatementId, Identity);
 struct DeclineContext {
     formal: FormalContext,
     until: Instant,
@@ -76,8 +76,8 @@ pub(crate) struct Intake {
 
 pub(crate) enum Progress {
     Waiting,
-    Skipped(ProofId, crate::Error),
-    Accepted(Vec<ProofId>),
+    Skipped(ArtifactId, crate::Error),
+    Accepted(Vec<ArtifactId>),
 }
 
 impl Intake {
@@ -105,7 +105,7 @@ impl Intake {
             .queued_metadata
             .saturating_sub(self.queue.len() + self.programs.queued())
     }
-    pub(crate) fn contains(&self, id: ProofId) -> bool {
+    pub(crate) fn contains(&self, id: ArtifactId) -> bool {
         if self.programs.contains(id) {
             return true;
         }
@@ -200,7 +200,7 @@ impl Intake {
         Ok("queued")
     }
 
-    pub(crate) fn needed(&self) -> Vec<(PeerId, ProofId, ProofId)> {
+    pub(crate) fn needed(&self) -> Vec<(PeerId, ArtifactId, ArtifactId)> {
         self.active
             .as_ref()
             .filter(|root| {
@@ -224,7 +224,7 @@ impl Intake {
             .collect()
     }
 
-    pub(crate) fn authorizes(&self, peer: PeerId, root_id: ProofId, id: ProofId) -> bool {
+    pub(crate) fn authorizes(&self, peer: PeerId, root_id: ArtifactId, id: ArtifactId) -> bool {
         self.programs.authorizes(peer, root_id, id)
             || self.active.as_ref().is_some_and(|root| {
                 root.fetching()
@@ -239,8 +239,8 @@ impl Intake {
     pub(crate) fn payload(
         &mut self,
         peer: PeerId,
-        root_id: ProofId,
-        expected: ProofId,
+        root_id: ArtifactId,
+        expected: ArtifactId,
         object: Envelope,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
@@ -264,7 +264,7 @@ impl Intake {
             .certificate_payload(expected, object, graph, &root.description.transfer)
     }
 
-    pub(crate) fn abort(&mut self, root_id: ProofId) {
+    pub(crate) fn abort(&mut self, root_id: ArtifactId) {
         self.programs.remove(root_id);
         self.waiting
             .retain(|w| w.description.transfer.root() != root_id);
@@ -361,7 +361,7 @@ impl Intake {
             return Progress::Waiting;
         };
         let id = root.description.transfer.root();
-        let operation = (|| -> Result<Option<Vec<ProofId>>, crate::Error> {
+        let operation = (|| -> Result<Option<Vec<ArtifactId>>, crate::Error> {
             if !root.description.transfer.live(now) {
                 if !root.closure.has_programs() {
                     return Err("root intake deadline".into());

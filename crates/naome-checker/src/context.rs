@@ -184,7 +184,7 @@ pub trait ContextView: sealed::Sealed + DefinitionResolver {
         kind: BucketKind,
         target: StatementId,
     ) -> Result<StatementCursor<'_>, ContextError>;
-    fn definition_kind(&self, id: DefinitionId) -> Option<DefinitionKind>;
+    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError>;
 }
 
 impl sealed::Sealed for ArtifactState {}
@@ -231,12 +231,31 @@ impl ContextView for ArtifactState {
             BucketKind::Instances => Box::new(self.question_index.instances(target).map(Ok)),
         })
     }
-    fn definition_kind(&self, id: DefinitionId) -> Option<DefinitionKind> {
-        ArtifactState::definition_kind(self, id)
+    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError> {
+        Ok(ArtifactState::definition_kind(self, id))
     }
 }
 
 pub(crate) mod cache;
 
 pub(crate) mod fingerprint;
-pub use fingerprint::ProofSetFingerprint;
+pub use fingerprint::SetFingerprint;
+
+impl From<naome_proof::DefinitionAccessError> for ContextError {
+    fn from(error: naome_proof::DefinitionAccessError) -> Self {
+        match error {
+            naome_proof::DefinitionAccessError::Storage(message) => Self::Storage(message),
+            naome_proof::DefinitionAccessError::Corrupt => Self::Corrupt,
+            naome_proof::DefinitionAccessError::Limit => Self::Limit,
+        }
+    }
+}
+impl From<ContextError> for naome_proof::DefinitionAccessError {
+    fn from(error: ContextError) -> Self {
+        match error {
+            ContextError::Storage(message) => Self::Storage(message),
+            ContextError::Corrupt => Self::Corrupt,
+            ContextError::Limit => Self::Limit,
+        }
+    }
+}

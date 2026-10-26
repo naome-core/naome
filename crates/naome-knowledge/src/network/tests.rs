@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(feature = "system-tests")]
 mod automatic_pause;
+#[cfg(feature = "system-tests")]
+mod definitions;
 use libp2p::tcp;
 use naome_authoring::CompiledQuestion;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -193,7 +195,7 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
             .unwrap(),
         )
         .unwrap();
-    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     sender_graph.ingest(object, Instant::now()).unwrap();
     let target = *sender_graph
         .describe(root)
@@ -262,7 +264,10 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
     tokio::time::timeout(Duration::from_secs(15), final_started.notified())
         .await
         .unwrap();
-    assert_eq!(receiver_handle.context().await.unwrap().checked_proofs, 0);
+    assert_eq!(
+        receiver_handle.context().await.unwrap().checked_artifacts,
+        0
+    );
     commands
         .send(Ok(QueuedCommand::from_value(
             json!({"command":"links","peers":[],"request":"disable-during-final"}),
@@ -275,7 +280,7 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
     assert!(dropped.load(Ordering::SeqCst));
     released.notify_waiters();
     let context = receiver_handle.context().await.unwrap();
-    assert_eq!(context.checked_proofs, 0);
+    assert_eq!(context.checked_artifacts, 0);
     assert_eq!(context.registered_questions, 0);
     receiver_admin.stop().await.unwrap();
     sender_admin.stop().await.unwrap();
@@ -294,7 +299,7 @@ async fn cli_peer_disable_cancels_final_interest_before_parent_commit() {
     let catalog =
         rusqlite::Connection::open(receiver_dir.join(crate::store::DATABASE_FILE)).unwrap();
     let count: i64 = catalog
-        .query_row("SELECT count(*) FROM proofs", [], |row| row.get(0))
+        .query_row("SELECT count(*) FROM artifacts", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 0);
 }
@@ -355,8 +360,8 @@ async fn changing_from_proof_peer_to_public_router_revokes_existing_publication_
     let (shared, _events, mut transport) = worker::Transport::spawn(swarm, listener);
     let remote = identity::Keypair::generate_ed25519();
     let peer = remote.public().to_peer_id();
-    let grant = shared.grant(peer, ProofId::from_bytes([31; 32]));
-    let other = shared.grant(PeerId::random(), ProofId::from_bytes([32; 32]));
+    let grant = shared.grant(peer, ArtifactId::from_bytes([31; 32]));
+    let other = shared.grant(PeerId::random(), ArtifactId::from_bytes([32; 32]));
     let mut info = libp2p::identify::Info {
         public_key: remote.public(),
         protocol_version: discovery::protocol_version(false),
@@ -466,7 +471,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         proof_bytes > crate::resources::limits().proof_bytes * 3 / 4
             && proof_bytes <= crate::resources::limits().proof_bytes
     );
-    let object = crate::object::BinaryProof::from_checked(&checked)
+    let object = crate::object::BinaryArtifact::from_checked(&checked)
         .unwrap()
         .envelope();
     let control =
@@ -518,8 +523,9 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         Some(control.selection().unwrap()),
     ));
     let offered = Metadata {
-        proof_id: object.proof_id.clone(),
-        statement_id: object.statement_id.clone(),
+        artifact_id: object.artifact_id.clone(),
+        proof_id: hex(object.proof_id().unwrap().unwrap().as_bytes()),
+        statement_id: object.statement_id.clone().unwrap(),
         question: "goal = all(x,eq(x,x))".into(),
     };
     let busy = shared.busy.clone();
@@ -560,7 +566,7 @@ async fn slow_checked_write_keeps_real_transport_and_control_responsive_and_revo
         .unwrap();
     let status_seconds = measure.elapsed().as_secs_f64();
     assert_eq!(status["report"]["kind"], "status");
-    assert_eq!(status["report"]["status"]["accepted_proofs"], 0);
+    assert_eq!(status["report"]["status"]["accepted_artifacts"], 0);
     tokio::time::sleep(crate::resources::limits().transport_busy_grace * 2).await;
     let measure = Instant::now();
     let id = client.behaviour_mut().exchange.send_request(

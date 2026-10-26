@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Envelope, Graph, hex};
 use naome_checker::{ContextStorage, ContextView};
-use naome_proof::{ProofCertificate, ProofId, ProofStep, StatementId};
+use naome_proof::{ArtifactId, ProofCertificate, ProofStep, StatementId};
 use std::{
     cell::RefCell,
     sync::{Arc, Barrier, mpsc},
@@ -265,7 +265,7 @@ fn public_ingest_batches_real_source_and_mirror_inserts_before_canonical_commit(
         let snapshot = old.snapshot_id();
         let before = graph.store.summary().unwrap();
         let envelope = object(&graph, 8116);
-        let id = ProofId::from_bytes(crate::object::id_bytes(&envelope.proof_id).unwrap());
+        let id = ArtifactId::from_bytes(crate::object::id_bytes(&envelope.artifact_id).unwrap());
         let _reset = probe(Fault::None);
         assert_eq!(
             graph
@@ -306,7 +306,7 @@ fn public_ingest_batches_real_source_and_mirror_inserts_before_canonical_commit(
         source.evict_cache();
         assert_eq!(old.snapshot_id(), snapshot);
         assert_eq!(
-            old.proof_ids()
+            old.artifact_ids_after(None)
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap()
                 .len(),
@@ -341,9 +341,10 @@ fn mathematically_invalid_public_ingest_rejects_before_opening_or_halting_a_phas
     let statement = StatementId::from_bytes([0; 32]);
     let envelope = Envelope {
         compatibility: hex(&crate::compatibility()),
-        proof_id: hex(crate::object::content_id(statement, &bytes).as_bytes()),
-        statement_id: hex(statement.as_bytes()),
-        proof: hex(&bytes),
+        artifact_id: hex(crate::object::content_id(statement, &bytes).as_bytes()),
+        statement_id: Some(hex(statement.as_bytes())),
+        payload: format!("00{}", hex(&bytes)),
+        obligation_proof: None,
     };
     let _reset = probe(Fault::None);
     let error = graph.ingest(envelope, Instant::now()).unwrap_err();
@@ -393,7 +394,7 @@ fn begin_insert_commit_epoch_and_poison_failures_close_both_indexes_without_cano
         assert_eq!(graph.accepted_count(), 16);
         assert_eq!(graph.store.summary().unwrap().count, 16);
         closed(&graph, &source, Some(&target));
-        assert!(old.proof_ids().next().unwrap().is_err());
+        assert!(old.artifact_ids_after(None).next().unwrap().is_err());
     }
 }
 
@@ -455,7 +456,7 @@ fn foreign_writer_waits_while_cold_old_reader_succeeds_and_abort_wakes_it_closed
             .unwrap();
         source.evict_cache();
         assert_eq!(
-            old.proof_ids()
+            old.artifact_ids_after(None)
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap()
                 .len(),
@@ -545,7 +546,7 @@ fn prepared_batch_staleness_deadline_and_last_snapshot_generation_lifetime_survi
     source.evict_cache();
     assert_eq!(old.snapshot_id(), snapshot);
     assert_eq!(
-        old.proof_ids()
+        old.artifact_ids_after(None)
             .collect::<Result<Vec<_>, _>>()
             .unwrap()
             .len(),

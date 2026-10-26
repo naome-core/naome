@@ -1,9 +1,9 @@
 use super::*;
 use crate::Graph;
 use naome_checker::{CHECKER_MAX_FORMULA_WORK_BYTES as WORK_BYTES, ContextView, DiskCopyBudget};
-use naome_proof::{DerivationId, ProofId, StatementId};
+use naome_proof::{ArtifactId, DerivationId, StatementId};
 use std::fmt::Write;
-type Expected = (ProofId, StatementId, DerivationId, Vec<u8>);
+type Expected = (ArtifactId, StatementId, DerivationId, Vec<u8>);
 fn fixture(index: usize) -> (String, Vec<u8>, Vec<u8>) {
     assert!((8100..130712).contains(&index));
     let mut source = String::from("let:\n    large0 = not(not(not(all(x,eq(x,x)))))\n");
@@ -48,22 +48,25 @@ fn admit(g: &mut Graph, index: usize) -> Expected {
     let (source, proof, goal) = fixture(index);
     let envelope = g.author(&source).unwrap();
     let candidate = envelope.clone().prepare().unwrap();
-    assert_eq!(candidate.normal.canonical_bytes(), proof);
+    assert_eq!(candidate.bytes[1..], proof);
     let (id, statement) = (candidate.id, candidate.statement);
     g.admit(candidate).unwrap();
     assert_eq!(g.object(id).unwrap(), Some(envelope));
-    let header = g.context.proof_header(id).unwrap().unwrap();
-    (id, statement, header.derivation_id(), goal)
+    let header = g.context.artifact_proof_header(id).unwrap().unwrap();
+    (id, statement.unwrap(), header.derivation_id(), goal)
 }
 fn verify(context: &DiskArtifactState, proofs: &[Expected]) {
     let mut ids: Vec<_> = proofs.iter().map(|row| row.0).collect();
     ids.sort();
     assert_eq!(
-        context.proof_ids().collect::<Result<Vec<_>, _>>().unwrap(),
+        context
+            .artifact_ids_after(None)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
         ids
     );
     for (id, statement, derivation, bytes) in proofs {
-        let header = context.proof_header(*id).unwrap().unwrap();
+        let header = context.artifact_proof_header(*id).unwrap().unwrap();
         assert_eq!(header.statement_id(), *statement);
         assert_eq!(header.derivation_id(), *derivation);
         assert_eq!(header.canonical_length(), bytes.len());

@@ -30,7 +30,14 @@ fn pending_frontier_matches_full_copy_including_formulas_and_nested_buckets() {
     )
     .unwrap();
     state.register_proof_for_replication(implication).unwrap();
-    assert!(maps(&state)[..8].iter().all(|map| map.root().is_some()));
+    let x = naome_foundation::FreeVariable::new(0);
+    let definition =
+        naome_proof::DefinitionCertificate::relation(1, naome_proof::DefinedFormula::equal(x, x))
+            .unwrap();
+    state
+        .register_definition(crate::check_definition_with_state(definition, &state).unwrap())
+        .unwrap();
+    assert!(maps(&state)[..9].iter().all(|map| map.root().is_some()));
     let complete = Arc::new(MemoryStorage::default());
     let copied = state.copy_to(complete.clone()).unwrap();
     let expected = complete

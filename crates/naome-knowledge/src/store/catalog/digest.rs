@@ -33,13 +33,18 @@ impl CommitDigest {
             return Err("catalog commit members are not uniquely sorted".into());
         }
         if member.length == 0
-            || member.length > naome_proof::CERTIFICATE_MAX_BYTES
+            || member.length > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES
             || member.dependencies.len() > naome_proof::CERTIFICATE_MAX_STEPS
         {
             return Err("catalog commit member width differs".into());
         }
         self.hash.update(member.id);
-        self.hash.update(member.statement);
+        for value in [member.statement, member.obligation] {
+            self.hash.update([u8::from(value.is_some())]);
+            if let Some(value) = value {
+                self.hash.update(value);
+            }
+        }
         self.hash.update(member.compatibility);
         self.hash.update(
             u32::try_from(member.length)

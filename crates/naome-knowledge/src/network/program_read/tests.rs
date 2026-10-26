@@ -4,8 +4,8 @@ use naome_proof::program::{Chunk, Command};
 #[test]
 fn program_reply_keeps_the_original_record_admission_and_scope() {
     let read = ProgramRead {
-        root: ProofId::from_bytes([1; 32]),
-        id: ProofId::from_bytes([2; 32]),
+        root: ArtifactId::from_bytes([1; 32]),
+        id: ArtifactId::from_bytes([2; 32]),
         start: 7,
         limit: 3,
     };

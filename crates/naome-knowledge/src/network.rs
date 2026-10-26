@@ -17,7 +17,7 @@ use libp2p::{
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
     yamux,
 };
-use naome_proof::ProofId;
+use naome_proof::ArtifactId;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -144,13 +144,13 @@ enum Flight {
     },
     Get {
         started: Instant,
-        root: ProofId,
-        id: ProofId,
+        root: ArtifactId,
+        id: ArtifactId,
         peer: PeerId,
     },
     Describe {
         started: Instant,
-        id: ProofId,
+        id: ArtifactId,
         peer: PeerId,
     },
     Offer {
@@ -182,7 +182,7 @@ struct Node {
     relay_listeners: BTreeMap<PeerId, libp2p::core::transport::ListenerId>,
     next_relay_attempt: BTreeMap<PeerId, Instant>,
     enabled: BTreeSet<PeerId>,
-    wanted: BTreeMap<ProofId, Wanted>,
+    wanted: BTreeMap<ArtifactId, Wanted>,
     flights: HashMap<request_response::OutboundRequestId, Flight>,
     next_inventory: BTreeMap<PeerId, Instant>,
     inventory_progress: BTreeMap<PeerId, InventoryProgress>,
@@ -191,7 +191,7 @@ struct Node {
     buckets: BTreeMap<PeerId, Quota>,
     outgoing: BTreeMap<PeerId, Quota>,
     intake: crate::intake::Intake,
-    test_objects: BTreeMap<ProofId, (Metadata, Option<Envelope>)>,
+    test_objects: BTreeMap<ArtifactId, (Metadata, Option<Envelope>)>,
     test_controls: bool,
     producer_sources: VecDeque<String>,
     next_production: Instant,
@@ -869,11 +869,11 @@ fn body_id(body: &Body) -> Option<String> {
         Body::Get { id, .. } | Body::Describe { id } => Some(hex(id)),
         Body::ProgramGet { id, .. } | Body::ProgramData { id, .. } => Some(hex(id)),
         Body::ProgramDescription { metadata, .. } | Body::ProgramOffer { metadata } => {
-            Some(hex(metadata.manifest.proof_id().as_bytes()))
+            Some(hex(metadata.manifest.artifact_id().as_bytes()))
         }
-        Body::Object { object, .. } => Some(object.proof_id.clone()),
+        Body::Object { object, .. } => Some(object.artifact_id.clone()),
         Body::Offer { metadata } | Body::Description { metadata } => {
-            Some(metadata.proof_id.clone())
+            Some(metadata.artifact_id.clone())
         }
         _ => None,
     }
@@ -996,7 +996,7 @@ impl Node {
             })
             .count()
     }
-    fn want(&mut self, id: ProofId) -> Result<bool, String> {
+    fn want(&mut self, id: ArtifactId) -> Result<bool, String> {
         if self.graph.contains(id)? || self.intake.contains(id) || self.wanted.contains_key(&id) {
             return Ok(true);
         }
@@ -1044,7 +1044,7 @@ impl Node {
         Ok(value)
     }
 
-    fn publish_admitted(&mut self, ids: &[ProofId], source: &str) {
+    fn publish_admitted(&mut self, ids: &[ArtifactId], source: &str) {
         for id in ids {
             self.wanted.remove(id);
             let mut announcement = crate::compatibility().to_vec();
@@ -1074,7 +1074,7 @@ impl Node {
                         .filter(|after| !after.is_null())
                         .map(|after| {
                             id_bytes(after.as_str().ok_or("after must be a proof ID")?)
-                                .map(ProofId::from_bytes)
+                                .map(ArtifactId::from_bytes)
                         })
                         .transpose()?;
                     let status_page = crate::resources::active_limits().status_page;
@@ -1084,7 +1084,7 @@ impl Node {
                         .flatten();
                     Ok(
                         json!({"ids":ids.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
-                    "next_after":next_after,"status_page_ids":status_page,"accepted_proofs":self.graph.accepted_count(),
+                    "next_after":next_after,"status_page_ids":status_page,"accepted_artifacts":self.graph.accepted_count(),
                     "root":hex(&self.graph.content_root()), "root_format":crate::CORPUS_ROOT_FORMAT, "pending_count":self.graph.pending_count()?, "pending":self.graph.pending_ids()?.iter().map(|id|hex(id.as_bytes())).collect::<Vec<_>>(),
                     "connected":self.swarm.connected_peers().map(|peer| peer.to_string()).collect::<Vec<_>>(),
                     "compatibility":hex(&crate::compatibility()),
@@ -1146,7 +1146,7 @@ impl Node {
                     Ok(json!({"installed":true}))
                 }
                 "describe" => Ok(
-                    json!({"metadata":self.graph.describe(ProofId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?))?}),
+                    json!({"metadata":self.graph.describe(ArtifactId::from_bytes(id_bytes(value.get("id").and_then(Value::as_str).ok_or("id missing")?)?))?}),
                 ),
                 "links" => {
                     if self.discovery.book.lock().automatic {
@@ -1192,14 +1192,14 @@ impl Node {
                 }
                 "announce" => {
                     crate::resources::require_work_admission()?;
-                    let id = ProofId::from_bytes(id_bytes(
+                    let id = ArtifactId::from_bytes(id_bytes(
                         value
                             .get("id")
                             .and_then(Value::as_str)
                             .ok_or("id missing")?,
                     )?);
                     if !self.graph.contains(id)? {
-                        return Err("only accepted proofs can be announced".into());
+                        return Err("only accepted artifacts can be announced".into());
                     }
                     let mut bytes = crate::compatibility().to_vec();
                     bytes.extend_from_slice(id.as_bytes());
@@ -1249,17 +1249,17 @@ impl Node {
                             }
                             let object: Envelope = serde_json::from_value(object.clone())
                                 .map_err(|error| error.to_string())?;
-                            if object.proof.len() > 2 * crate::resources::limits().proof_bytes {
+                            if object.payload.len() > 2 * crate::resources::limits().proof_bytes {
                                 return Err("test proof byte limit".into());
                             }
                             self.test_objects.insert(
-                                ProofId::from_bytes(id_bytes(&metadata.proof_id)?),
+                                ArtifactId::from_bytes(id_bytes(&metadata.artifact_id)?),
                                 (metadata.clone(), Some(object)),
                             );
                         }
                         metadata
                     } else {
-                        let id = ProofId::from_bytes(id_bytes(
+                        let id = ArtifactId::from_bytes(id_bytes(
                             value
                                 .get("id")
                                 .and_then(Value::as_str)
@@ -1732,7 +1732,7 @@ impl Node {
                     && message.data.len() == 64
                     && message.data[..32] == crate::compatibility()
                 {
-                    let id = ProofId::from_bytes(
+                    let id = ArtifactId::from_bytes(
                         message.data[32..].try_into().expect("announcement width"),
                     );
                     if self.graph.contains(id)? || !self.charge(propagation_source) {
@@ -1866,7 +1866,7 @@ impl Node {
                 },
                 Err(error) => return Err(error.into()),
             },
-            Body::Describe { id } => match self.graph.description(ProofId::from_bytes(id)) {
+            Body::Describe { id } => match self.graph.description(ArtifactId::from_bytes(id)) {
                 Ok(Some(crate::object::ProofDescription::Program(metadata))) => {
                     Body::ProgramDescription {
                         root: None,
@@ -1877,14 +1877,14 @@ impl Node {
                     Body::Description {
                         metadata: self
                             .test_objects
-                            .get(&ProofId::from_bytes(id))
+                            .get(&ArtifactId::from_bytes(id))
                             .filter(|_| self.test_controls)
                             .map_or(metadata, |(metadata, _)| metadata.clone()),
                     }
                 }
                 Ok(None) => self
                     .test_controls
-                    .then(|| self.test_objects.get(&ProofId::from_bytes(id)))
+                    .then(|| self.test_objects.get(&ArtifactId::from_bytes(id)))
                     .flatten()
                     .map(|(metadata, _)| Body::Description {
                         metadata: metadata.clone(),
@@ -1907,10 +1907,12 @@ impl Node {
                 } else {
                     let maximum = (crate::resources::limits().proof_bytes / 2)
                         .clamp(256, naome_proof::program::CHUNK_BYTES);
-                    match self
-                        .graph
-                        .program_chunk(ProofId::from_bytes(id), start, limit, maximum)
-                    {
+                    match self.graph.program_chunk(
+                        ArtifactId::from_bytes(id),
+                        start,
+                        limit,
+                        maximum,
+                    ) {
                         Ok(Some(chunk)) => Body::ProgramData { root, id, chunk },
                         Ok(None) => Body::Missing,
                         Err(error) => Body::Error {
@@ -1932,19 +1934,21 @@ impl Node {
                     },
                 }
             }
-            Body::Get { root, id } => match self.graph.transfer(ProofId::from_bytes(id))? {
-                Some(crate::object::ProofTransfer::Program(metadata)) => Body::ProgramDescription {
-                    root: Some(root),
-                    metadata,
-                },
-                Some(crate::object::ProofTransfer::Certificate(object)) => {
+            Body::Get { root, id } => match self.graph.transfer(ArtifactId::from_bytes(id))? {
+                Some(crate::object::ArtifactTransfer::Program(metadata)) => {
+                    Body::ProgramDescription {
+                        root: Some(root),
+                        metadata,
+                    }
+                }
+                Some(crate::object::ArtifactTransfer::Certificate(object)) => {
                     Body::Object { root, object }
                 }
                 None => self
                     .test_controls
                     .then(|| {
                         self.test_objects
-                            .get(&ProofId::from_bytes(id))
+                            .get(&ArtifactId::from_bytes(id))
                             .and_then(|(_, object)| object.clone())
                     })
                     .flatten()
@@ -2013,7 +2017,7 @@ impl Node {
                     metadata,
                 },
             ) => {
-                if metadata.manifest.proof_id() != id {
+                if metadata.manifest.artifact_id() != id {
                     emit(json!({"event":"rejected","error":"program description ID mismatch"}));
                 } else {
                     match self
@@ -2040,7 +2044,7 @@ impl Node {
                 },
             ) => {
                 let result = if root != *expected_root.as_bytes()
-                    || metadata.manifest.proof_id() != id
+                    || metadata.manifest.artifact_id() != id
                 {
                     Err(crate::Error::InvalidInput(
                         "cited program description scope mismatch".into(),
@@ -2132,7 +2136,7 @@ impl Node {
                 self.inventory_summaries.remove(&peer);
             }
             (Flight::Describe { id, .. }, Body::Description { metadata }) => {
-                if metadata.proof_id != hex(id.as_bytes()) {
+                if metadata.artifact_id != hex(id.as_bytes()) {
                     emit(json!({"event":"rejected","error":"description ID mismatch"}));
                     return Ok(());
                 }
@@ -2145,7 +2149,7 @@ impl Node {
                     }
                     // Preserve attempts and the original bounded hint epoch
                     // through queued/declined assessment. Otherwise a wrong
-                    // descriptor can monopolize retries for the same ProofId.
+                    // descriptor can monopolize retries for the same ArtifactId.
                     Ok(_) => {}
                     Err(error) => emit(json!({"event":"rejected","error":error})),
                 }

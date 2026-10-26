@@ -125,12 +125,12 @@ class WorkWindowTests(unittest.TestCase):
 
 class OwnerStatusTests(unittest.TestCase):
     def status(self, **changes):
-        return {"running": True, "accepted_proofs": 0, "interest": "exact owner text",
-                "proof_verification": "checked", "computation": "running",
+        return {"running": True, "accepted_artifacts": 0, "interest": "exact owner text",
+                "artifact_verification": "checked", "computation": "running",
                 "computation_reason": None, **changes}
 
     def check(self, value):
-        assert_owner_status(value, running=True, interest="exact owner text", accepted_proofs=0)
+        assert_owner_status(value, running=True, interest="exact owner text", accepted_artifacts=0)
 
     def test_pressure_transitions_preserve_the_owner_contract(self):
         for computation in ("running", "pausing", "paused"):
@@ -138,8 +138,8 @@ class OwnerStatusTests(unittest.TestCase):
                 computation_reason=None if computation == "running" else "sustained external CPU pressure"))
 
     def test_pressure_cannot_excuse_an_owner_or_proof_state_change(self):
-        for change in ({"interest": "changed"}, {"running": False}, {"accepted_proofs": 1},
-                       {"proof_verification": "not_run"}, {"unknown": 1}):
+        for change in ({"interest": "changed"}, {"running": False}, {"accepted_artifacts": 1},
+                       {"artifact_verification": "not_run"}, {"unknown": 1}):
             with self.subTest(change=change), self.assertRaises(AssertionError):
                 self.check(self.status(computation="paused", computation_reason="memory pressure", **change))
 

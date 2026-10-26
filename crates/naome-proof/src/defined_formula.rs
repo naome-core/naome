@@ -326,10 +326,10 @@ fn placeholder_node() -> Node {
 /// This view deliberately exposes neither canonical certificate bytes nor a
 /// [`DefinitionId`]. A resolver may cache an equivalent expanded body without
 /// presenting that cache as the exact selected definition artifact.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DefinitionResolution<'a> {
     relation_arity: u32,
-    body: &'a DefinedFormula,
+    body: std::borrow::Cow<'a, DefinedFormula>,
 }
 
 impl<'a> DefinitionResolution<'a> {
@@ -337,25 +337,54 @@ impl<'a> DefinitionResolution<'a> {
     pub const fn new(relation_arity: u32, body: &'a DefinedFormula) -> Self {
         Self {
             relation_arity,
-            body,
+            body: std::borrow::Cow::Borrowed(body),
         }
     }
 
     /// Returns the number of graph arguments required at a call site.
-    pub const fn relation_arity(self) -> u32 {
+    pub const fn relation_arity(&self) -> u32 {
         self.relation_arity
     }
 
     /// Returns the body substituted during expansion.
-    pub const fn body(self) -> &'a DefinedFormula {
-        self.body
+    pub fn body(&self) -> &DefinedFormula {
+        &self.body
+    }
+
+    /// Owns a bounded expansion read from authenticated cold storage.
+    pub fn owned(relation_arity: u32, body: DefinedFormula) -> Self {
+        Self {
+            relation_arity,
+            body: std::borrow::Cow::Owned(body),
+        }
     }
 }
+
+/// Failure to read an already selected definition. This is not absence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DefinitionAccessError {
+    Storage(String),
+    Corrupt,
+    Limit,
+}
+impl fmt::Display for DefinitionAccessError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Storage(message) => write!(f, "definition storage: {message}"),
+            Self::Corrupt => f.write_str("definition integrity failure"),
+            Self::Limit => f.write_str("definition access limit"),
+        }
+    }
+}
+impl Error for DefinitionAccessError {}
 
 /// Resolves only graph-expansion views authorized by already selected definitions.
 pub trait DefinitionResolver {
     /// Returns an expansion-only view, or `None` when the definition is unavailable.
-    fn resolve_definition(&self, definition_id: DefinitionId) -> Option<DefinitionResolution<'_>>;
+    fn resolve_definition(
+        &self,
+        definition_id: DefinitionId,
+    ) -> Result<Option<DefinitionResolution<'_>>, DefinitionAccessError>;
 }
 
 fn bind_free(node: &mut Node, depth: u32, variable: FreeVariable) {
@@ -882,11 +911,12 @@ fn expand_node<R: DefinitionResolver + ?Sized>(
             definition_id,
             arguments,
         } => {
-            let definition = resolver.resolve_definition(*definition_id).ok_or(
-                DefinitionExpansionError::UnknownDefinition {
+            let definition = resolver
+                .resolve_definition(*definition_id)
+                .map_err(DefinitionExpansionError::Access)?
+                .ok_or(DefinitionExpansionError::UnknownDefinition {
                     definition_id: *definition_id,
-                },
-            )?;
+                })?;
             let actual = arguments.len();
             let expected = definition.relation_arity() as usize;
             if actual != expected {
@@ -1059,6 +1089,8 @@ impl Error for DefinedFormulaCodecError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DefinitionExpansionError {
+    /// Reading selected state failed; no mathematical rejection is established.
+    Access(DefinitionAccessError),
     /// A referenced definition is absent from the supplied selected state.
     UnknownDefinition { definition_id: DefinitionId },
     /// A selected definition was called with the wrong number of graph arguments.
@@ -1082,6 +1114,7 @@ pub enum DefinitionExpansionError {
 impl fmt::Display for DefinitionExpansionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Access(source) => source.fmt(formatter),
             Self::UnknownDefinition { .. } => {
                 formatter.write_str("formula references an unknown definition")
             }
@@ -1115,6 +1148,7 @@ impl fmt::Display for DefinitionExpansionError {
 impl Error for DefinitionExpansionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Access(source) => Some(source),
             Self::Formula(source) => Some(source),
             _ => None,
         }

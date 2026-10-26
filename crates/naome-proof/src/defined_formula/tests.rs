@@ -8,8 +8,11 @@ struct OneDefinition {
 }
 
 impl DefinitionResolver for OneDefinition {
-    fn resolve_definition(&self, definition_id: DefinitionId) -> Option<DefinitionResolution<'_>> {
-        (definition_id == self.id).then(|| DefinitionResolution::new(self.arity, &self.body))
+    fn resolve_definition(
+        &self,
+        definition_id: DefinitionId,
+    ) -> Result<Option<DefinitionResolution<'_>>, crate::DefinitionAccessError> {
+        Ok((definition_id == self.id).then(|| DefinitionResolution::new(self.arity, &self.body)))
     }
 }
 
@@ -66,8 +69,11 @@ fn expansion_rejects_unknown_wrong_arity_cycle_and_work_exhaustion() {
     let missing = DefinedFormula::defined_relation(id, [x]);
     struct Empty;
     impl DefinitionResolver for Empty {
-        fn resolve_definition(&self, _: DefinitionId) -> Option<DefinitionResolution<'_>> {
-            None
+        fn resolve_definition(
+            &self,
+            _: DefinitionId,
+        ) -> Result<Option<DefinitionResolution<'_>>, crate::DefinitionAccessError> {
+            Ok(None)
         }
     }
     assert_eq!(
@@ -135,8 +141,11 @@ fn proof_id_shaped_values_do_not_resolve_as_definitions() {
     let formula = DefinedFormula::defined_relation(id, []);
     struct Empty;
     impl DefinitionResolver for Empty {
-        fn resolve_definition(&self, _: DefinitionId) -> Option<DefinitionResolution<'_>> {
-            None
+        fn resolve_definition(
+            &self,
+            _: DefinitionId,
+        ) -> Result<Option<DefinitionResolution<'_>>, crate::DefinitionAccessError> {
+            Ok(None)
         }
     }
     assert!(matches!(

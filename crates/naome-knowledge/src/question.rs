@@ -138,7 +138,7 @@ pub enum IntakeError {
 pub struct LocalQuestionContext {
     pub snapshot: Identity,
     pub policy: Identity,
-    pub checked_proofs: usize,
+    pub checked_artifacts: usize,
     pub registered_questions: usize,
 }
 
@@ -268,7 +268,7 @@ enum Reply {
     Exchange {
         reply: oneshot::Sender<QuestionAssessment>,
         deadline: Instant,
-        root: Option<naome_proof::ProofId>,
+        root: Option<naome_proof::ArtifactId>,
         purpose: crate::jobs::Purpose,
     },
 }
@@ -689,7 +689,7 @@ where
     }
     pub(crate) fn revision(&self, graph: &Graph) -> Revision {
         Revision {
-            checked_proofs: graph.accepted_count(),
+            checked_artifacts: graph.accepted_count(),
             registered_questions: self.registry.len(),
             policy: self.policy.identity(),
             selection: self.selection,
@@ -842,7 +842,7 @@ where
         &mut self,
         graph: &Graph,
         derived: CompiledQuestion,
-        root: naome_proof::ProofId,
+        root: naome_proof::ArtifactId,
         purpose: crate::jobs::Purpose,
         deadline: Instant,
     ) -> (CompiledQuestion, oneshot::Receiver<QuestionAssessment>) {
@@ -943,12 +943,12 @@ where
     pub(crate) fn publish_exchange(
         &mut self,
         graph: &mut Graph,
-        root: naome_proof::ProofId,
+        root: naome_proof::ArtifactId,
         batch: crate::graph::CheckedBatch,
         delta: QuestionDelta,
         peer: Option<crate::publication::PeerGrant>,
         deadline: Instant,
-    ) -> Result<Vec<naome_proof::ProofId>, crate::Error> {
+    ) -> Result<Vec<naome_proof::ArtifactId>, crate::Error> {
         if let (Some(persistence), Some(question)) = (&mut self.persistence, &delta.question)
             && let Err(error) = persistence.stage_publication(root, question)
         {
@@ -972,7 +972,7 @@ where
         Ok(admitted)
     }
 
-    fn finish_publication(&mut self, root: naome_proof::ProofId) -> Result<(), crate::Error> {
+    fn finish_publication(&mut self, root: naome_proof::ArtifactId) -> Result<(), crate::Error> {
         if let Some(persistence) = &mut self.persistence
             && let Err(error) = persistence.finish_publication(root)
         {
@@ -1227,7 +1227,7 @@ where
                 let _ = reply.send(LocalQuestionContext {
                     snapshot: self.snapshot(graph).identity(),
                     policy: self.policy.identity(),
-                    checked_proofs: graph.accepted_count(),
+                    checked_artifacts: graph.accepted_count(),
                     registered_questions: self.registry.len(),
                 });
             }

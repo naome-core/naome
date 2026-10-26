@@ -48,11 +48,11 @@ def main():
         objects = stored_objects(node)
         assert len(objects) == 1
         stored = objects[0]
-        assert stored["proof_id"] == id
+        assert stored["artifact_id"] == id
         driver.summary["accepted_ids"] = [id]
         driver.summary["content_root"] = content_root(driver.summary["contract"]["compatibility"], [id])
         driver.summary["scenarios"]["autonomous_production_and_listener_after_input_eof"] = {
-            "result": "pass", "proof_id": id, "stored_objects": 1,
+            "result": "pass", "artifact_id": id, "stored_objects": 1,
             "producer_source_bytes": len(producer_source.encode()),
             "listener_tcp_connect": True,
             "listener_evidence": "TCP accepts a connection after checked production with closed stdin; this is not a separate libp2p exchange trial",

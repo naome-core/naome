@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     DiskCopyBudget, DiskCopyProgress,
     state::{
-        copy::{AuthenticatedCopy, CopyMap, CopyPlan, Follow, FormulaRecord},
+        copy::{AuthenticatedCopy, ContentRecord, CopyMap, CopyPlan, Follow},
         disk_map::{DiskMap, Root},
     },
 };
@@ -67,8 +67,9 @@ impl CopyPlan for RegistryCopyPlan {
                 if length > naome_foundation::FORMULA_MAX_BYTES {
                     return Err(ContextError::Corrupt);
                 }
-                Ok(Follow::Formula(FormulaRecord {
-                    statement,
+                Ok(Follow::Content(ContentRecord {
+                    identity: *statement.as_bytes(),
+                    identity_of: |bytes| Ok(*crate::statement_id(bytes).as_bytes()),
                     address,
                     length,
                     address_of: cold::formula_address,

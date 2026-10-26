@@ -63,7 +63,7 @@ async fn automatic_status_and_interest_preserve_identity_and_do_not_override_res
         status.computation_reason.as_deref(),
         Some("operating system power saving")
     );
-    assert_eq!(status.accepted_proofs, 3);
+    assert_eq!(status.accepted_artifacts, 3);
     assert_eq!(status.interest, "  logic\nλ  ");
     drop(active);
     assert_eq!(

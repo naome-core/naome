@@ -3,8 +3,8 @@
 use super::*;
 
 pub(super) struct ProgramRead {
-    pub(super) root: ProofId,
-    pub(super) id: ProofId,
+    pub(super) root: ArtifactId,
+    pub(super) id: ArtifactId,
     pub(super) start: u64,
     pub(super) limit: usize,
 }

@@ -4,8 +4,11 @@ use crate::DefinitionResolution;
 struct EmptyResolver;
 
 impl DefinitionResolver for EmptyResolver {
-    fn resolve_definition(&self, _definition_id: DefinitionId) -> Option<DefinitionResolution<'_>> {
-        None
+    fn resolve_definition(
+        &self,
+        _definition_id: DefinitionId,
+    ) -> Result<Option<DefinitionResolution<'_>>, crate::DefinitionAccessError> {
+        Ok(None)
     }
 }
 
