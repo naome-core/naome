@@ -23,7 +23,7 @@ naome-foundation = { path = "../naome-foundation" }
 naome-proof = { path = "../naome-proof" }
 sha2.workspace = true
 serde_json = { version = "1", optional = true }
-rusqlite = { version = "=0.40.2", features = ["bundled", "hooks"], optional = true }
+rusqlite = { workspace = true, optional = true }
 
 [lints]
 workspace = true
