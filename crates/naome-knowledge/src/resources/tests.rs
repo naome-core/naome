@@ -7,9 +7,10 @@ fn defaults_scaling_and_independent_overrides_are_validated_before_allocation() 
     assert_eq!(default, DEFAULT);
     let maximum_envelope = crate::Envelope {
         compatibility: "00".repeat(32),
-        proof_id: "00".repeat(32),
-        statement_id: "00".repeat(32),
-        proof: "00".repeat(default.proof_bytes),
+        artifact_id: "00".repeat(32),
+        statement_id: Some("00".repeat(32)),
+        payload: "00".repeat(default.proof_bytes),
+        obligation_proof: None,
     };
     let command = serde_json::json!({"command":"ingest","object":maximum_envelope});
     assert!(serde_json::to_vec(&command).unwrap().len() < default.command_bytes);

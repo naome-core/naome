@@ -9,8 +9,8 @@ async fn maximum_escaped_owner_text_fits_bounded_control_frames() {
         running: true,
         computation: crate::resources::ComputationState::Running,
         computation_reason: None,
-        accepted_proofs: 3,
-        proof_verification: ProofVerification::Checked,
+        accepted_artifacts: 3,
+        artifact_verification: ArtifactVerification::Checked,
         interest: interest.clone(),
     };
     let response = Response {
@@ -31,7 +31,7 @@ async fn maximum_escaped_owner_text_fits_bounded_control_frames() {
 }
 use crate::{Envelope, object::id_bytes};
 use naome_authoring::CompiledQuestion;
-use naome_proof::ProofId;
+use naome_proof::ArtifactId;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct Directory(pub(super) PathBuf);
@@ -69,7 +69,7 @@ fn closure() -> (Envelope, Envelope, CompiledQuestion) {
         .proved_target()
         .to_source();
     let b = "all(y,mem(y,y))";
-    let root=producer.author(&format!("goal = imp({b},{a}) proof: p0 = cite(\"{}\") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2",helper.proof_id)).unwrap();
+    let root=producer.author(&format!("goal = imp({b},{a}) proof: p0 = cite(\"{}\") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2",crate::hex(helper.proof_id().unwrap().unwrap().as_bytes()))).unwrap();
     let question = CompiledQuestion::compile(&format!("goal = imp({b},{a})")).unwrap();
     (helper, root, question)
 }
@@ -152,7 +152,7 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
 async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissions() {
     let directory = Directory::new();
     let (helper, root, question) = closure();
-    let root_id = ProofId::from_bytes(id_bytes(&root.proof_id).unwrap());
+    let root_id = ArtifactId::from_bytes(id_bytes(&root.artifact_id).unwrap());
     let mut graph = Graph::open(&directory.0).unwrap();
     assert_eq!(
         graph.ingest(root.clone(), Instant::now()).unwrap().status,
@@ -168,13 +168,13 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
-            accepted_proofs: 0,
-            proof_verification: ProofVerification::NotRun,
+            accepted_artifacts: 0,
+            artifact_verification: ArtifactVerification::NotRun,
             interest: String::new()
         }
     );
     let mut graph = Graph::open(&directory.0).unwrap();
-    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
     let candidates = [
         (root_id, root.clone().prepare().unwrap()),
         (helper_id, helper.clone().prepare().unwrap()),
@@ -201,7 +201,7 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
         "duplicate"
     );
     let mut invalid = root.clone();
-    invalid.proof = "ff".into();
+    invalid.payload = "ff".into();
     assert!(graph.ingest(invalid, Instant::now()).is_err());
     assert_eq!(graph.accepted_count(), 2);
     let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
@@ -222,8 +222,8 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
             running: true,
             computation: crate::resources::ComputationState::Running,
             computation_reason: None,
-            accepted_proofs: 2,
-            proof_verification: ProofVerification::Checked,
+            accepted_artifacts: 2,
+            artifact_verification: ArtifactVerification::Checked,
             interest: String::new()
         }
     );
@@ -235,8 +235,8 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
-            accepted_proofs: 2,
-            proof_verification: ProofVerification::NotRun,
+            accepted_artifacts: 2,
+            artifact_verification: ArtifactVerification::NotRun,
             interest: String::new()
         }
     );
@@ -249,10 +249,10 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
         [helper_id, root_id].into()
     );
     drop(recovered);
-    crate::store::corrupt_payload(&directory.0, &helper.proof_id);
+    crate::store::corrupt_payload(&directory.0, &helper.artifact_id);
     let recorded = status(&directory.0).await.unwrap();
-    assert_eq!(recorded.accepted_proofs, 2);
-    assert_eq!(recorded.proof_verification, ProofVerification::NotRun);
+    assert_eq!(recorded.accepted_artifacts, 2);
+    assert_eq!(recorded.artifact_verification, ArtifactVerification::NotRun);
     assert!(
         Graph::open(&directory.0).is_err(),
         "corruption cannot become checked knowledge"
@@ -293,8 +293,8 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
             running: false,
             computation: crate::resources::ComputationState::Stopped,
             computation_reason: None,
-            accepted_proofs: 1,
-            proof_verification: ProofVerification::NotRun,
+            accepted_artifacts: 1,
+            artifact_verification: ArtifactVerification::NotRun,
             interest: String::new()
         }
     );
@@ -340,14 +340,14 @@ async fn stop_requires_directory_release_and_reports_offline_admissions_without_
     let mut graph = Graph::open(&directory.0).unwrap();
     graph.ingest(helper.clone(), Instant::now()).unwrap();
     drop(graph);
-    crate::store::corrupt_payload(&directory.0, &helper.proof_id);
+    crate::store::corrupt_payload(&directory.0, &helper.artifact_id);
     let recorded = wait_for_stop(&directory.0, Instant::now(), || {
         Err(nix::errno::Errno::ESRCH)
     })
     .await
     .unwrap();
-    assert_eq!(recorded.accepted_proofs, 1);
-    assert_eq!(recorded.proof_verification, ProofVerification::NotRun);
+    assert_eq!(recorded.accepted_artifacts, 1);
+    assert_eq!(recorded.artifact_verification, ArtifactVerification::NotRun);
     assert!(Graph::open(&directory.0).is_err());
 }
 
@@ -468,7 +468,10 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
         receipt
     );
     assert_eq!(
-        stopped_status(&directory.0).await.unwrap().accepted_proofs,
+        stopped_status(&directory.0)
+            .await
+            .unwrap()
+            .accepted_artifacts,
         1
     );
     let other = identity::Keypair::generate_ed25519()
@@ -486,8 +489,8 @@ async fn first_start_can_seed_identity_but_lost_changed_or_corrupt_identity_neve
     initialize(&directory.0).unwrap();
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), key);
     assert_eq!(
-        crate::store::payload_bytes(&directory.0, &proof.proof_id),
-        crate::unhex(&proof.proof).unwrap()
+        crate::store::payload_bytes(&directory.0, &proof.artifact_id),
+        crate::unhex(&proof.payload).unwrap()
     );
 }
 

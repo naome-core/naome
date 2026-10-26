@@ -1,11 +1,11 @@
 use crate::Envelope;
-use crate::object::{Candidate, Metadata, id_bytes};
+use crate::object::{Candidate, CandidatePayload, CheckedArtifact, Metadata, id_bytes};
 use crate::publication::{CommitGuard, PeerGrant, STALE_COMMIT};
 use crate::store::{Store, Summary};
 use naome_checker::{
     ContextView, DiskArtifactCopy, DiskArtifactState, DiskCopyBudget, check_normal_form_with_state,
 };
-use naome_proof::ProofId;
+use naome_proof::ArtifactId;
 #[cfg(test)]
 use std::time::Duration;
 use std::{
@@ -27,12 +27,12 @@ use storage::CheckedStorage;
 #[derive(Debug)]
 pub struct Ingest {
     pub status: &'static str,
-    pub id: ProofId,
-    pub admitted: Vec<ProofId>,
-    pub rejected: Vec<(ProofId, crate::Error)>,
+    pub id: ArtifactId,
+    pub admitted: Vec<ArtifactId>,
+    pub rejected: Vec<(ArtifactId, crate::Error)>,
 }
 
-type PendingResolution = (Vec<ProofId>, Vec<(ProofId, crate::Error)>);
+type PendingResolution = (Vec<ArtifactId>, Vec<(ArtifactId, crate::Error)>);
 
 /// The sole acceptance owner for this operating path. Checked state is private.
 pub struct Graph {
@@ -40,7 +40,7 @@ pub struct Graph {
     commit_guard: Option<CommitGuard>,
     #[cfg(test)]
     checks: [std::sync::atomic::AtomicU64; 2],
-    pending: BTreeMap<ProofId, (Candidate, Instant)>,
+    pending: BTreeMap<ArtifactId, (Candidate, Instant)>,
     backlog: Mutex<pending::PendingStore>,
     count: usize,
     bytes: usize,
@@ -119,7 +119,7 @@ impl Graph {
     pub(crate) fn peer_learning_page(
         &self,
         after: u64,
-    ) -> Result<Vec<(u64, ProofId, Option<libp2p::PeerId>)>, crate::Error> {
+    ) -> Result<Vec<(u64, ArtifactId, Option<libp2p::PeerId>)>, crate::Error> {
         self.ensure_live()?;
         if after > self.count as u64 {
             return Err("peer learning cursor exceeds checked graph".into());
@@ -132,11 +132,15 @@ impl Graph {
     }
     pub(crate) fn learning_question(
         &self,
-        id: ProofId,
+        id: ArtifactId,
     ) -> Result<Option<naome_authoring::CompiledQuestion>, crate::Error> {
         use naome_checker::ContextView;
         self.ensure_live()?;
-        let Some(header) = self.cold(self.context.proof_header(id).map_err(crate::Error::from))?
+        let Some(proof) = self.cold(self.context.artifact_proof_id(id))? else {
+            return Ok(None);
+        };
+        let Some(header) =
+            self.cold(self.context.proof_header(proof).map_err(crate::Error::from))?
         else {
             return Ok(None);
         };
@@ -162,7 +166,7 @@ impl Graph {
     }
     pub(crate) fn learning_certificate(
         &self,
-        id: ProofId,
+        id: ArtifactId,
     ) -> Result<Option<Vec<u8>>, crate::Error> {
         let Some(object) = self.binary_object(id)? else {
             return Ok(None);
@@ -173,7 +177,11 @@ impl Graph {
         {
             return Ok(None);
         }
-        Ok(crate::learning::peer::pack(&object.bytes).ok())
+        let Some((&naome_proof::ArtifactPayload::PROOF_TAG, payload)) = object.bytes.split_first()
+        else {
+            return Ok(None);
+        };
+        Ok(crate::learning::peer::pack(payload).ok())
     }
     pub fn accepted_count(&self) -> usize {
         self.count
@@ -218,9 +226,16 @@ impl Graph {
             error
         })
     }
-    pub(crate) fn describe(&self, id: ProofId) -> Result<Option<Metadata>, crate::Error> {
+    pub(crate) fn describe(&self, id: ArtifactId) -> Result<Option<Metadata>, crate::Error> {
         self.ensure_live()?;
-        let header = self.cold(self.context.proof_header(id).map_err(crate::Error::from))?;
+        let Some(proof_id) = self.cold(self.context.artifact_proof_id(id))? else {
+            return Ok(None);
+        };
+        let header = self.cold(
+            self.context
+                .proof_header(proof_id)
+                .map_err(crate::Error::from),
+        )?;
         let Some(header) = header else {
             return Ok(None);
         };
@@ -240,7 +255,8 @@ impl Graph {
             return Err("description statement does not match a question target".into());
         }
         let metadata = Metadata {
-            proof_id: crate::hex(id.as_bytes()),
+            artifact_id: crate::hex(id.as_bytes()),
+            proof_id: crate::hex(proof_id.as_bytes()),
             statement_id: crate::hex(statement.as_bytes()),
             question: format!("goal = {}", derived.core().to_source()),
         };
@@ -332,14 +348,14 @@ impl Graph {
                 let candidate = graph.cold(record.prepare_retained())?;
                 graph.bytes = graph
                     .bytes
-                    .checked_add(candidate.normal.canonical_bytes().len())
+                    .checked_add(candidate.bytes.len())
                     .ok_or("replayed payload byte overflow")?;
                 let mut ready = true;
                 for dependency in &candidate.dependencies {
                     if !graph.cold(
                         graph
                             .context
-                            .contains_proof(*dependency)
+                            .contains_artifact(*dependency)
                             .map_err(crate::Error::from),
                     )? {
                         ready = false;
@@ -371,7 +387,7 @@ impl Graph {
         {
             return Err("mathematical replay count differs from catalog".into());
         }
-        let root = crate::corpus::root(graph.count, graph.context.proof_set_fingerprint())?;
+        let root = crate::corpus::root(graph.count, graph.context.artifact_set_fingerprint())?;
         if root != summary.root || graph.bytes != summary.bytes {
             return Err("mathematically replayed corpus differs from catalog".into());
         }
@@ -569,8 +585,9 @@ impl Graph {
         if source.len() > crate::resources::limits().proof_bytes {
             return Err("producer source byte limit".into());
         }
-        self.compile_source(source, &self.context)
-            .map(Envelope::from_compiled)
+        let checked = CheckedArtifact::from_compiled(self.compile_source(source, &self.context)?);
+        self.cold(checked.record(&self.context))
+            .map(|record| record.envelope())
     }
 
     /// Compile and publish local source while retaining its sealed checker result.
@@ -582,17 +599,15 @@ impl Graph {
             return Err("producer source byte limit".into());
         }
         let disk = self.reserve_publication(source.len(), 1)?;
-        let checked = self
-            .compile_source(source, &self.context)?
-            .into_checked_proof();
-        let record = crate::object::BinaryProof::from_checked(&checked)?;
+        let checked = CheckedArtifact::from_compiled(self.compile_source(source, &self.context)?);
+        let record = self.cold(checked.record(&self.context))?;
         if record.bytes.len() > crate::resources::limits().proof_bytes {
             return Err("proof byte limit".into());
         }
         let id = record.id;
         let envelope = record.envelope();
         if let Some(existing) = self.binary_object(id)? {
-            if existing != record {
+            if !existing.same_content(&record) {
                 return Err("proof identity collision".into());
             }
             return Ok((
@@ -625,7 +640,7 @@ impl Graph {
         let candidate = envelope.prepare()?;
         let id = candidate.id;
         if let Some(existing) = self.binary_object(id)? {
-            if existing != candidate.record() {
+            if !existing.same_content(&candidate.record()) {
                 return Err("proof identity collision".into());
             }
             return Ok(Ingest {
@@ -762,14 +777,14 @@ impl Graph {
         &self,
         source: &str,
         context: &DiskArtifactState,
-    ) -> Result<naome_authoring::CompiledProof, crate::Error> {
+    ) -> Result<naome_authoring::CompiledArtifact, crate::Error> {
         self.ensure_live()?;
         crate::resources::require_work_admission()?;
         #[cfg(test)]
         {
             self.checks[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        naome_authoring::compile_against_proof_context(source, context).map_err(|error| {
+        naome_authoring::compile_artifact_against_proof_context(source, context).map_err(|error| {
             let error = crate::Error::from(error);
             self.record_check_failure(&error);
             error
@@ -803,24 +818,53 @@ impl Graph {
         }
     }
 
-    fn checked_registration(
+    fn check_artifact(
         &self,
         candidate: Candidate,
-    ) -> Result<(naome_checker::CheckedProof, usize), crate::Error> {
-        self.ensure_live()?;
-        let checked = self.check_normal(candidate.normal, &self.context)?;
-        if checked.proof_id() != candidate.id || checked.statement_id() != candidate.statement {
+        context: &DiskArtifactState,
+    ) -> Result<CheckedArtifact, crate::Error> {
+        let checked = match candidate.payload {
+            CandidatePayload::Proof(normal) => {
+                CheckedArtifact::Proof(self.check_normal(normal, context)?)
+            }
+            CandidatePayload::Definition(certificate) => {
+                #[cfg(test)]
+                {
+                    self.checks[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                let definition = naome_checker::check_definition_with_state(certificate, context)
+                    .map_err(crate::Error::from)?;
+                if let Some(statement) = definition.obligation_statement_id() {
+                    let witness = candidate
+                        .obligation
+                        .ok_or("function obligation witness missing")?;
+                    let header = self
+                        .cold(context.proof_header(witness).map_err(crate::Error::from))?
+                        .ok_or("function obligation proof missing")?;
+                    if header.statement_id() != statement {
+                        return Err("function obligation proof conclusion differs".into());
+                    }
+                }
+                CheckedArtifact::Definition(definition)
+            }
+        };
+        if checked.id() != candidate.id || checked.statement() != candidate.statement {
             return Err("checked identity mismatch".into());
         }
-        let growth = self.registration_growth(&self.context, &checked)?;
-        Ok((checked, growth))
+        Ok(checked)
     }
 
     fn registration_growth(
         &self,
         context: &DiskArtifactState,
-        checked: &naome_checker::CheckedProof,
+        checked: &CheckedArtifact,
     ) -> Result<usize, crate::Error> {
+        let CheckedArtifact::Proof(checked) = checked else {
+            let CheckedArtifact::Definition(definition) = checked else {
+                unreachable!()
+            };
+            return Ok(definition.certificate().to_canonical_bytes().len());
+        };
         let growth = if self.cold(
             context
                 .contains_statement(checked.statement_id())
@@ -839,14 +883,10 @@ impl Graph {
 
     fn registered_context(
         &self,
-        checked: naome_checker::CheckedProof,
+        checked: CheckedArtifact,
     ) -> Result<DiskArtifactState, crate::Error> {
         let mut context = self.context.clone();
-        self.cold(
-            context
-                .register_proof_for_replication(checked)
-                .map_err(crate::Error::from),
-        )?;
+        self.cold(checked.register(&mut context))?;
         Ok(context)
     }
 
@@ -857,7 +897,8 @@ impl Graph {
         // Replay owns its existing bounded page transaction, never a nested
         // per-admission transaction. Ordinary mathematical rejection is also
         // determined before any new runtime phase is opened.
-        let (checked, growth) = self.checked_registration(candidate)?;
+        let checked = self.check_artifact(candidate, &self.context)?;
+        let growth = self.registration_growth(&self.context, &checked)?;
         Ok((self.registered_context(checked)?, growth))
     }
 
@@ -887,28 +928,28 @@ impl Graph {
         self.publication_current()?;
         let disk = self.reserve_publication(candidate.bytes.len(), 1)?;
         let record = candidate.record();
-        let checked = self.check_normal(candidate.normal, &self.context)?;
+        let checked = self.check_artifact(candidate, &self.context)?;
         self.publish_checked(checked, record, disk)
     }
 
     fn publish_checked(
         &mut self,
-        checked: naome_checker::CheckedProof,
-        record: crate::object::BinaryProof,
+        checked: CheckedArtifact,
+        record: crate::object::BinaryArtifact,
         disk: crate::resources::DiskLease,
     ) -> Result<(), crate::Error> {
         self.publication_current()?;
         let id = record.id;
         let stamp = Stamp::capture(self)?;
         let mut preparation = Preparation::reserved(self, None, stamp, disk);
-        let registration = preparation.check_certificate(self, checked, record)?;
+        let registration = preparation.check_registration(self, checked, record)?;
         let source = self.checked_storage.clone();
         // The phase guard records every setup failure, including native close
         // errors. Do not overwrite that cleanup evidence through cold().
         let phase = source
             .admission_phase()
             .map_err(|error| format!("storage halted: {error}"))?;
-        preparation.register_certificate(self, registration)?;
+        preparation.register_artifact(self, registration)?;
         let batch = preparation.finish(self, id)?;
         let mut gates = self.cold(phase.finish(self.checked_storage.as_ref()))?;
         let persisted = self.store.persist_binary_batch(
@@ -918,7 +959,7 @@ impl Graph {
             None,
             crate::corpus::root(
                 self.count.checked_add(1).ok_or("accepted count overflow")?,
-                batch.context.proof_set_fingerprint(),
+                batch.context.artifact_set_fingerprint(),
             )?,
             self.commit_guard.as_ref(),
         );
@@ -948,14 +989,14 @@ impl Graph {
     }
     pub fn pending_ids_after(
         &self,
-        after: Option<ProofId>,
+        after: Option<ArtifactId>,
         limit: usize,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.ensure_live()?;
         let after = after.map(|id| crate::hex(id.as_bytes()));
         self.cold(self.backlog()?.ids(after.as_deref(), limit))
     }
-    pub fn missing(&self) -> Result<BTreeSet<ProofId>, crate::Error> {
+    pub fn missing(&self) -> Result<BTreeSet<ArtifactId>, crate::Error> {
         let mut missing = BTreeSet::new();
         for (candidate, _) in self.pending.values() {
             for id in &candidate.dependencies {
@@ -966,7 +1007,7 @@ impl Graph {
         }
         Ok(missing)
     }
-    pub fn pending_ids(&self) -> Result<Vec<ProofId>, crate::Error> {
+    pub fn pending_ids(&self) -> Result<Vec<ArtifactId>, crate::Error> {
         self.pending_ids_after(None, crate::resources::active_limits().id_page)
     }
     pub fn storage_error(&self) -> Option<String> {
@@ -975,9 +1016,13 @@ impl Graph {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
-    pub fn contains(&self, id: ProofId) -> Result<bool, crate::Error> {
+    pub fn contains(&self, id: ArtifactId) -> Result<bool, crate::Error> {
         self.ensure_live()?;
-        let checked = self.cold(self.context.contains_proof(id).map_err(crate::Error::from))?;
+        let checked = self.cold(
+            self.context
+                .contains_artifact(id)
+                .map_err(crate::Error::from),
+        )?;
         let stored = self.cold(self.store.contains(id, self.fixed_summary()))?;
         if checked != stored {
             return self.cold(Err::<_, crate::Error>(
@@ -986,16 +1031,20 @@ impl Graph {
         }
         Ok(checked)
     }
-    pub fn waiting(&self, id: ProofId) -> bool {
+    pub fn waiting(&self, id: ArtifactId) -> bool {
         self.cold(self.backlog().and_then(|backlog| backlog.contains(id)))
             .unwrap_or(false)
     }
     fn binary_object(
         &self,
-        id: ProofId,
-    ) -> Result<Option<crate::object::BinaryProof>, crate::Error> {
+        id: ArtifactId,
+    ) -> Result<Option<crate::object::BinaryArtifact>, crate::Error> {
         self.ensure_live()?;
-        let checked = self.cold(self.context.contains_proof(id).map_err(crate::Error::from))?;
+        let checked = self.cold(
+            self.context
+                .contains_artifact(id)
+                .map_err(crate::Error::from),
+        )?;
         let object = self.cold(self.store.get_binary(id, self.fixed_summary()))?;
         if checked != object.is_some() {
             return self.cold(Err::<_, crate::Error>(
@@ -1004,22 +1053,22 @@ impl Graph {
         }
         Ok(object)
     }
-    pub fn object(&self, id: ProofId) -> Result<Option<Envelope>, crate::Error> {
+    pub fn object(&self, id: ArtifactId) -> Result<Option<Envelope>, crate::Error> {
         self.binary_object(id)
             .map(|object| object.map(|object| object.envelope()))
     }
     pub fn ids_page(
         &self,
-        after: Option<ProofId>,
+        after: Option<ArtifactId>,
         limit: usize,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.ensure_live()?;
         if limit == 0 || limit > crate::resources::active_limits().id_page {
             return Err("inventory page limit".into());
         }
         let expected = self.cold(
             self.context
-                .proof_ids_after(after)
+                .artifact_ids_after(after)
                 .take(limit)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(crate::Error::from),
@@ -1053,7 +1102,11 @@ impl Graph {
         )?;
         if let Some(page) = &page {
             for id in &page.ids {
-                if !self.cold(self.context.contains_proof(*id).map_err(crate::Error::from))? {
+                if !self.cold(
+                    self.context
+                        .contains_artifact(*id)
+                        .map_err(crate::Error::from),
+                )? {
                     return self.cold(Err(crate::Error::CorruptStorage(
                         "canonical inventory differs from checked set".into(),
                     )));
@@ -1063,10 +1116,10 @@ impl Graph {
         Ok(page)
     }
     pub fn get(&self, id: &str) -> Result<Option<Envelope>, crate::Error> {
-        self.object(ProofId::from_bytes(id_bytes(id)?))
+        self.object(ArtifactId::from_bytes(id_bytes(id)?))
     }
     #[cfg(test)]
-    pub(crate) fn ids(&self) -> Vec<ProofId> {
+    pub(crate) fn ids(&self) -> Vec<ArtifactId> {
         let mut ids = Vec::new();
         let mut after = None;
         loop {

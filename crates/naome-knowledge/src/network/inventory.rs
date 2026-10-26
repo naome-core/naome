@@ -118,7 +118,7 @@ impl Node {
         // extend the captured horizon. No proof payload or SQL snapshot is held.
         let mut retained = true;
         for id in &ids {
-            retained &= self.want(ProofId::from_bytes(*id))?;
+            retained &= self.want(ArtifactId::from_bytes(*id))?;
         }
         if retained {
             if next.is_some() {

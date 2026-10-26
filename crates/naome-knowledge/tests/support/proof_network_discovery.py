@@ -159,12 +159,12 @@ class DiscoveryDriver(Driver):
         old_pid = node.process.pid
         node.stop()
         extra = self.produce(0, 6, "offline-new-proof")
-        initial.append(extra["proof_id"])
+        initial.append(extra["artifact_id"])
         self.convergence("remaining_nodes_while_peer_offline", [0, 2, 3], initial, time.monotonic(), timeout=30)
         started = time.monotonic()
         self.start_node(node, produce=False)
         assert node.process.pid != old_pid
-        assert extra["proof_id"] not in before["ids"]
+        assert extra["artifact_id"] not in before["ids"]
         self.convergence("restart_rediscovery_and_catchup", range(4), initial, started, timeout=40)
         self.assert_caps()
 
@@ -233,8 +233,8 @@ class DiscoveryDriver(Driver):
         assert witnessed, "authenticated hostile identities never reached the admission boundary"
         honest.start(network_config={"peers": [endpoint(victim)],
             "discovery": {"mdns": False, "dht": False, "internet": False}})
-        expected = [self.produce(0, 61, "victim-proof")["proof_id"],
-                    self.produce(1, 62, "honest-proof")["proof_id"]]
+        expected = [self.produce(0, 61, "victim-proof")["artifact_id"],
+                    self.produce(1, 62, "honest-proof")["artifact_id"]]
         self.convergence("honest_exchange_under_identity_pressure", [0, 1], expected, time.monotonic(), timeout=30)
         assert len(attacker_ids.intersection(victim.command("status")["connected"])) <= 4
         assert all(node.process.poll() is None for node in self.nodes)
@@ -276,7 +276,7 @@ class DiscoveryDriver(Driver):
             self.summary["scenarios"]["proof_payload_requires_relay_circuit"] = {
                 "result":"pass", "direct_proof_connections":0, "hole_punch_enabled":False, "transfers":transfers}
             self.relay.stop()
-            fresh = self.produce(0, 63, "relay-outage-proof")["proof_id"]
+            fresh = self.produce(0, 63, "relay-outage-proof")["artifact_id"]
             assert all(node.process.poll() is None for node in self.nodes)
             self.relay.start()
             expected.append(fresh)

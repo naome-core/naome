@@ -1,5 +1,6 @@
 use super::*;
 mod batch_order;
+mod definitions;
 mod startup_measurement;
 use crate::{Envelope, hex, object::content_id};
 use naome_foundation::FreeVariable;
@@ -15,7 +16,7 @@ fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
     let helper = producer.author(SOURCE).unwrap();
     let root_source = format!(
         "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        helper.proof_id
+        crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
     );
     let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
     let mut receiver = Graph::default();
@@ -43,7 +44,9 @@ fn generated_root_and_actual_helpers_stay_staged_until_native_batch_commit() {
     assert!(receiver.contains(root).unwrap());
     assert!(
         receiver
-            .contains(ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap()))
+            .contains(ArtifactId::from_bytes(
+                id_bytes(&helper.artifact_id).unwrap()
+            ))
             .unwrap()
     );
 }
@@ -54,7 +57,7 @@ fn generated_missing_invalid_unused_and_wrong_target_helpers_never_publish() {
     let helper = receiver.author(SOURCE).unwrap();
     let root_source = format!(
         "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        helper.proof_id
+        crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
     );
     let question =
         naome_authoring::CompiledQuestion::compile(&crate::mocks::create_question(0)).unwrap();
@@ -99,7 +102,7 @@ fn citation(graph: &Graph, parent: &Envelope) -> Envelope {
     graph
         .author(&format!(
             "goal = all(x, eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            parent.proof_id
+            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap()
 }
@@ -109,18 +112,19 @@ fn aliases_and_alternative_derivations_coexist() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
     let child = citation(&graph, &parent);
-    assert_ne!(parent.proof_id, child.proof_id);
+    assert_ne!(parent.artifact_id, child.artifact_id);
     assert_eq!(parent.statement_id, child.statement_id);
     // Keep the strict selected-state rejection as an independent small oracle.
     let mut strict = naome_checker::ArtifactState::new();
     strict
         .register_proof(
-            check_normal_form_with_state(parent.clone().prepare().unwrap().normal, &strict)
+            check_normal_form_with_state(parent.clone().prepare().unwrap().into_normal(), &strict)
                 .unwrap(),
         )
         .unwrap();
     let checked =
-        check_normal_form_with_state(child.clone().prepare().unwrap().normal, &strict).unwrap();
+        check_normal_form_with_state(child.clone().prepare().unwrap().into_normal(), &strict)
+            .unwrap();
     assert!(matches!(
         strict.validate_proof_registration(&checked),
         Err(naome_checker::ArtifactStateError::DuplicateDerivation { .. })
@@ -135,10 +139,12 @@ fn aliases_and_alternative_derivations_coexist() {
     assert_eq!(graph.ids().len(), 2);
     let alternate = graph.author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = simp(eq(x,x),eq(x,x)) p2 = mp(p0,p1) p3 = mp(p0,p2) p4 = gen(p3,x) return p4").unwrap();
     assert_eq!(alternate.statement_id, parent.statement_id);
-    assert_ne!(alternate.proof_id, parent.proof_id);
-    let alternate_checked =
-        check_normal_form_with_state(alternate.clone().prepare().unwrap().normal, &graph.context)
-            .unwrap();
+    assert_ne!(alternate.artifact_id, parent.artifact_id);
+    let alternate_checked = check_normal_form_with_state(
+        alternate.clone().prepare().unwrap().into_normal(),
+        &graph.context,
+    )
+    .unwrap();
     assert!(
         strict
             .validate_proof_registration(&alternate_checked)
@@ -204,7 +210,7 @@ fn malformed_mismatched_open_and_non_normal_bytes_have_no_accepted_effects() {
     let original = introduce(&mut graph);
     let root = graph.content_root();
     let mut invalid = original.clone();
-    invalid.proof = "ff".into();
+    invalid.payload = "0000000001ff".into();
     assert!(
         graph
             .ingest(invalid, Instant::now())
@@ -212,7 +218,7 @@ fn malformed_mismatched_open_and_non_normal_bytes_have_no_accepted_effects() {
             .contains("malformed")
     );
     let mut invalid = original.clone();
-    invalid.proof_id = "00".repeat(32);
+    invalid.artifact_id = "00".repeat(32);
     assert!(
         graph
             .ingest(invalid, Instant::now())
@@ -235,9 +241,10 @@ fn malformed_mismatched_open_and_non_normal_bytes_have_no_accepted_effects() {
     let statement = StatementId::from_bytes([0; 32]);
     let invalid = Envelope {
         compatibility: hex(&crate::compatibility()),
-        proof_id: hex(content_id(statement, &bytes).as_bytes()),
-        statement_id: hex(statement.as_bytes()),
-        proof: hex(&bytes),
+        artifact_id: hex(content_id(statement, &bytes).as_bytes()),
+        statement_id: Some(hex(statement.as_bytes())),
+        payload: format!("00{}", hex(&bytes)),
+        obligation_proof: None,
     };
     assert_eq!(
         graph
@@ -264,9 +271,10 @@ fn malformed_mismatched_open_and_non_normal_bytes_have_no_accepted_effects() {
     .to_canonical_bytes();
     let invalid = Envelope {
         compatibility: hex(&crate::compatibility()),
-        proof_id: hex(content_id(statement, &bytes).as_bytes()),
-        statement_id: hex(statement.as_bytes()),
-        proof: hex(&bytes),
+        artifact_id: hex(content_id(statement, &bytes).as_bytes()),
+        statement_id: Some(hex(statement.as_bytes())),
+        payload: format!("00{}", hex(&bytes)),
+        obligation_proof: None,
     };
     assert!(
         graph
@@ -296,7 +304,7 @@ fn durable_restart_rechecks_dependencies_aliases_and_detects_corruption() {
     let graph = Graph::open(&directory).unwrap();
     assert_eq!(graph.content_root(), root);
     drop(graph);
-    crate::store::corrupt_payload(&directory, &parent.proof_id);
+    crate::store::corrupt_payload(&directory, &parent.artifact_id);
     assert!(Graph::open(&directory).is_err());
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -311,7 +319,7 @@ fn pending_history_outlives_working_pages_and_restart_without_affecting_accepted
         let mut parent = [0; 32];
         parent[..8].copy_from_slice(&(index as u64).to_be_bytes());
         let bytes = ProofCertificate::new(vec![ProofStep::ProofReference {
-            proof_id: ProofId::from_bytes(parent),
+            proof_id: naome_proof::ProofId::from_bytes(parent),
         }])
         .unwrap()
         .to_canonical_bytes();
@@ -321,9 +329,10 @@ fn pending_history_outlives_working_pages_and_restart_without_affecting_accepted
                 .ingest(
                     Envelope {
                         compatibility: hex(&crate::compatibility()),
-                        proof_id: hex(content_id(statement, &bytes).as_bytes()),
-                        statement_id: hex(statement.as_bytes()),
-                        proof: hex(&bytes)
+                        artifact_id: hex(content_id(statement, &bytes).as_bytes()),
+                        statement_id: Some(hex(statement.as_bytes())),
+                        payload: format!("00{}", hex(&bytes)),
+                        obligation_proof: None,
                     },
                     Instant::now()
                 )
@@ -371,9 +380,12 @@ fn dependency_depth_is_a_derived_metric_without_a_lifetime_ceiling() {
         parent = child;
     }
     let root = graph.content_root();
-    let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&parent.artifact_id).unwrap());
     assert_eq!(
-        graph.checked_context().proof_dependency_depth(id).unwrap(),
+        graph
+            .checked_context()
+            .artifact_proof_dependency_depth(id)
+            .unwrap(),
         Some(160)
     );
     drop(graph);
@@ -433,20 +445,20 @@ fn expired_commit_rolls_back_without_publishing_or_halting_the_graph() {
 fn generation_compaction_preserves_cold_snapshots_and_rejects_old_prepared_batches() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
-    let parent_id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let parent_id = ArtifactId::from_bytes(id_bytes(&parent.artifact_id).unwrap());
     let old = graph.context.clone();
     let old_storage = Arc::downgrade(&graph.checked_storage);
     let before = old.snapshot_id();
     let source = format!(
         "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        parent.proof_id
+        crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
     );
     let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
     let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
     graph.next_compaction = 0;
     graph.maintain_checked_storage().unwrap();
     graph.checked_storage.evict_cache();
-    assert!(old.contains_proof(parent_id).unwrap());
+    assert!(old.contains_artifact(parent_id).unwrap());
     assert_eq!(graph.context.snapshot_id(), before);
     assert_eq!(graph.object(parent_id).unwrap(), Some(parent));
     assert_eq!(
@@ -495,7 +507,7 @@ fn pre_attach_batch_is_stale_before_canonical_write_while_generation_is_unchange
     let parent = introduce(&mut graph);
     let source = format!(
         "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        parent.proof_id
+        crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
     );
     let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
     let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
@@ -527,7 +539,7 @@ fn pre_attach_batch_is_stale_before_canonical_write_while_generation_is_unchange
 fn post_attach_batch_and_new_formula_survive_current_root_handoff_with_cold_reads() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
-    let parent_id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let parent_id = ArtifactId::from_bytes(id_bytes(&parent.artifact_id).unwrap());
     let old = graph.context.clone();
     let old_storage = Arc::downgrade(&graph.checked_storage);
     let old_snapshot = old.snapshot_id();
@@ -553,7 +565,7 @@ fn post_attach_batch_and_new_formula_survive_current_root_handoff_with_cold_read
     assert_eq!(graph.content_root(), current_corpus);
     graph.checked_storage.evict_cache();
     assert_eq!(graph.object(root).unwrap(), Some(expected));
-    let header = graph.context.proof_header(root).unwrap().unwrap();
+    let header = graph.context.artifact_proof_header(root).unwrap().unwrap();
     assert!(
         graph
             .context
@@ -564,10 +576,10 @@ fn post_attach_batch_and_new_formula_survive_current_root_handoff_with_cold_read
             .unwrap()
             .is_some()
     );
-    assert!(graph.context.contains_proof(parent_id).unwrap());
+    assert!(graph.context.contains_artifact(parent_id).unwrap());
     graph.checked_storage.evict_cache();
-    assert!(old.contains_proof(parent_id).unwrap());
-    assert!(!old.contains_proof(root).unwrap());
+    assert!(old.contains_artifact(parent_id).unwrap());
+    assert!(!old.contains_artifact(root).unwrap());
     assert!(old_storage.upgrade().is_some());
     drop(old);
     assert!(
@@ -584,7 +596,7 @@ fn an_expired_post_attach_batch_preserves_deadline_and_partial_copy_state() {
     assert!(graph.test_compaction_step(1).unwrap());
     let source = format!(
         "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-        parent.proof_id
+        crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
     );
     let question = naome_authoring::CompiledQuestion::compile("goal = all(x,eq(x,x))").unwrap();
     let (root, batch) = graph.prepare_generated(&source, &[], &question).unwrap();
@@ -607,7 +619,7 @@ fn an_expired_post_attach_batch_preserves_deadline_and_partial_copy_state() {
 fn four_retained_old_generations_bound_copy_admission_without_changing_snapshots() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
-    let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&parent.artifact_id).unwrap());
     let snapshot = graph.context.snapshot_id();
     let mut retained = Vec::new();
     for _ in 0..4 {
@@ -628,11 +640,11 @@ fn four_retained_old_generations_bound_copy_admission_without_changing_snapshots
     assert!(graph.test_compaction_step(1).unwrap());
     drain_current_copy(&mut graph);
     graph.checked_storage.evict_cache();
-    assert!(graph.context.contains_proof(id).unwrap());
+    assert!(graph.context.contains_artifact(id).unwrap());
     for old in retained {
         graph.checked_storage.evict_cache();
         assert_eq!(old.snapshot_id(), snapshot);
-        assert!(old.contains_proof(id).unwrap());
+        assert!(old.contains_artifact(id).unwrap());
     }
 }
 
@@ -640,8 +652,8 @@ fn four_retained_old_generations_bound_copy_admission_without_changing_snapshots
 fn direct_cold_formula_integrity_failure_halts_the_owner() {
     let mut graph = Graph::default();
     let parent = introduce(&mut graph);
-    let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
-    let header = graph.context.proof_header(id).unwrap().unwrap();
+    let id = ArtifactId::from_bytes(id_bytes(&parent.artifact_id).unwrap());
+    let header = graph.context.artifact_proof_header(id).unwrap().unwrap();
     let formula = graph
         .context
         .statement_formula(
@@ -696,7 +708,7 @@ fn metadata_drift_and_missing_inventory_members_cannot_look_like_absence() {
     for drift in [true, false] {
         let mut graph = Graph::default();
         let parent = introduce(&mut graph);
-        let id = ProofId::from_bytes(id_bytes(&parent.proof_id).unwrap());
+        let id = ArtifactId::from_bytes(id_bytes(&parent.artifact_id).unwrap());
         let before = graph.content_root();
         let database =
             rusqlite::Connection::open(graph.store.directory().join(crate::store::DATABASE_FILE))
@@ -714,7 +726,10 @@ fn metadata_drift_and_missing_inventory_members_cannot_look_like_absence() {
                 .execute_batch("PRAGMA foreign_keys = OFF;")
                 .unwrap();
             database
-                .execute("DELETE FROM proofs WHERE id=?1", [id.as_bytes().as_slice()])
+                .execute(
+                    "DELETE FROM artifacts WHERE id=?1",
+                    [id.as_bytes().as_slice()],
+                )
                 .unwrap();
         }
         assert!(graph.ids_page(None, 64).is_err());
@@ -731,7 +746,7 @@ fn unrelated_external_payload_change_halts_admission_without_advancing_checked_s
     let child = graph
         .author(&format!(
             "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            parent.proof_id
+            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap();
     let before = graph.content_root();
@@ -742,8 +757,8 @@ fn unrelated_external_payload_change_halts_admission_without_advancing_checked_s
     assert_eq!(
         database
             .execute(
-                "UPDATE proofs SET payload_digest=zeroblob(32) WHERE id=?1",
-                [crate::unhex(&parent.proof_id).unwrap()],
+                "UPDATE artifacts SET payload_digest=zeroblob(32) WHERE id=?1",
+                [crate::unhex(&parent.artifact_id).unwrap()],
             )
             .unwrap(),
         1
@@ -772,7 +787,7 @@ fn replay_compaction_keeps_ingest_scheduling_and_cold_snapshots() {
 
     let mut graph = Graph::default();
     let envelope = introduce(&mut graph);
-    let id = ProofId::from_bytes(id_bytes(&envelope.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&envelope.artifact_id).unwrap());
     let old = graph.context.clone();
     let old_storage = Arc::downgrade(&graph.checked_storage);
     let snapshot = old.snapshot_id();
@@ -790,7 +805,7 @@ fn replay_compaction_keeps_ingest_scheduling_and_cold_snapshots() {
     assert_eq!(graph.next_compaction, ingest_threshold);
     graph.checked_storage.evict_cache();
     assert_eq!(graph.context.snapshot_id(), snapshot);
-    assert!(old.contains_proof(id).unwrap());
+    assert!(old.contains_artifact(id).unwrap());
     assert_eq!(graph.object(id).unwrap(), Some(envelope.clone()));
 
     let current = Arc::downgrade(&graph.checked_storage);
@@ -825,7 +840,8 @@ fn startup_prune_directory(name: &str) -> std::path::PathBuf {
 fn startup_prune_fixture(directory: &Path) -> (Graph, Vec<Envelope>, StatementId) {
     let mut graph = Graph::open(directory).unwrap();
     let parent = introduce(&mut graph);
-    let target = StatementId::from_bytes(id_bytes(&parent.statement_id).unwrap());
+    let target =
+        StatementId::from_bytes(id_bytes(parent.statement_id.as_deref().unwrap()).unwrap());
     let mut envelopes = vec![parent.clone(), citation(&graph, &parent)];
     graph.ingest(envelopes[1].clone(), Instant::now()).unwrap();
     for source in [
@@ -869,7 +885,7 @@ fn startup_prune_replays_aliases_dependencies_and_nested_buckets_after_cache_evi
     let directory = startup_prune_directory("cold-buckets");
     let (graph, envelopes, target) = startup_prune_fixture(&directory);
     assert_eq!(envelopes[0].statement_id, envelopes[1].statement_id);
-    assert_ne!(envelopes[0].proof_id, envelopes[1].proof_id);
+    assert_ne!(envelopes[0].artifact_id, envelopes[1].artifact_id);
     let root = graph.content_root();
     let snapshot = graph.context.snapshot_id();
     let buckets = startup_prune_buckets(&graph, target);
@@ -885,14 +901,14 @@ fn startup_prune_replays_aliases_dependencies_and_nested_buckets_after_cache_evi
     assert_eq!(
         graph
             .context
-            .proof_dependency_depth(ProofId::from_bytes(
-                id_bytes(&envelopes[1].proof_id).unwrap()
+            .artifact_proof_dependency_depth(ArtifactId::from_bytes(
+                id_bytes(&envelopes[1].artifact_id).unwrap()
             ))
             .unwrap(),
         Some(2)
     );
     for envelope in envelopes {
-        assert_eq!(graph.get(&envelope.proof_id).unwrap(), Some(envelope));
+        assert_eq!(graph.get(&envelope.artifact_id).unwrap(), Some(envelope));
     }
     assert!(graph.storage_error().is_none());
     drop(graph);
@@ -937,7 +953,7 @@ fn startup_prune_failures_discard_the_generation_and_rebuild_from_canonical_hist
         assert_eq!(graph.accepted_count(), envelopes.len());
         assert_eq!(startup_prune_buckets(&graph, target), buckets);
         for envelope in envelopes {
-            assert_eq!(graph.get(&envelope.proof_id).unwrap(), Some(envelope));
+            assert_eq!(graph.get(&envelope.artifact_id).unwrap(), Some(envelope));
         }
         assert!(graph.storage_error().is_none());
         drop(graph);
@@ -1064,7 +1080,7 @@ fn narrowed_intake_limits_replay_current_proofs_without_changing_their_identity(
         assert_eq!(graph.accepted_count(), 1);
         let id = graph.ids_page(None, 1).unwrap()[0];
         let object = graph.object(id).unwrap().unwrap();
-        assert!(object.proof.len() > 128);
+        assert!(object.payload.len() > 128);
         assert!(matches!(
             graph.ingest(object, Instant::now()),
             Err(crate::Error::InputLimit(_))
@@ -1085,7 +1101,7 @@ fn narrowed_intake_limits_replay_current_proofs_without_changing_their_identity(
     }
     let checked =
         naome_checker::normalize_and_check(ProofCertificate::new(steps).unwrap()).unwrap();
-    let object = crate::object::BinaryProof::from_checked(&checked)
+    let object = crate::object::BinaryArtifact::from_checked(&checked)
         .unwrap()
         .envelope();
     graph.ingest(object, Instant::now()).unwrap();

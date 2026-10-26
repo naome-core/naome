@@ -21,7 +21,7 @@ impl FormalContext {
 /// A cheap change indicator; formal authority still uses the complete snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Revision {
-    pub(super) checked_proofs: usize,
+    pub(super) checked_artifacts: usize,
     pub(super) registered_questions: usize,
     pub(super) policy: Identity,
     pub(crate) selection: Option<Identity>,

@@ -1,7 +1,7 @@
 //! Bounded authenticated traversal shared by checked contexts and registries.
 //! Plans own record interpretation; the cursor owns reads, writes and budgets.
 use super::disk_map::{DiskMap, Lookup, MAX_NODE_BYTES, Walk};
-use crate::{ContextError, ContextStorage, StatementId, statement_id};
+use crate::{ContextError, ContextStorage};
 use std::sync::Arc;
 
 /// Limits actual authenticated record visits and raw bytes read in one step.
@@ -36,15 +36,16 @@ pub(crate) struct CopyMap<'a> {
     pub(crate) map: &'a DiskMap,
     pub(crate) copy_nodes: bool,
 }
-pub(crate) struct FormulaRecord {
-    pub(crate) statement: StatementId,
+pub(crate) struct ContentRecord {
+    pub(crate) identity: [u8; 32],
+    pub(crate) identity_of: fn(&[u8]) -> Result<[u8; 32], ContextError>,
     pub(crate) address: [u8; 32],
     pub(crate) length: usize,
     pub(crate) address_of: fn(&[u8]) -> [u8; 32],
 }
 pub(crate) enum Follow {
     None,
-    Formula(FormulaRecord),
+    Content(ContentRecord),
     Bucket(Walk),
     Membership(DiskMap, Lookup),
 }
@@ -126,7 +127,7 @@ impl<P: CopyPlan> AuthenticatedCopy<P> {
                     work.node(map.advance_lookup(lookup)?.ok_or(ContextError::Corrupt)?);
                     continue;
                 }
-                Follow::Formula(record) => {
+                Follow::Content(record) => {
                     if record.length > budget.bytes {
                         return Err(ContextError::Limit);
                     }
@@ -136,7 +137,7 @@ impl<P: CopyPlan> AuthenticatedCopy<P> {
                     let bytes = self.plan.storage().read(record.address, record.length)?;
                     if bytes.len() != record.length
                         || (record.address_of)(&bytes) != record.address
-                        || statement_id(&bytes) != record.statement
+                        || (record.identity_of)(&bytes)? != record.identity
                     {
                         return Err(ContextError::Corrupt);
                     }

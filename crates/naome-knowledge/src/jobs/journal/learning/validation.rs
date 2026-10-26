@@ -69,7 +69,9 @@ fn validate_sources(
             {
                 if c.get::<String>("learned", &example.job.to_string(), 256)?
                     .as_ref()
-                    != Some(&example.proof_id)
+                    != Some(&crate::hex(
+                        crate::object::proof_address(&example.proof_id)?.as_bytes(),
+                    ))
                 {
                     return Err("native replay lacks admitted own receipt".into());
                 }
@@ -121,7 +123,7 @@ pub(in crate::jobs::journal) fn validate_rows(
         if let Some(native) = &source.native {
             for evidence in &native.evidence {
                 let origin = record(c, evidence.job)?;
-                if !matches!(&origin.input, Input::Peer { artifact, certificate, .. } if artifact == &evidence.proof_id && certificate == &evidence.certificate) { return Err("native replay snapshot source differs".into()); }
+                if !matches!(&origin.input, Input::Peer { artifact, certificate, .. } if crate::object::proof_address(&evidence.proof_id).is_ok_and(|id| crate::hex(id.as_bytes()) == *artifact) && certificate == &evidence.certificate) { return Err("native replay snapshot source differs".into()); }
             }
         }
         let expected = Disk::record_model_refs(&source);
@@ -271,7 +273,7 @@ fn validate_learned(
     let root: String = crate::checkpoint::decode(bytes)?;
     crate::object::id_bytes(&root)?;
     let source = record(c, id)?;
-    let matching = matches!(source.result, Some(Output::Native{solution:Some(ref solution),..}) if solution.proof_id==root);
+    let matching = matches!(source.result, Some(Output::Native{solution:Some(ref solution),..}) if crate::object::proof_address(&solution.proof_id).is_ok_and(|id| crate::hex(id.as_bytes())==root));
     if id == 0
         || key != id.to_string()
         || !source.acknowledged

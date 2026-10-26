@@ -23,14 +23,14 @@ pub fn validate_solution(
     }
     let expected = extract(question, artifact, bytes)?;
     if solution.refuted
-        || solution.proof_id != artifact
+        || crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes()) != artifact
         || super::digest(&solution.tree) != super::digest(&expected.tree)
         || crate::hex(
             naome_authoring::compile(&solution.source)
                 .map_err(|e| e.to_string())?
                 .proof_id()
                 .as_bytes(),
-        ) != artifact
+        ) != solution.proof_id
     {
         return Err("peer replay source differs from checked native DAG".into());
     }
@@ -202,7 +202,8 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
         return Err("peer DAG has no supported ambiguous inference".into());
     }
     let verified = proof::verify(&term, q.proved_target())?;
-    if crate::hex(verified.native_id.as_bytes()) != artifact {
+    if crate::hex(naome_proof::ArtifactId::from_proof_id(verified.native_id).as_bytes()) != artifact
+    {
         return Err("peer artifact identity differs".into());
     }
     Ok(Solution {
@@ -219,7 +220,7 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
             generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
         },
         source: proof::source(&verified)?,
-        proof_id: artifact.into(),
+        proof_id: crate::hex(verified.native_id.as_bytes()),
         refuted: false,
         tree: Tree::Certificate(pack(&verified.certificate.to_canonical_bytes())?),
     })
@@ -234,7 +235,12 @@ mod tests {
         let question = super::super::tests::own_question();
         let original = naome_authoring::compile(&solution.source).unwrap();
         let compressed = pack(original.canonical_proof_bytes()).unwrap();
-        let extracted = extract(&question, &solution.proof_id, &compressed).unwrap();
+        let extracted = extract(
+            &question,
+            &crate::hex(original.artifact_id().as_bytes()),
+            &compressed,
+        )
+        .unwrap();
         assert_eq!(extracted.cost.search_expansions, 0);
         assert!(extracted.cost.unique_states > 0);
         assert_eq!(
@@ -255,7 +261,14 @@ mod tests {
         assert!(unpack(&u32::MAX.to_le_bytes()).is_err());
         let mut corrupted = compressed.clone();
         *corrupted.last_mut().unwrap() ^= 1;
-        assert!(extract(&question, &solution.proof_id, &corrupted).is_err());
+        assert!(
+            extract(
+                &question,
+                &crate::hex(original.artifact_id().as_bytes()),
+                &corrupted
+            )
+            .is_err()
+        );
         eprintln!(
             "peer_dag original_bytes={} compressed_bytes={} steps={} useful_states={}",
             original.canonical_proof_bytes().len(),

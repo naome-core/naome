@@ -6,7 +6,7 @@ fn expired_primary_program_response_cannot_extend_durable_input() {
     let checked = source(&graph);
     let metadata = metadata(&checked);
     let manifest = metadata.manifest.clone();
-    let id = manifest.proof_id();
+    let id = manifest.artifact_id();
     let peer = PeerId::random();
     graph.ownership().start_program(&manifest).unwrap();
     let mut programs = Programs {
@@ -54,7 +54,7 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_interes
     let checked = source(&graph);
     let metadata = metadata(&checked);
     let manifest = metadata.manifest.clone();
-    let id = manifest.proof_id();
+    let id = manifest.artifact_id();
     let peer = PeerId::random();
     let capability = crate::publication::PeerGrant::new();
     graph.ownership().start_program(&manifest).unwrap();
@@ -90,7 +90,7 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_interes
         .unwrap()
         .input_chunk(before.commands, 64, CHUNK_BYTES)
         .unwrap();
-    let wrong = ProofId::from_bytes([9; 32]);
+    let wrong = ArtifactId::from_bytes([9; 32]);
     assert!(
         intake
             .program_payload(PeerId::random(), id, id, next.clone(), &graph)
@@ -160,7 +160,7 @@ async fn expired_queued_program_metadata_cannot_start_interest_or_input_staging(
     let checked = source(&graph);
     let metadata = metadata(&checked);
     let manifest = metadata.manifest.clone();
-    let id = manifest.proof_id();
+    let id = manifest.artifact_id();
     let mut transfer = TransferGrant::new(PeerId::random(), id, None);
     transfer.set_received_for_test(Instant::now() - crate::resources::limits().root_timeout);
     let mut programs = Programs::default();

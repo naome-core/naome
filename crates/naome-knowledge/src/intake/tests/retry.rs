@@ -52,7 +52,7 @@ async fn temporary_overload_retains_final_selection_without_declining_or_repeati
             LocalQuestions::new(Some(counted as fn(_) -> _))
         };
         let (object, metadata) = fixture(76);
-        let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+        let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
         let peer = PeerId::random();
         let mut intake = Intake::default();
         intake.enqueue(peer, metadata.clone(), &graph).unwrap();
@@ -144,7 +144,7 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
     let fixtures: Vec<_> = (79..82).map(fixture).collect();
     let ids: Vec<_> = fixtures
         .iter()
-        .map(|(object, _)| ProofId::from_bytes(id_bytes(&object.proof_id).unwrap()))
+        .map(|(object, _)| ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap()))
         .collect();
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
@@ -261,7 +261,7 @@ async fn reduced_capacity_drains_active_selection_before_admitting_another_root(
 async fn allocation_backpressure_preserves_payload_frontier_and_prepared_inputs() {
     for during_preparation in [false, true] {
         let (object, metadata) = fixture(77);
-        let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+        let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
         let peer = PeerId::random();
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
@@ -319,7 +319,7 @@ async fn allocation_backpressure_preserves_payload_frontier_and_prepared_inputs(
 #[tokio::test]
 async fn sealed_selection_cannot_publish_through_a_different_root_grant() {
     let (object, metadata) = fixture(78);
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     let peer = PeerId::random();
     let mut graph = Graph::default();
     let before = graph.content_root();
@@ -335,7 +335,7 @@ async fn sealed_selection_cannot_publish_through_a_different_root_grant() {
     let Phase::Final(batch) = root.phase else {
         panic!("complete checked batch");
     };
-    let wrong = TransferGrant::new(peer, ProofId::from_bytes([9; 32]), None);
+    let wrong = TransferGrant::new(peer, ArtifactId::from_bytes([9; 32]), None);
     assert_eq!(
         root.selection
             .publish(&mut graph, &mut questions, &wrong, *batch),

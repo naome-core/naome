@@ -90,7 +90,7 @@ fn accepted(owner: &mut Owner) -> u64 {
     );
     owner
         .disk
-        .accept_learning(&mut owner.journal, id, &solution.proof_id)
+        .accept_learning(&mut owner.journal, id, &crate::hex(root.as_bytes()))
         .unwrap();
     assert_eq!(learning(owner)["local_examples"], 1);
     id
@@ -100,7 +100,11 @@ fn only_the_exact_admitted_own_solution_enters_local_replay_once() {
     let (directory, mut owner) = native();
     let id = accepted(&mut owner);
     let before = learning(&owner);
-    let root = checked_solution().proof_id;
+    let root = crate::hex(
+        crate::object::proof_address(&checked_solution().proof_id)
+            .unwrap()
+            .as_bytes(),
+    );
     owner
         .disk
         .accept_learning(&mut owner.journal, id, &root)
@@ -129,7 +133,11 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
             .unwrap(),
         ),
         ordinal: 1,
-        artifact: solution.proof_id.clone(),
+        artifact: crate::hex(
+            crate::object::proof_address(&solution.proof_id)
+                .unwrap()
+                .as_bytes(),
+        ),
         peer: peer.clone(),
         question: Some(crate::learning::tests::own_question()),
         binding: Binding::new([1; 32], [2; 32]),
@@ -153,7 +161,11 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
     assert_eq!(state["replay"][0]["origin"]["Peer"]["peer"], peer);
     assert_eq!(
         state["replay"][0]["origin"]["Peer"]["artifact"],
-        solution.proof_id
+        crate::hex(
+            crate::object::proof_address(&solution.proof_id)
+                .unwrap()
+                .as_bytes()
+        )
     );
     assert_eq!(
         state["statistics"],
@@ -255,7 +267,11 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
             .unwrap(),
         ),
         ordinal: 1,
-        artifact: solution.proof_id.clone(),
+        artifact: crate::hex(
+            crate::object::proof_address(&solution.proof_id)
+                .unwrap()
+                .as_bytes(),
+        ),
         peer: libp2p::PeerId::random().to_string(),
         question: Some(crate::learning::tests::own_question()),
         binding: Binding::new([1; 32], [2; 32]),

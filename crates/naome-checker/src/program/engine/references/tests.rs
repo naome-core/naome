@@ -296,3 +296,88 @@ fn corrupt_cited_context_never_yields_a_proved_program_result() {
     ));
     assert!(!engine.status().unwrap().fully_checked);
 }
+
+#[test]
+fn definition_expansion_cannot_mint_proof_authority_or_hide_missing_selected_state() {
+    use naome_proof::{DefinedFormula, DefinitionCertificate};
+    let storage = Arc::new(Storage::default());
+    let mut context = DiskArtifactState::new(storage.clone());
+    let x = naome_foundation::FreeVariable::new(0);
+    let certificate = DefinitionCertificate::relation(1, DefinedFormula::equal(x, x)).unwrap();
+    let id = certificate.definition_id();
+    context
+        .register_definition(crate::check_definition_with_state(certificate, &context).unwrap())
+        .unwrap();
+    let command = Command::DefinedRelation {
+        definition_id: *id.as_bytes(),
+        arguments: vec![0],
+    };
+    let mut unproved = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    unproved
+        .append_group(&[command.clone(), Command::Seal { proof: 0 }])
+        .unwrap();
+    assert!(
+        matches!(unproved.advance(97,32768,&context),Err(Error::Check(error))
+        if matches!(error.failure,crate::diagnostics::Failure::InputNotProved { .. }))
+    );
+    let mut missing = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    missing.append(&command).unwrap();
+    assert!(
+        matches!(missing.advance(97,32768,&ArtifactState::new()),Err(Error::Check(error))
+        if matches!(error.failure,crate::diagnostics::Failure::Expansion { reason: crate::diagnostics::ExpansionFailure::UnknownDefinition { .. } }))
+    );
+    storage.corrupt.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        context.definition_kind(id),
+        Err(ContextError::Corrupt)
+    ));
+    assert!(matches!(
+        missing.advance(97, 32768, &context),
+        Err(Error::Context(ContextError::Corrupt))
+    ));
+}
+
+#[test]
+fn checked_program_definition_dependencies_are_revalidated_at_registration() {
+    use naome_proof::{DefinedFormula, DefinitionCertificate};
+    let storage = Arc::new(Storage::default());
+    let mut context = DiskArtifactState::new(storage);
+    let x = naome_foundation::FreeVariable::new(0);
+    let certificate = DefinitionCertificate::relation(1, DefinedFormula::equal(x, x)).unwrap();
+    let id = certificate.definition_id();
+    context
+        .register_definition(crate::check_definition_with_state(certificate, &context).unwrap())
+        .unwrap();
+    let mut engine = Engine::open(Connection::open_in_memory().unwrap()).unwrap();
+    engine
+        .append_group(&[
+            Command::DefinedRelation {
+                definition_id: *id.as_bytes(),
+                arguments: vec![0],
+            },
+            Command::Separation {
+                predicate: 0,
+                element: 0,
+                source: 1,
+                result: 2,
+            },
+            Command::Seal { proof: 1 },
+        ])
+        .unwrap();
+    let checked = finish(engine, &context);
+    assert_eq!(
+        checked.definition_dependencies_after(None, 1).unwrap(),
+        [id]
+    );
+    let empty = DiskArtifactState::new(Arc::new(Storage::default()));
+    let mut registration = empty.begin_program_registration(&checked).unwrap();
+    assert!(
+        matches!(registration.advance(&checked,31),Err(crate::ArtifactStateError::MissingDefinitionDependency { definition_id }) if definition_id==id)
+    );
+    register(&mut context, &checked);
+    assert!(
+        context
+            .contains_proof(checked.manifest().proof_id())
+            .unwrap()
+    );
+}

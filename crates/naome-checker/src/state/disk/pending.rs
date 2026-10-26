@@ -1,6 +1,7 @@
 //! Enumerate a buffered storage frontier from already checked live roots.
 use super::{
-    DiskArtifactState, MapKind, decode_root, decode_statement_record, formula_address, statement_id,
+    DiskArtifactState, MapKind, decode_root, decode_statement_record, definition_address,
+    definition_identity, definition_record, formula_address, statement_id,
 };
 use crate::{ContextError, StatementId, state::disk_map::DiskMap};
 
@@ -40,6 +41,17 @@ impl DiskArtifactState {
                             if bytes.len() != length
                                 || formula_address(&bytes) != address
                                 || statement_id(&bytes) != id
+                            {
+                                return Err(ContextError::Corrupt);
+                            }
+                        }
+                    } else if matches!(kind, MapKind::Definitions) {
+                        let (address, length) = definition_record(&record)?;
+                        if select(address)? {
+                            let bytes = map.storage().read(address, length)?;
+                            if bytes.len() != length
+                                || definition_address(&bytes) != address
+                                || definition_identity(&bytes)? != key
                             {
                                 return Err(ContextError::Corrupt);
                             }

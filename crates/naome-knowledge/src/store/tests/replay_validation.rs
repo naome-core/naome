@@ -29,7 +29,7 @@ fn external_write_after_integrity_validation_invalidates_the_replay_ticket() {
     let path = fs::canonicalize(&directory.0).unwrap().join(DATABASE_FILE);
     let other = rusqlite::Connection::open(path).unwrap();
     other
-        .execute("UPDATE proofs SET payload=zeroblob(length(payload))", [])
+        .execute("UPDATE artifacts SET payload=zeroblob(length(payload))", [])
         .unwrap();
     drop(other);
     assert!(store.finish_replay(root).is_err());

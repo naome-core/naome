@@ -1,7 +1,7 @@
 use super::*;
 use naome_foundation::FreeVariable;
 
-fn record() -> BinaryProof {
+fn record() -> BinaryArtifact {
     let variable = FreeVariable::new(0);
     let certificate = ProofCertificate::new(vec![
         ProofStep::EqualityReflexivity { variable },
@@ -11,7 +11,7 @@ fn record() -> BinaryProof {
         },
     ])
     .unwrap();
-    BinaryProof::from_checked(&naome_checker::normalize_and_check(certificate).unwrap()).unwrap()
+    BinaryArtifact::from_checked(&naome_checker::normalize_and_check(certificate).unwrap()).unwrap()
 }
 
 #[test]
@@ -24,7 +24,7 @@ fn binary_and_envelope_preparation_share_canonical_acceptance_and_rejection() {
         let mut invalid = valid.clone();
         match case {
             0 => invalid.bytes = vec![0xff].into(),
-            1 => invalid.id = ProofId::from_bytes([0; 32]),
+            1 => invalid.id = ArtifactId::from_bytes([0; 32]),
             _ => {
                 invalid.bytes = ProofCertificate::new(vec![
                     ProofStep::EqualityReflexivity {
@@ -41,7 +41,7 @@ fn binary_and_envelope_preparation_share_canonical_acceptance_and_rejection() {
                 .unwrap()
                 .to_canonical_bytes()
                 .into();
-                invalid.id = content_id(invalid.statement, &invalid.bytes);
+                invalid.id = content_id(invalid.statement.unwrap(), &invalid.bytes);
             }
         }
         let envelope = invalid.envelope();
@@ -55,7 +55,9 @@ fn binary_and_envelope_preparation_share_canonical_acceptance_and_rejection() {
 fn wrappers_keep_dependency_metadata_and_memory_admission_before_parsing() {
     let valid = record();
     let mut metadata = valid.clone();
-    metadata.dependencies.insert(ProofId::from_bytes([7; 32]));
+    metadata
+        .dependencies
+        .insert(ArtifactId::from_bytes([7; 32]));
     assert!(
         metadata
             .prepare()

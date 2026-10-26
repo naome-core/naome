@@ -25,8 +25,8 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              Budgets adapt automatically. Status reports running, pausing, paused\n\
              or stopped computation and its reason. Pressure closes new computation;\n\
              admitted work drains without new time or work allowances. Bounded\n\
-             discovery, checked-proof serving and lifecycle control remain active.\n\
-             No unchecked proof is admitted. Network allocations retain memory limits.\n\
+             discovery, checked-artifact serving and lifecycle control remain active.\n\
+             No unchecked artifact is admitted. Network allocations retain memory limits.\n\
              \nNative proof learning (opt-in):\n\
              Set runtime.jobs.native_proof_learning=true in config.json while stopped.\n\
              A fresh 1,003,361-parameter CPU graph model learns from accepted local proofs.\n\
@@ -123,9 +123,9 @@ fn human(command: &str, status: &Status, color: bool) -> String {
     } else {
         format!("{red}○ Stopped{reset}")
     };
-    let verification = match status.proof_verification {
-        super::ProofVerification::Checked => "checked in this run",
-        super::ProofVerification::NotRun => "stored; verification not run",
+    let verification = match status.artifact_verification {
+        super::ArtifactVerification::Checked => "checked in this run",
+        super::ArtifactVerification::NotRun => "stored; verification not run",
     };
     let computation = match status.computation {
         crate::resources::ComputationState::Stopped => "Stopped",
@@ -138,8 +138,8 @@ fn human(command: &str, status: &Status, color: bool) -> String {
         }
     };
     let mut output = format!(
-        "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted proofs  {} ({verification})\n",
-        status.accepted_proofs,
+        "\n  NAOME  {action}\n\n  State            {state}\n  Computation      {computation}\n  Accepted artifacts {} ({verification})\n",
+        status.accepted_artifacts,
     );
     if let Some(reason) = &status.computation_reason {
         let reason = reason

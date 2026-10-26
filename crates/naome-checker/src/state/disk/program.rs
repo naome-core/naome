@@ -12,6 +12,8 @@ pub struct ProgramRegistration {
     nodes_complete: bool,
     after_dependency: Option<ProofId>,
     dependencies_complete: bool,
+    definitions_complete: bool,
+    after_definition: Option<naome_proof::DefinitionId>,
     depth: usize,
     complete: bool,
 }
@@ -36,6 +38,8 @@ impl DiskArtifactState {
             nodes_complete: proof.conclusion().is_some(),
             after_dependency: None,
             dependencies_complete: false,
+            definitions_complete: false,
+            after_definition: None,
             depth: 1,
             complete: false,
         })
@@ -80,8 +84,10 @@ impl DiskArtifactState {
         self.proofs
             .insert(*proof.as_bytes(), &proof_record)
             .map_err(context)?;
+        let mut identity = vec![0];
+        identity.extend_from_slice(proof.as_bytes());
         self.artifacts
-            .insert(*ArtifactId::from_proof_id(proof).as_bytes(), &[])
+            .insert(*ArtifactId::from_proof_id(proof).as_bytes(), &identity)
             .map_err(context)?;
         let previous = self.witnesses.get(statement.as_bytes()).map_err(context)?;
         match previous {
@@ -178,6 +184,35 @@ impl ProgramRegistration {
             }
             self.dependencies_complete = dependencies.len() < limit;
             if !dependencies.is_empty() || !self.dependencies_complete {
+                return Ok(());
+            }
+        }
+        if !self.definitions_complete {
+            let limit = records.min(4096);
+            let definitions = proof
+                .definition_dependencies_after(self.after_definition, limit)
+                .map_err(|error| {
+                    ArtifactStateError::Context(if error.resource_shortage() {
+                        ContextError::Limit
+                    } else {
+                        ContextError::Storage(error.to_string())
+                    })
+                })?;
+            for definition_id in &definitions {
+                if self
+                    .next
+                    .definition_kind(*definition_id)
+                    .map_err(ArtifactStateError::Context)?
+                    .is_none()
+                {
+                    return Err(ArtifactStateError::MissingDefinitionDependency {
+                        definition_id: *definition_id,
+                    });
+                }
+                self.after_definition = Some(*definition_id);
+            }
+            self.definitions_complete = definitions.len() < limit;
+            if !definitions.is_empty() || !self.definitions_complete {
                 return Ok(());
             }
         }

@@ -68,7 +68,7 @@ pub(super) struct SharedSwarm {
 }
 #[derive(Default)]
 struct PeerGrants {
-    roots: BTreeMap<(PeerId, ProofId), std::sync::Weak<AtomicBool>>,
+    roots: BTreeMap<(PeerId, ArtifactId), std::sync::Weak<AtomicBool>>,
     requests: HashMap<request_response::OutboundRequestId, std::sync::Weak<AtomicBool>>,
 }
 impl PeerGrants {
@@ -130,7 +130,7 @@ impl SharedSwarm {
                 .revoke_peer(peer);
         }
     }
-    pub(super) fn grant(&self, peer: PeerId, root: ProofId) -> crate::publication::PeerGrant {
+    pub(super) fn grant(&self, peer: PeerId, root: ArtifactId) -> crate::publication::PeerGrant {
         let mut grants = self.grants.lock().expect("peer grant lock");
         grants.roots.retain(|_, lease| lease.strong_count() > 0);
         if let Some(lease) = grants
@@ -144,7 +144,7 @@ impl SharedSwarm {
         grants.roots.insert((peer, root), Arc::downgrade(&grant.0));
         grant
     }
-    fn fresh_grant(&self, peer: PeerId, root: ProofId) -> crate::publication::PeerGrant {
+    fn fresh_grant(&self, peer: PeerId, root: ArtifactId) -> crate::publication::PeerGrant {
         {
             let mut grants = self.grants.lock().expect("peer grant lock");
             if grants
@@ -361,16 +361,16 @@ impl Transport {
                         };
                         match body {
                             Body::Offer { metadata } | Body::Description { metadata } => {
-                                crate::object::id_bytes(&metadata.proof_id)
+                                crate::object::id_bytes(&metadata.artifact_id)
                                     .ok()
-                                    .map(|id| driver.fresh_grant(*peer, ProofId::from_bytes(id)))
+                                    .map(|id| driver.fresh_grant(*peer, ArtifactId::from_bytes(id)))
                             }
                             Body::ProgramDescription {
                                 root: None,
                                 metadata,
                             }
                             | Body::ProgramOffer { metadata } => {
-                                Some(driver.fresh_grant(*peer, metadata.manifest.proof_id()))
+                                Some(driver.fresh_grant(*peer, metadata.manifest.artifact_id()))
                             }
                             _ => None,
                         }

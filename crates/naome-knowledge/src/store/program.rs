@@ -37,7 +37,10 @@ impl Store {
     ) -> Result<ProgramProgress, crate::Error> {
         self.update_program(|catalog| catalog.start_program(manifest))
     }
-    pub(crate) fn program_manifest(&self, id: ProofId) -> Result<Option<Manifest>, crate::Error> {
+    pub(crate) fn program_manifest(
+        &self,
+        id: ArtifactId,
+    ) -> Result<Option<Manifest>, crate::Error> {
         self.read_program(|catalog| catalog.program_manifest(id))
     }
     pub(crate) fn program_progress(

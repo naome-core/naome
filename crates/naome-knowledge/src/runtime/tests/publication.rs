@@ -35,5 +35,5 @@ async fn dropping_a_prepared_listener_preserves_a_published_replacement() {
     let (status, ()) = tokio::join!(request(&directory.0, Operation::Status, None), serve);
     let status = status.unwrap().unwrap();
     assert!(status.running);
-    assert_eq!(status.accepted_proofs, 7);
+    assert_eq!(status.accepted_artifacts, 7);
 }

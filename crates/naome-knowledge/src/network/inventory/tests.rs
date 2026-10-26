@@ -1,6 +1,6 @@
 use super::*;
 
-fn add(graph: &mut Graph, depth: usize) -> ProofId {
+fn add(graph: &mut Graph, depth: usize) -> ArtifactId {
     let mut goal = "eq(x0,x0)".to_owned();
     for v in (0..depth).rev() {
         goal = format!("all(x{v},{goal})");
@@ -33,7 +33,7 @@ fn inventory_reaches_the_original_tail_while_every_page_adds_new_proofs() {
         };
         assert_eq!(snapshot.root, initial);
         assert_eq!(snapshot.count, 9);
-        observed.extend(ids.into_iter().map(ProofId::from_bytes));
+        observed.extend(ids.into_iter().map(ArtifactId::from_bytes));
         let _ = add(&mut graph, depth);
         if next.is_none() {
             break;
@@ -220,7 +220,7 @@ fn receiver_accepts_smaller_peer_pages_without_relaxing_progress_or_local_limits
             };
             assert!(!valid_page(request(None), large, &oversized, None));
         }
-        observed.extend(ids.into_iter().map(ProofId::from_bytes));
+        observed.extend(ids.into_iter().map(ArtifactId::from_bytes));
         if next.is_none() {
             break;
         }

@@ -18,6 +18,7 @@ impl GraphRead for Engine {
 type CommandMetadata = (Rule, Vec<(R, u64)>, Vec<(R, u32)>);
 fn metadata(command: &Command) -> CommandMetadata {
     let (rule, references, variables) = match *command {
+        Command::DefinedRelation { .. } => (Rule::DefinedRelation, vec![], vec![]),
         Command::Equal { left, right } => (
             Rule::Equal,
             vec![],

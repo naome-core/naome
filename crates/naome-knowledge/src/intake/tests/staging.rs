@@ -22,7 +22,7 @@ async fn managed_short_proof_is_fetched_and_checked_once_across_final_interest()
     let peer = PeerId::random();
     let mut intake = Intake::default();
     let (object, metadata) = fixture(74);
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     assert!(matches!(
         intake.advance(&mut graph, &mut questions),
@@ -78,7 +78,7 @@ async fn expired_staging_releases_payload_but_keeps_the_final_interest_result() 
     let peer = PeerId::random();
     let mut intake = Intake::default();
     let (object, metadata) = fixture(75);
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.enqueue(peer, metadata.clone(), &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
     complete(&mut owner, &mut questions, &graph).await;

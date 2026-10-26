@@ -25,7 +25,8 @@ impl Disk {
             else {
                 return Err("peer replay source role differs".into());
             };
-            if artifact != &example.proof_id {
+            if crate::hex(crate::object::proof_address(&example.proof_id)?.as_bytes()) != *artifact
+            {
                 return Err("peer snapshot artifact differs".into());
             }
             result.insert(
@@ -194,7 +195,8 @@ impl Disk {
                 let checked =
                     naome_authoring::compile(&solution.source).map_err(|e| e.to_string())?;
                 if crate::hex(checked.proof_id().as_bytes()) != solution.proof_id
-                    || solution.proof_id != *artifact
+                    || crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes())
+                        != *artifact
                 {
                     return Err("peer reconstructed proof checker identity differs".into());
                 }
@@ -558,21 +560,21 @@ impl Disk {
             self.acknowledge(journal, id)?;
             return Ok(());
         };
-        if solution.proof_id != root {
+        if crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes()) != root {
             return Err("accepted native proof identity differs".into());
         }
         let Input::Solve { question } = &record.input else {
             return Err("learning source role differs".into());
         };
         let compiled = naome_authoring::compile(&solution.source).map_err(|e| e.to_string())?;
-        if crate::hex(compiled.proof_id().as_bytes()) != root {
+        if crate::hex(compiled.artifact_id().as_bytes()) != root {
             return Err("accepted source checker identity differs".into());
         }
         let example = crate::learning::Example {
             origin: crate::learning::Origin::Local,
             job: id,
             question: question.clone(),
-            proof_id: root.to_owned(),
+            proof_id: solution.proof_id.clone(),
             refuted: solution.refuted,
             tree: solution.tree.clone(),
         };
@@ -588,7 +590,7 @@ impl Disk {
         let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
         let unseen = self
             .checkpoint
-            .get::<u64>("replay_seen", root, 64)?
+            .get::<u64>("replay_seen", &solution.proof_id, 64)?
             .is_none();
         let sampled = unseen && learning.consider(example, unique)?;
         record.acknowledged = true;
@@ -599,7 +601,11 @@ impl Disk {
             crate::checkpoint::Update::put("record", id, &record)?,
         ];
         if unseen {
-            updates.push(crate::checkpoint::Update::put("replay_seen", root, &id)?);
+            updates.push(crate::checkpoint::Update::put(
+                "replay_seen",
+                &solution.proof_id,
+                &id,
+            )?);
         }
         if sampled && unique {
             updates.push(crate::checkpoint::Update::put("sample", key, &id)?);

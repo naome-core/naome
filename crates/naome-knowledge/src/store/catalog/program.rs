@@ -33,7 +33,7 @@ fn decode_manifest(bytes: &[u8]) -> Result<Manifest, crate::Error> {
 }
 fn progress(connection: &Connection, manifest: &Manifest) -> Result<Progress, crate::Error> {
     type Row = (Vec<u8>, i64, i64, Vec<u8>, Vec<u8>);
-    let row:Option<Row>=connection.query_row("SELECT substr(manifest,1,2049),received,input_bytes,substr(hash,1,33),substr(remaining,1,33) FROM programs WHERE id=?1",[manifest.proof_id().as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(sql_error)?;
+    let row:Option<Row>=connection.query_row("SELECT substr(manifest,1,2049),received,input_bytes,substr(hash,1,33),substr(remaining,1,33) FROM programs WHERE id=?1",[manifest.artifact_id().as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(sql_error)?;
     let Some((bytes, commands, input_bytes, hash, remaining)) = row else {
         return Err("program staging missing".into());
     };
@@ -72,7 +72,7 @@ impl Catalog {
             .execute(
                 "INSERT OR IGNORE INTO programs VALUES(?1,?2,0,0,zeroblob(32),?3)",
                 params![
-                    manifest.proof_id().as_bytes().as_slice(),
+                    manifest.artifact_id().as_bytes().as_slice(),
                     bytes,
                     manifest.stream_root.as_slice()
                 ],
@@ -86,7 +86,7 @@ impl Catalog {
     }
     pub(in crate::store) fn program_manifest(
         &self,
-        id: ProofId,
+        id: ArtifactId,
     ) -> Result<Option<Manifest>, crate::Error> {
         #[cfg(test)]
         MANIFEST_READS.with(|count| count.set(count.get() + 1));
@@ -103,7 +103,7 @@ impl Catalog {
         bytes
             .map(|bytes| {
                 let manifest = decode_manifest(&bytes)?;
-                if manifest.proof_id() != id {
+                if manifest.artifact_id() != id {
                     return Err("program address differs".into());
                 }
                 Ok(manifest)
@@ -131,7 +131,7 @@ impl Catalog {
                 .execute(
                     "INSERT INTO program_input VALUES(?1,?2,?3,?4,?5)",
                     params![
-                        manifest.proof_id().as_bytes().as_slice(),
+                        manifest.artifact_id().as_bytes().as_slice(),
                         ordinal(record.position)?,
                         record.bytes,
                         record.hash.as_slice(),
@@ -144,7 +144,7 @@ impl Catalog {
             .execute(
                 "UPDATE programs SET received=?2,input_bytes=?3,hash=?4,remaining=?5 WHERE id=?1",
                 params![
-                    manifest.proof_id().as_bytes().as_slice(),
+                    manifest.artifact_id().as_bytes().as_slice(),
                     ordinal(value.commands)?,
                     ordinal(value.input_bytes)?,
                     value.hash.as_slice(),
@@ -177,7 +177,7 @@ impl Catalog {
                 .query_row(
                     "SELECT substr(hash,1,33) FROM program_input WHERE id=?1 AND position=?2",
                     params![
-                        manifest.proof_id().as_bytes().as_slice(),
+                        manifest.artifact_id().as_bytes().as_slice(),
                         ordinal(start - 1)?
                     ],
                     |r| r.get(0),
@@ -188,7 +188,7 @@ impl Catalog {
         let mut statement=self.connection.prepare_cached("SELECT position,substr(command,1,4097),substr(hash,1,33) FROM program_input WHERE id=?1 AND position>=?2 ORDER BY position LIMIT ?3").map_err(sql_error)?;
         let mut rows = statement
             .query(params![
-                manifest.proof_id().as_bytes().as_slice(),
+                manifest.artifact_id().as_bytes().as_slice(),
                 ordinal(start)?,
                 records as i64
             ])
@@ -210,7 +210,7 @@ impl Catalog {
                 .connection
                 .query_row(
                     "SELECT substr(suffix,1,33) FROM program_input WHERE id=?1 AND position=?2",
-                    params![manifest.proof_id().as_bytes().as_slice(), ordinal(end)?],
+                    params![manifest.artifact_id().as_bytes().as_slice(), ordinal(end)?],
                     |row| row.get(0),
                 )
                 .map_err(sql_error)?;
@@ -231,7 +231,7 @@ pub(super) fn validate_staging(connection: &Connection) -> Result<(), crate::Err
         let id = key(row.get(0).map_err(sql_error)?)?;
         let bytes: Vec<u8> = row.get(1).map_err(sql_error)?;
         let manifest = decode_manifest(&bytes)?;
-        if manifest.proof_id().as_bytes() != &id {
+        if manifest.artifact_id().as_bytes() != &id {
             return Err("staged program identity differs".into());
         }
         let expected = progress(connection, &manifest)?;

@@ -30,7 +30,10 @@ impl<'a> ReadContext<'a> {
 }
 impl sealed::Sealed for ReadContext<'_> {}
 impl DefinitionResolver for ReadContext<'_> {
-    fn resolve_definition(&self, id: DefinitionId) -> Option<DefinitionResolution<'_>> {
+    fn resolve_definition(
+        &self,
+        id: DefinitionId,
+    ) -> Result<Option<DefinitionResolution<'_>>, naome_proof::DefinitionAccessError> {
         self.source.resolve_definition(id)
     }
 }
@@ -118,7 +121,7 @@ impl ContextView for ReadContext<'_> {
     ) -> Result<StatementCursor<'_>, ContextError> {
         self.source.bucket(kind, target)
     }
-    fn definition_kind(&self, id: DefinitionId) -> Option<DefinitionKind> {
+    fn definition_kind(&self, id: DefinitionId) -> Result<Option<DefinitionKind>, ContextError> {
         self.source.definition_kind(id)
     }
 }

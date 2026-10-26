@@ -121,7 +121,10 @@ fn train_seed(
                 graph
                     .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
                     .unwrap();
-                assert_eq!(crate::hex(root.as_bytes()), solution.proof_id);
+                assert_eq!(
+                    root,
+                    crate::object::proof_address(&solution.proof_id).unwrap()
+                );
                 assert!(graph.contains(root).unwrap());
                 accepted = state
                     .accept(Example {

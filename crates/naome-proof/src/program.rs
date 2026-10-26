@@ -46,6 +46,10 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// The common artifact address of this exact program proof.
+    pub fn artifact_id(&self) -> crate::ArtifactId {
+        self.proof_id().into()
+    }
     pub fn proof_id(&self) -> ProofId {
         ProofId::from_bytes(self.address(b"naome:program-proof\0"))
     }
@@ -265,6 +269,11 @@ pub fn bounded_formula<I: Copy>(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Expand a selected conservative definition into an unproved formula.
+    DefinedRelation {
+        definition_id: [u8; 32],
+        arguments: Vec<u32>,
+    },
     Equal {
         left: u32,
         right: u32,

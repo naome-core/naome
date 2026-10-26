@@ -45,7 +45,7 @@ impl Generated {
         graph: &Graph,
         client: &jobs::Client,
         question: &CompiledQuestion,
-    ) -> Result<Option<(ProofId, crate::graph::CheckedBatch)>, crate::Error> {
+    ) -> Result<Option<(ArtifactId, crate::graph::CheckedBatch)>, crate::Error> {
         let snapshot = self.budget.refresh(graph.ownership().directory())?.clone();
         if snapshot.budget.paused.is_some() {
             return Ok(None);
@@ -145,7 +145,7 @@ impl Generated {
         }
         if checked.advance(graph, snapshot.budget.batch_steps.max(1))? {
             Ok(Some((
-                manifest.proof_id(),
+                manifest.artifact_id(),
                 checked.take_batch().expect("prepared candidate"),
             )))
         } else {

@@ -7,11 +7,11 @@ fn peer_and_request_revocation_leave_unrelated_roots_and_node_lifetime_valid() {
     let root_b = crate::publication::PeerGrant::new();
     let mut grants = PeerGrants::default();
     grants.roots.insert(
-        (peer_a, ProofId::from_bytes([1; 32])),
+        (peer_a, ArtifactId::from_bytes([1; 32])),
         Arc::downgrade(&root_a.0),
     );
     grants.roots.insert(
-        (peer_b, ProofId::from_bytes([2; 32])),
+        (peer_b, ArtifactId::from_bytes([2; 32])),
         Arc::downgrade(&root_b.0),
     );
     let lifetime = Arc::new(AtomicU64::new(0));

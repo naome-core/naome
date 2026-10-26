@@ -14,7 +14,7 @@ use crate::{
 };
 use naome_proof::program::{CHUNK_RECORDS, Chunk};
 
-type ProgramRequest = (PeerId, ProofId, ProofId, u64, usize);
+type ProgramRequest = (PeerId, ArtifactId, ArtifactId, u64, usize);
 
 pub(super) fn transfer_records() -> usize {
     // The wire format already bounds each chunk by CHUNK_RECORDS and
@@ -31,7 +31,7 @@ pub(super) fn transfer_records() -> usize {
 pub(super) struct Programs {
     queue: VecDeque<Offer>,
     active: Option<Root>,
-    declined: BTreeMap<ProofId, Instant>,
+    declined: BTreeMap<ArtifactId, Instant>,
 }
 struct Offer {
     metadata: ProgramMetadata,
@@ -61,13 +61,13 @@ impl Root {
 }
 
 impl Programs {
-    pub(super) fn remove(&mut self, id: ProofId) {
+    pub(super) fn remove(&mut self, id: ArtifactId) {
         self.queue
-            .retain(|offer| offer.metadata.manifest.proof_id() != id);
+            .retain(|offer| offer.metadata.manifest.artifact_id() != id);
         if self
             .active
             .as_ref()
-            .is_some_and(|root| root.offer.metadata.manifest.proof_id() == id)
+            .is_some_and(|root| root.offer.metadata.manifest.artifact_id() == id)
         {
             self.active = None;
         }
@@ -78,14 +78,14 @@ impl Programs {
     pub(super) fn queued(&self) -> usize {
         self.queue.len() + usize::from(self.active.is_some())
     }
-    pub(super) fn contains(&self, id: ProofId) -> bool {
+    pub(super) fn contains(&self, id: ArtifactId) -> bool {
         self.active
             .as_ref()
-            .is_some_and(|root| root.offer.metadata.manifest.proof_id() == id)
+            .is_some_and(|root| root.offer.metadata.manifest.artifact_id() == id)
             || self
                 .queue
                 .iter()
-                .any(|offer| offer.metadata.manifest.proof_id() == id)
+                .any(|offer| offer.metadata.manifest.artifact_id() == id)
     }
     pub(super) fn selection_boundary_ready(&self) -> bool {
         self.active
@@ -107,12 +107,12 @@ impl Programs {
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
     ) -> Result<&'static str, crate::Error> {
-        let id = metadata.manifest.proof_id();
+        let id = metadata.manifest.artifact_id();
         if graph.contains(id)? {
             return Ok("duplicate");
         }
         if let Some(root) = &mut self.active
-            && root.offer.metadata.manifest.proof_id() == id
+            && root.offer.metadata.manifest.artifact_id() == id
         {
             if root.offer.metadata.manifest != metadata.manifest {
                 return Err("program manifest changed during transfer".into());
@@ -134,7 +134,7 @@ impl Programs {
         if self
             .queue
             .iter()
-            .any(|offer| offer.metadata.manifest.proof_id() == id)
+            .any(|offer| offer.metadata.manifest.artifact_id() == id)
         {
             return Ok("queued_duplicate");
         }
@@ -151,7 +151,7 @@ impl Programs {
         if !root.fetching() || !root.offer.transfer.live(Instant::now()) {
             return Ok(None);
         }
-        let id = root.offer.metadata.manifest.proof_id();
+        let id = root.offer.metadata.manifest.artifact_id();
         if let Some((helper, start, records)) = root.closure.request(graph)? {
             return Ok(Some((
                 root.offer.transfer.peer(),
@@ -176,14 +176,14 @@ impl Programs {
             records,
         )))
     }
-    fn refresh_needed(&self) -> Vec<(PeerId, ProofId)> {
+    fn refresh_needed(&self) -> Vec<(PeerId, ArtifactId)> {
         self.active
             .as_ref()
             .filter(|root| root.refresh || root.offer.transfer.refresh_due(Instant::now()))
             .map(|root| {
                 vec![(
                     root.offer.transfer.peer(),
-                    root.offer.metadata.manifest.proof_id(),
+                    root.offer.metadata.manifest.artifact_id(),
                 )]
             })
             .unwrap_or_default()
@@ -191,7 +191,7 @@ impl Programs {
     fn payload(
         &mut self,
         peer: PeerId,
-        id: ProofId,
+        id: ArtifactId,
         chunk: Chunk,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
@@ -206,11 +206,11 @@ impl Programs {
         root.input_complete = progress.commands == root.offer.metadata.manifest.commands;
         Ok(())
     }
-    pub(super) fn failed(&mut self, peer: PeerId, id: Option<ProofId>) {
+    pub(super) fn failed(&mut self, peer: PeerId, id: Option<ArtifactId>) {
         if let Some(root) = &mut self.active
             && root.offer.transfer.peer() == peer
             && id.is_none_or(|id| {
-                root.offer.metadata.manifest.proof_id() == id
+                root.offer.metadata.manifest.artifact_id() == id
                     || root.closure.contains(id)
                     || root.closure.needs(id)
             })
@@ -219,7 +219,7 @@ impl Programs {
         }
         self.queue.retain(|offer| {
             offer.transfer.peer() != peer
-                || id.is_some_and(|id| offer.metadata.manifest.proof_id() != id)
+                || id.is_some_and(|id| offer.metadata.manifest.artifact_id() != id)
         });
     }
     pub(super) fn advance<F, Fut>(
@@ -235,7 +235,7 @@ impl Programs {
         if self.active.is_none()
             && let Some(offer) = self.queue.pop_front()
         {
-            let id = offer.metadata.manifest.proof_id();
+            let id = offer.metadata.manifest.artifact_id();
             if !offer.transfer.live(Instant::now()) {
                 return Progress::Skipped(id, "queued program metadata expired".into());
             }
@@ -266,8 +266,8 @@ impl Programs {
         let Some(mut root) = self.active.take() else {
             return Progress::Waiting;
         };
-        let id = root.offer.metadata.manifest.proof_id();
-        let result = (|| -> Result<Option<Vec<ProofId>>, crate::Error> {
+        let id = root.offer.metadata.manifest.artifact_id();
+        let result = (|| -> Result<Option<Vec<ArtifactId>>, crate::Error> {
             if graph.contains(id)? {
                 return Ok(Some(Vec::new()));
             }
@@ -420,15 +420,18 @@ impl Intake {
         graph: &Graph,
         grant: Option<crate::publication::PeerGrant>,
     ) -> Result<&'static str, crate::Error> {
-        if self.programs.helper_contains(metadata.manifest.proof_id())
+        if self
+            .programs
+            .helper_contains(metadata.manifest.artifact_id())
             || self
                 .active
                 .as_ref()
-                .is_some_and(|root| root.closure.contains(metadata.manifest.proof_id()))
+                .is_some_and(|root| root.closure.contains(metadata.manifest.artifact_id()))
         {
             return Ok("cited_program_pending");
         }
-        if self.description_capacity() == 0 && !self.programs.contains(metadata.manifest.proof_id())
+        if self.description_capacity() == 0
+            && !self.programs.contains(metadata.manifest.artifact_id())
         {
             return Err("program description queue capacity".into());
         }
@@ -456,8 +459,8 @@ impl Intake {
     pub(crate) fn program_payload(
         &mut self,
         peer: PeerId,
-        root_id: ProofId,
-        id: ProofId,
+        root_id: ArtifactId,
+        id: ArtifactId,
         chunk: Chunk,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
@@ -476,10 +479,10 @@ impl Intake {
         }
         self.programs.payload(peer, id, chunk, graph)
     }
-    pub(crate) fn program_failed(&mut self, peer: PeerId, id: ProofId) {
+    pub(crate) fn program_failed(&mut self, peer: PeerId, id: ArtifactId) {
         self.programs.failed(peer, Some(id));
     }
-    pub(crate) fn program_refresh_needed(&self) -> Vec<(PeerId, ProofId)> {
+    pub(crate) fn program_refresh_needed(&self) -> Vec<(PeerId, ArtifactId)> {
         self.programs.refresh_needed()
     }
     pub(crate) fn program_busy(&self) -> bool {

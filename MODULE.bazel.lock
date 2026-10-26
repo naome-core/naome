@@ -508,7 +508,7 @@
           "FILE:@@//crates/naome-checker/Cargo.toml 1d87041ee983b2e22bf9cea5ec0247c2e63913c246010890b05300fde51a50bd",
           "FILE:@@//crates/naome-foundation/Cargo.toml 4523e1f4400afbedc6cda3e7130ae0555d999710177201cb4b5a79561f57efba",
           "FILE:@@//crates/naome-proof/Cargo.toml 576def3d9ac3c3780f87b10fa9d992b892ecf322e272b658f45c7b064090b8f2",
-          "FILE:@@//crates/naome-knowledge/Cargo.toml 256ba3f450231a71fa437674448fe6fd431db73a94fdd768b9225ab197db67d9",
+          "FILE:@@//crates/naome-knowledge/Cargo.toml e9edff885d9c79b552f904cc97cb8e37e7a32caf25d4c7808f2694274b5e5ec0",
           "FILE:@@//crates/naome-storage/Cargo.toml 828c829ff9ed5672171a41ec0acdad79f372e1a81e5d4f2a58c5a350877ecfa2",
           "FILE:@@//vendor/burn-dispatch/Cargo.toml b1c659781592f3fc652ef127c425040c52dd36eb77eb27e204a4ae49225cff4e"
         ],

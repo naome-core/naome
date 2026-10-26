@@ -84,9 +84,10 @@ fn main() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
         objects.push(Envelope {
             compatibility: hex(&compatibility()),
-            proof_id: hex(checked.proof_id().as_bytes()),
-            statement_id: hex(checked.statement_id().as_bytes()),
-            proof: hex(checked.normal_form().canonical_bytes()),
+            artifact_id: hex(checked.artifact_id().as_bytes()),
+            statement_id: Some(hex(checked.statement_id().as_bytes())),
+            payload: format!("00{}", hex(checked.normal_form().canonical_bytes())),
+            obligation_proof: None,
         });
     }
     let workload_id = hex(&Sha256::digest(

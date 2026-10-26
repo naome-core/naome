@@ -1,6 +1,6 @@
 use super::{BatchCut, COMMIT_DEADLINE_ERROR};
-use crate::object::BinaryProof;
-use naome_proof::ProofId;
+use crate::object::BinaryArtifact;
+use naome_proof::ArtifactId;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
@@ -23,7 +23,7 @@ pub(crate) fn set_scan_count() -> usize {
 }
 
 const APPLICATION_ID: i64 = 0x4e414f43;
-const IDS_PAGE_QUERY: &str = "SELECT substr(id,1,33) FROM proofs
+const IDS_PAGE_QUERY: &str = "SELECT substr(id,1,33) FROM artifacts
     WHERE id > ?1 ORDER BY id LIMIT ?2";
 
 const TABLES: [(&str, &str); 7] = [
@@ -63,17 +63,18 @@ const TABLES: [(&str, &str); 7] = [
         root BLOB NOT NULL CHECK(length(root) = 32),
         member_count INTEGER NOT NULL CHECK(member_count >= 1),
         peer TEXT CHECK(peer IS NULL OR length(peer) BETWEEN 1 AND 128),
-        FOREIGN KEY(root) REFERENCES proofs(id) DEFERRABLE INITIALLY DEFERRED
+        FOREIGN KEY(root) REFERENCES artifacts(id) DEFERRABLE INITIALLY DEFERRED
     ) STRICT, WITHOUT ROWID",
     ),
     (
-        "proofs",
-        "CREATE TABLE proofs (
+        "artifacts",
+        "CREATE TABLE artifacts (
         id BLOB PRIMARY KEY CHECK(length(id) = 32),
         replay_order INTEGER NOT NULL UNIQUE CHECK(replay_order > 0),
-        statement BLOB NOT NULL CHECK(length(statement) = 32),
+        statement BLOB CHECK(statement IS NULL OR length(statement) = 32),
+        obligation BLOB CHECK(obligation IS NULL OR length(obligation) = 32),
         compatibility BLOB NOT NULL CHECK(length(compatibility) = 32),
-        payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 4194304),
+        payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 4194305),
         payload_length INTEGER NOT NULL CHECK(payload_length = length(payload)),
         payload_digest BLOB NOT NULL CHECK(length(payload_digest) = 32),
         origin_commit BLOB NOT NULL CHECK(length(origin_commit) = 32),
@@ -83,24 +84,24 @@ const TABLES: [(&str, &str); 7] = [
     (
         "dependencies",
         "CREATE TABLE dependencies (
-        proof_id BLOB NOT NULL CHECK(length(proof_id) = 32),
+        artifact_id BLOB NOT NULL CHECK(length(artifact_id) = 32),
         ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 0 AND 65535),
         target BLOB NOT NULL CHECK(length(target) = 32),
-        PRIMARY KEY(proof_id, ordinal),
-        UNIQUE(proof_id, target),
-        FOREIGN KEY(proof_id) REFERENCES proofs(id),
-        FOREIGN KEY(target) REFERENCES proofs(id) DEFERRABLE INITIALLY DEFERRED
+        PRIMARY KEY(artifact_id, ordinal),
+        UNIQUE(artifact_id, target),
+        FOREIGN KEY(artifact_id) REFERENCES artifacts(id),
+        FOREIGN KEY(target) REFERENCES artifacts(id) DEFERRABLE INITIALLY DEFERRED
     ) STRICT, WITHOUT ROWID",
     ),
     (
         "members",
         "CREATE TABLE members (
         commit_id BLOB NOT NULL CHECK(length(commit_id) = 32),
-        proof_id BLOB NOT NULL CHECK(length(proof_id) = 32),
-        PRIMARY KEY(commit_id, proof_id),
-        UNIQUE(proof_id),
+        artifact_id BLOB NOT NULL CHECK(length(artifact_id) = 32),
+        PRIMARY KEY(commit_id, artifact_id),
+        UNIQUE(artifact_id),
         FOREIGN KEY(commit_id) REFERENCES commits(id),
-        FOREIGN KEY(proof_id) REFERENCES proofs(id)
+        FOREIGN KEY(artifact_id) REFERENCES artifacts(id)
     ) STRICT, WITHOUT ROWID",
     ),
 ];
@@ -109,8 +110,8 @@ const TABLES: [(&str, &str); 7] = [
 // Without these indexes SQLite scans accepted records even for one new proof.
 const INDEXES: [(&str, &str); 3] = [
     (
-        "proofs_by_origin_commit",
-        "CREATE INDEX proofs_by_origin_commit ON proofs(origin_commit)",
+        "artifacts_by_origin_commit",
+        "CREATE INDEX artifacts_by_origin_commit ON artifacts(origin_commit)",
     ),
     (
         "commits_by_root",
@@ -260,14 +261,14 @@ impl Catalog {
         after: u64,
         limit: usize,
         expected: Summary,
-    ) -> Result<Vec<(u64, ProofId, Option<libp2p::PeerId>)>, crate::Error> {
+    ) -> Result<Vec<(u64, ArtifactId, Option<libp2p::PeerId>)>, crate::Error> {
         page_limit(limit, crate::resources::active_limits().id_page)?;
         let transaction = self.begin(TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
         let mut values = Vec::new();
         {
-            let mut statement=transaction.prepare("SELECT p.replay_order,substr(p.id,1,33),substr(c.peer,1,129) FROM proofs p JOIN commits c ON p.origin_commit=c.id WHERE p.replay_order>?1 ORDER BY p.replay_order LIMIT ?2").map_err(sql_error)?;
+            let mut statement=transaction.prepare("SELECT p.replay_order,substr(p.id,1,33),substr(c.peer,1,129) FROM artifacts p JOIN commits c ON p.origin_commit=c.id WHERE p.replay_order>?1 ORDER BY p.replay_order LIMIT ?2").map_err(sql_error)?;
             let mut rows = statement
                 .query(params![
                     i64::try_from(after).map_err(|_| "peer learning cursor width")?,
@@ -277,7 +278,7 @@ impl Catalog {
             while let Some(row) = rows.next().map_err(sql_error)? {
                 let ordinal = u64::try_from(row.get::<_, i64>(0).map_err(sql_error)?)
                     .map_err(|_| "peer learning ordinal")?;
-                let id = ProofId::from_bytes(key(row.get(1).map_err(sql_error)?)?);
+                let id = ArtifactId::from_bytes(key(row.get(1).map_err(sql_error)?)?);
                 let text: Option<String> = row.get(2).map_err(sql_error)?;
                 let peer = text
                     .map(|text| {
@@ -302,7 +303,7 @@ impl Catalog {
         &self,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<(u64, BinaryProof)>, crate::Error> {
+    ) -> Result<Vec<(u64, BinaryArtifact)>, crate::Error> {
         page_limit(limit, crate::resources::active_limits().replay_page)?;
         let after_sql = i64::try_from(after).map_err(|_| "catalog replay cursor width")?;
         let transaction = self.begin(TransactionBehavior::Deferred)?;
@@ -316,7 +317,7 @@ impl Catalog {
         {
             let mut statement = transaction
                 .prepare(
-                    "SELECT replay_order, substr(id,1,33) FROM proofs
+                    "SELECT replay_order, substr(id,1,33) FROM artifacts
                  WHERE replay_order > ?1 ORDER BY replay_order LIMIT ?2",
                 )
                 .map_err(sql_error)?;
@@ -355,10 +356,10 @@ impl Catalog {
 
     pub(super) fn ids_page(
         &self,
-        after: Option<ProofId>,
+        after: Option<ArtifactId>,
         limit: usize,
         expected: Summary,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         page_limit(limit, crate::resources::active_limits().id_page)?;
         let transaction = self.begin(TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
@@ -380,7 +381,7 @@ impl Catalog {
                 if previous.is_some_and(|value| value >= id) {
                     return Err("catalog proof ID page ordering differs".into());
                 }
-                ids.push(ProofId::from_bytes(id));
+                ids.push(ArtifactId::from_bytes(id));
                 previous = Some(id);
             }
         }
@@ -390,9 +391,9 @@ impl Catalog {
 
     pub(super) fn get(
         &self,
-        id: ProofId,
+        id: ArtifactId,
         expected: Summary,
-    ) -> Result<Option<BinaryProof>, crate::Error> {
+    ) -> Result<Option<BinaryArtifact>, crate::Error> {
         let transaction = self.begin(TransactionBehavior::Deferred)?;
         check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
         self.require_validated_version(&transaction)?;
@@ -401,7 +402,7 @@ impl Catalog {
         Ok(record.map(|record| record.object))
     }
 
-    pub(super) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, crate::Error> {
+    pub(super) fn contains(&self, id: ArtifactId, expected: Summary) -> Result<bool, crate::Error> {
         // Complete validation/replay establishes this connection's generation.
         // Foreign SQLite writes invalidate it before any metadata-only answer.
         let transaction = self.begin(TransactionBehavior::Deferred)?;
@@ -409,7 +410,7 @@ impl Catalog {
         self.require_validated_version(&transaction)?;
         let present = transaction
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM proofs WHERE id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id=?1)",
                 params![id.as_bytes().as_slice()],
                 |row| row.get(0),
             )
@@ -456,8 +457,8 @@ impl Catalog {
 
     pub(super) fn persist(
         &self,
-        root: ProofId,
-        objects: &[&BinaryProof],
+        root: ArtifactId,
+        objects: &[&BinaryArtifact],
         commit: Commit<'_>,
     ) -> Result<Summary, crate::Error> {
         let Commit {
@@ -633,7 +634,8 @@ pub(crate) struct Summary {
 #[derive(PartialEq, Eq)]
 struct Member {
     id: [u8; 32],
-    statement: [u8; 32],
+    statement: Option<[u8; 32]>,
+    obligation: Option<[u8; 32]>,
     compatibility: [u8; 32],
     length: usize,
     digest: [u8; 32],
@@ -650,11 +652,11 @@ struct Record {
     member: Member,
     origin: [u8; 32],
     replay_order: u64,
-    object: BinaryProof,
+    object: BinaryArtifact,
 }
 
 fn prepare<'a>(
-    objects: impl Iterator<Item = &'a BinaryProof>,
+    objects: impl Iterator<Item = &'a BinaryArtifact>,
 ) -> Result<BTreeMap<[u8; 32], Prepared>, crate::Error> {
     let mut prepared = BTreeMap::new();
     let mut bytes = 0usize;
@@ -673,7 +675,8 @@ fn prepare<'a>(
         let id = *candidate.id.as_bytes();
         let member = Member {
             id,
-            statement: *candidate.statement.as_bytes(),
+            statement: candidate.statement.map(|id| *id.as_bytes()),
+            obligation: candidate.obligation.map(|id| *id.as_bytes()),
             compatibility: crate::compatibility(),
             length: payload.len(),
             digest: Sha256::digest(&payload).into(),
@@ -901,10 +904,10 @@ fn validate_catalog(
     let summary = verify_summary(connection, &meta)?;
     program::validate_staging(connection)?;
     let mut statement = connection
-        .prepare("SELECT substr(id,1,33), replay_order FROM proofs ORDER BY replay_order")
+        .prepare("SELECT substr(id,1,33), replay_order FROM artifacts ORDER BY replay_order")
         .map_err(sql_error)?;
     let mut proof_order = connection
-        .prepare("SELECT replay_order FROM proofs WHERE id = ?1")
+        .prepare("SELECT replay_order FROM artifacts WHERE id = ?1")
         .map_err(sql_error)?;
     let mut rows = statement.query([]).map_err(sql_error)?;
     let mut observed = 0usize;
@@ -959,7 +962,7 @@ fn read_record(
     // Reserve from bounded authenticated metadata before fetching any payload.
     let length: Option<i64> = connection
         .query_row(
-            "SELECT payload_length FROM proofs WHERE id=?1",
+            "SELECT payload_length FROM artifacts WHERE id=?1",
             [id.as_slice()],
             |row| row.get(0),
         )
@@ -969,7 +972,7 @@ fn read_record(
         return Ok(None);
     };
     let length = usize::try_from(length).map_err(|_| "catalog payload length width")?;
-    if length == 0 || length > naome_proof::CERTIFICATE_MAX_BYTES {
+    if length == 0 || length > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES {
         return Err("catalog payload length differs".into());
     }
     let bytes = length.checked_mul(4).ok_or("proof memory overflow")?;
@@ -979,13 +982,22 @@ fn read_record(
     }?;
     #[cfg(test)]
     PAYLOAD_READS.with(|reads| reads.set(reads.get() + 1));
-    type Stored = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>, i64);
+    type Stored = (
+        Option<Vec<u8>>,
+        Vec<u8>,
+        Vec<u8>,
+        i64,
+        Vec<u8>,
+        Vec<u8>,
+        i64,
+        Option<Vec<u8>>,
+    );
     let stored: Option<Stored> = {
         let mut statement = connection
             .prepare_cached(
-                "SELECT substr(statement,1,33), substr(compatibility,1,33), substr(payload,1,4194305),
-                payload_length, substr(payload_digest,1,33), substr(origin_commit,1,33), replay_order
-         FROM proofs WHERE id = ?1",
+                "SELECT substr(statement,1,33), substr(compatibility,1,33), substr(payload,1,4194306),
+                payload_length, substr(payload_digest,1,33), substr(origin_commit,1,33), replay_order, substr(obligation,1,33)
+         FROM artifacts WHERE id = ?1",
             )
             .map_err(sql_error)?;
         statement
@@ -998,21 +1010,25 @@ fn read_record(
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             })
             .optional()
             .map_err(sql_error)?
     };
-    let Some((statement, compatibility, payload, length, digest, origin, ordinal)) = stored else {
+    let Some((statement, compatibility, payload, length, digest, origin, ordinal, obligation)) =
+        stored
+    else {
         return Ok(None);
     };
-    let statement = key(statement)?;
+    let statement = statement.map(key).transpose()?;
+    let obligation = obligation.map(key).transpose()?;
     let compatibility = key(compatibility)?;
     let digest = key(digest)?;
     let origin = key(origin)?;
     let replay_order = replay_ordinal(ordinal)?;
     if payload.is_empty()
-        || payload.len() > naome_proof::CERTIFICATE_MAX_BYTES
+        || payload.len() > naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES
         || usize::try_from(length).ok() != Some(payload.len())
         || <[u8; 32]>::from(Sha256::digest(&payload)) != digest
     {
@@ -1020,7 +1036,7 @@ fn read_record(
     }
     if compatibility != crate::compatibility()
         || crate::object::record_content_id(
-            naome_proof::StatementId::from_bytes(statement),
+            statement.map(naome_proof::StatementId::from_bytes),
             &payload,
         )?
         .as_bytes()
@@ -1029,15 +1045,16 @@ fn read_record(
         return Err("catalog canonical proof identity differs".into());
     }
     let dependencies = read_dependencies(connection, id)?;
-    let object = BinaryProof {
-        id: ProofId::from_bytes(id),
-        statement: naome_proof::StatementId::from_bytes(statement),
+    let object = BinaryArtifact {
+        id: ArtifactId::from_bytes(id),
+        statement: statement.map(naome_proof::StatementId::from_bytes),
+        obligation: obligation.map(naome_proof::ProofId::from_bytes),
         bytes: payload.clone().into(),
         _memory: Some(memory),
         dependencies: dependencies
             .iter()
             .copied()
-            .map(ProofId::from_bytes)
+            .map(ArtifactId::from_bytes)
             .collect(),
     };
     if let Some(manifest) = object.program()? {
@@ -1045,7 +1062,7 @@ fn read_record(
     }
     let member_origin: Option<Vec<u8>> = {
         let mut statement = connection
-            .prepare_cached("SELECT substr(commit_id,1,33) FROM members WHERE proof_id = ?1")
+            .prepare_cached("SELECT substr(commit_id,1,33) FROM members WHERE artifact_id = ?1")
             .map_err(sql_error)?;
         statement
             .query_row(params![id.as_slice()], |row| row.get(0))
@@ -1069,8 +1086,8 @@ fn read_record(
     let unordered: bool = {
         let mut statement = connection
             .prepare_cached(
-                "SELECT EXISTS(SELECT 1 FROM dependencies d LEFT JOIN proofs p ON p.id = d.target
-         WHERE d.proof_id = ?1 AND (p.id IS NULL OR p.replay_order >= ?2))",
+                "SELECT EXISTS(SELECT 1 FROM dependencies d LEFT JOIN artifacts p ON p.id = d.target
+         WHERE d.artifact_id = ?1 AND (p.id IS NULL OR p.replay_order >= ?2))",
             )
             .map_err(sql_error)?;
         statement
@@ -1084,6 +1101,7 @@ fn read_record(
         member: Member {
             id,
             statement,
+            obligation,
             compatibility,
             length: payload.len(),
             digest,
@@ -1116,7 +1134,7 @@ fn verify_summary_fields(
     }
     let (first, last): (i64, i64) = connection
         .query_row(
-            "SELECT coalesce(min(replay_order),0), coalesce(max(replay_order),0) FROM proofs",
+            "SELECT coalesce(min(replay_order),0), coalesce(max(replay_order),0) FROM artifacts",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -1129,15 +1147,15 @@ fn verify_summary_fields(
         .query_row(
             "SELECT count(*) FROM commits c WHERE c.member_count !=
              (SELECT count(*) FROM members m WHERE m.commit_id = c.id)
-         OR NOT EXISTS(SELECT 1 FROM members m WHERE m.commit_id = c.id AND m.proof_id = c.root)",
+         OR NOT EXISTS(SELECT 1 FROM members m WHERE m.commit_id = c.id AND m.artifact_id = c.root)",
             [],
             |row| row.get(0),
         )
         .map_err(sql_error)?;
     let orphan_origin: i64 = connection
         .query_row(
-            "SELECT count(*) FROM proofs p WHERE NOT EXISTS(
-            SELECT 1 FROM members m WHERE m.commit_id = p.origin_commit AND m.proof_id = p.id)",
+            "SELECT count(*) FROM artifacts p WHERE NOT EXISTS(
+            SELECT 1 FROM members m WHERE m.commit_id = p.origin_commit AND m.artifact_id = p.id)",
             [],
             |row| row.get(0),
         )
@@ -1147,7 +1165,7 @@ fn verify_summary_fields(
     }
     verify_foreign_keys(connection)?;
     let missing: i64 = connection.query_row(
-        "SELECT count(*) FROM dependencies d LEFT JOIN proofs p ON p.id = d.target WHERE p.id IS NULL",
+        "SELECT count(*) FROM dependencies d LEFT JOIN artifacts p ON p.id = d.target WHERE p.id IS NULL",
         [], |row| row.get(0),
     ).map_err(sql_error)?;
     if missing != 0 {
@@ -1155,8 +1173,8 @@ fn verify_summary_fields(
     }
     let unordered: bool = connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM dependencies d JOIN proofs p ON p.id = d.proof_id
-         JOIN proofs target ON target.id = d.target WHERE target.replay_order >= p.replay_order)",
+            "SELECT EXISTS(SELECT 1 FROM dependencies d JOIN artifacts p ON p.id = d.artifact_id
+         JOIN artifacts target ON target.id = d.target WHERE target.replay_order >= p.replay_order)",
             [],
             |row| row.get(0),
         )
@@ -1174,7 +1192,7 @@ fn corpus_summary(connection: &Connection) -> Result<Summary, crate::Error> {
         .query_row(
             "SELECT count(*), coalesce(sum(payload_length), 0),
             coalesce(sum(CASE WHEN payload_length != length(payload)
-                OR length(payload) NOT BETWEEN 1 AND 4194304 THEN 1 ELSE 0 END), 0) FROM proofs",
+                OR length(payload) NOT BETWEEN 1 AND 4194305 THEN 1 ELSE 0 END), 0) FROM artifacts",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -1184,14 +1202,14 @@ fn corpus_summary(connection: &Connection) -> Result<Summary, crate::Error> {
     if invalid != 0 {
         return Err("catalog payload width differs".into());
     }
-    let mut fingerprint = naome_checker::context::ProofSetFingerprint::default();
+    let mut fingerprint = naome_checker::context::SetFingerprint::default();
     let mut statement = connection
-        .prepare("SELECT substr(id,1,33) FROM proofs ORDER BY id")
+        .prepare("SELECT substr(id,1,33) FROM artifacts ORDER BY id")
         .map_err(sql_error)?;
     let mut rows = statement.query([]).map_err(sql_error)?;
     while let Some(row) = rows.next().map_err(sql_error)? {
         fingerprint
-            .push(ProofId::from_bytes(key(row.get(0).map_err(sql_error)?)?))
+            .push(key(row.get(0).map_err(sql_error)?)?)
             .map_err(|e| e.to_string())?;
     }
     let root = crate::corpus::root(count, fingerprint.finish())?;
@@ -1283,15 +1301,15 @@ fn insert_commit(
                 .and_then(|value| value.checked_add(1))
                 .ok_or("catalog replay ordinal overflow")?;
             connection.execute(
-                "INSERT INTO proofs(id, statement, compatibility, payload, payload_length, payload_digest, origin_commit, replay_order)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![member.id.as_slice(), member.statement.as_slice(), member.compatibility.as_slice(),
+                "INSERT INTO artifacts(id, statement, obligation, compatibility, payload, payload_length, payload_digest, origin_commit, replay_order)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![member.id.as_slice(), member.statement.as_ref().map(|id| id.as_slice()), member.obligation.as_ref().map(|id| id.as_slice()), member.compatibility.as_slice(),
                     object.payload.as_slice(), sql_width(member.length)?, member.digest.as_slice(), commit.as_slice(), sql_width(replay_order)?],
             ).map_err(sql_error)?;
             for (ordinal, dependency) in member.dependencies.iter().enumerate() {
                 connection
                     .execute(
-                        "INSERT INTO dependencies(proof_id, ordinal, target) VALUES(?1, ?2, ?3)",
+                        "INSERT INTO dependencies(artifact_id, ordinal, target) VALUES(?1, ?2, ?3)",
                         params![
                             member.id.as_slice(),
                             sql_width(ordinal)?,
@@ -1303,7 +1321,7 @@ fn insert_commit(
         }
         connection
             .execute(
-                "INSERT INTO members(commit_id, proof_id) VALUES(?1, ?2)",
+                "INSERT INTO members(commit_id, artifact_id) VALUES(?1, ?2)",
                 params![commit.as_slice(), member.id.as_slice()],
             )
             .map_err(sql_error)?;
@@ -1371,7 +1389,7 @@ fn verify_proof(
 
 fn read_dependencies(connection: &Connection, id: [u8; 32]) -> Result<Vec<[u8; 32]>, crate::Error> {
     let mut statement = connection
-        .prepare_cached("SELECT ordinal, substr(target,1,33) FROM dependencies WHERE proof_id = ?1 ORDER BY ordinal")
+        .prepare_cached("SELECT ordinal, substr(target,1,33) FROM dependencies WHERE artifact_id = ?1 ORDER BY ordinal")
         .map_err(sql_error)?;
     let mut rows = statement.query(params![id.as_slice()]).map_err(sql_error)?;
     let mut dependencies = Vec::new();
@@ -1400,7 +1418,7 @@ fn visit_members(
 ) -> Result<usize, crate::Error> {
     let mut statement = connection
         .prepare_cached(
-            "SELECT substr(proof_id,1,33) FROM members WHERE commit_id = ?1 ORDER BY proof_id",
+            "SELECT substr(artifact_id,1,33) FROM members WHERE commit_id = ?1 ORDER BY artifact_id",
         )
         .map_err(sql_error)?;
     let mut rows = statement
@@ -1486,7 +1504,7 @@ fn verify_foreign_keys(connection: &Connection) -> Result<(), crate::Error> {
 fn proof_exists(connection: &Connection, id: [u8; 32]) -> Result<bool, crate::Error> {
     connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM proofs WHERE id = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1)",
             params![id.as_slice()],
             |row| row.get(0),
         )

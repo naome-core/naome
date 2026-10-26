@@ -47,11 +47,11 @@ def main():
             driver.nodes.append(node)
             node.start(network_config={"listen": "/ip4/0.0.0.0/tcp/0", "peers": [],
                 "discovery": {"mdns": False, "dht": True, "internet": True}})
-        expected = [driver.nodes[0].command("test_compile", source=source(700 + index))["object"]["proof_id"]
+        expected = [driver.nodes[0].command("test_compile", source=source(700 + index))["object"]["artifact_id"]
                     for index in range(2)]
         for participant, node in zip(participants, driver.nodes):
             result = node.command("produce", source=source(700 + participant))
-            assert result["object"]["proof_id"] == expected[participant]
+            assert result["object"]["artifact_id"] == expected[participant]
         public_convergence(driver, expected, args.timeout - 20)
         for node in driver.nodes:
             assert any(event.get("event") == "accepted" and event.get("source") == "fetch" for event in node.events)

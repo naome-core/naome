@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crate::Envelope;
-use crate::object::BinaryProof;
-use naome_proof::ProofId;
+use crate::object::BinaryArtifact;
+use naome_proof::ArtifactId;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -181,7 +181,7 @@ impl Store {
         &self,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<(u64, BinaryProof)>, crate::Error> {
+    ) -> Result<Vec<(u64, BinaryArtifact)>, crate::Error> {
         let catalog = self
             .catalog
             .lock()
@@ -192,10 +192,10 @@ impl Store {
 
     pub(crate) fn ids_page(
         &self,
-        after: Option<ProofId>,
+        after: Option<ArtifactId>,
         limit: usize,
         expected: Summary,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         let catalog = self
             .catalog
             .lock()
@@ -209,7 +209,7 @@ impl Store {
         after: u64,
         limit: usize,
         expected: Summary,
-    ) -> Result<Vec<(u64, ProofId, Option<libp2p::PeerId>)>, crate::Error> {
+    ) -> Result<Vec<(u64, ArtifactId, Option<libp2p::PeerId>)>, crate::Error> {
         let catalog = self
             .catalog
             .lock()
@@ -233,9 +233,9 @@ impl Store {
 
     pub(crate) fn get_binary(
         &self,
-        id: ProofId,
+        id: ArtifactId,
         expected: Summary,
-    ) -> Result<Option<BinaryProof>, crate::Error> {
+    ) -> Result<Option<BinaryArtifact>, crate::Error> {
         let catalog = self
             .catalog
             .lock()
@@ -247,14 +247,14 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn get(
         &self,
-        id: ProofId,
+        id: ArtifactId,
         expected: Summary,
     ) -> Result<Option<Envelope>, crate::Error> {
         self.get_binary(id, expected)
             .map(|object| object.map(|object| object.envelope()))
     }
 
-    pub(crate) fn contains(&self, id: ProofId, expected: Summary) -> Result<bool, crate::Error> {
+    pub(crate) fn contains(&self, id: ArtifactId, expected: Summary) -> Result<bool, crate::Error> {
         let catalog = self
             .catalog
             .lock()
@@ -310,13 +310,13 @@ impl Store {
         object: &Envelope,
         expected: Summary,
     ) -> Result<Summary, crate::Error> {
-        let root = ProofId::from_bytes(crate::object::id_bytes(&object.proof_id)?);
+        let root = ArtifactId::from_bytes(crate::object::id_bytes(&object.artifact_id)?);
         self.persist_batch_checked(root, std::iter::once(object), expected, None)
     }
     #[cfg(test)]
     pub(crate) fn persist_batch_checked<'a>(
         &self,
-        root: ProofId,
+        root: ArtifactId,
         objects: impl Iterator<Item = &'a Envelope>,
         expected: Summary,
         deadline: Option<Instant>,
@@ -329,8 +329,8 @@ impl Store {
 
     pub(crate) fn persist_binary_batch<'a>(
         &self,
-        root: ProofId,
-        objects: impl Iterator<Item = &'a BinaryProof>,
+        root: ArtifactId,
+        objects: impl Iterator<Item = &'a BinaryArtifact>,
         expected: Summary,
         deadline: Option<Instant>,
         next_root: [u8; 32],
@@ -341,8 +341,8 @@ impl Store {
 
     fn persist_records<'a>(
         &self,
-        root: ProofId,
-        objects: impl Iterator<Item = &'a BinaryProof>,
+        root: ArtifactId,
+        objects: impl Iterator<Item = &'a BinaryArtifact>,
         expected: Summary,
         deadline: Option<Instant>,
         next_root: Option<[u8; 32]>,
@@ -398,7 +398,7 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn persist_batch<'a>(
         &self,
-        root: ProofId,
+        root: ArtifactId,
         objects: impl Iterator<Item = &'a Envelope>,
     ) -> Result<Summary, crate::Error> {
         self.persist_batch_checked(root, objects, self.summary()?, None)
@@ -582,7 +582,7 @@ pub(crate) fn corrupt_payload(directory: &Path, proof: &str) {
     assert_eq!(
         database
             .execute(
-                "UPDATE proofs SET payload=zeroblob(length(payload)) WHERE id=?1",
+                "UPDATE artifacts SET payload=zeroblob(length(payload)) WHERE id=?1",
                 rusqlite::params![crate::unhex(proof).unwrap()]
             )
             .unwrap(),
@@ -595,7 +595,7 @@ pub(crate) fn payload_bytes(directory: &Path, proof: &str) -> Vec<u8> {
     let database = rusqlite::Connection::open(directory.join(DATABASE_FILE)).unwrap();
     database
         .query_row(
-            "SELECT payload FROM proofs WHERE id=?1",
+            "SELECT payload FROM artifacts WHERE id=?1",
             rusqlite::params![crate::unhex(proof).unwrap()],
             |row| row.get(0),
         )

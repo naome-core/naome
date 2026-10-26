@@ -7,7 +7,7 @@ from pathlib import Path
 import socket
 import sys
 
-from proof_network import Driver, Node, content_root, digest, stored_objects
+from proof_network import Driver, Node, citation_id, content_root, digest, stored_objects
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
             port = reservation.getsockname()[1]
         node = Node(driver, 0, directory, identity, port)
         driver.nodes = [node]
-        # Preserve this service fixture's original proof address independently
+        # Preserve this service fixture's proof identity independently
         # of the distinct question family used by the inventory scenarios.
         producer_source = 'goal = all(x, eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1'
         producer_source += "#" + "\u0001" * (65536 - len(producer_source.encode()) - 2) + "\n"
@@ -40,7 +40,7 @@ def main():
         event = node.wait_event(lambda event: event.get("event") == "producer_result")
         assert event["result"]["status"] == "accepted"
         id = event["result"]["id"]
-        assert id == "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73", "original service proof address"
+        assert id == "c0de06fa90f5d8ba27cf4d97779d2614a3eb819695ac8ac13751df9e1b062798", "service artifact address"
         assert node.process.poll() is None
         with socket.create_connection(("127.0.0.1", port), timeout=5):
             pass
@@ -48,11 +48,12 @@ def main():
         objects = stored_objects(node)
         assert len(objects) == 1
         stored = objects[0]
-        assert stored["proof_id"] == id
+        assert stored["artifact_id"] == id
+        assert citation_id(stored) == "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73", "service proof citation identity"
         driver.summary["accepted_ids"] = [id]
         driver.summary["content_root"] = content_root(driver.summary["contract"]["compatibility"], [id])
         driver.summary["scenarios"]["autonomous_production_and_listener_after_input_eof"] = {
-            "result": "pass", "proof_id": id, "stored_objects": 1,
+            "result": "pass", "artifact_id": id, "stored_objects": 1,
             "producer_source_bytes": len(producer_source.encode()),
             "listener_tcp_connect": True,
             "listener_evidence": "TCP accepts a connection after checked production with closed stdin; this is not a separate libp2p exchange trial",

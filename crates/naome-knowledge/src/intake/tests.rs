@@ -35,7 +35,7 @@ fn source(index: usize) -> String {
 fn fixture(index: usize) -> (Envelope, Metadata) {
     let mut producer = Graph::default();
     let object = producer.author(&source(index)).unwrap();
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     producer.ingest(object.clone(), Instant::now()).unwrap();
     (object, producer.describe(id).unwrap().unwrap())
 }
@@ -88,7 +88,7 @@ async fn managed_interest_survives_unrelated_graph_growth_without_provider_retry
         intake.advance(&mut graph, &mut questions),
         Progress::Waiting
     ));
-    let id = ProofId::from_bytes(id_bytes(&metadata.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&metadata.artifact_id).unwrap());
     assert_eq!(intake.needed(), [(peer, id, id)]);
 }
 
@@ -137,14 +137,14 @@ fn descriptions_bind_the_checked_statement_and_preserve_existing_proof_addresses
         .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
         .unwrap();
     assert_eq!(
-        object.proof_id,
+        crate::hex(object.proof_id().unwrap().unwrap().as_bytes()),
         "c617c9222df901d99404868aab415e917af76ce65699876342fe0c0ff1e62e73"
     );
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     graph.ingest(object.clone(), Instant::now()).unwrap();
     let mut metadata = graph.describe(id).unwrap().unwrap();
     let (_, statement, question) = metadata.compile().unwrap();
-    assert_eq!(hex(statement.as_bytes()), object.statement_id);
+    assert_eq!(hex(statement.as_bytes()), object.statement_id.unwrap());
     assert!(!question.negation_parity());
     metadata.statement_id = "00".repeat(32);
     assert!(metadata.compile().unwrap_err().contains("question target"));
@@ -249,15 +249,16 @@ async fn valid_normal_proofs_respect_the_cumulative_transport_step_budget() {
         eprintln!(
             "checked_transport_boundary steps={count} canonical_bytes={} proof_id={}",
             bytes.len(),
-            hex(checked.proof_id().as_bytes())
+            hex(checked.artifact_id().as_bytes())
         );
         let object = Envelope {
             compatibility: hex(&crate::compatibility()),
-            proof_id: hex(checked.proof_id().as_bytes()),
-            statement_id: hex(checked.statement_id().as_bytes()),
-            proof: hex(bytes),
+            artifact_id: hex(checked.artifact_id().as_bytes()),
+            statement_id: Some(hex(checked.statement_id().as_bytes())),
+            payload: format!("00{}", hex(bytes)),
+            obligation_proof: None,
         };
-        let id = checked.proof_id();
+        let id = checked.artifact_id();
         let mut producer = Graph::default();
         assert_eq!(
             producer
@@ -345,7 +346,7 @@ async fn absent_false_error_and_timeout_interest_never_authorize_payloads() {
 #[tokio::test]
 async fn unrelated_context_refreshes_formal_checks_but_expired_grants_cannot_fetch_or_stage() {
     let (object, metadata) = fixture(2);
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     let peer = PeerId::random();
     let mut graph = Graph::default();
     let mut questions = new_questions();
@@ -421,7 +422,7 @@ async fn declined_metadata_does_not_poison_new_source_or_peer_for_same_proof() {
     changed.question = format!("# changed exact input\n{}", changed.question);
     assert_eq!(intake.enqueue(peer, changed, &graph).unwrap(), "queued");
     approve(&mut intake, &mut questions, &mut graph).await;
-    let id = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let id = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     assert!(intake.authorizes(peer, id, id));
     assert_eq!(
         intake.enqueue(PeerId::random(), metadata, &graph).unwrap(),
@@ -433,7 +434,8 @@ async fn declined_metadata_does_not_poison_new_source_or_peer_for_same_proof() {
 async fn false_statement_question_pair_cannot_poison_later_correct_description() {
     let (object, metadata) = fixture(20);
     let mut wrong = fixture(21).1;
-    wrong.proof_id = object.proof_id.clone();
+    wrong.artifact_id = object.artifact_id.clone();
+    wrong.proof_id = metadata.proof_id.clone();
     let peer = PeerId::random();
     let mut graph = Graph::default();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -452,7 +454,7 @@ async fn false_statement_question_pair_cannot_poison_later_correct_description()
     assert!(intake.needed().is_empty());
     assert_eq!(intake.enqueue(peer, metadata, &graph).unwrap(), "queued");
     approve(&mut intake, &mut questions, &mut graph).await;
-    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.payload(peer, root, root, object, &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
     interest(&mut questions, &graph).await;
@@ -468,7 +470,9 @@ fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
     let helper = producer.author(&source(5)).unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
     let premise = producer
-        .describe(ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap()))
+        .describe(ArtifactId::from_bytes(
+            id_bytes(&helper.artifact_id).unwrap(),
+        ))
         .unwrap()
         .unwrap()
         .question
@@ -477,8 +481,8 @@ fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
         .unwrap()
         .to_owned();
     let b = "all(z,mem(z,z))";
-    let root = producer.author(&format!("goal = imp({b},{premise}) proof: p0 = cite(\"{}\") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2", helper.proof_id)).unwrap();
-    let id = ProofId::from_bytes(id_bytes(&root.proof_id).unwrap());
+    let root = producer.author(&format!("goal = imp({b},{premise}) proof: p0 = cite(\"{}\") p1 = simp({premise},{b}) p2 = mp(p0,p1) return p2", crate::hex(helper.proof_id().unwrap().unwrap().as_bytes()))).unwrap();
+    let id = ArtifactId::from_bytes(id_bytes(&root.artifact_id).unwrap());
     producer.ingest(root.clone(), Instant::now()).unwrap();
     (root, helper, producer.describe(id).unwrap().unwrap())
 }
@@ -486,8 +490,8 @@ fn dependent_fixture() -> (Envelope, Envelope, Metadata) {
 #[tokio::test]
 async fn approved_parent_stages_only_committed_helpers_and_publishes_whole_closure() {
     let (object, helper, metadata) = dependent_fixture();
-    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
-    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+    let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
     let peer = PeerId::random();
     let mut graph = Graph::default();
     let mut questions = new_questions();
@@ -528,7 +532,9 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
     let mut producer = Graph::default();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
     let formula = producer
-        .describe(ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap()))
+        .describe(ArtifactId::from_bytes(
+            id_bytes(&helper.artifact_id).unwrap(),
+        ))
         .unwrap()
         .unwrap()
         .compile()
@@ -539,12 +545,12 @@ async fn successful_batch_enables_only_the_preexisting_local_owner_pending_trans
     let owner = producer
         .author(&format!(
             "goal = {formula} proof: p0 = cite(\"{}\") return p0",
-            helper.proof_id
+            crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap();
-    let owner_id = ProofId::from_bytes(id_bytes(&owner.proof_id).unwrap());
-    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
-    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let owner_id = ArtifactId::from_bytes(id_bytes(&owner.artifact_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+    let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
     let mut graph = Graph::default();
     assert_eq!(
         graph.ingest(owner, Instant::now()).unwrap().status,
@@ -588,9 +594,12 @@ async fn necessary_helper_outside_question_codec_is_checked_without_own_question
         .author(&format!("goal = {formula} proof: {proof} return p40"))
         .unwrap();
     producer.ingest(helper.clone(), Instant::now()).unwrap();
-    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
     assert!(producer.describe(helper_id).is_err());
-    let mut steps = format!("p0 = cite(\"{}\")", helper.proof_id);
+    let mut steps = format!(
+        "p0 = cite(\"{}\")",
+        crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
+    );
     let mut previous = "p0".to_owned();
     for (offset, variable) in (1..40).rev().enumerate() {
         let mut body = "eq(x0,x0)".to_owned();
@@ -608,7 +617,7 @@ async fn necessary_helper_outside_question_codec_is_checked_without_own_question
             "goal = all(x0,imp(mem(x0,x0),eq(x0,x0))) proof: {steps} return closed"
         ))
         .unwrap();
-    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     producer.ingest(object.clone(), Instant::now()).unwrap();
     let metadata = producer.describe(root).unwrap().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -665,8 +674,8 @@ async fn final_false_error_timeout_or_registry_change_discards_every_staged_obje
         let mut intake = Intake::default();
         intake.enqueue(peer, metadata.clone(), &graph).unwrap();
         approve(&mut intake, &mut questions, &mut graph).await;
-        let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
-        let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+        let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+        let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
         intake.payload(peer, root, root, object, &graph).unwrap();
         intake
             .payload(peer, root, helper_id, helper, &graph)
@@ -695,17 +704,23 @@ async fn invalid_parent_after_valid_helper_leaves_no_orphan_or_registry_effect()
     let (mut object, helper, mut metadata) = dependent_fixture();
     // A real canonical citation certificate commits the helper, but its
     // conclusion cannot establish the advertised unrelated statement.
-    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
     let bytes = naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
-        proof_id: helper_id,
+        proof_id: helper.proof_id().unwrap().unwrap(),
     }])
     .unwrap()
     .to_canonical_bytes();
-    object.proof = hex(&bytes);
-    let statement = StatementId::from_bytes(id_bytes(&object.statement_id).unwrap());
+    object.payload = format!("00{}", hex(&bytes));
+    let statement =
+        StatementId::from_bytes(id_bytes(object.statement_id.as_deref().unwrap()).unwrap());
     let root = content_id(statement, &bytes);
-    object.proof_id = hex(root.as_bytes());
-    metadata.proof_id = object.proof_id.clone();
+    object.artifact_id = hex(root.as_bytes());
+    metadata.artifact_id = object.artifact_id.clone();
+    metadata.proof_id = hex(
+        naome_proof::ProofId::of_canonical_certificate(statement, &bytes)
+            .unwrap()
+            .as_bytes(),
+    );
     let peer = PeerId::random();
     let mut graph = Graph::default();
     let mut questions = new_questions();
@@ -757,7 +772,7 @@ async fn delivered_original_admission_allows_fresh_current_policy_but_baseline_d
         approved.selection.initial().unwrap().prefilter.policy,
         receipt.policy()
     );
-    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
     intake.payload(peer, root, root, object, &graph).unwrap();
     intake.advance(&mut graph, &mut questions);
     interest(&mut questions, &graph).await;
@@ -807,12 +822,12 @@ async fn persistence_cuts_preserve_existing_state_and_recover_only_complete_cata
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
         let existing = fixture(7).0;
-        let existing_id = ProofId::from_bytes(id_bytes(&existing.proof_id).unwrap());
+        let existing_id = ArtifactId::from_bytes(id_bytes(&existing.artifact_id).unwrap());
         graph.ingest(existing, Instant::now()).unwrap();
         let before = graph.content_root();
         let (object, helper, metadata) = dependent_fixture();
-        let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
-        let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+        let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+        let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
         let peer = PeerId::random();
         let mut questions = new_questions();
         let mut intake = Intake::default();
@@ -851,8 +866,8 @@ async fn final_interest_batch_prepared_before_copy_attach_never_reaches_persiste
     graph.ingest(fixture(7).0, Instant::now()).unwrap();
     let before = graph.content_root();
     let (object, helper, metadata) = dependent_fixture();
-    let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
-    let helper_id = ProofId::from_bytes(id_bytes(&helper.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
+    let helper_id = ArtifactId::from_bytes(id_bytes(&helper.artifact_id).unwrap());
     let peer = PeerId::random();
     let mut questions = new_questions();
     let mut intake = Intake::default();
@@ -903,7 +918,7 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
         let directory = Directory::new();
         let mut graph = Graph::open(&directory.0).unwrap();
         let (object, metadata) = fixture(8);
-        let root = ProofId::from_bytes(id_bytes(&object.proof_id).unwrap());
+        let root = ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap());
         let peer = PeerId::random();
         let mut questions = new_questions();
         let mut intake = Intake::default();
@@ -924,7 +939,7 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
         match mode {
             0 => {
                 database
-                    .execute("DELETE FROM proofs WHERE id=?1", [id])
+                    .execute("DELETE FROM artifacts WHERE id=?1", [id])
                     .unwrap();
             }
             1 => {
@@ -932,7 +947,7 @@ async fn committed_missing_corrupt_membership_or_root_batch_fails_startup() {
             }
             2 => {
                 database
-                    .execute("DELETE FROM members WHERE proof_id=?1", [id])
+                    .execute("DELETE FROM members WHERE artifact_id=?1", [id])
                     .unwrap();
             }
             _ => {

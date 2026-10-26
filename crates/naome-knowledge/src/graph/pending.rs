@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     checkpoint::{Checkpoint, Update},
-    object::BinaryProof,
+    object::BinaryArtifact,
 };
 use serde::{Deserialize, Serialize};
 
@@ -152,7 +152,7 @@ impl PendingStore {
             .query(|connection| Ok(connection.total_changes()))
             .unwrap()
     }
-    pub(super) fn contains(&self, id: ProofId) -> Result<bool, crate::Error> {
+    pub(super) fn contains(&self, id: ArtifactId) -> Result<bool, crate::Error> {
         Ok(self
             .checkpoint
             .get::<String>("proof", &crate::hex(id.as_bytes()), 128)?
@@ -203,7 +203,7 @@ impl PendingStore {
         }
         Ok(())
     }
-    pub(super) fn remove(&mut self, id: ProofId) -> Result<(), crate::Error> {
+    pub(super) fn remove(&mut self, id: ArtifactId) -> Result<(), crate::Error> {
         let id = crate::hex(id.as_bytes());
         let Some(sequence) = self.checkpoint.get::<String>("proof", &id, 128)? else {
             return Ok(());
@@ -285,12 +285,12 @@ impl PendingStore {
     fn schedule_one(
         &self,
         sequence: &str,
-        dependencies: &BTreeSet<ProofId>,
+        dependencies: &BTreeSet<ArtifactId>,
         context: &DiskArtifactState,
     ) -> Result<(), crate::Error> {
         let missing = dependencies
             .iter()
-            .filter_map(|id| match context.contains_proof(*id) {
+            .filter_map(|id| match context.contains_artifact(*id) {
                 Ok(true) => None,
                 Ok(false) => Some(Ok(*id)),
                 Err(e) => Some(Err(crate::Error::from(e))),
@@ -314,7 +314,7 @@ impl PendingStore {
             Ok(())
         })
     }
-    pub(super) fn accepted(&mut self, id: ProofId) -> Result<(), crate::Error> {
+    pub(super) fn accepted(&mut self, id: ArtifactId) -> Result<(), crate::Error> {
         if !self.scheduled {
             return Ok(());
         }
@@ -327,7 +327,7 @@ impl PendingStore {
             tx.commit().map_err(sql)
         })
     }
-    pub(super) fn next_page(&mut self) -> Result<Vec<BinaryProof>, crate::Error> {
+    pub(super) fn next_page(&mut self) -> Result<Vec<BinaryArtifact>, crate::Error> {
         if !self.scheduled {
             return Err("proof backlog readiness not initialized".into());
         }
@@ -367,7 +367,7 @@ impl PendingStore {
         &self,
         after: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         self.checkpoint
             .page(
                 "proof",
@@ -376,75 +376,22 @@ impl PendingStore {
                 crate::resources::limits().closure_bytes,
             )?
             .into_iter()
-            .map(|(id, _)| crate::object::id_bytes(&id).map(ProofId::from_bytes))
+            .map(|(id, _)| crate::object::id_bytes(&id).map(ArtifactId::from_bytes))
             .collect()
     }
 }
-fn encode(proof: &BinaryProof) -> Result<Vec<u8>, crate::Error> {
-    let mut bytes = vec![1];
-    bytes.extend_from_slice(proof.id.as_bytes());
-    bytes.extend_from_slice(proof.statement.as_bytes());
-    bytes.extend_from_slice(
-        &u32::try_from(proof.dependencies.len())
-            .map_err(|_| "proof dependency width")?
-            .to_be_bytes(),
-    );
-    for id in &proof.dependencies {
-        bytes.extend_from_slice(id.as_bytes());
-    }
-    bytes.extend_from_slice(
-        &u32::try_from(proof.bytes.len())
-            .map_err(|_| "proof payload width")?
-            .to_be_bytes(),
-    );
-    bytes.extend_from_slice(&proof.bytes);
-    Ok(bytes)
+fn encode(artifact: &BinaryArtifact) -> Result<Vec<u8>, crate::Error> {
+    serde_json::to_vec(&artifact.envelope()).map_err(|error| error.to_string().into())
 }
-fn decode(bytes: &[u8]) -> Result<BinaryProof, crate::Error> {
-    let malformed = || "malformed proof backlog binary row".to_owned();
-    if bytes.len() < 73 || bytes[0] != 1 {
-        return Err(malformed().into());
+fn decode(bytes: &[u8]) -> Result<BinaryArtifact, crate::Error> {
+    if bytes.len() > 2 * naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES + 1024 {
+        return Err("artifact backlog row limit".into());
     }
-    let id = ProofId::from_bytes(bytes[1..33].try_into().map_err(|_| malformed())?);
-    let statement =
-        naome_proof::StatementId::from_bytes(bytes[33..65].try_into().map_err(|_| malformed())?);
-    let count = u32::from_be_bytes(bytes[65..69].try_into().map_err(|_| malformed())?) as usize;
-    if count > naome_proof::CERTIFICATE_MAX_STEPS {
-        return Err(malformed().into());
-    }
-    let end = 69usize
-        .checked_add(count.checked_mul(32).ok_or_else(malformed)?)
-        .ok_or_else(malformed)?;
-    let dependencies = bytes
-        .get(69..end)
-        .ok_or_else(malformed)?
-        .chunks_exact(32)
-        .map(|id| ProofId::from_bytes(id.try_into().expect("fixed chunk")))
-        .collect::<BTreeSet<_>>();
-    let length = u32::from_be_bytes(
-        bytes
-            .get(end..end + 4)
-            .ok_or_else(malformed)?
-            .try_into()
-            .map_err(|_| malformed())?,
-    ) as usize;
-    let payload = bytes.get(end + 4..).ok_or_else(malformed)?;
-    if count != dependencies.len()
-        || length != payload.len()
-        || length > naome_proof::CERTIFICATE_MAX_BYTES
-        || crate::object::content_id(statement, payload) != id
-    {
-        return Err(malformed().into());
-    }
-    Ok(BinaryProof {
-        id,
-        statement,
-        dependencies,
-        bytes: payload.into(),
-        _memory: Some(crate::resources::MemoryLease::acquire(
-            payload.len().checked_mul(4).ok_or_else(malformed)?,
-        )?),
-    })
+    let envelope: crate::Envelope =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    envelope
+        .prepare_retained()
+        .map(|candidate| candidate.record())
 }
 
 fn sql(error: rusqlite::Error) -> crate::Error {

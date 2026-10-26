@@ -45,6 +45,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":naome_knowledge",
+    compile_data = ["//crates/naome-checker:src/tests/fixtures/identity_unique.proof.hex"],
     lint_config = ":cargo_lints",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

@@ -71,7 +71,7 @@ fn object(graph: &crate::Graph, parent: Option<&crate::Envelope>) -> crate::Enve
         .map(|p| {
             format!(
                 "goal=all(x,eq(x,x)) proof:p0=cite(\"{}\") return p0",
-                p.proof_id
+                crate::hex(p.proof_id().unwrap().unwrap().as_bytes())
             )
         })
         .unwrap_or_else(|| "goal=all(x,eq(x,x)) proof:p0=refl(x) p1=gen(p0,x) return p1".into());
@@ -96,19 +96,19 @@ fn cold_membership(graph: &crate::Graph, objects: &[crate::Envelope], snapshot: 
     graph.checked_storage.evict_cache();
     assert_eq!(graph.context.snapshot_id(), snapshot);
     for object in objects {
-        let id = crate::object::id_bytes(&object.proof_id).unwrap();
-        let id = naome_proof::ProofId::from_bytes(id);
-        assert!(graph.context.contains_proof(id).unwrap());
+        let id = crate::object::id_bytes(&object.artifact_id).unwrap();
+        let id = naome_proof::ArtifactId::from_bytes(id);
+        assert!(graph.context.contains_artifact(id).unwrap());
         let normal =
             naome_proof::ProofCertificate::new(vec![naome_proof::ProofStep::ProofReference {
-                proof_id: id,
+                proof_id: object.proof_id().unwrap().unwrap(),
             }])
             .unwrap()
             .into_unchecked_normal_form();
         let checked = naome_checker::check_normal_form_with_state(normal, &graph.context).unwrap();
         assert_eq!(
             crate::hex(checked.statement_id().as_bytes()),
-            object.statement_id
+            object.statement_id.as_deref().unwrap()
         );
     }
 }

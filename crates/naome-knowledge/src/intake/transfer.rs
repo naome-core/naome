@@ -6,12 +6,12 @@ use crate::publication::PeerGrant;
 #[derive(Clone)]
 pub(super) struct TransferGrant {
     peer: PeerId,
-    root: ProofId,
+    root: ArtifactId,
     received: Instant,
     capability: Option<PeerGrant>,
 }
 impl TransferGrant {
-    pub(super) fn new(peer: PeerId, root: ProofId, capability: Option<PeerGrant>) -> Self {
+    pub(super) fn new(peer: PeerId, root: ArtifactId, capability: Option<PeerGrant>) -> Self {
         Self {
             peer,
             root,
@@ -22,7 +22,7 @@ impl TransferGrant {
     pub(super) fn peer(&self) -> PeerId {
         self.peer
     }
-    pub(super) fn root(&self) -> ProofId {
+    pub(super) fn root(&self) -> ArtifactId {
         self.root
     }
     pub(super) fn deadline(&self) -> Instant {
@@ -40,13 +40,13 @@ impl TransferGrant {
     pub(super) fn live(&self, now: Instant) -> bool {
         self.check(now).is_ok()
     }
-    pub(super) fn authorizes(&self, peer: PeerId, root: ProofId, now: Instant) -> bool {
+    pub(super) fn authorizes(&self, peer: PeerId, root: ArtifactId, now: Instant) -> bool {
         self.authorize(peer, root, now).is_ok()
     }
     pub(super) fn authorize(
         &self,
         peer: PeerId,
-        root: ProofId,
+        root: ArtifactId,
         now: Instant,
     ) -> Result<(), crate::Error> {
         if self.peer != peer || self.root != root {

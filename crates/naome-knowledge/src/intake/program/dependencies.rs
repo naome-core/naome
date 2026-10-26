@@ -3,26 +3,31 @@
 use super::*;
 
 impl Programs {
-    fn helper_root(&self, peer: PeerId, root: ProofId) -> Option<&Root> {
+    fn helper_root(&self, peer: PeerId, root: ArtifactId) -> Option<&Root> {
         self.active.as_ref().filter(|active| {
             active.fetching() && active.offer.transfer.authorizes(peer, root, Instant::now())
         })
     }
 
-    pub(in crate::intake) fn helper_contains(&self, id: ProofId) -> bool {
+    pub(in crate::intake) fn helper_contains(&self, id: ArtifactId) -> bool {
         self.active
             .as_ref()
             .is_some_and(|root| root.closure.contains(id))
     }
-    pub(in crate::intake) fn authorizes(&self, peer: PeerId, root: ProofId, id: ProofId) -> bool {
+    pub(in crate::intake) fn authorizes(
+        &self,
+        peer: PeerId,
+        root: ArtifactId,
+        id: ArtifactId,
+    ) -> bool {
         self.helper_root(peer, root)
             .is_some_and(|root| root.closure.needs(id) || root.closure.contains(id))
     }
-    pub(in crate::intake) fn needed(&self) -> Vec<(PeerId, ProofId, ProofId)> {
+    pub(in crate::intake) fn needed(&self) -> Vec<(PeerId, ArtifactId, ArtifactId)> {
         let Some(root) = &self.active else {
             return Vec::new();
         };
-        let id = root.offer.metadata.manifest.proof_id();
+        let id = root.offer.metadata.manifest.artifact_id();
         if self.helper_root(root.offer.transfer.peer(), id).is_none() {
             return Vec::new();
         }
@@ -34,11 +39,11 @@ impl Programs {
     pub(in crate::intake) fn insert_helper(
         &mut self,
         peer: PeerId,
-        root: ProofId,
+        root: ArtifactId,
         metadata: ProgramMetadata,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
-        if !self.authorizes(peer, root, metadata.manifest.proof_id()) {
+        if !self.authorizes(peer, root, metadata.manifest.artifact_id()) {
             return Err("unrequested program dependency description".into());
         }
         self.active
@@ -50,8 +55,8 @@ impl Programs {
     pub(in crate::intake) fn helper_payload(
         &mut self,
         peer: PeerId,
-        root: ProofId,
-        id: ProofId,
+        root: ArtifactId,
+        id: ArtifactId,
         chunk: Chunk,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
@@ -67,8 +72,8 @@ impl Programs {
     pub(in crate::intake) fn certificate_payload(
         &mut self,
         peer: PeerId,
-        root: ProofId,
-        id: ProofId,
+        root: ArtifactId,
+        id: ArtifactId,
         object: Envelope,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
@@ -86,11 +91,11 @@ impl Intake {
     pub(crate) fn enqueue_program_helper(
         &mut self,
         peer: PeerId,
-        root: ProofId,
+        root: ArtifactId,
         metadata: ProgramMetadata,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
-        let id = metadata.manifest.proof_id();
+        let id = metadata.manifest.artifact_id();
         if self.programs.authorizes(peer, root, id) {
             return self.programs.insert_helper(peer, root, metadata, graph);
         }

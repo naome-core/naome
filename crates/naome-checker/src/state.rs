@@ -268,30 +268,7 @@ impl ArtifactState {
         &self,
         definition: &CheckedDefinition,
     ) -> Result<(), ArtifactStateError> {
-        if let Some(existing) = self.definitions.get(&definition.definition_id) {
-            return if existing.certificate == definition.certificate {
-                Err(ArtifactStateError::DuplicateDefinition {
-                    definition_id: definition.definition_id,
-                })
-            } else {
-                Err(ArtifactStateError::DefinitionIdentityCollision {
-                    definition_id: definition.definition_id,
-                })
-            };
-        }
-        if let Some(obligation) = &definition.obligation {
-            let Some(selected) = self.statements.get(&obligation.statement_id) else {
-                return Err(ArtifactStateError::MissingDefinitionObligation {
-                    statement_id: obligation.statement_id,
-                });
-            };
-            if selected.conclusion != obligation.conclusion {
-                return Err(ArtifactStateError::StatementIdentityCollision {
-                    statement_id: obligation.statement_id,
-                });
-            }
-        }
-        Ok(())
+        registration::validate_definition(self, definition)
     }
 
     pub(crate) fn resolve_proof(&self, proof_id: ProofId) -> Option<crate::context::ProofHeader> {
@@ -350,13 +327,16 @@ struct StoredDefinition {
 }
 
 impl DefinitionResolver for ArtifactState {
-    fn resolve_definition(&self, definition_id: DefinitionId) -> Option<DefinitionResolution<'_>> {
-        self.definitions.get(&definition_id).map(|definition| {
+    fn resolve_definition(
+        &self,
+        definition_id: DefinitionId,
+    ) -> Result<Option<DefinitionResolution<'_>>, naome_proof::DefinitionAccessError> {
+        Ok(self.definitions.get(&definition_id).map(|definition| {
             DefinitionResolution::new(
                 definition.certificate.relation_arity(),
                 definition.certificate.body(),
             )
-        })
+        }))
     }
 }
 

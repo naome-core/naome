@@ -11,21 +11,21 @@ async fn offline_controls_do_not_read_payloads_or_rebuild_checked_indexes() {
     fs::write(&sentinel, b"disposable index must remain untouched").unwrap();
     let reads = crate::store::payload_reads();
     let recorded = status(&directory.0).await.unwrap();
-    assert_eq!(recorded.accepted_proofs, 1);
-    assert_eq!(recorded.proof_verification, ProofVerification::NotRun);
+    assert_eq!(recorded.accepted_artifacts, 1);
+    assert_eq!(recorded.artifact_verification, ArtifactVerification::NotRun);
     let saved = interest(&directory.0, "set theory").await.unwrap();
     assert_eq!(saved.interest, "set theory");
-    assert_eq!(saved.accepted_proofs, 1);
-    assert_eq!(saved.proof_verification, ProofVerification::NotRun);
+    assert_eq!(saved.accepted_artifacts, 1);
+    assert_eq!(saved.artifact_verification, ArtifactVerification::NotRun);
     assert_eq!(crate::store::payload_reads(), reads);
     assert_eq!(
         fs::read(&sentinel).unwrap(),
         b"disposable index must remain untouched"
     );
-    crate::store::corrupt_payload(&directory.0, &helper.proof_id);
+    crate::store::corrupt_payload(&directory.0, &helper.artifact_id);
     assert_eq!(
-        status(&directory.0).await.unwrap().proof_verification,
-        ProofVerification::NotRun
+        status(&directory.0).await.unwrap().artifact_verification,
+        ArtifactVerification::NotRun
     );
     assert!(Graph::open(&directory.0).is_err());
 }

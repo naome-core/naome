@@ -43,7 +43,7 @@ fn measure_startup_context_build() {
             assert_eq!(graph.context.snapshot_id(), snapshot);
             println!(
                 "startup_build {}",
-                serde_json::json!({"size":size,"repeat":repeat,"wall_ms":elapsed,"cpu_ms":cpu,"sqlite_inserts":inserts,"index_page_bytes":graph.checked_storage.allocated_bytes().unwrap(),"root":crate::hex(&root),"snapshot":crate::hex(&snapshot),"last_proof_id":last.as_ref().map(|p|p.proof_id.as_str())})
+                serde_json::json!({"size":size,"repeat":repeat,"wall_ms":elapsed,"cpu_ms":cpu,"sqlite_inserts":inserts,"index_page_bytes":graph.checked_storage.allocated_bytes().unwrap(),"root":crate::hex(&root),"snapshot":crate::hex(&snapshot),"last_proof_id":last.as_ref().map(|p|p.artifact_id.as_str())})
             );
             drop(graph);
         }
