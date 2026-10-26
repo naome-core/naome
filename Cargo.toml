@@ -21,6 +21,7 @@ repository = "https://github.com/naome-core/naome"
 publish = false
 
 [workspace.dependencies]
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
 sha2 = { version = "0.11.0", default-features = false }
 
 [workspace.lints.rust]
