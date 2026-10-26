@@ -23,10 +23,16 @@ impl Hash for Kernel {
 
 impl Kernel {
     pub fn new(step: ProofStep) -> Result<Self, String> {
+        Self::with_context(step, &naome_checker::ArtifactState::new())
+    }
+    pub fn with_context(
+        step: ProofStep,
+        context: &dyn naome_checker::ContextView,
+    ) -> Result<Self, String> {
         let primitive = |f: &naome_proof::ProofFormula| {
-            f.as_primitive()
-                .cloned()
-                .ok_or("kernel constants require primitive fields".to_owned())
+            f.expand_with(context)
+                .map(std::borrow::Cow::into_owned)
+                .map_err(|e| e.to_string())
         };
         let formula = match &step {
             ProofStep::Simplification {

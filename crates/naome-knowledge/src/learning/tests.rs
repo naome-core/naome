@@ -50,6 +50,7 @@ fn question_seed_preserves_dependency_partitions_and_native_identities() {
     assert_eq!(
         curriculum::development()
             .iter()
+            .take(curriculum::CORPUS_DEVELOPMENT)
             .map(|q| q.dependency.as_str())
             .collect::<std::collections::BTreeSet<_>>()
             .len(),
@@ -220,6 +221,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     let graphs = state.training_graphs().unwrap();
     let incumbent = model::test_update(&state.model, &graphs, &mut 31, &mut io).unwrap();
     state.model = incumbent.clone();
+    let development_parent = state.clone();
     let mut job = state.job();
     job.training = true;
     let (candidate, _, _) = engine
@@ -232,6 +234,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         .unwrap();
     assert_ne!(candidate.model, incumbent.model);
     assert_ne!(candidate.optimizer, incumbent.optimizer);
+    let candidate_for_development_regression = candidate.clone();
     let mut finished = job.base.clone();
     finished.trained = finished.accepted;
     job.progress = Some(Progress {
@@ -248,6 +251,8 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         incumbent_score: 1,
         candidate_score: 2,
         anchor_regression: true,
+        development_regression: false,
+        original_score: [0, 0],
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
     });
@@ -265,6 +270,46 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         actual, expected,
         "the next real update must retain both model and Adam state"
     );
+    let mut alternate = development_parent;
+    let mut job = alternate.job();
+    job.training = true;
+    let mut progress = finished_progress(&alternate);
+    progress.unit = job.units() - 1;
+    progress.candidate = Some(candidate_for_development_regression);
+    progress.candidate_score = 20;
+    progress.incumbent_score = 12;
+    progress.original_score = [7, 6];
+    progress.development_regression = true;
+    job.progress = Some(progress);
+    job.execute(job.units(), None, 43, &mut engine, &mut io)
+        .unwrap();
+    assert_eq!(
+        job.progress.as_ref().unwrap().diagnostic,
+        "development_regression_rejected"
+    );
+    assert!(alternate.qualify(&job));
+    assert_eq!(alternate.model, incumbent);
+}
+fn finished_progress(state: &State) -> Progress {
+    Progress {
+        cost: None,
+        unit: 0,
+        model: state.model.clone(),
+        trained: state.epoch,
+        promotions: state.promotions,
+        rejections: state.rejections,
+        candidate: None,
+        rng: state.draws,
+        first_loss: None,
+        last_loss: None,
+        incumbent_score: 0,
+        candidate_score: 0,
+        anchor_regression: false,
+        development_regression: false,
+        original_score: [0, 0],
+        result: None,
+        diagnostic: String::new(),
+    }
 }
 #[derive(Default)]
 pub(crate) struct MemoryStore(pub BTreeMap<(String, usize), Vec<u8>>);
@@ -308,6 +353,8 @@ pub(crate) fn completed(job: &mut Job, solution: Solution) {
         incumbent_score: 0,
         candidate_score: 0,
         anchor_regression: false,
+        development_regression: false,
+        original_score: [0, 0],
         result: Some(solution),
         diagnostic: "certified_candidate".into(),
     });
@@ -333,6 +380,8 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         incumbent_score: 0,
         candidate_score: 0,
         anchor_regression: false,
+        development_regression: false,
+        original_score: [0, 0],
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
     });
@@ -413,8 +462,9 @@ fn later_better_proof_advances_replay_revision_without_recounting_the_question()
     let checked = proof::verify(&detour, target).unwrap();
     let mut earlier = original.clone();
     earlier.proof_id = crate::hex(checked.native_id.as_bytes());
-    earlier.tree =
-        search::Tree::Certificate(peer::pack(&checked.certificate.to_canonical_bytes()).unwrap());
+    earlier.tree = search::Tree::Certificate(
+        peer::pack(&checked.certificate.to_canonical_bytes(), &[]).unwrap(),
+    );
     earlier.job = 40;
     assert_ne!(earlier.proof_id, original.proof_id);
     let mut state = State::fresh();

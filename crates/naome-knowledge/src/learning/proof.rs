@@ -20,6 +20,7 @@ pub enum Term {
     Native {
         certificate: ProofCertificate,
         target: Formula,
+        definitions: Vec<super::definitions::Entry>,
     },
     Variable(usize, Formula),
     Kernel(Kernel),
@@ -216,6 +217,7 @@ pub fn close(mut formula: Formula) -> Formula {
 }
 
 pub struct Verified {
+    pub definitions: Vec<super::definitions::Entry>,
     pub certificate: ProofCertificate,
     pub target: Formula,
     pub native_id: ProofId,
@@ -227,16 +229,20 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     if term.formula() != *expected {
         return Err("search term differs from the requested target".into());
     }
-    if let Term::Native { certificate, .. } = term {
-        let checked = naome_checker::normalize_and_check_with_state(
-            certificate.clone(),
-            &ArtifactState::new(),
-        )
-        .map_err(|e| e.to_string())?;
+    if let Term::Native {
+        certificate,
+        definitions,
+        ..
+    } = term
+    {
+        let context = super::definitions::context(definitions)?;
+        let checked = naome_checker::normalize_and_check_with_state(certificate.clone(), &context)
+            .map_err(|e| e.to_string())?;
         if checked.conclusion() != expected {
             return Err("native DAG conclusion differs".into());
         }
         return Ok(Verified {
+            definitions: definitions.clone(),
             certificate: checked.normal_form().certificate().clone(),
             target: expected.clone(),
             native_id: checked.proof_id(),
@@ -389,6 +395,7 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         return Err("checked certificate does not positively resolve the question".into());
     }
     Ok(Verified {
+        definitions: Vec::new(),
         certificate,
         target,
         native_id: checked.proof_id(),
@@ -397,6 +404,17 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
 }
 
 pub fn source(proof: &Verified) -> Result<String, String> {
+    source_with_definitions(proof, &proof.definitions)
+}
+pub fn source_with_definitions(
+    proof: &Verified,
+    definitions: &[super::definitions::Entry],
+) -> Result<String, String> {
+    if !proof.definitions.is_empty() && proof.definitions != definitions {
+        return Err("exact native references cannot be replaced during source export".into());
+    }
+    let context = super::definitions::context(&proof.definitions)?;
+    let rewrite = proof.definitions.is_empty();
     let mut output = String::new();
     write!(output, "\ngoal = {}\n\nproof:\n", proof.target.to_source())
         .map_err(|e| e.to_string())?;
@@ -406,17 +424,24 @@ pub fn source(proof: &Verified) -> Result<String, String> {
         f: &Formula,
         names: &mut HashMap<Formula, String>,
         bindings: &mut String,
+        definitions: &[super::definitions::Entry],
     ) -> Result<String, String> {
+        if let Some(reference) = super::definitions::application(f, definitions)? {
+            return Ok(reference);
+        }
         if let Some(name) = names.get(f) {
             return Ok(name.clone());
         }
         use naome_foundation::graph::Node;
         let expression = match f.view().graph_node() {
-            Node::Not(body) => format!("not({})", bind(&body.to_owned(), names, bindings)?),
+            Node::Not(body) => format!(
+                "not({})",
+                bind(&body.to_owned(), names, bindings, definitions)?
+            ),
             Node::Implies(a, b) => format!(
                 "imp({},{})",
-                bind(&a.to_owned(), names, bindings)?,
-                bind(&b.to_owned(), names, bindings)?
+                bind(&a.to_owned(), names, bindings, definitions)?,
+                bind(&b.to_owned(), names, bindings, definitions)?
             ),
             Node::ForAll(_) => {
                 let used = f.free_variables();
@@ -425,7 +450,11 @@ pub fn source(proof: &Verified) -> Result<String, String> {
                     .find(|v| !used.contains(v))
                     .ok_or("source binder space")?;
                 let body = f.open_outer_universal(v).ok_or("source universal")?;
-                format!("all(f{},{})", v.identifier(), bind(&body, names, bindings)?)
+                format!(
+                    "all(f{},{})",
+                    v.identifier(),
+                    bind(&body, names, bindings, definitions)?
+                )
             }
             _ => f.to_source(),
         };
@@ -435,10 +464,17 @@ pub fn source(proof: &Verified) -> Result<String, String> {
         Ok(name)
     }
     let mut formula = |value: &naome_proof::ProofFormula| -> Result<String, String> {
+        if let Some(defined) = value.as_defined() {
+            return super::definitions::exact_expression(defined, &proof.definitions);
+        }
         bind(
-            value.as_primitive().ok_or("nonprimitive solver field")?,
+            value
+                .expand_with(&context)
+                .map_err(|e| e.to_string())?
+                .as_ref(),
             &mut names,
             &mut bindings,
+            if rewrite { definitions } else { &[] },
         )
     };
     for (index, step) in proof.certificate.steps().iter().enumerate() {
@@ -514,9 +550,13 @@ pub fn source(proof: &Verified) -> Result<String, String> {
         proof.certificate.steps().len() - 1
     )
     .map_err(|e| e.to_string())?;
-    Ok(if bindings.is_empty() {
+    let output = if bindings.is_empty() {
         output
     } else {
         format!("let:\n{bindings}\n{output}")
-    })
+    };
+    Ok(format!(
+        "{}{output}",
+        super::definitions::aliases(definitions)?
+    ))
 }

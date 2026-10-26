@@ -1,8 +1,9 @@
 //! Sealed question-only subset of the original TRAIN corpus.
 //! Dependency SHA-256 buckets 0/1 are development/reserved; 2..4 learn.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+pub mod frontier;
 use std::sync::LazyLock;
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Case {
     pub id: String,
     pub source: String,
@@ -31,7 +32,21 @@ pub static CORPUS: LazyLock<Corpus> = LazyLock::new(|| {
     corpus
 });
 pub fn learning(id: &str) -> Option<&'static Case> {
-    CORPUS.cases.iter().find(|q| q.id == id && !q.development)
+    learning_cases().find(|q| q.id == id)
+}
+pub fn learning_cases() -> impl Iterator<Item = &'static Case> {
+    CORPUS
+        .cases
+        .iter()
+        .filter(|q| !q.development)
+        .chain(frontier::BANK.learning.iter())
+}
+pub fn statistics_key(case: &Case) -> &str {
+    if case.family.starts_with("frontier-") {
+        &case.family
+    } else {
+        &case.dependency
+    }
 }
 pub fn reserved(id: &str) -> bool {
     CORPUS
@@ -39,10 +54,12 @@ pub fn reserved(id: &str) -> bool {
         .binary_search_by(|s| s.as_str().cmp(id))
         .is_ok()
         || CORPUS.cases.iter().any(|q| q.id == id && q.development)
+        || frontier::BANK.reserved.contains(id)
 }
 /// Extend the original eight sentinels across every development dependency.
 /// Selection uses only sealed identities, never solver outcomes or labels.
-pub const DEVELOPMENT: usize = 32;
+pub const CORPUS_DEVELOPMENT: usize = 32;
+pub const DEVELOPMENT: usize = CORPUS_DEVELOPMENT + 32;
 pub fn development() -> Vec<&'static Case> {
     use std::collections::{BTreeMap, BTreeSet};
     let mut families = BTreeSet::new();
@@ -62,12 +79,13 @@ pub fn development() -> Vec<&'static Case> {
     for index in 0..groups.values().map(Vec::len).max().unwrap_or(0) {
         for cases in groups.values() {
             if let Some(q) = cases.get(index)
-                && selected.len() < DEVELOPMENT
+                && selected.len() < CORPUS_DEVELOPMENT
                 && !selected.iter().any(|s| s.id == q.id)
             {
                 selected.push(*q);
             }
         }
     }
+    selected.extend(&frontier::BANK.development);
     selected
 }

@@ -25,12 +25,7 @@ pub fn validate_solution(
     if solution.refuted
         || crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes()) != artifact
         || super::digest(&solution.tree) != super::digest(&expected.tree)
-        || crate::hex(
-            naome_authoring::compile(&solution.source)
-                .map_err(|e| e.to_string())?
-                .proof_id()
-                .as_bytes(),
-        ) != solution.proof_id
+        || crate::hex(solution.checked()?.proof_id().as_bytes()) != solution.proof_id
     {
         return Err("peer replay source differs from checked native DAG".into());
     }
@@ -43,22 +38,26 @@ pub fn validate_solution(
     });
     Ok(())
 }
-pub fn pack(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    if bytes.len()
+pub fn pack(bytes: &[u8], definitions: &[super::definitions::Entry]) -> Result<Vec<u8>, String> {
+    let _ = super::definitions::context(definitions)?;
+    let mut payload = (bytes.len() as u32).to_le_bytes().to_vec();
+    payload.extend_from_slice(bytes);
+    payload.extend(serde_json::to_vec(definitions).map_err(|e| e.to_string())?);
+    if payload.len()
         > crate::resources::limits()
             .proof_bytes
             .min(crate::resources::limits().closure_bytes)
     {
         return Err("peer certificate decoded capacity".into());
     }
-    let mut packed = (bytes.len() as u32).to_le_bytes().to_vec();
-    packed.extend(lz4_flex::block::compress(bytes));
+    let mut packed = (payload.len() as u32).to_le_bytes().to_vec();
+    packed.extend(lz4_flex::block::compress(&payload));
     if packed.len() > 8 * 1024 {
         return Err("peer compressed replay capacity".into());
     }
     Ok(packed)
 }
-fn unpack(bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn unpack(bytes: &[u8]) -> Result<(Vec<u8>, Vec<super::definitions::Entry>), String> {
     if bytes.len() > 8 * 1024 || bytes.len() < 4 {
         return Err("peer compressed replay capacity".into());
     }
@@ -74,28 +73,54 @@ fn unpack(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut result = vec![0; size];
     let actual =
         lz4_flex::block::decompress_into(&bytes[4..], &mut result).map_err(|e| e.to_string())?;
-    if actual != size || pack(&result)? != bytes {
+    if actual != size || result.len() < 4 {
         return Err("peer compressed encoding differs".into());
     }
-    Ok(result)
+    let length = u32::from_le_bytes(
+        result[..4]
+            .try_into()
+            .map_err(|_| "peer certificate length")?,
+    ) as usize;
+    let end = 4usize
+        .checked_add(length)
+        .filter(|end| *end <= result.len())
+        .ok_or("peer certificate extent")?;
+    let certificate = result[4..end].to_vec();
+    let definitions = serde_json::from_slice::<Vec<super::definitions::Entry>>(&result[end..])
+        .map_err(|e| e.to_string())?;
+    if pack(&certificate, &definitions)? != bytes {
+        return Err("peer compressed encoding differs".into());
+    }
+    Ok((certificate, definitions))
+}
+pub fn definitions(bytes: &[u8]) -> Result<Vec<super::definitions::Entry>, String> {
+    Ok(unpack(bytes)?.1)
 }
 pub fn step_count(bytes: &[u8]) -> usize {
     unpack(bytes)
         .ok()
-        .and_then(|b| ProofCertificate::from_canonical_bytes(&b).ok())
+        .and_then(|(b, _)| ProofCertificate::from_canonical_bytes(&b).ok())
         .map_or(0, |c| c.steps().len())
 }
 pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), String> {
     if bytes.len() > 8 * 1024 {
         return Err("peer certificate replay capacity".into());
     }
+    let (certificate, definitions) = unpack(bytes)?;
+    let context = super::definitions::context(&definitions)?;
     let certificate =
-        ProofCertificate::from_canonical_bytes(&unpack(bytes)?).map_err(|e| e.to_string())?;
-    let checked = naome_checker::normalize_and_check_with_state(
-        certificate,
-        &naome_checker::ArtifactState::new(),
-    )
-    .map_err(|e| format!("peer certificate unsupported: {e}"))?;
+        ProofCertificate::from_canonical_bytes(&certificate).map_err(|e| e.to_string())?;
+    let checked = naome_checker::normalize_and_check_with_state(certificate, &context)
+        .map_err(|e| format!("peer certificate unsupported: {e}"))?;
+    let mut supplied = definitions
+        .iter()
+        .map(super::definitions::Entry::address)
+        .collect::<Result<Vec<_>, _>>()?;
+    supplied.sort_unstable();
+    supplied.dedup();
+    if checked.direct_artifact_dependencies().as_ref() != supplied.as_slice() {
+        return Err("peer definition closure differs".into());
+    }
     if checked.conclusion() != target {
         return Err("peer certificate conclusion differs".into());
     }
@@ -177,7 +202,7 @@ pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), Str
                     .ok_or("peer generalization index")?
                     .clone(),
             ),
-            _ => Kernel::new(step.clone())?.formula(),
+            _ => Kernel::with_context(step.clone(), &context)?.formula(),
         };
         let encoded = formula.encode_canonical().map_err(|e| e.to_string())?;
         prefix.update((encoded.len() as u64).to_le_bytes());
@@ -185,6 +210,7 @@ pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), Str
         formulas.push(formula);
     }
     let term = Term::Native {
+        definitions,
         certificate: checked.normal_form().certificate().clone(),
         target: target.clone(),
     };
@@ -207,7 +233,8 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
         return Err("peer artifact identity differs".into());
     }
     Ok(Solution {
-        cost: super::GenerationCost {
+        helpers: Vec::new(),
+        cost: Box::new(super::GenerationCost {
             search_expansions: 0,
             original_steps: verified.certificate.steps().len(),
             useful_steps: verified.certificate.steps().len(),
@@ -218,11 +245,15 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
                 .len(),
             core_work: verified.certificate.steps().len(),
             generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
-        },
+            ..super::GenerationCost::default()
+        }),
         source: proof::source(&verified)?,
         proof_id: crate::hex(verified.native_id.as_bytes()),
         refuted: false,
-        tree: Tree::Certificate(pack(&verified.certificate.to_canonical_bytes())?),
+        tree: Tree::Certificate(pack(
+            &verified.certificate.to_canonical_bytes(),
+            &verified.definitions,
+        )?),
     })
 }
 
@@ -234,7 +265,7 @@ mod tests {
         let solution = super::super::tests::own_solution();
         let question = super::super::tests::own_question();
         let original = naome_authoring::compile(&solution.source).unwrap();
-        let compressed = pack(original.canonical_proof_bytes()).unwrap();
+        let compressed = pack(original.canonical_proof_bytes(), &[]).unwrap();
         let extracted = extract(
             &question,
             &crate::hex(original.artifact_id().as_bytes()),
@@ -276,5 +307,55 @@ mod tests {
             extracted.cost.original_steps,
             graphs.len()
         );
+    }
+    #[test]
+    fn admitted_definition_references_keep_exact_native_identity_during_peer_replay() {
+        let solution = super::super::tests::own_solution();
+        let question = super::super::tests::own_question();
+        let q = naome_authoring::CompiledQuestion::compile(&question).unwrap();
+        let naome_authoring::CompiledArtifact::Definition(definition) =
+            naome_authoring::compile_artifact("def equal=relation(x,y): eq(x,y)").unwrap()
+        else {
+            panic!("definition");
+        };
+        let entry = super::super::definitions::Entry {
+            certificate: definition.canonical_definition_bytes().to_vec(),
+            obligation: None,
+        };
+        let tree = Tree::Definitions {
+            entries: vec![entry.clone()],
+            selected: 0,
+            available: 0,
+            proof: Box::new(solution.tree),
+        };
+        let (_, _, checked) =
+            super::super::search::core::checked(q.proved_target(), &tree).unwrap();
+        let source = proof::source(&checked).unwrap();
+        let helpers = super::super::definitions::helpers(&tree).unwrap();
+        let mut graph = crate::Graph::default();
+        let (root, batch) = graph.prepare_generated(&source, &helpers, &q).unwrap();
+        graph
+            .commit_batch(
+                root,
+                batch,
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+            )
+            .unwrap();
+        let packet = graph
+            .learning_certificate(root)
+            .unwrap()
+            .expect("bounded definition closure");
+        assert!(packet.len() <= 8 * 1024);
+        let extracted = extract(&question, &crate::hex(root.as_bytes()), &packet).unwrap();
+        assert_eq!(extracted.proof_id, crate::hex(checked.native_id.as_bytes()));
+        assert_ne!(extracted.proof_id, solution.proof_id);
+        assert_eq!(extracted.checked().unwrap().proof_id(), checked.native_id);
+        validate_solution(&question, &crate::hex(root.as_bytes()), &packet, &extracted).unwrap();
+        let bytes = checked.certificate.to_canonical_bytes();
+        assert!(compile(q.proved_target(), &pack(&bytes, &[]).unwrap()).is_err());
+        let wrong = super::super::definitions::discover(q.proved_target()).unwrap();
+        if let Some(wrong) = wrong {
+            assert!(compile(q.proved_target(), &pack(&bytes, &[wrong]).unwrap()).is_err());
+        }
     }
 }

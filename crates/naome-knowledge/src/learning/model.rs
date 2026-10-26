@@ -34,7 +34,7 @@ pub(crate) const REQUIREMENTS: Requirements = Requirements {
     io_bytes: 2 * 1024 * 1024 * 1024,
     work_bytes: 768 * 1024 * 1024,
 };
-pub const PARAMETERS: usize = 1_003_361;
+pub const PARAMETERS: usize = 1_003_681;
 pub const TRAINING_UNITS: u32 = 25;
 pub const UPDATES_PER_UNIT: u64 = 10;
 
@@ -49,10 +49,16 @@ pub enum Rule {
     ImplicationBranch,
     UniversalInstance,
     EqualitySubstitution,
+    ExistentialWitness,
+    DefinitionReference,
 }
 impl Rule {
     pub fn kind(self) -> i32 {
-        8 + self as i32
+        match self {
+            Self::ExistentialWitness => 15,
+            Self::DefinitionReference => 16,
+            _ => 8 + self as i32,
+        }
     }
 }
 pub struct Candidate {
@@ -88,6 +94,10 @@ fn specification() -> String {
     hash.update(include_str!("search/core.rs"));
     hash.update(include_str!("pool.rs"));
     hash.update(include_str!("peer.rs"));
+    hash.update(include_str!("definitions.rs"));
+    hash.update(include_str!("curriculum.rs"));
+    hash.update(include_str!("curriculum/frontier.rs"));
+    hash.update(include_str!("progress-protocol.json"));
     hash.update(
         b"Adam;successful-action-marginal;hierarchical-cyclic-pool;packed-disjoint-graphs;sparse-parent-mean;batch=16;lr=0.001;float32",
     );

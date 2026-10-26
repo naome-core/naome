@@ -192,8 +192,7 @@ impl Disk {
             if let Some(solution) = solution
                 && !solution.refuted
             {
-                let checked =
-                    naome_authoring::compile(&solution.source).map_err(|e| e.to_string())?;
+                let checked = solution.checked()?;
                 if crate::hex(checked.proof_id().as_bytes()) != solution.proof_id
                     || crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes())
                         != *artifact
@@ -566,7 +565,7 @@ impl Disk {
         let Input::Solve { question } = &record.input else {
             return Err("learning source role differs".into());
         };
-        let compiled = naome_authoring::compile(&solution.source).map_err(|e| e.to_string())?;
+        let compiled = solution.checked()?;
         if crate::hex(compiled.artifact_id().as_bytes()) != root {
             return Err("accepted source checker identity differs".into());
         }

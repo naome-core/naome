@@ -257,6 +257,16 @@ impl Owner {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
+                    Some(Command::DefinitionVerified{ordinal,definition})=>{
+                        if ordinal==0 {return Err("definition learning ordinal is zero".into());}
+                        if let Some(learning)=self.journal.learning.as_mut(){
+                            let address=definition.address()?;
+                            let remembered=learning.remember_definition(definition)?;
+                            learning.peer_cursor=learning.peer_cursor.max(ordinal);
+                            self.save()?;
+                            crate::network::emit(serde_json::json!({"event":"native_definition_observed","artifact":crate::hex(address.as_bytes()),"remembered":remembered}));
+                        }
+                    },
                     Some(Command::PeerCursor(ordinal))=>{if let Some(learning)=self.journal.learning.as_mut(){learning.peer_cursor=learning.peer_cursor.max(ordinal);self.save()?;}},
                     Some(Command::PeerVerified(admission))=>{if self.settings.native_proof_learning {self.disk.enqueue_peer(&mut self.journal,admission)?;}},
                     Some(Command::Accepted{id,root})=>{

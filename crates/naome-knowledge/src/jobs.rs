@@ -356,7 +356,7 @@ impl Output {
                 solution: Some(s), ..
             } => Self::Proof {
                 source: s.source,
-                helpers: Vec::new(),
+                helpers: s.helpers,
             },
             Self::Native { solution: None, .. } => Self::NoCandidate,
             other => other,
@@ -393,9 +393,11 @@ impl Output {
                 },
                 Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. },
             ) if diagnostic.len() <= 4096
-                && solution
-                    .as_ref()
-                    .is_none_or(|s| s.source.len() <= source_bytes)
+                && solution.as_ref().is_none_or(|s| {
+                    s.source.len() <= source_bytes
+                        && s.helpers.len() < objects
+                        && s.helpers.iter().all(|source| source.len() <= source_bytes)
+                })
                 && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
             {
                 Ok(())
@@ -551,6 +553,10 @@ enum PeerStatus {
     },
 }
 enum Command {
+    DefinitionVerified {
+        ordinal: u64,
+        definition: crate::learning::definitions::Entry,
+    },
     PeerVerified(PeerAdmission),
     PeerCursor(u64),
     Accepted {
@@ -586,6 +592,18 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    pub(crate) fn definition_verified(
+        &self,
+        ordinal: u64,
+        definition: crate::learning::definitions::Entry,
+    ) -> Result<(), String> {
+        self.sender
+            .try_send(Command::DefinitionVerified {
+                ordinal,
+                definition,
+            })
+            .map_err(|_| "definition learning command capacity or stopped service".into())
+    }
     pub(crate) fn peer_cursor(&self, ordinal: u64) -> Result<(), String> {
         self.sender
             .try_send(Command::PeerCursor(ordinal))

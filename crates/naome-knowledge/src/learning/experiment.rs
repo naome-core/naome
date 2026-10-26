@@ -2,6 +2,7 @@
 //! Only fresh model self-search and checker-admitted native solutions train it.
 use super::tests::MemoryStore;
 use super::*;
+mod lookup;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -14,8 +15,11 @@ fn write(path: &Path, value: &impl Serialize) {
 }
 fn shuffled_learning(seed: u64) -> Vec<&'static curriculum::Case> {
     let mut groups: BTreeMap<&str, Vec<_>> = BTreeMap::new();
-    for q in curriculum::CORPUS.cases.iter().filter(|q| !q.development) {
-        groups.entry(&q.dependency).or_default().push(q);
+    for q in curriculum::learning_cases() {
+        groups
+            .entry(curriculum::statistics_key(q))
+            .or_default()
+            .push(q);
     }
     for cases in groups.values_mut() {
         cases.sort_by_key(|q| Sha256::digest(format!("{seed}:{}", q.id).as_bytes()));
@@ -36,11 +40,12 @@ fn evaluate(
     engine: &mut Engine,
     io: &mut MemoryStore,
     budget: usize,
+    known: &[definitions::Entry],
 ) -> Vec<serde_json::Value> {
     cases.iter().enumerate().map(|(i,q)| {
         let started=Instant::now();
-        let (solution,diagnostic)=engine.with(model,io,|runtime|solve(&q.source,runtime,budget,900_000+i as u64)).unwrap();
-        serde_json::json!({"id":q.id,"dependency":q.dependency,"family":q.family,"solved":solution.is_some(),"proof_id":solution.as_ref().map(|s|s.proof_id.clone()),"proof_source":solution.as_ref().map(|s|s.source.clone()),"refuted":solution.as_ref().map(|s|s.refuted),"diagnostic":diagnostic,"elapsed_ms":started.elapsed().as_millis()})
+        let (solution,diagnostic,cost)=engine.with(model,io,|runtime|solve_with_definitions(&q.source,runtime,budget,900_000+i as u64,known)).unwrap();
+        serde_json::json!({"id":q.id,"dependency":q.dependency,"family":q.family,"solved":solution.is_some(),"solution":solution,"diagnostic":diagnostic,"elapsed_ms":started.elapsed().as_millis(),"cost":cost})
     }).collect()
 }
 fn decision_metrics(
@@ -50,16 +55,18 @@ fn decision_metrics(
     io: &mut MemoryStore,
 ) -> serde_json::Value {
     engine.with(model,io,|runtime| {
-        let mut loss=0f64;let mut correct=0usize;
+        let mut loss=0f64;let mut correct=0usize;let mut rules:BTreeMap<i32,(usize,usize)>=BTreeMap::new();
         for graph in graphs {
             let scores=runtime.scores_graph(graph)?;
             let maximum=scores.iter().copied().fold(f32::NEG_INFINITY,f32::max);
             let sum=scores.iter().map(|s|f64::from(*s-maximum).exp()).sum::<f64>();
             loss+=sum.ln()-(graph.successes.iter().map(|i|f64::from(scores[*i]-maximum).exp()).sum::<f64>()).ln();
             let selected=(0..scores.len()).max_by(|a,b|scores[*a].total_cmp(&scores[*b]).then(b.cmp(a))).unwrap();
-            correct+=usize::from(graph.successes.contains(&selected));
+            let hit=usize::from(graph.successes.contains(&selected));correct+=hit;
+            let kind=graph.nodes[graph.candidates[graph.expert]].kind;
+            let entry=rules.entry(kind).or_default();entry.0+=1;entry.1+=hit;
         }
-        Ok(serde_json::json!({"graphs":graphs.len(),"top_one":correct,"mean_cross_entropy":loss/graphs.len().max(1) as f64}))
+        Ok(serde_json::json!({"graphs":graphs.len(),"top_one":correct,"mean_cross_entropy":loss/graphs.len().max(1) as f64,"by_rule":rules}))
     }).unwrap()
 }
 fn export_model(path: &Path, model: &Checkpoint, io: &MemoryStore) {
@@ -107,16 +114,16 @@ fn train_seed(
             assert!(!q.development);
             assert!(seen.insert(q.id.clone()));
             let job = 1 + round as u64 * 128 + index as u64;
-            let (solution, diagnostic) = engine
+            let (solution, diagnostic, cost) = engine
                 .with(&state.model, &mut io, |runtime| {
-                    solve(&q.source, runtime, 128, job)
+                    solve_with_definitions(&q.source, runtime, 128, job, &state.definitions)
                 })
                 .unwrap();
             let mut accepted = false;
             if let Some(solution) = solution {
                 let question = CompiledQuestion::compile(&q.source).unwrap();
                 let (root, batch) = graph
-                    .prepare_generated(&solution.source, &[], &question)
+                    .prepare_generated(&solution.source, &solution.helpers, &question)
                     .unwrap();
                 graph
                     .commit_batch(root, batch, Instant::now() + Duration::from_secs(5))
@@ -126,6 +133,12 @@ fn train_seed(
                     crate::object::proof_address(&solution.proof_id).unwrap()
                 );
                 assert!(graph.contains(root).unwrap());
+                for (_, id, _) in graph.peer_learning_page(state.peer_cursor).unwrap() {
+                    if let Some(definition) = graph.learning_definition(id).unwrap() {
+                        state.remember_definition(definition).unwrap();
+                    }
+                }
+                state.peer_cursor = graph.accepted_count() as u64;
                 accepted = state
                     .accept(Example {
                         origin: Origin::Local,
@@ -137,7 +150,11 @@ fn train_seed(
                     })
                     .unwrap();
             }
-            acquisitions.push(serde_json::json!({"id":q.id,"dependency":q.dependency,"accepted":accepted,"diagnostic":diagnostic}));
+            acquisitions.push(serde_json::json!({"id":q.id,"dependency":q.dependency,"accepted":accepted,"diagnostic":diagnostic,"cost":cost}));
+            write(
+                &output.join(format!("round-{round}-acquisitions.json")),
+                &acquisitions,
+            );
             if index % 16 == 15 {
                 eprintln!(
                     "native_learning_progress seed={seed} round={round} attempts={} accepted={} replay={}",
@@ -180,7 +197,7 @@ fn train_seed(
                 io.0.retain(|(hash, _), _| keep.contains(hash));
             }
             let p = job.progress.as_ref().unwrap();
-            gate = serde_json::json!({"diagnostic":p.diagnostic,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"anchor_regression":p.anchor_regression,"first_loss":p.first_loss,"last_loss":p.last_loss});
+            gate = serde_json::json!({"diagnostic":p.diagnostic,"incumbent":p.incumbent_score,"candidate":p.candidate_score,"anchor_regression":p.anchor_regression,"development_regression":p.development_regression,"original_score":p.original_score,"first_loss":p.first_loss,"last_loss":p.last_loss});
             assert!(state.qualify(&job));
             state.validate().unwrap();
         }
@@ -205,7 +222,7 @@ fn train_seed(
                 let term = search::compile(target, &e.tree).unwrap().0;
                 let verified = proof::verify(&term, target).unwrap();
                 assert_eq!(crate::hex(verified.native_id.as_bytes()), e.proof_id);
-                serde_json::json!({"example":e,"source":proof::source(&verified).unwrap()})
+                serde_json::json!({"example":e,"source":proof::source(&verified).unwrap(),"helpers":definitions::helpers(&e.tree).unwrap()})
             })
             .collect::<Vec<_>>();
         write(
@@ -215,6 +232,23 @@ fn train_seed(
         write(&output.join("rounds.json"), &events);
     }
     (state, io, events, initial)
+}
+
+#[test]
+#[ignore = "Finite engineering diagnosis on training and existing selection questions only"]
+fn pipeline_selection_diagnosis() {
+    let output =
+        std::env::var("NAOME_LEARNING_DIAGNOSIS_OUTPUT").expect("explicit local output directory");
+    let output = Path::new(&output);
+    assert!(!output.exists(), "preserve earlier attempts");
+    let (state, _, events, _) = train_seed(0x4e414f4d45, 1, output);
+    eprintln!(
+        "pipeline_selection_diagnosis definitions={} replay={} accepted={} events={}",
+        state.definitions.len(),
+        state.replay.len(),
+        state.accepted,
+        serde_json::to_string(&events).unwrap()
+    );
 }
 
 #[test]
@@ -240,29 +274,35 @@ fn native_learning_progress_experiment() {
             "git_commit":std::env::var("NAOME_PROGRESS_COMMIT").expect("explicit frozen source commit required"),
             "binary_sha256":crate::hex(&Sha256::digest(&bytes)),
             "protocol_sha256":crate::hex(&Sha256::digest(include_bytes!("progress-protocol.json"))),
-            "corpus_sha256":crate::hex(&Sha256::digest(include_bytes!("curriculum.json")))
+            "corpus_sha256":crate::hex(&Sha256::digest(include_bytes!("curriculum.json"))),
+            "frontier_source_sha256":crate::hex(&Sha256::digest(include_bytes!("curriculum/frontier.rs")))
         }),
     );
     drop(bytes);
-    let pilot = std::env::var("NAOME_PROGRESS_PILOT").as_deref() == Ok("1");
-    let seeds = if pilot {
-        vec![653]
-    } else {
-        vec![809, 907, 1009]
-    };
-    let rounds = if pilot { 1 } else { 2 };
-    let selection: BTreeSet<_> = curriculum::development()
+    let seeds = vec![1103, 1201, 1301];
+    let rounds = 2;
+    let cases = curriculum::frontier::BANK
+        .confirmation
         .iter()
-        .map(|q| q.id.clone())
-        .collect();
-    let cases = curriculum::CORPUS
-        .cases
-        .iter()
-        .filter(|q| q.development && (pilot == selection.contains(&q.id)))
         .collect::<Vec<_>>();
     write(
+        &output.join("question-bank.json"),
+        &serde_json::json!({
+            "learning":curriculum::frontier::BANK.learning,
+            "selection":curriculum::frontier::BANK.development,
+            "confirmation":curriculum::frontier::BANK.confirmation,
+            "reserved":curriculum::frontier::BANK.reserved,
+            "roots":curriculum::frontier::BANK.roots
+        }),
+    );
+    write(
         &output.join("schedule.json"),
-        &serde_json::json!({"pilot":pilot,"seeds":seeds,"rounds":rounds,"acquisitions_per_round":128,"evaluation_ids":cases.iter().map(|q|&q.id).collect::<Vec<_>>(),"search_expansions":[32,128],"claim":"Prospective comparison within the existing original-TRAIN development corpus, not independent external-test qualification"}),
+        &serde_json::json!({
+            "seeds":seeds,"rounds":rounds,"acquisitions_per_round":128,
+            "evaluation_ids":cases.iter().map(|q|&q.id).collect::<Vec<_>>(),
+            "search_expansions":[32,128],
+            "claim":"Prospective paired comparison on unseen generated construction roots; no external mathematical or production qualification"
+        }),
     );
     write(
         &output.join("protocol.json"),
@@ -273,18 +313,59 @@ fn native_learning_progress_experiment() {
         .iter()
         .map(|seed| train_seed(*seed, rounds, &output.join(format!("seed-{seed}"))))
         .collect::<Vec<_>>();
+    struct Ordered;
+    impl model::Ranker for Ordered {
+        fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+            Ok(vec![0.; d.candidates.len()])
+        }
+    }
+    let mut controls = Vec::new();
+    for budget in [32, 128] {
+        let mut rows = Vec::new();
+        for q in &cases {
+            let (solution, diagnostic, cost) =
+                search_question_measured(&q.source, &mut Ordered, budget).unwrap();
+            rows.push(serde_json::json!({"id":q.id,"dependency":q.dependency,"family":q.family,"solved":solution.is_some(),"solution":solution,"diagnostic":diagnostic,"cost":cost}));
+        }
+        controls.push(serde_json::json!({"budget":budget,"results":rows}));
+    }
+    write(&output.join("symbolic-controls.json"), &controls);
     let mut results = Vec::new();
     for (seed, (state, mut io, events, fresh)) in seeds.iter().zip(trained) {
         assert_eq!(fresh.seed, *seed);
         assert_eq!(fresh.updates, 0);
         let mut engine = Engine::default();
-        let before = evaluate(&fresh, &cases, &mut engine, &mut io, 32);
-        let after = evaluate(&state.model, &cases, &mut engine, &mut io, 32);
-        let before_128 = evaluate(&fresh, &cases, &mut engine, &mut io, 128);
-        let after_128 = evaluate(&state.model, &cases, &mut engine, &mut io, 128);
+        let before = evaluate(&fresh, &cases, &mut engine, &mut io, 32, &state.definitions);
+        let after = evaluate(
+            &state.model,
+            &cases,
+            &mut engine,
+            &mut io,
+            32,
+            &state.definitions,
+        );
+        let before_128 = evaluate(
+            &fresh,
+            &cases,
+            &mut engine,
+            &mut io,
+            128,
+            &state.definitions,
+        );
+        let after_128 = evaluate(
+            &state.model,
+            &cases,
+            &mut engine,
+            &mut io,
+            128,
+            &state.definitions,
+        );
+        let reference_before = lookup::evaluate(&fresh, &state.definitions, &mut engine, &mut io);
+        let reference_after =
+            lookup::evaluate(&state.model, &state.definitions, &mut engine, &mut io);
         let count =
             |rows: &[serde_json::Value]| rows.iter().filter(|q| q["solved"] == true).count();
-        let result = serde_json::json!({"seed":seed,"questions":cases.len(),"before_solved":count(&before),"after_solved":count(&after),"retained_updates":state.model.updates,"rounds":events,"before":before,"after":after,"secondary_128":{"before_solved":count(&before_128),"after_solved":count(&after_128),"before":before_128,"after":after_128}});
+        let result = serde_json::json!({"seed":seed,"questions":cases.len(),"before_solved":count(&before),"after_solved":count(&after),"retained_updates":state.model.updates,"rounds":events,"before":before,"after":after,"secondary_128":{"before_solved":count(&before_128),"after_solved":count(&after_128),"before":before_128,"after":after_128},"definition_lookup":{"before":reference_before,"after":reference_after}});
         eprintln!(
             "native_learning_progress_result seed={seed} before={} after={} questions={}",
             count(&before),

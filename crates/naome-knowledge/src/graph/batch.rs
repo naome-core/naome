@@ -94,7 +94,15 @@ impl Graph {
                     .classify_checked_proof(checked.proof()?)
                     .map_err(crate::Error::from)?;
             }
-            preparation.append_artifact(self, checked, record)?;
+            if position < helpers.len()
+                && let Some(existing) = self.binary_object(id)?
+            {
+                if !existing.same_content(&record) {
+                    return Err("generated helper identity collision".into());
+                }
+            } else {
+                preparation.append_artifact(self, checked, record)?;
+            }
         }
         let root = root.ok_or("missing generated root")?;
         Ok((root, preparation.finish(self, root)?))

@@ -1,45 +1,74 @@
 {
-  "decision": "Does native self-search learning improve certified success at a matched search budget after a repaired action representation and broader selection?",
-  "hypotheses": [
-    "Explicit rule, actual premises and actual consequences resolve action aliasing.",
-    "A minimum of eight admitted proofs across at least three dependency groups supplies a meaningful replay batch.",
-    "The original eight ID-selected sentinels miss progress that a fixed 32-case all-group selection can detect.",
-    "Guarded eager initialization and stable local parameter identities make a seeded fresh model and zero-update binary snapshot produce the exact same first update."
-  ],
+  "decision": "Can native self-search produce a retained model that improves certified search on prospectively frozen construction roots and correctly reuses checked definition identities?",
+  "diagnosis": {
+    "retired_engineering_evidence": "The original selection reached 7/32 for both the fresh and trained default-seed policy. Forty-two training states improved from 17 to 41 correct first actions, without certified selection gain. Repeated attempts and the earlier 200-case confirmation are development evidence only.",
+    "source_changes": [
+      "Discard unchanged tableau transitions.",
+      "Introduce fresh witnesses for negated universals and discharge them through ordinary native proofs.",
+      "Treat certificate resource exhaustion as a failed candidate under the original remaining search budget.",
+      "Create conservative repeated-structure relation definitions, consume checked graph definitions, and learn reference selection from actual checked uses.",
+      "Add question-only compositional roots with complete sibling grouping before splitting."
+    ]
+  },
   "seeds": [
-    809,
-    907,
-    1009
+    1103,
+    1201,
+    1301
   ],
   "rounds": 2,
   "acquisitions_per_round": 128,
   "acquisition_search_expansions": 128,
   "acquisition_exploration": 0.2,
-  "training": "Only this seed own native-search solutions after unchanged native checker and Graph admission; no imported proofs, external weights or teacher corpus.",
+  "training": "Only each seed own native-search solutions after ordinary kernel and atomic Graph admission. No imported proofs, teacher corpus, pretrained weights or earlier candidate checkpoints. Original 1308 TRAIN questions plus 395 generated learning questions from 190 disjoint construction groups. Acquisition balances the original dependency groups and the four generated topic groups; full proof/context provenance stays outside model features.",
   "model": {
-    "parameters": 1003361,
-    "backend": "Burn CPU Flex float32",
+    "parameters": 1003681,
+    "backend": "Burn CPU Flex SIMD float32, no Rayon workers",
     "updates_per_candidate": 250,
     "batch": 16,
     "learning_rate": 0.001,
-    "maximum_replay_proofs": 32
+    "maximum_replay_proofs": 32,
+    "replay_serialized_bytes": 32768,
+    "definition_snapshot_bytes": 8192,
+    "definition_snapshot_entries": 8
   },
   "selection": {
-    "cases": 32,
-    "dependency_groups": 11,
-    "method": "Original eight sentinels plus sealed-ID round-robin over every development dependency; no solver outcome filtering.",
+    "cases": 64,
+    "original_cases": 32,
+    "new_cases": 32,
+    "new_construction_groups": 16,
+    "method": "Keep all original selection questions; append two cases from each of four ID-ordered construction roots in every generated topic. No model-outcome filtering.",
     "search_expansions": 32,
-    "promotion": "Strictly greater certified development successes; no earlier-anchor regression; reject restores both incumbent weights and Adam."
+    "promotion": "Strictly more certified successes across 64 cases, no lost original selection solution, and no earlier-anchor regression. Rejection retains the exact incumbent weights and Adam.",
+    "training_job_units": 94
   },
   "confirmation": {
-    "cases": 200,
-    "method": "All remaining original-TRAIN development cases, disjoint from current-run training and selection. All three seeds finish learning before any confirmation search.",
+    "cases": 64,
+    "construction_groups": 32,
+    "topic_counts": {
+      "routing": 16,
+      "contradiction": 16,
+      "equality": 16,
+      "quantifiers": 16
+    },
+    "generator": "curriculum/frontier.rs: canonical duplicates and source siblings are joined before SHA-256 construction-component buckets; bucket 1 supplies confirmation, bucket 0 selection, buckets 2..4 learning.",
+    "method": "Two ID-ordered cases from eight held-out construction components per topic. Freeze source, bank, evaluator and comparator before inference. All three seeds finish learning before any confirmation search.",
     "primary_expansions": 32,
     "secondary_expansions": 128,
     "secondary_exploration": 0.2,
-    "comparator": "Exact same fresh initialization and zero-update optimizer as this seed initial acquisition model.",
-    "success": "Mean certified gain >=5 percentage points, no negative seed and at least two strictly positive seeds supports a replicated finite-corpus gain.",
-    "uncertainty": "Report paired dependency-group bootstrap 95% interval across the 11 fixed groups. Broader-group generalization requires its lower bound above zero; otherwise remains inconclusive."
+    "comparator": "Actual exported initial model and zero-update Adam paired with this seed retained checkpoint. Identical inference source, search rules, limits, question ordering, job seeds and checked definition dictionary.",
+    "success": "Mean certified-success gain >=5 percentage points, no negative seed and at least two strictly positive seeds.",
+    "uncertainty": "Paired construction-group bootstrap, 20000 deterministic draws and 95% interval. An interval crossing zero leaves the improvement inconclusive outside this fixed generated bank. Report topic breakdowns and technical failures in all denominators.",
+    "symbolic_control": "One fixed-action-order native solver at 32 and 128 expansions, after all learning finishes; report separately from the paired fresh-model comparison."
+  },
+  "definition_lookup": {
+    "role": "Secondary reference-selection measurement; never a promotion trigger or a substitute for proof success.",
+    "tracks": [
+      "Known checked definitions in new formula contexts.",
+      "Previously unseen empty, successor, inductive and natural-number predicates."
+    ],
+    "oracle": "For each proposed ID, the unchanged native checker must accept a newly reconstructed proof whose actual direct dependency contains that definition. Multiple valid choices are valid alternatives.",
+    "features": "Only the goal, actual context, rule, premises and expanded definition meaning. No artifact IDs, labels, generator names or provenance enter model tensors.",
+    "limits": "Known-definition cases share their underlying definitions; report counts and tracks without treating variants as independent mathematics."
   },
   "limits": {
     "depth": 32,
@@ -49,15 +78,18 @@
     "context": 48,
     "orientation_deadline_ms": 2500,
     "native_kernel_and_certificate_caps": "unchanged",
-    "state_serialized_bytes": 32768,
-    "model_work_reservation_bytes": 805306368
+    "model_work_reservation_bytes": 805306368,
+    "peer_compressed_snapshot_bytes": 8192,
+    "provider_deadlines_pauses_and_original_budgets": "authoritative and unchanged"
   },
-  "exclusions": "Original internal 241 reserved questions and original external validation/calibration/test never searched, trained or selected. Interest labels are never truth labels.",
+  "exclusions": "All original 241 reserved questions, original external held-outs, the retired 200-case confirmation, and every generated reserved component are excluded from learning. The retired 200-case set is not evaluated again.",
   "limitations": [
-    "Development corpus has historical engineering reuse; confirmation is prospective for this run, not a new independent external test.",
-    "Pilot seed 653 and all of its weights/proofs are excluded from the main run. Expanded selection pilot observed 4/32 -> 6/32; it is selection evidence only.",
-    "Actual total training compute is additional to initialization and inference; paired inference budgets match.",
-    "No physical multi-host, production, hosted-CI or full Cargo matrix qualification."
+    "Synthetic construction roots measure transfer within the declared procedural population, not unrestricted mathematics.",
+    "One AI author designed the generator and evaluation; no independent human semantic agreement is measured.",
+    "A conservative natural-number predicate does not establish the existence or uniqueness of a natural-number set or implement standalone numeric terms.",
+    "Only bounded supported certificate and definition closures train the learner; unsupported cases remain explicit.",
+    "No production, physical multi-host or general model-quality qualification.",
+    "Improvement over a paired random initialization does not establish superiority to the fixed-order symbolic control."
   ],
-  "stopping": "Exactly three fresh seeds, two acquisition/training rounds each, one frozen confirmation. Preserve negative results; do not tune on confirmation."
+  "stopping": "Exactly three fresh seeds, two 128-question acquisition rounds each, at most 250 updates per candidate, and one frozen confirmation. Preserve every negative or incomplete attempt; do not tune on confirmation."
 }

@@ -36,7 +36,9 @@ impl Manual {
                 Command::Accepted { id, root } => {
                     self.receipts.push(Receipt::Accepted { id, root })
                 }
-                Command::PeerVerified(_) | Command::PeerCursor(_) => {}
+                Command::PeerVerified(_)
+                | Command::PeerCursor(_)
+                | Command::DefinitionVerified { .. } => {}
                 Command::Program { reply, .. } => {
                     let _ = reply.send(Err("manual provider has no retained program".into()));
                 }

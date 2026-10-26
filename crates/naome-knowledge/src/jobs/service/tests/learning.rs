@@ -129,6 +129,7 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
                 naome_authoring::compile(&checked_solution().source)
                     .unwrap()
                     .canonical_proof_bytes(),
+                &[],
             )
             .unwrap(),
         ),
@@ -217,6 +218,7 @@ fn reserved_or_unclassified_peer_admissions_have_one_durable_unsupported_disposi
                 naome_authoring::compile(&checked_solution().source)
                     .unwrap()
                     .canonical_proof_bytes(),
+                &[],
             )
             .unwrap(),
         ),
@@ -263,6 +265,7 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
                 naome_authoring::compile(&checked_solution().source)
                     .unwrap()
                     .canonical_proof_bytes(),
+                &[],
             )
             .unwrap(),
         ),

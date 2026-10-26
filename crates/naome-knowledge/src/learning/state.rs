@@ -82,6 +82,7 @@ impl State {
     pub fn fresh() -> Self {
         Self {
             model: Checkpoint::fresh(),
+            definitions: Vec::new(),
             replay: Vec::new(),
             anchors: Vec::new(),
             accepted: 0,
@@ -99,6 +100,7 @@ impl State {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.model.validate()?;
+        let _ = definitions::context(&self.definitions)?;
         if self.anchors.len() > 4
             || self.replay.len() > REPLAY
             || self.accepted > self.epoch
@@ -132,6 +134,39 @@ impl State {
         }
         Ok(())
     }
+    pub fn remember_definition(&mut self, entry: definitions::Entry) -> Result<bool, String> {
+        let _ = definitions::context(std::slice::from_ref(&entry))?;
+        if self.definitions.contains(&entry) {
+            return Ok(false);
+        }
+        let mut next = self.clone();
+        while next.definitions.len() >= definitions::CAPACITY - 1
+            || next
+                .definitions
+                .iter()
+                .map(definitions::Entry::bytes)
+                .sum::<usize>()
+                + entry.bytes()
+                > definitions::BYTES
+        {
+            if next.definitions.is_empty() {
+                return Ok(false);
+            }
+            next.definitions.remove(0);
+        }
+        next.definitions.push(entry);
+        while serde_json::to_vec(&next).map_err(|e| e.to_string())?.len()
+            > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
+        {
+            if next.replay.is_empty() {
+                return Ok(false);
+            }
+            next.remove_replay();
+        }
+        next.validate()?;
+        *self = next;
+        Ok(true)
+    }
     pub fn job(&self) -> Job {
         Job {
             evidence: Vec::new(),
@@ -145,14 +180,13 @@ impl State {
         }
     }
     pub fn question(&self, cursor: u64) -> String {
-        let cases: Vec<_> = curriculum::CORPUS
-            .cases
-            .iter()
-            .filter(|q| !q.development)
-            .collect();
+        let cases: Vec<_> = curriculum::learning_cases().collect();
         let mut families: BTreeMap<&str, Vec<&curriculum::Case>> = BTreeMap::new();
         for q in cases {
-            families.entry(&q.dependency).or_default().push(q);
+            families
+                .entry(curriculum::statistics_key(q))
+                .or_default()
+                .push(q);
         }
         // Two easy lanes preserve known prerequisites, two frontier lanes
         // revisit partial success/search exhaustion, two explore unseen work.
@@ -234,7 +268,10 @@ impl State {
             return;
         };
         if let Some(case) = curriculum::learning(&crate::hex(q.resolution_id())) {
-            let s = self.statistics.entry(case.dependency.clone()).or_default();
+            let s = self
+                .statistics
+                .entry(curriculum::statistics_key(case).to_owned())
+                .or_default();
             if let Some(success) = solved {
                 s.attempts = s.attempts.saturating_add(1);
                 s.recent = (4 * s.recent + 1_000_000 * u32::from(success)) / 5;
@@ -263,7 +300,10 @@ impl State {
             } else {
                 5
             };
-            let s = self.statistics.entry(case.dependency.clone()).or_default();
+            let s = self
+                .statistics
+                .entry(curriculum::statistics_key(case).to_owned())
+                .or_default();
             s.failures[reason] = s.failures[reason].saturating_add(1);
         }
     }

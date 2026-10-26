@@ -152,10 +152,10 @@ def run(trial):
     for node in trial.nodes:
         original = retained[node.index]["record"]
         completed = trial.wait(lambda: next((r for r in training(node) if r["id"] == original["id"] and r["state"] == "complete"), None), maximum=180)
-        assert completed["checkpoint"] == 62 and completed["native"]["progress"]["unit"] == 62
+        assert completed["checkpoint"] == 94 and completed["native"]["progress"]["unit"] == 94
         progress = completed["native"]["progress"]
         assert progress["candidate"] is None
-        assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected"}
+        assert progress["diagnostic"] in {"candidate_promoted", "no_development_gain_rejected", "forgetting_rejected", "development_regression_rejected"}
         assert observe(node)["learning"]["accepted"] > 0
         assert checkpoint_identity(completed) == checkpoint_identity(original)
         if progress["diagnostic"] != "candidate_promoted":
@@ -165,7 +165,7 @@ def run(trial):
         qualifications[node.index] = {"job": original["id"], "diagnostic": progress["diagnostic"], "incumbent_score": progress["incumbent_score"], "candidate_score": progress["candidate_score"], "anchor_regression": progress["anchor_regression"], "model": progress["model"], "io_bytes": completed["native"]["io_bytes"]}
     trial.summary["qualifications"] = qualifications
     trial.summary["restart_and_pause"] = {"result": "pass", "retained_training_jobs": [r["record"]["id"] for r in retained.values()]}
-    trial.summary["claim"] = "Two ordinary loopback nodes, actual fresh 1,003,361-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; interest remains the existing placeholder."
+    trial.summary["claim"] = "Two ordinary loopback nodes, actual fresh 1,003,681-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; interest remains the existing placeholder."
     trial.summary["result"] = "pass"
 
 

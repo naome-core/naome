@@ -164,6 +164,52 @@ impl Graph {
             .into_owned();
         Ok(naome_authoring::CompiledQuestion::from_formula(formula).ok())
     }
+    pub(crate) fn learning_definition(
+        &self,
+        id: ArtifactId,
+    ) -> Result<Option<crate::learning::definitions::Entry>, crate::Error> {
+        self.ensure_live()?;
+        if self
+            .cold(self.context.artifact_definition_id(id))?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let object = self
+            .binary_object(id)?
+            .ok_or("checked definition payload missing")?;
+        let Some((&naome_proof::ArtifactPayload::DEFINITION_TAG, certificate)) =
+            object.bytes.split_first()
+        else {
+            return Err("checked definition payload type differs".into());
+        };
+        if certificate.len() > crate::learning::definitions::BYTES {
+            return Ok(None);
+        }
+        let obligation = if let Some(proof) = object.obligation {
+            let Some(proof) = self.binary_object(proof.into())? else {
+                return Err("checked definition obligation missing".into());
+            };
+            if !proof.dependencies.is_empty()
+                || proof.bytes.len() + certificate.len() > crate::learning::definitions::BYTES
+            {
+                return Ok(None);
+            }
+            let Some((&naome_proof::ArtifactPayload::PROOF_TAG, bytes)) = proof.bytes.split_first()
+            else {
+                return Ok(None);
+            };
+            Some(bytes.to_vec())
+        } else {
+            None
+        };
+        let entry = crate::learning::definitions::Entry {
+            certificate: certificate.to_vec(),
+            obligation,
+        };
+        let _ = crate::learning::definitions::context(std::slice::from_ref(&entry))?;
+        Ok(Some(entry))
+    }
     pub(crate) fn learning_certificate(
         &self,
         id: ArtifactId,
@@ -172,7 +218,6 @@ impl Graph {
             return Ok(None);
         };
         if object.bytes.len() > crate::resources::limits().closure_bytes
-            || !object.dependencies.is_empty()
             || crate::object::program_manifest(&object.bytes)?.is_some()
         {
             return Ok(None);
@@ -181,7 +226,17 @@ impl Graph {
         else {
             return Ok(None);
         };
-        Ok(crate::learning::peer::pack(payload).ok())
+        let mut definitions = Vec::new();
+        for id in &object.dependencies {
+            let Some(definition) = self.learning_definition(*id)? else {
+                return Ok(None);
+            };
+            definitions.push(definition);
+            if definitions.len() > crate::learning::definitions::CAPACITY {
+                return Ok(None);
+            }
+        }
+        Ok(crate::learning::peer::pack(payload, &definitions).ok())
     }
     pub fn accepted_count(&self) -> usize {
         self.count

@@ -1007,6 +1007,22 @@ impl Node {
             Err(error) => return Err(error.to_string()),
         };
         for (ordinal, id, peer) in page {
+            match self.graph.learning_definition(id) {
+                Ok(Some(definition)) => {
+                    if learning
+                        .client
+                        .definition_verified(ordinal, definition)
+                        .is_err()
+                    {
+                        break;
+                    }
+                    learning.cursor = ordinal;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) if error.retryable() => break,
+                Err(error) => return Err(error.to_string()),
+            }
             let Some(peer) = peer else {
                 if learning.client.peer_cursor(ordinal).is_err() {
                     break;

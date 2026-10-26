@@ -2,6 +2,7 @@
 mod artifact;
 mod calculus;
 mod curriculum;
+pub(crate) mod definitions;
 mod graph;
 mod model;
 pub(crate) mod peer;
@@ -68,6 +69,7 @@ impl Example {
 #[serde(deny_unknown_fields)]
 pub(crate) struct State {
     model: Checkpoint,
+    definitions: Vec<definitions::Entry>,
     replay: Vec<Example>,
     anchors: Vec<Example>,
     accepted: u64,
@@ -98,6 +100,8 @@ pub(crate) struct Progress {
     incumbent_score: u32,
     candidate_score: u32,
     anchor_regression: bool,
+    development_regression: bool,
+    original_score: [u32; 2],
     pub result: Option<Solution>,
     pub diagnostic: String,
 }
@@ -122,15 +126,36 @@ pub(crate) struct GenerationCost {
     pub unique_states: usize,
     pub core_work: usize,
     pub generation_micros: u64,
+    pub definition_candidates: usize,
+    pub definition_references: usize,
+    pub definition_check_steps: usize,
+    pub definition_micros: u64,
+    pub definition_failure: Option<String>,
+    pub certificate_failures: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Solution {
-    pub cost: GenerationCost,
+    pub cost: Box<GenerationCost>,
     pub source: String,
+    pub helpers: Vec<String>,
     pub proof_id: String,
     pub refuted: bool,
     pub tree: search::Tree,
+}
+impl Solution {
+    pub fn checked(&self) -> Result<naome_authoring::CompiledProof, String> {
+        if self.helpers != definitions::helpers(&self.tree)? {
+            return Err("definition helper source binding differs".into());
+        }
+        let context = definitions::context(&definitions::selected(&self.tree)?)?;
+        let proof = naome_authoring::compile_against_proof_context(&self.source, &context)
+            .map_err(|e| e.to_string())?;
+        if crate::hex(proof.proof_id().as_bytes()) != self.proof_id {
+            return Err("native source identity differs".into());
+        }
+        Ok(proof)
+    }
 }
 pub(crate) fn digest(value: &impl Serialize) -> String {
     use sha2::{Digest, Sha256};
@@ -275,6 +300,8 @@ impl Job {
             incumbent_score: 0,
             candidate_score: 0,
             anchor_regression: false,
+            development_regression: false,
+            original_score: [0, 0],
             result: None,
             diagnostic: "no_new_accepted_solutions".into(),
         });
@@ -325,6 +352,11 @@ impl Job {
                     if index < curriculum::DEVELOPMENT {
                         p.incumbent_score += u32::from(before);
                         p.candidate_score += u32::from(after);
+                        if index < curriculum::CORPUS_DEVELOPMENT {
+                            p.original_score[0] += u32::from(before);
+                            p.original_score[1] += u32::from(after);
+                            p.development_regression |= before && !after;
+                        }
                     } else if before && !after {
                         p.anchor_regression = true;
                     }
@@ -332,13 +364,18 @@ impl Job {
             }
         } else {
             if let Some(candidate) = p.candidate.take() {
-                if p.candidate_score > p.incumbent_score && !p.anchor_regression {
+                if p.candidate_score > p.incumbent_score
+                    && !p.anchor_regression
+                    && !p.development_regression
+                {
                     p.model = candidate;
                     p.promotions += 1;
                     p.diagnostic = "candidate_promoted".into();
                 } else {
                     p.rejections += 1;
-                    p.diagnostic = if p.anchor_regression {
+                    p.diagnostic = if p.development_regression {
+                        "development_regression_rejected"
+                    } else if p.anchor_regression {
                         "forgetting_rejected"
                     } else {
                         "no_development_gain_rejected"
@@ -353,7 +390,13 @@ impl Job {
                 } else {
                     let budget = if p.rejections % 3 == 2 { 256 } else { 128 };
                     let (solution, failure, cost) = engine.with(&p.model, io, |runtime| {
-                        solve_measured(question, runtime, budget, job)
+                        solve_with_definitions(
+                            question,
+                            runtime,
+                            budget,
+                            job,
+                            &self.base.definitions,
+                        )
                     })?;
                     p.cost = Some(cost);
                     if solution.is_none() {
@@ -406,6 +449,71 @@ fn solve_measured(
     };
     search_question_measured(source, &mut ranker, budget)
 }
+fn solve_with_definitions(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+    known: &[definitions::Entry],
+) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    let started = std::time::Instant::now();
+    let (mut solution, diagnostic, mut cost) = solve_measured(source, model, budget, job)?;
+    if let Some(solution) = &mut solution {
+        let definition_started = std::time::Instant::now();
+        let question = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+        let target = if solution.refuted {
+            question.refuted_target()
+        } else {
+            question.proved_target()
+        };
+        if let Some((entries, selected)) = definitions::choose(target, known, model)? {
+            cost.definition_candidates = entries.len();
+            let tree = search::Tree::Definitions {
+                entries,
+                selected,
+                available: known.len().min(definitions::CAPACITY - 1),
+                proof: Box::new(solution.tree.clone()),
+            };
+            match search::core::checked(target, &tree) {
+                Ok((tree, _, checked)) => {
+                    cost.definition_check_steps = checked.certificate.steps().len();
+                    let source = proof::source(&checked)?;
+                    let helpers = definitions::helpers(&tree)?;
+                    if source.len() + helpers.iter().map(String::len).sum::<usize>()
+                        <= crate::resources::limits().closure_bytes
+                        && source.len() <= crate::resources::limits().proof_bytes
+                        && checked.payload_bytes <= crate::resources::limits().proof_bytes
+                        && helpers
+                            .iter()
+                            .all(|source| source.len() <= crate::resources::limits().proof_bytes)
+                    {
+                        solution.source = source;
+                        solution.helpers = helpers;
+                        solution.proof_id = crate::hex(checked.native_id.as_bytes());
+                        solution.tree = tree;
+                        cost.definition_references = checked
+                            .certificate
+                            .steps()
+                            .iter()
+                            .map(|s| s.definition_references().len())
+                            .sum();
+                    } else {
+                        cost.definition_failure =
+                            Some("definition certificate or helper capacity".into());
+                    }
+                }
+                Err(error) => cost.definition_failure = Some(error),
+            }
+        }
+        cost.definition_micros = definition_started
+            .elapsed()
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
+        cost.generation_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        *solution.cost = cost.clone();
+    }
+    Ok((solution, diagnostic, cost))
+}
 #[cfg(test)]
 fn search_question(
     source: &str,
@@ -424,6 +532,7 @@ fn search_question_measured(
     let q = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
     let mut failure = "calculus_or_strategy_unresolved".to_owned();
     let mut remaining = budget;
+    let mut certificate_failures = 0;
     for refuted in [false, true] {
         if remaining == 0 {
             break;
@@ -436,7 +545,14 @@ fn search_question_measured(
         let found = search::solve(&target, ranker, remaining)?;
         remaining = remaining.saturating_sub(found.expansions);
         if let Some(tree) = found.tree {
-            let (tree, cost, verified) = search::core::checked(&target, &tree)?;
+            let (tree, cost, verified) = match search::core::checked(&target, &tree) {
+                Ok(checked) => checked,
+                Err(error) => {
+                    certificate_failures += 1;
+                    failure = format!("certificate_unresolved: {error}");
+                    continue;
+                }
+            };
             match Ok::<_, String>(verified).and_then(|verified| {
                 Ok((
                     proof::source(&verified)?,
@@ -452,6 +568,7 @@ fn search_question_measured(
                                 .min(crate::resources::limits().closure_bytes) =>
                 {
                     let measured = GenerationCost {
+                        certificate_failures,
                         search_expansions: budget - remaining,
                         original_steps: cost.original_steps,
                         useful_steps: cost.useful_steps,
@@ -464,10 +581,12 @@ fn search_question_measured(
                             .len(),
                         generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
                             as u64,
+                        ..GenerationCost::default()
                     };
                     return Ok((
                         Some(Solution {
-                            cost: measured.clone(),
+                            helpers: Vec::new(),
+                            cost: Box::new(measured.clone()),
                             source,
                             proof_id,
                             refuted,
@@ -488,6 +607,7 @@ fn search_question_measured(
         None,
         failure,
         GenerationCost {
+            certificate_failures,
             search_expansions: budget - remaining,
             generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
             ..GenerationCost::default()

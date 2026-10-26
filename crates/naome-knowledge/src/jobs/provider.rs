@@ -202,7 +202,7 @@ impl Provider for Native {
                 .ok_or("peer extraction progress missing")?;
             match crate::learning::peer::extract(question, artifact, certificate) {
                 Ok(solution) => {
-                    p.cost = Some(solution.cost.clone());
+                    p.cost = Some((*solution.cost).clone());
                     p.result = Some(solution);
                     p.diagnostic = "native_peer_dag_extracted".into();
                 }

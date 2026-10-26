@@ -23,7 +23,7 @@ pub struct Policy {
 impl Policy {
     pub fn new(device: &Device) -> Self {
         Self {
-            kinds: EmbeddingConfig::new(15, WIDTH).init(device),
+            kinds: EmbeddingConfig::new(17, WIDTH).init(device),
             roles: EmbeddingConfig::new(4, WIDTH).init(device),
             messages: (0..LAYERS)
                 .map(|_| LinearConfig::new(4 * WIDTH, WIDTH).init(device))

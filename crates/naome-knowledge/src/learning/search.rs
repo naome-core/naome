@@ -21,15 +21,27 @@ pub enum Action {
     Mp(usize, usize),
     Beta(usize),
     Instantiate(usize, u32),
+    Witness(usize, u32),
     Substitute(usize, usize),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Tree {
+    Definitions {
+        entries: Vec<super::definitions::Entry>,
+        selected: usize,
+        available: usize,
+        proof: Box<Self>,
+    },
     Axiom(u8),
     Certificate(Vec<u8>),
-    Peer { steps: usize },
+    Peer {
+        steps: usize,
+    },
     Close(usize, usize),
-    Step { action: Action, children: Vec<Self> },
+    Step {
+        action: Action,
+        children: Vec<Self>,
+    },
 }
 #[derive(Clone)]
 struct State {
@@ -134,6 +146,20 @@ fn actions(state: &State) -> Vec<Action> {
             .is_some()
         {
             result.push(Action::NotImp(i));
+        } else if let Some(universal) = f.view().negated()
+            && matches!(
+                universal.graph_node(),
+                naome_foundation::graph::Node::ForAll(_)
+            )
+        {
+            if !state
+                .used
+                .iter()
+                .any(|a| matches!(a, Action::Witness(j, _) if *j == i))
+            {
+                let variable = fresh(state.facts.iter().cloned()).expect("bounded fresh variable");
+                result.push(Action::Witness(i, variable.identifier()));
+            }
         } else if let Some((a, b)) = f.view().implication_parts() {
             if !state.facts.iter().any(|g| g.view() == b) {
                 if let Some(j) = state.facts.iter().position(|g| g.view() == a) {
@@ -161,7 +187,11 @@ fn actions(state: &State) -> Vec<Action> {
             }
         }
     }
-    result.retain(|a| !state.used.contains(a));
+    result.retain(|a| {
+        !state.used.contains(a)
+            && next(state, a)
+                .is_ok_and(|children| children.iter().any(|child| child.facts != state.facts))
+    });
     result.truncate(16);
     result
 }
@@ -187,6 +217,7 @@ fn decision(
             Action::Mp(i, j) => (Rule::ModusPonens, vec![i, j]),
             Action::Beta(i) => (Rule::ImplicationBranch, vec![i]),
             Action::Instantiate(i, _) => (Rule::UniversalInstance, vec![i]),
+            Action::Witness(i, _) => (Rule::ExistentialWitness, vec![i]),
             Action::Substitute(i, j) => (Rule::EqualitySubstitution, vec![i, j]),
         };
         let mut consequences = Vec::new();
@@ -268,6 +299,27 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
                 .ok_or("universal action mismatch")?
                 .substitute_free(x, FreeVariable::new(v));
             insert(&mut state, f);
+        }
+        Action::Witness(i, v) => {
+            let variable = FreeVariable::new(v);
+            if state
+                .facts
+                .iter()
+                .any(|f| f.free_variables().contains(&variable))
+            {
+                return Err("witness variable is not fresh".into());
+            }
+            let universal = state.facts[i]
+                .view()
+                .negated()
+                .ok_or("witness negation")?
+                .to_owned();
+            let opened = universal
+                .open_outer_universal(variable)
+                .ok_or("witness universal")?;
+            insert(&mut state, c::not(opened));
+            insert(&mut state, Formula::equal(variable, variable));
+            state.domain.push(variable);
         }
         Action::Substitute(i, j) => {
             let (a, b) = state.facts[i]
@@ -462,6 +514,39 @@ fn replay(
             &mut updated,
             c::instantiate(facts[i].clone(), FreeVariable::new(v))?,
         ),
+        Action::Witness(i, v) => {
+            let variable = FreeVariable::new(v);
+            let universal = facts[i]
+                .formula()
+                .view()
+                .negated()
+                .ok_or("replay witness")?
+                .to_owned();
+            let opened = universal
+                .open_outer_universal(variable)
+                .ok_or("replay witness body")?;
+            let (id, witness) = names.assumption(c::not(opened.clone()));
+            add_term(&mut updated, witness);
+            add_term(
+                &mut updated,
+                c::axiom(ProofStep::EqualityReflexivity { variable })?,
+            );
+            let (positive, negative) = replay(
+                &children[0],
+                &states[0],
+                &updated,
+                goal,
+                names,
+                graphs,
+                depth + 1,
+            )?;
+            let body = c::raa(opened, id, positive, negative, names)?;
+            let all = Term::Generalize(variable, Box::new(body));
+            if all.formula() != universal {
+                return Err("witness discharge changed the universal".into());
+            }
+            return Ok((all, facts[i].clone()));
+        }
         Action::Substitute(i, j) => {
             let f = facts[i].formula();
             let (a, b) = f.view().equality_variables().ok_or("replay equality")?;
@@ -516,6 +601,43 @@ fn replay(
 }
 
 pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), String> {
+    if let Tree::Definitions {
+        entries,
+        selected,
+        available,
+        proof,
+    } = tree
+    {
+        if *available > entries.len() {
+            return Err("definition availability differs".into());
+        }
+        let entry = entries.get(*selected).ok_or("definition selection index")?;
+        let _ = super::definitions::context(entries)?;
+        let (term, mut graphs) = compile(target, proof)?;
+        let verified = super::proof::verify(&term, target)?;
+        let source = super::proof::source_with_definitions(&verified, std::slice::from_ref(entry))?;
+        let context = super::definitions::context(std::slice::from_ref(entry))?;
+        let checked = naome_authoring::compile_against_proof_context(&source, &context)
+            .map_err(|e| e.to_string())?
+            .into_checked_proof();
+        if !checked
+            .direct_artifact_dependencies()
+            .contains(&entry.address()?)
+        {
+            return Err("selected definition is not used by the checked proof".into());
+        }
+        if entries.len() > 1 {
+            graphs.push(super::definitions::decision(target, entries, *selected)?);
+        }
+        return Ok((
+            Term::Native {
+                certificate: checked.normal_form().certificate().clone(),
+                target: target.clone(),
+                definitions: vec![entry.clone()],
+            },
+            graphs,
+        ));
+    }
     if matches!(tree, Tree::Peer { .. }) {
         return Err("peer replay requires its owned journal snapshot".into());
     }
@@ -593,5 +715,65 @@ pub fn axiom_name(a: naome_foundation::ZfcAxiom) -> &'static str {
         Infinity => "infinity",
         Foundation => "foundation",
         Choice => "choice",
+    }
+}
+
+#[cfg(test)]
+mod witness_tests {
+    use super::*;
+    struct Ordered;
+    impl Ranker for Ordered {
+        fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+            Ok(vec![0.; d.candidates.len()])
+        }
+    }
+    #[test]
+    fn existential_transport_discharges_its_fresh_witness_in_the_native_checker() {
+        let q = naome_authoring::CompiledQuestion::compile(
+            "goal=all(x,imp(ex(y,mem(y,x)),ex(y,or(mem(y,x),eq(y,x)))))",
+        )
+        .unwrap();
+        let found = solve(q.proved_target(), &mut Ordered, 128).unwrap();
+        let tree = found.tree.expect("existential witness transport");
+        let (_, _, checked) = core::checked(q.proved_target(), &tree).unwrap();
+        let source = super::super::proof::source(&checked).unwrap();
+        assert_eq!(
+            naome_authoring::compile(&source).unwrap().proof_id(),
+            checked.native_id
+        );
+        let invalid = naome_authoring::CompiledQuestion::compile(
+            "goal=all(x,imp(ex(y,mem(y,x)),all(y,mem(y,x))))",
+        )
+        .unwrap();
+        assert!(
+            solve(invalid.proved_target(), &mut Ordered, 128)
+                .unwrap()
+                .tree
+                .is_none()
+        );
+    }
+    #[test]
+    fn reused_eigenvariables_and_unchanged_instantiations_are_not_offered() {
+        let x = FreeVariable::new(0);
+        let y = FreeVariable::new(1);
+        let body = Formula::member(y, x);
+        let universal = Formula::for_all(y, body.clone());
+        let state = State {
+            facts: vec![universal.clone(), body, c::not(universal)],
+            used: BTreeSet::new(),
+            domain: vec![y],
+        };
+        assert!(!actions(&state).contains(&Action::Instantiate(0, 1)));
+        assert!(next(&state, &Action::Witness(2, 0)).is_err());
+        let action = actions(&state)
+            .into_iter()
+            .find(|a| matches!(a, Action::Witness(..)))
+            .unwrap();
+        let after = next(&state, &action).unwrap().remove(0);
+        assert!(
+            !actions(&after)
+                .iter()
+                .any(|a| matches!(a, Action::Witness(2, _)))
+        );
     }
 }

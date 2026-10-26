@@ -11,6 +11,7 @@ pub struct Cost {
 }
 pub fn steps(tree: &Tree) -> usize {
     match tree {
+        Tree::Definitions { proof, .. } => 1 + steps(proof),
         Tree::Step { children, .. } => 1 + children.iter().map(steps).sum::<usize>(),
         Tree::Certificate(bytes) => super::super::peer::step_count(bytes),
         Tree::Peer { steps } => *steps,
@@ -31,6 +32,7 @@ fn action(action: &Action, from: &State, to: &State) -> Result<Action, String> {
         Action::Mp(i, j) => Action::Mp(position(i, from, to)?, position(j, from, to)?),
         Action::Beta(i) => Action::Beta(position(i, from, to)?),
         Action::Instantiate(i, v) => Action::Instantiate(position(i, from, to)?, v),
+        Action::Witness(i, v) => Action::Witness(position(i, from, to)?, v),
         Action::Substitute(i, j) => {
             Action::Substitute(position(i, from, to)?, position(j, from, to)?)
         }
@@ -62,7 +64,7 @@ fn rebase(
             position(*a, from, to)?,
             position(*b, from, to)?,
         )),
-        Tree::Axiom(_) | Tree::Certificate(_) | Tree::Peer { .. } => {
+        Tree::Axiom(_) | Tree::Certificate(_) | Tree::Peer { .. } | Tree::Definitions { .. } => {
             Err("nested core axiom".into())
         }
         Tree::Step {
@@ -138,7 +140,20 @@ pub fn checked(
 ) -> Result<(Tree, Cost, super::super::proof::Verified), String> {
     let original_steps = steps(tree);
     let mut work = 0;
-    let candidate = if matches!(tree, Tree::Axiom(_) | Tree::Certificate(_)) {
+    let candidate = if let Tree::Definitions {
+        entries,
+        selected,
+        available,
+        proof,
+    } = tree
+    {
+        Tree::Definitions {
+            entries: entries.clone(),
+            selected: *selected,
+            available: *available,
+            proof: Box::new(checked(target, proof)?.0),
+        }
+    } else if matches!(tree, Tree::Axiom(_) | Tree::Certificate(_)) {
         tree.clone()
     } else {
         slice(tree, &prepare(target)?.state, &mut work, 0).unwrap_or_else(|_| tree.clone())
