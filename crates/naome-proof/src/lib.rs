@@ -18,7 +18,7 @@ mod question;
 
 use std::error::Error;
 use std::fmt;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use naome_foundation::{FORMULA_MAX_NODES, FormulaCodecError, FreeVariable, ZfcAxiom};
 
@@ -29,7 +29,7 @@ pub use defined_formula::{
 };
 pub use definition::{
     DEFINITION_MAX_BYTES, DEFINITION_MAX_GRAPH_ARITY, DefinitionCertificate,
-    DefinitionCertificateError, DefinitionKind,
+    DefinitionCertificateError, DefinitionInstantiation, DefinitionKind,
 };
 pub use identity::{ArtifactId, DefinitionId, DerivationId, ProofId, StatementId};
 pub use proof_formula::ProofFormula;
@@ -117,8 +117,8 @@ impl ProofCertificate {
     /// resulting normal-form certificate.
     pub fn into_unchecked_normal_form(self) -> ProofNormalForm {
         ProofNormalForm {
-            certificate: normal_form::normalize(self),
-            canonical_bytes: OnceLock::new(),
+            certificate: Arc::new(normal_form::normalize(self)),
+            canonical_bytes: Arc::new(OnceLock::new()),
         }
     }
 
@@ -137,8 +137,8 @@ impl ProofCertificate {
             normal_form::normalize_with_step_origins(self);
         (
             ProofNormalForm {
-                certificate,
-                canonical_bytes: OnceLock::new(),
+                certificate: Arc::new(certificate),
+                canonical_bytes: Arc::new(OnceLock::new()),
             },
             ProofStepOrigins {
                 source_to_normalized,
@@ -200,9 +200,10 @@ impl ProofStepOrigins {
 /// This type establishes structural identity only. The mathematical checker
 /// must still validate the contained certificate.
 #[must_use]
+#[derive(Clone)]
 pub struct ProofNormalForm {
-    certificate: ProofCertificate,
-    canonical_bytes: OnceLock<Box<[u8]>>,
+    certificate: Arc<ProofCertificate>,
+    canonical_bytes: Arc<OnceLock<Box<[u8]>>>,
 }
 
 /// A Separation schema payload whose predicate may cite definitions.
@@ -267,7 +268,7 @@ impl From<naome_foundation::Replacement> for ProofReplacement {
 
 impl ProofNormalForm {
     /// Returns the canonical certificate carried by this normal form.
-    pub const fn certificate(&self) -> &ProofCertificate {
+    pub fn certificate(&self) -> &ProofCertificate {
         &self.certificate
     }
 
@@ -291,7 +292,7 @@ impl ProofNormalForm {
         if !matches {
             return None;
         }
-        self.canonical_bytes = OnceLock::from(canonical_bytes);
+        self.canonical_bytes = Arc::new(OnceLock::from(canonical_bytes));
         Some(self)
     }
 
@@ -302,9 +303,14 @@ impl ProofNormalForm {
             certificate,
             canonical_bytes,
         } = self;
-        canonical_bytes
-            .into_inner()
-            .unwrap_or_else(|| certificate.to_canonical_bytes().into_boxed_slice())
+        match Arc::try_unwrap(canonical_bytes) {
+            Ok(bytes) => bytes
+                .into_inner()
+                .unwrap_or_else(|| certificate.to_canonical_bytes().into_boxed_slice()),
+            Err(bytes) => bytes
+                .get_or_init(|| certificate.to_canonical_bytes().into_boxed_slice())
+                .clone(),
+        }
     }
 }
 

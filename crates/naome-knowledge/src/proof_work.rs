@@ -45,6 +45,10 @@ pub(crate) struct CheckedWork {
     _lock: crate::storage::LockFile,
 }
 impl CheckedWork {
+    pub(crate) fn suspend_cache(&mut self) -> Result<(), crate::Error> {
+        self.proof()?;
+        self.proof.suspend_cache().map_err(crate::Error::from)
+    }
     pub(crate) fn restrict_cache(&mut self, bytes: u64) -> Result<(), crate::Error> {
         self.proof()?;
         self.proof
@@ -61,6 +65,10 @@ impl CheckedWork {
 }
 
 impl Work {
+    pub(crate) fn suspend_cache(&mut self) -> Result<(), crate::Error> {
+        self.live()?;
+        self.engine.suspend_cache().map_err(crate::Error::from)
+    }
     pub fn open(path: &Path) -> Result<Self, crate::Error> {
         let parent = path
             .parent()

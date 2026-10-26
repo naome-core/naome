@@ -3,6 +3,30 @@ use crate::{graph::program::PreparedProgram, proof_work::Work, resources::adapti
 use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Command};
 
 #[test]
+fn extending_a_private_batch_does_not_reserve_its_prefix_twice() {
+    let graph = Graph::default();
+    let parent = graph
+        .author("goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q")
+        .unwrap();
+    let candidate = parent.prepare().unwrap();
+    let bound = Graph::publication_reservation(candidate.bytes.len() * 2, 2).unwrap();
+    crate::resources::with_disk_available(
+        u128::from(crate::resources::limits().disk_reserve_bytes) + u128::from(bound),
+        || {
+            let prefix = graph.prepare_helper_after(candidate.clone(), None).unwrap();
+            let extended =
+                Preparation::new(&graph, Some(prefix), candidate.bytes.len(), 1).unwrap();
+            extended
+                .batch
+                ._disk
+                .recheck(graph.store.directory())
+                .unwrap();
+            assert_eq!(graph.accepted_count(), 0);
+        },
+    );
+}
+
+#[test]
 fn a_valid_certificate_with_forged_claimed_identity_is_rejected_before_the_write_phase() {
     let mut graph = Graph::default();
     let valid = graph

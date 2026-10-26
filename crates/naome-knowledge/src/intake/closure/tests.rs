@@ -7,7 +7,7 @@ impl std::fmt::Debug for Closure {
             .field("needed", &self.needed)
             .field("programs", &self.items.len())
             .field("certificates", &self.certificates.len())
-            .field("registered", &self.registered)
+            .field("active", &self.active)
             .field("registration_pending", &self.registration.is_some())
             .field("budget", &self.budget)
             .finish()
@@ -54,6 +54,100 @@ fn isolated(case: &str) -> bool {
         String::from_utf8_lossy(&output.stderr)
     );
     true
+}
+
+#[test]
+fn preparing_received_certificates_keeps_one_allocation_charge() {
+    const CASE: &str =
+        "intake::closure::tests::preparing_received_certificates_keeps_one_allocation_charge";
+    if isolated(CASE) {
+        return;
+    }
+    let (root, parent, helper) = fixtures();
+    let graph = Graph::default();
+    let root_id = id(&root);
+    let transfer = TransferGrant::new(PeerId::random(), root_id, None);
+    let mut closure = Closure::new(root_id, None);
+    closure.require_root(&graph).unwrap();
+    for object in [root, parent, helper] {
+        closure
+            .certificate_payload(id(&object), object, &graph, &transfer)
+            .unwrap();
+    }
+    let charged = crate::resources::memory_usage().0;
+    let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let batch = closure.prepare_certificates(&graph, &question).unwrap();
+    assert_eq!(
+        crate::resources::memory_usage().0,
+        charged,
+        "checking shared immutable input must not reserve its payload a second time"
+    );
+    assert_eq!(graph.accepted_count(), 0);
+    drop(batch);
+    assert_eq!(crate::resources::memory_usage().0, charged);
+    drop(closure);
+    assert_eq!(crate::resources::memory_usage().0, 0);
+}
+
+#[test]
+fn a_reverse_received_chain_visits_each_dependency_only_when_added_and_completed() {
+    const CASE: &str = "intake::closure::tests::a_reverse_received_chain_visits_each_dependency_only_when_added_and_completed";
+    if isolated(CASE) {
+        return;
+    }
+    let mut source = Graph::default();
+    let mut objects = Vec::new();
+    for _ in 0..64 {
+        let text = objects.last().map_or_else(
+            || "goal=all(x,eq(x,x)) proof: p=refl(x) q=gen(p,x) return q".into(),
+            |object: &Envelope| {
+                format!(
+                    "goal=all(x,eq(x,x)) proof: p=cite(\"{}\") return p",
+                    crate::hex(object.proof_id().unwrap().unwrap().as_bytes())
+                )
+            },
+        );
+        objects.push(source.produce(&text).unwrap().0);
+    }
+    let mut receiver = Graph::default();
+    let root = id(objects.last().unwrap());
+    let grant = TransferGrant::new(PeerId::random(), root, None);
+    let mut closure = Closure::new(root, None);
+    closure.require_root(&receiver).unwrap();
+    for object in objects.into_iter().rev() {
+        closure
+            .certificate_payload(id(&object), object, &receiver, &grant)
+            .unwrap();
+    }
+    assert_eq!(closure.schedule.visits(), 63);
+    for _ in 0..63 {
+        assert_eq!(closure.advance(&receiver).unwrap().len(), 1);
+        assert_eq!(receiver.accepted_count(), 0);
+    }
+    assert!(closure.ready());
+    assert_eq!(closure.schedule.visits(), 126);
+    for _ in 0..8 {
+        closure.advance(&receiver).unwrap();
+    }
+    assert_eq!(
+        closure.schedule.visits(),
+        126,
+        "idle quanta do not rescan the closure"
+    );
+    let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let batch = closure.prepare_certificates(&receiver, &question).unwrap();
+    assert_eq!(
+        receiver
+            .commit_batch(
+                root,
+                batch,
+                Instant::now() + std::time::Duration::from_secs(30)
+            )
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(receiver.content_root(), source.content_root());
 }
 
 #[test]

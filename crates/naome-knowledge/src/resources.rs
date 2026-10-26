@@ -422,20 +422,41 @@ static DISK_RESERVATIONS: std::sync::Mutex<std::collections::BTreeMap<u64, u128>
 #[derive(Debug)]
 pub(crate) struct DiskLease {
     volume: u64,
+    #[cfg(test)]
+    reservation: u64,
     bytes: u128,
 }
+fn disk_capacity(path: &std::path::Path) -> Result<(u64, u128), crate::Error> {
+    use std::os::unix::fs::MetadataExt;
+    let volume = std::fs::metadata(path).map_err(|e| e.to_string())?.dev();
+    let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
+    let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
+    #[cfg(test)]
+    let available = TEST_DISK
+        .with(|value| value.get())
+        .map_or(available, |(_, available)| available);
+    Ok((volume, available))
+}
 impl DiskLease {
-    pub(crate) fn recheck(&self, path: &std::path::Path) -> Result<(), crate::Error> {
-        let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
-        let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
+    fn reservation_key(&self) -> u64 {
         #[cfg(test)]
-        let available = TEST_DISK
-            .with(|value| value.get())
-            .map_or(available, |(_, available)| available);
+        {
+            self.reservation
+        }
+        #[cfg(not(test))]
+        {
+            self.volume
+        }
+    }
+    pub(crate) fn recheck(&self, path: &std::path::Path) -> Result<(), crate::Error> {
+        let (volume, available) = disk_capacity(path)?;
+        if volume != self.volume {
+            return Err("disk reservation filesystem changed".into());
+        }
         let held = *DISK_RESERVATIONS
             .lock()
             .map_err(|_| "disk reservation lock poisoned")?
-            .get(&self.volume)
+            .get(&self.reservation_key())
             .unwrap_or(&0);
         let required = u128::from(limits().disk_reserve_bytes) + held;
         if available < required {
@@ -447,20 +468,39 @@ impl DiskLease {
         Ok(())
     }
     pub(crate) fn acquire(path: &std::path::Path, additional: u64) -> Result<Self, crate::Error> {
-        use std::os::unix::fs::MetadataExt;
-        let volume = std::fs::metadata(path).map_err(|e| e.to_string())?.dev();
-        let stats = nix::sys::statvfs::statvfs(path).map_err(|e| e.to_string())?;
-        let available = u128::from(stats.blocks_available()) * u128::from(stats.fragment_size());
-        #[cfg(test)]
-        let (volume, available) = TEST_DISK
-            .with(|value| value.get())
-            .unwrap_or((volume, available));
+        let (volume, available) = disk_capacity(path)?;
+        let mut lease = Self {
+            volume,
+            bytes: 0,
+            #[cfg(test)]
+            reservation: TEST_DISK
+                .with(|value| value.get())
+                .map_or(volume, |(reservation, _)| reservation),
+        };
+        lease.grow(available, additional)?;
+        Ok(lease)
+    }
+    /// Extend this custody atomically. Failure preserves its previous reservation.
+    pub(crate) fn grow_to(
+        &mut self,
+        path: &std::path::Path,
+        total: u64,
+    ) -> Result<(), crate::Error> {
+        let (volume, available) = disk_capacity(path)?;
+        if volume != self.volume {
+            return Err("disk reservation filesystem changed".into());
+        }
+        self.grow(available, total)
+    }
+    fn grow(&mut self, available: u128, total: u64) -> Result<(), crate::Error> {
         let mut reservations = DISK_RESERVATIONS
             .lock()
             .map_err(|_| "disk reservation lock poisoned")?;
-        let held = reservations.entry(volume).or_default();
+        let held = reservations.entry(self.reservation_key()).or_default();
+        let bytes = self.bytes.max(u128::from(total));
         let next = held
-            .checked_add(u128::from(additional))
+            .checked_sub(self.bytes)
+            .and_then(|other| other.checked_add(bytes))
             .ok_or("disk reservation overflow")?;
         let required = u128::from(limits().disk_reserve_bytes) + next;
         if available < required {
@@ -470,19 +510,18 @@ impl DiskLease {
             });
         }
         *held = next;
-        Ok(Self {
-            volume,
-            bytes: u128::from(additional),
-        })
+        self.bytes = bytes;
+        Ok(())
     }
 }
 impl Drop for DiskLease {
     fn drop(&mut self) {
         let mut reservations = DISK_RESERVATIONS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(held) = reservations.get_mut(&self.volume) {
+        let key = self.reservation_key();
+        if let Some(held) = reservations.get_mut(&key) {
             *held -= self.bytes;
             if *held == 0 {
-                reservations.remove(&self.volume);
+                reservations.remove(&key);
             }
         }
     }

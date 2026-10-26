@@ -4,6 +4,7 @@
 use super::program::transfer_records;
 use super::*;
 use crate::{
+    graph::dependencies::Dependencies,
     graph::program::{ProgramAdmission, ProgramCheck},
     object::{ProgramMetadata, id_bytes},
     proof_work::CheckedWork,
@@ -15,7 +16,7 @@ use naome_proof::program::{CHUNK_BYTES, Chunk, Command, Manifest};
 struct Helper {
     manifest: Manifest,
     scanned: u64,
-    received: bool,
+    available: u64,
     dependencies: BTreeSet<ArtifactId>,
     checking: Option<ProgramCheck>,
     checked: Option<CheckedWork>,
@@ -24,12 +25,16 @@ pub(in crate::intake) struct Closure {
     root: ArtifactId,
     statement: Option<StatementId>,
     items: BTreeMap<ArtifactId, Helper>,
-    certificates: BTreeMap<ArtifactId, crate::object::BinaryArtifact>,
+    certificates: BTreeMap<ArtifactId, crate::object::Candidate>,
     needed: BTreeSet<ArtifactId>,
     usage: certificate::Usage,
     prefix: Option<CheckedBatch>,
     registration: Option<(ArtifactId, ProgramAdmission)>,
-    registered: BTreeSet<ArtifactId>,
+    active: Option<ArtifactId>,
+    schedule: Dependencies,
+    observed_root: Option<[u8; 32]>,
+    scan_ready: BTreeSet<ArtifactId>,
+    receiving: BTreeSet<ArtifactId>,
     budget: Observer,
 }
 impl Closure {
@@ -43,13 +48,19 @@ impl Closure {
             usage: certificate::Usage::default(),
             prefix: None,
             registration: None,
-            registered: BTreeSet::new(),
+            active: None,
+            schedule: Dependencies::default(),
+            observed_root: None,
+            scan_ready: BTreeSet::new(),
+            receiving: BTreeSet::new(),
             budget: Observer::default(),
         }
     }
     pub(in crate::intake) fn require_root(&mut self, graph: &Graph) -> Result<(), crate::Error> {
+        self.synchronize(graph)?;
         if !graph.contains(self.root)? && !self.contains(self.root) {
             self.needed.insert(self.root);
+            self.schedule.declare(self.root);
         }
         Ok(())
     }
@@ -57,20 +68,23 @@ impl Closure {
         !self.items.is_empty()
     }
     pub(in crate::intake) fn certificate_ready(&self) -> bool {
-        self.needed.is_empty()
+        self.observed_root.is_some()
+            && self.needed.is_empty()
             && self.registration.is_none()
-            && self.items.keys().all(|id| self.registered.contains(id))
+            && self.active.is_none()
+            && self.items.keys().all(|id| self.schedule.is_complete(*id))
     }
     pub(in crate::intake) fn prepare_certificates(
         &mut self,
         graph: &Graph,
         question: &CompiledQuestion,
     ) -> Result<CheckedBatch, crate::Error> {
+        self.synchronize(graph)?;
         let candidates = self
             .certificates
             .iter()
-            .filter(|(id, _)| !self.registered.contains(id))
-            .map(|(id, record)| record.clone().prepare().map(|candidate| (*id, candidate)))
+            .filter(|(id, _)| !self.schedule.is_complete(**id))
+            .map(|(id, candidate)| candidate.for_admission().map(|candidate| (*id, candidate)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let result = graph.prepare_batch_after(self.root, candidates, question, self.prefix.take());
         if result.is_err() {
@@ -87,13 +101,9 @@ impl Closure {
         self.certificates.len()
     }
     pub(in crate::intake) fn busy(&self) -> bool {
-        self.items.values().any(|helper| {
-            helper.checking.is_some()
-                || helper.received && helper.scanned < helper.manifest.commands
-        }) || self.registration.is_some()
-            || self.needed.is_empty()
-                && !self.ready()
-                && self.items.values().all(|helper| helper.received)
+        self.active.is_some()
+            || !self.scan_ready.is_empty()
+            || self.needed.is_empty() && self.receiving.is_empty() && !self.ready()
     }
     pub(in crate::intake) fn contains(&self, id: ArtifactId) -> bool {
         self.items.contains_key(&id) || self.certificates.contains_key(&id)
@@ -117,21 +127,18 @@ impl Closure {
             + self.needed.len()
             + usize::from(!self.contains(self.root) && !self.needed.contains(&self.root))
     }
-    pub(in crate::intake) fn cache_share(&self, bytes: u64) -> Result<u64, crate::Error> {
-        let share = bytes / (self.items.len() as u64 + 1);
-        if share < 4096 {
+    pub(in crate::intake) fn working_cache(&self, bytes: u64) -> Result<u64, crate::Error> {
+        if bytes < 4096 {
             return Err(crate::Error::ExecutionLimit);
         }
-        Ok(share)
+        Ok(bytes)
     }
     pub(in crate::intake) fn ready(&self) -> bool {
-        self.needed.is_empty()
-            && self
-                .items
-                .keys()
-                .chain(self.certificates.keys())
-                .all(|id| *id == self.root || self.registered.contains(id))
+        self.observed_root.is_some()
+            && self.needed.is_empty()
+            && self.schedule.only_pending(self.root)
             && self.registration.is_none()
+            && self.active.is_none()
     }
     pub(in crate::intake) fn context<'a>(
         &'a self,
@@ -147,20 +154,91 @@ impl Closure {
     pub(in crate::intake) fn invalidate_prefix(&mut self) {
         self.prefix = None;
         self.registration = None;
-        self.registered.clear();
+        self.active = None;
+        self.observed_root = None;
+        self.schedule = Dependencies::default();
+        for helper in self.items.values_mut() {
+            helper.checking = None;
+        }
     }
     fn require(&mut self, id: ArtifactId, graph: &Graph) -> Result<(), crate::Error> {
         if id == self.root {
             return Err("cited closure has cyclic dependencies".into());
         }
-        if graph.contains(id)? || self.contains(id) || self.needed.contains(&id) {
+        if self.schedule.is_complete(id) || self.contains(id) || self.needed.contains(&id) {
+            return Ok(());
+        }
+        if graph.contains(id)? {
+            self.schedule.finish(id);
             return Ok(());
         }
         if self.member_count() >= crate::resources::limits().closure_objects {
             return Err(crate::Error::InputLimit("cited closure operation capacity"));
         }
         self.needed.insert(id);
+        self.schedule.declare(id);
         Ok(())
+    }
+    fn track(
+        &mut self,
+        id: ArtifactId,
+        dependencies: &BTreeSet<ArtifactId>,
+        graph: &Graph,
+    ) -> Result<(), crate::Error> {
+        if self.schedule.is_complete(id) {
+            return Ok(());
+        }
+        for dependency in dependencies {
+            if !self.schedule.known(*dependency) && graph.contains(*dependency)? {
+                self.schedule.finish(*dependency);
+            }
+        }
+        self.schedule.add(id, dependencies)
+    }
+    /// Rebuild disposable readiness only when its checked predecessor changes.
+    /// Mathematical checking and the publication stamp remain authoritative.
+    pub(in crate::intake) fn synchronize(&mut self, graph: &Graph) -> Result<bool, crate::Error> {
+        let root = graph.content_root();
+        let stale = self.observed_root.is_some_and(|observed| observed != root)
+            || self
+                .prefix
+                .as_ref()
+                .map(|prefix| graph.batch_current(prefix))
+                .transpose()?
+                .is_some_and(|current| !current);
+        if !stale && self.observed_root == Some(root) {
+            return Ok(false);
+        }
+        self.invalidate_prefix();
+        self.observed_root = Some(root);
+        for helper in self.items.values_mut() {
+            if let Some(proof) = &mut helper.checked {
+                proof.suspend_cache()?;
+            }
+        }
+        for id in self.members().collect::<BTreeSet<_>>() {
+            if graph.contains(id)? {
+                self.schedule.finish(id);
+                self.needed.remove(&id);
+            } else {
+                self.schedule.declare(id);
+            }
+        }
+        let dependencies: Vec<_> = self
+            .certificates
+            .iter()
+            .map(|(id, candidate)| (*id, candidate.dependencies.clone()))
+            .chain(
+                self.items
+                    .iter()
+                    .filter(|(_, helper)| helper.scanned == helper.manifest.commands)
+                    .map(|(id, helper)| (*id, helper.dependencies.clone())),
+            )
+            .collect();
+        for (id, dependencies) in dependencies {
+            self.track(id, &dependencies, graph)?;
+        }
+        Ok(true)
     }
     /// Read only the authenticated canonical command stream. No secondary
     /// dependency index or saved checked flag can supply mathematical authority.
@@ -170,6 +248,7 @@ impl Closure {
         cursor: &mut u64,
         graph: &Graph,
     ) -> Result<(bool, BTreeSet<ArtifactId>), crate::Error> {
+        self.synchronize(graph)?;
         if *cursor == manifest.commands {
             return Ok((true, BTreeSet::new()));
         }
@@ -197,6 +276,8 @@ impl Closure {
                 }
                 _ => None,
             };
+            // Keep only the bounded unpublished closure. A program may cite
+            // arbitrarily many committed facts; its canonical stream owns them.
             if let Some(id) = id
                 && !graph.contains(id)?
             {
@@ -212,6 +293,7 @@ impl Closure {
         metadata: ProgramMetadata,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
+        self.synchronize(graph)?;
         let id = metadata.manifest.artifact_id();
         if let Some(helper) = self.items.get(&id) {
             if helper.manifest != metadata.manifest {
@@ -224,14 +306,19 @@ impl Closure {
         }
         self.require(id, graph)?;
         let progress = graph.ownership().start_program(&metadata.manifest)?;
-        let received = progress.commands == metadata.manifest.commands;
+        if progress.commands < metadata.manifest.commands {
+            self.receiving.insert(id);
+        }
+        if progress.commands > 0 {
+            self.scan_ready.insert(id);
+        }
         self.needed.remove(&id);
         self.items.insert(
             id,
             Helper {
                 manifest: metadata.manifest,
                 scanned: 0,
-                received,
+                available: progress.commands,
                 dependencies: BTreeSet::new(),
                 checking: None,
                 checked: None,
@@ -247,6 +334,7 @@ impl Closure {
         transfer: &TransferGrant,
     ) -> Result<(), crate::Error> {
         transfer.check(Instant::now())?;
+        self.synchronize(graph)?;
         if !self.needed.contains(&id) || id_bytes(&object.artifact_id)? != *id.as_bytes() {
             return Err("unrequested or mismatched proof payload".into());
         }
@@ -284,8 +372,12 @@ impl Closure {
             ));
         }
         self.needed.remove(&id);
-        self.needed.extend(missing);
-        self.certificates.insert(id, candidate.record());
+        for dependency in missing {
+            self.needed.insert(dependency);
+            self.schedule.declare(dependency);
+        }
+        self.track(id, &candidate.dependencies, graph)?;
+        self.certificates.insert(id, candidate);
         self.usage = usage;
         Ok(())
     }
@@ -293,7 +385,8 @@ impl Closure {
         &self,
         graph: &Graph,
     ) -> Result<Option<(ArtifactId, u64, usize)>, crate::Error> {
-        for (id, helper) in &self.items {
+        if let Some(id) = self.receiving.first() {
+            let helper = &self.items[id];
             let progress = graph.ownership().program_progress(&helper.manifest)?;
             if progress.commands < helper.manifest.commands {
                 let records = transfer_records();
@@ -313,28 +406,24 @@ impl Closure {
             .get_mut(&id)
             .ok_or("unrequested cited program payload")?;
         let progress = graph.ownership().append_program(&helper.manifest, &chunk)?;
-        helper.received = progress.commands == helper.manifest.commands;
-        Ok(())
-    }
-    fn dependencies_ready(
-        &self,
-        dependencies: &BTreeSet<ArtifactId>,
-        graph: &Graph,
-    ) -> Result<bool, crate::Error> {
-        for id in dependencies {
-            if !self.registered.contains(id) && !graph.contains(*id)? {
-                return Ok(false);
-            }
+        helper.available = progress.commands;
+        if helper.scanned < helper.available {
+            self.scan_ready.insert(id);
         }
-        Ok(true)
+        if helper.available == helper.manifest.commands {
+            self.receiving.remove(&id);
+        }
+        Ok(())
     }
     pub(in crate::intake) fn advance(
         &mut self,
         graph: &Graph,
     ) -> Result<Vec<ArtifactId>, crate::Error> {
+        self.synchronize(graph)?;
         let snapshot = self.budget.refresh(graph.ownership().directory())?.clone();
-        let cache = self.cache_share(snapshot.budget.cache_bytes)?;
-        for helper in self.items.values_mut() {
+        let cache = self.working_cache(snapshot.budget.cache_bytes)?;
+        if let Some(id) = self.active {
+            let helper = self.items.get_mut(&id).expect("active cited program");
             if let Some(check) = &mut helper.checking {
                 check.restrict_cache(cache)?;
             }
@@ -345,35 +434,7 @@ impl Closure {
         if snapshot.budget.paused.is_some() {
             return Ok(Vec::new());
         }
-        if self
-            .prefix
-            .as_ref()
-            .map(|prefix| graph.batch_current(prefix))
-            .transpose()?
-            .is_some_and(|current| !current)
-        {
-            self.invalidate_prefix();
-        }
-        let mut fulfilled = Vec::new();
-        for id in self.members().collect::<BTreeSet<_>>() {
-            if !self.registered.contains(&id) && graph.contains(id)? {
-                fulfilled.push(id);
-            }
-        }
-        for id in &fulfilled {
-            self.needed.remove(id);
-            if self.contains(*id) {
-                self.registered.insert(*id);
-            }
-        }
-        if !fulfilled.is_empty() {
-            return Ok(fulfilled);
-        }
-        if let Some(id) = self
-            .items
-            .iter()
-            .find_map(|(id, helper)| (helper.scanned < helper.manifest.commands).then_some(*id))
-        {
+        if let Some(id) = self.scan_ready.first().copied() {
             let (manifest, mut cursor) = {
                 let helper = &self.items[&id];
                 (helper.manifest.clone(), helper.scanned)
@@ -382,15 +443,19 @@ impl Closure {
             let helper = self.items.get_mut(&id).expect("cited program scan");
             helper.scanned = cursor;
             helper.dependencies.extend(dependencies);
-            if cursor < manifest.commands {
-                return Ok(Vec::new());
+            if cursor == manifest.commands {
+                let dependencies = helper.dependencies.clone();
+                self.scan_ready.remove(&id);
+                self.track(id, &dependencies, graph)?;
+            } else if cursor == helper.available {
+                self.scan_ready.remove(&id);
             }
+            return Ok(Vec::new());
         }
         if let Some((id, admission)) = &mut self.registration {
-            let proof = self
-                .items
-                .get(id)
-                .and_then(|helper| helper.checked.as_ref())
+            let proof = self.items[id]
+                .checked
+                .as_ref()
                 .ok_or("cited checked program missing")?;
             match admission.advance(graph, proof, snapshot.budget.batch_steps.max(1)) {
                 Ok(false) => return Ok(Vec::new()),
@@ -399,8 +464,22 @@ impl Closure {
                         .registration
                         .take()
                         .expect("cited program registration");
-                    self.prefix = Some(admission.finish(graph, proof)?);
-                    self.registered.insert(id);
+                    match admission.finish(graph, proof) {
+                        Ok(prefix) => self.prefix = Some(prefix),
+                        Err(error) => {
+                            self.invalidate_prefix();
+                            return Err(error);
+                        }
+                    }
+                    self.items
+                        .get_mut(&id)
+                        .expect("registered helper")
+                        .checked
+                        .as_mut()
+                        .expect("checked helper")
+                        .suspend_cache()?;
+                    self.active = None;
+                    self.schedule.finish(id);
                     return Ok(vec![id]);
                 }
                 Err(crate::Error::StaleAuthority) => self.invalidate_prefix(),
@@ -408,79 +487,54 @@ impl Closure {
             }
             return Ok(Vec::new());
         }
-        let mut next_certificate = None;
-        for (id, proof) in &self.certificates {
-            if *id != self.root
-                && !self.registered.contains(id)
-                && self.dependencies_ready(&proof.dependencies, graph)?
-            {
-                next_certificate = Some(*id);
-                break;
+        let next = self.active.or_else(|| self.schedule.next(Some(self.root)));
+        if let Some(id) = next {
+            if let Some(proof) = self.certificates.get(&id) {
+                let proof = proof.for_admission()?;
+                self.prefix = match graph.prepare_helper_after(proof, self.prefix.take()) {
+                    Ok(prefix) => Some(prefix),
+                    Err(error) => {
+                        self.invalidate_prefix();
+                        return Err(error);
+                    }
+                };
+                self.schedule.finish(id);
+                return Ok(vec![id]);
             }
-        }
-        if let Some(id) = next_certificate {
-            let proof = self.certificates[&id].clone().prepare()?;
-            self.prefix = match graph.prepare_helper_after(proof, self.prefix.take()) {
-                Ok(prefix) => Some(prefix),
-                Err(error) => {
-                    self.invalidate_prefix();
-                    return Err(error);
-                }
-            };
-            self.registered.insert(id);
-            return Ok(vec![id]);
-        }
-        let mut next_program = None;
-        for (id, helper) in &self.items {
-            if !self.registered.contains(id)
-                && helper.scanned == helper.manifest.commands
-                && self.dependencies_ready(&helper.dependencies, graph)?
-            {
-                next_program = Some(*id);
-                break;
-            }
-        }
-        if let Some(id) = next_program {
-            let context = self
-                .prefix
-                .as_ref()
-                .map_or(graph.checked_context(), CheckedBatch::context)
-                .clone();
-            let helper = self.items.get_mut(&id).expect("cited program");
+            let context = self.context(graph).clone();
+            let helper = self
+                .items
+                .get_mut(&id)
+                .ok_or("ready program member missing")?;
+            self.active = Some(id);
             if helper.checked.is_none() {
                 if helper.checking.is_none() {
                     helper.checking = Some(ProgramCheck::open(graph, helper.manifest.clone())?);
                 }
-                if let Some(checked) = helper
-                    .checking
-                    .as_mut()
-                    .expect("cited program check")
-                    .advance(graph, &context)?
-                {
+                let check = helper.checking.as_mut().expect("cited program check");
+                check.restrict_cache(cache)?;
+                if let Some(mut checked) = check.advance(graph, &context)? {
+                    checked.suspend_cache()?;
                     helper.checking = None;
                     helper.checked = Some(checked);
                 }
                 return Ok(Vec::new());
             }
-            let admission = graph.begin_program_admission_after(
-                helper.checked.as_ref().expect("checked cited program"),
-                self.prefix.take(),
-            );
-            match admission {
+            let proof = helper.checked.as_mut().expect("checked cited program");
+            proof.restrict_cache(cache)?;
+            match graph.begin_program_admission_after(proof, self.prefix.take()) {
                 Ok(admission) => self.registration = Some((id, admission)),
                 Err(error) => {
                     self.invalidate_prefix();
                     return Err(error);
                 }
             }
+            return Ok(Vec::new());
         }
-        if self.registration.is_none()
-            && self.needed.is_empty()
+        if self.needed.is_empty()
+            && self.receiving.is_empty()
             && !self.ready()
-            && self
-                .items
-                .values()
-                .all(|helper| helper.scanned == helper.manifest.commands)
+            && self.schedule.defined()
         {
             return Err("cited program closure has cyclic dependencies".into());
         }

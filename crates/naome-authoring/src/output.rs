@@ -14,18 +14,17 @@ pub struct CompiledProof {
 #[must_use]
 pub struct CompiledDefinition {
     checked: naome_checker::CheckedDefinition,
-    canonical_definition_bytes: Box<[u8]>,
 }
 
 impl CompiledDefinition {
     /// Returns the exact canonical definition-certificate bytes.
     pub fn canonical_definition_bytes(&self) -> &[u8] {
-        &self.canonical_definition_bytes
+        self.checked.certificate().canonical_bytes()
     }
 
     /// Consumes this result and returns the exact canonical definition bytes.
     pub fn into_canonical_definition_bytes(self) -> Box<[u8]> {
-        self.canonical_definition_bytes
+        self.checked.certificate().canonical_bytes().into()
     }
 
     /// Returns the checked definition identity.
@@ -125,13 +124,6 @@ impl CompiledProof {
 
 impl CompiledDefinition {
     pub(super) fn from_checked(checked: naome_checker::CheckedDefinition) -> Self {
-        let canonical_definition_bytes = checked
-            .certificate()
-            .to_canonical_bytes()
-            .into_boxed_slice();
-        Self {
-            checked,
-            canonical_definition_bytes,
-        }
+        Self { checked }
     }
 }

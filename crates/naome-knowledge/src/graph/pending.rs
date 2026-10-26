@@ -327,7 +327,7 @@ impl PendingStore {
             tx.commit().map_err(sql)
         })
     }
-    pub(super) fn next_page(&mut self) -> Result<Vec<BinaryArtifact>, crate::Error> {
+    pub(super) fn next_page(&mut self) -> Result<Vec<Candidate>, crate::Error> {
         if !self.scheduled {
             return Err("proof backlog readiness not initialized".into());
         }
@@ -383,15 +383,13 @@ impl PendingStore {
 fn encode(artifact: &BinaryArtifact) -> Result<Vec<u8>, crate::Error> {
     serde_json::to_vec(&artifact.envelope()).map_err(|error| error.to_string().into())
 }
-fn decode(bytes: &[u8]) -> Result<BinaryArtifact, crate::Error> {
+fn decode(bytes: &[u8]) -> Result<Candidate, crate::Error> {
     if bytes.len() > 2 * naome_proof::ARTIFACT_PAYLOAD_MAX_BYTES + 1024 {
         return Err("artifact backlog row limit".into());
     }
     let envelope: crate::Envelope =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    envelope
-        .prepare_retained()
-        .map(|candidate| candidate.record())
+    envelope.prepare_retained()
 }
 
 fn sql(error: rusqlite::Error) -> crate::Error {

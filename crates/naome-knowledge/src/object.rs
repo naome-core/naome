@@ -191,7 +191,10 @@ pub(crate) enum CandidatePayload {
     Proof(ProofNormalForm),
     Definition(DefinitionCertificate),
 }
-pub(crate) struct Candidate {
+/// Immutable parsed syntax and its one shared physical allocation charge.
+#[derive(Clone)]
+pub(crate) struct Candidate(std::sync::Arc<CandidateData>);
+pub(crate) struct CandidateData {
     pub id: ArtifactId,
     pub statement: Option<StatementId>,
     pub obligation: Option<ProofId>,
@@ -201,10 +204,19 @@ pub(crate) struct Candidate {
     memory: std::sync::Arc<crate::resources::MemoryLease>,
 }
 impl Candidate {
+    pub(crate) fn for_admission(&self) -> Result<Self, crate::Error> {
+        if self.bytes.len() > crate::resources::limits().proof_bytes {
+            return Err(crate::Error::InputLimit("artifact byte limit"));
+        }
+        if self.dependencies.len() > crate::resources::limits().proof_dependencies {
+            return Err(crate::Error::InputLimit("dependency count limit"));
+        }
+        Ok(self.clone())
+    }
     #[cfg(test)]
     pub(crate) fn into_normal(self) -> ProofNormalForm {
-        match self.payload {
-            CandidatePayload::Proof(normal) => normal,
+        match &self.payload {
+            CandidatePayload::Proof(normal) => normal.clone(),
             CandidatePayload::Definition(_) => panic!("proof fixture required"),
         }
     }
@@ -217,6 +229,12 @@ impl Candidate {
             dependencies: self.dependencies.clone(),
             _memory: Some(self.memory.clone()),
         }
+    }
+}
+impl std::ops::Deref for Candidate {
+    type Target = CandidateData;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -291,7 +309,7 @@ impl CheckedArtifact {
                             })
                     })
                     .transpose()?;
-                let certificate = definition.certificate().to_canonical_bytes();
+                let certificate = definition.certificate().canonical_bytes();
                 let length = certificate
                     .len()
                     .checked_add(1)
@@ -301,7 +319,7 @@ impl CheckedArtifact {
                 )?;
                 let mut bytes = Vec::with_capacity(length);
                 bytes.push(ArtifactPayload::DEFINITION_TAG);
-                bytes.extend(certificate);
+                bytes.extend_from_slice(certificate);
                 let dependencies = obligation
                     .into_iter()
                     .map(ArtifactId::from_proof_id)
@@ -396,6 +414,7 @@ impl BinaryArtifact {
             payload: hex(&self.bytes),
         }
     }
+    #[cfg(test)]
     pub(crate) fn prepare(self) -> Result<Candidate, crate::Error> {
         self.prepare_with_limits(
             crate::resources::limits().proof_bytes,
@@ -477,7 +496,19 @@ fn prepare_candidate(
         }
         _ => return Err("unknown artifact payload".into()),
     };
-    if record_content_id(statement, &bytes)? != id {
+    let reconstructed = match &payload {
+        CandidatePayload::Proof(normal) => content_id(
+            statement.ok_or("proof statement missing")?,
+            normal.canonical_bytes(),
+        ),
+        CandidatePayload::Definition(definition) => {
+            if statement.is_some() {
+                return Err("definition has a statement claim".into());
+            }
+            definition.definition_id().into()
+        }
+    };
+    if reconstructed != id {
         return Err("claimed artifact ID mismatch".into());
     }
     let dependencies = match &payload {
@@ -492,7 +523,7 @@ fn prepare_candidate(
     if dependencies.len() > maximum_dependencies {
         return Err(crate::Error::InputLimit("dependency count limit"));
     }
-    Ok(Candidate {
+    Ok(Candidate(std::sync::Arc::new(CandidateData {
         id,
         statement,
         obligation,
@@ -500,7 +531,7 @@ fn prepare_candidate(
         dependencies,
         bytes,
         memory,
-    })
+    })))
 }
 fn dependencies_with_limit(
     id: ArtifactId,
@@ -543,7 +574,7 @@ impl Envelope {
             return Ok(None);
         }
         let candidate = self.clone().prepare()?;
-        Ok(match candidate.payload {
+        Ok(match &candidate.payload {
             CandidatePayload::Definition(certificate) => Some(certificate.definition_id()),
             CandidatePayload::Proof(_) => None,
         })

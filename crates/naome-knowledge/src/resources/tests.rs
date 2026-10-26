@@ -154,6 +154,34 @@ fn simultaneous_disk_preparations_share_custody_and_release_it() {
     });
 }
 
+#[test]
+fn growing_disk_custody_reserves_only_the_delta_and_preserves_failure() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    with_disk_available(u128::from(limits().disk_reserve_bytes) + 1024, || {
+        let mut lease = DiskLease::acquire(&directory.0, 800).unwrap();
+        let other = DiskLease::acquire(&directory.0, 100).unwrap();
+        lease.grow_to(&directory.0, 924).unwrap();
+        assert!(matches!(
+            lease.grow_to(&directory.0, 925),
+            Err(crate::Error::DiskOverload { .. })
+        ));
+        lease.recheck(&directory.0).unwrap();
+        assert!(matches!(
+            DiskLease::acquire(&directory.0, 1),
+            Err(crate::Error::DiskOverload { .. })
+        ));
+        drop(other);
+        lease.grow_to(&directory.0, 1024).unwrap();
+        lease.grow_to(&directory.0, 1).unwrap();
+        assert!(matches!(
+            DiskLease::acquire(&directory.0, 1),
+            Err(crate::Error::DiskOverload { .. })
+        ));
+        drop(lease);
+        DiskLease::acquire(&directory.0, 1024).unwrap();
+    });
+}
+
 pub(crate) fn snapshot(paused: bool) -> Snapshot {
     let mut snapshot = Snapshot::derive(
         Selection::default(),
