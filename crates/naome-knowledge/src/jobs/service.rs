@@ -16,6 +16,7 @@ fn lanes() -> [usize; 4] {
 #[derive(Clone)]
 pub(crate) struct Recovery {
     pub next_cursor: u64,
+    pub peer_cursor: u64,
     pub archive_end: u64,
     pub records: Vec<Record>,
 }
@@ -38,11 +39,15 @@ impl Service {
         let (disk, journal) = Disk::open(directory, settings, cursor)?;
         let recovery = Recovery {
             next_cursor: journal.next_cursor,
+            peer_cursor: journal
+                .learning
+                .as_ref()
+                .map_or(0, |learning| learning.peer_cursor),
             archive_end: journal.next_id,
             records: journal
                 .records
                 .values()
-                .filter(|r| !r.acknowledged)
+                .filter(|r| !r.acknowledged && !r.input.internal())
                 .cloned()
                 .collect(),
         };
@@ -136,15 +141,31 @@ struct PendingProgram {
     records: Vec<naome_proof::program::Command>,
     reply: oneshot::Sender<Result<(), String>>,
 }
+struct PendingModel {
+    unit: u32,
+    blob: crate::learning::Blob,
+    index: usize,
+    bytes: Option<Vec<u8>>,
+    reply: oneshot::Sender<Result<Vec<u8>, String>>,
+}
+struct PendingLearning {
+    unit: u32,
+    progress: Box<crate::learning::Progress>,
+    reply: oneshot::Sender<Result<(), String>>,
+}
 struct Owner {
     computation: Arc<crate::resources::Computation>,
     disk: Disk,
     journal: Journal,
     settings: Settings,
     waiters: BTreeMap<u64, Vec<oneshot::Sender<Completion>>>,
+    internal_receivers: BTreeMap<u64, oneshot::Receiver<Completion>>,
     clocks: BTreeMap<u64, Instant>,
     running: BTreeMap<u64, Running>,
     programs: BTreeMap<u64, PendingProgram>,
+    learning_progress: BTreeMap<u64, PendingLearning>,
+    learning_receipts: BTreeMap<u64, String>,
+    model_io: BTreeMap<u64, PendingModel>,
     tasks: FuturesUnordered<BoxFuture<'static, (u64, process::Outcome)>>,
     next_lane: usize,
     recovery_skip: std::collections::BTreeSet<u64>,
@@ -165,20 +186,35 @@ impl Owner {
         computation: Arc<crate::resources::Computation>,
     ) -> Self {
         let recovery_skip = journal.records.keys().copied().collect();
-        Self {
+        let mut owner = Self {
             computation,
             disk,
             journal,
             recovery_skip,
             settings,
             waiters: BTreeMap::new(),
+            internal_receivers: BTreeMap::new(),
             clocks: BTreeMap::new(),
             running: BTreeMap::new(),
             programs: BTreeMap::new(),
+            learning_progress: BTreeMap::new(),
+            learning_receipts: BTreeMap::new(),
+            model_io: BTreeMap::new(),
             tasks: FuturesUnordered::new(),
             next_lane: 0,
             flushed: Instant::now(),
+        };
+        for record in owner
+            .journal
+            .records
+            .values()
+            .filter(|r| r.input.internal() && !r.acknowledged && !r.state.terminal())
+        {
+            let (reply, receive) = oneshot::channel();
+            owner.waiters.entry(record.id).or_default().push(reply);
+            owner.internal_receivers.insert(record.id, receive);
         }
+        owner
     }
 
     async fn run(
@@ -206,6 +242,7 @@ impl Owner {
         events: mpsc::Sender<process::Event>,
         mut progress: mpsc::Receiver<process::Event>,
     ) -> Result<(), String> {
+        self.recover_internal()?;
         let mut tick = tokio::time::interval(crate::resources::limits().job_tick_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -217,6 +254,11 @@ impl Owner {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
+                    Some(Command::PeerCursor(ordinal))=>{if let Some(learning)=self.journal.learning.as_mut(){learning.peer_cursor=learning.peer_cursor.max(ordinal);self.save()?;}},
+                    Some(Command::PeerVerified(admission))=>{if self.settings.native_proof_learning {self.disk.enqueue_peer(&mut self.journal,admission)?;}},
+                    Some(Command::Accepted{id,root})=>{
+                        if let Some(previous)=self.learning_receipts.insert(id,root.clone()) && previous!=root {return Err("pending owned learning receipt differs".into());}
+                    },
                     Some(Command::Program{id,unit,reply})=>{let _=reply.send(self.disk.program_group(id,unit));},
                     Some(Command::Submit(input,binding,reply))=>self.submit(input,binding,reply)?,
                     Some(Command::Recover{after,before,reply})=>{
@@ -224,7 +266,7 @@ impl Owner {
                         let _=reply.send(Ok(page));
                     },
                     Some(Command::Acknowledge(id))=>{
-                        if id==0{continue;}
+                        if id==0 || self.learning_receipts.contains_key(&id){continue;}
                         if !self.journal.records.contains_key(&id){self.disk.acknowledge(&self.journal,id)?;continue;}
                         if id!=0 {
                             let Some(record)=self.journal.records.get_mut(&id) else {
@@ -274,6 +316,10 @@ impl Owner {
                                 Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error);},
                             }
                         },
+                        process::Event::Model{id,unit,blob,index,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,index,bytes,reply}).is_some() {return Err("duplicate pending native model IO".into());}},
+                        process::Event::Learning{id,unit,progress,reply}=>{
+                            if self.learning_progress.insert(id,PendingLearning{unit,progress,reply}).is_some() {return Err("duplicate pending local checkpoint".into());}
+                        },
                         process::Event::Progress{id,checkpoint,reply}=>{
                             if self.journal.records.get(&id).is_some_and(|r|matches!(r.state,State::Cancelled|State::Expired)) {
                                 let _=reply.send(Err("research job cancelled or expired".into()));continue;
@@ -285,8 +331,8 @@ impl Owner {
                                 if checkpoint!=record.checkpoint+1 || checkpoint>record.reserved_units {
                                     return Err("provider checkpoint differs from its durable reservation".into());
                                 }
-                                record.checkpoint=checkpoint;
-                                self.save()
+                                let native=record.native.is_some();record.checkpoint=checkpoint;
+                                self.save()?;if native {self.disk.collect_models(&mut self.journal)}else{Ok(())}
                             })();
                             let failure=result.as_ref().err().cloned();
                             let _=reply.send(result.map_err(String::from));
@@ -299,8 +345,277 @@ impl Owner {
                 },
                 _=tick.tick()=>self.reconcile()?,
             }
+            self.persist_learning()?;
             self.persist_programs()?;
+            self.fill_internal()?;
             self.schedule(&events)?;
+        }
+        Ok(())
+    }
+
+    fn recover_internal(&mut self) -> Result<(), String> {
+        let ids = self
+            .journal
+            .records
+            .values()
+            .filter(|r| r.input.internal() && !r.acknowledged && r.state.terminal())
+            .map(|r| r.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            let record = self
+                .journal
+                .records
+                .get(&id)
+                .expect("recovering internal result");
+            if record.state == State::Complete
+                && let (Some(native), Some(learning)) =
+                    (&record.native, self.journal.learning.as_mut())
+            {
+                native.validate()?;
+                learning.qualify(native);
+            }
+            if let Input::Train { epoch } = record.input
+                && let Some(learning) = self.journal.learning.as_mut()
+            {
+                learning.attempted(epoch);
+            }
+            let updates = if matches!(record.input, Input::Peer { .. }) {
+                self.disk.finish_peer(&mut self.journal, id)?
+            } else {
+                Vec::new()
+            };
+            self.journal
+                .records
+                .get_mut(&id)
+                .expect("recovering internal result")
+                .acknowledged = true;
+            self.save_extra(updates)?;
+        }
+        Ok(())
+    }
+    fn submit_internal(&mut self, input: Input, binding: Binding) -> Result<Option<u64>, String> {
+        let (reply, mut receive) = oneshot::channel();
+        self.submit(input.clone(), binding.clone(), reply)?;
+        if let Ok(completion) = receive.try_recv()
+            && completion.id == 0
+        {
+            return Ok(None);
+        }
+        let Some(record) = self
+            .disk
+            .request(&input, &binding, self.settings.for_input(&input))?
+        else {
+            return Ok(None);
+        };
+        self.internal_receivers.insert(record.id, receive);
+        Ok(Some(record.id))
+    }
+    fn fill_internal(&mut self) -> Result<(), String> {
+        if !self.settings.native_proof_learning {
+            return Ok(());
+        }
+        if let Some(admission) = self.disk.pending_peer()? {
+            let eligible = admission
+                .question
+                .as_ref()
+                .is_some_and(|q| crate::learning::State::eligible(q));
+            if !eligible {
+                self.disk.peer_status(
+                    &mut self.journal,
+                    &admission,
+                    PeerStatus::Unsupported {
+                        reason: "reserved, unclassified or oversized question".into(),
+                    },
+                )?;
+            } else {
+                let input = Input::Peer {
+                    question: admission.question.clone().expect("eligible question"),
+                    artifact: admission.artifact.clone(),
+                    peer: admission.peer.clone(),
+                };
+                if let Some(job) = self.submit_internal(input, admission.binding.clone())? {
+                    self.disk.peer_status(
+                        &mut self.journal,
+                        &admission,
+                        PeerStatus::Running { job },
+                    )?;
+                }
+            }
+        }
+        let Some(learning) = self.journal.learning.as_ref() else {
+            return Ok(());
+        };
+        if learning.needs_training()
+            && !self.journal.records.values().any(|r| {
+                matches!(r.input, Input::Train { .. }) && !r.state.terminal() && !r.acknowledged
+            })
+        {
+            let epoch = learning.learning_epoch();
+            let binding = Binding::new([0; 32], [0; 32]);
+            if self
+                .submit_internal(Input::Train { epoch }, binding)?
+                .is_some()
+            {
+                self.journal
+                    .learning
+                    .as_mut()
+                    .expect("native learning state")
+                    .attempted(epoch);
+                self.save()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn persist_learning(&mut self) -> Result<(), String> {
+        for id in self.model_io.keys().copied().collect::<Vec<_>>() {
+            let pending = self.model_io.remove(&id).expect("owned model IO");
+            if pending.reply.is_closed() {
+                continue;
+            }
+            if self
+                .journal
+                .records
+                .get(&id)
+                .is_some_and(|r| matches!(r.state, State::Cancelled | State::Expired))
+            {
+                let _ = pending
+                    .reply
+                    .send(Err("native model job cancelled or expired".into()));
+                continue;
+            }
+            let _disk = match crate::resources::DiskLease::acquire(
+                self.disk.directory(),
+                (crate::resources::limits().native_model_chunk_bytes as u64) * 8,
+            ) {
+                Ok(lease) => lease,
+                Err(error) if error.retryable() => {
+                    self.model_io.insert(id, pending);
+                    continue;
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            self.charge(id)?;
+            let result = self.disk.model_io(
+                &mut self.journal,
+                id,
+                pending.unit,
+                &pending.blob,
+                pending.index,
+                pending.bytes.clone(),
+            );
+            match result {
+                Err(error) if error.retryable() => {
+                    self.model_io.insert(id, pending);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = pending.reply.send(Err(message.clone()));
+                    return Err(message);
+                }
+                Ok(bytes) => {
+                    let _ = pending.reply.send(Ok(bytes));
+                }
+            }
+        }
+        for id in self.learning_progress.keys().copied().collect::<Vec<_>>() {
+            let pending = self
+                .learning_progress
+                .remove(&id)
+                .expect("owned local checkpoint");
+            if pending.reply.is_closed() {
+                continue;
+            }
+            if self
+                .journal
+                .records
+                .get(&id)
+                .is_some_and(|r| matches!(r.state, State::Cancelled | State::Expired))
+            {
+                let _ = pending
+                    .reply
+                    .send(Err("learning job cancelled or expired".into()));
+                continue;
+            }
+            let lease = crate::resources::DiskLease::acquire(
+                self.disk.directory(),
+                (crate::resources::limits().closure_bytes as u64) * 8,
+            );
+            let _lease = match lease {
+                Ok(lease) => lease,
+                Err(error) if error.retryable() => {
+                    self.learning_progress.insert(id, pending);
+                    continue;
+                }
+                Err(error) => {
+                    let reason = error.to_string();
+                    let _ = pending.reply.send(Err(reason.clone()));
+                    return Err(reason);
+                }
+            };
+            let previous_native = self.journal.records.get(&id).and_then(|r| r.native.clone());
+            let result = (|| -> Result<(), crate::Error> {
+                self.charge(id)?;
+                let record = self
+                    .journal
+                    .records
+                    .get_mut(&id)
+                    .ok_or("unknown learning checkpoint")?;
+                if record.state != State::Running
+                    || pending.unit != record.checkpoint + 1
+                    || pending.unit > record.reserved_units
+                    || pending.progress.unit != pending.unit
+                {
+                    return Err("learning checkpoint lacks original reservation".into());
+                }
+                let native = record
+                    .native
+                    .as_mut()
+                    .ok_or("learning checkpoint lacks snapshot")?;
+                native.progress = Some((*pending.progress).clone());
+                native.validate()?;
+                self.disk.verify_models(native)?;
+                self.save()
+            })();
+            match result {
+                Err(error) if error.retryable() => {
+                    self.journal
+                        .records
+                        .get_mut(&id)
+                        .expect("owned learning checkpoint")
+                        .native = previous_native;
+                    self.learning_progress.insert(id, pending);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = pending.reply.send(Err(message.clone()));
+                    return Err(message);
+                }
+                Ok(()) => {
+                    let _ = pending.reply.send(Ok(()));
+                }
+            }
+        }
+        for id in self.learning_receipts.keys().copied().collect::<Vec<_>>() {
+            let _lease = match crate::resources::DiskLease::acquire(
+                self.disk.directory(),
+                (crate::resources::limits().closure_bytes as u64) * 8,
+            ) {
+                Ok(lease) => lease,
+                Err(error) if error.retryable() => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            let root = self
+                .learning_receipts
+                .remove(&id)
+                .expect("owned learning receipt");
+            self.disk.accept_learning(&mut self.journal, id, &root)?;
+        }
+        if self.journal.learning.is_some()
+            && let Err(error) = self.disk.collect_models(&mut self.journal)
+            && !error.retryable()
+        {
+            return Err(error.to_string());
         }
         Ok(())
     }
@@ -408,12 +723,49 @@ impl Owner {
             record.acknowledged = true;
         }
         let uncertain = record.state == State::InDoubt;
+        if record.state == State::Complete
+            && let Some(learning) = self.journal.learning.as_mut()
+        {
+            if let Some(native) = &record.native {
+                native.validate()?;
+                if learning.qualify(native)
+                    && let Some(progress) = &native.progress
+                {
+                    crate::network::emit(
+                        serde_json::json!({"event":"native_learning_qualification","job":id,"diagnostic":progress.diagnostic}),
+                    );
+                }
+            }
+            match (&record.input, &record.result) {
+                (Input::Find { .. }, Some(Output::Question(source)))
+                    if record.provider == crate::learning::PROVIDER =>
+                {
+                    learning.observe(source, None)
+                }
+                (Input::Solve { question }, Some(Output::Native { solution, .. })) => {
+                    learning.observe(question, Some(solution.is_some()))
+                }
+                _ => {}
+            }
+        }
+        let internal = record.input.internal();
+        if internal {
+            record.acknowledged = true;
+        }
+        let updates = if matches!(record.input, Input::Peer { .. }) {
+            self.disk.finish_peer(&mut self.journal, id)?
+        } else {
+            Vec::new()
+        };
         // Keep the completing job protected from terminal-history compaction
         // until its persisted outcome can be delivered, even if abandoned.
-        self.save()?;
+        self.save_extra(updates)?;
         self.running.remove(&id);
         self.clocks.remove(&id);
         self.deliver(id);
+        if internal {
+            self.internal_receivers.remove(&id);
+        }
         if uncertain {
             return Err("provider cleanup or effects require reconciliation".into());
         }
@@ -421,6 +773,9 @@ impl Owner {
     }
 
     fn save(&mut self) -> Result<(), crate::Error> {
+        self.save_extra(Vec::new())
+    }
+    fn save_extra(&mut self, extra: Vec<crate::checkpoint::Update>) -> Result<(), crate::Error> {
         let now = wall_ms().map_err(crate::Error::CorruptStorage)?;
         if now < self.journal.observed_ms {
             return Err(crate::Error::CorruptStorage(
@@ -442,7 +797,7 @@ impl Owner {
         self.journal
             .validate_delta(self.settings)
             .map_err(crate::Error::CorruptStorage)?;
-        self.disk.save(&mut self.journal)?;
+        self.disk.save_with(&mut self.journal, extra)?;
         self.flushed = Instant::now();
         Ok(())
     }
@@ -628,7 +983,26 @@ impl Owner {
                 id,
                 input: input.clone(),
                 binding: binding.clone(),
-                provider: super::provider::DEFAULT_PROVIDER.into(),
+                provider: if self.settings.native_proof_learning
+                    && !matches!(input, Input::Interest { .. })
+                {
+                    crate::learning::PROVIDER
+                } else {
+                    super::provider::DEFAULT_PROVIDER
+                }
+                .into(),
+                native: (self.settings.native_proof_learning
+                    && !matches!(input, Input::Interest { .. }))
+                .then(|| {
+                    let mut job = self
+                        .journal
+                        .learning
+                        .as_ref()
+                        .expect("configured native learning state")
+                        .job();
+                    job.training = matches!(input, Input::Train { .. });
+                    Box::new(job)
+                }),
                 configuration: identity(&settings),
                 settings,
                 created_ms,
@@ -677,6 +1051,7 @@ impl Owner {
             .ok_or("research accounting record absent")?;
         record.spent_ms = record.spent_ms.saturating_add(elapsed);
         record.accounted_ms = now;
+        self.journal.observed_ms = now;
         self.journal.total_spent_ms = self.journal.total_spent_ms.saturating_add(elapsed);
         if let Some(account) = self.journal.accounts.get_mut(&record.input.account_key()) {
             account.spent_ms = account.spent_ms.saturating_add(elapsed);
@@ -757,6 +1132,23 @@ impl Owner {
                 let Some(computation) = self.computation.try_enter() else {
                     break;
                 };
+                let model_memory = if self.journal.records.get(&id).is_some_and(|r| {
+                    r.provider == crate::learning::PROVIDER
+                        && matches!(
+                            r.input,
+                            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
+                        )
+                }) {
+                    match crate::resources::MemoryLease::acquire(
+                        crate::resources::limits().native_model_work_bytes,
+                    ) {
+                        Ok(lease) => Some(lease),
+                        Err(error) if error.retryable() => continue,
+                        Err(error) => return Err(error.to_string()),
+                    }
+                } else {
+                    None
+                };
                 let Some(slot) = self.disk.slot(lane)? else {
                     continue;
                 };
@@ -790,6 +1182,7 @@ impl Owner {
                     },
                 );
                 self.tasks.push(Box::pin(async move {
+                    let _model_memory = model_memory;
                     let outcome = std::panic::AssertUnwindSafe(process::run(
                         source,
                         allowance.remaining_ms,
@@ -1080,7 +1473,9 @@ fn failure_detail(error: &str) -> String {
 
 fn output_reservation(input: &Input) -> usize {
     match input {
-        Input::Solve { .. } => 6 * crate::resources::limits().closure_bytes + 1024,
+        Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => {
+            6 * crate::resources::limits().closure_bytes + 1024
+        }
         Input::Find { .. } => 6 * naome_authoring::QUESTION_SOURCE_MAX_BYTES + 128,
         Input::Interest { .. } => 64,
     }

@@ -10,6 +10,7 @@ members = [
     "crates/naome-proof",
     "crates/naome-storage",
 ]
+exclude = ["vendor/burn-dispatch"]
 resolver = "3"
 
 [workspace.package]
@@ -43,6 +44,7 @@ debug-assertions = true
 overflow-checks = true
 
 [patch.crates-io]
+burn-dispatch = { path = "vendor/burn-dispatch" }
 libp2p-mdns = { path = "vendor/libp2p-mdns" }
 libp2p-dcutr = { path = "vendor/libp2p-dcutr" }
 libp2p-relay = { path = "vendor/libp2p-relay" }

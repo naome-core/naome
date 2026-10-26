@@ -1,0 +1,248 @@
+use super::*;
+use naome_foundation::{Formula, FreeVariable, ZfcAxiom};
+pub(crate) fn own_question() -> String {
+    curriculum::CORPUS
+        .cases
+        .iter()
+        .find(|q| {
+            q.id == "0b9642ac64348266b101937f7e963be206ff56282f962f95a8501737bcc3fb7e"
+                && !q.development
+        })
+        .expect("eligible native question")
+        .source
+        .clone()
+}
+pub(crate) fn own_example() -> Example {
+    let question = own_question();
+    let (solution, diagnostic) = search_question(&question, &mut Symbolic, 128).unwrap();
+    let solution = solution.unwrap_or_else(|| panic!("own native solution: {diagnostic}"));
+    Example {
+        origin: Origin::Local,
+        job: 41,
+        question,
+        proof_id: solution.proof_id,
+        refuted: solution.refuted,
+        tree: solution.tree,
+    }
+}
+#[test]
+fn question_seed_preserves_dependency_partitions_and_native_identities() {
+    use sha2::{Digest, Sha256};
+    let c = &*curriculum::CORPUS;
+    assert_eq!(c.cases.iter().filter(|q| !q.development).count(), 1308);
+    assert_eq!(c.cases.iter().filter(|q| q.development).count(), 232);
+    let mut groups = BTreeMap::new();
+    let mut ids = std::collections::BTreeSet::new();
+    for q in &c.cases {
+        let compiled = CompiledQuestion::compile(&q.source).unwrap();
+        assert_eq!(crate::hex(compiled.resolution_id()), q.id);
+        assert!(ids.insert(q.id.clone()));
+        assert!(c.reserved_ids.binary_search(&q.id).is_err());
+        let hash = crate::hex(&Sha256::digest(q.dependency.as_bytes()));
+        let bucket = u64::from_str_radix(&hash[..8], 16).unwrap() % 5;
+        assert_ne!(bucket, 1);
+        assert_eq!(q.development, bucket == 0);
+        if let Some(old) = groups.insert(q.dependency.clone(), q.development) {
+            assert_eq!(old, q.development);
+        }
+    }
+    assert_eq!(curriculum::development().len(), 8);
+    assert!(c.reserved_ids.windows(2).all(|w| w[0] < w[1]));
+}
+#[test]
+fn progress_statistics_remain_canonical_through_repeated_observation_and_reload() {
+    let question = own_question();
+    let mut state = State::fresh();
+    for attempt in 0..200 {
+        state.observe(&question, Some(attempt % 3 != 0));
+        let bytes = crate::checkpoint::encode(&state).unwrap();
+        let restored: State = crate::checkpoint::decode(&bytes).unwrap();
+        assert_eq!(crate::checkpoint::encode(&restored).unwrap(), bytes);
+        state = restored;
+    }
+    state.validate().unwrap();
+}
+#[test]
+fn native_search_reconstructs_classical_quantifier_equality_and_zfc_proofs() {
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    let a = Formula::member(x, x);
+    let targets = [
+        Formula::implies(Formula::negate(Formula::negate(a.clone())), a.clone()),
+        Formula::implies(Formula::for_all(y, Formula::member(y, y)), a.clone()),
+        Formula::implies(
+            Formula::equal(x, y),
+            Formula::implies(a, Formula::member(y, y)),
+        ),
+        ZfcAxiom::Pairing.formula(),
+    ];
+    for target in targets {
+        let source = format!("goal={}", proof::close(target).to_source());
+        let solution = search_question(&source, &mut Symbolic, 128)
+            .unwrap()
+            .0
+            .expect("native candidate");
+        assert!(!solution.refuted);
+        let proof = naome_authoring::compile(&solution.source).unwrap();
+        assert_eq!(crate::hex(proof.proof_id().as_bytes()), solution.proof_id);
+    }
+    let source = "goal=all(x,mem(x,x))";
+    assert!(
+        search_question(source, &mut Symbolic, 1)
+            .unwrap()
+            .0
+            .is_none(),
+        "failure is not a refutation label"
+    );
+}
+#[test]
+fn learning_replays_only_checked_owned_eligible_solutions_and_is_atomic_on_forgery() {
+    let mut state = State::fresh();
+    let e = own_example();
+    assert!(state.accept(e.clone()).unwrap());
+    assert!(!state.accept(e.clone()).unwrap());
+    let before = digest(&state);
+    let mut forged = e;
+    forged.job += 1;
+    forged.proof_id = "01".repeat(32);
+    forged.tree = search::Tree::Close(0, 0);
+    assert!(state.accept(forged).is_err());
+    assert_eq!(digest(&state), before);
+    let mut job = state.job();
+    job.base_hash = "02".repeat(32);
+    assert!(job.validate().is_err());
+}
+#[test]
+fn checkpoint_after_work_before_acknowledgement_is_idempotent() {
+    let mut job = State::fresh().job();
+    let mut engine = Engine::default();
+    let mut io = MemoryStore::default();
+    let source = curriculum::CORPUS
+        .cases
+        .iter()
+        .find(|q| q.development)
+        .unwrap()
+        .source
+        .clone();
+    job.execute(1, Some(&source), 61, &mut engine, &mut io)
+        .unwrap();
+    let bytes = serde_json::to_vec(&job).unwrap();
+    let mut resumed: Job = serde_json::from_slice(&bytes).unwrap();
+    resumed.validate().unwrap();
+    resumed
+        .execute(1, Some(&source), 61, &mut engine, &mut io)
+        .unwrap();
+    assert_eq!(serde_json::to_vec(&resumed).unwrap(), bytes);
+    assert!(
+        resumed
+            .execute(3, Some(&source), 61, &mut engine, &mut io)
+            .is_err()
+    );
+}
+#[test]
+fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuation() {
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let mut io = MemoryStore::default();
+    let mut engine = Engine::default();
+    let graphs = state.training_graphs().unwrap();
+    let incumbent = model::test_update(&state.model, &graphs, &mut 31, &mut io).unwrap();
+    state.model = incumbent.clone();
+    let mut job = state.job();
+    job.training = true;
+    let (candidate, _, _) = engine.train(&incumbent, &graphs, &mut 47, &mut io).unwrap();
+    assert_ne!(candidate.model, incumbent.model);
+    assert_ne!(candidate.optimizer, incumbent.optimizer);
+    let mut finished = job.base.clone();
+    finished.trained = finished.accepted;
+    job.progress = Some(Progress {
+        unit: job.units() - 1,
+        state: finished,
+        candidate: Some(candidate),
+        rng: 9,
+        first_loss: Some(1.),
+        last_loss: Some(0.1),
+        incumbent_score: 1,
+        candidate_score: 2,
+        anchor_regression: true,
+        result: None,
+        diagnostic: "candidate_requires_qualification".into(),
+    });
+    job.execute(job.units(), None, 42, &mut engine, &mut io)
+        .unwrap();
+    assert_eq!(
+        job.progress.as_ref().unwrap().diagnostic,
+        "forgetting_rejected"
+    );
+    assert!(state.qualify(&job));
+    assert_eq!(state.model, incumbent);
+    let actual = model::test_update(&state.model, &graphs, &mut 59, &mut io).unwrap();
+    let expected = model::test_update(&incumbent, &graphs, &mut 59, &mut io).unwrap();
+    assert_eq!(
+        actual, expected,
+        "the next real update must retain both model and Adam state"
+    );
+}
+#[derive(Default)]
+pub(crate) struct MemoryStore(pub BTreeMap<(String, usize), Vec<u8>>);
+impl ArtifactIo for MemoryStore {
+    fn read(&mut self, blob: &Blob, index: usize) -> Result<Vec<u8>, String> {
+        self.0
+            .get(&(blob.sha256.clone(), index))
+            .cloned()
+            .ok_or("test checkpoint missing".into())
+    }
+    fn write(&mut self, blob: &Blob, index: usize, bytes: Vec<u8>) -> Result<(), String> {
+        self.0.insert((blob.sha256.clone(), index), bytes);
+        Ok(())
+    }
+}
+struct Symbolic;
+impl model::Ranker for Symbolic {
+    fn scores(&mut self, d: &model::Decision) -> Result<Vec<f32>, String> {
+        Ok(vec![0.; d.candidates.len()])
+    }
+}
+
+pub(crate) fn own_solution() -> Solution {
+    search_question(&own_question(), &mut Symbolic, 128)
+        .unwrap()
+        .0
+        .unwrap()
+}
+pub(crate) fn completed(job: &mut Job, solution: Solution) {
+    job.progress = Some(Progress {
+        unit: 1,
+        state: job.base.clone(),
+        candidate: None,
+        rng: 1,
+        first_loss: None,
+        last_loss: None,
+        incumbent_score: 0,
+        candidate_score: 0,
+        anchor_regression: false,
+        result: Some(solution),
+        diagnostic: "certified_candidate".into(),
+    });
+}
+pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
+    let mut state = job.base.clone();
+    state.trained = state.accepted;
+    let mut candidate = state.model.clone();
+    candidate.model = Some(model);
+    candidate.optimizer = Some(optimizer);
+    candidate.updates += model::UPDATES_PER_UNIT;
+    job.progress = Some(Progress {
+        unit: 1,
+        state,
+        candidate: Some(candidate),
+        rng: 1,
+        first_loss: Some(1.),
+        last_loss: Some(0.9),
+        incumbent_score: 0,
+        candidate_score: 0,
+        anchor_regression: false,
+        result: None,
+        diagnostic: "candidate_requires_qualification".into(),
+    });
+}

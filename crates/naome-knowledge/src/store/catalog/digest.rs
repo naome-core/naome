@@ -10,7 +10,11 @@ pub(super) struct CommitDigest {
 }
 
 impl CommitDigest {
-    pub(super) fn new(root: [u8; 32], count: usize) -> Result<Self, crate::Error> {
+    pub(super) fn new(
+        root: [u8; 32],
+        count: usize,
+        peer: Option<&str>,
+    ) -> Result<Self, crate::Error> {
         let width = u32::try_from(count).map_err(|_| "catalog commit count width")?;
         if count == 0 {
             return Err("invalid catalog commit membership".into());
@@ -19,6 +23,15 @@ impl CommitDigest {
         hash.update(b"naome:knowledge:catalog-commit:v1\0");
         hash.update(root);
         hash.update(width.to_be_bytes());
+        hash.update([u8::from(peer.is_some())]);
+        if let Some(peer) = peer {
+            let parsed: libp2p::PeerId = peer.parse().map_err(|_| "catalog peer origin syntax")?;
+            if peer.len() > 128 || parsed.to_string() != peer {
+                return Err("catalog peer origin encoding".into());
+            }
+            hash.update((peer.len() as u32).to_be_bytes());
+            hash.update(peer.as_bytes());
+        }
         Ok(Self {
             hash,
             root,

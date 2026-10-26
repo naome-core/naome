@@ -27,6 +27,13 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              admitted work drains without new time or work allowances. Bounded\n\
              discovery, checked-proof serving and lifecycle control remain active.\n\
              No unchecked proof is admitted. Network allocations retain memory limits.\n\
+             \nNative proof learning (opt-in):\n\
+             Set runtime.jobs.native_proof_learning=true in config.json while stopped.\n\
+             A fresh 1,003,361-parameter CPU graph model learns from accepted local proofs.\n\
+             Locally checked peer proofs can supply supported reconstructed traces.\n\
+             Training uses a sealed question-only TRAIN subset and excludes reserved groups.\n\
+             Model, optimizer and replay stay local; only checked mathematics is gossiped.\n\
+             Candidate promotion is bounded; continued improvement is not established.\n\
              \nNetworking and privacy:\n\
              The checked graph is public to compatible peers: do not store secrets.\n\
              mDNS discovers LAN peers; the public IPFS Amino DHT discovers Internet\n\

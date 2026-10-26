@@ -34,6 +34,24 @@ pub(super) trait Supervisor {
     ) -> Result<(), String> {
         Err("provider does not support streamed candidates".into())
     }
+    fn read_model(
+        &mut self,
+        _blob: crate::learning::Blob,
+        _index: usize,
+    ) -> Result<Vec<u8>, String> {
+        Err("provider cannot read local model artifacts".into())
+    }
+    fn write_model(
+        &mut self,
+        _blob: crate::learning::Blob,
+        _index: usize,
+        _bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        Err("provider cannot write local model artifacts".into())
+    }
+    fn learning(&mut self, _unit: u32, _progress: crate::learning::Progress) -> Result<(), String> {
+        Err("provider does not support local learning checkpoints".into())
+    }
     fn reserve(&mut self, next: u32) -> Result<(), String>;
     fn checkpoint(&mut self, checkpoint: u32) -> Result<(), String>;
     fn probe(&mut self, probe: Probe) -> Result<(), String>;
@@ -93,6 +111,14 @@ pub(super) struct Contract {
 }
 pub(super) fn contract(record: &Record) -> Option<Contract> {
     match record.provider.as_str() {
+        crate::learning::PROVIDER => record.native.as_ref().map(|job| Contract {
+            units: if matches!(record.input, Input::Find { .. }) {
+                1
+            } else {
+                job.units()
+            },
+            resumable: true,
+        }),
         DEFAULT_PROVIDER => Some(Contract {
             units: if streams(&record.input, record.settings.mock) {
                 record.settings.mock.program_units
@@ -119,11 +145,60 @@ pub(super) fn resumable(record: &Record) -> bool {
 }
 pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, String> {
     match record.provider.as_str() {
+        crate::learning::PROVIDER => Ok(Box::new(Native {
+            record: record.clone(),
+            engine: crate::learning::Engine::default(),
+        })),
         DEFAULT_PROVIDER => Ok(Box::new(Mock {
             input: record.input.clone(),
             work: record.settings.mock,
         })),
         _ => Err("unknown research provider".into()),
+    }
+}
+struct Native {
+    record: Record,
+    engine: crate::learning::Engine,
+}
+impl Provider for Native {
+    fn next(&self, checkpoint: u32) -> Result<Option<u32>, Failure> {
+        let units = contract(&self.record)
+            .ok_or("native provider contract")?
+            .units;
+        Ok((checkpoint < units).then_some(checkpoint + 1))
+    }
+    fn execute(&mut self, unit: u32, owner: &mut dyn Supervisor) -> Result<(), Failure> {
+        let question = match &self.record.input {
+            Input::Solve { question } | Input::Peer { question, .. } => Some(question.as_str()),
+            Input::Train { .. } => None,
+            _ => return Ok(()),
+        };
+        let job = self
+            .record
+            .native
+            .as_mut()
+            .ok_or("native model snapshot missing")?;
+        job.execute(unit, question, self.record.id, &mut self.engine, owner)?;
+        owner.learning(unit, job.progress.clone().ok_or("native progress missing")?)?;
+        Ok(())
+    }
+    fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {
+        let job = self
+            .record
+            .native
+            .as_ref()
+            .ok_or("native model snapshot missing")?;
+        Ok(match &self.record.input {
+            Input::Find { cursor } => Output::Question(job.base.question(*cursor)),
+            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => {
+                let p = job.progress.as_ref().ok_or("native final state missing")?;
+                Output::Native {
+                    solution: p.result.clone(),
+                    diagnostic: p.diagnostic.clone(),
+                }
+            }
+            _ => return Err("native provider role differs".into()),
+        })
     }
 }
 struct Mock {
@@ -246,6 +321,9 @@ impl Provider for Mock {
                     })
                     .unwrap_or(Output::NoCandidate)
             }
+            Input::Peer { .. } | Input::Train { .. } => {
+                return Err("native learning jobs require the native provider".into());
+            }
             Input::Interest { question, .. } => {
                 let compiled = naome_authoring::CompiledQuestion::compile(question)
                     .map_err(|e| e.to_string())?;
@@ -260,3 +338,17 @@ impl Provider for Mock {
 
 #[cfg(test)]
 mod tests;
+
+impl crate::learning::ArtifactIo for dyn Supervisor + '_ {
+    fn read(&mut self, blob: &crate::learning::Blob, index: usize) -> Result<Vec<u8>, String> {
+        self.read_model(blob.clone(), index)
+    }
+    fn write(
+        &mut self,
+        blob: &crate::learning::Blob,
+        index: usize,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        self.write_model(blob.clone(), index, bytes)
+    }
+}

@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod learning;
+
 const CHECKPOINT_DOMAIN: &str = "naome:research-jobs";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -34,6 +36,7 @@ pub(super) struct Journal {
     pub total_reserved_units: u64,
     pub records: super::tracked::TrackedMap<u64, Record>,
     pub accounts: super::tracked::TrackedMap<String, Account>,
+    pub learning: Option<crate::learning::State>,
     pub slots: Vec<(u64, u64)>,
 }
 
@@ -79,6 +82,7 @@ impl Journal {
             total_spent_ms: header.total_spent_ms,
             total_reserved_units: header.total_reserved_units,
             slots: header.slots,
+            learning: None,
             records: super::tracked::TrackedMap::new(),
             accounts: super::tracked::TrackedMap::new(),
         }
@@ -103,9 +107,14 @@ impl Journal {
         Ok(())
     }
     pub(super) fn encoded_active_len(&mut self) -> Result<usize, String> {
+        let learning = match &self.learning {
+            Some(state) => crate::checkpoint::encode(state)?.len(),
+            None => 0,
+        };
         self.records
             .encoded_len()?
             .checked_add(self.accounts.encoded_len()?)
+            .and_then(|bytes| bytes.checked_add(learning))
             .and_then(|bytes| bytes.checked_add(4096))
             .ok_or("active journal byte overflow".into())
     }
@@ -116,6 +125,8 @@ pub(super) struct Disk {
     slots: Vec<(u64, u64)>,
     workers: [usize; 4],
     checkpoint: crate::checkpoint::Checkpoint,
+    learning_hash: String,
+    verified_models: std::collections::BTreeSet<String>,
 }
 
 impl Disk {
@@ -143,6 +154,9 @@ impl Disk {
                 retired_jobs: 0,
                 total_spent_ms: 0,
                 total_reserved_units: 0,
+                learning: settings
+                    .native_proof_learning
+                    .then(crate::learning::State::fresh),
                 records: super::tracked::TrackedMap::new(),
                 accounts: super::tracked::TrackedMap::new(),
                 slots: install_slots(&root)?,
@@ -152,10 +166,29 @@ impl Disk {
                 &path,
                 CHECKPOINT_DOMAIN,
                 &journal.header(),
-                vec![],
+                vec![crate::checkpoint::Update::put(
+                    "learning",
+                    "current",
+                    &journal.learning,
+                )?],
             )?
         };
-        checkpoint.require_kinds(&["record", "account", "request", "history", "program"])?;
+        checkpoint.require_kinds(&[
+            "record",
+            "account",
+            "request",
+            "history",
+            "program",
+            "learning",
+            "learned",
+            "sample",
+            "model",
+            "peer_pending",
+            "peer_receipt",
+            "model_owner",
+            "model_use",
+            "model_gc",
+        ])?;
         checkpoint.scan(
             "program",
             naome_proof::program::CHUNK_BYTES,
@@ -204,6 +237,21 @@ impl Disk {
             return Err("research physical slot allocation differs".into());
         }
         let mut journal = Journal::from_header(header);
+        journal.learning = checkpoint
+            .get(
+                "learning",
+                "current",
+                crate::resources::limits().closure_bytes,
+            )?
+            .ok_or("local learning state missing")?;
+        learning::validate_rows(&checkpoint, journal.learning.as_ref())?;
+        let persisted_learning_hash = crate::learning::digest(&journal.learning);
+        if settings.native_proof_learning && journal.learning.is_none() {
+            journal.learning = Some(crate::learning::State::fresh());
+        }
+        if let Some(learning) = &journal.learning {
+            learning.validate()?;
+        }
         journal.configuration = identity(&settings);
         let mut resident_bytes = 4096usize;
         let mut terminal_residents = Vec::new();
@@ -387,9 +435,24 @@ impl Disk {
             path,
             slots: journal.slots.clone(),
             workers: crate::resources::limits().workers,
+            learning_hash: persisted_learning_hash,
+            verified_models: std::collections::BTreeSet::new(),
             checkpoint,
         };
         disk.save(&mut journal)?;
+        if disk.checkpoint.count("model")? > 0 {
+            disk.collect_models(&mut journal)?;
+        }
+        if let Some(learning) = &journal.learning {
+            for blob in learning.blobs() {
+                disk.verify_blob(blob)?;
+            }
+        }
+        for record in journal.records.values().filter(|r| !r.acknowledged) {
+            if let Some(native) = &record.native {
+                disk.verify_models(native)?;
+            }
+        }
         disk.retire_acknowledged_candidates()?;
         drop(reconfiguration_locks);
         if !established {
@@ -450,6 +513,13 @@ impl Disk {
     }
 
     pub(super) fn save(&mut self, journal: &mut Journal) -> Result<(), crate::Error> {
+        self.save_with(journal, Vec::new())
+    }
+    pub(super) fn save_with(
+        &mut self,
+        journal: &mut Journal,
+        extra: Vec<crate::checkpoint::Update>,
+    ) -> Result<(), crate::Error> {
         journal
             .remember_holds()
             .map_err(crate::Error::CorruptStorage)?;
@@ -469,9 +539,33 @@ impl Disk {
             .filter(|update| matches!(update, crate::checkpoint::Update::Put { .. }))
             .collect::<Vec<_>>();
         updates.extend(journal.accounts.updates("account")?);
+        let learning_hash = crate::learning::digest(&journal.learning);
+        if learning_hash != self.learning_hash {
+            updates.push(crate::checkpoint::Update::put(
+                "learning",
+                "current",
+                &journal.learning,
+            )?);
+        }
+        if learning_hash != self.learning_hash {
+            let refs: Vec<_> = journal
+                .learning
+                .as_ref()
+                .into_iter()
+                .flat_map(|s| s.blobs().cloned())
+                .collect();
+            self.update_model_refs(&mut updates, "global", refs)?;
+        }
         for (id, record) in &journal.records {
             if !journal.records.changed(id) {
                 continue;
+            }
+            if record.native.is_some() {
+                self.update_model_refs(
+                    &mut updates,
+                    &format!("job{id}"),
+                    Self::record_model_refs(record),
+                )?;
             }
             let history = format!("{id:020}");
             if self
@@ -500,6 +594,7 @@ impl Disk {
             }
         }
 
+        updates.extend(extra);
         self.checkpoint
             .commit(&journal.header(), updates)
             .map_err(crate::Error::from)?;
@@ -508,6 +603,7 @@ impl Disk {
                 self.retire_candidate_cache(*id);
             }
         }
+        self.learning_hash = learning_hash;
         journal.records.clean();
         journal.accounts.clean();
         let retained = journal
@@ -554,7 +650,7 @@ impl Disk {
                 if record.id != id {
                     return Err("research history record identity differs".into());
                 }
-                if !record.acknowledged {
+                if !record.acknowledged && !record.input.internal() {
                     let size = crate::checkpoint::encode(&record)?.len();
                     if !records.is_empty()
                         && bytes
@@ -619,6 +715,9 @@ impl Disk {
                 kind: "request",
                 key,
             });
+        }
+        if record.native.is_some() {
+            self.update_model_refs(&mut updates, &format!("job{id}"), Vec::new())?;
         }
         self.checkpoint
             .commit(&journal.header(), updates)
@@ -841,6 +940,27 @@ fn validate_record(
     account: Option<&Account>,
 ) -> Result<(), String> {
     r.input.validate()?;
+    if let Some(native) = &r.native {
+        if native.training != matches!(r.input, Input::Train { .. }) {
+            return Err("native training role differs".into());
+        }
+        if let Input::Train { epoch } = r.input
+            && epoch != native.base.learning_epoch()
+        {
+            return Err("native learning epoch differs".into());
+        }
+        native.validate()?;
+        if r.provider != crate::learning::PROVIDER
+            || !matches!(
+                r.input,
+                Input::Find { .. } | Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. }
+            )
+        {
+            return Err("native provider snapshot role differs".into());
+        }
+    } else if r.provider == crate::learning::PROVIDER {
+        return Err("native provider snapshot absent".into());
+    }
     r.binding.validate()?;
     r.settings.validate_history()?;
     if id != r.id

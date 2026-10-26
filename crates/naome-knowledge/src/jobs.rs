@@ -103,6 +103,9 @@ pub enum RecoveryPolicy {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    /// Enable the bounded local graph solver and learning loop at node start.
+    /// Weights, optimizer and replay stay in the local job journal.
+    pub native_proof_learning: bool,
     pub finding: RoleSettings,
     pub solving: RoleSettings,
     pub interest: RoleSettings,
@@ -136,6 +139,18 @@ impl RoleSettings {
 
 impl Settings {
     pub(crate) fn validate(self) -> Result<Self, String> {
+        if self.native_proof_learning {
+            crate::resources::limits().native_model_capacity()?;
+            if [self.finding, self.solving]
+                .iter()
+                .any(|role| role.mock != MockWork::default())
+            {
+                return Err(
+                    "native proof learning and controlled mock workloads are separate providers"
+                        .into(),
+                );
+            }
+        }
         for role in [self.finding, self.solving, self.interest] {
             if role.limits.horizon_ms == 0
                 || role.limits.work_units == 0
@@ -169,7 +184,7 @@ impl Settings {
     fn for_input(&self, input: &Input) -> RoleSettings {
         match input {
             Input::Find { .. } => self.finding,
-            Input::Solve { .. } => self.solving,
+            Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => self.solving,
             Input::Interest { .. } => self.interest,
         }
     }
@@ -228,6 +243,14 @@ pub(crate) enum Purpose {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Input {
+    Peer {
+        question: String,
+        artifact: String,
+        peer: String,
+    },
+    Train {
+        epoch: u64,
+    },
     Find {
         cursor: u64,
     },
@@ -242,11 +265,14 @@ pub(crate) enum Input {
 }
 
 impl Input {
+    fn internal(&self) -> bool {
+        matches!(self, Self::Peer { .. } | Self::Train { .. })
+    }
     fn feedback_role(&self) -> crate::resources::feedback::Role {
         use crate::resources::feedback::Role;
         match self {
             Self::Find { .. } => Role::Finding,
-            Self::Solve { .. } => Role::Solving,
+            Self::Solve { .. } | Self::Peer { .. } | Self::Train { .. } => Role::Solving,
             Self::Interest { root: None, .. } => Role::LocalInterest,
             Self::Interest { root: Some(_), .. } => Role::PeerInterest,
         }
@@ -254,6 +280,24 @@ impl Input {
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Find { .. } => {}
+            Self::Train { epoch } => {
+                if *epoch == 0 {
+                    return Err("empty native learning epoch".into());
+                }
+            }
+            Self::Peer {
+                question,
+                artifact,
+                peer,
+            } => {
+                naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+                crate::object::id_bytes(artifact)?;
+                let parsed: libp2p::PeerId =
+                    peer.parse().map_err(|_| "native peer origin syntax")?;
+                if parsed.to_string() != *peer {
+                    return Err("native peer origin encoding".into());
+                }
+            }
             Self::Solve { question } | Self::Interest { question, .. } => {
                 naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
             }
@@ -284,6 +328,10 @@ impl Input {
     deny_unknown_fields
 )]
 pub(crate) enum Output {
+    Native {
+        solution: Option<crate::learning::Solution>,
+        diagnostic: String,
+    },
     Question(String),
     Proof {
         source: String,
@@ -297,6 +345,18 @@ pub(crate) enum Output {
 }
 
 impl Output {
+    pub(crate) fn candidate(self) -> Self {
+        match self {
+            Self::Native {
+                solution: Some(s), ..
+            } => Self::Proof {
+                source: s.source,
+                helpers: Vec::new(),
+            },
+            Self::Native { solution: None, .. } => Self::NoCandidate,
+            other => other,
+        }
+    }
     fn validate(&self, input: &Input) -> Result<(), String> {
         self.validate_with_limits(
             input,
@@ -321,6 +381,20 @@ impl Output {
         bytes: usize,
     ) -> Result<(), String> {
         match (self, input) {
+            (
+                Self::Native {
+                    solution,
+                    diagnostic,
+                },
+                Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. },
+            ) if diagnostic.len() <= 4096
+                && solution
+                    .as_ref()
+                    .is_none_or(|s| s.source.len() <= source_bytes)
+                && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
+            {
+                Ok(())
+            }
             (Self::Question(source), Input::Find { .. })
                 if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES =>
             {
@@ -371,6 +445,7 @@ pub(crate) struct Record {
     pub input: Input,
     pub binding: Binding,
     pub provider: String,
+    pub native: Option<Box<crate::learning::Job>>,
     pub configuration: String,
     pub settings: RoleSettings,
     pub created_ms: u64,
@@ -440,7 +515,42 @@ pub(crate) struct RecoveryPage {
     pub next: Option<u64>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PeerAdmission {
+    pub ordinal: u64,
+    pub artifact: String,
+    pub peer: String,
+    pub question: Option<String>,
+    pub binding: Binding,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerReceipt {
+    admission: PeerAdmission,
+    status: PeerStatus,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum PeerStatus {
+    Queued,
+    Running {
+        job: u64,
+    },
+    Learned {
+        conversion_job: u64,
+        trace_proof: String,
+    },
+    Unsupported {
+        reason: String,
+    },
+}
 enum Command {
+    PeerVerified(PeerAdmission),
+    PeerCursor(u64),
+    Accepted {
+        id: u64,
+        root: String,
+    },
     Program {
         id: u64,
         unit: u32,
@@ -462,6 +572,24 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    pub(crate) fn peer_cursor(&self, ordinal: u64) -> Result<(), String> {
+        self.sender
+            .try_send(Command::PeerCursor(ordinal))
+            .map_err(|_| "peer cursor capacity or stopped service".into())
+    }
+    pub(crate) fn peer_verified(&self, admission: PeerAdmission) -> Result<(), String> {
+        self.sender
+            .try_send(Command::PeerVerified(admission))
+            .map_err(|_| "peer learning command capacity or stopped service".into())
+    }
+    pub(crate) fn accepted(&self, id: u64, root: naome_proof::ProofId) -> Result<(), String> {
+        self.sender
+            .try_send(Command::Accepted {
+                id,
+                root: crate::hex(root.as_bytes()),
+            })
+            .map_err(|_| "learning receipt capacity or stopped service".into())
+    }
     pub(crate) fn program(
         &self,
         id: u64,

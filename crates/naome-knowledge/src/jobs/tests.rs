@@ -31,6 +31,7 @@ impl Manual {
         let mut requests = Vec::new();
         while let Ok(command) = self.receiver.try_recv() {
             match command {
+                Command::Accepted { .. } | Command::PeerVerified(_) | Command::PeerCursor(_) => {}
                 Command::Program { reply, .. } => {
                     let _ = reply.send(Err("manual provider has no retained program".into()));
                 }
@@ -83,6 +84,7 @@ impl Manual {
         Recovery {
             archive_end: 0,
             next_cursor: 0,
+            peer_cursor: 0,
             records: Vec::new(),
         }
     }

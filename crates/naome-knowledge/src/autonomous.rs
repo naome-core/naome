@@ -202,6 +202,31 @@ impl Autonomous {
         }
     }
 
+    fn accepted_learning(&mut self, job: u64, root: ProofId) {
+        if job != 0
+            && let Err(error) = self.client.accepted(job, root)
+        {
+            self.error = Some(error);
+        }
+    }
+
+    fn recover_learning(&mut self, graph: &Graph, record: &jobs::Record) {
+        if let Some(jobs::Output::Native {
+            solution: Some(solution),
+            ..
+        }) = &record.result
+        {
+            match crate::object::id_bytes(&solution.proof_id)
+                .map(ProofId::from_bytes)
+                .and_then(|root| graph.contains(root).map(|yes| (root, yes)))
+            {
+                Ok((root, true)) => self.accepted_learning(record.id, root),
+                Ok(_) => {}
+                Err(error) => self.error = Some(error.to_string()),
+            }
+        }
+    }
+
     fn retire(&mut self, record: jobs::Record) {
         if record.state == jobs::State::InDoubt {
             emit(
@@ -337,6 +362,9 @@ impl Autonomous {
                     } else if fresh.inconclusive() {
                         self.defer_recovery(record, revision, now);
                     } else {
+                        if fresh.has_answer() {
+                            self.recover_learning(graph, &record);
+                        }
                         self.retire(record);
                     }
                 } else {
@@ -440,7 +468,7 @@ impl Autonomous {
                         "state":format!("{:?}",completion.state)}),
                     );
                 }
-                Ok(completion) => match completion.result {
+                Ok(completion) => match completion.result.map(jobs::Output::candidate) {
                     Ok(jobs::Output::Proof { source, helpers }) => {
                         match graph.prepare_generated(&source, &helpers, &solving.question) {
                             Ok((root, batch)) => {
@@ -592,6 +620,11 @@ impl Autonomous {
                 let fresh = questions.generation_decision(graph, &pending.question);
                 pending.eligible = fresh.passed();
                 if fresh.has_answer() {
+                    if let Some((root, _)) = &pending.batch
+                        && graph.contains(*root).unwrap_or(false)
+                    {
+                        self.accepted_learning(pending.job, *root);
+                    }
                     self.acknowledge(pending.job);
                     continue;
                 }
@@ -639,6 +672,7 @@ impl Autonomous {
                     .transpose();
                 match current {
                     Ok(Some(true)) => {
+                        let learning_root = pending.batch.as_ref().map(|(root, _)| *root);
                         let outcome = (|| -> Result<Vec<ProofId>, crate::Error> {
                             let delta = questions.prepare_exchange(
                                 graph,
@@ -658,6 +692,9 @@ impl Autonomous {
                         })();
                         match outcome {
                             Ok(ids) => {
+                                if let Some(root) = learning_root {
+                                    self.accepted_learning(pending.job, root);
+                                }
                                 accepted.extend(ids);
                                 let job = pending.job;
                                 drop(pending);

@@ -841,7 +841,7 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
     let config: network::Config =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
     if !config.producer_sources.is_empty() {
-        return Err("producer_sources is a developer-only operation; ordinary runtime uses the three mock functions".into());
+        return Err("producer_sources is a developer-only operation; ordinary runtime uses supervised producers".into());
     }
     Ok((config, intervals.validate()?))
 }

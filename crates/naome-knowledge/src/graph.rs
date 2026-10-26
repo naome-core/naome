@@ -116,6 +116,50 @@ impl Graph {
         )?;
         Ok(self.compaction.is_some())
     }
+    pub(crate) fn peer_learning_page(
+        &self,
+        after: u64,
+    ) -> Result<Vec<(u64, ProofId, Option<libp2p::PeerId>)>, crate::Error> {
+        self.ensure_live()?;
+        if after > self.count as u64 {
+            return Err("peer learning cursor exceeds checked graph".into());
+        }
+        self.cold(self.store.peer_learning_page(
+            after,
+            crate::resources::active_limits().id_page.min(4),
+            self.fixed_summary(),
+        ))
+    }
+    pub(crate) fn learning_question(
+        &self,
+        id: ProofId,
+    ) -> Result<Option<naome_authoring::CompiledQuestion>, crate::Error> {
+        use naome_checker::ContextView;
+        self.ensure_live()?;
+        let Some(header) = self.cold(self.context.proof_header(id).map_err(crate::Error::from))?
+        else {
+            return Ok(None);
+        };
+        if header.canonical_length() > crate::resources::limits().closure_bytes {
+            return Ok(None);
+        }
+        let _memory = crate::resources::MemoryLease::acquire(
+            header
+                .canonical_length()
+                .checked_mul(16)
+                .and_then(|n| n.checked_add(4096))
+                .ok_or("learning formula memory overflow")?,
+        )?;
+        let formula = self
+            .cold(
+                self.context
+                    .proof_formula(header, header.canonical_length())
+                    .map_err(crate::Error::from),
+            )?
+            .ok_or("checked learning formula missing")?
+            .into_owned();
+        Ok(naome_authoring::CompiledQuestion::from_formula(formula).ok())
+    }
     pub fn accepted_count(&self) -> usize {
         self.count
     }

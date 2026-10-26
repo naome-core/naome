@@ -16,7 +16,7 @@ impl TransferGrant {
             peer,
             root,
             received: Instant::now(),
-            capability,
+            capability: capability.map(|grant| grant.with_origin(peer)),
         }
     }
     pub(super) fn peer(&self) -> PeerId {

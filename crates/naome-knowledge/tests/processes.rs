@@ -179,6 +179,17 @@ fn ordinary_driver_loss_guardian_stops_owned_daemon_and_relay() {
 }
 
 #[cfg(unix)]
+#[test]
+#[ignore = "Finite 1M native learning, gossip, resource pause and checkpoint screen; requires Release"]
+fn native_learning_uses_checked_own_and_peer_solutions_and_resumes_model_and_adam() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "native 1M process qualification requires Release"
+    );
+    run_autonomous("native");
+}
+
+#[cfg(unix)]
 fn run_autonomous(mode: &str) {
     let _active = ACTIVE
         .lock()
@@ -202,6 +213,7 @@ fn run_autonomous(mode: &str) {
             "pause" => "crates/naome-knowledge/tests/support/automatic_computation.py",
             "provider-feedback" => "crates/naome-knowledge/tests/support/provider_feedback.py",
             "startup" => "crates/naome-knowledge/tests/support/startup_lifecycle.py",
+            "native" => "crates/naome-knowledge/tests/support/native_learning.py",
             _ => "crates/naome-knowledge/tests/support/autonomous_lifecycle.py",
         }))
         .args(["--binary", env!("CARGO_BIN_EXE_naome"), "--output"])
@@ -213,6 +225,7 @@ fn run_autonomous(mode: &str) {
                 "direct" => "60",
                 "guardian-probe" => "45",
                 "startup" => "50",
+                "native" => "480",
                 "pause" => "120",
                 _ => "90",
             },

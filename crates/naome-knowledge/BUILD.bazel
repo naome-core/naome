@@ -19,6 +19,7 @@ rust_library(
     compile_data = glob(
         [
             "src/**/*.hex",
+            "src/learning/curriculum.json",
             "tests/fixtures/**",
         ],
         allow_empty = True,

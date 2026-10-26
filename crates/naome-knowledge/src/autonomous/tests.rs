@@ -49,6 +49,7 @@ fn recovered(id: u64, input: jobs::Input) -> jobs::Record {
         input,
         binding: jobs::Binding::new([1; 32], [2; 32]),
         provider: "00".repeat(32),
+        native: None,
         configuration: "00".repeat(32),
         settings: jobs::RoleSettings::default(),
         created_ms: 1,

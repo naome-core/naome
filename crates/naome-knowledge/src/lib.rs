@@ -18,6 +18,7 @@ mod index_storage;
 mod intake;
 #[cfg(unix)]
 mod jobs;
+mod learning;
 pub mod mocks;
 pub mod network;
 mod object;

@@ -139,6 +139,7 @@ fn three_roles_use_three_admitted_slots_and_a_reduction_only_drains_them() {
             Input::Find { cursor } => Output::Question(crate::mocks::create_question(cursor)),
             Input::Solve { .. } => Output::NoCandidate,
             Input::Interest { .. } => Output::Interest(true),
+            Input::Peer { .. } | Input::Train { .. } => unreachable!("ordinary-role fixture"),
         };
         owner
             .complete(
@@ -238,6 +239,7 @@ fn busy_events_cannot_steal_single_slot_admission_from_waiting_roles() {
             Input::Find { cursor } => Output::Question(crate::mocks::create_question(cursor)),
             Input::Solve { .. } => Output::NoCandidate,
             Input::Interest { .. } => Output::Interest(true),
+            Input::Peer { .. } | Input::Train { .. } => unreachable!("ordinary-role fixture"),
         };
         owner
             .complete(

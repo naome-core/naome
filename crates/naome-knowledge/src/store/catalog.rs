@@ -62,6 +62,7 @@ const TABLES: [(&str, &str); 7] = [
         id BLOB PRIMARY KEY CHECK(length(id) = 32),
         root BLOB NOT NULL CHECK(length(root) = 32),
         member_count INTEGER NOT NULL CHECK(member_count >= 1),
+        peer TEXT CHECK(peer IS NULL OR length(peer) BETWEEN 1 AND 128),
         FOREIGN KEY(root) REFERENCES proofs(id) DEFERRABLE INITIALLY DEFERRED
     ) STRICT, WITHOUT ROWID",
     ),
@@ -124,6 +125,7 @@ const INDEXES: [(&str, &str); 3] = [
 /// One connection, serialized by the enclosing Store mutex and directory lock.
 /// Stored syntax and hashes never establish mathematical proof validity.
 pub(super) struct Commit<'a> {
+    pub peer: Option<String>,
     pub expected: Summary,
     pub deadline: Option<Instant>,
     pub cut: Option<BatchCut>,
@@ -253,6 +255,49 @@ impl Catalog {
         Ok(summary)
     }
 
+    pub(super) fn peer_learning_page(
+        &self,
+        after: u64,
+        limit: usize,
+        expected: Summary,
+    ) -> Result<Vec<(u64, ProofId, Option<libp2p::PeerId>)>, crate::Error> {
+        page_limit(limit, crate::resources::active_limits().id_page)?;
+        let transaction = self.begin(TransactionBehavior::Deferred)?;
+        check_expected_summary(&read_meta(&transaction, Some(self.database_id))?, expected)?;
+        self.require_validated_version(&transaction)?;
+        let mut values = Vec::new();
+        {
+            let mut statement=transaction.prepare("SELECT p.replay_order,substr(p.id,1,33),substr(c.peer,1,129) FROM proofs p JOIN commits c ON p.origin_commit=c.id WHERE p.replay_order>?1 ORDER BY p.replay_order LIMIT ?2").map_err(sql_error)?;
+            let mut rows = statement
+                .query(params![
+                    i64::try_from(after).map_err(|_| "peer learning cursor width")?,
+                    sql_width(limit)?
+                ])
+                .map_err(sql_error)?;
+            while let Some(row) = rows.next().map_err(sql_error)? {
+                let ordinal = u64::try_from(row.get::<_, i64>(0).map_err(sql_error)?)
+                    .map_err(|_| "peer learning ordinal")?;
+                let id = ProofId::from_bytes(key(row.get(1).map_err(sql_error)?)?);
+                let text: Option<String> = row.get(2).map_err(sql_error)?;
+                let peer = text
+                    .map(|text| {
+                        let peer: libp2p::PeerId =
+                            text.parse().map_err(|_| "peer learning origin syntax")?;
+                        if peer.to_string() != text {
+                            return Err(crate::Error::from("peer learning origin encoding"));
+                        }
+                        Ok(peer)
+                    })
+                    .transpose()?;
+                if ordinal <= after {
+                    return Err("peer learning ordinal differs".into());
+                }
+                values.push((ordinal, id, peer));
+            }
+        }
+        transaction.commit().map_err(sql_error)?;
+        Ok(values)
+    }
     pub(super) fn replay_page(
         &self,
         after: u64,
@@ -421,11 +466,16 @@ impl Catalog {
             cut,
             next_root,
             guard,
+            peer,
         } = commit;
         self.replay_summary.set(None);
         let prepared = prepare(objects.iter().copied())?;
         let root = *root.as_bytes();
-        let commit = commit_digest(root, prepared.values().map(|object| &object.member))?;
+        let commit = commit_digest(
+            root,
+            prepared.values().map(|object| &object.member),
+            peer.as_deref(),
+        )?;
         fail_at(cut, BatchCut::BeforeWrite)?;
         let transaction = self.begin(TransactionBehavior::Immediate)?;
         let meta = read_meta(&transaction, Some(self.database_id))?;
@@ -439,9 +489,17 @@ impl Catalog {
                 program::require_complete(&transaction, &manifest)?;
             }
         }
-        let inserted = insert_commit(&transaction, commit, root, &prepared, meta.count, cut)?;
+        let inserted = insert_commit(
+            &transaction,
+            commit,
+            root,
+            &prepared,
+            meta.count,
+            cut,
+            peer.as_deref(),
+        )?;
         let summary = if inserted {
-            verify_commit(&transaction, commit, root, &prepared)?;
+            verify_commit(&transaction, commit, root, &prepared, peer.as_deref())?;
             commit_summary(&transaction, expected, &prepared, next_root)?
         } else {
             expected
@@ -1186,6 +1244,7 @@ fn insert_commit(
     objects: &BTreeMap<[u8; 32], Prepared>,
     preceding_count: usize,
     cut: Option<BatchCut>,
+    peer: Option<&str>,
 ) -> Result<bool, crate::Error> {
     let existing: Option<i64> = connection
         .query_row(
@@ -1196,7 +1255,7 @@ fn insert_commit(
         .optional()
         .map_err(sql_error)?;
     if existing.is_some() {
-        verify_commit(connection, commit, root, objects)?;
+        verify_commit(connection, commit, root, objects, peer)?;
         fail_at(cut, BatchCut::DuringWrite)?;
         return Ok(false);
     }
@@ -1205,11 +1264,12 @@ fn insert_commit(
     }
     connection
         .execute(
-            "INSERT INTO commits(id, root, member_count) VALUES(?1, ?2, ?3)",
+            "INSERT INTO commits(id, root, member_count,peer) VALUES(?1, ?2, ?3,?4)",
             params![
                 commit.as_slice(),
                 root.as_slice(),
-                sql_width(objects.len())?
+                sql_width(objects.len())?,
+                peer
             ],
         )
         .map_err(sql_error)?;
@@ -1257,14 +1317,18 @@ fn verify_commit(
     commit: [u8; 32],
     root: [u8; 32],
     objects: &BTreeMap<[u8; 32], Prepared>,
+    peer: Option<&str>,
 ) -> Result<(), crate::Error> {
-    let (stored_root, stored_count): (Vec<u8>, i64) = connection
+    let (stored_root, stored_count, stored_peer): (Vec<u8>, i64, Option<String>) = connection
         .query_row(
-            "SELECT substr(root,1,33), member_count FROM commits WHERE id = ?1",
+            "SELECT substr(root,1,33), member_count,substr(peer,1,129) FROM commits WHERE id = ?1",
             params![commit.as_slice()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(sql_error)?;
+    if stored_peer.as_deref() != peer {
+        return Err("catalog commit peer origin differs".into());
+    }
     let mut expected = objects.keys();
     let members = visit_members(connection, commit, |member| {
         if expected.next() != Some(&member) {
@@ -1361,7 +1425,7 @@ fn visit_members(
 
 fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
     let mut statement = connection
-        .prepare("SELECT substr(id,1,33), substr(root,1,33), member_count FROM commits ORDER BY id")
+        .prepare("SELECT substr(id,1,33), substr(root,1,33), member_count,substr(peer,1,129) FROM commits ORDER BY id")
         .map_err(sql_error)?;
     let mut rows = statement.query([]).map_err(sql_error)?;
     while let Some(row) = rows.next().map_err(sql_error)? {
@@ -1369,7 +1433,8 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
         let root = key(row.get(1).map_err(sql_error)?)?;
         let count = usize::try_from(row.get::<_, i64>(2).map_err(sql_error)?)
             .map_err(|_| "catalog commit count width")?;
-        let mut digest = CommitDigest::new(root, count)?;
+        let peer: Option<String> = row.get(3).map_err(sql_error)?;
+        let mut digest = CommitDigest::new(root, count, peer.as_deref())?;
         visit_members(connection, id, |member| {
             let record = read_record(connection, member, ReadAdmission::Work)?
                 .ok_or("missing catalog commit proof")?;
@@ -1393,8 +1458,9 @@ fn verify_commits(connection: &Connection) -> Result<(), crate::Error> {
 fn commit_digest<'a>(
     root: [u8; 32],
     members: impl ExactSizeIterator<Item = &'a Member>,
+    peer: Option<&str>,
 ) -> Result<[u8; 32], crate::Error> {
-    let mut digest = CommitDigest::new(root, members.len())?;
+    let mut digest = CommitDigest::new(root, members.len(), peer)?;
     for member in members {
         digest.push(member)?;
     }
