@@ -314,14 +314,30 @@ fn finished_progress(state: &State) -> Progress {
 #[derive(Default)]
 pub(crate) struct MemoryStore(pub BTreeMap<(String, usize), Vec<u8>>);
 impl ArtifactIo for MemoryStore {
-    fn read(&mut self, blob: &Blob, index: usize) -> Result<Vec<u8>, String> {
-        self.0
-            .get(&(blob.sha256.clone(), index))
-            .cloned()
-            .ok_or("test checkpoint missing".into())
+    fn read(&mut self, blob: &Blob, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+        blob.range_len(&range)?;
+        let mut bytes = Vec::new();
+        for index in range {
+            bytes.extend_from_slice(
+                self.0
+                    .get(&(blob.sha256.clone(), index))
+                    .ok_or("test checkpoint missing")?,
+            );
+        }
+        Ok(bytes)
     }
-    fn write(&mut self, blob: &Blob, index: usize, bytes: Vec<u8>) -> Result<(), String> {
-        self.0.insert((blob.sha256.clone(), index), bytes);
+    fn write(
+        &mut self,
+        blob: &Blob,
+        range: std::ops::Range<usize>,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        assert_eq!(blob.range_len(&range)?, bytes.len());
+        for (index, part) in
+            range.zip(bytes.chunks(crate::resources::limits().native_model_chunk_bytes))
+        {
+            self.0.insert((blob.sha256.clone(), index), part.to_vec());
+        }
         Ok(())
     }
 }

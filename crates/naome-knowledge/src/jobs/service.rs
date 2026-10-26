@@ -147,7 +147,7 @@ struct PendingProgram {
 struct PendingModel {
     unit: u32,
     blob: crate::learning::Blob,
-    index: usize,
+    range: std::ops::Range<usize>,
     bytes: Option<Vec<u8>>,
     reply: oneshot::Sender<Result<Vec<u8>, String>>,
 }
@@ -329,7 +329,7 @@ impl Owner {
                                 Err(error)=>{let _=reply.send(Err(error.clone()));return Err(error);},
                             }
                         },
-                        process::Event::Model{id,unit,blob,index,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,index,bytes,reply}).is_some() {return Err("duplicate pending native model IO".into());}},
+                        process::Event::Model{id,unit,blob,range,bytes,reply}=>{if self.model_io.insert(id,PendingModel{unit,blob,range,bytes,reply}).is_some() {return Err("duplicate pending native model IO".into());}},
                         process::Event::Learning{id,unit,progress,reply}=>{
                             if self.learning_progress.insert(id,PendingLearning{unit,progress,reply}).is_some() {return Err("duplicate pending local checkpoint".into());}
                         },
@@ -518,7 +518,7 @@ impl Owner {
                 id,
                 pending.unit,
                 &pending.blob,
-                pending.index,
+                pending.range.clone(),
                 pending.bytes.clone(),
             );
             match result {

@@ -37,14 +37,14 @@ pub(super) trait Supervisor {
     fn read_model(
         &mut self,
         _blob: crate::learning::Blob,
-        _index: usize,
+        _range: std::ops::Range<usize>,
     ) -> Result<Vec<u8>, String> {
         Err("provider cannot read local model artifacts".into())
     }
     fn write_model(
         &mut self,
         _blob: crate::learning::Blob,
-        _index: usize,
+        _range: std::ops::Range<usize>,
         _bytes: Vec<u8>,
     ) -> Result<(), String> {
         Err("provider cannot write local model artifacts".into())
@@ -373,15 +373,19 @@ impl Provider for Mock {
 mod tests;
 
 impl crate::learning::ArtifactIo for dyn Supervisor + '_ {
-    fn read(&mut self, blob: &crate::learning::Blob, index: usize) -> Result<Vec<u8>, String> {
-        self.read_model(blob.clone(), index)
+    fn read(
+        &mut self,
+        blob: &crate::learning::Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, String> {
+        self.read_model(blob.clone(), range)
     }
     fn write(
         &mut self,
         blob: &crate::learning::Blob,
-        index: usize,
+        range: std::ops::Range<usize>,
         bytes: Vec<u8>,
     ) -> Result<(), String> {
-        self.write_model(blob.clone(), index, bytes)
+        self.write_model(blob.clone(), range, bytes)
     }
 }

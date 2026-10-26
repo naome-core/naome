@@ -271,10 +271,10 @@ impl Disk {
         id: u64,
         unit: u32,
         blob: &crate::learning::Blob,
-        index: usize,
+        range: std::ops::Range<usize>,
         bytes: Option<Vec<u8>>,
     ) -> Result<Vec<u8>, crate::Error> {
-        let length = blob.chunk_len(index)?;
+        let length = blob.range_len(&range)?;
         let record = journal
             .records
             .get_mut(&id)
@@ -304,7 +304,7 @@ impl Disk {
             .ok_or("native model IO overflow")?;
         let operations = native
             .io_operations
-            .checked_add(1)
+            .checked_add(range.len())
             .ok_or("native model IO operations overflow")?;
         if count > crate::resources::limits().native_model_io_bytes
             || operations
@@ -319,41 +319,54 @@ impl Disk {
             if bytes.len() != length {
                 return Err("native model chunk length differs".into());
             }
-            if !native
+            let new = !native
                 .written
                 .iter()
-                .any(|(owner, known)| *owner == unit && known == blob)
-            {
-                if native.written.len() >= 2 * (crate::learning::TRAINING_UNITS as usize + 2) {
-                    return Err("native model artifact count exhausted".into());
-                }
-                native.written.push((unit, blob.clone()));
+                .any(|(owner, known)| *owner == unit && known == blob);
+            if new && native.written.len() >= 2 * (crate::learning::TRAINING_UNITS as usize + 2) {
+                return Err("native model artifact count exhausted".into());
             }
-            let key = blob.key(index);
-            if let Some(previous) = self.checkpoint.get_bytes(
-                "model",
-                &key,
-                crate::resources::limits().native_model_chunk_bytes,
-            )? {
-                if previous != bytes {
-                    return Err("native model immutable chunk differs".into());
+            for (index, part) in
+                range.zip(bytes.chunks(crate::resources::limits().native_model_chunk_bytes))
+            {
+                let key = blob.key(index);
+                if let Some(previous) = self.checkpoint.get_bytes(
+                    "model",
+                    &key,
+                    crate::resources::limits().native_model_chunk_bytes,
+                )? {
+                    if previous != part {
+                        return Err("native model immutable chunk differs".into());
+                    }
+                } else {
+                    updates.push(crate::checkpoint::Update::Put {
+                        kind: "model",
+                        key,
+                        payload: part.to_vec(),
+                    });
                 }
-            } else {
-                updates.push(crate::checkpoint::Update::Put {
-                    kind: "model",
-                    key,
-                    payload: bytes,
-                });
+            }
+            if new {
+                native.written.push((unit, blob.clone()));
             }
             Vec::new()
         } else {
-            self.checkpoint
-                .get_bytes(
-                    "model",
-                    &blob.key(index),
-                    crate::resources::limits().native_model_chunk_bytes,
-                )?
-                .ok_or("native model chunk missing")?
+            let mut bytes = Vec::with_capacity(length);
+            for index in range {
+                let part = self
+                    .checkpoint
+                    .get_bytes(
+                        "model",
+                        &blob.key(index),
+                        crate::resources::limits().native_model_chunk_bytes,
+                    )?
+                    .ok_or("native model chunk missing")?;
+                if part.len() != blob.chunk_len(index)? {
+                    return Err("native model retained chunk length differs".into());
+                }
+                bytes.extend_from_slice(&part);
+            }
+            bytes
         };
         if reading && output.len() != length {
             return Err("native model retained chunk length differs".into());

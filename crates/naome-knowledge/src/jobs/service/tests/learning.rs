@@ -309,7 +309,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
                 id,
                 1,
                 &blob,
-                0,
+                0..1,
                 Some(b"bounded-model".to_vec())
             )
             .is_err()
@@ -325,7 +325,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
                 id,
                 1,
                 &blob,
-                0,
+                0..1,
                 Some(b"bounded-model".to_vec())
             )
             .unwrap_err()
@@ -355,7 +355,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
                 id,
                 2,
                 &blob,
-                0,
+                0..1,
                 Some(b"bounded-model".to_vec())
             )
             .is_err()
@@ -367,14 +367,14 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
             id,
             1,
             &blob,
-            0,
+            0..1,
             Some(b"bounded-model".to_vec()),
         )
         .unwrap();
     assert!(
         owner
             .disk
-            .model_io(&mut owner.journal, id, 1, &blob, 0, None)
+            .model_io(&mut owner.journal, id, 1, &blob, 0..1, None)
             .is_err(),
         "staged bytes do not grant snapshot read authority"
     );
@@ -386,7 +386,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
                 id,
                 1,
                 &blob,
-                0,
+                0..1,
                 Some(b"altered-model".to_vec())
             )
             .is_err()
@@ -399,7 +399,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
             id,
             1,
             &optimizer,
-            0,
+            0..1,
             Some(b"bounded-adam".to_vec()),
         )
         .unwrap();
@@ -423,7 +423,7 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
     assert_eq!(
         owner
             .disk
-            .model_io(&mut owner.journal, id, 1, &blob, 0, None)
+            .model_io(&mut owner.journal, id, 1, &blob, 0..1, None)
             .unwrap(),
         b"bounded-model"
     );
@@ -440,11 +440,65 @@ fn native_model_chunks_require_original_training_reservations_and_immutable_read
     assert!(
         owner
             .disk
-            .model_io(&mut owner.journal, id, 1, &blob, 0, None)
+            .model_io(&mut owner.journal, id, 1, &blob, 0..1, None)
             .is_err()
     );
     assert_eq!(owner.journal.records[&id].reserved_units, reserved);
 }
+#[test]
+fn model_chunk_pairs_commit_atomically_and_charge_every_original_chunk_after_restart() {
+    let (directory, mut owner) = native();
+    accepted(&mut owner);
+    let (id, _receive) = submit_native(&mut owner, Input::Train { epoch: 1 });
+    owner.journal.records.get_mut(&id).unwrap().state = State::Running;
+    owner.reserve(id, 1).unwrap();
+    let bytes = vec![37; crate::resources::limits().native_model_chunk_bytes + 17];
+    let blob = crate::learning::Blob::of(&bytes);
+    let original = serde_json::to_value(owner.journal.records[&id].native.as_ref()).unwrap();
+    crate::checkpoint::fail_next_commit();
+    assert!(
+        owner
+            .disk
+            .model_io(&mut owner.journal, id, 1, &blob, 0..2, Some(bytes.clone()))
+            .unwrap_err()
+            .retryable()
+    );
+    assert_eq!(
+        serde_json::to_value(owner.journal.records[&id].native.as_ref()).unwrap(),
+        original
+    );
+    assert!(
+        owner
+            .disk
+            .model_io(&mut owner.journal, id, 1, &blob, 0..3, Some(bytes.clone()))
+            .is_err()
+    );
+    owner
+        .disk
+        .model_io(&mut owner.journal, id, 1, &blob, 0..2, Some(bytes.clone()))
+        .unwrap();
+    let saved = owner.journal.records[&id].native.as_ref().unwrap();
+    assert_eq!(saved.io_bytes, bytes.len());
+    assert_eq!(saved.io_operations, 2);
+    assert_eq!(saved.written.len(), 1);
+    let settings = owner.settings;
+    drop(owner);
+    let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    let saved = journal.records[&id].native.as_ref().unwrap();
+    assert_eq!(saved.io_bytes, bytes.len());
+    assert_eq!(saved.io_operations, 2);
+    let connection = rusqlite::Connection::open(directory.0.join("research/jobs.sqlite3")).unwrap();
+    let parts = connection
+        .prepare("SELECT payload FROM entries WHERE kind='model' ORDER BY key")
+        .unwrap()
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts.concat(), bytes);
+}
+
 #[test]
 fn model_chunk_disk_pressure_defers_the_same_original_unit_without_a_fresh_allowance() {
     let (_directory, mut owner) = native();
@@ -459,7 +513,7 @@ fn model_chunk_disk_pressure_defers_the_same_original_unit_without_a_fresh_allow
         PendingModel {
             unit: 1,
             blob: crate::learning::Blob::of(b"state"),
-            index: 0,
+            range: 0..1,
             bytes: Some(b"state".to_vec()),
             reply,
         },

@@ -9,6 +9,7 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 mod feedback;
+mod model_bytes;
 use crate::resources::feedback::{Phase, Sample};
 
 const INTERNAL: &str = "NAOME_INTERNAL_RESEARCH_PROVIDER";
@@ -33,7 +34,8 @@ enum Frame {
         id: u64,
         unit: u32,
         blob: crate::learning::Blob,
-        index: usize,
+        range: std::ops::Range<usize>,
+        #[serde(with = "model_bytes")]
         bytes: Option<Vec<u8>>,
     },
     Learning {
@@ -105,7 +107,7 @@ enum Frame {
 struct Grant {
     id: u64,
     next: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "model_bytes")]
     data: Option<Vec<u8>>,
 }
 
@@ -114,7 +116,7 @@ pub(super) enum Event {
         id: u64,
         unit: u32,
         blob: crate::learning::Blob,
-        index: usize,
+        range: std::ops::Range<usize>,
         bytes: Option<Vec<u8>>,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
@@ -372,16 +374,16 @@ async fn run_owned(
                     id,
                     unit,
                     blob,
-                    index,
+                    range,
                     bytes,
                 } if ready
                     && id == record.id
                     && outstanding == Some(unit)
                     && record.provider == crate::learning::PROVIDER =>
                 {
-                    blob.validate()?;
+                    let length = blob.range_len(&range)?;
                     if let Some(bytes) = &bytes
-                        && bytes.len() != blob.chunk_len(index)?
+                        && bytes.len() != length
                     {
                         return Err("native model chunk length differs".into());
                     }
@@ -391,7 +393,7 @@ async fn run_owned(
                             id,
                             unit,
                             blob,
-                            index,
+                            range,
                             bytes,
                             reply,
                         })
@@ -1084,12 +1086,16 @@ impl WorkerControl {
     }
 }
 impl super::provider::Supervisor for WorkerControl {
-    fn read_model(&mut self, blob: crate::learning::Blob, index: usize) -> Result<Vec<u8>, String> {
+    fn read_model(
+        &mut self,
+        blob: crate::learning::Blob,
+        range: std::ops::Range<usize>,
+    ) -> Result<Vec<u8>, String> {
         emit(&Frame::Model {
             id: self.id,
             unit: self.current_unit,
             blob,
-            index,
+            range,
             bytes: None,
         })?;
         self.grant_data(self.current_unit)?
@@ -1098,14 +1104,14 @@ impl super::provider::Supervisor for WorkerControl {
     fn write_model(
         &mut self,
         blob: crate::learning::Blob,
-        index: usize,
+        range: std::ops::Range<usize>,
         bytes: Vec<u8>,
     ) -> Result<(), String> {
         emit(&Frame::Model {
             id: self.id,
             unit: self.current_unit,
             blob,
-            index,
+            range,
             bytes: Some(bytes),
         })?;
         self.grant(self.current_unit)

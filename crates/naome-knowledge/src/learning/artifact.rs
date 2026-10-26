@@ -1,6 +1,7 @@
 //! Typed local binary checkpoints. The job journal remains their sole owner.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::ops::Range;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Blob {
@@ -38,17 +39,32 @@ impl Blob {
     pub fn key(&self, index: usize) -> String {
         format!("{}:{index:06}", self.sha256)
     }
+    /// At most two existing chunks share one durable IO acknowledgement. The
+    /// chunk identities, individual lengths and lifetime charges stay exact.
+    pub fn ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        (0..self.chunks())
+            .step_by(2)
+            .map(|start| start..(start + 2).min(self.chunks()))
+    }
+    pub fn range_len(&self, range: &Range<usize>) -> Result<usize, String> {
+        self.validate()?;
+        if range.start >= range.end || range.end - range.start > 2 || range.end > self.chunks() {
+            return Err("native model chunk range".into());
+        }
+        range.clone().map(|index| self.chunk_len(index)).sum()
+    }
 }
 pub(crate) trait ArtifactIo {
-    fn read(&mut self, blob: &Blob, index: usize) -> Result<Vec<u8>, String>;
-    fn write(&mut self, blob: &Blob, index: usize, bytes: Vec<u8>) -> Result<(), String>;
+    fn read(&mut self, blob: &Blob, range: Range<usize>) -> Result<Vec<u8>, String>;
+    fn write(&mut self, blob: &Blob, range: Range<usize>, bytes: Vec<u8>) -> Result<(), String>;
 }
 pub(crate) fn load<I: ArtifactIo + ?Sized>(io: &mut I, blob: &Blob) -> Result<Vec<u8>, String> {
     blob.validate()?;
     let mut bytes = Vec::with_capacity(blob.bytes);
-    for i in 0..blob.chunks() {
-        let chunk = io.read(blob, i)?;
-        if chunk.len() != blob.chunk_len(i)? {
+    for range in blob.ranges() {
+        let length = blob.range_len(&range)?;
+        let chunk = io.read(blob, range)?;
+        if chunk.len() != length {
             return Err("native model chunk length differs".into());
         }
         bytes.extend_from_slice(&chunk);
@@ -61,11 +77,10 @@ pub(crate) fn load<I: ArtifactIo + ?Sized>(io: &mut I, blob: &Blob) -> Result<Ve
 pub(crate) fn save<I: ArtifactIo + ?Sized>(io: &mut I, bytes: &[u8]) -> Result<Blob, String> {
     let blob = Blob::of(bytes);
     blob.validate()?;
-    for (index, chunk) in bytes
-        .chunks(crate::resources::limits().native_model_chunk_bytes)
-        .enumerate()
-    {
-        io.write(&blob, index, chunk.to_vec())?;
+    let chunk = crate::resources::limits().native_model_chunk_bytes;
+    for range in blob.ranges() {
+        let data = bytes[range.start * chunk..(range.end * chunk).min(bytes.len())].to_vec();
+        io.write(&blob, range, data)?;
     }
     Ok(blob)
 }
