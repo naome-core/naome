@@ -291,8 +291,17 @@ impl CheckedArtifact {
                             })
                     })
                     .transpose()?;
-                let mut bytes = vec![ArtifactPayload::DEFINITION_TAG];
-                bytes.extend(definition.certificate().to_canonical_bytes());
+                let certificate = definition.certificate().to_canonical_bytes();
+                let length = certificate
+                    .len()
+                    .checked_add(1)
+                    .ok_or("artifact byte overflow")?;
+                let memory = crate::resources::MemoryLease::acquire(
+                    length.checked_mul(4).ok_or("artifact memory overflow")?,
+                )?;
+                let mut bytes = Vec::with_capacity(length);
+                bytes.push(ArtifactPayload::DEFINITION_TAG);
+                bytes.extend(certificate);
                 let dependencies = obligation
                     .into_iter()
                     .map(ArtifactId::from_proof_id)
@@ -303,7 +312,7 @@ impl CheckedArtifact {
                     obligation,
                     bytes: bytes.into(),
                     dependencies,
-                    _memory: None,
+                    _memory: Some(memory),
                 })
             }
         }

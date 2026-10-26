@@ -24,6 +24,21 @@ fn identity_obligation() -> Envelope {
 }
 
 #[test]
+fn definition_memory_overload_preserves_the_graph_and_allows_retry() {
+    let mut graph = Graph::default();
+    let root = graph.content_root();
+    crate::resources::fail_next_memory_allocation();
+    assert!(matches!(
+        graph.produce(RELATION),
+        Err(crate::Error::MemoryOverload { .. })
+    ));
+    assert_eq!(graph.accepted_count(), 0);
+    assert_eq!(graph.content_root(), root);
+    assert!(graph.storage_error().is_none());
+    assert_eq!(graph.produce(RELATION).unwrap().1.status, "accepted");
+}
+
+#[test]
 fn definitions_are_durable_cited_dependencies_and_restart_rechecks_them() {
     let directory = crate::checkpoint::tests::Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
