@@ -10,9 +10,10 @@ fn a_valid_certificate_with_forged_claimed_identity_is_rejected_before_the_write
         .unwrap();
     let mut forged = valid.clone();
     let statement = naome_proof::StatementId::from_bytes([7; 32]);
-    forged.statement_id = crate::hex(statement.as_bytes());
-    forged.proof_id = crate::hex(
-        crate::object::content_id(statement, &crate::unhex(&forged.proof).unwrap()).as_bytes(),
+    forged.statement_id = Some(crate::hex(statement.as_bytes()));
+    forged.artifact_id = crate::hex(
+        crate::object::content_id(statement, &crate::unhex(&forged.payload[2..]).unwrap())
+            .as_bytes(),
     );
     let before = graph.content_root();
     let error = graph.ingest(forged, Instant::now()).unwrap_err();
@@ -66,7 +67,7 @@ fn a_checked_program_rebinds_registration_after_graph_and_copy_changes_before_pu
     }
     let proof = work.into_checked().unwrap();
     let manifest = proof.proof().unwrap().manifest().clone();
-    let root = manifest.proof_id();
+    let root = manifest.artifact_id();
     graph.store.start_program(&manifest).unwrap();
     let chunk = proof
         .proof()

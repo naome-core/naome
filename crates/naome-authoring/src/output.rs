@@ -13,9 +13,8 @@ pub struct CompiledProof {
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
 pub struct CompiledDefinition {
+    checked: naome_checker::CheckedDefinition,
     canonical_definition_bytes: Box<[u8]>,
-    definition_id: DefinitionId,
-    artifact_id: ArtifactId,
 }
 
 impl CompiledDefinition {
@@ -31,12 +30,17 @@ impl CompiledDefinition {
 
     /// Returns the checked definition identity.
     pub const fn definition_id(&self) -> DefinitionId {
-        self.definition_id
+        self.checked.definition_id()
     }
 
     /// Returns the typed artifact identity used by blocks.
-    pub const fn artifact_id(&self) -> ArtifactId {
-        self.artifact_id
+    pub fn artifact_id(&self) -> ArtifactId {
+        ArtifactId::from_definition_id(self.definition_id())
+    }
+
+    /// Retain semantic checking for registration in the selected context.
+    pub fn into_checked_definition(self) -> naome_checker::CheckedDefinition {
+        self.checked
     }
 }
 
@@ -77,6 +81,10 @@ impl CompiledArtifact {
 }
 
 impl CompiledProof {
+    /// The common artifact address of this exact checked proof.
+    pub fn artifact_id(&self) -> ArtifactId {
+        self.proof_id().into()
+    }
     /// Returns the exact canonical proof normal-form bytes.
     pub fn canonical_proof_bytes(&self) -> &[u8] {
         self.checked.normal_form().canonical_bytes()
@@ -117,16 +125,13 @@ impl CompiledProof {
 
 impl CompiledDefinition {
     pub(super) fn from_checked(checked: naome_checker::CheckedDefinition) -> Self {
-        let definition_id = checked.definition_id();
-        let artifact_id = ArtifactId::from_definition_id(definition_id);
         let canonical_definition_bytes = checked
-            .into_certificate()
+            .certificate()
             .to_canonical_bytes()
             .into_boxed_slice();
         Self {
+            checked,
             canonical_definition_bytes,
-            definition_id,
-            artifact_id,
         }
     }
 }

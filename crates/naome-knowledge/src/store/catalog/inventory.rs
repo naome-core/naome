@@ -40,7 +40,7 @@ impl Catalog {
         {
             let mut statement = transaction
                 .prepare_cached(
-                    "SELECT replay_order, substr(id,1,33) FROM proofs
+                    "SELECT replay_order, substr(id,1,33) FROM artifacts
                  WHERE replay_order > ?1 AND replay_order <= ?2
                  ORDER BY replay_order LIMIT ?3",
                 )
@@ -57,7 +57,9 @@ impl Catalog {
                 if ordinal != position + ids.len() as u64 + 1 {
                     return Err("catalog inventory order is incomplete".into());
                 }
-                ids.push(ProofId::from_bytes(key(row.get(1).map_err(sql_error)?)?));
+                ids.push(ArtifactId::from_bytes(key(row
+                    .get(1)
+                    .map_err(sql_error)?)?));
             }
         }
         if ids.len() as u64 != (snapshot.count - position).min(limit as u64) {

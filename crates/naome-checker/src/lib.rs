@@ -138,6 +138,10 @@ impl CheckedDefinition {
 }
 
 impl CheckedProof {
+    /// The common artifact address of this exact checked proof.
+    pub fn artifact_id(&self) -> naome_proof::ArtifactId {
+        self.proof_id.into()
+    }
     /// The checked immutable context used to derive this proof.
     pub fn context_snapshot(&self) -> [u8; 32] {
         self.context_snapshot
@@ -807,7 +811,13 @@ fn primitive_formula<'a>(
             .expect("every non-primitive proof formula contains a definition")
             .expand_with_node_limit(artifact_state, FORMULA_MAX_NODES)
             .map(|value| Cow::Owned(value.0))
-            .map_err(|source| CheckErrorKind::DefinitionExpansion { step, source })
+            .map_err(|source| match source {
+                DefinitionExpansionError::Access(source) => CheckErrorKind::ContextAccess {
+                    step,
+                    source: source.into(),
+                },
+                source => CheckErrorKind::DefinitionExpansion { step, source },
+            })
     }
 }
 

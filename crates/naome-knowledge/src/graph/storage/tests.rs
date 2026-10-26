@@ -550,13 +550,13 @@ fn oversized_sql_blob_is_refused_before_parsing_its_header() {
     assert!(graph.storage_error().is_some());
 }
 
-fn startup_prune_graph() -> (Graph, crate::Envelope, naome_proof::ProofId) {
+fn startup_prune_graph() -> (Graph, crate::Envelope, naome_proof::ArtifactId) {
     let mut graph = Graph::default();
     let envelope = graph
         .author("goal = all(x,eq(x,x)) proof: p0 = refl(x) p1 = gen(p0,x) return p1")
         .unwrap();
-    let id = naome_proof::ProofId::from_bytes(
-        crate::unhex(&envelope.proof_id)
+    let id = naome_proof::ArtifactId::from_bytes(
+        crate::unhex(&envelope.artifact_id)
             .unwrap()
             .try_into()
             .unwrap(),
@@ -579,7 +579,7 @@ fn startup_prune_checks_actual_map_formula_and_nested_bucket_rows_despite_hot_ca
         for damage in ["missing", "corrupt", "oversized", "different"] {
             let (mut graph, _, id) = startup_prune_graph();
             let storage = graph.checked_storage.clone();
-            let header = graph.context.proof_header(id).unwrap().unwrap();
+            let header = graph.context.artifact_proof_header(id).unwrap().unwrap();
             let formula = graph
                 .context
                 .statement_formula(
@@ -598,11 +598,22 @@ fn startup_prune_checks_actual_map_formula_and_nested_bucket_rows_despite_hot_ca
                 // Identify a real live authenticated leaf; none is inserted by this fixture.
                 raw.extend_from_slice(&[1, 0]);
                 if target == "proof-map" {
-                    raw.extend_from_slice(id.as_bytes());
+                    raw.extend_from_slice(
+                        graph
+                            .context
+                            .artifact_proof_id(id)
+                            .unwrap()
+                            .unwrap()
+                            .as_bytes(),
+                    );
                     raw.extend_from_slice(&40u16.to_be_bytes());
                     raw.extend_from_slice(header.derivation_id().as_bytes());
                     raw.extend_from_slice(
-                        &(graph.context.proof_dependency_depth(id).unwrap().unwrap() as u64)
+                        &(graph
+                            .context
+                            .artifact_proof_dependency_depth(id)
+                            .unwrap()
+                            .unwrap() as u64)
                             .to_be_bytes(),
                     );
                 } else {

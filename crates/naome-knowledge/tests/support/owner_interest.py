@@ -74,24 +74,24 @@ def human(trial, node, verb, text=None, terminal=False, no_color=False, json_mod
     if json_mode:
         assert "\x1b" not in output
         return json.loads(output)
-    assert "  State            " in output and "  Accepted proofs  " in output
+    assert "  State            " in output and "  Accepted artifacts  " in output
     assert "  Interest\n" in output
     if not terminal or no_color:
         assert "\x1b" not in output
     return output
 
 
-def assert_owner_status(value, *, running, interest, accepted_proofs=None):
+def assert_owner_status(value, *, running, interest, accepted_artifacts=None):
     assert set(value) == {
-        "running", "accepted_proofs", "interest", "proof_verification",
+        "running", "accepted_artifacts", "interest", "artifact_verification",
         "computation", "computation_reason",
     }, value
     assert value["running"] is running, value
-    assert type(value["accepted_proofs"]) is int and value["accepted_proofs"] >= 0, value
-    if accepted_proofs is not None:
-        assert value["accepted_proofs"] == accepted_proofs, value
+    assert type(value["accepted_artifacts"]) is int and value["accepted_artifacts"] >= 0, value
+    if accepted_artifacts is not None:
+        assert value["accepted_artifacts"] == accepted_artifacts, value
     assert value["interest"] == interest, value
-    assert value["proof_verification"] == ("checked" if running else "not_run"), value
+    assert value["artifact_verification"] == ("checked" if running else "not_run"), value
     if not running:
         assert value["computation"] == "stopped" and value["computation_reason"] is None, value
     elif value["computation"] == "running":
@@ -118,7 +118,7 @@ def run(trial):
     assert b"valid UTF-8" in invalid.stderr
     assert not fresh.directory.exists(), "invalid input mutated an absent node directory"
     initial = "  Mathematical logic\n\tλ and 🦀  "
-    expected = {"running": False, "accepted_proofs": 0, "interest": initial, "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+    expected = {"running": False, "accepted_artifacts": 0, "interest": initial, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
     assert trial.call(fresh, "interest", text=initial) == expected
     assert trial.call(fresh, "status") == expected
     assert not (fresh.directory / "identity.key").exists(), "interest implicitly initialized identity"
@@ -137,7 +137,7 @@ def run(trial):
     assert "\x1b[31m○ Stopped\x1b[0m" in human(trial, before_start, "stop", terminal=True)
     assert "✓ Stop complete" in human(trial, before_start, "stop", terminal=True, no_color=True)
     assert stopped_default["interest"] == initial
-    assert stopped_default["accepted_proofs"] == len(before_start.ids())
+    assert stopped_default["accepted_artifacts"] == len(before_start.ids())
     before_start.write_config()
     assert trial.call(before_start, "interest", text=initial) == stopped_default
     assert digest(before_start.directory / "identity.key") == identity_before
@@ -165,11 +165,11 @@ def run(trial):
             result = trial.call(first, "interest", text=text)
             assert_owner_status(
                 human(trial, first, "status", terminal=True, json_mode=True),
-                running=running, interest=text, accepted_proofs=0,
+                running=running, interest=text, accepted_artifacts=0,
             )
-            assert_owner_status(result, running=running, interest=text, accepted_proofs=0)
+            assert_owner_status(result, running=running, interest=text, accepted_artifacts=0)
             assert_owner_status(
-                trial.call(first, "status"), running=running, interest=text, accepted_proofs=0
+                trial.call(first, "status"), running=running, interest=text, accepted_artifacts=0
             )
             for oversized in ["x" * 1025, "🦀" * 256 + "x"]:
                 owner_before = (first.directory / "owner.json").read_bytes()
@@ -208,21 +208,21 @@ def run(trial):
     first.stop()
     first.config["runtime"]["question_interval_ms"] = 3600000
     first.write_config()
-    identities = {object["proof_id"]: object for object in stored_objects(first)}
+    identities = {object["artifact_id"]: object for object in stored_objects(first)}
     identity = digest(first.directory / "identity.key")
     first.start()
     assert_owner_status(
-        trial.call(first, "status"), running=True, interest=initial, accepted_proofs=3
+        trial.call(first, "status"), running=True, interest=initial, accepted_artifacts=3
     )
     old_process = dict(first.process)
     assert process_identity(old_process["pid"]) == old_process
     os.killpg(old_process["group"], signal.SIGKILL)
     trial.wait(lambda: not process_group(old_process), maximum=5)
-    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": initial, "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+    assert trial.call(first, "status") == {"running": False, "accepted_artifacts": 3, "interest": initial, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
     first.start()
     assert digest(first.directory / "identity.key") == identity
     assert first.ids() == accepted
-    assert {object["proof_id"]: object for object in stored_objects(first)} == identities
+    assert {object["artifact_id"]: object for object in stored_objects(first)} == identities
     trial.summary["scenarios"]["clean_crash_restart_preserves_interest_identity_and_proofs"] = {"result": "pass"}
 
     # Start/stop and interest use one lifecycle lock, regardless of completion order.
@@ -243,7 +243,7 @@ def run(trial):
         assert not stop.result()["running"]
         assert update.result()["interest"] == "race stop"
     assert not process_group(first.process)
-    assert trial.call(first, "status") == {"running": False, "accepted_proofs": 3, "interest": "race stop", "proof_verification": "not_run", "computation": "stopped", "computation_reason": None}
+    assert trial.call(first, "status") == {"running": False, "accepted_artifacts": 3, "interest": "race stop", "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
     assert first.ids() == accepted
     trial.summary["scenarios"]["start_stop_update_races_preserve_owner_text_and_checked_ids"] = {"result": "pass"}
     trial.summary["accepted_ids"] = sorted(accepted)

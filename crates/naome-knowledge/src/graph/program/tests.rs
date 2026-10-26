@@ -98,7 +98,7 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
         "one bounded input group must not become one transaction per checker step"
     );
     assert_eq!(imported.checked_commands, 0);
-    assert!(!receiver.contains(manifest.proof_id()).unwrap());
+    assert!(!receiver.contains(manifest.artifact_id()).unwrap());
 
     // Reopening retains imported input without treating it as a checked proof.
     drop(check);
@@ -131,5 +131,5 @@ fn bounded_input_import_preserves_single_step_checking_and_pause() {
         })
         .expect("single-step mathematical checking completes");
     assert_eq!(checked.proof().unwrap().manifest(), &manifest);
-    assert!(!receiver.contains(manifest.proof_id()).unwrap());
+    assert!(!receiver.contains(manifest.artifact_id()).unwrap());
 }

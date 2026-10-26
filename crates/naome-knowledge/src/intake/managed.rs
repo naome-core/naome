@@ -17,16 +17,16 @@ pub(super) struct Waiting {
 enum WaitingStep {
     Waiting,
     Activate,
-    Published(Vec<ProofId>),
+    Published(Vec<ArtifactId>),
 }
 enum ActiveStep {
     Waiting,
     Final(Box<CheckedBatch>, Instant),
-    Published(Vec<ProofId>),
+    Published(Vec<ArtifactId>),
 }
 
 impl Intake {
-    pub(crate) fn refresh_needed(&self) -> Vec<(PeerId, ProofId)> {
+    pub(crate) fn refresh_needed(&self) -> Vec<(PeerId, ArtifactId)> {
         self.active
             .iter()
             .filter(|root| {

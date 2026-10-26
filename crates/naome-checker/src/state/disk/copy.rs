@@ -1,10 +1,10 @@
 use super::{
-    DiskArtifactState, MapKind, StatementId, decode_root, decode_statement_record, formula_address,
-    maps,
+    DiskArtifactState, MapKind, decode_root, decode_statement_record, definition_address,
+    definition_identity, definition_record, formula_address, maps,
 };
 use crate::context::{ContextError, ContextStorage};
 use crate::state::{
-    copy::{AuthenticatedCopy, CopyMap, CopyPlan, Follow, FormulaRecord},
+    copy::{AuthenticatedCopy, ContentRecord, CopyMap, CopyPlan, Follow},
     disk_map::DiskMap,
 };
 use std::sync::Arc;
@@ -15,6 +15,7 @@ pub use crate::state::copy::{DiskCopyBudget, DiskCopyProgress};
 enum Phase {
     Map(MapKind),
     Formulas,
+    Definitions,
     Bucket(crate::context::BucketKind),
     Complete,
 }
@@ -23,7 +24,8 @@ impl Phase {
         use crate::context::BucketKind;
         match self {
             Self::Map(kind) => kind.next().map_or(Self::Formulas, Self::Map),
-            Self::Formulas => Self::Bucket(BucketKind::Outgoing),
+            Self::Formulas => Self::Definitions,
+            Self::Definitions => Self::Bucket(BucketKind::Outgoing),
             Self::Bucket(BucketKind::Outgoing) => Self::Bucket(BucketKind::Deductions),
             Self::Bucket(BucketKind::Deductions) => Self::Bucket(BucketKind::Instances),
             Self::Bucket(BucketKind::Instances) | Self::Complete => Self::Complete,
@@ -34,6 +36,7 @@ impl Phase {
         match self {
             Self::Map(kind) => kind.map(source),
             Self::Formulas => &source.statements,
+            Self::Definitions => &source.definitions,
             Self::Bucket(BucketKind::Outgoing) => &source.outgoing,
             Self::Bucket(BucketKind::Deductions) => &source.deductions,
             Self::Bucket(BucketKind::Instances) => &source.instances,
@@ -72,13 +75,24 @@ impl CopyPlan for ArtifactCopyPlan {
                         self.source.program_nodes.lookup(address),
                     ))
                 } else {
-                    Ok(Follow::Formula(FormulaRecord {
-                        statement: StatementId::from_bytes(key),
+                    Ok(Follow::Content(ContentRecord {
+                        identity: key,
+                        identity_of: |bytes| Ok(*crate::statement_id(bytes).as_bytes()),
                         address,
                         length,
                         address_of: formula_address,
                     }))
                 }
+            }
+            Phase::Definitions => {
+                let (address, length) = definition_record(value)?;
+                Ok(Follow::Content(ContentRecord {
+                    identity: key,
+                    identity_of: definition_identity,
+                    address,
+                    length,
+                    address_of: definition_address,
+                }))
             }
             Phase::Bucket(_) => Ok(Follow::Bucket(
                 DiskMap::from_root(self.storage(), decode_root(Some(value))?).walk(),
@@ -143,6 +157,7 @@ impl DiskArtifactCopy {
             }
             let [
                 proofs,
+                definitions,
                 derivations,
                 statements,
                 artifacts,
@@ -155,6 +170,7 @@ impl DiskArtifactCopy {
             Ok(DiskArtifactState {
                 read_cache: current.read_cache,
                 proofs,
+                definitions,
                 derivations,
                 statements,
                 artifacts,

@@ -39,7 +39,7 @@ class AutonomousNode(Node):
         assert not status['running'] and not process_group(self.process)
         if self.process is not None:
             assert sum(event.get('event')=='stopped' for event in self.logs()[self.event_offset:])==1
-        assert status['accepted_proofs']==len(self.ids())
+        assert status['accepted_artifacts']==len(self.ids())
         self.reserve_port()
         return status
 
@@ -51,7 +51,7 @@ def program_rows(node):
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=0)) as connection:
             return [{'id':identity.hex(),'manifest':json.loads(manifest),'received':received,
                 'published':bool(published)} for identity,manifest,received,published in connection.execute(
-                'SELECT id,manifest,received,EXISTS(SELECT 1 FROM proofs WHERE proofs.id=programs.id) FROM programs ORDER BY id')]
+                'SELECT id,manifest,received,EXISTS(SELECT 1 FROM artifacts WHERE artifacts.id=programs.id) FROM programs ORDER BY id')]
     except sqlite3.OperationalError as error:
         if str(error) not in ('database is locked', 'database table is locked'):
             raise
@@ -106,7 +106,7 @@ def run(trial,units,memory_mib=None):
         if event.get('event')=='exchange_response' and event.get('kind')=='program_data' and event.get('object_id')==identity]
     assert resumed and resumed[0]['position']==after['received'],resumed[:1]
     source_objects=stored_objects(donor);received_objects=stored_objects(receiver)
-    assert next(value for value in source_objects if value['proof_id']==identity)==next(value for value in received_objects if value['proof_id']==identity)
+    assert next(value for value in source_objects if value['artifact_id']==identity)==next(value for value in received_objects if value['artifact_id']==identity)
     observation=trial.wait(lambda:latest(receiver))
     snapshot=observation['snapshot']
     assert snapshot['selection']['profile']==getattr(receiver,'expected_profile','dynamic')
@@ -121,7 +121,7 @@ def run(trial,units,memory_mib=None):
         assert work.stat().st_size>snapshot['budget']['memory_bytes'],"screen must exceed its configured working-memory target"
     receiver.start()
     assert receiver.ids()==before and identity in before
-    assert trial.call(receiver,'status')['accepted_proofs']==len(before)
+    assert trial.call(receiver,'status')['accepted_artifacts']==len(before)
     trial.summary.update(result='pass',fixture='autonomous_program_replication',program=published,
         receiver_prefix_at_restart=after['received'],receiver_first_resumed_position=resumed[0]['position'],
         receiver_work_database_bytes=work.stat().st_size,receiver_resource_observation=observation,

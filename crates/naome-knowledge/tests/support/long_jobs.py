@@ -304,7 +304,7 @@ def limits(trial,probe):
         expected='proof_candidate_rejected' if outcome!='failed' else 'solve_obligation_held_or_expired'
         trial.wait(lambda:any(event.get('event')==expected for event in node.logs()),maximum=12)
         assert not node.ids()
-        probe.observe(node);assert trial.call(node,'status')['accepted_proofs']==0
+        probe.observe(node);assert trial.call(node,'status')['accepted_artifacts']==0
         node.stop();probe.ended()
     node=Node(trial,3)
     node.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':3,'work_units':2}))
@@ -324,7 +324,7 @@ def limits(trial,probe):
             assert len(failures)==1 and expected in failures[0].get('error',''),(case,failures)
             assert not any(e.get('event') in {'research_started','research_worker','research_descendant'} for e in events)
             recorded=trial.call(node,'status')
-            assert not recorded['running'] and recorded['proof_verification']=='not_run'
+            assert not recorded['running'] and recorded['artifact_verification']=='not_run'
             assert not (node.directory/'control.json').exists()
             trial.summary.setdefault('startup_rejections',[]).append({'case':case,
                 'expected_error':expected,'fatal_error':failures[0]['error'],'research_process_started':False})

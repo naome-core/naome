@@ -39,7 +39,7 @@ fn program(graph: &mut Graph) -> naome_proof::program::Manifest {
     let batch = admission.finish(graph, &checked).unwrap();
     graph
         .commit_batch(
-            manifest.proof_id(),
+            manifest.artifact_id(),
             batch,
             Instant::now() + Duration::from_secs(60),
         )
@@ -238,7 +238,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
         &mut late,
         server,
         Body::Describe {
-            id: *manifest.proof_id().as_bytes(),
+            id: *manifest.artifact_id().as_bytes(),
         },
     )
     .await;
@@ -259,8 +259,8 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
             &mut late,
             server,
             Body::ProgramGet {
-                root: *manifest.proof_id().as_bytes(),
-                id: *manifest.proof_id().as_bytes(),
+                root: *manifest.artifact_id().as_bytes(),
+                id: *manifest.artifact_id().as_bytes(),
                 start: position,
                 limit: 1,
             },
@@ -269,7 +269,7 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
         else {
             panic!("the paused node must serve every requested chunk");
         };
-        assert_eq!(root, *manifest.proof_id().as_bytes());
+        assert_eq!(root, *manifest.artifact_id().as_bytes());
         assert_eq!(id, root);
         assert_eq!(chunk.records.len(), 1);
         verifier.append_group(&chunk.records).unwrap();
@@ -283,8 +283,9 @@ async fn automatic_cpu_pause_preserves_new_peering_gossip_and_checked_program_de
         Body::ProgramOffer { metadata },
         Body::Offer {
             metadata: Metadata {
-                proof_id: candidate.proof_id,
-                statement_id: candidate.statement_id,
+                proof_id: crate::hex(candidate.proof_id().unwrap().unwrap().as_bytes()),
+                artifact_id: candidate.artifact_id,
+                statement_id: candidate.statement_id.unwrap(),
                 question: "goal=all(x,eq(x,x))".into(),
             },
         },

@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 import traceback
 
-from proof_network import digest, question_source, source, stored_objects
+from proof_network import citation_id, proof_metadata, digest, question_source, source, stored_objects
 from proof_network_discovery import DiscoveryDriver, Relay, port
 
 
@@ -53,29 +53,29 @@ class QuestionDriver(DiscoveryDriver):
         accepted = sender.command("produce", source=source(11))
         declined = sender.command("produce", source=source(12))
         helper = sender.command("produce", source=source(7))
-        self.wait_set(selected, [accepted["object"]["proof_id"]])
-        selected.wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("id") == helper["object"]["proof_id"], timeout=10)
-        sender.command("announce", id=declined["object"]["proof_id"])
-        sender.command("offer", peer=selected.identity, id=declined["object"]["proof_id"])
+        self.wait_set(selected, [accepted["object"]["artifact_id"]])
+        selected.wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("id") == helper["object"]["artifact_id"], timeout=10)
+        sender.command("announce", id=declined["object"]["artifact_id"])
+        sender.command("offer", peer=selected.identity, id=declined["object"]["artifact_id"])
         self.wait_set(absent, [])
         # The helper's own question is declined. Its exact bytes are required
         # only after the selected parent commits its actual citation.
-        child_source = f'goal = {child_statement}\nproof: p0 = cite("{helper["object"]["proof_id"]}") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2'
+        child_source = f'goal = {child_statement}\nproof: p0 = cite("{citation_id(helper["object"])}") p1 = simp({a},{b}) p2 = mp(p0,p1) return p2'
         child = sender.command("produce", source=child_source)
-        expected = [accepted["object"]["proof_id"], helper["object"]["proof_id"], child["object"]["proof_id"]]
+        expected = [accepted["object"]["artifact_id"], helper["object"]["artifact_id"], child["object"]["artifact_id"]]
         self.wait_set(selected, expected)
         time.sleep(2)
-        assert absent.command("status")["accepted_proofs"] == 0
+        assert absent.command("status")["accepted_artifacts"] == 0
         assert not any(event.get("event") == "exchange_response" and event.get("kind") == "object" for event in absent.events)
         gets = [event for event in sender.events if event.get("event") == "exchange_request" and event.get("kind") == "get"]
         assert not any(event["peer"] == absent.identity for event in gets)
-        declined_id = declined["object"]["proof_id"]
+        declined_id = declined["object"]["artifact_id"]
         assert not any(event.get("event") == "exchange_response" and event.get("kind") == "object" and event.get("object_id") == declined_id for event in selected.events)
         assert not any(event["peer"] == selected.identity and event["object_id"] == declined_id for event in gets)
-        helper_payloads = [event for event in selected.events if event.get("event") == "exchange_response" and event.get("kind") == "object" and event.get("object_id") == helper["object"]["proof_id"]]
-        assert helper_payloads and all(event["root_id"] == child["object"]["proof_id"] for event in helper_payloads)
-        helper_gets = [event for event in gets if event["peer"] == selected.identity and event["object_id"] == helper["object"]["proof_id"]]
-        assert helper_gets and all(event["root_id"] == child["object"]["proof_id"] for event in helper_gets)
+        helper_payloads = [event for event in selected.events if event.get("event") == "exchange_response" and event.get("kind") == "object" and event.get("object_id") == helper["object"]["artifact_id"]]
+        assert helper_payloads and all(event["root_id"] == child["object"]["artifact_id"] for event in helper_payloads)
+        helper_gets = [event for event in gets if event["peer"] == selected.identity and event["object_id"] == helper["object"]["artifact_id"]]
+        assert helper_gets and all(event["root_id"] == child["object"]["artifact_id"] for event in helper_gets)
         assert len(stored_objects(selected)) == 3 and stored_objects(absent) == []
         responses = [event for event in selected.events if event.get("event") == "exchange_response" and event.get("kind") == "object"]
         if self.mode == "relay":
@@ -105,7 +105,8 @@ class QuestionDriver(DiscoveryDriver):
         for supplier in [sender, absent]:
             supplier.command("ingest", object=actual)
         bad, good = sorted([sender, absent], key=lambda node: node.identity)
-        wrong = {"proof_id": actual["proof_id"], "statement_id": unrelated["statement_id"], "question": question_source(source(32))}
+        wrong = proof_metadata(actual, question_source(source(32)))
+        wrong["statement_id"] = unrelated["statement_id"]
         bad.command("test_descriptor", metadata=wrong)
         # A live Good can finish fetching before Bad is identified, especially
         # in release builds. Isolate the initial probe in both transport modes.
@@ -113,22 +114,22 @@ class QuestionDriver(DiscoveryDriver):
         bad_offset, good_offset = len(bad.events), len(good.events)
         selected_offset = len(selected.events)
         self.start_participant(selected, allowlist)
-        bad.wait_event(lambda event: event.get("event") == "exchange_request" and event.get("kind") == "describe" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"], since=bad_offset)
-        selected.wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("id") == actual["proof_id"], since=selected_offset)
-        assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"] for event in bad.events[bad_offset:])
+        bad.wait_event(lambda event: event.get("event") == "exchange_request" and event.get("kind") == "describe" and event.get("peer") == selected.identity and event.get("object_id") == actual["artifact_id"], since=bad_offset)
+        selected.wait_event(lambda event: event.get("event") == "proof_skipped" and event.get("id") == actual["artifact_id"], since=selected_offset)
+        assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get" and event.get("peer") == selected.identity and event.get("object_id") == actual["artifact_id"] for event in bad.events[bad_offset:])
         assert set(selected.ids()) == set(expected)
         self.start_participant(good, "all" if good is sender else None)
-        expected.append(actual["proof_id"])
+        expected.append(actual["artifact_id"])
         self.wait_set(selected, expected)
-        bad_describes = [event for event in bad.events[bad_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "describe" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"]]
-        good_describes = [event for event in good.events[good_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "describe" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"]]
-        good_gets = [event for event in good.events[good_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "get" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"]]
+        bad_describes = [event for event in bad.events[bad_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "describe" and event.get("peer") == selected.identity and event.get("object_id") == actual["artifact_id"]]
+        good_describes = [event for event in good.events[good_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "describe" and event.get("peer") == selected.identity and event.get("object_id") == actual["artifact_id"]]
+        good_gets = [event for event in good.events[good_offset:] if event.get("event") == "exchange_request" and event.get("kind") == "get" and event.get("peer") == selected.identity and event.get("object_id") == actual["artifact_id"]]
         assert bad_describes and good_describes and good_gets
         assert bad_describes[0]["observed_monotonic"] < good_describes[0]["observed_monotonic"]
-        assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get" and event.get("peer") == selected.identity and event.get("object_id") == actual["proof_id"] for event in bad.events[bad_offset:])
+        assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get" and event.get("peer") == selected.identity and event.get("object_id") == actual["artifact_id"] for event in bad.events[bad_offset:])
         assert len(stored_objects(selected)) == 4
         self.summary["scenarios"]["false_description_preserves_correct_supplier_rotation"] = {
-            "result": "pass", "proof_id": actual["proof_id"], "bad_supplier": bad.identity,
+            "result": "pass", "artifact_id": actual["artifact_id"], "bad_supplier": bad.identity,
             "good_supplier": good.identity, "bad_describes": bad_describes,
             "good_describes": good_describes, "good_gets": good_gets, "bad_get_count": 0}
         if self.mode == "direct":
@@ -146,8 +147,8 @@ class QuestionDriver(DiscoveryDriver):
             assert error["schema_version"] == 1 and error["code"] == "input.invalid", error
             assert error["message"] == "question limit exceeded: question target depth", error
             assert error["retryable"] is False and error["fatal"] is False, error
-            assert result["object"]["proof_id"] in sender.ids()
-            self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": "pass", "accepted_id": result["object"]["proof_id"], "metadata_error": result["metadata_error"]}
+            assert result["object"]["artifact_id"] in sender.ids()
+            self.summary["scenarios"]["local_producer_outside_question_codec"] = {"result": "pass", "accepted_id": result["object"]["artifact_id"], "metadata_error": result["metadata_error"]}
         self.assert_caps()
         self.summary["accepted_ids"] = sorted(expected)
         self.summary["result"] = "pass"

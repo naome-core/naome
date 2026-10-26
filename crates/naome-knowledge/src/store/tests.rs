@@ -35,7 +35,7 @@ fn fixtures() -> (Envelope, Envelope) {
     let child = graph
         .author(&format!(
             "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            parent.proof_id
+            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap();
     (parent, child)
@@ -114,9 +114,9 @@ fn canonical_leaf_aliases_and_nonregular_files_cannot_publish_or_replace_data() 
 fn unknown_normal_schema_objects_are_refused_without_changing_data() {
     for sql in [
         "CREATE TABLE unexpected_schema(value INTEGER)",
-        "CREATE VIEW unexpected_schema AS SELECT id FROM proofs",
-        "CREATE TRIGGER unexpected_schema AFTER INSERT ON proofs BEGIN SELECT 1; END",
-        "CREATE INDEX unexpected_schema ON proofs(statement)",
+        "CREATE VIEW unexpected_schema AS SELECT id FROM artifacts",
+        "CREATE TRIGGER unexpected_schema AFTER INSERT ON artifacts BEGIN SELECT 1; END",
+        "CREATE INDEX unexpected_schema ON artifacts(statement)",
     ] {
         let directory = Directory::new();
         let (parent, _) = fixtures();
@@ -192,7 +192,7 @@ fn binary_single_and_dependency_batch_preserve_exact_bytes_ids_root_and_membersh
             .finish_replay(Graph::default().content_root())
             .unwrap();
         if batched {
-            let root = ProofId::from_bytes(crate::object::id_bytes(&child.proof_id).unwrap());
+            let root = ArtifactId::from_bytes(crate::object::id_bytes(&child.artifact_id).unwrap());
             store
                 .persist_batch(root, [&parent, &child].into_iter())
                 .unwrap();
@@ -204,18 +204,21 @@ fn binary_single_and_dependency_batch_preserve_exact_bytes_ids_root_and_membersh
         let graph = Graph::open(&directory.0).unwrap();
         assert_eq!(graph.ids(), baseline.ids());
         assert_eq!(graph.content_root(), baseline.content_root());
-        assert_eq!(graph.get(&parent.proof_id).unwrap(), Some(parent.clone()));
-        assert_eq!(graph.get(&child.proof_id).unwrap(), Some(child.clone()));
+        assert_eq!(
+            graph.get(&parent.artifact_id).unwrap(),
+            Some(parent.clone())
+        );
+        assert_eq!(graph.get(&child.artifact_id).unwrap(), Some(child.clone()));
         let database = rusqlite::Connection::open(directory.0.join(DATABASE_FILE)).unwrap();
         for object in [&parent, &child] {
             let payload: Vec<u8> = database
                 .query_row(
-                    "SELECT payload FROM proofs WHERE id=?1",
-                    [crate::unhex(&object.proof_id).unwrap()],
+                    "SELECT payload FROM artifacts WHERE id=?1",
+                    [crate::unhex(&object.artifact_id).unwrap()],
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(payload, crate::unhex(&object.proof).unwrap());
+            assert_eq!(payload, crate::unhex(&object.payload).unwrap());
         }
         assert!(!directory.0.join("objects").exists());
         drop(graph);
@@ -238,10 +241,10 @@ fn deferred_parent_inserts_resolve_foreign_keys_with_indexed_child_lookups() {
         (
             "EXPLAIN QUERY PLAN INSERT INTO commits(id,root,member_count)
              VALUES(zeroblob(32),zeroblob(32),1)",
-            &["proofs_by_origin_commit"],
+            &["artifacts_by_origin_commit"],
         ),
         (
-            "EXPLAIN QUERY PLAN INSERT INTO proofs(id,replay_order,statement,compatibility,
+            "EXPLAIN QUERY PLAN INSERT INTO artifacts(id,replay_order,statement,compatibility,
              payload,payload_length,payload_digest,origin_commit)
              VALUES(zeroblob(32),1,zeroblob(32),zeroblob(32),x'00',1,zeroblob(32),zeroblob(32))",
             &["commits_by_root", "dependencies_by_target"],
@@ -267,7 +270,7 @@ fn deferred_parent_inserts_resolve_foreign_keys_with_indexed_child_lookups() {
     }
     assert_eq!(
         database
-            .query_row("SELECT count(*) FROM proofs", [], |row| row
+            .query_row("SELECT count(*) FROM artifacts", [], |row| row
                 .get::<_, i64>(0))
             .unwrap(),
         0
@@ -277,7 +280,7 @@ fn deferred_parent_inserts_resolve_foreign_keys_with_indexed_child_lookups() {
 #[test]
 fn missing_or_changed_foreign_key_indexes_refuse_startup() {
     for (name, table) in [
-        ("proofs_by_origin_commit", "proofs"),
+        ("artifacts_by_origin_commit", "artifacts"),
         ("commits_by_root", "commits"),
         ("dependencies_by_target", "dependencies"),
     ] {
@@ -293,7 +296,7 @@ fn missing_or_changed_foreign_key_indexes_refuse_startup() {
                     .execute_batch(&format!(
                         "CREATE INDEX {name} ON {table}({})",
                         if table == "dependencies" {
-                            "proof_id"
+                            "artifact_id"
                         } else {
                             "id"
                         }
@@ -339,14 +342,14 @@ fn repeated_commit_preserves_totals_and_full_replay_root() {
     store
         .finish_replay(Graph::default().content_root())
         .unwrap();
-    let root = ProofId::from_bytes(crate::object::id_bytes(&child.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(crate::object::id_bytes(&child.artifact_id).unwrap());
     let first = store
         .persist_batch(root, [&parent, &child].into_iter())
         .unwrap();
     assert_eq!(first.count, 2);
     assert_eq!(
         first.bytes,
-        crate::unhex(&parent.proof).unwrap().len() + crate::unhex(&child.proof).unwrap().len()
+        crate::unhex(&parent.payload).unwrap().len() + crate::unhex(&child.payload).unwrap().len()
     );
     let repeated = store
         .persist_batch_checked(root, [&parent, &child].into_iter(), first, None)
@@ -357,8 +360,8 @@ fn repeated_commit_preserves_totals_and_full_replay_root() {
     let graph = Graph::open(&directory.0).unwrap();
     assert_eq!(graph.accepted_count(), first.count);
     assert_eq!(graph.content_root(), first.root);
-    assert_eq!(graph.get(&parent.proof_id).unwrap(), Some(parent));
-    assert_eq!(graph.get(&child.proof_id).unwrap(), Some(child));
+    assert_eq!(graph.get(&parent.artifact_id).unwrap(), Some(parent));
+    assert_eq!(graph.get(&child.artifact_id).unwrap(), Some(child));
 }
 
 #[test]
@@ -370,7 +373,7 @@ fn forward_dependency_batch_rolls_back_before_publishing_incremental_totals() {
         .finish_replay(Graph::default().content_root())
         .unwrap();
     let empty = store.summary().unwrap();
-    let root = ProofId::from_bytes(crate::object::id_bytes(&child.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(crate::object::id_bytes(&child.artifact_id).unwrap());
     let error = store
         .persist_batch_checked(root, [&child, &parent].into_iter(), empty, None)
         .unwrap_err();
@@ -395,14 +398,14 @@ fn external_commit_invalidates_reads_replay_activation_and_new_writes() {
         assert_eq!(
             database
                 .execute(
-                    "UPDATE proofs SET payload_digest=zeroblob(32) WHERE id=?1",
-                    [crate::unhex(&parent.proof_id).unwrap()],
+                    "UPDATE artifacts SET payload_digest=zeroblob(32) WHERE id=?1",
+                    [crate::unhex(&parent.artifact_id).unwrap()],
                 )
                 .unwrap(),
             1
         );
         drop(database);
-        let absent = ProofId::from_bytes(crate::object::id_bytes(&child.proof_id).unwrap());
+        let absent = ArtifactId::from_bytes(crate::object::id_bytes(&child.artifact_id).unwrap());
         let refused = match operation {
             0 => store.get(absent, summary).is_err(),
             1 => store.ids_page(None, 64, summary).is_err(),
@@ -417,7 +420,7 @@ fn external_commit_invalidates_reads_replay_activation_and_new_writes() {
         );
         let database = rusqlite::Connection::open(directory.0.join(DATABASE_FILE)).unwrap();
         let count: i64 = database
-            .query_row("SELECT count(*) FROM proofs", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM artifacts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "no new commit after invalidation");
     }
@@ -441,12 +444,15 @@ fn hash_consistent_invalid_proofs_cannot_bypass_mathematical_restart_replay() {
         .into_unchecked_normal_form()
         .canonical_bytes()
         .to_vec();
-    let statement = StatementId::from_bytes(crate::object::id_bytes(&parent.statement_id).unwrap());
+    let statement = StatementId::from_bytes(
+        crate::object::id_bytes(parent.statement_id.as_deref().unwrap()).unwrap(),
+    );
     let object = Envelope {
         compatibility: crate::hex(&crate::compatibility()),
-        proof_id: crate::hex(crate::object::content_id(statement, &bytes).as_bytes()),
+        artifact_id: crate::hex(crate::object::content_id(statement, &bytes).as_bytes()),
         statement_id: parent.statement_id,
-        proof: crate::hex(&bytes),
+        payload: format!("00{}", crate::hex(&bytes)),
+        obligation_proof: None,
     };
     assert!(
         object.clone().prepare().is_ok(),
@@ -534,7 +540,7 @@ fn database_identity_and_payload_corruption_refuse_startup() {
                 receipt[71] ^= 1;
                 fs::write(directory.0.join(FORMAT_FILE), receipt).unwrap();
             }
-            1 => corrupt_payload(&directory.0, &parent.proof_id),
+            1 => corrupt_payload(&directory.0, &parent.artifact_id),
             _ => {
                 fs::write(directory.0.join(DATABASE_FILE), b"truncated database").unwrap();
             }
@@ -580,11 +586,12 @@ fn large_fixture() -> Envelope {
     .unwrap();
     let object = Envelope {
         compatibility: crate::hex(&crate::compatibility()),
-        proof_id: crate::hex(checked.proof_id().as_bytes()),
-        statement_id: crate::hex(checked.statement_id().as_bytes()),
-        proof: crate::hex(checked.normal_form().canonical_bytes()),
+        artifact_id: crate::hex(checked.artifact_id().as_bytes()),
+        statement_id: Some(crate::hex(checked.statement_id().as_bytes())),
+        payload: format!("00{}", crate::hex(checked.normal_form().canonical_bytes())),
+        obligation_proof: None,
     };
-    assert!(object.proof.len() / 2 <= crate::resources::limits().proof_bytes);
+    assert!(object.payload.len() / 2 <= crate::resources::limits().proof_bytes);
     object
 }
 
@@ -709,7 +716,7 @@ fn an_existing_proof_cannot_acquire_a_second_originating_commit() {
         .finish_replay(Graph::default().content_root())
         .unwrap();
     store.persist(&parent).unwrap();
-    let root = ProofId::from_bytes(crate::object::id_bytes(&child.proof_id).unwrap());
+    let root = ArtifactId::from_bytes(crate::object::id_bytes(&child.artifact_id).unwrap());
     let error = store
         .persist_batch(root, [&parent, &child].into_iter())
         .unwrap_err();
@@ -745,13 +752,13 @@ fn canonical_statement_compatibility_and_dependency_metadata_faults_fail_startup
         drop(graph);
         let database = rusqlite::Connection::open(directory.0.join(DATABASE_FILE)).unwrap();
         database.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
-        let id = crate::unhex(&child.proof_id).unwrap();
+        let id = crate::unhex(&child.artifact_id).unwrap();
         let sql = match mode {
-            0 => "UPDATE proofs SET statement=zeroblob(32) WHERE id=?1",
-            1 => "UPDATE proofs SET compatibility=zeroblob(32) WHERE id=?1",
-            2 => "UPDATE dependencies SET target=zeroblob(32) WHERE proof_id=?1",
-            3 => "DELETE FROM dependencies WHERE proof_id=?1",
-            _ => "UPDATE proofs SET payload_digest=zeroblob(32) WHERE id=?1",
+            0 => "UPDATE artifacts SET statement=zeroblob(32) WHERE id=?1",
+            1 => "UPDATE artifacts SET compatibility=zeroblob(32) WHERE id=?1",
+            2 => "UPDATE dependencies SET target=zeroblob(32) WHERE artifact_id=?1",
+            3 => "DELETE FROM dependencies WHERE artifact_id=?1",
+            _ => "UPDATE artifacts SET payload_digest=zeroblob(32) WHERE id=?1",
         };
         assert_eq!(database.execute(sql, [id]).unwrap(), 1);
         drop(database);
@@ -780,13 +787,13 @@ fn non_root_batch_members_receive_full_catalog_validation_before_acceptance() {
     let root = baseline
         .author(&format!(
             "goal = all(x,eq(x,x)) proof: p0 = cite(\"{}\") return p0",
-            child.proof_id
+            crate::hex(child.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap();
     baseline.ingest(root.clone(), Instant::now()).unwrap();
-    let root_id = ProofId::from_bytes(crate::object::id_bytes(&root.proof_id).unwrap());
-    let child_id = crate::unhex(&child.proof_id).unwrap();
-    assert_ne!(child.proof_id, root.proof_id);
+    let root_id = ArtifactId::from_bytes(crate::object::id_bytes(&root.artifact_id).unwrap());
+    let child_id = crate::unhex(&child.artifact_id).unwrap();
+    assert_ne!(child.artifact_id, root.artifact_id);
     for mode in 0..3 {
         let directory = Directory::new();
         let store = Store::open(&directory.0).unwrap();
@@ -806,9 +813,9 @@ fn non_root_batch_members_receive_full_catalog_validation_before_acceptance() {
             database
                 .query_row(
                     "SELECT corpus_root,corpus_count,payload_bytes,
-                     (SELECT count(*) FROM proofs),(SELECT count(*) FROM members),
-                     (SELECT count(*) FROM commits),(SELECT min(replay_order) FROM proofs),
-                     (SELECT max(replay_order) FROM proofs) FROM meta WHERE singleton=1",
+                     (SELECT count(*) FROM artifacts),(SELECT count(*) FROM members),
+                     (SELECT count(*) FROM commits),(SELECT min(replay_order) FROM artifacts),
+                     (SELECT max(replay_order) FROM artifacts) FROM meta WHERE singleton=1",
                     [],
                     |row| {
                         Ok((
@@ -828,9 +835,9 @@ fn non_root_batch_members_receive_full_catalog_validation_before_acceptance() {
         let membership = || {
             database
                 .prepare(
-                    "SELECT m.commit_id,m.proof_id,p.origin_commit,c.root,c.member_count
-                     FROM members m JOIN proofs p ON p.id=m.proof_id
-                     JOIN commits c ON c.id=m.commit_id ORDER BY m.proof_id",
+                    "SELECT m.commit_id,m.artifact_id,p.origin_commit,c.root,c.member_count
+                     FROM members m JOIN artifacts p ON p.id=m.artifact_id
+                     JOIN commits c ON c.id=m.commit_id ORDER BY m.artifact_id",
                 )
                 .unwrap()
                 .query_map([], |row| {
@@ -869,9 +876,9 @@ fn non_root_batch_members_receive_full_catalog_validation_before_acceptance() {
         }));
         let sql = match mode {
             // Preserve the stored digest and commit digest to require payload validation.
-            0 => "UPDATE proofs SET payload=zeroblob(length(payload)) WHERE id=?1",
-            1 => "UPDATE proofs SET statement=zeroblob(32) WHERE id=?1",
-            _ => "DELETE FROM dependencies WHERE proof_id=?1",
+            0 => "UPDATE artifacts SET payload=zeroblob(length(payload)) WHERE id=?1",
+            1 => "UPDATE artifacts SET statement=zeroblob(32) WHERE id=?1",
+            _ => "DELETE FROM dependencies WHERE artifact_id=?1",
         };
         assert_eq!(database.execute(sql, [&child_id]).unwrap(), 1);
         assert_eq!(totals(), before_totals);
@@ -893,9 +900,9 @@ fn non_root_batch_members_receive_full_catalog_validation_before_acceptance() {
 fn dependency_batch_rollback_then_same_connection_retry_reads_current_exact_records() {
     let directory = Directory::new();
     let (parent, child) = fixtures();
-    let parent_id = ProofId::from_bytes(crate::object::id_bytes(&parent.proof_id).unwrap());
-    let child_id = ProofId::from_bytes(crate::object::id_bytes(&child.proof_id).unwrap());
-    let absent = ProofId::from_bytes([0; 32]);
+    let parent_id = ArtifactId::from_bytes(crate::object::id_bytes(&parent.artifact_id).unwrap());
+    let child_id = ArtifactId::from_bytes(crate::object::id_bytes(&child.artifact_id).unwrap());
+    let absent = ArtifactId::from_bytes([0; 32]);
     assert_ne!(absent, parent_id);
     assert_ne!(absent, child_id);
     let mut baseline = Graph::default();
@@ -920,7 +927,7 @@ fn dependency_batch_rollback_then_same_connection_retry_reads_current_exact_reco
     assert_eq!(summary.count, 2);
     assert_eq!(
         summary.bytes,
-        crate::unhex(&parent.proof).unwrap().len() + crate::unhex(&child.proof).unwrap().len()
+        crate::unhex(&parent.payload).unwrap().len() + crate::unhex(&child.payload).unwrap().len()
     );
     assert_eq!(summary.root, baseline.content_root());
     assert_eq!(store.summary().unwrap(), summary);
@@ -934,7 +941,7 @@ fn dependency_batch_rollback_then_same_connection_retry_reads_current_exact_reco
     ] {
         let (id, wanted) = match expected {
             Some(object) => (
-                ProofId::from_bytes(crate::object::id_bytes(&object.proof_id).unwrap()),
+                ArtifactId::from_bytes(crate::object::id_bytes(&object.artifact_id).unwrap()),
                 Some(object.clone()),
             ),
             None => (absent, None),
@@ -946,8 +953,8 @@ fn dependency_batch_rollback_then_same_connection_retry_reads_current_exact_reco
     assert_eq!(reopened.ids(), baseline.ids());
     assert_eq!(reopened.accepted_count(), summary.count);
     assert_eq!(reopened.content_root(), summary.root);
-    assert_eq!(reopened.get(&parent.proof_id).unwrap(), Some(parent));
-    assert_eq!(reopened.get(&child.proof_id).unwrap(), Some(child));
+    assert_eq!(reopened.get(&parent.artifact_id).unwrap(), Some(parent));
+    assert_eq!(reopened.get(&child.artifact_id).unwrap(), Some(child));
 }
 
 #[test]
@@ -968,12 +975,13 @@ fn inventory_pages_seek_past_the_cursor_without_rescanning_prior_ids() {
             .unwrap(),
         )
         .unwrap();
-        let id = checked.proof_id();
+        let id = checked.artifact_id();
         let object = Envelope {
             compatibility: crate::hex(&crate::compatibility()),
-            proof_id: crate::hex(id.as_bytes()),
-            statement_id: crate::hex(checked.statement_id().as_bytes()),
-            proof: crate::hex(checked.normal_form().canonical_bytes()),
+            artifact_id: crate::hex(id.as_bytes()),
+            statement_id: Some(crate::hex(checked.statement_id().as_bytes())),
+            payload: format!("00{}", crate::hex(checked.normal_form().canonical_bytes())),
+            obligation_proof: None,
         };
         assert_eq!(
             graph.ingest(object, Instant::now()).unwrap().status,
@@ -1006,13 +1014,13 @@ fn inventory_pages_seek_past_the_cursor_without_rescanning_prior_ids() {
     assert_eq!(observed, expected);
     assert_eq!(
         store
-            .ids_page(Some(ProofId::from_bytes([0; 32])), 7, summary)
+            .ids_page(Some(ArtifactId::from_bytes([0; 32])), 7, summary)
             .unwrap(),
         expected[..7]
     );
     assert!(
         store
-            .ids_page(Some(ProofId::from_bytes([255; 32])), 7, summary)
+            .ids_page(Some(ArtifactId::from_bytes([255; 32])), 7, summary)
             .unwrap()
             .is_empty()
     );
@@ -1026,7 +1034,7 @@ fn inventory_pages_seek_past_the_cursor_without_rescanning_prior_ids() {
     .unwrap();
     let mut old_query = database
         .prepare(
-            "SELECT substr(id,1,33) FROM proofs WHERE (?1 IS NULL OR id > ?1) ORDER BY id LIMIT ?2",
+            "SELECT substr(id,1,33) FROM artifacts WHERE (?1 IS NULL OR id > ?1) ORDER BY id LIMIT ?2",
         )
         .unwrap();
     let old_page = old_query
@@ -1064,7 +1072,7 @@ fn growing_live_commits_never_rescan_the_corpus_set() {
             .unwrap(),
         )
         .unwrap();
-        let object = crate::object::BinaryProof::from_checked(&checked)
+        let object = crate::object::BinaryArtifact::from_checked(&checked)
             .unwrap()
             .envelope();
         graph.ingest(object, Instant::now()).unwrap();
@@ -1077,7 +1085,7 @@ fn growing_live_commits_never_rescan_the_corpus_set() {
     assert_eq!(graph.accepted_count(), 65);
     assert_eq!(
         graph.content_root(),
-        crate::corpus::root(65, graph.checked_context().proof_set_fingerprint()).unwrap()
+        crate::corpus::root(65, graph.checked_context().artifact_set_fingerprint()).unwrap()
     );
 }
 

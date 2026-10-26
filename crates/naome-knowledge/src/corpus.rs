@@ -21,7 +21,7 @@ pub(crate) struct InventoryCursor {
 
 pub(crate) struct InventoryPage {
     pub snapshot: InventorySnapshot,
-    pub ids: Vec<naome_proof::ProofId>,
+    pub ids: Vec<naome_proof::ArtifactId>,
     pub next: Option<InventoryCursor>,
 }
 

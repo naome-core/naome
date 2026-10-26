@@ -33,7 +33,7 @@ impl ProgramCheck {
         }
         let work = Work::open(&directory.join(format!(
             "{}.sqlite3",
-            crate::hex(manifest.proof_id().as_bytes())
+            crate::hex(manifest.artifact_id().as_bytes())
         )))?;
         Ok(Self {
             manifest,
@@ -263,7 +263,17 @@ impl ProgramAdmission {
         };
         let mut dependencies = std::collections::BTreeSet::new();
         for id in self.preparation.ids() {
-            if checked.references_proof(id)? {
+            let reference =
+                if let Some(proof_id) = self.preparation.context().artifact_proof_id(id)? {
+                    checked.references_proof(proof_id)?
+                } else if let Some(definition_id) =
+                    self.preparation.context().artifact_definition_id(id)?
+                {
+                    checked.references_definition(definition_id)?
+                } else {
+                    return Err("staged artifact identity missing".into());
+                };
+            if reference {
                 dependencies.insert(id);
             }
         }
@@ -271,7 +281,7 @@ impl ProgramAdmission {
         self.preparation.append_program(
             graph,
             context,
-            crate::object::BinaryProof::from_program(checked)?,
+            crate::object::BinaryArtifact::from_program(checked)?,
             dependencies,
             growth,
         )?;
@@ -282,7 +292,7 @@ impl ProgramAdmission {
 impl Graph {
     pub(crate) fn description(
         &self,
-        id: ProofId,
+        id: ArtifactId,
     ) -> Result<Option<crate::object::ProofDescription>, crate::Error> {
         if !self.contains(id)? {
             return Ok(None);
@@ -300,17 +310,17 @@ impl Graph {
 
     pub(crate) fn transfer(
         &self,
-        id: ProofId,
-    ) -> Result<Option<crate::object::ProofTransfer>, crate::Error> {
+        id: ArtifactId,
+    ) -> Result<Option<crate::object::ArtifactTransfer>, crate::Error> {
         let Some(record) = self.binary_object(id)? else {
             return Ok(None);
         };
         match record.program()? {
             Some(manifest) => self
                 .describe_program(id, manifest)
-                .map(crate::object::ProofTransfer::Program)
+                .map(crate::object::ArtifactTransfer::Program)
                 .map(Some),
-            None => Ok(Some(crate::object::ProofTransfer::Certificate(
+            None => Ok(Some(crate::object::ArtifactTransfer::Certificate(
                 record.envelope(),
             ))),
         }
@@ -318,12 +328,12 @@ impl Graph {
 
     fn describe_program(
         &self,
-        id: ProofId,
+        id: ArtifactId,
         manifest: Manifest,
     ) -> Result<crate::object::ProgramMetadata, crate::Error> {
         let question = if self
             .context
-            .proof_header(id)
+            .proof_header(manifest.proof_id())
             .map_err(crate::Error::from)?
             .is_some_and(|header| header.canonical_length() != usize::MAX)
         {
@@ -337,7 +347,10 @@ impl Graph {
         };
         Ok(crate::object::ProgramMetadata { manifest, question })
     }
-    pub(crate) fn program_manifest(&self, id: ProofId) -> Result<Option<Manifest>, crate::Error> {
+    pub(crate) fn program_manifest(
+        &self,
+        id: ArtifactId,
+    ) -> Result<Option<Manifest>, crate::Error> {
         if !self.contains(id)? {
             return Ok(None);
         }
@@ -345,7 +358,7 @@ impl Graph {
     }
     pub(crate) fn program_chunk(
         &self,
-        id: ProofId,
+        id: ArtifactId,
         start: u64,
         records: usize,
         maximum: usize,
@@ -367,7 +380,7 @@ impl Graph {
         proof: &CheckedWork,
         prefix: Option<CheckedBatch>,
     ) -> Result<ProgramAdmission, crate::Error> {
-        let record = crate::object::BinaryProof::from_program(proof.proof()?)?;
+        let record = crate::object::BinaryArtifact::from_program(proof.proof()?)?;
         let preparation = Preparation::new(self, prefix, record.bytes.len(), 1)?;
         let cursor = preparation
             .context()

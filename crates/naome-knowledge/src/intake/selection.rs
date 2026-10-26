@@ -15,7 +15,7 @@ struct Pending {
     received: Option<QuestionAssessment>,
 }
 pub(super) struct Selection {
-    root: ProofId,
+    root: ArtifactId,
     question: CompiledQuestion,
     initial: Option<QuestionAssessment>,
     final_assessment: Option<QuestionAssessment>,
@@ -23,7 +23,7 @@ pub(super) struct Selection {
     until: Instant,
 }
 impl Selection {
-    pub(super) fn new(root: ProofId, question: CompiledQuestion) -> Self {
+    pub(super) fn new(root: ArtifactId, question: CompiledQuestion) -> Self {
         Self {
             root,
             question,
@@ -172,7 +172,7 @@ impl Selection {
         questions: &mut LocalQuestions<F>,
         transfer: &TransferGrant,
         batch: CheckedBatch,
-    ) -> Result<Vec<ProofId>, crate::Error>
+    ) -> Result<Vec<ArtifactId>, crate::Error>
     where
         F: Fn(CompiledQuestion) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<bool, String>> + Send + 'static,

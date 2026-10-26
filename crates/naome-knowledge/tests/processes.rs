@@ -150,7 +150,7 @@ fn native_provider_feedback_reaches_owner_without_changing_job_allowances() {
 
 #[cfg(unix)]
 #[test]
-fn ordinary_lifecycle_generates_exchanges_and_recovers_checked_proofs() {
+fn ordinary_lifecycle_generates_exchanges_and_recovers_checked_artifacts() {
     run_autonomous("direct");
 }
 
@@ -321,7 +321,7 @@ mod developer_transport {
     }
 
     #[test]
-    fn relay_circuit_transfers_checked_proofs_without_direct_shortcuts() {
+    fn relay_circuit_transfers_checked_artifacts_without_direct_shortcuts() {
         run_discovery("relay");
     }
 

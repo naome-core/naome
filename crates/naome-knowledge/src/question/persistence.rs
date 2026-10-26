@@ -312,7 +312,7 @@ impl Persistence {
     /// from the rechecked graph, never from a persisted success flag.
     pub(super) fn stage_publication(
         &mut self,
-        root: naome_proof::ProofId,
+        root: naome_proof::ArtifactId,
         question: &CompiledQuestion,
     ) -> Result<(), crate::Error> {
         crate::resources::require_disk_space(
@@ -332,7 +332,7 @@ impl Persistence {
     }
     pub(super) fn finish_publication(
         &mut self,
-        root: naome_proof::ProofId,
+        root: naome_proof::ArtifactId,
     ) -> Result<(), crate::Error> {
         self.checkpoint
             .commit(
@@ -346,7 +346,7 @@ impl Persistence {
     }
     pub(super) fn publications(
         &self,
-    ) -> Result<Vec<(naome_proof::ProofId, CompiledQuestion)>, String> {
+    ) -> Result<Vec<(naome_proof::ArtifactId, CompiledQuestion)>, String> {
         self.checkpoint
             .page(
                 "publication",
@@ -356,7 +356,7 @@ impl Persistence {
             )?
             .into_iter()
             .map(|(key, bytes)| {
-                let root = naome_proof::ProofId::from_bytes(crate::object::id_bytes(&key)?);
+                let root = naome_proof::ArtifactId::from_bytes(crate::object::id_bytes(&key)?);
                 let source: String = crate::checkpoint::decode(&bytes)?;
                 let question = CompiledQuestion::compile(&source).map_err(|e| e.to_string())?;
                 Ok((root, question))

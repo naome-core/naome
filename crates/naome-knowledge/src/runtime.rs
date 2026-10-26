@@ -177,21 +177,21 @@ pub fn report_error(error: &str) {
 /// Whether this process reconstructed mathematical validity for the reported set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProofVerification {
+pub enum ArtifactVerification {
     Checked,
     NotRun,
 }
 
 /// The ordinary status surface. Offline counts describe recorded admissions;
-/// only a live checked graph can report `ProofVerification::Checked`.
+/// only a live checked graph can report `ArtifactVerification::Checked`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
     pub running: bool,
     pub computation: crate::resources::ComputationState,
     pub computation_reason: Option<String>,
-    pub accepted_proofs: usize,
-    pub proof_verification: ProofVerification,
+    pub accepted_artifacts: usize,
+    pub artifact_verification: ArtifactVerification,
     pub interest: String,
 }
 
@@ -566,8 +566,8 @@ impl Control {
                     running,
                     computation,
                     computation_reason,
-                    accepted_proofs: count,
-                    proof_verification: ProofVerification::Checked,
+                    accepted_artifacts: count,
+                    artifact_verification: ArtifactVerification::Checked,
                     interest,
                 },
             },
@@ -852,8 +852,8 @@ async fn stopped_status(directory: &Path) -> Result<Status, String> {
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,
-        accepted_proofs: store.stored_count()?,
-        proof_verification: ProofVerification::NotRun,
+        accepted_artifacts: store.stored_count()?,
+        artifact_verification: ArtifactVerification::NotRun,
         interest: owner::load(directory)?,
     })
 }
@@ -870,8 +870,8 @@ async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
         running: false,
         computation: crate::resources::ComputationState::Stopped,
         computation_reason: None,
-        accepted_proofs: store.stored_count()?,
-        proof_verification: ProofVerification::NotRun,
+        accepted_artifacts: store.stored_count()?,
+        artifact_verification: ArtifactVerification::NotRun,
         interest: owner::update(directory, text).map_err(|error| error.message)?,
     })
 }
@@ -1296,8 +1296,8 @@ pub async fn execute() -> Result<(), String> {
                 running: false,
                 computation: crate::resources::ComputationState::Stopped,
                 computation_reason: None,
-                accepted_proofs: 0,
-                proof_verification: ProofVerification::NotRun,
+                accepted_artifacts: 0,
+                artifact_verification: ArtifactVerification::NotRun,
                 interest: String::new(),
             },
         )?;

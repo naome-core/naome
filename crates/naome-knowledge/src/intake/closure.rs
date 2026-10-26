@@ -16,24 +16,24 @@ struct Helper {
     manifest: Manifest,
     scanned: u64,
     received: bool,
-    dependencies: BTreeSet<ProofId>,
+    dependencies: BTreeSet<ArtifactId>,
     checking: Option<ProgramCheck>,
     checked: Option<CheckedWork>,
 }
 pub(in crate::intake) struct Closure {
-    root: ProofId,
+    root: ArtifactId,
     statement: Option<StatementId>,
-    items: BTreeMap<ProofId, Helper>,
-    certificates: BTreeMap<ProofId, crate::object::BinaryProof>,
-    needed: BTreeSet<ProofId>,
+    items: BTreeMap<ArtifactId, Helper>,
+    certificates: BTreeMap<ArtifactId, crate::object::BinaryArtifact>,
+    needed: BTreeSet<ArtifactId>,
     usage: certificate::Usage,
     prefix: Option<CheckedBatch>,
-    registration: Option<(ProofId, ProgramAdmission)>,
-    registered: BTreeSet<ProofId>,
+    registration: Option<(ArtifactId, ProgramAdmission)>,
+    registered: BTreeSet<ArtifactId>,
     budget: Observer,
 }
 impl Closure {
-    pub(in crate::intake) fn new(root: ProofId, statement: Option<StatementId>) -> Self {
+    pub(in crate::intake) fn new(root: ArtifactId, statement: Option<StatementId>) -> Self {
         Self {
             root,
             statement,
@@ -95,16 +95,16 @@ impl Closure {
                 && !self.ready()
                 && self.items.values().all(|helper| helper.received)
     }
-    pub(in crate::intake) fn contains(&self, id: ProofId) -> bool {
+    pub(in crate::intake) fn contains(&self, id: ArtifactId) -> bool {
         self.items.contains_key(&id) || self.certificates.contains_key(&id)
     }
-    pub(in crate::intake) fn needs(&self, id: ProofId) -> bool {
+    pub(in crate::intake) fn needs(&self, id: ArtifactId) -> bool {
         self.needed.contains(&id)
     }
-    pub(in crate::intake) fn needed(&self) -> impl Iterator<Item = ProofId> + '_ {
+    pub(in crate::intake) fn needed(&self) -> impl Iterator<Item = ArtifactId> + '_ {
         self.needed.iter().copied()
     }
-    pub(in crate::intake) fn members(&self) -> impl Iterator<Item = ProofId> + '_ {
+    pub(in crate::intake) fn members(&self) -> impl Iterator<Item = ArtifactId> + '_ {
         self.items
             .keys()
             .copied()
@@ -149,7 +149,7 @@ impl Closure {
         self.registration = None;
         self.registered.clear();
     }
-    fn require(&mut self, id: ProofId, graph: &Graph) -> Result<(), crate::Error> {
+    fn require(&mut self, id: ArtifactId, graph: &Graph) -> Result<(), crate::Error> {
         if id == self.root {
             return Err("cited closure has cyclic dependencies".into());
         }
@@ -169,7 +169,7 @@ impl Closure {
         manifest: &Manifest,
         cursor: &mut u64,
         graph: &Graph,
-    ) -> Result<(bool, BTreeSet<ProofId>), crate::Error> {
+    ) -> Result<(bool, BTreeSet<ArtifactId>), crate::Error> {
         if *cursor == manifest.commands {
             return Ok((true, BTreeSet::new()));
         }
@@ -186,12 +186,22 @@ impl Closure {
             .program_chunk(manifest, *cursor, records, CHUNK_BYTES)?;
         let mut dependencies = BTreeSet::new();
         for command in &chunk.records {
-            if let Command::ProofReference { proof_id } = command {
-                let id = ProofId::from_bytes(*proof_id);
-                if !graph.contains(id)? {
-                    self.require(id, graph)?;
-                    dependencies.insert(id);
+            let id = match command {
+                Command::ProofReference { proof_id } => Some(ArtifactId::from_proof_id(
+                    naome_proof::ProofId::from_bytes(*proof_id),
+                )),
+                Command::DefinedRelation { definition_id, .. } => {
+                    Some(ArtifactId::from_definition_id(
+                        naome_proof::DefinitionId::from_bytes(*definition_id),
+                    ))
                 }
+                _ => None,
+            };
+            if let Some(id) = id
+                && !graph.contains(id)?
+            {
+                self.require(id, graph)?;
+                dependencies.insert(id);
             }
         }
         *cursor += chunk.records.len() as u64;
@@ -202,7 +212,7 @@ impl Closure {
         metadata: ProgramMetadata,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
-        let id = metadata.manifest.proof_id();
+        let id = metadata.manifest.artifact_id();
         if let Some(helper) = self.items.get(&id) {
             if helper.manifest != metadata.manifest {
                 return Err("cited program manifest changed".into());
@@ -231,13 +241,13 @@ impl Closure {
     }
     pub(in crate::intake) fn certificate_payload(
         &mut self,
-        id: ProofId,
+        id: ArtifactId,
         object: Envelope,
         graph: &Graph,
         transfer: &TransferGrant,
     ) -> Result<(), crate::Error> {
         transfer.check(Instant::now())?;
-        if !self.needed.contains(&id) || id_bytes(&object.proof_id)? != *id.as_bytes() {
+        if !self.needed.contains(&id) || id_bytes(&object.artifact_id)? != *id.as_bytes() {
             return Err("unrequested or mismatched proof payload".into());
         }
         // The same cumulative charge covers root certificates and every helper,
@@ -248,7 +258,7 @@ impl Closure {
         if id == self.root
             && self
                 .statement
-                .is_some_and(|statement| statement != candidate.statement)
+                .is_some_and(|statement| Some(statement) != candidate.statement)
         {
             return Err("root statement differs from approved metadata".into());
         }
@@ -282,7 +292,7 @@ impl Closure {
     pub(in crate::intake) fn request(
         &self,
         graph: &Graph,
-    ) -> Result<Option<(ProofId, u64, usize)>, crate::Error> {
+    ) -> Result<Option<(ArtifactId, u64, usize)>, crate::Error> {
         for (id, helper) in &self.items {
             let progress = graph.ownership().program_progress(&helper.manifest)?;
             if progress.commands < helper.manifest.commands {
@@ -294,7 +304,7 @@ impl Closure {
     }
     pub(in crate::intake) fn payload(
         &mut self,
-        id: ProofId,
+        id: ArtifactId,
         chunk: Chunk,
         graph: &Graph,
     ) -> Result<(), crate::Error> {
@@ -308,7 +318,7 @@ impl Closure {
     }
     fn dependencies_ready(
         &self,
-        dependencies: &BTreeSet<ProofId>,
+        dependencies: &BTreeSet<ArtifactId>,
         graph: &Graph,
     ) -> Result<bool, crate::Error> {
         for id in dependencies {
@@ -321,7 +331,7 @@ impl Closure {
     pub(in crate::intake) fn advance(
         &mut self,
         graph: &Graph,
-    ) -> Result<Vec<ProofId>, crate::Error> {
+    ) -> Result<Vec<ArtifactId>, crate::Error> {
         let snapshot = self.budget.refresh(graph.ownership().directory())?.clone();
         let cache = self.cache_share(snapshot.budget.cache_bytes)?;
         for helper in self.items.values_mut() {

@@ -16,6 +16,41 @@ impl ProgramDependency {
 }
 
 impl CheckedProgram {
+    pub fn definition_dependencies_after(
+        &self,
+        after: Option<naome_proof::DefinitionId>,
+        limit: usize,
+    ) -> Result<Vec<naome_proof::DefinitionId>, Error> {
+        self.engine.live()?;
+        if limit == 0 || limit > 4096 {
+            return Err("program dependency page capacity".into());
+        }
+        let mut query = sql(self
+            .engine
+            .connection
+            .prepare_cached("SELECT id FROM checked_definition WHERE id>?1 ORDER BY id LIMIT ?2"))?;
+        let mut rows = sql(query.query(params![
+            after.map(|id| id.as_bytes().to_vec()).unwrap_or_default(),
+            limit as i64
+        ]))?;
+        let mut result = Vec::with_capacity(limit);
+        while let Some(row) = sql(rows.next())? {
+            let id: Vec<u8> = sql(row.get(0))?;
+            result.push(naome_proof::DefinitionId::from_bytes(
+                id.try_into().map_err(|_| crate::ContextError::Corrupt)?,
+            ));
+        }
+        Ok(result)
+    }
+    pub fn references_definition(&self, id: naome_proof::DefinitionId) -> Result<bool, Error> {
+        self.engine.live()?;
+        sql(self.engine.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM checked_definition WHERE id=?1)",
+            [id.as_bytes().as_slice()],
+            |row| row.get(0),
+        ))
+    }
+
     /// Complete ascending dependency pages from this evaluator's actual checks.
     /// A page bound limits residency, never total program dependency count.
     pub fn dependencies_after(
@@ -62,6 +97,17 @@ impl CheckedProgram {
 }
 
 impl Engine {
+    pub(super) fn observe_reference_context(&mut self, context: &dyn ContextView) {
+        let snapshot = context.snapshot_id();
+        if self
+            .reference_snapshot
+            .is_some_and(|previous| previous != snapshot)
+        {
+            self.context_consistent = false;
+        }
+        self.reference_snapshot = Some(snapshot);
+    }
+
     pub(super) fn import_reference(
         &mut self,
         evaluation: &mut Evaluation,
@@ -70,14 +116,7 @@ impl Engine {
         query: Option<&crate::diagnostics::FormulaQuery>,
     ) -> Result<Option<u64>, Error> {
         if evaluation.reference.is_none() {
-            let snapshot = context.snapshot_id();
-            if self
-                .reference_snapshot
-                .is_some_and(|previous| previous != snapshot)
-            {
-                self.context_consistent = false;
-            }
-            self.reference_snapshot = Some(snapshot);
+            self.observe_reference_context(context);
             evaluation.reference = match context.program_source(proof)? {
                 Some(source) => Some(source),
                 None => {

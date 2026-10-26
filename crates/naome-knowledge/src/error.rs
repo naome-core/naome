@@ -299,7 +299,32 @@ impl From<naome_checker::CheckError> for Error {
 
 impl From<naome_authoring::CompileError> for Error {
     fn from(error: naome_authoring::CompileError) -> Self {
+        match error.kind() {
+            naome_authoring::CompileErrorKind::DefinitionExpansion {
+                source: naome_proof::DefinitionExpansionError::Access(source),
+                ..
+            } => return naome_checker::ContextError::from(source.clone()).into(),
+            naome_authoring::CompileErrorKind::DefinitionCheck { source, .. } => {
+                if let naome_checker::DefinitionCheckError::ContextAccess(source) = source.as_ref()
+                {
+                    return source.clone().into();
+                }
+            }
+            _ => {}
+        }
         Self::Compile(Box::new(error.into_diagnostic()))
+    }
+}
+
+impl From<naome_checker::DefinitionCheckError> for Error {
+    fn from(error: naome_checker::DefinitionCheckError) -> Self {
+        match error {
+            naome_checker::DefinitionCheckError::ContextAccess(source) => source.into(),
+            naome_checker::DefinitionCheckError::Expansion(
+                naome_proof::DefinitionExpansionError::Access(source),
+            ) => naome_checker::ContextError::from(source).into(),
+            other => Self::InvalidInput(other.to_string()),
+        }
     }
 }
 

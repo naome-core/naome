@@ -14,8 +14,8 @@ impl std::fmt::Debug for Closure {
     }
 }
 
-fn id(object: &Envelope) -> ProofId {
-    ProofId::from_bytes(id_bytes(&object.proof_id).unwrap())
+fn id(object: &Envelope) -> ArtifactId {
+    ArtifactId::from_bytes(id_bytes(&object.artifact_id).unwrap())
 }
 fn fixtures() -> (Envelope, Envelope, Envelope) {
     let mut producer = Graph::default();
@@ -26,14 +26,14 @@ fn fixtures() -> (Envelope, Envelope, Envelope) {
     let parent = producer
         .produce(&format!(
             "goal=all(x,eq(x,x)) proof: p0=cite(\"{}\") return p0",
-            helper.proof_id
+            crate::hex(helper.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap()
         .0;
     let root = producer
         .author(&format!(
             "goal=all(x,eq(x,x)) proof: p0=cite(\"{}\") return p0",
-            parent.proof_id
+            crate::hex(parent.proof_id().unwrap().unwrap().as_bytes())
         ))
         .unwrap();
     (root, parent, helper)
@@ -65,7 +65,7 @@ fn one_frontier_deduplicates_members_and_rejected_payloads_do_not_spend_budget()
     let mut closure = Closure::new(
         root_id,
         Some(StatementId::from_bytes(
-            id_bytes(&root.statement_id).unwrap(),
+            id_bytes(root.statement_id.as_deref().unwrap()).unwrap(),
         )),
     );
     closure.require_root(&graph).unwrap();
@@ -91,7 +91,7 @@ fn one_frontier_deduplicates_members_and_rejected_payloads_do_not_spend_budget()
             .is_err()
     );
     let mut corrupt = helper.clone();
-    corrupt.proof.pop();
+    corrupt.payload.pop();
     assert!(
         closure
             .certificate_payload(id(&helper), corrupt, &graph, &transfer)
@@ -157,27 +157,30 @@ fn program_root_reserves_its_member_slot_before_dependencies_arrive() {
     profile.tuning.closure_objects = Some(3);
     crate::resources::configure(profile).unwrap();
     let graph = Graph::default();
-    let root = ProofId::from_bytes([1; 32]);
+    let root = ArtifactId::from_bytes([1; 32]);
     let mut closure = Closure::new(root, None);
     assert_eq!(closure.member_count(), 1);
     closure
-        .require(ProofId::from_bytes([2; 32]), &graph)
+        .require(ArtifactId::from_bytes([2; 32]), &graph)
         .unwrap();
     closure
-        .require(ProofId::from_bytes([3; 32]), &graph)
+        .require(ArtifactId::from_bytes([3; 32]), &graph)
         .unwrap();
     closure
-        .require(ProofId::from_bytes([2; 32]), &graph)
+        .require(ArtifactId::from_bytes([2; 32]), &graph)
         .unwrap();
     assert!(
         closure
-            .require(ProofId::from_bytes([4; 32]), &graph)
+            .require(ArtifactId::from_bytes([4; 32]), &graph)
             .is_err()
     );
     assert_eq!(closure.member_count(), 3);
     assert_eq!(
         closure.needed().collect::<Vec<_>>(),
-        [ProofId::from_bytes([2; 32]), ProofId::from_bytes([3; 32])]
+        [
+            ArtifactId::from_bytes([2; 32]),
+            ArtifactId::from_bytes([3; 32])
+        ]
     );
     assert!(
         closure.require(root, &graph).is_err(),

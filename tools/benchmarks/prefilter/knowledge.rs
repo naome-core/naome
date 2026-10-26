@@ -113,7 +113,7 @@ async fn measure_prefilter_node_api() {
     let elapsed_ns = started.elapsed().as_nanos();
     assert_eq!(handle.context().await.unwrap(), initial);
     assert_eq!(initial.registered_questions, 0);
-    assert_eq!(initial.checked_proofs, 0);
+    assert_eq!(initial.checked_artifacts, 0);
     admin.stop().await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), task)
         .await

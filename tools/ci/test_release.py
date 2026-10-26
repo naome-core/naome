@@ -262,7 +262,7 @@ class PackageTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def payload(self, target):
-        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","proof_verification":"not_run","accepted_proofs":0,"interest":""}}\';;\n*) exit 1;;\nesac\n'.encode()
+        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","artifact_verification":"not_run","accepted_artifacts":0,"interest":""}}\';;\n*) exit 1;;\nesac\n'.encode()
         lockfile = (ROOT / "Cargo.lock").read_bytes()
         build = {"schema": 1, "repository": "naome-core/naome", "commit": SHA, "target": target, "profile": "release",
                  "features": [], "version": VERSION, "tag": f"v{VERSION}", "prerelease": "-" in VERSION,
@@ -444,7 +444,7 @@ class PackageTests(unittest.TestCase):
                         self.fail(f"unexpected lifecycle command: {command}")
                     return json.dumps({"running": running, "computation": computation if running else "stopped",
                                        "computation_reason": "operating system memory pressure" if running and computation != "running" else None,
-                                       "proof_verification": "checked" if running else "not_run", "interest": interest})
+                                       "artifact_verification": "checked" if running else "not_run", "interest": interest})
                 package.lifecycle(run, self.directory / computation)
                 self.assertEqual(operations, ["start", "status", "interest", "stop", "status"])
                 self.assertFalse(running)
@@ -459,7 +459,7 @@ class PackageTests(unittest.TestCase):
                     operations.append(command)
                     return json.dumps({"running": command != "stop",
                         "computation": "stopped" if command == "stop" else computation,
-                        "computation_reason": reason, "proof_verification": verification})
+                        "computation_reason": reason, "artifact_verification": verification})
                 with tempfile.TemporaryDirectory(dir=self.directory) as directory:
                     with self.assertRaisesRegex(ValueError, "valid computation state"):
                         package.lifecycle(run, Path(directory) / "node")

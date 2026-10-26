@@ -1,6 +1,5 @@
 //! Key-only Patricia fingerprints. Storage summaries are not checked contexts.
 use crate::ContextError;
-use naome_proof::ProofId;
 use sha2::{Digest, Sha256};
 
 pub(crate) fn leaf(key: &[u8; 32]) -> [u8; 32] {
@@ -21,14 +20,13 @@ pub(crate) fn branch(bit: u8, left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
 /// Streaming, order-checked reconstruction using at most 256 pending branches.
 /// The digest says nothing about mathematical validity or proof admission.
 #[derive(Default, Clone)]
-pub struct ProofSetFingerprint {
+pub struct SetFingerprint {
     previous: Option<[u8; 32]>,
     pending: Vec<(u8, [u8; 32])>,
     current: [u8; 32],
 }
-impl ProofSetFingerprint {
-    pub fn push(&mut self, id: ProofId) -> Result<(), ContextError> {
-        let key = *id.as_bytes();
+impl SetFingerprint {
+    pub fn push(&mut self, key: [u8; 32]) -> Result<(), ContextError> {
         if let Some(previous) = self.previous {
             if previous >= key {
                 return Err(ContextError::Corrupt);

@@ -24,8 +24,8 @@ use naome_foundation::{FORMULA_MAX_NODES, FormulaCodecError, FreeVariable, ZfcAx
 
 pub use artifact::{ARTIFACT_PAYLOAD_MAX_BYTES, ArtifactPayload, ArtifactPayloadError};
 pub use defined_formula::{
-    DefinedFormula, DefinedFormulaCodecError, DefinitionExpansionError, DefinitionResolution,
-    DefinitionResolver,
+    DefinedFormula, DefinedFormulaCodecError, DefinitionAccessError, DefinitionExpansionError,
+    DefinitionResolution, DefinitionResolver,
 };
 pub use definition::{
     DEFINITION_MAX_BYTES, DEFINITION_MAX_GRAPH_ARITY, DefinitionCertificate,

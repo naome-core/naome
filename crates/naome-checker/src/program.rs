@@ -62,6 +62,7 @@ pub struct Plan<F> {
 pub enum Construction<F> {
     Formula(Expression<F>),
     Reference(naome_proof::ProofId),
+    Definition(naome_proof::DefinitionId, Vec<u32>),
 }
 
 /// Derive a fixed-size construction recipe from previously checked results.
@@ -95,6 +96,20 @@ pub fn prepare<C: Context>(
     let mut is_proved = true;
     let mut seal = false;
     let expression = match *command {
+        Command::DefinedRelation {
+            definition_id,
+            ref arguments,
+        } => {
+            return Ok(Plan {
+                construction: Construction::Definition(
+                    naome_proof::DefinitionId::from_bytes(definition_id),
+                    arguments.clone(),
+                ),
+                proved: false,
+                seal: false,
+                absent,
+            });
+        }
         Command::Equal { left, right } => {
             is_proved = false;
             Expression::Equal(variable(left), variable(right))

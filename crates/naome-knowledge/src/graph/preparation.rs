@@ -46,11 +46,11 @@ impl Stamp {
 
 pub(super) struct Preparation {
     batch: CheckedBatch,
-    ids: BTreeSet<ProofId>,
+    ids: BTreeSet<ArtifactId>,
 }
-pub(super) struct CertificateRegistration {
-    checked: naome_checker::CheckedProof,
-    record: crate::object::BinaryProof,
+pub(super) struct ArtifactRegistration {
+    checked: CheckedArtifact,
+    record: crate::object::BinaryArtifact,
     context_bytes: usize,
 }
 impl Preparation {
@@ -129,36 +129,36 @@ impl Preparation {
     pub(super) fn context(&self) -> &DiskArtifactState {
         &self.batch.context
     }
-    pub(super) fn ids(&self) -> impl Iterator<Item = ProofId> + '_ {
+    pub(super) fn ids(&self) -> impl Iterator<Item = ArtifactId> + '_ {
         self.ids.iter().copied()
     }
     pub(super) fn stamp(&self) -> &Stamp {
         &self.batch.stamp
     }
-    fn require_absent(&self, graph: &Graph, id: ProofId) -> Result<(), crate::Error> {
+    fn require_absent(&self, graph: &Graph, id: ArtifactId) -> Result<(), crate::Error> {
         if graph.contains(id)? || self.ids.contains(&id) {
             return Err("duplicate staged object".into());
         }
         Ok(())
     }
-    pub(super) fn append_certificate(
+    pub(super) fn append_artifact(
         &mut self,
         graph: &Graph,
-        checked: naome_checker::CheckedProof,
-        record: crate::object::BinaryProof,
+        checked: CheckedArtifact,
+        record: crate::object::BinaryArtifact,
     ) -> Result<(), crate::Error> {
-        let registration = self.check_certificate(graph, checked, record)?;
-        self.register_certificate(graph, registration)
+        let registration = self.check_registration(graph, checked, record)?;
+        self.register_artifact(graph, registration)
     }
     /// Reject input and reserve growth before opening a disposable write phase.
-    pub(super) fn check_certificate(
+    pub(super) fn check_registration(
         &self,
         graph: &Graph,
-        checked: naome_checker::CheckedProof,
-        record: crate::object::BinaryProof,
-    ) -> Result<CertificateRegistration, crate::Error> {
+        checked: CheckedArtifact,
+        record: crate::object::BinaryArtifact,
+    ) -> Result<ArtifactRegistration, crate::Error> {
         self.require_absent(graph, record.id)?;
-        if checked.proof_id() != record.id || checked.statement_id() != record.statement {
+        if checked.id() != record.id || checked.statement() != record.statement {
             return Err("checked identity mismatch".into());
         }
         let growth = graph.registration_growth(&self.batch.context, &checked)?;
@@ -167,28 +167,23 @@ impl Preparation {
             .context_bytes
             .checked_add(growth)
             .ok_or("checked context capacity")?;
-        Ok(CertificateRegistration {
+        Ok(ArtifactRegistration {
             checked,
             record,
             context_bytes,
         })
     }
-    pub(super) fn register_certificate(
+    pub(super) fn register_artifact(
         &mut self,
         graph: &Graph,
-        registration: CertificateRegistration,
+        registration: ArtifactRegistration,
     ) -> Result<(), crate::Error> {
-        let CertificateRegistration {
+        let ArtifactRegistration {
             checked,
             record,
             context_bytes,
         } = registration;
-        graph.cold(
-            self.batch
-                .context
-                .register_proof_for_replication(checked)
-                .map_err(crate::Error::from),
-        )?;
+        graph.cold(checked.register(&mut self.batch.context))?;
         self.batch.context_bytes = context_bytes;
         self.ids.insert(record.id);
         self.batch
@@ -201,8 +196,8 @@ impl Preparation {
         &mut self,
         graph: &Graph,
         context: DiskArtifactState,
-        record: crate::object::BinaryProof,
-        dependencies: BTreeSet<ProofId>,
+        record: crate::object::BinaryArtifact,
+        dependencies: BTreeSet<ArtifactId>,
         growth: usize,
     ) -> Result<(), crate::Error> {
         self.batch.stamp.check(graph)?;
@@ -223,14 +218,22 @@ impl Preparation {
     pub(super) fn into_prefix(self) -> CheckedBatch {
         self.batch
     }
-    pub(super) fn finish(self, graph: &Graph, root: ProofId) -> Result<CheckedBatch, crate::Error> {
+    pub(super) fn finish(
+        self,
+        graph: &Graph,
+        root: ArtifactId,
+    ) -> Result<CheckedBatch, crate::Error> {
         self.batch.require_closure(graph, root)?;
         Ok(self.batch)
     }
 }
 
 impl CheckedBatch {
-    pub(super) fn require_closure(&self, graph: &Graph, root: ProofId) -> Result<(), crate::Error> {
+    pub(super) fn require_closure(
+        &self,
+        graph: &Graph,
+        root: ArtifactId,
+    ) -> Result<(), crate::Error> {
         require_closure(
             graph,
             root,
@@ -243,8 +246,8 @@ impl CheckedBatch {
 
 pub(super) fn require_closure<'a>(
     graph: &Graph,
-    root: ProofId,
-    entries: impl IntoIterator<Item = (ProofId, &'a BTreeSet<ProofId>)>,
+    root: ArtifactId,
+    entries: impl IntoIterator<Item = (ArtifactId, &'a BTreeSet<ArtifactId>)>,
 ) -> Result<(), crate::Error> {
     let mut records = BTreeMap::new();
     for (id, dependencies) in entries {

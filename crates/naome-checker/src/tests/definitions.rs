@@ -124,7 +124,9 @@ fn authoring_alias_expands_to_the_exact_existing_definition_identity() {
             ),
         )
     );
-    let resolution = DefinitionResolver::resolve_definition(&state, base_id).unwrap();
+    let resolution = DefinitionResolver::resolve_definition(&state, base_id)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(resolution.relation_arity(), 1);
     assert_eq!(resolution.body(), base.body());

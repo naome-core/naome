@@ -2,7 +2,7 @@
 name = "naome-knowledge"
 version.workspace = true
 edition.workspace = true
-description = "Economy-free checked proof graph replication and independent producers."
+description = "Economy-free checked mathematical artifact replication and independent producers."
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

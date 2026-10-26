@@ -36,12 +36,16 @@ impl<'source> Parser<'source> {
             }
             self.punctuation('=')?;
             let definition_id = self.definition_id()?;
-            let kind = artifact_state.definition_kind(definition_id).ok_or(
-                CompileError::DefinitionNotSelected {
+            let kind = artifact_state
+                .definition_kind(definition_id)
+                .map_err(|source| CompileError::DefinitionExpansion {
+                    offset,
+                    source: DefinitionExpansionError::Access(source.into()),
+                })?
+                .ok_or(CompileError::DefinitionNotSelected {
                     offset,
                     definition_id,
-                },
-            )?;
+                })?;
             self.definition_aliases.insert(
                 name,
                 DefinitionAlias {
