@@ -53,6 +53,19 @@ fn validate_example(e: &Example) -> Result<(), String> {
     });
     Ok(())
 }
+pub(super) fn proof_steps(
+    target: &naome_foundation::Formula,
+    tree: &search::Tree,
+) -> Result<usize, String> {
+    if let search::Tree::Peer { steps } = tree {
+        return Ok(*steps);
+    }
+    Ok(search::core::checked(target, tree)?
+        .2
+        .certificate
+        .steps()
+        .len())
+}
 impl State {
     pub fn sample_counts(&self) -> (u64, u64) {
         (self.local_examples, self.peer_examples)
@@ -376,7 +389,8 @@ impl State {
         } else {
             q.proved_target()
         };
-        let (_, cost, _) = search::core::checked(target, &example.tree)?;
+        let (_, _, checked) = search::core::checked(target, &example.tree)?;
+        let native_steps = checked.certificate.steps().len();
         let (_, graphs) = search::compile(target, &example.tree)?;
         if graphs.is_empty() {
             return Ok(false);
@@ -395,12 +409,10 @@ impl State {
             let mut witnessed = std::collections::BTreeSet::new();
             let mut costs = Vec::new();
             for (i, e) in &previous {
-                if let search::Tree::Peer { steps } = e.tree {
-                    costs.push((*i, steps));
+                costs.push((*i, proof_steps(target, &e.tree)?));
+                if matches!(e.tree, search::Tree::Peer { .. }) {
                     continue;
                 }
-                let (_, old_cost, _) = search::core::checked(target, &e.tree)?;
-                costs.push((*i, old_cost.useful_steps));
                 for g in search::compile(target, &e.tree)?.1 {
                     for action in &g.successes {
                         witnessed.insert((g.key(), *action));
@@ -416,7 +428,7 @@ impl State {
                 .iter()
                 .max_by_key(|(i, c)| (*c, std::cmp::Reverse(*i)))
                 .expect("retained strategy");
-            if !novel && cost.useful_steps >= worst.1 {
+            if !novel && native_steps >= worst.1 {
                 return Ok(false);
             }
             if previous.len() >= 2 {
@@ -453,7 +465,7 @@ impl State {
             .ok_or("learning revision overflow")?;
         if matches!(example.origin, Origin::Peer { .. }) {
             example.tree = search::Tree::Peer {
-                steps: cost.useful_steps,
+                steps: native_steps,
             };
         }
         if next.anchors.len() < 4

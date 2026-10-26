@@ -430,3 +430,24 @@ fn later_better_proof_advances_replay_revision_without_recounting_the_question()
     assert_eq!(state.epoch, 2);
     state.validate().unwrap();
 }
+
+#[test]
+fn proof_strategy_cost_uses_the_same_native_unit_for_local_traces_and_peer_dags() {
+    let own = own_example();
+    let q = CompiledQuestion::compile(&own.question).unwrap();
+    let (_, cost, checked) = search::core::checked(q.proved_target(), &own.tree).unwrap();
+    let native = checked.certificate.steps().len();
+    assert_ne!(
+        native, cost.useful_steps,
+        "the fixture must distinguish macro actions from native steps"
+    );
+    let peer = search::Tree::Peer { steps: native };
+    assert_eq!(
+        state::proof_steps(q.proved_target(), &own.tree).unwrap(),
+        native
+    );
+    assert_eq!(
+        state::proof_steps(q.proved_target(), &peer).unwrap(),
+        native
+    );
+}
