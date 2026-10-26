@@ -73,6 +73,9 @@ impl Service {
                     )
                 })();
                 if let Err(failure) = &result {
+                    crate::network::emit(
+                        serde_json::json!({"event":"research_service_failed","error":failure}),
+                    );
                     *report.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure.clone());
                 }
                 let _ = receipt.send(result);

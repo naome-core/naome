@@ -566,6 +566,14 @@ enum Command {
     },
 }
 
+/// A completed owner's bounded receipt; queue pressure never changes its job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Receipt {
+    Acknowledge(u64),
+    Accepted { id: u64, root: String },
+    Discard(Input, Binding),
+}
+
 #[derive(Clone)]
 pub(crate) struct Client {
     sender: mpsc::Sender<Command>,
@@ -582,13 +590,22 @@ impl Client {
             .try_send(Command::PeerVerified(admission))
             .map_err(|_| "peer learning command capacity or stopped service".into())
     }
-    pub(crate) fn accepted(&self, id: u64, root: naome_proof::ProofId) -> Result<(), String> {
-        self.sender
-            .try_send(Command::Accepted {
-                id,
-                root: crate::hex(root.as_bytes()),
-            })
-            .map_err(|_| "learning receipt capacity or stopped service".into())
+    pub(crate) fn try_receipt(&self, receipt: &Receipt) -> Result<bool, String> {
+        let command = match receipt {
+            Receipt::Acknowledge(id) => Command::Acknowledge(*id),
+            Receipt::Accepted { id, root } => Command::Accepted {
+                id: *id,
+                root: root.clone(),
+            },
+            Receipt::Discard(input, binding) => Command::Discard(input.clone(), binding.clone()),
+        };
+        match self.sender.try_send(command) {
+            Ok(()) => Ok(true),
+            Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err("research receipt service stopped".into())
+            }
+        }
     }
     pub(crate) fn program(
         &self,
@@ -632,14 +649,11 @@ impl Client {
         Ok(receive)
     }
     pub(crate) fn acknowledge(&self, id: u64) -> Result<(), String> {
-        self.sender
-            .try_send(Command::Acknowledge(id))
-            .map_err(|_| "research acknowledgement capacity or stopped service".into())
-    }
-    pub(crate) fn discard(&self, input: Input, binding: Binding) -> Result<(), String> {
-        self.sender
-            .try_send(Command::Discard(input, binding))
-            .map_err(|_| "research retirement command capacity or stopped service".into())
+        if self.try_receipt(&Receipt::Acknowledge(id))? {
+            Ok(())
+        } else {
+            Err("research acknowledgement capacity".into())
+        }
     }
 }
 

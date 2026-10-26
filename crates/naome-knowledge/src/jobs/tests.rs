@@ -11,6 +11,7 @@ pub(crate) struct Manual {
     recovery_pages: VecDeque<RecoveryPage>,
     recovery_requests: Vec<(u64, u64)>,
     discarded: Vec<Input>,
+    receipts: Vec<Receipt>,
 }
 
 impl Manual {
@@ -25,13 +26,17 @@ impl Manual {
             recovery_pages: VecDeque::new(),
             recovery_requests: Vec::new(),
             discarded: Vec::new(),
+            receipts: Vec::new(),
         }
     }
     pub(crate) fn requests(&mut self) -> Vec<(u64, Input)> {
         let mut requests = Vec::new();
         while let Ok(command) = self.receiver.try_recv() {
             match command {
-                Command::Accepted { .. } | Command::PeerVerified(_) | Command::PeerCursor(_) => {}
+                Command::Accepted { id, root } => {
+                    self.receipts.push(Receipt::Accepted { id, root })
+                }
+                Command::PeerVerified(_) | Command::PeerCursor(_) => {}
                 Command::Program { reply, .. } => {
                     let _ = reply.send(Err("manual provider has no retained program".into()));
                 }
@@ -42,11 +47,16 @@ impl Manual {
                     self.waiting.insert(id, (input, binding, reply));
                 }
                 Command::Discard(input, binding) => {
+                    self.receipts
+                        .push(Receipt::Discard(input.clone(), binding.clone()));
                     self.waiting
                         .retain(|_, (i, b, _)| i != &input || b != &binding);
                     self.discarded.push(input);
                 }
-                Command::Acknowledge(id) => self.acknowledged.push(id),
+                Command::Acknowledge(id) => {
+                    self.receipts.push(Receipt::Acknowledge(id));
+                    self.acknowledged.push(id);
+                }
                 Command::Recover {
                     after,
                     before,
@@ -95,6 +105,10 @@ impl Manual {
     pub(crate) fn queue_recovery(&mut self, records: Vec<Record>, next: Option<u64>) {
         self.recovery_pages
             .push_back(RecoveryPage { records, next });
+    }
+    pub(crate) fn receipts(&mut self) -> Vec<Receipt> {
+        self.requests();
+        std::mem::take(&mut self.receipts)
     }
     pub(crate) fn recovery_requests(&self) -> &[(u64, u64)] {
         &self.recovery_requests

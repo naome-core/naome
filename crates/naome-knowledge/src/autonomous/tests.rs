@@ -373,3 +373,105 @@ async fn unchanged_successful_publication_retains_the_first_checked_batch() {
     );
     assert_eq!(graph.accepted_count(), 1);
 }
+
+#[test]
+fn full_job_channel_retains_one_exact_receipt_and_defers_new_autonomous_work() {
+    let input = jobs::Input::Solve {
+        question: "goal=all(x,eq(x,x))".into(),
+    };
+    let binding = jobs::Binding::new([3; 32], [4; 32]);
+    for receipt in [
+        jobs::Receipt::Acknowledge(91),
+        jobs::Receipt::Accepted {
+            id: 92,
+            root: "ab".repeat(32),
+        },
+        jobs::Receipt::Discard(input, binding),
+    ] {
+        let mut owner = jobs::tests::Manual::new();
+        let mut autonomous = Autonomous::new(
+            intervals(3_600_000),
+            owner.client.clone(),
+            owner.recovery(),
+            vec![],
+        );
+        let mut graph = Graph::default();
+        let mut questions = questions();
+        for id in 1..=crate::resources::limits().job_commands {
+            owner.client.acknowledge(id as u64).unwrap();
+        }
+        assert!(!autonomous.receipt(receipt.clone()));
+        autonomous.next_question = Instant::now() - Duration::from_secs(1);
+        for _ in 0..3 {
+            assert!(autonomous.advance(&mut graph, &mut questions).is_empty());
+            assert_eq!(autonomous.pending_receipt.as_ref(), Some(&receipt));
+            assert_eq!(
+                autonomous.cursor, 0,
+                "queue pressure cannot start another obligation"
+            );
+            assert!(autonomous.error().is_none());
+        }
+        assert!(owner.requests().is_empty());
+        owner.receipts();
+        autonomous.advance(&mut graph, &mut questions);
+        assert!(autonomous.pending_receipt.is_none());
+        assert_eq!(
+            owner.receipts(),
+            vec![receipt],
+            "the original receipt must be delivered once with identical binding"
+        );
+        assert!(autonomous.error().is_none());
+    }
+}
+#[test]
+fn deferred_completion_receipt_preserves_the_unsolved_question_and_closed_service_still_fails() {
+    let mut owner = jobs::tests::Manual::new();
+    let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+    let ticket = owner
+        .client
+        .submit(
+            jobs::Input::Solve {
+                question: question.source().into(),
+            },
+            jobs::Binding::new([0; 32], [0; 32]),
+        )
+        .unwrap();
+    let id = owner.requests()[0].0;
+    owner.complete(id, Ok(jobs::Output::NoCandidate));
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    let mut autonomous = Autonomous::new(
+        intervals(3_600_000),
+        owner.client.clone(),
+        owner.recovery(),
+        vec![],
+    );
+    autonomous.solving.insert(
+        *question.resolution_id(),
+        Solving {
+            question: question.clone(),
+            ticket,
+            seen: questions.revision(&graph),
+        },
+    );
+    for index in 0..crate::resources::limits().job_commands {
+        owner.client.acknowledge(100 + index as u64).unwrap();
+    }
+    autonomous.advance(&mut graph, &mut questions);
+    assert_eq!(
+        autonomous.pending_receipt,
+        Some(jobs::Receipt::Acknowledge(id))
+    );
+    assert!(autonomous.unanswered.contains(&question));
+    assert!(autonomous.solving.is_empty() && autonomous.error().is_none());
+    owner.requests();
+    autonomous.advance(&mut graph, &mut questions);
+    assert!(autonomous.pending_receipt.is_none());
+    drop(owner);
+    assert!(!autonomous.acknowledge(999));
+    assert!(autonomous.error().unwrap().contains("stopped"));
+    assert!(
+        autonomous.pending_receipt.is_none(),
+        "a stopped owner is not an endless capacity retry"
+    );
+}
