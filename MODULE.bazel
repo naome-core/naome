@@ -46,8 +46,15 @@ use_repo(
     "crates__burn-autodiff-0.22.1",
     "crates__burn-backend-0.22.1",
     "crates__burn-backend-extension-0.22.1",
+    "crates__burn-derive-0.22.1",
+    "crates__burn-dispatch-0.22.1",
+    "crates__burn-einsum-0.22.1",
     "crates__burn-flex-0.22.1",
+    "crates__burn-std-0.22.1",
+    "crates__derive-new-0.7.0",
+    "crates__num-traits-0.2.19",
     "crates__paste-1.0.15",
+    "crates__serde-1.0.229",
 )
 
 # Cargo's excluded path patch is mirrored from this checkout on every host.
@@ -59,3 +66,9 @@ new_local_repository(
     path = "vendor/burn-dispatch",
 )
 override_repo(crate, **{"crates__burn-dispatch-0.22.1": "burn_dispatch_local"})
+new_local_repository(
+    name = "burn_tensor_local",
+    build_file = "//vendor/burn-tensor:BUILD.bazel",
+    path = "vendor/burn-tensor",
+)
+override_repo(crate, **{"crates__burn-tensor-0.22.1": "burn_tensor_local"})
