@@ -7,6 +7,9 @@ use crate::{
 use naome_proof::program::{CHUNK_BYTES, CHUNK_RECORDS, Chunk, Manifest};
 use std::time::Duration;
 
+#[cfg(test)]
+mod tests;
+
 /// Input is restored in bounded groups before mathematical evaluation starts.
 /// No saved result or incoming manifest creates checked graph membership.
 pub(crate) struct ProgramCheck {
@@ -66,10 +69,18 @@ impl ProgramCheck {
                 return Err("work input exceeds canonical received prefix".into());
             }
             if status.commands < progress.commands {
+                // Restoring authenticated input is a bounded storage copy.
+                // A small checker quantum must not split it into one durable
+                // transaction per command before mathematical checking starts.
+                crate::resources::require_work_admission()?;
+                let _input = crate::resources::MemoryLease::acquire(
+                    CHUNK_BYTES
+                        + CHUNK_RECORDS * std::mem::size_of::<naome_proof::program::Command>(),
+                )?;
                 let chunk = graph.store.program_chunk(
                     &self.manifest,
                     status.commands,
-                    snapshot.budget.batch_steps.clamp(1, CHUNK_RECORDS),
+                    CHUNK_RECORDS,
                     CHUNK_BYTES,
                 )?;
                 if status.program_hash != crate::hex(&chunk.previous) {

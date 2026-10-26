@@ -47,10 +47,17 @@ class AutonomousNode(Node):
 def program_rows(node):
     path=node.directory/'proof-corpus.sqlite3'
     if not path.exists():return []
-    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1)) as connection:
-        return [{'id':identity.hex(),'manifest':json.loads(manifest),'received':received,
-            'published':bool(published)} for identity,manifest,received,published in connection.execute(
-            'SELECT id,manifest,received,EXISTS(SELECT 1 FROM proofs WHERE proofs.id=programs.id) FROM programs ORDER BY id')]
+    try:
+        with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=0)) as connection:
+            return [{'id':identity.hex(),'manifest':json.loads(manifest),'received':received,
+                'published':bool(published)} for identity,manifest,received,published in connection.execute(
+                'SELECT id,manifest,received,EXISTS(SELECT 1 FROM proofs WHERE proofs.id=programs.id) FROM programs ORDER BY id')]
+    except sqlite3.OperationalError as error:
+        if str(error) not in ('database is locked', 'database table is locked'):
+            raise
+        # The node owns recovery and publication. Observe again through the
+        # caller's existing bounded wait instead of extending its deadline.
+        return []
 
 
 def run(trial,units,memory_mib=None):
