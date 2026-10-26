@@ -681,7 +681,7 @@ where
             .min()
             .copied();
         tokio::select! {
-            _=tokio::time::sleep(Duration::from_millis(crate::resources::adaptive::current().map_or(5,|snapshot|if snapshot.budget.paused.is_some(){250}else{snapshot.budget.yield_ms.max(1)}))),if work.is_some()&&(node.intake.program_busy()||autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::program_busy))&&!stopping=>{},
+            _=tokio::time::sleep(crate::resources::adaptive::work_delay()),if work.is_some()&&(node.intake.program_busy()||autonomous.as_ref().is_some_and(crate::autonomous::Autonomous::program_busy))&&!stopping=>{},
             _ = &mut cancel => break,
             _ = async {
                 if let Some(until) = automatic_wake {

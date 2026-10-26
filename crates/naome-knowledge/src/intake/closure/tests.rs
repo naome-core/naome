@@ -1,6 +1,19 @@
 use super::*;
 use crate::object::id_bytes;
 
+impl std::fmt::Debug for Closure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Closure")
+            .field("needed", &self.needed)
+            .field("programs", &self.items.len())
+            .field("certificates", &self.certificates.len())
+            .field("registered", &self.registered)
+            .field("registration_pending", &self.registration.is_some())
+            .field("budget", &self.budget)
+            .finish()
+    }
+}
+
 fn id(object: &Envelope) -> ProofId {
     ProofId::from_bytes(id_bytes(&object.proof_id).unwrap())
 }

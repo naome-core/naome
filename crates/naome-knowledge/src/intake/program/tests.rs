@@ -32,6 +32,38 @@ fn isolated(case: &str) -> bool {
 fn question_source() -> String {
     crate::mocks::create_question(0)
 }
+
+fn progress_state(intake: &Intake) -> String {
+    let program = intake.programs.active.as_ref().map(|root| {
+        let stage = match &root.stage {
+            Stage::Start => "start",
+            Stage::Fetch => "fetch",
+            Stage::Check(_) => "check",
+            Stage::Prepare(prepared) if prepared.ready() => "ready",
+            Stage::Prepare(_) => "prepare",
+        };
+        (
+            stage,
+            root.allowed,
+            root.refresh,
+            root.input_complete,
+            root.scanned,
+            root.authority.ready(SelectionStage::Initial),
+            root.authority.ready(SelectionStage::Final),
+            &root.budget,
+            &root.closure,
+        )
+    });
+    let certificate = intake.active.as_ref().map(|root| {
+        let stage = match &root.phase {
+            super::super::Phase::Initial => "initial",
+            super::super::Phase::Fetch => "fetch",
+            super::super::Phase::Final(_) => "final",
+        };
+        (stage, &root.closure)
+    });
+    format!("program={program:?}, certificate={certificate:?}")
+}
 fn accepting(_: CompiledQuestion) -> Ready<Result<bool, String>> {
     ready(Ok(true))
 }
@@ -211,6 +243,23 @@ async fn each_chunk_authenticates_before_persistence_and_complete_transfer_is_in
     ) {
         return;
     }
+    receive_program(false).await;
+}
+
+#[tokio::test]
+async fn paused_program_polling_yields_to_resource_release_within_the_original_work_budget() {
+    if isolated(
+        "intake::program::tests::paused_program_polling_yields_to_resource_release_within_the_original_work_budget",
+    ) {
+        return;
+    }
+    receive_program(true).await;
+}
+
+async fn receive_program(pause_once: bool) {
+    if pause_once {
+        crate::resources::tests::budget(false);
+    }
     let producer = Graph::default();
     let source = source(&producer);
     let metadata = metadata(&source);
@@ -232,15 +281,62 @@ async fn each_chunk_authenticates_before_persistence_and_complete_transfer_is_in
             .program_payload(peer, id, id, first.clone(), &receiver)
             .is_err()
     );
+    let mut release = None;
     for _ in 0..10000 {
+        let paused_input = if pause_once
+            && release.is_none()
+            && intake
+                .programs
+                .active
+                .as_ref()
+                .is_some_and(|root| matches!(root.stage, Stage::Fetch))
+        {
+            let before = receiver
+                .ownership()
+                .program_progress(&metadata.manifest)
+                .unwrap();
+            crate::resources::tests::budget(true);
+            // The release is ready on this same runtime. A synchronous poll
+            // loop must not starve it while spending the finite work budget.
+            release = Some(tokio::spawn(async {
+                crate::resources::tests::budget(false);
+            }));
+            Some(before)
+        } else {
+            None
+        };
         match intake.advance(&mut receiver, &mut questions) {
             Progress::Accepted(ids) => {
                 assert_eq!(ids, vec![id]);
                 assert!(receiver.contains(id).unwrap());
+                if pause_once {
+                    let release = release.expect("the transfer must encounter resource pressure");
+                    assert!(release.is_finished());
+                    release.await.unwrap();
+                }
                 return;
             }
             Progress::Skipped(_, error) => panic!("valid program declined: {error}"),
             Progress::Waiting => {}
+        }
+        if let Some(before) = paused_input {
+            assert!(
+                crate::resources::adaptive::current()
+                    .unwrap()
+                    .budget
+                    .paused
+                    .is_some()
+            );
+            assert!(intake.program_request(&receiver).unwrap().is_none());
+            assert_eq!(
+                receiver
+                    .ownership()
+                    .program_progress(&metadata.manifest)
+                    .unwrap(),
+                before,
+                "resource pause cannot authenticate or persist another chunk"
+            );
+            assert_eq!(receiver.accepted_count(), 0);
         }
         if !questions.available() {
             let completed = questions.completed().await;
@@ -281,8 +377,14 @@ async fn each_chunk_authenticates_before_persistence_and_complete_transfer_is_in
                 "input authentication alone creates no checked membership"
             );
         }
+        // Match the node's cooperative cadence; a resource hold is wall-clock
+        // state and may need another runtime task before work can resume.
+        tokio::time::sleep(crate::resources::adaptive::work_delay()).await;
     }
-    panic!("incremental program did not finish");
+    panic!(
+        "incremental program did not finish: {}",
+        progress_state(&intake)
+    );
 }
 
 #[tokio::test]
@@ -479,8 +581,13 @@ async fn cited_program_and_parent_commit_together_and_final_decline_publishes_ne
                     .program_payload(owner, parent_id, id, chunk, &receiver)
                     .unwrap();
             }
+            tokio::time::sleep(crate::resources::adaptive::work_delay()).await;
         }
-        assert!(terminal && parent_sent && helper_described);
+        assert!(
+            terminal && parent_sent && helper_described,
+            "terminal={terminal}, parent_sent={parent_sent}, helper_described={helper_described}: {}",
+            progress_state(&intake)
+        );
     }
 }
 

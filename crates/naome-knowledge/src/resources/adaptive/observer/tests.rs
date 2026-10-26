@@ -1,6 +1,18 @@
 use super::*;
 use std::time::Duration;
 
+impl std::fmt::Debug for Observer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Observer")
+            .field("snapshot", &self.snapshot)
+            .field(
+                "sample_due_in",
+                &self.next.saturating_duration_since(Instant::now()),
+            )
+            .finish()
+    }
+}
+
 impl Observer {
     // Local input tests own the pause boundary without consulting native host
     // observations. An active node budget still has the same precedence.
