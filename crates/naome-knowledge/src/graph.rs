@@ -160,6 +160,21 @@ impl Graph {
             .into_owned();
         Ok(naome_authoring::CompiledQuestion::from_formula(formula).ok())
     }
+    pub(crate) fn learning_certificate(
+        &self,
+        id: ProofId,
+    ) -> Result<Option<Vec<u8>>, crate::Error> {
+        let Some(object) = self.binary_object(id)? else {
+            return Ok(None);
+        };
+        if object.bytes.len() > crate::resources::limits().closure_bytes
+            || !object.dependencies.is_empty()
+            || crate::object::program_manifest(&object.bytes)?.is_some()
+        {
+            return Ok(None);
+        }
+        Ok(crate::learning::peer::pack(&object.bytes).ok())
+    }
     pub fn accepted_count(&self) -> usize {
         self.count
     }

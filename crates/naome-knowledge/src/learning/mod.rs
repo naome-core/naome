@@ -4,6 +4,8 @@ mod calculus;
 mod curriculum;
 mod graph;
 mod model;
+pub(crate) mod peer;
+mod pool;
 mod proof;
 mod search;
 mod state;
@@ -24,7 +26,7 @@ pub(crate) struct Statistics {
     attempts: u64,
     successes: u64,
     recent: u32,
-    previous: u32,
+    failures: [u64; 6],
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,11 +46,33 @@ pub(crate) struct Example {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct Evidence {
+    pub job: u64,
+    pub proof_id: String,
+    pub certificate: Vec<u8>,
+}
+impl Example {
+    pub fn peer_job(&self) -> Option<u64> {
+        matches!(self.tree, search::Tree::Peer { .. }).then_some(self.job)
+    }
+    pub fn matches_solution(&self, solution: &Solution) -> bool {
+        match (&self.tree, &solution.tree) {
+            (search::Tree::Peer { steps }, search::Tree::Certificate(bytes)) => {
+                matches!(self.origin, Origin::Peer { .. }) && *steps == peer::step_count(bytes)
+            }
+            _ => digest(&self.tree) == digest(&solution.tree),
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct State {
     model: Checkpoint,
     replay: Vec<Example>,
     anchors: Vec<Example>,
     accepted: u64,
+    epoch: u64,
+    draws: u64,
     trained: u64,
     attempted: u64,
     pub peer_cursor: u64,
@@ -61,6 +85,7 @@ pub(crate) struct State {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Progress {
+    pub cost: Option<GenerationCost>,
     pub unit: u32,
     model: Checkpoint,
     trained: u64,
@@ -79,6 +104,7 @@ pub(crate) struct Progress {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Job {
+    pub evidence: Vec<Evidence>,
     pub training: bool,
     pub base_hash: String,
     pub base: State,
@@ -87,9 +113,20 @@ pub(crate) struct Job {
     pub io_bytes: usize,
     pub io_operations: usize,
 }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GenerationCost {
+    pub search_expansions: usize,
+    pub original_steps: usize,
+    pub useful_steps: usize,
+    pub unique_states: usize,
+    pub core_work: usize,
+    pub generation_micros: u64,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Solution {
+    pub cost: GenerationCost,
     pub source: String,
     pub proof_id: String,
     pub refuted: bool,
@@ -116,7 +153,7 @@ impl Job {
         self.blobs().into_iter().any(|b| b == blob)
     }
     pub fn units(&self) -> u32 {
-        if self.training && self.base.accepted > self.base.trained {
+        if self.training && self.base.epoch > self.base.trained {
             model::TRAINING_UNITS + EVALUATIONS + 1
         } else {
             1
@@ -127,6 +164,29 @@ impl Job {
             return Err("learning parent snapshot differs".into());
         }
         self.base.validate()?;
+        let mut expected = if self.training {
+            self.base
+                .replay
+                .iter()
+                .filter_map(Example::peer_job)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        expected.sort_unstable();
+        expected.dedup();
+        let actual = self.evidence.iter().map(|e| e.job).collect::<Vec<_>>();
+        if expected != actual
+            || self.evidence.iter().any(|e| {
+                e.certificate.len() > 8 * 1024
+                    || !self.base.replay.iter().any(|r| {
+                        r.job == e.job && r.proof_id == e.proof_id && r.peer_job().is_some()
+                    })
+            })
+        {
+            return Err("peer replay snapshot binding differs".into());
+        }
+
         if self.written.len() > 2 * (model::TRAINING_UNITS as usize + 2)
             || self.io_bytes > crate::resources::limits().native_model_io_bytes
             || self.io_operations
@@ -163,12 +223,18 @@ impl Job {
             {
                 return Err("native model changed before successful qualification".into());
             }
+            if p.rng < self.base.draws
+                || p.rng.saturating_sub(self.base.draws)
+                    > u64::from(model::TRAINING_UNITS) * model::UPDATES_PER_UNIT * 16
+            {
+                return Err("native sampling continuation differs".into());
+            }
             if p.promotions < self.base.promotions
                 || p.promotions > self.base.promotions.saturating_add(1)
                 || p.rejections < self.base.rejections
                 || p.rejections > self.base.rejections.saturating_add(1)
                 || p.trained < self.base.trained
-                || p.trained > self.base.accepted
+                || p.trained > self.base.epoch
             {
                 return Err("native qualification sequence differs".into());
             }
@@ -196,13 +262,14 @@ impl Job {
             return Err("learning checkpoint sequence differs".into());
         }
         let mut p = self.progress.clone().unwrap_or(Progress {
+            cost: None,
             unit: 0,
             model: self.base.model.clone(),
             trained: self.base.trained,
             promotions: self.base.promotions,
             rejections: self.base.rejections,
             candidate: None,
-            rng: self.base.model.seed ^ job ^ self.base.accepted,
+            rng: self.base.draws,
             first_loss: None,
             last_loss: None,
             incumbent_score: 0,
@@ -212,10 +279,10 @@ impl Job {
             diagnostic: "no_new_accepted_solutions".into(),
         });
         if self.units() > 1 && unit <= model::TRAINING_UNITS {
-            let graphs = self.base.training_graphs()?;
-            if !graphs.is_empty() {
-                let parent = p.candidate.as_ref().unwrap_or(&self.base.model);
-                let (candidate, first, last) = engine.train(parent, &graphs, &mut p.rng, io)?;
+            let parent = p.candidate.as_ref().unwrap_or(&self.base.model);
+            if let Some((candidate, first, last)) =
+                engine.train_replay(parent, &self.base, &self.evidence, &mut p.rng, io)?
+            {
                 p.first_loss.get_or_insert(first);
                 p.last_loss = Some(last);
                 p.candidate = Some(candidate);
@@ -229,7 +296,7 @@ impl Job {
                 p.diagnostic = "no_ambiguous_training_decisions".into();
             }
             if unit == model::TRAINING_UNITS {
-                p.trained = self.base.accepted;
+                p.trained = self.base.epoch;
             }
         } else if self.units() > 1 && unit <= model::TRAINING_UNITS + EVALUATIONS {
             if let Some(candidate) = &p.candidate {
@@ -285,9 +352,10 @@ impl Job {
                     p.diagnostic = "reserved_question_excluded".into();
                 } else {
                     let budget = if p.rejections % 3 == 2 { 256 } else { 128 };
-                    let (solution, failure) = engine.with(&p.model, io, |runtime| {
-                        solve(question, runtime, budget, job)
+                    let (solution, failure, cost) = engine.with(&p.model, io, |runtime| {
+                        solve_measured(question, runtime, budget, job)
                     })?;
+                    p.cost = Some(cost);
                     if solution.is_none() {
                         p.diagnostic = failure;
                     }
@@ -322,18 +390,37 @@ fn solve(
     budget: usize,
     job: u64,
 ) -> Result<(Option<Solution>, String), String> {
+    let (solution, diagnostic, _) = solve_measured(source, model, budget, job)?;
+    Ok((solution, diagnostic))
+}
+fn solve_measured(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+) -> Result<(Option<Solution>, String, GenerationCost), String> {
     let mut ranker = Exploring {
         model,
         seed: job.max(1),
         explore: budget >= 128,
     };
-    search_question(source, &mut ranker, budget)
+    search_question_measured(source, &mut ranker, budget)
 }
+#[cfg(test)]
 fn search_question(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
 ) -> Result<(Option<Solution>, String), String> {
+    let (solution, diagnostic, _) = search_question_measured(source, ranker, budget)?;
+    Ok((solution, diagnostic))
+}
+fn search_question_measured(
+    source: &str,
+    ranker: &mut dyn model::Ranker,
+    budget: usize,
+) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    let started = std::time::Instant::now();
     let q = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
     let mut failure = "calculus_or_strategy_unresolved".to_owned();
     let mut remaining = budget;
@@ -349,15 +436,14 @@ fn search_question(
         let found = search::solve(&target, ranker, remaining)?;
         remaining = remaining.saturating_sub(found.expansions);
         if let Some(tree) = found.tree {
-            match search::compile(&target, &tree)
-                .and_then(|(term, _)| proof::verify(&term, &target))
-                .and_then(|verified| {
-                    Ok((
-                        proof::source(&verified)?,
-                        crate::hex(verified.native_id.as_bytes()),
-                        verified.payload_bytes,
-                    ))
-                }) {
+            let (tree, cost, verified) = search::core::checked(&target, &tree)?;
+            match Ok::<_, String>(verified).and_then(|verified| {
+                Ok((
+                    proof::source(&verified)?,
+                    crate::hex(verified.native_id.as_bytes()),
+                    verified.payload_bytes,
+                ))
+            }) {
                 Ok((source, proof_id, payload_bytes))
                     if source.len() <= crate::resources::limits().proof_bytes
                         && payload_bytes
@@ -365,14 +451,30 @@ fn search_question(
                                 .proof_bytes
                                 .min(crate::resources::limits().closure_bytes) =>
                 {
+                    let measured = GenerationCost {
+                        search_expansions: budget - remaining,
+                        original_steps: cost.original_steps,
+                        useful_steps: cost.useful_steps,
+                        core_work: cost.replay_work,
+                        unique_states: search::compile(&target, &tree)?
+                            .1
+                            .iter()
+                            .map(graph::Graph::key)
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len(),
+                        generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
+                            as u64,
+                    };
                     return Ok((
                         Some(Solution {
+                            cost: measured.clone(),
                             source,
                             proof_id,
                             refuted,
                             tree,
                         }),
                         "certified_candidate".into(),
+                        measured,
                     ));
                 }
                 Ok(_) => failure = "certificate_capacity".into(),
@@ -382,7 +484,15 @@ fn search_question(
             failure = reason;
         }
     }
-    Ok((None, failure))
+    Ok((
+        None,
+        failure,
+        GenerationCost {
+            search_expansions: budget - remaining,
+            generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+            ..GenerationCost::default()
+        },
+    ))
 }
 
 #[cfg(test)]

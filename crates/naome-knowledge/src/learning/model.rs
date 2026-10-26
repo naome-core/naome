@@ -5,11 +5,11 @@ mod policy;
 use super::{
     artifact::{self, ArtifactIo, Blob},
     graph::{Batch, Graph},
+    pool::Pool,
 };
 use burn::{
     module::{Module, ModuleMapper, Param},
-    nn::loss::CrossEntropyLossConfig,
-    optim::{AdamConfig, GradientsParams, ModuleOptimizer},
+    optim::{AdamConfig, GradientsAccumulator, GradientsParams, ModuleOptimizer},
     store::ModuleRecord,
     tensor::{Bytes, Device, Tensor},
 };
@@ -83,7 +83,12 @@ fn specification() -> String {
     hash.update(include_str!("graph.rs"));
     hash.update(include_str!("model.rs"));
     hash.update(include_str!("search.rs"));
-    hash.update(b"Adam;cross-entropy;batch=16;lr=0.001;float32");
+    hash.update(include_str!("search/core.rs"));
+    hash.update(include_str!("pool.rs"));
+    hash.update(include_str!("peer.rs"));
+    hash.update(
+        b"Adam;successful-action-marginal;hierarchical-cyclic-pool;shape-microbatch-weight=1/16;batch=16;lr=0.001;float32",
+    );
     crate::hex(&hash.finalize())
 }
 impl Checkpoint {
@@ -233,36 +238,54 @@ impl Runtime {
             optimizer: Some(artifact::save(io, &optimizer[..])?),
         })
     }
-    fn train(
-        &mut self,
-        graphs: &[Graph],
-        rng: &mut u64,
-        updates: u64,
-    ) -> Result<(f32, f32), String> {
+    fn train(&mut self, graphs: &Pool, rng: &mut u64, updates: u64) -> Result<(f32, f32), String> {
         if graphs.is_empty() {
             return Err("training requires own accepted proof decisions".into());
         }
         let mut first = 0.;
         let mut last = 0.;
         for update in 0..updates {
-            let sample: Vec<_> = (0..16)
-                .map(|_| graphs[(random(rng) % graphs.len() as u64) as usize].clone())
-                .collect();
-            let batch = Batch::from_graphs(&sample, &self.device)?;
-            let logits = self.policy.forward(&batch);
-            let loss = CrossEntropyLossConfig::new()
-                .init(&self.device)
-                .forward(logits, batch.targets);
-            let value = loss
-                .clone()
-                .into_data()
-                .try_to_vec::<f32>()
-                .map_err(|e| e.to_string())?[0];
-            if !value.is_finite() {
-                return Err("non-finite native training loss".into());
+            let sample = graphs.batch(rng);
+            // Every selected graph contributes 1/16 to the same update. Group
+            // only by tensor padding size, accumulate gradients, then apply Adam
+            // once. This avoids padding every small graph to the largest one.
+            let mut groups = std::collections::BTreeMap::<usize, Vec<Graph>>::new();
+            for graph in sample {
+                groups
+                    .entry(graph.nodes.len().next_power_of_two().max(16))
+                    .or_default()
+                    .push(graph);
             }
-            let gradients = GradientsParams::from_grads(loss.backward(), &self.policy);
-            self.policy = self.optimizer.step(0.001, self.policy.clone(), gradients);
+            let mut accumulated = GradientsAccumulator::<Policy>::new();
+            let mut value = 0.;
+            for group in groups.values() {
+                let batch = Batch::from_graphs(group, &self.device)?;
+                let logits = self.policy.forward(&batch);
+                // Untried alternatives have no mathematical false label.
+                let probability = burn::tensor::activation::log_softmax(logits, 1).exp();
+                let loss = -(probability * batch.successes)
+                    .sum_dim(1)
+                    .clamp_min(1e-12)
+                    .log()
+                    .sum()
+                    / 16.;
+                let part = loss
+                    .clone()
+                    .into_data()
+                    .try_to_vec::<f32>()
+                    .map_err(|e| e.to_string())?[0];
+                if !part.is_finite() {
+                    return Err("non-finite native training loss".into());
+                }
+                value += part;
+                accumulated.accumulate(
+                    &self.policy,
+                    GradientsParams::from_grads(loss.backward(), &self.policy),
+                );
+            }
+            self.policy = self
+                .optimizer
+                .step(0.001, self.policy.clone(), accumulated.grads());
             if update == 0 {
                 first = value;
             }
@@ -290,7 +313,7 @@ pub(super) fn test_update<I: ArtifactIo + ?Sized>(
     io: &mut I,
 ) -> Result<Checkpoint, String> {
     let mut runtime = Runtime::load(checkpoint, io)?;
-    runtime.train(graphs, rng, 1)?;
+    runtime.train(&Pool::from_graphs(graphs), rng, 1)?;
     runtime.checkpoint(checkpoint, 1, io)
 }
 /// Only two concrete model lifetimes coexist: incumbent and current candidate.
@@ -298,6 +321,7 @@ pub(super) fn test_update<I: ArtifactIo + ?Sized>(
 #[derive(Default)]
 pub(crate) struct Engine {
     cache: Vec<(Checkpoint, Runtime)>,
+    pool: Option<(String, Pool)>,
 }
 impl Engine {
     #[cfg(test)]
@@ -338,10 +362,31 @@ impl Engine {
         self.retain(c.clone(), runtime);
         result
     }
+    pub fn train_replay<I: ArtifactIo + ?Sized>(
+        &mut self,
+        c: &Checkpoint,
+        state: &super::State,
+        evidence: &[super::Evidence],
+        cursor: &mut u64,
+        io: &mut I,
+    ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
+        let key = super::digest(&(&state.replay, evidence));
+        let pool = match self.pool.take() {
+            Some((previous, pool)) if previous == key => pool,
+            _ => state.training_pool(evidence)?,
+        };
+        let result = if pool.is_empty() {
+            Ok(None)
+        } else {
+            self.train(c, &pool, cursor, io).map(Some)
+        };
+        self.pool = Some((key, pool));
+        result
+    }
     pub fn train<I: ArtifactIo + ?Sized>(
         &mut self,
         c: &Checkpoint,
-        graphs: &[Graph],
+        graphs: &Pool,
         rng: &mut u64,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), String> {
@@ -370,11 +415,13 @@ mod tests {
             })
             .collect();
         let graph = Graph {
+            binding: String::new(),
             nodes,
             goal: 255,
             context: (1..33).collect(),
             candidates: (32..48).collect(),
             expert: 0,
+            successes: vec![0],
         };
         let mut io = MemoryStore::default();
         let fresh = Checkpoint::fresh();
@@ -382,17 +429,72 @@ mod tests {
         let meter = crate::resources::feedback::Meter::start();
         let mut runtime = Runtime::load(&fresh, &mut io).unwrap();
         runtime
-            .train(std::slice::from_ref(&graph), &mut rng, 1)
+            .train(
+                &Pool::from_graphs(std::slice::from_ref(&graph)),
+                &mut rng,
+                1,
+            )
             .unwrap();
         let trained = runtime.checkpoint(&fresh, 1, &mut io).unwrap();
         let mut candidate = Runtime::load(&trained, &mut io).unwrap();
-        candidate.train(&[graph], &mut rng, 1).unwrap();
+        candidate
+            .train(&Pool::from_graphs(&[graph]), &mut rng, 1)
+            .unwrap();
         candidate.checkpoint(&trained, 1, &mut io).unwrap();
         let sample = meter.finish(0, true);
         eprintln!(
             "native_maximum_shape batch=16 nodes=256 candidates=16 parameters={} sample={:?}",
             PARAMETERS, sample
         );
+    }
+    #[test]
+    fn shape_microbatches_preserve_the_sixteen_graph_adam_update() {
+        let solution = super::super::tests::own_solution();
+        let q = naome_authoring::CompiledQuestion::compile(&super::super::tests::own_question())
+            .unwrap();
+        let graph = super::super::search::compile(q.proved_target(), &solution.tree)
+            .unwrap()
+            .1
+            .remove(0);
+        let mut larger = graph.clone();
+        while larger.nodes.len() < graph.nodes.len().next_power_of_two() + 1 {
+            larger.nodes.push(super::super::graph::Node {
+                kind: 6,
+                left: 0,
+                right: 0,
+                role: 2,
+            });
+            larger.context.push(larger.nodes.len() - 1);
+        }
+        let pool = Pool::from_graphs(&[graph.clone(), larger]);
+        let sample = pool.batch(&mut 0);
+        let fresh = Checkpoint::fresh();
+        let mut io = MemoryStore::default();
+        let mut padded = Runtime::load(&fresh, &mut io).unwrap();
+        let mut grouped = Runtime::load(&fresh, &mut io).unwrap();
+        let batch = Batch::from_graphs(&sample, &padded.device).unwrap();
+        let probability =
+            burn::tensor::activation::log_softmax(padded.policy.forward(&batch), 1).exp();
+        let loss = -(probability * batch.successes)
+            .sum_dim(1)
+            .clamp_min(1e-12)
+            .log()
+            .mean();
+        let expected_loss = loss.clone().into_data().try_to_vec::<f32>().unwrap()[0];
+        let gradients = GradientsParams::from_grads(loss.backward(), &padded.policy);
+        padded.policy = padded
+            .optimizer
+            .step(0.001, padded.policy.clone(), gradients);
+        let (actual_loss, _) = grouped.train(&pool, &mut 0, 1).unwrap();
+        assert!((expected_loss - actual_loss).abs() < 1e-5);
+        let a = padded.scores_graph(&graph).unwrap();
+        let b = grouped.scores_graph(&graph).unwrap();
+        let maximum = a
+            .iter()
+            .zip(b)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(maximum < 1e-4, "microbatch prediction difference {maximum}");
     }
     #[test]
     fn zero_update_snapshot_preserves_fresh_predictions_and_optimizer_continuation() {
@@ -446,7 +548,9 @@ mod tests {
         let mut rng = 17;
         let started = std::time::Instant::now();
         let mut runtime = Runtime::load(&fresh, &mut io).unwrap();
-        let (first, last) = runtime.train(&graphs, &mut rng, 1).unwrap();
+        let (first, last) = runtime
+            .train(&Pool::from_graphs(&graphs), &mut rng, 1)
+            .unwrap();
         let trained = runtime.checkpoint(&fresh, 1, &mut io).unwrap();
         assert_eq!(trained.updates, 1);
         assert!(first.is_finite() && last.is_finite());
@@ -456,9 +560,13 @@ mod tests {
         assert!(serde_json::to_vec(&trained).unwrap().len() < 1024);
         let mut resumed = Runtime::load(&trained, &mut io).unwrap();
         let mut continued_rng = rng;
-        runtime.train(&graphs, &mut continued_rng, 1).unwrap();
+        runtime
+            .train(&Pool::from_graphs(&graphs), &mut continued_rng, 1)
+            .unwrap();
         let continued = runtime.checkpoint(&trained, 1, &mut io).unwrap();
-        resumed.train(&graphs, &mut rng, 1).unwrap();
+        resumed
+            .train(&Pool::from_graphs(&graphs), &mut rng, 1)
+            .unwrap();
         let restored = resumed.checkpoint(&trained, 1, &mut io).unwrap();
         assert_eq!(
             continued, restored,

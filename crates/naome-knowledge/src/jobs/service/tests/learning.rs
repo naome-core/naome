@@ -23,6 +23,17 @@ fn submit_native(owner: &mut Owner, input: Input) -> (u64, oneshot::Receiver<Com
     (owner.journal.next_id - 1, receive)
 }
 fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
+    let solution = if let Input::Peer {
+        question,
+        artifact,
+        certificate,
+        ..
+    } = &owner.journal.records.get(&id).unwrap().input
+    {
+        crate::learning::peer::extract(question, artifact, certificate).unwrap()
+    } else {
+        solution
+    };
     owner.journal.records.get_mut(&id).unwrap().state = State::Running;
     owner.reserve(id, 1).unwrap();
     let record = owner.journal.records.get_mut(&id).unwrap();
@@ -109,6 +120,14 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
     let solution = checked_solution();
     let peer = libp2p::PeerId::random().to_string();
     let admission = PeerAdmission {
+        certificate: Some(
+            crate::learning::peer::pack(
+                naome_authoring::compile(&checked_solution().source)
+                    .unwrap()
+                    .canonical_proof_bytes(),
+            )
+            .unwrap(),
+        ),
         ordinal: 1,
         artifact: solution.proof_id.clone(),
         peer: peer.clone(),
@@ -147,6 +166,28 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
         .unwrap();
     assert!(owner.disk.pending_peer().unwrap().is_none());
     assert_eq!(learning(&owner), state);
+    assert!(
+        state["replay"][0]["tree"]["Peer"]["steps"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(serde_json::to_vec(&state["replay"][0]).unwrap().len() < 2048);
+    let epoch = owner.journal.learning.as_ref().unwrap().learning_epoch();
+    let (training, _) = submit_native(&mut owner, Input::Train { epoch });
+    let native = owner
+        .journal
+        .records
+        .get(&training)
+        .unwrap()
+        .native
+        .as_ref()
+        .unwrap();
+    assert_eq!(native.evidence.len(), 1);
+    native.validate().unwrap();
+    let mut forged = native.clone();
+    forged.evidence[0].proof_id = "ff".repeat(32);
+    assert!(forged.validate().is_err());
     let settings = owner.settings;
     drop(owner);
     let (_disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
@@ -159,6 +200,14 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
 fn reserved_or_unclassified_peer_admissions_have_one_durable_unsupported_disposition() {
     let (directory, mut owner) = native();
     let admission = PeerAdmission {
+        certificate: Some(
+            crate::learning::peer::pack(
+                naome_authoring::compile(&checked_solution().source)
+                    .unwrap()
+                    .canonical_proof_bytes(),
+            )
+            .unwrap(),
+        ),
         ordinal: 1,
         artifact: "a1".repeat(32),
         peer: libp2p::PeerId::random().to_string(),
@@ -197,6 +246,14 @@ fn canonical_question_is_sampled_once_across_local_and_peer_history() {
     let before = learning(&owner);
     let solution = checked_solution();
     let admission = PeerAdmission {
+        certificate: Some(
+            crate::learning::peer::pack(
+                naome_authoring::compile(&checked_solution().source)
+                    .unwrap()
+                    .canonical_proof_bytes(),
+            )
+            .unwrap(),
+        ),
         ordinal: 1,
         artifact: solution.proof_id.clone(),
         peer: libp2p::PeerId::random().to_string(),

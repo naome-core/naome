@@ -1,0 +1,267 @@
+//! Replay used native DAG edges, without searching again for their conclusion.
+use super::{
+    Solution,
+    graph::Graph,
+    model::{Binding, Candidate, Decision, Rule},
+    proof::{self, Kernel, Term},
+    search::Tree,
+};
+use naome_foundation::Formula;
+use naome_proof::{ProofCertificate, ProofStep};
+use sha2::{Digest, Sha256};
+
+std::thread_local! { static VERIFIED: std::cell::RefCell<std::collections::BTreeSet<String>> = const { std::cell::RefCell::new(std::collections::BTreeSet::new()) }; }
+pub fn validate_solution(
+    question: &str,
+    artifact: &str,
+    bytes: &[u8],
+    solution: &Solution,
+) -> Result<(), String> {
+    let key = super::digest(&(question, artifact, bytes, solution));
+    if VERIFIED.with(|cache| cache.borrow().contains(&key)) {
+        return Ok(());
+    }
+    let expected = extract(question, artifact, bytes)?;
+    if solution.refuted
+        || solution.proof_id != artifact
+        || super::digest(&solution.tree) != super::digest(&expected.tree)
+        || crate::hex(
+            naome_authoring::compile(&solution.source)
+                .map_err(|e| e.to_string())?
+                .proof_id()
+                .as_bytes(),
+        ) != artifact
+    {
+        return Err("peer replay source differs from checked native DAG".into());
+    }
+    VERIFIED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 128 {
+            cache.pop_first();
+        }
+        cache.insert(key);
+    });
+    Ok(())
+}
+pub fn pack(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if bytes.len()
+        > crate::resources::limits()
+            .proof_bytes
+            .min(crate::resources::limits().closure_bytes)
+    {
+        return Err("peer certificate decoded capacity".into());
+    }
+    let mut packed = (bytes.len() as u32).to_le_bytes().to_vec();
+    packed.extend(lz4_flex::block::compress(bytes));
+    if packed.len() > 8 * 1024 {
+        return Err("peer compressed replay capacity".into());
+    }
+    Ok(packed)
+}
+fn unpack(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if bytes.len() > 8 * 1024 || bytes.len() < 4 {
+        return Err("peer compressed replay capacity".into());
+    }
+    let size =
+        u32::from_le_bytes(bytes[..4].try_into().map_err(|_| "peer decoded length")?) as usize;
+    if size
+        > crate::resources::limits()
+            .proof_bytes
+            .min(crate::resources::limits().closure_bytes)
+    {
+        return Err("peer decoded capacity".into());
+    }
+    let mut result = vec![0; size];
+    let actual =
+        lz4_flex::block::decompress_into(&bytes[4..], &mut result).map_err(|e| e.to_string())?;
+    if actual != size || pack(&result)? != bytes {
+        return Err("peer compressed encoding differs".into());
+    }
+    Ok(result)
+}
+pub fn step_count(bytes: &[u8]) -> usize {
+    unpack(bytes)
+        .ok()
+        .and_then(|b| ProofCertificate::from_canonical_bytes(&b).ok())
+        .map_or(0, |c| c.steps().len())
+}
+pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), String> {
+    if bytes.len() > 8 * 1024 {
+        return Err("peer certificate replay capacity".into());
+    }
+    let certificate =
+        ProofCertificate::from_canonical_bytes(&unpack(bytes)?).map_err(|e| e.to_string())?;
+    let checked = naome_checker::normalize_and_check_with_state(
+        certificate,
+        &naome_checker::ArtifactState::new(),
+    )
+    .map_err(|e| format!("peer certificate unsupported: {e}"))?;
+    if checked.conclusion() != target {
+        return Err("peer certificate conclusion differs".into());
+    }
+    let steps = checked.normal_form().certificate().steps();
+    if steps.len() > crate::resources::limits().closure_steps.min(16_384) {
+        return Err("peer DAG replay step capacity".into());
+    }
+    let mut formulas: Vec<Formula> = Vec::new();
+    let mut graphs = Vec::new();
+    let mut graph_bytes = 0usize;
+    let mut prefix = Sha256::new();
+    prefix.update(target.encode_canonical().map_err(|e| e.to_string())?);
+    for step in steps {
+        let formula = match step {
+            ProofStep::ModusPonens {
+                premise,
+                implication,
+            } => {
+                let a = *premise as usize;
+                let b = *implication as usize;
+                let implication = formulas.get(b).ok_or("peer implication index")?;
+                let (antecedent, consequent) = implication
+                    .view()
+                    .implication_parts()
+                    .ok_or("peer MP implication")?;
+                if formulas.get(a).ok_or("peer premise index")?.view() != antecedent {
+                    return Err("peer MP premise differs".into());
+                }
+                let conclusion = consequent.to_owned();
+                // Only already checked earlier conclusions are available. The
+                // witness and the final conclusion are never candidate features.
+                let first = formulas.len().saturating_sub(32);
+                let context: Vec<_> = formulas[first..]
+                    .iter()
+                    .map(|f| Binding { formula: f.clone() })
+                    .collect();
+                let mut candidates = Vec::new();
+                let mut witness = None;
+                for (i, f) in context.iter().enumerate() {
+                    if let Some((antecedent, consequent)) = f.formula.view().implication_parts() {
+                        for (j, p) in context.iter().enumerate() {
+                            if antecedent == p.formula.view() && candidates.len() < 16 {
+                                if first + i == b && first + j == a {
+                                    witness = Some(candidates.len());
+                                }
+                                candidates.push(Candidate {
+                                    rule: Rule::ModusPonens,
+                                    premises: vec![i, j],
+                                    consequences: vec![consequent.to_owned()],
+                                });
+                            }
+                        }
+                    }
+                }
+                if let Some(expert) = witness.filter(|_| candidates.len() > 1) {
+                    let decision = Decision {
+                        goal: target.clone(),
+                        context,
+                        candidates,
+                        expert,
+                    };
+                    if let Ok(mut graph) = Graph::encode(&decision) {
+                        graph.binding = crate::hex(&prefix.clone().finalize());
+                        graph_bytes = graph_bytes
+                            .checked_add(graph.work_bytes())
+                            .ok_or("peer graph work overflow")?;
+                        if graph_bytes > super::MODEL_REQUIREMENTS.work_bytes / 16 {
+                            return Err("peer graph work capacity".into());
+                        }
+                        graphs.push(graph);
+                    }
+                }
+                conclusion
+            }
+            ProofStep::Generalization { premise, variable } => Formula::for_all(
+                *variable,
+                formulas
+                    .get(*premise as usize)
+                    .ok_or("peer generalization index")?
+                    .clone(),
+            ),
+            _ => Kernel::new(step.clone())?.formula(),
+        };
+        let encoded = formula.encode_canonical().map_err(|e| e.to_string())?;
+        prefix.update((encoded.len() as u64).to_le_bytes());
+        prefix.update(encoded);
+        formulas.push(formula);
+    }
+    let term = Term::Native {
+        certificate: checked.normal_form().certificate().clone(),
+        target: target.clone(),
+    };
+    let verified = proof::verify(&term, target)?;
+    if verified.native_id != checked.proof_id() {
+        return Err("peer DAG reconstruction identity differs".into());
+    }
+    Ok((term, graphs))
+}
+pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution, String> {
+    let started = std::time::Instant::now();
+    let q = naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+    let (term, graphs) = compile(q.proved_target(), bytes)?;
+    if graphs.is_empty() {
+        return Err("peer DAG has no supported ambiguous inference".into());
+    }
+    let verified = proof::verify(&term, q.proved_target())?;
+    if crate::hex(verified.native_id.as_bytes()) != artifact {
+        return Err("peer artifact identity differs".into());
+    }
+    Ok(Solution {
+        cost: super::GenerationCost {
+            search_expansions: 0,
+            original_steps: verified.certificate.steps().len(),
+            useful_steps: verified.certificate.steps().len(),
+            unique_states: graphs
+                .iter()
+                .map(Graph::key)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            core_work: verified.certificate.steps().len(),
+            generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+        },
+        source: proof::source(&verified)?,
+        proof_id: artifact.into(),
+        refuted: false,
+        tree: Tree::Certificate(pack(&verified.certificate.to_canonical_bytes())?),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_dag_edges_are_extracted_without_goal_search_and_remain_bound_to_the_artifact() {
+        let solution = super::super::tests::own_solution();
+        let question = super::super::tests::own_question();
+        let original = naome_authoring::compile(&solution.source).unwrap();
+        let compressed = pack(original.canonical_proof_bytes()).unwrap();
+        let extracted = extract(&question, &solution.proof_id, &compressed).unwrap();
+        assert_eq!(extracted.cost.search_expansions, 0);
+        assert!(extracted.cost.unique_states > 0);
+        assert_eq!(
+            naome_authoring::compile(&extracted.source)
+                .unwrap()
+                .proof_id(),
+            original.proof_id()
+        );
+        let target = naome_authoring::CompiledQuestion::compile(&question).unwrap();
+        let (_, graphs) = compile(target.proved_target(), &compressed).unwrap();
+        assert!(!graphs.is_empty());
+        assert!(graphs.iter().all(|g| {
+            g.candidates
+                .iter()
+                .all(|c| g.nodes[*c].kind == Rule::ModusPonens.kind())
+        }));
+        assert!(extract(&question, &"ff".repeat(32), &compressed).is_err());
+        assert!(unpack(&u32::MAX.to_le_bytes()).is_err());
+        let mut corrupted = compressed.clone();
+        *corrupted.last_mut().unwrap() ^= 1;
+        assert!(extract(&question, &solution.proof_id, &corrupted).is_err());
+        eprintln!(
+            "peer_dag original_bytes={} compressed_bytes={} steps={} useful_states={}",
+            original.canonical_proof_bytes().len(),
+            compressed.len(),
+            extracted.cost.original_steps,
+            graphs.len()
+        );
+    }
+}

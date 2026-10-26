@@ -55,9 +55,9 @@ fn decision_metrics(
             let scores=runtime.scores_graph(graph)?;
             let maximum=scores.iter().copied().fold(f32::NEG_INFINITY,f32::max);
             let sum=scores.iter().map(|s|f64::from(*s-maximum).exp()).sum::<f64>();
-            loss+=f64::from(maximum-scores[graph.expert])+sum.ln();
+            loss+=sum.ln()-(graph.successes.iter().map(|i|f64::from(scores[*i]-maximum).exp()).sum::<f64>()).ln();
             let selected=(0..scores.len()).max_by(|a,b|scores[*a].total_cmp(&scores[*b]).then(b.cmp(a))).unwrap();
-            correct+=usize::from(selected==graph.expert);
+            correct+=usize::from(graph.successes.contains(&selected));
         }
         Ok(serde_json::json!({"graphs":graphs.len(),"top_one":correct,"mean_cross_entropy":loss/graphs.len().max(1) as f64}))
     }).unwrap()

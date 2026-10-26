@@ -422,16 +422,20 @@ impl Owner {
                 .question
                 .as_ref()
                 .is_some_and(|q| crate::learning::State::eligible(q));
-            if !eligible {
+            if !eligible || admission.certificate.is_none() {
                 self.disk.peer_status(
                     &mut self.journal,
                     &admission,
                     PeerStatus::Unsupported {
-                        reason: "reserved, unclassified or oversized question".into(),
+                        reason: "reserved question or unsupported certificate/DAG capacity".into(),
                     },
                 )?;
             } else {
                 let input = Input::Peer {
+                    certificate: admission
+                        .certificate
+                        .clone()
+                        .expect("supported certificate"),
                     question: admission.question.clone().expect("eligible question"),
                     artifact: admission.artifact.clone(),
                     peer: admission.peer.clone(),
@@ -745,11 +749,25 @@ impl Owner {
                 {
                     learning.observe(source, None)
                 }
-                (Input::Solve { question }, Some(Output::Native { solution, .. })) => {
-                    learning.observe(question, Some(solution.is_some()))
-                }
+                (
+                    Input::Solve { question },
+                    Some(Output::Native {
+                        solution,
+                        diagnostic,
+                    }),
+                ) => learning.observe_result(question, solution.is_some(), diagnostic),
                 _ => {}
             }
+        }
+        if let Some(cost) = record
+            .native
+            .as_ref()
+            .and_then(|n| n.progress.as_ref())
+            .and_then(|p| p.cost.as_ref())
+        {
+            crate::network::emit(
+                serde_json::json!({"event":"native_data_generation","job":id,"cost":cost}),
+            );
         }
         let internal = record.input.internal();
         if internal {
@@ -896,8 +914,25 @@ impl Owner {
             reject(reply, binding, &error.to_string());
             return Ok(());
         }
+        let native =
+            if self.settings.native_proof_learning && !matches!(input, Input::Interest { .. }) {
+                let mut job = self
+                    .journal
+                    .learning
+                    .as_ref()
+                    .expect("configured native learning state")
+                    .job();
+                job.training = matches!(input, Input::Train { .. });
+                if job.training {
+                    job.evidence = self.disk.replay_evidence(&job.base)?;
+                }
+                job.validate()?;
+                Some(Box::new(job))
+            } else {
+                None
+            };
         self.compact();
-        let input_bytes = serde_json::to_vec(&(&input, &binding, settings))
+        let input_bytes = serde_json::to_vec(&(&input, &binding, settings, &native))
             .map_err(|e| e.to_string())?
             .len();
         let reservation = output_reservation(&input)
@@ -994,18 +1029,7 @@ impl Owner {
                     super::provider::DEFAULT_PROVIDER
                 }
                 .into(),
-                native: (self.settings.native_proof_learning
-                    && !matches!(input, Input::Interest { .. }))
-                .then(|| {
-                    let mut job = self
-                        .journal
-                        .learning
-                        .as_ref()
-                        .expect("configured native learning state")
-                        .job();
-                    job.training = matches!(input, Input::Train { .. });
-                    Box::new(job)
-                }),
+                native,
                 configuration: identity(&settings),
                 settings,
                 created_ms,

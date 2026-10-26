@@ -22,11 +22,13 @@ pub struct Node {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Graph {
+    pub binding: String,
     pub nodes: Vec<Node>,
     pub goal: usize,
     pub context: Vec<usize>,
     pub candidates: Vec<usize>,
     pub expert: usize,
+    pub successes: Vec<usize>,
 }
 
 struct Builder {
@@ -132,6 +134,23 @@ impl Builder {
 }
 
 impl Graph {
+    pub fn work_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.nodes.len() * std::mem::size_of::<Node>()
+            + (self.context.len() + self.candidates.len() + self.successes.len())
+                * std::mem::size_of::<usize>()
+            + self.binding.len()
+            + 1024
+    }
+    pub fn key(&self) -> String {
+        super::digest(&(
+            &self.binding,
+            &self.nodes,
+            self.goal,
+            &self.context,
+            &self.candidates,
+        ))
+    }
     pub fn encode(decision: &Decision) -> Result<Self, String> {
         if decision.context.len() > MAX_CONTEXT || decision.candidates.is_empty() {
             return Err("decision_capacity".into());
@@ -184,11 +203,13 @@ impl Graph {
             })?);
         }
         Ok(Self {
+            binding: String::new(),
             nodes: builder.nodes,
             goal,
             context,
             candidates,
             expert: decision.expert,
+            successes: vec![decision.expert],
         })
     }
 }
@@ -204,7 +225,7 @@ pub struct Batch {
     pub context: Tensor<3>,
     pub candidates: Tensor<2, Int>,
     pub invalid: Tensor<2, Bool>,
-    pub targets: Tensor<1, Int>,
+    pub successes: Tensor<2>,
 }
 
 impl Batch {
@@ -242,7 +263,7 @@ impl Batch {
         let mut context = vec![0f32; b * n];
         let mut candidates = vec![0i32; b * c];
         let mut invalid = vec![true; b * c];
-        let mut targets = vec![0i32; b];
+        let mut successes = vec![0f32; b * c];
         for (batch, graph) in graphs.iter().enumerate() {
             for (i, node) in graph.nodes.iter().enumerate().skip(1) {
                 let offset = batch * n + i;
@@ -273,7 +294,14 @@ impl Batch {
                 candidates[batch * c + i] = *root as i32;
                 invalid[batch * c + i] = false;
             }
-            targets[batch] = graph.expert as i32;
+            if graph.successes.is_empty()
+                || graph.successes.iter().any(|i| *i >= graph.candidates.len())
+            {
+                return Err("successful action binding differs".into());
+            }
+            for index in &graph.successes {
+                successes[batch * c + index] = 1.;
+            }
         }
         Ok(Self {
             kinds: Tensor::from_data(TensorData::new(kinds, [b, n]), device),
@@ -286,7 +314,7 @@ impl Batch {
             context: Tensor::from_data(TensorData::new(context, [b, 1, n]), device),
             candidates: Tensor::from_data(TensorData::new(candidates, [b, c]), device),
             invalid: Tensor::from_data(TensorData::new(invalid, [b, c]), device),
-            targets: Tensor::from_data(TensorData::new(targets, [b]), device),
+            successes: Tensor::from_data(TensorData::new(successes, [b, c]), device),
         })
     }
 }

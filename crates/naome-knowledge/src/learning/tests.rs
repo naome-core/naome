@@ -222,12 +222,20 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     state.model = incumbent.clone();
     let mut job = state.job();
     job.training = true;
-    let (candidate, _, _) = engine.train(&incumbent, &graphs, &mut 47, &mut io).unwrap();
+    let (candidate, _, _) = engine
+        .train(
+            &incumbent,
+            &pool::Pool::from_graphs(&graphs),
+            &mut 47,
+            &mut io,
+        )
+        .unwrap();
     assert_ne!(candidate.model, incumbent.model);
     assert_ne!(candidate.optimizer, incumbent.optimizer);
     let mut finished = job.base.clone();
     finished.trained = finished.accepted;
     job.progress = Some(Progress {
+        cost: None,
         unit: job.units() - 1,
         model: finished.model,
         trained: finished.trained,
@@ -287,6 +295,7 @@ pub(crate) fn own_solution() -> Solution {
 }
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
+        cost: None,
         unit: 1,
         model: job.base.model.clone(),
         trained: job.base.trained,
@@ -311,6 +320,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
     candidate.optimizer = Some(optimizer);
     candidate.updates += model::UPDATES_PER_UNIT;
     job.progress = Some(Progress {
+        cost: None,
         unit: 1,
         model: state.model,
         trained: state.trained,
@@ -349,4 +359,74 @@ fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified
             .unwrap_err()
             .contains("before successful qualification")
     );
+}
+
+#[test]
+fn curriculum_distinguishes_easy_frontier_and_representation_failure() {
+    let mut state = State::fresh();
+    let easy = own_question();
+    let easy_case = CompiledQuestion::compile(&easy).unwrap();
+    let easy_group = &curriculum::learning(&crate::hex(easy_case.resolution_id()))
+        .unwrap()
+        .dependency;
+    let frontier = curriculum::CORPUS
+        .cases
+        .iter()
+        .find(|q| !q.development && &q.dependency != easy_group)
+        .unwrap();
+    state.observe_result(&easy, true, "certified_candidate");
+    state.observe_result(&frontier.source, false, "search_budget");
+    let chosen = |cursor| {
+        let source = state.question(cursor);
+        let q = CompiledQuestion::compile(&source).unwrap();
+        assert!(State::eligible(&source));
+        curriculum::learning(&crate::hex(q.resolution_id()))
+            .unwrap()
+            .dependency
+            .clone()
+    };
+    assert_eq!(chosen(0), *easy_group);
+    assert_eq!(chosen(2), frontier.dependency);
+    state.observe_result(&frontier.source, false, "formula_graph_capacity");
+    assert_eq!(state.statistics[&frontier.dependency].failures[..2], [1, 1]);
+    let recovered: State =
+        crate::checkpoint::decode(&crate::checkpoint::encode(&state).unwrap()).unwrap();
+    assert_eq!(state.question(2), recovered.question(2));
+}
+
+#[test]
+fn later_better_proof_advances_replay_revision_without_recounting_the_question() {
+    let original = own_example();
+    let q = CompiledQuestion::compile(&original.question).unwrap();
+    let target = q.proved_target();
+    let (term, _) = search::compile(target, &original.tree).unwrap();
+    let k = proof::Kernel::new(naome_proof::ProofStep::Simplification {
+        antecedent: target.clone().into(),
+        consequent: target.clone().into(),
+    })
+    .unwrap();
+    let detour = proof::Term::apply(
+        proof::Term::apply(proof::Term::Kernel(k), term.clone()).unwrap(),
+        term,
+    )
+    .unwrap();
+    let checked = proof::verify(&detour, target).unwrap();
+    let mut earlier = original.clone();
+    earlier.proof_id = crate::hex(checked.native_id.as_bytes());
+    earlier.tree =
+        search::Tree::Certificate(peer::pack(&checked.certificate.to_canonical_bytes()).unwrap());
+    earlier.job = 40;
+    assert_ne!(earlier.proof_id, original.proof_id);
+    let mut state = State::fresh();
+    assert!(state.consider(earlier, true).unwrap());
+    let unique = state.sample_counts();
+    assert!(state.consider(original.clone(), false).unwrap());
+    assert_eq!(state.sample_counts(), unique);
+    assert_eq!(state.accepted, 1);
+    assert_eq!(state.epoch, 2);
+    assert!(state.replay.len() <= 2);
+    assert!(state.replay.iter().any(|e| e.proof_id == original.proof_id));
+    assert!(!state.consider(original, false).unwrap());
+    assert_eq!(state.epoch, 2);
+    state.validate().unwrap();
 }

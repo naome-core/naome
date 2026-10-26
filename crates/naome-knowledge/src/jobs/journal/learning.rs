@@ -3,6 +3,42 @@ use super::*;
 mod validation;
 pub(super) use validation::validate_rows;
 impl Disk {
+    pub(in crate::jobs) fn replay_evidence(
+        &self,
+        state: &crate::learning::State,
+    ) -> Result<Vec<crate::learning::Evidence>, String> {
+        let mut result = std::collections::BTreeMap::new();
+        for example in state.replay_sources() {
+            let source: Record = self
+                .checkpoint
+                .get(
+                    "record",
+                    &example.job.to_string(),
+                    crate::checkpoint::MAX_ROW,
+                )?
+                .ok_or("peer replay source job absent")?;
+            let Input::Peer {
+                artifact,
+                certificate,
+                ..
+            } = &source.input
+            else {
+                return Err("peer replay source role differs".into());
+            };
+            if artifact != &example.proof_id {
+                return Err("peer snapshot artifact differs".into());
+            }
+            result.insert(
+                example.job,
+                crate::learning::Evidence {
+                    job: example.job,
+                    proof_id: example.proof_id.clone(),
+                    certificate: certificate.clone(),
+                },
+            );
+        }
+        Ok(result.into_values().collect())
+    }
     pub(in crate::jobs) fn enqueue_peer(
         &mut self,
         journal: &mut Journal,
@@ -19,6 +55,13 @@ impl Disk {
             .map_err(|_| "peer learning source syntax")?;
         if peer.to_string() != admission.peer {
             return Err("peer learning source encoding".into());
+        }
+        if admission
+            .certificate
+            .as_ref()
+            .is_some_and(|b| b.len() > 8 * 1024)
+        {
+            return Err("peer compressed admission capacity".into());
         }
         if let Some(question) = &admission.question {
             naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
@@ -106,6 +149,7 @@ impl Disk {
             question,
             artifact,
             peer,
+            certificate,
         } = &record.input
         else {
             return Ok(Vec::new());
@@ -129,6 +173,7 @@ impl Disk {
             return Err("peer conversion origin differs".into());
         }
         let mut sample = None;
+        let mut seen = None;
         let mut status = PeerStatus::Unsupported {
             reason: record
                 .failure
@@ -148,8 +193,16 @@ impl Disk {
             {
                 let checked =
                     naome_authoring::compile(&solution.source).map_err(|e| e.to_string())?;
-                if crate::hex(checked.proof_id().as_bytes()) != solution.proof_id {
+                if crate::hex(checked.proof_id().as_bytes()) != solution.proof_id
+                    || solution.proof_id != *artifact
+                {
                     return Err("peer reconstructed proof checker identity differs".into());
+                }
+                let extracted = crate::learning::peer::extract(question, artifact, certificate)?;
+                if crate::learning::digest(&extracted.tree)
+                    != crate::learning::digest(&solution.tree)
+                {
+                    return Err("peer replay did not extract the admitted native DAG".into());
                 }
                 let example = crate::learning::Example {
                     origin: crate::learning::Origin::Peer {
@@ -169,10 +222,22 @@ impl Disk {
                 let q = naome_authoring::CompiledQuestion::compile(question)
                     .map_err(|e| e.to_string())?;
                 let key = crate::hex(q.resolution_id());
-                if self.checkpoint.get::<u64>("sample", &key, 64)?.is_none()
-                    && learning.accept(example)?
-                {
-                    sample = Some(crate::checkpoint::Update::put("sample", key, &id)?);
+                let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
+                let unseen = self
+                    .checkpoint
+                    .get::<u64>("replay_seen", &solution.proof_id, 64)?
+                    .is_none();
+                if unseen {
+                    seen = Some(crate::checkpoint::Update::put(
+                        "replay_seen",
+                        &solution.proof_id,
+                        &id,
+                    )?);
+                }
+                if unseen && learning.consider(example, unique)? {
+                    if unique {
+                        sample = Some(crate::checkpoint::Update::put("sample", key, &id)?);
+                    }
                     status = PeerStatus::Learned {
                         conversion_job: id,
                         trace_proof: solution.proof_id.clone(),
@@ -196,6 +261,7 @@ impl Disk {
             },
         ];
         updates.extend(sample);
+        updates.extend(seen);
         Ok(updates)
     }
     pub(in crate::jobs) fn model_io(
@@ -519,8 +585,12 @@ impl Disk {
                 .map_err(|e| e.to_string())?
                 .resolution_id(),
         );
-        let sampled = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none()
-            && learning.accept(example)?;
+        let unique = self.checkpoint.get::<u64>("sample", &key, 64)?.is_none();
+        let unseen = self
+            .checkpoint
+            .get::<u64>("replay_seen", root, 64)?
+            .is_none();
+        let sampled = unseen && learning.consider(example, unique)?;
         record.acknowledged = true;
         let request = super::request_key(&record.input, &record.binding, record.settings);
         let mut updates = vec![
@@ -528,7 +598,10 @@ impl Disk {
             crate::checkpoint::Update::put("learned", id, &root)?,
             crate::checkpoint::Update::put("record", id, &record)?,
         ];
-        if sampled {
+        if unseen {
+            updates.push(crate::checkpoint::Update::put("replay_seen", root, &id)?);
+        }
+        if sampled && unique {
             updates.push(crate::checkpoint::Update::put("sample", key, &id)?);
         }
         if self.checkpoint.get::<u64>("request", &request, 64)? == Some(id) {

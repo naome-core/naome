@@ -1019,7 +1019,13 @@ impl Node {
                 Err(error) if error.retryable() => break,
                 Err(error) => return Err(error.to_string()),
             };
+            let certificate = match self.graph.learning_certificate(id) {
+                Ok(value) => value,
+                Err(error) if error.retryable() => break,
+                Err(error) => return Err(error.to_string()),
+            };
             let admission = crate::jobs::PeerAdmission {
+                certificate,
                 ordinal,
                 artifact: hex(id.as_bytes()),
                 peer: peer.to_string(),

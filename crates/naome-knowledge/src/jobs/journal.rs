@@ -182,6 +182,7 @@ impl Disk {
             "learning",
             "learned",
             "sample",
+            "replay_seen",
             "model",
             "peer_pending",
             "peer_receipt",

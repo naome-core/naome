@@ -178,7 +178,40 @@ impl Provider for Native {
             .native
             .as_mut()
             .ok_or("native model snapshot missing")?;
-        job.execute(unit, question, self.record.id, &mut self.engine, owner)?;
+        job.execute(
+            unit,
+            if matches!(self.record.input, Input::Peer { .. }) {
+                None
+            } else {
+                question
+            },
+            self.record.id,
+            &mut self.engine,
+            owner,
+        )?;
+        if let Input::Peer {
+            certificate,
+            question,
+            artifact,
+            ..
+        } = &self.record.input
+        {
+            let p = job
+                .progress
+                .as_mut()
+                .ok_or("peer extraction progress missing")?;
+            match crate::learning::peer::extract(question, artifact, certificate) {
+                Ok(solution) => {
+                    p.cost = Some(solution.cost.clone());
+                    p.result = Some(solution);
+                    p.diagnostic = "native_peer_dag_extracted".into();
+                }
+                Err(reason) => {
+                    p.result = None;
+                    p.diagnostic = reason;
+                }
+            }
+        }
         owner.learning(unit, job.progress.clone().ok_or("native progress missing")?)?;
         Ok(())
     }

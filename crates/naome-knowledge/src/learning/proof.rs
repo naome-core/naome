@@ -17,6 +17,10 @@ pub const STEP_WORK_LIMIT: &str = "solver certificate work limit";
 
 #[derive(Clone, Debug)]
 pub enum Term {
+    Native {
+        certificate: ProofCertificate,
+        target: Formula,
+    },
     Variable(usize, Formula),
     Kernel(Kernel),
     Generalize(FreeVariable, Box<Self>),
@@ -57,6 +61,7 @@ impl Term {
         match self {
             Self::Variable(_, formula) | Self::Apply(_, _, formula) => formula.clone(),
             Self::Kernel(k) => k.formula(),
+            Self::Native { target, .. } => target.clone(),
             Self::Generalize(variable, body) => Formula::for_all(*variable, body.formula()),
             Self::Lambda(_, argument, body) => Formula::implies(argument.clone(), body.formula()),
         }
@@ -194,6 +199,7 @@ fn abstract_variable(
 
 fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
     match term {
+        Term::Native { .. } => Err("native DAG is a closed replay root".into()),
         Term::Variable(id, formula) => Ok(Arc::new(Combinator::Variable(*id, formula.clone()))),
         Term::Kernel(k) => Ok(Arc::new(Combinator::Kernel(k.clone()))),
         Term::Generalize(v, body) => Ok(Arc::new(Combinator::Generalize(*v, lower(body)?))),
@@ -220,6 +226,22 @@ pub struct Verified {
 pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     if term.formula() != *expected {
         return Err("search term differs from the requested target".into());
+    }
+    if let Term::Native { certificate, .. } = term {
+        let checked = naome_checker::normalize_and_check_with_state(
+            certificate.clone(),
+            &ArtifactState::new(),
+        )
+        .map_err(|e| e.to_string())?;
+        if checked.conclusion() != expected {
+            return Err("native DAG conclusion differs".into());
+        }
+        return Ok(Verified {
+            certificate: checked.normal_form().certificate().clone(),
+            target: expected.clone(),
+            native_id: checked.proof_id(),
+            payload_bytes: checked.normal_form().canonical_bytes().len(),
+        });
     }
     let root = lower(term)?;
     let mut steps = Vec::new();

@@ -244,6 +244,7 @@ pub(crate) enum Purpose {
 #[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Input {
     Peer {
+        certificate: Vec<u8>,
         question: String,
         artifact: String,
         peer: String,
@@ -286,10 +287,14 @@ impl Input {
                 }
             }
             Self::Peer {
+                certificate,
                 question,
                 artifact,
                 peer,
             } => {
+                if certificate.len() > 8 * 1024 {
+                    return Err("peer extraction input capacity".into());
+                }
                 naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
                 crate::object::id_bytes(artifact)?;
                 let parsed: libp2p::PeerId =
@@ -518,6 +523,7 @@ pub(crate) struct RecoveryPage {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PeerAdmission {
+    pub certificate: Option<Vec<u8>>,
     pub ordinal: u64,
     pub artifact: String,
     pub peer: String,

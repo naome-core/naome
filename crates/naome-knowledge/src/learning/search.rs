@@ -1,4 +1,5 @@
 //! Bounded classical tableau with checked, replayable proof reconstruction.
+pub mod core;
 use super::calculus::{self as c, Names};
 use super::{
     graph::Graph,
@@ -25,6 +26,8 @@ pub enum Action {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Tree {
     Axiom(u8),
+    Certificate(Vec<u8>),
+    Peer { steps: usize },
     Close(usize, usize),
     Step { action: Action, children: Vec<Self> },
 }
@@ -424,7 +427,23 @@ fn replay(
         .position(|a| a == action)
         .ok_or("replay action not offered")?;
     if offered.len() > 1 {
-        graphs.push(Graph::encode(&decision(goal, state, &offered, expert)?)?);
+        let mut graph = Graph::encode(&decision(goal, state, &offered, expert)?)?;
+        graph.binding = super::digest(&(
+            goal.encode_canonical().map_err(|e| e.to_string())?,
+            state
+                .facts
+                .iter()
+                .map(Formula::encode_canonical)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?,
+            &state.used,
+            state
+                .domain
+                .iter()
+                .map(|v| v.identifier())
+                .collect::<Vec<_>>(),
+        ));
+        graphs.push(graph);
     }
     let states = next(state, action)?;
     if states.len() != children.len() {
@@ -497,6 +516,12 @@ fn replay(
 }
 
 pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), String> {
+    if matches!(tree, Tree::Peer { .. }) {
+        return Err("peer replay requires its owned journal snapshot".into());
+    }
+    if let Tree::Certificate(bytes) = tree {
+        return super::peer::compile(target, bytes);
+    }
     if let Tree::Axiom(index) = tree {
         let axiom = *AXIOMS.get(*index as usize).ok_or("unknown native axiom")?;
         if axiom.formula() != *target {
