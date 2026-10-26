@@ -219,7 +219,7 @@ pub struct Batch {
     pub roles: Tensor<2, Int>,
     pub left: Tensor<2, Int>,
     pub right: Tensor<2, Int>,
-    pub parents: Tensor<3>,
+    pub parent_scale: Tensor<3>,
     pub valid: Tensor<3>,
     pub goal: Tensor<2, Int>,
     pub context: Tensor<3>,
@@ -244,54 +244,58 @@ impl Batch {
         if graphs.is_empty() {
             return Err("empty graph batch".into());
         }
+        if graphs.len() > 16
+            || graphs.iter().any(|g| {
+                g.nodes.is_empty()
+                    || g.nodes.len() > MAX_NODES
+                    || g.candidates.is_empty()
+                    || g.candidates.len() > 16
+            })
+        {
+            return Err("graph batch capacity".into());
+        }
         let b = graphs.len();
-        let n = graphs
-            .iter()
-            .map(|g| g.nodes.len())
-            .max()
-            .unwrap()
-            .next_power_of_two()
-            .max(16);
+        // One shared zero sentinel and disjoint ranges for the actual nodes.
+        // No graph is padded to another graph's size.
+        let n = 1 + graphs.iter().map(|g| g.nodes.len() - 1).sum::<usize>();
         let c = graphs.iter().map(|g| g.candidates.len()).max().unwrap();
-        let mut kinds = vec![0i32; b * n];
+        let mut kinds = vec![0i32; n];
         let mut roles = kinds.clone();
         let mut left = kinds.clone();
         let mut right = kinds.clone();
-        let mut parents = vec![0f32; b * n * n];
-        let mut valid = vec![0f32; b * n];
+        let mut parents = vec![0f32; n];
+        let mut valid = vec![0f32; n];
         let mut goal = vec![0i32; b];
         let mut context = vec![0f32; b * n];
         let mut candidates = vec![0i32; b * c];
         let mut invalid = vec![true; b * c];
         let mut successes = vec![0f32; b * c];
+        let mut base = 1;
         for (batch, graph) in graphs.iter().enumerate() {
+            let index = |i: usize| -> Result<usize, String> {
+                if i >= graph.nodes.len() {
+                    Err("graph node binding differs".into())
+                } else {
+                    Ok(if i == 0 { 0 } else { base + i - 1 })
+                }
+            };
             for (i, node) in graph.nodes.iter().enumerate().skip(1) {
-                let offset = batch * n + i;
+                let offset = index(i)?;
                 kinds[offset] = node.kind;
                 roles[offset] = node.role;
-                left[offset] = node.left as i32;
-                right[offset] = node.right as i32;
+                left[offset] = index(node.left)? as i32;
+                right[offset] = index(node.right)? as i32;
                 valid[offset] = 1.;
-                for child in [node.left, node.right]
-                    .into_iter()
-                    .filter(|child| *child != 0)
-                {
-                    parents[batch * n * n + child * n + i] += 1.;
+                for child in [node.left, node.right].into_iter().filter(|i| *i != 0) {
+                    parents[index(child)?] += 1.;
                 }
             }
-            for i in 1..graph.nodes.len() {
-                let row = &mut parents[batch * n * n + i * n..batch * n * n + (i + 1) * n];
-                let total: f32 = row.iter().sum();
-                if total > 0. {
-                    row.iter_mut().for_each(|x| *x /= total);
-                }
-            }
-            goal[batch] = graph.goal as i32;
+            goal[batch] = index(graph.goal)? as i32;
             for root in &graph.context {
-                context[batch * n + root] += 1. / graph.context.len() as f32;
+                context[batch * n + index(*root)?] += 1. / graph.context.len() as f32;
             }
             for (i, root) in graph.candidates.iter().enumerate() {
-                candidates[batch * c + i] = *root as i32;
+                candidates[batch * c + i] = index(*root)? as i32;
                 invalid[batch * c + i] = false;
             }
             if graph.successes.is_empty()
@@ -299,17 +303,23 @@ impl Batch {
             {
                 return Err("successful action binding differs".into());
             }
-            for index in &graph.successes {
-                successes[batch * c + index] = 1.;
+            for i in &graph.successes {
+                successes[batch * c + i] = 1.;
+            }
+            base += graph.nodes.len() - 1;
+        }
+        for count in &mut parents {
+            if *count > 0. {
+                *count = 1. / *count;
             }
         }
         Ok(Self {
-            kinds: Tensor::from_data(TensorData::new(kinds, [b, n]), device),
-            roles: Tensor::from_data(TensorData::new(roles, [b, n]), device),
-            left: Tensor::from_data(TensorData::new(left, [b, n]), device),
-            right: Tensor::from_data(TensorData::new(right, [b, n]), device),
-            parents: Tensor::from_data(TensorData::new(parents, [b, n, n]), device),
-            valid: Tensor::from_data(TensorData::new(valid, [b, n, 1]), device),
+            kinds: Tensor::from_data(TensorData::new(kinds, [1, n]), device),
+            roles: Tensor::from_data(TensorData::new(roles, [1, n]), device),
+            left: Tensor::from_data(TensorData::new(left, [1, n]), device),
+            right: Tensor::from_data(TensorData::new(right, [1, n]), device),
+            parent_scale: Tensor::from_data(TensorData::new(parents, [1, n, 1]), device),
+            valid: Tensor::from_data(TensorData::new(valid, [1, n, 1]), device),
             goal: Tensor::from_data(TensorData::new(goal, [b, 1]), device),
             context: Tensor::from_data(TensorData::new(context, [b, 1, n]), device),
             candidates: Tensor::from_data(TensorData::new(candidates, [b, c]), device),

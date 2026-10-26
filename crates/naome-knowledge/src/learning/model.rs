@@ -2,14 +2,16 @@
 //! Policy topology, graph tensors, Adam, cross entropy, batch 16 and LR .001
 //! are preserved from the native research implementation. No weights are imported.
 mod policy;
+#[cfg(test)]
+use super::graph::Graph;
 use super::{
     artifact::{self, ArtifactIo, Blob},
-    graph::{Batch, Graph},
+    graph::Batch,
     pool::Pool,
 };
 use burn::{
     module::{Module, ModuleMapper, Param},
-    optim::{AdamConfig, GradientsAccumulator, GradientsParams, ModuleOptimizer},
+    optim::{AdamConfig, GradientsParams, ModuleOptimizer},
     store::ModuleRecord,
     tensor::{Bytes, Device, Tensor},
 };
@@ -87,7 +89,7 @@ fn specification() -> String {
     hash.update(include_str!("pool.rs"));
     hash.update(include_str!("peer.rs"));
     hash.update(
-        b"Adam;successful-action-marginal;hierarchical-cyclic-pool;shape-microbatch-weight=1/16;batch=16;lr=0.001;float32",
+        b"Adam;successful-action-marginal;hierarchical-cyclic-pool;packed-disjoint-graphs;sparse-parent-mean;batch=16;lr=0.001;float32",
     );
     crate::hex(&hash.finalize())
 }
@@ -246,46 +248,24 @@ impl Runtime {
         let mut last = 0.;
         for update in 0..updates {
             let sample = graphs.batch(rng);
-            // Every selected graph contributes 1/16 to the same update. Group
-            // only by tensor padding size, accumulate gradients, then apply Adam
-            // once. This avoids padding every small graph to the largest one.
-            let mut groups = std::collections::BTreeMap::<usize, Vec<Graph>>::new();
-            for graph in sample {
-                groups
-                    .entry(graph.nodes.len().next_power_of_two().max(16))
-                    .or_default()
-                    .push(graph);
+            let batch = Batch::from_graphs(&sample, &self.device)?;
+            let logits = self.policy.forward(&batch);
+            let probability = burn::tensor::activation::log_softmax(logits, 1).exp();
+            let loss = -(probability * batch.successes)
+                .sum_dim(1)
+                .clamp_min(1e-12)
+                .log()
+                .mean();
+            let value = loss
+                .clone()
+                .into_data()
+                .try_to_vec::<f32>()
+                .map_err(|e| e.to_string())?[0];
+            if !value.is_finite() {
+                return Err("non-finite native training loss".into());
             }
-            let mut accumulated = GradientsAccumulator::<Policy>::new();
-            let mut value = 0.;
-            for group in groups.values() {
-                let batch = Batch::from_graphs(group, &self.device)?;
-                let logits = self.policy.forward(&batch);
-                // Untried alternatives have no mathematical false label.
-                let probability = burn::tensor::activation::log_softmax(logits, 1).exp();
-                let loss = -(probability * batch.successes)
-                    .sum_dim(1)
-                    .clamp_min(1e-12)
-                    .log()
-                    .sum()
-                    / 16.;
-                let part = loss
-                    .clone()
-                    .into_data()
-                    .try_to_vec::<f32>()
-                    .map_err(|e| e.to_string())?[0];
-                if !part.is_finite() {
-                    return Err("non-finite native training loss".into());
-                }
-                value += part;
-                accumulated.accumulate(
-                    &self.policy,
-                    GradientsParams::from_grads(loss.backward(), &self.policy),
-                );
-            }
-            self.policy = self
-                .optimizer
-                .step(0.001, self.policy.clone(), accumulated.grads());
+            let gradients = GradientsParams::from_grads(loss.backward(), &self.policy);
+            self.policy = self.optimizer.step(0.001, self.policy.clone(), gradients);
             if update == 0 {
                 first = value;
             }
@@ -448,7 +428,7 @@ mod tests {
         );
     }
     #[test]
-    fn shape_microbatches_preserve_the_sixteen_graph_adam_update() {
+    fn sparse_packed_graphs_preserve_the_dense_sixteen_graph_adam_update() {
         let solution = super::super::tests::own_solution();
         let q = naome_authoring::CompiledQuestion::compile(&super::super::tests::own_question())
             .unwrap();
@@ -470,31 +450,49 @@ mod tests {
         let sample = pool.batch(&mut 0);
         let fresh = Checkpoint::fresh();
         let mut io = MemoryStore::default();
-        let mut padded = Runtime::load(&fresh, &mut io).unwrap();
-        let mut grouped = Runtime::load(&fresh, &mut io).unwrap();
-        let batch = Batch::from_graphs(&sample, &padded.device).unwrap();
+        let mut dense = Runtime::load(&fresh, &mut io).unwrap();
+        let mut sparse = Runtime::load(&fresh, &mut io).unwrap();
+        let batch = Batch::from_graphs(&sample, &dense.device).unwrap();
+        let joint = sparse
+            .policy
+            .valid()
+            .forward(&batch)
+            .into_data()
+            .try_to_vec::<f32>()
+            .unwrap();
+        let width = batch.candidates.dims()[1];
+        for (index, graph) in sample.iter().enumerate() {
+            let separate = sparse.scores_graph(graph).unwrap();
+            for (action, value) in separate.iter().enumerate() {
+                assert!(
+                    (joint[index * width + action] - value).abs() < 1e-4,
+                    "an unrelated graph changed this graph's action score"
+                );
+            }
+        }
         let probability =
-            burn::tensor::activation::log_softmax(padded.policy.forward(&batch), 1).exp();
+            burn::tensor::activation::log_softmax(dense.policy.forward_dense(&batch), 1).exp();
         let loss = -(probability * batch.successes)
             .sum_dim(1)
             .clamp_min(1e-12)
             .log()
             .mean();
         let expected_loss = loss.clone().into_data().try_to_vec::<f32>().unwrap()[0];
-        let gradients = GradientsParams::from_grads(loss.backward(), &padded.policy);
-        padded.policy = padded
-            .optimizer
-            .step(0.001, padded.policy.clone(), gradients);
-        let (actual_loss, _) = grouped.train(&pool, &mut 0, 1).unwrap();
+        let gradients = GradientsParams::from_grads(loss.backward(), &dense.policy);
+        dense.policy = dense.optimizer.step(0.001, dense.policy.clone(), gradients);
+        let (actual_loss, _) = sparse.train(&pool, &mut 0, 1).unwrap();
         assert!((expected_loss - actual_loss).abs() < 1e-5);
-        let a = padded.scores_graph(&graph).unwrap();
-        let b = grouped.scores_graph(&graph).unwrap();
+        let a = dense.scores_graph(&graph).unwrap();
+        let b = sparse.scores_graph(&graph).unwrap();
         let maximum = a
             .iter()
             .zip(b)
             .map(|(a, b)| (a - b).abs())
             .fold(0f32, f32::max);
-        assert!(maximum < 1e-4, "microbatch prediction difference {maximum}");
+        assert!(
+            maximum < 1e-4,
+            "sparse parent prediction difference {maximum}"
+        );
     }
     #[test]
     fn zero_update_snapshot_preserves_fresh_predictions_and_optimizer_continuation() {

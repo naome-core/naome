@@ -931,6 +931,7 @@ version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e05d08ef48d738fadf13f8689b634f8b396d5a8cbb27d0a87f61e163d241846"
 dependencies = [
+ "aligned-vec",
  "burn-backend",
  "burn-ir",
  "burn-std",
@@ -938,6 +939,7 @@ dependencies = [
  "gemm",
  "half",
  "libm",
+ "macerator",
  "num-traits",
  "once_cell",
  "portable-atomic",
@@ -994,7 +996,9 @@ dependencies = [
  "burn-backend",
  "burn-ir",
  "burn-std",
+ "bytemuck",
  "const-random",
+ "itertools 0.15.0",
  "libm",
  "macerator",
  "matrixmultiply",
@@ -1002,6 +1006,7 @@ dependencies = [
  "num-traits",
  "paste",
  "rand 0.10.3",
+ "seq-macro",
 ]
 
 [[package]]
