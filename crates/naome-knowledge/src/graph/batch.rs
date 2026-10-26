@@ -17,6 +17,7 @@ pub(crate) struct CheckedBatch {
     pub(super) stamp: Stamp,
     pub(super) context_bytes: usize,
     pub(super) _disk: crate::resources::DiskLease,
+    pub(super) payload_bytes: usize,
 }
 
 impl CheckedBatch {
@@ -161,35 +162,27 @@ impl Graph {
         )?;
         // Resolve internal edges once. Only dependencies outside this batch
         // need an authenticated lookup in the fixed predecessor context.
-        let mut waiting = BTreeMap::new();
-        let mut dependents: BTreeMap<ArtifactId, Vec<ArtifactId>> = BTreeMap::new();
+        let mut schedule = dependencies::Dependencies::default();
         let mut external = BTreeSet::new();
-        let mut ready = BTreeSet::new();
         for (id, candidate) in &candidates {
-            let mut count = 0usize;
             for dependency in &candidate.dependencies {
                 #[cfg(test)]
                 DEPENDENCY_VISITS.with(|count| count.set(count.get() + 1));
-                if candidates.contains_key(dependency) {
-                    count += 1;
-                    dependents.entry(*dependency).or_default().push(*id);
-                } else if external.insert(*dependency)
-                    && !self.cold(
+                if !candidates.contains_key(dependency) && external.insert(*dependency) {
+                    if !self.cold(
                         preparation
                             .context()
                             .contains_artifact(*dependency)
                             .map_err(crate::Error::from),
-                    )?
-                {
-                    return Err("missing or cyclic committed dependency closure".into());
+                    )? {
+                        return Err("missing or cyclic committed dependency closure".into());
+                    }
+                    schedule.finish(*dependency);
                 }
             }
-            waiting.insert(*id, count);
-            if count == 0 {
-                ready.insert(*id);
-            }
+            schedule.add(*id, &candidate.dependencies)?;
         }
-        while let Some(id) = ready.pop_first() {
+        while let Some(id) = schedule.next(None) {
             let candidate = candidates.remove(&id).expect("selected staged object");
             let record = candidate.record();
             let checked = self.check_artifact(candidate, preparation.context())?;
@@ -199,15 +192,9 @@ impl Graph {
                     .map_err(crate::Error::from)?;
             }
             preparation.append_artifact(self, checked, record)?;
-            for dependent in dependents.remove(&id).unwrap_or_default() {
-                let remaining = waiting.get_mut(&dependent).expect("batch dependency");
-                *remaining -= 1;
-                if *remaining == 0 {
-                    ready.insert(dependent);
-                }
-            }
+            schedule.finish(id);
         }
-        if !candidates.is_empty() {
+        if !schedule.complete() || !candidates.is_empty() {
             return Err("missing or cyclic committed dependency closure".into());
         }
         preparation.finish(self, root)

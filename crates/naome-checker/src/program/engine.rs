@@ -30,7 +30,9 @@ fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     })
 }
 use format::{ChunkReader, command_hash, decode_command, encode_command};
+mod definitions;
 mod diagnostics;
+use definitions::DefinitionEvaluation;
 mod materialization;
 mod references;
 use materialization::{Finalization, Shape};
@@ -58,7 +60,7 @@ pub struct Engine {
     checked_hash: [u8; 32],
     active: Option<Evaluation>,
     accepted: Option<u64>,
-    cache_budget: u64,
+    cache_budget: Option<u64>,
     last_quantum_steps: usize,
     export: Option<Export>,
     finalization: Option<Finalization>,
@@ -92,6 +94,10 @@ impl CheckedProgram {
         self.engine
             .advance(0, bytes, &ArtifactState::new())
             .map(|_| ())
+    }
+    /// Evicts volatile caches while retaining this live checked result and its owner.
+    pub fn suspend_cache(&mut self) -> Result<(), Error> {
+        self.engine.suspend_cache()
     }
     pub fn input_chunk(
         &self,
@@ -165,8 +171,10 @@ struct Evaluation {
     restoring: bool,
     reference: Option<ProgramSource>,
     reference_depth: u64,
+    definition: Option<DefinitionEvaluation>,
 }
 enum Operation {
+    Definition,
     Reference(ProofId),
     Input(u64),
     Equal(u32, u32),
@@ -204,6 +212,25 @@ fn compile(expression: Expression<u64>, operations: &mut Vec<Operation>) -> usiz
 }
 
 impl Engine {
+    /// Releases inactive evaluator caches without executing mathematical work.
+    pub fn suspend_cache(&mut self) -> Result<(), Error> {
+        self.live()?;
+        if self.cache_budget == Some(0) {
+            return Ok(());
+        }
+        sql(self.connection.pragma_update(None, "cache_size", 0))?;
+        sql(self.connection.pragma_update(Some("temp"), "cache_size", 0))?;
+        sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
+        if let Some(tree) = self
+            .finalization
+            .as_mut()
+            .and_then(|state| state.tree.as_mut())
+        {
+            tree.restrict_cache(0);
+        }
+        self.cache_budget = Some(0);
+        Ok(())
+    }
     pub fn input_chunk(
         &self,
         start: u64,
@@ -382,7 +409,7 @@ impl Engine {
             checked_hash: [0; 32],
             active: None,
             accepted: None,
-            cache_budget: 0,
+            cache_budget: None,
             last_quantum_steps: 0,
             export: None,
             finalization: None,
@@ -498,7 +525,7 @@ impl Engine {
         }
         // Trimming must still run while admission is paused, otherwise a live
         // profile reduction could keep its old cache resident indefinitely.
-        if self.cache_budget != cache_bytes {
+        if self.cache_budget != Some(cache_bytes) {
             // Main/temp SQLite caches and the bounded projection cache share
             // one effective byte budget, including live downward adjustments.
             let sqlite_bytes = cache_bytes - materialization::Tree::cache_bytes(cache_bytes);
@@ -509,7 +536,7 @@ impl Engine {
                 .pragma_update(Some("temp"), "cache_size", kib))?;
             // A growing allowance needs no eviction. Preserve the live temp
             // evaluator while still trimming on initialization and every cut.
-            if self.cache_budget == 0 || cache_bytes < self.cache_budget {
+            if self.cache_budget.is_none_or(|before| cache_bytes < before) {
                 sql(self.connection.execute_batch("PRAGMA shrink_memory"))?;
             }
             if let Some(tree) = self
@@ -519,7 +546,7 @@ impl Engine {
             {
                 tree.restrict_cache(cache_bytes);
             }
-            self.cache_budget = cache_bytes;
+            self.cache_budget = Some(cache_bytes);
         }
         if steps == 0 {
             return Ok(false);
@@ -528,7 +555,8 @@ impl Engine {
         self.context_snapshot = Some(snapshot);
         let before = (self.cursor, self.checked_hash, self.accepted);
         sql(self.connection.execute_batch("BEGIN IMMEDIATE"))?;
-        let result = self.advance_batch(steps, context, query);
+        let reads = crate::context::cache::ReadContext::new(context);
+        let result = self.advance_batch(steps, &reads, query);
         match result {
             Ok(progress) => match sql(self.connection.execute_batch("COMMIT")) {
                 Ok(()) => Ok(progress),
@@ -600,39 +628,17 @@ impl Engine {
                         role: freshness.role,
                     });
                 }
+                let mut definition = None;
                 match plan.construction {
                     checker::Construction::Definition(definition_id, arguments) => {
-                        self.observe_reference_context(context);
-                        let formula = naome_proof::DefinedFormula::defined_relation(
+                        definition = Some(self.begin_definition(
+                            context,
                             definition_id,
-                            arguments
-                                .into_iter()
-                                .map(naome_foundation::FreeVariable::new),
-                        );
-                        let expanded = match formula
-                            .expand_with_node_limit(context, naome_foundation::FORMULA_MAX_NODES)
-                        {
-                            Ok((formula, _)) => formula,
-                            Err(naome_proof::DefinitionExpansionError::Access(source)) => {
-                                return Err(crate::ContextError::from(source).into());
-                            }
-                            Err(source) => {
-                                return Err(Error::Check(Box::new(self.proof_diagnostic(
-                                    &command,
-                                    crate::diagnostics::Failure::Expansion {
-                                        reason: (&source).into(),
-                                    },
-                                    context,
-                                    query,
-                                )?)));
-                            }
-                        };
-                        let node = checker::Context::fixed(self, &expanded)?;
-                        sql(self.connection.execute(
-                            "INSERT OR IGNORE INTO checked_definition VALUES(?1)",
-                            [definition_id.as_bytes().as_slice()],
-                        ))?;
-                        operations.push(Operation::Input(node));
+                            &arguments,
+                            &command,
+                            query,
+                        )?);
+                        operations.push(Operation::Definition);
                     }
                     checker::Construction::Formula(expression) => {
                         compile(expression, &mut operations);
@@ -652,6 +658,7 @@ impl Engine {
                     restoring: true,
                     reference: None,
                     reference_depth: 0,
+                    definition,
                 });
                 sql(self
                     .connection
@@ -725,6 +732,7 @@ impl Engine {
     ) -> Result<Option<u64>, Error> {
         let r = &evaluation.registers;
         let node = match evaluation.operations[evaluation.position] {
+            Operation::Definition => return self.advance_definition(evaluation, context, query),
             Operation::Reference(proof) => {
                 return self.import_reference(evaluation, context, proof, query);
             }

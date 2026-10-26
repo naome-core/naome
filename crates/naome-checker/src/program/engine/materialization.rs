@@ -155,7 +155,9 @@ impl Engine {
             self.finalization = Some(Finalization {
                 reachable: 0,
                 walk_complete: false,
-                tree: shape.fits().then(|| Tree::new(root, self.cache_budget)),
+                tree: shape
+                    .fits()
+                    .then(|| Tree::new(root, self.cache_budget.unwrap_or(0))),
                 canonical: None,
             });
         }

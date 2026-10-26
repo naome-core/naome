@@ -16,6 +16,7 @@ use std::{
 };
 
 mod batch;
+pub(crate) mod dependencies;
 mod pending;
 mod preparation;
 use preparation::{Preparation, Stamp};
@@ -662,7 +663,7 @@ impl Graph {
                 self.cold(removed)?;
                 continue;
             }
-            let candidate = match record.prepare() {
+            let candidate = match record.for_admission() {
                 Ok(candidate) => candidate,
                 Err(error) if error.retryable() || matches!(error, crate::Error::InputLimit(_)) => {
                     crate::network::emit(
@@ -756,17 +757,18 @@ impl Graph {
         candidate: Candidate,
         context: &DiskArtifactState,
     ) -> Result<CheckedArtifact, crate::Error> {
-        let checked = match candidate.payload {
+        let checked = match &candidate.payload {
             CandidatePayload::Proof(normal) => {
-                CheckedArtifact::Proof(self.check_normal(normal, context)?)
+                CheckedArtifact::Proof(self.check_normal(normal.clone(), context)?)
             }
             CandidatePayload::Definition(certificate) => {
                 #[cfg(test)]
                 {
                     self.checks[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                let definition = naome_checker::check_definition_with_state(certificate, context)
-                    .map_err(crate::Error::from)?;
+                let definition =
+                    naome_checker::check_definition_with_state(certificate.clone(), context)
+                        .map_err(crate::Error::from)?;
                 if let Some(statement) = definition.obligation_statement_id() {
                     let witness = candidate
                         .obligation
@@ -796,7 +798,7 @@ impl Graph {
             let CheckedArtifact::Definition(definition) = checked else {
                 unreachable!()
             };
-            return Ok(definition.certificate().to_canonical_bytes().len());
+            return Ok(definition.certificate().canonical_bytes().len());
         };
         let growth = if self.cold(
             context
@@ -842,6 +844,12 @@ impl Graph {
         bytes: usize,
         objects: usize,
     ) -> Result<crate::resources::DiskLease, crate::Error> {
+        crate::resources::DiskLease::acquire(
+            self.store.directory(),
+            Self::publication_reservation(bytes, objects)?,
+        )
+    }
+    fn publication_reservation(bytes: usize, objects: usize) -> Result<u64, crate::Error> {
         let index = objects
             .checked_mul(naome_checker::CHECKER_MAX_FORMULA_WORK_BYTES)
             .and_then(|n| n.checked_mul(16))
@@ -851,10 +859,7 @@ impl Graph {
             .and_then(|n| n.checked_add(index))
             .and_then(|n| n.checked_add(1024 * 1024))
             .ok_or("publication disk estimate overflow")?;
-        crate::resources::DiskLease::acquire(
-            self.store.directory(),
-            u64::try_from(work).map_err(|_| "publication disk width")?,
-        )
+        u64::try_from(work).map_err(|_| "publication disk width".into())
     }
 
     fn admit(&mut self, candidate: Candidate) -> Result<(), crate::Error> {
@@ -874,7 +879,7 @@ impl Graph {
         self.publication_current()?;
         let id = record.id;
         let stamp = Stamp::capture(self)?;
-        let mut preparation = Preparation::reserved(self, None, stamp, disk);
+        let mut preparation = Preparation::reserved(self, stamp, disk);
         let registration = preparation.check_registration(self, checked, record)?;
         let source = self.checked_storage.clone();
         // The phase guard records every setup failure, including native close

@@ -19,6 +19,12 @@ pub(crate) struct ProgramCheck {
     cache_cap: u64,
 }
 impl ProgramCheck {
+    pub(crate) fn suspend_cache(&mut self) -> Result<(), crate::Error> {
+        if let Some(work) = &mut self.work {
+            work.suspend_cache()?;
+        }
+        Ok(())
+    }
     pub(crate) fn open(graph: &Graph, manifest: Manifest) -> Result<Self, crate::Error> {
         let directory = graph.store.directory().join(".program-work");
         match std::fs::symlink_metadata(&directory) {
@@ -123,6 +129,9 @@ enum Registration {
     Ready(Box<CheckedBatch>),
 }
 impl PreparedProgram {
+    pub(crate) fn suspend_cache(&mut self) -> Result<(), crate::Error> {
+        self.proof.suspend_cache()
+    }
     pub(crate) fn new(proof: CheckedWork) -> Self {
         Self {
             proof,
@@ -212,6 +221,11 @@ impl PreparedProgram {
 pub(crate) struct ProgramAdmission {
     preparation: Preparation,
     cursor: naome_checker::ProgramRegistration,
+    dependencies: BTreeSet<ArtifactId>,
+    after_proof: Option<naome_proof::ProofId>,
+    after_definition: Option<naome_proof::DefinitionId>,
+    proofs_complete: bool,
+    references_complete: bool,
 }
 impl ProgramAdmission {
     fn current(&self, graph: &Graph) -> Result<(), crate::Error> {
@@ -243,7 +257,38 @@ impl ProgramAdmission {
         let mut gates = graph.cold(phase.finish(graph.checked_storage.as_ref()))?;
         phase.discarded(&mut gates);
         result?;
-        Ok(self.cursor.complete())
+        if !self.cursor.complete() {
+            return Ok(false);
+        }
+        let checked = proof.proof()?;
+        let records = records.clamp(1, 4096);
+        if !self.proofs_complete {
+            let page = checked.dependencies_after(self.after_proof, records)?;
+            if let Some(last) = page.last() {
+                self.after_proof = Some(last.proof_id());
+                for dependency in page {
+                    let id = ArtifactId::from_proof_id(dependency.proof_id());
+                    if self.preparation.contains(id) {
+                        self.dependencies.insert(id);
+                    }
+                }
+                return Ok(false);
+            }
+            self.proofs_complete = true;
+        }
+        let page = checked.definition_dependencies_after(self.after_definition, records)?;
+        if let Some(last) = page.last() {
+            self.after_definition = Some(*last);
+            for dependency in page {
+                let id = ArtifactId::from_definition_id(dependency);
+                if self.preparation.contains(id) {
+                    self.dependencies.insert(id);
+                }
+            }
+            return Ok(false);
+        }
+        self.references_complete = true;
+        Ok(true)
     }
     pub(crate) fn finish(
         mut self,
@@ -251,6 +296,9 @@ impl ProgramAdmission {
         proof: &CheckedWork,
     ) -> Result<CheckedBatch, crate::Error> {
         self.current(graph)?;
+        if !self.references_complete {
+            return Err("program dependency traversal incomplete".into());
+        }
         let checked = proof.proof()?;
         let growth = if graph.cold(
             self.preparation
@@ -261,28 +309,12 @@ impl ProgramAdmission {
         } else {
             program_context_bytes(checked)?
         };
-        let mut dependencies = std::collections::BTreeSet::new();
-        for id in self.preparation.ids() {
-            let reference =
-                if let Some(proof_id) = self.preparation.context().artifact_proof_id(id)? {
-                    checked.references_proof(proof_id)?
-                } else if let Some(definition_id) =
-                    self.preparation.context().artifact_definition_id(id)?
-                {
-                    checked.references_definition(definition_id)?
-                } else {
-                    return Err("staged artifact identity missing".into());
-                };
-            if reference {
-                dependencies.insert(id);
-            }
-        }
         let context = self.cursor.finish().map_err(crate::Error::from)?;
         self.preparation.append_program(
             graph,
             context,
             crate::object::BinaryArtifact::from_program(checked)?,
-            dependencies,
+            self.dependencies,
             growth,
         )?;
         Ok(self.preparation.into_prefix())
@@ -389,6 +421,11 @@ impl Graph {
         Ok(ProgramAdmission {
             preparation,
             cursor,
+            dependencies: BTreeSet::new(),
+            after_proof: None,
+            after_definition: None,
+            proofs_complete: false,
+            references_complete: false,
         })
     }
 

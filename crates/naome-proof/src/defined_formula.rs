@@ -329,7 +329,12 @@ fn placeholder_node() -> Node {
 #[derive(Clone, Debug)]
 pub struct DefinitionResolution<'a> {
     relation_arity: u32,
-    body: std::borrow::Cow<'a, DefinedFormula>,
+    body: DefinitionBody<'a>,
+}
+#[derive(Clone, Debug)]
+enum DefinitionBody<'a> {
+    Borrowed(&'a DefinedFormula),
+    Shared(std::sync::Arc<DefinedFormula>),
 }
 
 impl<'a> DefinitionResolution<'a> {
@@ -337,7 +342,7 @@ impl<'a> DefinitionResolution<'a> {
     pub const fn new(relation_arity: u32, body: &'a DefinedFormula) -> Self {
         Self {
             relation_arity,
-            body: std::borrow::Cow::Borrowed(body),
+            body: DefinitionBody::Borrowed(body),
         }
     }
 
@@ -348,14 +353,21 @@ impl<'a> DefinitionResolution<'a> {
 
     /// Returns the body substituted during expansion.
     pub fn body(&self) -> &DefinedFormula {
-        &self.body
+        match &self.body {
+            DefinitionBody::Borrowed(body) => body,
+            DefinitionBody::Shared(body) => body,
+        }
     }
 
     /// Owns a bounded expansion read from authenticated cold storage.
     pub fn owned(relation_arity: u32, body: DefinedFormula) -> Self {
+        Self::shared(relation_arity, std::sync::Arc::new(body))
+    }
+    /// Shares an immutable body without cloning its formula tree.
+    pub fn shared(relation_arity: u32, body: std::sync::Arc<DefinedFormula>) -> Self {
         Self {
             relation_arity,
-            body: std::borrow::Cow::Owned(body),
+            body: DefinitionBody::Shared(body),
         }
     }
 }
@@ -760,6 +772,45 @@ fn decode_variable(
         }),
         tag => Err(DefinedFormulaCodecError::UnknownVariableTag(tag)),
     }
+}
+
+pub(crate) fn instantiate_prefix(
+    bytes: &[u8],
+    position: &mut usize,
+    binders: u32,
+    arguments: &[u32],
+) -> Result<naome_foundation::graph::Node<()>, DefinitionExpansionError> {
+    use naome_foundation::graph::{Node as Primitive, Variable as PrimitiveVariable};
+    let corrupt = |_| DefinitionExpansionError::Access(DefinitionAccessError::Corrupt);
+    let mut cursor = Cursor {
+        bytes,
+        position: *position,
+    };
+    let tag = cursor.read_u8().map_err(corrupt)?;
+    let mut variable = || match decode_variable(&mut cursor, binders).map_err(corrupt)? {
+        Variable::Bound(index) => Ok(PrimitiveVariable::Bound(u64::from(index))),
+        Variable::Free(formal) => arguments
+            .get(formal.identifier() as usize)
+            .copied()
+            .map(PrimitiveVariable::Free)
+            .ok_or(DefinitionExpansionError::UndeclaredFormalVariable {
+                identifier: formal.identifier(),
+            }),
+    };
+    let node = match tag {
+        EQUAL => Primitive::Equal(variable()?, variable()?),
+        MEMBER => Primitive::Member(variable()?, variable()?),
+        NOT => Primitive::Not(()),
+        IMPLIES => Primitive::Implies((), ()),
+        FOR_ALL => Primitive::ForAll(()),
+        _ => {
+            return Err(DefinitionExpansionError::Access(
+                DefinitionAccessError::Corrupt,
+            ));
+        }
+    };
+    *position = cursor.position;
+    Ok(node)
 }
 
 fn check_depth(depth: u32) -> Result<(), DefinedFormulaCodecError> {

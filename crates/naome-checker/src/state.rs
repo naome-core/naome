@@ -149,6 +149,14 @@ impl ArtifactState {
             .get(&definition_id)
             .map(|definition| definition.certificate.kind())
     }
+    pub(crate) fn definition_certificate(
+        &self,
+        id: DefinitionId,
+    ) -> Option<&DefinitionCertificate> {
+        self.definitions
+            .get(&id)
+            .map(|definition| &definition.certificate)
+    }
 
     /// Registers one checked proof without replacing selected state.
     ///

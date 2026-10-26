@@ -169,6 +169,113 @@ fn work_selection() -> crate::resources::adaptive::Selection {
 }
 
 #[test]
+fn a_certificate_closure_checks_program_helpers_with_one_minimum_cache() {
+    const CASE: &str = "intake::program::tests::composition::a_certificate_closure_checks_program_helpers_with_one_minimum_cache";
+    if isolated(CASE) {
+        return;
+    }
+    use crate::resources::adaptive::{self, Snapshot};
+    fn helper(graph: &mut Graph, name: &str, commands: &[Command]) -> Manifest {
+        let mut work =
+            crate::proof_work::Work::open(&graph.ownership().directory().join(name)).unwrap();
+        work.append_group(commands).unwrap();
+        while work.advance(&budget(), graph.checked_context()).unwrap() {}
+        while !work.prepare_export(&budget()).unwrap() {}
+        let checked = work.into_checked().unwrap();
+        let manifest = checked.proof().unwrap().manifest().clone();
+        publish(graph, &checked);
+        manifest
+    }
+    let mut source = Graph::default();
+    let first = helper(
+        &mut source,
+        "first.sqlite3",
+        &[
+            Command::Reflexivity { variable: 0 },
+            Command::Generalization {
+                premise: 0,
+                variable: 0,
+            },
+            Command::Seal { proof: 1 },
+        ],
+    );
+    let second = helper(
+        &mut source,
+        "second.sqlite3",
+        &[
+            Command::ProofReference {
+                proof_id: *first.proof_id().as_bytes(),
+            },
+            Command::Seal { proof: 0 },
+        ],
+    );
+    let (root, admission) = source
+        .produce(&format!(
+            "goal=all(x,eq(x,x)) proof: p=cite(\"{}\") return p",
+            crate::hex(second.proof_id().as_bytes())
+        ))
+        .unwrap();
+    let mut receiver = Graph::default();
+    let mut selection = work_selection();
+    selection.custom.as_mut().unwrap().cache_bytes = 4096;
+    let snapshot = Snapshot::derive(
+        selection,
+        adaptive::sample(receiver.ownership().directory()).unwrap(),
+        crate::resources::limits().memory_bytes as u64,
+    )
+    .unwrap();
+    assert_eq!(snapshot.budget.cache_bytes, 4096);
+    adaptive::publish(snapshot);
+    let mut closure = crate::intake::closure::Closure::new(admission.id, None);
+    closure.require_root(&receiver).unwrap();
+    let transfer = TransferGrant::new(PeerId::random(), admission.id, None);
+    closure
+        .certificate_payload(admission.id, root, &receiver, &transfer)
+        .unwrap();
+    for _ in 0..1024 {
+        let needed: Vec<_> = closure.needed().collect();
+        for id in needed {
+            let ArtifactTransfer::Program(metadata) = source.transfer(id).unwrap().unwrap() else {
+                panic!("program helper expected")
+            };
+            closure.insert(metadata, &receiver).unwrap();
+        }
+        if let Some((id, start, records)) = closure.request(&receiver).unwrap() {
+            let chunk = source
+                .program_chunk(id, start, records, CHUNK_BYTES)
+                .unwrap()
+                .unwrap();
+            closure.payload(id, chunk, &receiver).unwrap();
+        }
+        closure.advance(&receiver).unwrap();
+        assert_eq!(
+            receiver.accepted_count(),
+            0,
+            "helpers remain private until the complete root commits"
+        );
+        if closure.certificate_ready() {
+            let question = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
+            let batch = closure.prepare_certificates(&receiver, &question).unwrap();
+            assert_eq!(
+                receiver
+                    .commit_batch(
+                        admission.id,
+                        batch,
+                        Instant::now() + std::time::Duration::from_secs(30)
+                    )
+                    .unwrap()
+                    .len(),
+                3
+            );
+            assert_eq!(receiver.content_root(), source.content_root());
+            assert_eq!(adaptive::current().unwrap().budget.cache_bytes, 4096);
+            return;
+        }
+    }
+    panic!("a finite helper closure must progress at the minimum cache budget");
+}
+
+#[test]
 fn startup_replay_refreshes_the_owner_budget_between_program_quanta() {
     const CASE: &str = "intake::program::tests::composition::startup_replay_refreshes_the_owner_budget_between_program_quanta";
     if isolated(CASE) {

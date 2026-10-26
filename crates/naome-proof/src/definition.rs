@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use naome_foundation::{FORMULA_MAX_BYTES, FOUNDATION_ID};
 use sha2::{Digest, Sha256};
@@ -11,6 +12,8 @@ use crate::{DefinedFormula, DefinedFormulaCodecError, DefinitionId};
 const RELATION: u8 = 0x00;
 const FUNCTION: u8 = 0x02;
 const DEFINITION_ID_DOMAIN: &[u8] = b"naome:definition:v1\0";
+mod instantiation;
+pub use instantiation::DefinitionInstantiation;
 
 /// Maximum number of formal graph arguments admitted by one definition.
 pub const DEFINITION_MAX_GRAPH_ARITY: u32 = 256;
@@ -32,11 +35,28 @@ pub enum DefinitionKind {
 /// The body uses canonical formal free variables. Relation arguments are
 /// `0..arity`; function inputs are `0..input_arity` and its output is
 /// variable `input_arity`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 #[must_use]
 pub struct DefinitionCertificate {
     kind: DefinitionKind,
-    body: DefinedFormula,
+    body: Arc<DefinedFormula>,
+    canonical: Arc<[u8]>,
+    id: DefinitionId,
+}
+impl PartialEq for DefinitionCertificate {
+    fn eq(&self, other: &Self) -> bool {
+        self.canonical == other.canonical
+    }
+}
+impl Eq for DefinitionCertificate {}
+impl fmt::Debug for DefinitionCertificate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DefinitionCertificate")
+            .field("kind", &self.kind)
+            .field("body", &self.body)
+            .finish()
+    }
 }
 
 impl DefinitionCertificate {
@@ -45,9 +65,42 @@ impl DefinitionCertificate {
         kind: DefinitionKind,
         body: DefinedFormula,
     ) -> Result<Self, DefinitionCertificateError> {
-        let certificate = Self { kind, body };
-        certificate.validate()?;
-        Ok(certificate)
+        Self::validate_kind(kind)?;
+        let encoded = body
+            .encode_canonical()
+            .map_err(DefinitionCertificateError::Formula)?;
+        Self::validate(kind, &body, encoded.len())?;
+        let mut canonical = Vec::with_capacity(9 + encoded.len());
+        match kind {
+            DefinitionKind::Relation { arity } => {
+                canonical.push(RELATION);
+                canonical.extend_from_slice(&arity.to_be_bytes());
+            }
+            DefinitionKind::Function { input_arity } => {
+                canonical.push(FUNCTION);
+                canonical.extend_from_slice(&input_arity.to_be_bytes());
+            }
+        }
+        canonical.extend_from_slice(
+            &u32::try_from(encoded.len())
+                .expect("bounded definition length fits u32")
+                .to_be_bytes(),
+        );
+        canonical.extend_from_slice(&encoded);
+        Ok(Self::from_parts(kind, body, canonical.into()))
+    }
+
+    fn from_parts(kind: DefinitionKind, body: DefinedFormula, canonical: Arc<[u8]>) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(DEFINITION_ID_DOMAIN);
+        update_framed(&mut hasher, FOUNDATION_ID.as_bytes());
+        update_framed(&mut hasher, &canonical);
+        Self {
+            kind,
+            body: Arc::new(body),
+            canonical,
+            id: DefinitionId::from_bytes(hasher.finalize().into()),
+        }
     }
 
     /// Constructs a relation definition.
@@ -71,8 +124,20 @@ impl DefinitionCertificate {
 
     /// Returns the compact definition body.
     #[must_use]
-    pub const fn body(&self) -> &DefinedFormula {
+    pub fn body(&self) -> &DefinedFormula {
         &self.body
+    }
+
+    /// A shared expansion view of this exact, structurally checked certificate.
+    pub fn resolution(&self) -> crate::DefinitionResolution<'static> {
+        crate::DefinitionResolution::shared(self.relation_arity(), self.body.clone())
+    }
+    /// Streams primitive nodes in prefix order with capture-safe free arguments.
+    pub fn instantiate(
+        &self,
+        arguments: &[u32],
+    ) -> Result<DefinitionInstantiation, crate::DefinitionExpansionError> {
+        DefinitionInstantiation::new(self, arguments)
     }
 
     /// Returns the graph relation arity used by canonical formula applications.
@@ -87,26 +152,12 @@ impl DefinitionCertificate {
     /// Returns the canonical certificate bytes.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
-        let body = self
-            .body
-            .encode_canonical()
-            .expect("DefinitionCertificate validates its body encoding");
-        let mut output = Vec::with_capacity(1 + 8 + body.len());
-        match self.kind {
-            DefinitionKind::Relation { arity } => {
-                output.push(RELATION);
-                output.extend_from_slice(&arity.to_be_bytes());
-            }
-            DefinitionKind::Function { input_arity } => {
-                output.push(FUNCTION);
-                output.extend_from_slice(&input_arity.to_be_bytes());
-            }
-        }
-        let body_length =
-            u32::try_from(body.len()).expect("the formula byte limit is smaller than u32::MAX");
-        output.extend_from_slice(&body_length.to_be_bytes());
-        output.extend_from_slice(&body);
-        output
+        self.canonical.to_vec()
+    }
+
+    /// Borrows the single canonical encoding retained by this certificate.
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical
     }
 
     /// Decodes one complete canonical definition certificate.
@@ -138,21 +189,17 @@ impl DefinitionCertificate {
         }
         let body = DefinedFormula::decode_canonical(body_bytes)
             .map_err(DefinitionCertificateError::Formula)?;
-        Self::new(kind, body)
+        Self::validate(kind, &body, body_bytes.len())?;
+        Ok(Self::from_parts(kind, body, bytes.into()))
     }
 
     /// Returns the Foundation-scoped identity of this complete certificate.
-    pub fn definition_id(&self) -> DefinitionId {
-        let bytes = self.to_canonical_bytes();
-        let mut hasher = Sha256::new();
-        hasher.update(DEFINITION_ID_DOMAIN);
-        update_framed(&mut hasher, FOUNDATION_ID.as_bytes());
-        update_framed(&mut hasher, &bytes);
-        DefinitionId::from_bytes(hasher.finalize().into())
+    pub const fn definition_id(&self) -> DefinitionId {
+        self.id
     }
 
-    fn validate(&self) -> Result<(), DefinitionCertificateError> {
-        let graph_arity = match self.kind {
+    fn validate_kind(kind: DefinitionKind) -> Result<u32, DefinitionCertificateError> {
+        let graph_arity = match kind {
             DefinitionKind::Relation { arity: 0 } => {
                 return Err(DefinitionCertificateError::ZeroRelationArity);
             }
@@ -168,16 +215,18 @@ impl DefinitionCertificate {
                 maximum: DEFINITION_MAX_GRAPH_ARITY,
             });
         }
-        let arity =
-            u32::try_from(graph_arity).expect("the checked definition graph-arity limit fits u32");
-        let body = self
-            .body
-            .encode_canonical()
-            .map_err(DefinitionCertificateError::Formula)?;
-        if let Some(definition_id) = self.body.first_definition_reference() {
+        Ok(u32::try_from(graph_arity).expect("the checked definition graph-arity limit fits u32"))
+    }
+    fn validate(
+        kind: DefinitionKind,
+        formula: &DefinedFormula,
+        body_length: usize,
+    ) -> Result<(), DefinitionCertificateError> {
+        let arity = Self::validate_kind(kind)?;
+        if let Some(definition_id) = formula.first_definition_reference() {
             return Err(DefinitionCertificateError::DefinitionReference { definition_id });
         }
-        let free_variables = self.body.free_variables();
+        let free_variables = formula.free_variables();
         if let Some(variable) = free_variables
             .iter()
             .find(|variable| variable.identifier() >= arity)
@@ -198,7 +247,7 @@ impl DefinitionCertificate {
                 });
             }
         }
-        let actual = 1 + 4 + 4 + body.len();
+        let actual = 1 + 4 + 4 + body_length;
         if actual > DEFINITION_MAX_BYTES {
             return Err(DefinitionCertificateError::InputTooLong {
                 actual,
