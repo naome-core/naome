@@ -677,8 +677,9 @@ class Driver:
             assert right["artifact_id"] not in self.nodes[0].ids()
             assert left["artifact_id"] not in self.nodes[2].ids()
 
-            # Each malformed payload uses a distinct unresolved question and
-            # real metadata approval/Get, never a full-payload Offer.
+            # Payload controls use distinct unresolved questions and real
+            # metadata approval/Get. A forged typed address is rejected earlier,
+            # before it can authorize any payload request.
             baseline = self.nodes[1].status_snapshot()
             controls = []
             for index, label in enumerate(["malformed", "claimed_id", "compatibility", "mathematical", "statement"]):
@@ -690,7 +691,7 @@ class Driver:
                     expected_error = "malformed certificate"
                 elif label == "claimed_id":
                     object["artifact_id"] = "00" * 32
-                    expected_error = "claimed artifact ID mismatch"
+                    expected_error = "description proof address differs"
                 elif label == "compatibility":
                     object["compatibility"] = "00" * 32
                     expected_error = "compatibility mismatch"
@@ -707,10 +708,16 @@ class Driver:
                     object["artifact_id"] = artifact_id(object["statement_id"], object["payload"])
                 metadata = proof_metadata(object, q)
                 offset = len(self.nodes[1].events)
+                sender_offset = len(self.nodes[0].events)
                 self.nodes[0].command("test_offer", peer=self.nodes[1].identity, metadata=metadata, object=object)
-                event = self.nodes[1].wait_event(lambda event: event.get("event") == "proof_skipped" and (
+                expected_event = "rejected" if label == "claimed_id" else "proof_skipped"
+                event = self.nodes[1].wait_event(lambda event: event.get("event") == expected_event and (
                     (event.get("error", {}).get("diagnostic") or {}).get("failure", {}).get("code") == expected_error
                     if label == "mathematical" else expected_error in event.get("error", {}).get("message", "")), since=offset)
+                if label == "claimed_id":
+                    assert not any(event.get("event") == "exchange_request" and event.get("kind") == "get"
+                                   and event.get("object_id") == object["artifact_id"]
+                                   for event in self.nodes[0].events[sender_offset:]), "invalid metadata must not authorize payload retrieval"
                 status = self.nodes[1].status_snapshot()
                 assert status["ids"] == baseline["ids"] and status["root"] == baseline["root"] and not status["pending"]
                 assert len(stored_objects(self.nodes[1])) == len(baseline["ids"])
