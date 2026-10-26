@@ -382,8 +382,9 @@ mod tests {
     }
     fn malformed_model_row(chunk: bool) {
         let path = std::env::temp_dir().join(format!(
-            "naome-native-index-{}-{}",
+            "naome-native-index-{}-{}-{}",
             std::process::id(),
+            u8::from(chunk),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

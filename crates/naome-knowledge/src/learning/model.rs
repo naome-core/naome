@@ -7,11 +7,11 @@ use super::{
     graph::{Batch, Graph},
 };
 use burn::{
-    module::Module,
+    module::{Module, ModuleMapper, Param},
     nn::loss::CrossEntropyLossConfig,
     optim::{AdamConfig, GradientsParams, ModuleOptimizer},
     store::ModuleRecord,
-    tensor::{Bytes, Device},
+    tensor::{Bytes, Device, Tensor},
 };
 use naome_foundation::Formula;
 pub use policy::Policy;
@@ -39,10 +39,29 @@ pub const UPDATES_PER_UNIT: u64 = 10;
 pub struct Binding {
     pub formula: Formula,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rule {
+    DoubleNegation,
+    NegatedImplication,
+    ModusPonens,
+    ImplicationBranch,
+    UniversalInstance,
+    EqualitySubstitution,
+}
+impl Rule {
+    pub fn kind(self) -> i32 {
+        8 + self as i32
+    }
+}
+pub struct Candidate {
+    pub rule: Rule,
+    pub premises: Vec<usize>,
+    pub consequences: Vec<Formula>,
+}
 pub struct Decision {
     pub context: Vec<Binding>,
     pub goal: Formula,
-    pub candidates: Vec<usize>,
+    pub candidates: Vec<Candidate>,
     pub expert: usize,
 }
 pub trait Ranker {
@@ -62,6 +81,8 @@ fn specification() -> String {
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
     hash.update(include_str!("graph.rs"));
+    hash.update(include_str!("model.rs"));
+    hash.update(include_str!("search.rs"));
     hash.update(b"Adam;cross-entropy;batch=16;lr=0.001;float32");
     crate::hex(&hash.finalize())
 }
@@ -120,11 +141,43 @@ fn canonical_checkpoint(bytes: Bytes) -> Result<Bytes, String> {
     writer.into_bytes().map_err(|e| e.to_string())
 }
 impl Runtime {
+    #[cfg(test)]
+    pub(super) fn scores_graph(&self, graph: &Graph) -> Result<Vec<f32>, String> {
+        let batch = Batch::from_graphs(std::slice::from_ref(graph), &self.device)?;
+        self.policy
+            .valid()
+            .forward(&batch)
+            .into_data()
+            .try_to_vec::<f32>()
+            .map_err(|e| e.to_string())
+    }
     fn load<I: ArtifactIo + ?Sized>(checkpoint: &Checkpoint, io: &mut I) -> Result<Self, String> {
         checkpoint.validate()?;
         let device = Device::flex().autodiff();
-        device.seed(checkpoint.seed);
-        let mut policy = Policy::new(&device).train();
+        let mut policy = {
+            // Flex has one process-wide RNG, and parameters initialize lazily.
+            // Materialize every parameter under the same seed guard before any
+            // inference, serialization or other model can advance that RNG.
+            static INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _guard = INITIALIZATION
+                .lock()
+                .map_err(|_| "native model initialization poisoned")?;
+            device.seed(checkpoint.seed);
+            struct StableParameters(u64);
+            impl ModuleMapper for StableParameters {
+                fn map_float<const D: usize>(
+                    &mut self,
+                    mut param: Param<Tensor<D>>,
+                ) -> Param<Tensor<D>> {
+                    self.0 += 1;
+                    param.id = self.0.into();
+                    param
+                }
+            }
+            let policy = Policy::new(&device).train().map(&mut StableParameters(0));
+            drop(policy.clone().into_record());
+            policy
+        };
         if policy.num_params() != PARAMETERS {
             return Err("native graph policy parameter count differs".into());
         }
@@ -247,6 +300,17 @@ pub(crate) struct Engine {
     cache: Vec<(Checkpoint, Runtime)>,
 }
 impl Engine {
+    #[cfg(test)]
+    pub(super) fn snapshot<I: ArtifactIo + ?Sized>(
+        &mut self,
+        c: &Checkpoint,
+        io: &mut I,
+    ) -> Result<Checkpoint, String> {
+        let runtime = self.take(c, io)?;
+        let saved = runtime.checkpoint(c, 0, io)?;
+        self.retain(saved.clone(), runtime);
+        Ok(saved)
+    }
     fn take<I: ArtifactIo + ?Sized>(
         &mut self,
         c: &Checkpoint,
@@ -328,6 +392,36 @@ mod tests {
         eprintln!(
             "native_maximum_shape batch=16 nodes=256 candidates=16 parameters={} sample={:?}",
             PARAMETERS, sample
+        );
+    }
+    #[test]
+    fn zero_update_snapshot_preserves_fresh_predictions_and_optimizer_continuation() {
+        let solution = super::super::tests::own_solution();
+        let q = naome_authoring::CompiledQuestion::compile(&super::super::tests::own_question())
+            .unwrap();
+        let graph = super::super::search::compile(q.proved_target(), &solution.tree)
+            .unwrap()
+            .1
+            .remove(0);
+        let mut io = MemoryStore::default();
+        let fresh = Checkpoint::fresh();
+        let runtime = Runtime::load(&fresh, &mut io).unwrap();
+        let expected = runtime.scores_graph(&graph).unwrap();
+        let saved = Engine::default().snapshot(&fresh, &mut io).unwrap();
+        assert_eq!(saved.updates, 0);
+        assert_eq!(
+            Runtime::load(&saved, &mut io)
+                .unwrap()
+                .scores_graph(&graph)
+                .unwrap(),
+            expected
+        );
+        let from_seed =
+            test_update(&fresh, std::slice::from_ref(&graph), &mut 91, &mut io).unwrap();
+        let from_saved = test_update(&saved, &[graph], &mut 91, &mut io).unwrap();
+        assert_eq!(
+            from_seed, from_saved,
+            "initial binary model and optimizer must reproduce the same first real update"
         );
     }
     #[test]

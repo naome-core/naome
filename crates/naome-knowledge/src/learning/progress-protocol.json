@@ -1,0 +1,63 @@
+{
+  "decision": "Does native self-search learning improve certified success at a matched search budget after a repaired action representation and broader selection?",
+  "hypotheses": [
+    "Explicit rule, actual premises and actual consequences resolve action aliasing.",
+    "A minimum of eight admitted proofs across at least three dependency groups supplies a meaningful replay batch.",
+    "The original eight ID-selected sentinels miss progress that a fixed 32-case all-group selection can detect.",
+    "Guarded eager initialization and stable local parameter identities make a seeded fresh model and zero-update binary snapshot produce the exact same first update."
+  ],
+  "seeds": [
+    809,
+    907,
+    1009
+  ],
+  "rounds": 2,
+  "acquisitions_per_round": 128,
+  "acquisition_search_expansions": 128,
+  "acquisition_exploration": 0.2,
+  "training": "Only this seed own native-search solutions after unchanged native checker and Graph admission; no imported proofs, external weights or teacher corpus.",
+  "model": {
+    "parameters": 1003361,
+    "backend": "Burn CPU Flex float32",
+    "updates_per_candidate": 250,
+    "batch": 16,
+    "learning_rate": 0.001,
+    "maximum_replay_proofs": 32
+  },
+  "selection": {
+    "cases": 32,
+    "dependency_groups": 11,
+    "method": "Original eight sentinels plus sealed-ID round-robin over every development dependency; no solver outcome filtering.",
+    "search_expansions": 32,
+    "promotion": "Strictly greater certified development successes; no earlier-anchor regression; reject restores both incumbent weights and Adam."
+  },
+  "confirmation": {
+    "cases": 200,
+    "method": "All remaining original-TRAIN development cases, disjoint from current-run training and selection. All three seeds finish learning before any confirmation search.",
+    "primary_expansions": 32,
+    "secondary_expansions": 128,
+    "secondary_exploration": 0.2,
+    "comparator": "Exact same fresh initialization and zero-update optimizer as this seed initial acquisition model.",
+    "success": "Mean certified gain >=5 percentage points, no negative seed and at least two strictly positive seeds supports a replicated finite-corpus gain.",
+    "uncertainty": "Report paired dependency-group bootstrap 95% interval across the 11 fixed groups. Broader-group generalization requires its lower bound above zero; otherwise remains inconclusive."
+  },
+  "limits": {
+    "depth": 32,
+    "facts": 32,
+    "actions": 16,
+    "graph_nodes": 256,
+    "context": 48,
+    "orientation_deadline_ms": 2500,
+    "native_kernel_and_certificate_caps": "unchanged",
+    "state_serialized_bytes": 32768,
+    "model_work_reservation_bytes": 805306368
+  },
+  "exclusions": "Original internal 241 reserved questions and original external validation/calibration/test never searched, trained or selected. Interest labels are never truth labels.",
+  "limitations": [
+    "Development corpus has historical engineering reuse; confirmation is prospective for this run, not a new independent external test.",
+    "Pilot seed 653 and all of its weights/proofs are excluded from the main run. Expanded selection pilot observed 4/32 -> 6/32; it is selection evidence only.",
+    "Actual total training compute is additional to initialization and inference; paired inference budgets match.",
+    "No physical multi-host, production, hosted-CI or full Cargo matrix qualification."
+  ],
+  "stopping": "Exactly three fresh seeds, two acquisition/training rounds each, one frozen confirmation. Preserve negative results; do not tune on confirmation."
+}

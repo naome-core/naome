@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub(crate) const PROVIDER: &str = "naome-native-proof-learning";
-const REPLAY: usize = 8;
-const EVALUATIONS: u32 = 12;
+const REPLAY: usize = 32;
+const EVALUATIONS: u32 = curriculum::DEVELOPMENT as u32 + 4;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Statistics {
@@ -62,7 +62,10 @@ pub(crate) struct State {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Progress {
     pub unit: u32,
-    pub state: State,
+    model: Checkpoint,
+    trained: u64,
+    promotions: u64,
+    rejections: u64,
     candidate: Option<Checkpoint>,
     rng: u64,
     first_loss: Option<f32>,
@@ -102,7 +105,7 @@ impl Job {
     pub fn blobs(&self) -> Vec<&Blob> {
         let mut blobs: Vec<_> = self.base.model.blobs().collect();
         if let Some(p) = &self.progress {
-            blobs.extend(p.state.model.blobs());
+            blobs.extend(p.model.blobs());
             if let Some(candidate) = &p.candidate {
                 blobs.extend(candidate.blobs());
             }
@@ -140,12 +143,6 @@ impl Job {
             blob.validate()?;
         }
         if let Some(p) = &self.progress {
-            if digest(&p.state.anchors) != digest(&self.base.anchors)
-                || digest(&p.state.replay) != digest(&self.base.replay)
-                || p.state.accepted != self.base.accepted
-            {
-                return Err("worker changed admitted replay provenance".into());
-            }
             if serde_json::to_vec(p)
                 .map_err(|e| e.to_string())?
                 .len()
@@ -155,13 +152,23 @@ impl Job {
                 return Err("local checkpoints exceed original provider stream capacity".into());
             }
 
-            p.state.validate()?;
-            if p.state.promotions < self.base.promotions
-                || p.state.promotions > self.base.promotions.saturating_add(1)
-                || p.state.rejections < self.base.rejections
-                || p.state.rejections > self.base.rejections.saturating_add(1)
-                || p.state.trained < self.base.trained
-                || p.state.trained > self.base.accepted
+            p.model.validate()?;
+            if p.unit < self.units()
+                && (p.model != self.base.model
+                    || p.promotions != self.base.promotions
+                    || p.rejections != self.base.rejections)
+                || p.unit == self.units()
+                    && p.promotions == self.base.promotions
+                    && p.model != self.base.model
+            {
+                return Err("native model changed before successful qualification".into());
+            }
+            if p.promotions < self.base.promotions
+                || p.promotions > self.base.promotions.saturating_add(1)
+                || p.rejections < self.base.rejections
+                || p.rejections > self.base.rejections.saturating_add(1)
+                || p.trained < self.base.trained
+                || p.trained > self.base.accepted
             {
                 return Err("native qualification sequence differs".into());
             }
@@ -190,7 +197,10 @@ impl Job {
         }
         let mut p = self.progress.clone().unwrap_or(Progress {
             unit: 0,
-            state: self.base.clone(),
+            model: self.base.model.clone(),
+            trained: self.base.trained,
+            promotions: self.base.promotions,
+            rejections: self.base.rejections,
             candidate: None,
             rng: self.base.model.seed ^ job ^ self.base.accepted,
             first_loss: None,
@@ -219,17 +229,20 @@ impl Job {
                 p.diagnostic = "no_ambiguous_training_decisions".into();
             }
             if unit == model::TRAINING_UNITS {
-                p.state.trained = self.base.accepted;
+                p.trained = self.base.accepted;
             }
         } else if self.units() > 1 && unit <= model::TRAINING_UNITS + EVALUATIONS {
             if let Some(candidate) = &p.candidate {
                 let index = (unit - model::TRAINING_UNITS - 1) as usize;
-                let source = if index < 8 {
+                let source = if index < curriculum::DEVELOPMENT {
                     curriculum::development()
                         .get(index)
                         .map(|q| q.source.clone())
                 } else {
-                    self.base.anchors.get(index - 8).map(|e| e.question.clone())
+                    self.base
+                        .anchors
+                        .get(index - curriculum::DEVELOPMENT)
+                        .map(|e| e.question.clone())
                 };
                 if let Some(source) = source {
                     let before = engine
@@ -242,7 +255,7 @@ impl Job {
                         .with(candidate, io, |runtime| solve(&source, runtime, 32, job))?
                         .0
                         .is_some();
-                    if index < 8 {
+                    if index < curriculum::DEVELOPMENT {
                         p.incumbent_score += u32::from(before);
                         p.candidate_score += u32::from(after);
                     } else if before && !after {
@@ -253,11 +266,11 @@ impl Job {
         } else {
             if let Some(candidate) = p.candidate.take() {
                 if p.candidate_score > p.incumbent_score && !p.anchor_regression {
-                    p.state.model = candidate;
-                    p.state.promotions += 1;
+                    p.model = candidate;
+                    p.promotions += 1;
                     p.diagnostic = "candidate_promoted".into();
                 } else {
-                    p.state.rejections += 1;
+                    p.rejections += 1;
                     p.diagnostic = if p.anchor_regression {
                         "forgetting_rejected"
                     } else {
@@ -271,12 +284,8 @@ impl Job {
                 if curriculum::reserved(&crate::hex(q.resolution_id())) {
                     p.diagnostic = "reserved_question_excluded".into();
                 } else {
-                    let budget = if p.state.rejections % 3 == 2 {
-                        256
-                    } else {
-                        128
-                    };
-                    let (solution, failure) = engine.with(&p.state.model, io, |runtime| {
+                    let budget = if p.rejections % 3 == 2 { 256 } else { 128 };
+                    let (solution, failure) = engine.with(&p.model, io, |runtime| {
                         solve(question, runtime, budget, job)
                     })?;
                     if solution.is_none() {
@@ -376,5 +385,7 @@ fn search_question(
     Ok((None, failure))
 }
 
+#[cfg(test)]
+mod experiment;
 #[cfg(test)]
 pub(crate) mod tests;

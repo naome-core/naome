@@ -135,7 +135,18 @@ impl State {
             .is_some_and(|q| curriculum::learning(&crate::hex(q.resolution_id())).is_some())
     }
     pub fn needs_training(&self) -> bool {
-        self.accepted > self.attempted
+        if self.replay.len() < 8 || self.accepted.saturating_sub(self.attempted) < 4 {
+            return false;
+        }
+        let groups = self
+            .replay
+            .iter()
+            .filter_map(|e| CompiledQuestion::compile(&e.question).ok())
+            .filter_map(|q| {
+                curriculum::learning(&crate::hex(q.resolution_id())).map(|c| c.dependency.as_str())
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        groups.len() >= 3
     }
     pub fn learning_epoch(&self) -> u64 {
         self.accepted
@@ -170,14 +181,14 @@ impl State {
         {
             return false;
         }
-        self.model = p.state.model.clone();
-        self.trained = p.state.trained;
+        self.model = p.model.clone();
+        self.trained = p.trained;
         self.promotions = self
             .promotions
-            .saturating_add(p.state.promotions - native.base.promotions);
+            .saturating_add(p.promotions - native.base.promotions);
         self.rejections = self
             .rejections
-            .saturating_add(p.state.rejections - native.base.rejections);
+            .saturating_add(p.rejections - native.base.rejections);
         true
     }
     fn remove_replay(&mut self) {

@@ -2,7 +2,7 @@
 use super::calculus::{self as c, Names};
 use super::{
     graph::Graph,
-    model::{Binding, Decision, Ranker},
+    model::{Binding, Candidate, Decision, Ranker, Rule},
     proof::Term,
 };
 use naome_foundation::{Formula, FreeVariable};
@@ -163,37 +163,13 @@ fn actions(state: &State) -> Vec<Action> {
     result
 }
 
-fn display(action: &Action, state: &State) -> Result<Formula, String> {
-    Ok(match *action {
-        Action::Instantiate(i, v) => {
-            let f = &state.facts[i];
-            let x = fresh(std::iter::once(f.clone()))?;
-            let body = f.open_outer_universal(x).ok_or("universal action")?;
-            Formula::implies(f.clone(), body.substitute_free(x, FreeVariable::new(v)))
-        }
-        Action::Substitute(i, j) => {
-            let (a, b) = state.facts[i]
-                .view()
-                .equality_variables()
-                .ok_or("equality action")?;
-            Formula::implies(
-                state.facts[j].clone(),
-                state.facts[j].clone().substitute_free(a, b),
-            )
-        }
-        Action::Double(i) | Action::NotImp(i) | Action::Beta(i) | Action::Mp(i, _) => {
-            state.facts[i].clone()
-        }
-    })
-}
-
 fn decision(
     goal: &Formula,
     state: &State,
     actions: &[Action],
     expert: usize,
 ) -> Result<Decision, String> {
-    let mut context: Vec<_> = state
+    let context: Vec<_> = state
         .facts
         .iter()
         .map(|formula| Binding {
@@ -202,9 +178,28 @@ fn decision(
         .collect();
     let mut candidates = Vec::new();
     for a in actions {
-        candidates.push(context.len());
-        context.push(Binding {
-            formula: display(a, state)?,
+        let (rule, premises) = match *a {
+            Action::Double(i) => (Rule::DoubleNegation, vec![i]),
+            Action::NotImp(i) => (Rule::NegatedImplication, vec![i]),
+            Action::Mp(i, j) => (Rule::ModusPonens, vec![i, j]),
+            Action::Beta(i) => (Rule::ImplicationBranch, vec![i]),
+            Action::Instantiate(i, _) => (Rule::UniversalInstance, vec![i]),
+            Action::Substitute(i, j) => (Rule::EqualitySubstitution, vec![i, j]),
+        };
+        let mut consequences = Vec::new();
+        // Features are derived from the same bounded transition used by live
+        // search and proof replay. They contain no future proof or label.
+        for child in next(state, a)? {
+            for formula in child.facts.into_iter().skip(state.facts.len()) {
+                if !consequences.contains(&formula) {
+                    consequences.push(formula);
+                }
+            }
+        }
+        candidates.push(Candidate {
+            rule,
+            premises,
+            consequences,
         });
     }
     Ok(Decision {

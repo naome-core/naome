@@ -20,6 +20,7 @@ rust_library(
         [
             "src/**/*.hex",
             "src/learning/curriculum.json",
+            "src/learning/progress-protocol.json",
             "tests/fixtures/**",
         ],
         allow_empty = True,

@@ -46,7 +46,15 @@ fn question_seed_preserves_dependency_partitions_and_native_identities() {
             assert_eq!(old, q.development);
         }
     }
-    assert_eq!(curriculum::development().len(), 8);
+    assert_eq!(curriculum::development().len(), curriculum::DEVELOPMENT);
+    assert_eq!(
+        curriculum::development()
+            .iter()
+            .map(|q| q.dependency.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        11
+    );
     assert!(c.reserved_ids.windows(2).all(|w| w[0] < w[1]));
 }
 #[test]
@@ -61,6 +69,70 @@ fn progress_statistics_remain_canonical_through_repeated_observation_and_reload(
         state = restored;
     }
     state.validate().unwrap();
+}
+#[test]
+fn action_graph_preserves_transition_information_and_keeps_labels_out_of_features() {
+    use model::{Binding, Candidate, Decision, Rule};
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    let p = Formula::member(x, x);
+    let q = Formula::member(y, y);
+    let mut decision = Decision {
+        context: vec![
+            Binding {
+                formula: Formula::implies(p.clone(), q.clone()),
+            },
+            Binding { formula: p.clone() },
+        ],
+        goal: q.clone(),
+        candidates: vec![
+            Candidate {
+                rule: Rule::ModusPonens,
+                premises: vec![0, 1],
+                consequences: vec![q.clone()],
+            },
+            Candidate {
+                rule: Rule::ImplicationBranch,
+                premises: vec![0],
+                consequences: vec![Formula::negate(p), q],
+            },
+        ],
+        expert: 0,
+    };
+    let encoded = graph::Graph::encode(&decision).unwrap();
+    assert_eq!(
+        encoded.context.len(),
+        2,
+        "only actual facts enter context pooling"
+    );
+    let action = &encoded.nodes[encoded.candidates[0]];
+    assert_eq!(action.kind, Rule::ModusPonens.kind());
+    assert_eq!(
+        encoded.nodes[action.left].kind, 14,
+        "both MP premises are linked"
+    );
+    assert_eq!(
+        action.right, encoded.goal,
+        "the actual consequence is linked to the goal"
+    );
+    assert_ne!(
+        encoded.candidates[0], encoded.context[0],
+        "an action must not alias its source formula"
+    );
+    assert_ne!(encoded.nodes[encoded.candidates[1]].kind, action.kind);
+    decision.expert = 1;
+    let relabeled = graph::Graph::encode(&decision).unwrap();
+    assert_eq!(encoded.nodes, relabeled.nodes);
+    assert_eq!(encoded.candidates, relabeled.candidates);
+    assert_eq!(encoded.context, relabeled.context);
+}
+#[test]
+fn a_single_new_proof_does_not_trigger_repeated_full_training() {
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    assert!(!state.needs_training());
+    state.attempted(state.accepted);
+    assert!(!state.needs_training());
 }
 #[test]
 fn native_search_reconstructs_classical_quantifier_equality_and_zfc_proofs() {
@@ -157,7 +229,10 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     finished.trained = finished.accepted;
     job.progress = Some(Progress {
         unit: job.units() - 1,
-        state: finished,
+        model: finished.model,
+        trained: finished.trained,
+        promotions: finished.promotions,
+        rejections: finished.rejections,
         candidate: Some(candidate),
         rng: 9,
         first_loss: Some(1.),
@@ -213,7 +288,10 @@ pub(crate) fn own_solution() -> Solution {
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
         unit: 1,
-        state: job.base.clone(),
+        model: job.base.model.clone(),
+        trained: job.base.trained,
+        promotions: job.base.promotions,
+        rejections: job.base.rejections,
         candidate: None,
         rng: 1,
         first_loss: None,
@@ -234,7 +312,10 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
     candidate.updates += model::UPDATES_PER_UNIT;
     job.progress = Some(Progress {
         unit: 1,
-        state,
+        model: state.model,
+        trained: state.trained,
+        promotions: state.promotions,
+        rejections: state.rejections,
         candidate: Some(candidate),
         rng: 1,
         first_loss: Some(1.),
@@ -245,4 +326,27 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
     });
+}
+
+#[test]
+fn compact_worker_progress_cannot_replace_parent_replay_or_select_an_unqualified_model() {
+    let mut state = State::fresh();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    completed(&mut job, own_solution());
+    job.progress.as_mut().unwrap().result = None;
+    job.validate().unwrap();
+    let progress = serde_json::to_value(job.progress.as_ref().unwrap()).unwrap();
+    assert!(progress.get("state").is_none() && progress.get("replay").is_none());
+    assert!(
+        serde_json::to_vec(&progress).unwrap().len() * (job.units() as usize)
+            < crate::resources::limits().provider_stream_bytes / 2
+    );
+    job.progress.as_mut().unwrap().model.seed += 1;
+    assert!(
+        job.validate()
+            .unwrap_err()
+            .contains("before successful qualification")
+    );
 }

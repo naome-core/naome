@@ -40,12 +40,34 @@ pub fn reserved(id: &str) -> bool {
         .is_ok()
         || CORPUS.cases.iter().any(|q| q.id == id && q.development)
 }
+/// Extend the original eight sentinels across every development dependency.
+/// Selection uses only sealed identities, never solver outcomes or labels.
+pub const DEVELOPMENT: usize = 32;
 pub fn development() -> Vec<&'static Case> {
-    let mut families = std::collections::BTreeSet::new();
-    CORPUS
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut families = BTreeSet::new();
+    let mut selected: Vec<_> = CORPUS
         .cases
         .iter()
         .filter(|q| q.development && families.insert(q.dependency.clone()))
         .take(8)
-        .collect()
+        .collect();
+    let mut groups: BTreeMap<&str, Vec<_>> = BTreeMap::new();
+    for q in CORPUS.cases.iter().filter(|q| q.development) {
+        groups.entry(&q.dependency).or_default().push(q);
+    }
+    for cases in groups.values_mut() {
+        cases.sort_by_key(|q| &q.id);
+    }
+    for index in 0..groups.values().map(Vec::len).max().unwrap_or(0) {
+        for cases in groups.values() {
+            if let Some(q) = cases.get(index)
+                && selected.len() < DEVELOPMENT
+                && !selected.iter().any(|s| s.id == q.id)
+            {
+                selected.push(*q);
+            }
+        }
+    }
+    selected
 }

@@ -44,6 +44,19 @@ impl Builder {
         self.nodes.push(node);
         Ok(index)
     }
+    fn pair(&mut self, roots: &[usize]) -> Result<usize, String> {
+        match roots {
+            [] => Ok(0),
+            [root] => Ok(*root),
+            [left, right] => self.push(Node {
+                kind: 14,
+                left: *left,
+                right: *right,
+                role: 0,
+            }),
+            _ => Err("action arity capacity".into()),
+        }
+    }
 
     fn variable(&mut self, variable: Variable, binders: &[usize]) -> Result<usize, String> {
         let (key, kind, binder) = match variable {
@@ -141,11 +154,35 @@ impl Graph {
             context.push(root);
         }
         builder.nodes[goal].role |= 1;
-        let candidates = decision
-            .candidates
-            .iter()
-            .map(|index| context[*index])
-            .collect();
+        let mut candidates = Vec::new();
+        for candidate in &decision.candidates {
+            let premises = candidate
+                .premises
+                .iter()
+                .map(|i| {
+                    context
+                        .get(*i)
+                        .copied()
+                        .ok_or("action premise missing".into())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            if premises.is_empty() {
+                return Err("action premise missing".into());
+            }
+            let conclusions = candidate
+                .consequences
+                .iter()
+                .map(|formula| builder.formula(formula.view(), &[]))
+                .collect::<Result<Vec<_>, _>>()?;
+            let left = builder.pair(&premises)?;
+            let right = builder.pair(&conclusions)?;
+            candidates.push(builder.push(Node {
+                kind: candidate.rule.kind(),
+                left,
+                right,
+                role: 0,
+            })?);
+        }
         Ok(Self {
             nodes: builder.nodes,
             goal,
