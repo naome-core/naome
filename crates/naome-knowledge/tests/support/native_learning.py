@@ -102,8 +102,12 @@ def run(trial):
 
     trial.summary["own_and_peer"] = trial.wait(own_and_peer, maximum=120)
     retained = {}
-    for node in trial.nodes:
-        record = trial.wait(lambda: next((r for r in training(node) if r["state"] == "running" and 0 < r["checkpoint"] < 25), None), maximum=60)
+    # The receiver needs a diverse batch of checked reconstructions. Keep the
+    # sender producing until that batch is ready, then pause the receiver first.
+    # Pausing the sender at its first batch would starve the receiver below its
+    # unchanged readiness threshold. Both waits retain the original trial end.
+    for node in (b, a):
+        record = trial.wait(lambda: next((r for r in training(node) if r["state"] == "running" and 0 < r["checkpoint"] < 25), None), maximum=180)
         pressure(node, True)
         trial.wait(lambda: state(trial, node, "paused"), maximum=8)
         # The current reserved quantum may finish before the next permit. Once
