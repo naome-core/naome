@@ -267,6 +267,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
     previous.unit = job.units() - 1;
     previous.plan = Some(selection.clone());
     previous.candidate = Some(candidate.clone());
+    previous.transfer.observed = transfer::Summary::prefix(transfer::CASES);
     previous.cpu_micros = 10;
     previous.wall_micros = 20;
     previous.meta_cpu_micros = 1;
@@ -287,6 +288,7 @@ fn meta_outcome_is_bound_to_its_retained_candidate_and_commits_only_once() {
                 after: 0,
                 protected_loss: false,
                 anchor_loss: false,
+                transfer: previous.transfer,
                 lower_cpu_micros: 9,
                 lower_wall_micros: 19,
             },
@@ -456,6 +458,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
         anchor_regression: true,
         development_regression: false,
         original_score: [0, 0],
+        transfer: transfer::Summary::default(),
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
         ..finished_progress(&job.base)
@@ -518,6 +521,7 @@ fn finished_progress(state: &State) -> Progress {
         anchor_regression: false,
         development_regression: false,
         original_score: [0, 0],
+        transfer: transfer::Summary::default(),
         development_before: crate::training::ability::Profile::new(digest(&state.model)),
         development_after: crate::training::ability::Profile::new(digest(&state.model)),
         regressions: [0; crate::training::ability::SKILLS],
@@ -692,6 +696,7 @@ pub(crate) fn completed(job: &mut Job, solution: Solution) {
         anchor_regression: false,
         development_regression: false,
         original_score: [0, 0],
+        transfer: transfer::Summary::default(),
         result: Some(solution),
         diagnostic: "certified_candidate".into(),
         ..finished_progress(&job.base)
@@ -724,6 +729,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         anchor_regression: false,
         development_regression: false,
         original_score: [0, 0],
+        transfer: transfer::Summary::default(),
         result: None,
         diagnostic: "candidate_requires_qualification".into(),
         plan: Some(plan),
@@ -981,4 +987,48 @@ fn selecting_a_checkpoint_compacts_replay_without_losing_anchors_or_the_model_pa
     assert_eq!(digest(&state.anchors), anchors);
     assert_eq!(state.accepted, accepted);
     assert!(state.replay.len() < job.base.replay.len());
+}
+
+#[test]
+fn retained_promotion_cannot_trade_a_transfer_family_loss_for_aggregate_gain() {
+    let mut state = fixed_state();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    let mut p = finished_progress(&state);
+    p.unit = job.units();
+    p.promotions = state.promotions + 1;
+    p.incumbent_score = 45;
+    p.candidate_score = 49;
+    p.transfer = transfer::Summary {
+        before: 1,
+        after: 12,
+        observed: transfer::Summary::prefix(transfer::CASES),
+    };
+    job.progress = Some(p.clone());
+    assert!(job.validate().is_err());
+    p.transfer.after = 3;
+    job.progress = Some(p);
+    job.validate().unwrap();
+}
+#[test]
+fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
+    let mut state = fixed_state();
+    state.accept(own_example()).unwrap();
+    let mut job = state.job();
+    job.training = true;
+    let mut p = finished_progress(&state);
+    p.unit = model::TRAINING_UNITS + 1;
+    p.first_loss = Some(1.);
+    p.last_loss = Some(0.5);
+    p.transfer.record(0, true, true).unwrap();
+    job.progress = Some(p.clone());
+    let before = digest(&job);
+    p.unit += 1;
+    p.transfer.record(1, false, true).unwrap();
+    let mut forged = p.clone();
+    forged.transfer.before ^= 1;
+    assert!(job.retain_progress(71, forged).is_err());
+    assert_eq!(digest(&job), before);
+    job.retain_progress(71, p).unwrap();
 }

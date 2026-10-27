@@ -9,6 +9,7 @@ pub const DEVELOPMENT: usize = 24;
 pub struct Bank {
     pub learning: Vec<Case>,
     pub development: Vec<Case>,
+    pub transfer: Vec<Case>,
     #[cfg(test)]
     pub confirmation: Vec<Case>,
     #[cfg(test)]
@@ -168,6 +169,7 @@ fn build() -> Bank {
     let mut bank = Bank {
         learning: Vec::new(),
         development: Vec::new(),
+        transfer: Vec::new(),
         #[cfg(test)]
         confirmation: Vec::new(),
         #[cfg(test)]
@@ -260,14 +262,68 @@ fn build() -> Bank {
         bank.prior_confirmation = std::mem::take(&mut bank.confirmation);
         bank.excluded_roots = roots.clone();
     }
-    let targets = [5usize, 8, 7, 4];
+    let retired = heldout(
+        500_009,
+        [5, 8, 7, 4],
+        3,
+        &mut bank,
+        &mut roots,
+        &mut families,
+        &mut ids,
+    );
+    #[cfg(test)]
+    bank.prior_confirmation.extend(retired);
+    #[cfg(not(test))]
+    drop(retired);
+    bank.transfer = heldout(
+        800_011,
+        [3, 3, 3, 3],
+        3,
+        &mut bank,
+        &mut roots,
+        &mut families,
+        &mut ids,
+    );
+    #[cfg(test)]
+    {
+        bank.excluded_roots = roots.clone();
+    }
+    let confirmation = heldout(
+        1_100_017,
+        [5, 8, 7, 4],
+        3,
+        &mut bank,
+        &mut roots,
+        &mut families,
+        &mut ids,
+    );
+    #[cfg(test)]
+    {
+        bank.confirmation_roots = roots.difference(&bank.excluded_roots).cloned().collect();
+        bank.confirmation = confirmation;
+    }
+    #[cfg(not(test))]
+    drop(confirmation);
+    bank
+}
+
+fn heldout(
+    start: u64,
+    targets: [usize; 4],
+    extra: usize,
+    bank: &mut Bank,
+    roots: &mut BTreeSet<String>,
+    families: &mut BTreeSet<String>,
+    ids: &mut BTreeSet<String>,
+) -> Vec<Case> {
+    let mut selected = Vec::new();
     let mut fresh = [0usize; 4];
-    for seed in 500_009..700_009 {
+    for seed in start..start + 200_000 {
         let kind = (seed % 4) as usize;
         if fresh[kind] == targets[kind] {
             continue;
         }
-        let Some((first, root)) = question_with_steps(seed, 0, 3) else {
+        let Some((first, root)) = question_with_steps(seed, 0, extra) else {
             continue;
         };
         if roots.contains(&root) {
@@ -282,7 +338,7 @@ fn build() -> Bank {
         }
         let cases = (0..2)
             .filter_map(|variant| {
-                let (q, _) = question_with_steps(seed, variant, 3)?;
+                let (q, _) = question_with_steps(seed, variant, extra)?;
                 if super::owned::family(q.proved_target()) != family {
                     return None;
                 }
@@ -307,64 +363,15 @@ fn build() -> Bank {
         bank.reserved_families.insert(family);
         bank.reserved.extend(cases.iter().map(|q| q.id.clone()));
         ids.extend(cases.iter().map(|q| q.id.clone()));
-        #[cfg(test)]
-        {
-            bank.confirmation_roots.insert(root);
-            bank.confirmation.extend(cases);
-        }
+        selected.extend(cases);
         fresh[kind] += 1;
         if fresh == targets {
             break;
         }
     }
-    assert_eq!(fresh, targets, "fresh confirmation root supply");
-    bank
+    assert_eq!(fresh, targets, "independent family supply");
+    selected
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn whole_construction_families_are_frozen_disjoint_and_new_before_any_search() {
-        assert_eq!(
-            (
-                BANK.learning.len(),
-                BANK.development.len(),
-                BANK.confirmation.len()
-            ),
-            (96, 24, 48)
-        );
-        let parts = [&BANK.learning, &BANK.development, &BANK.confirmation];
-        for (i, a) in parts.iter().enumerate() {
-            let families = a.iter().map(|q| &q.dependency).collect::<BTreeSet<_>>();
-            assert_eq!(families.len() * 2, a.len());
-            for b in parts.iter().skip(i + 1) {
-                assert!(b.iter().all(|q| !families.contains(&q.dependency)));
-            }
-        }
-        for q in &BANK.learning {
-            assert!(super::super::owned::case(&q.source).is_some());
-        }
-        for q in BANK.development.iter().chain(&BANK.confirmation) {
-            assert!(super::super::owned::case(&q.source).is_none());
-        }
-        assert!(BANK.confirmation_roots.is_disjoint(&BANK.excluded_roots));
-        let previous = BANK
-            .learning
-            .iter()
-            .chain(&BANK.development)
-            .chain(&BANK.prior_confirmation)
-            .map(|q| &q.dependency)
-            .collect::<BTreeSet<_>>();
-        assert!(
-            BANK.confirmation
-                .iter()
-                .all(|q| !previous.contains(&q.dependency))
-        );
-        assert!(
-            BANK.prior_confirmation
-                .iter()
-                .all(|q| super::super::owned::case(&q.source).is_none())
-        );
-    }
-}
+mod tests;
