@@ -1,239 +1,694 @@
 {
-  "backend": "Burn 0.22.1 CPU Flex; fresh deterministic random initialization; no imported checkpoints",
-  "base_commit": "b1275e44ef98fa124333e959be28a1a81fc63df7",
-  "binary_sha256": "dce312b47a353a0d38d61605b0380c3f89ae3a35397cf2eea4f5f0d1262c5fa0",
-  "candidate_updates_per_completed_cycle": 250,
-  "cleanup": {
-    "all_owned_groups_empty": true,
-    "errors": []
+  "audit": {
+    "bound_real_meta_trials": 54,
+    "checkpoints": 159,
+    "evaluated_groups": 24,
+    "frozen_confirmation_families": 24,
+    "meta_checkpoints": 54,
+    "states": 42,
+    "status": "pass",
+    "unique_native_source_target_records": 975
+  },
+  "base_commit": "3767e2bdbcf919689cbd87ac43c562a8af587dfe",
+  "counts": [
+    {
+      "arm": "random_balanced",
+      "initial_128": 35,
+      "initial_32": 32,
+      "initial_empty_32": 32,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 34,
+      "selected_32": 32,
+      "selected_empty_32": 32,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_balanced",
+      "initial_128": 35,
+      "initial_32": 32,
+      "initial_empty_32": 32,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 35,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_reference",
+      "initial_128": 35,
+      "initial_32": 32,
+      "initial_empty_32": 32,
+      "retained_updates": 500,
+      "seed": 2411,
+      "selected_128": 34,
+      "selected_32": 28,
+      "selected_empty_32": 28,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_targeted",
+      "initial_128": 35,
+      "initial_32": 32,
+      "initial_empty_32": 32,
+      "retained_updates": 500,
+      "seed": 2411,
+      "selected_128": 31,
+      "selected_32": 28,
+      "selected_empty_32": 28,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_fixed_mixture",
+      "initial_128": 35,
+      "initial_32": 32,
+      "initial_empty_32": 32,
+      "retained_updates": 500,
+      "seed": 2411,
+      "selected_128": 35,
+      "selected_32": 32,
+      "selected_empty_32": 32,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_random_mixture",
+      "initial_128": 35,
+      "initial_32": 32,
+      "initial_empty_32": 32,
+      "retained_updates": 250,
+      "seed": 2411,
+      "selected_128": 31,
+      "selected_32": 30,
+      "selected_empty_32": 30,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta",
+      "initial_128": 35,
+      "initial_32": 32,
+      "initial_empty_32": 32,
+      "retained_updates": 500,
+      "seed": 2411,
+      "selected_128": 38,
+      "selected_32": 36,
+      "selected_empty_32": 36,
+      "total": 48
+    },
+    {
+      "arm": "random_balanced",
+      "initial_128": 39,
+      "initial_32": 40,
+      "initial_empty_32": 40,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 35,
+      "selected_32": 38,
+      "selected_empty_32": 38,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_balanced",
+      "initial_128": 39,
+      "initial_32": 40,
+      "initial_empty_32": 40,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 41,
+      "selected_32": 42,
+      "selected_empty_32": 42,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_reference",
+      "initial_128": 39,
+      "initial_32": 40,
+      "initial_empty_32": 40,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 43,
+      "selected_32": 44,
+      "selected_empty_32": 44,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_targeted",
+      "initial_128": 39,
+      "initial_32": 40,
+      "initial_empty_32": 40,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 44,
+      "selected_32": 44,
+      "selected_empty_32": 44,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_fixed_mixture",
+      "initial_128": 39,
+      "initial_32": 40,
+      "initial_empty_32": 40,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 42,
+      "selected_32": 42,
+      "selected_empty_32": 42,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_random_mixture",
+      "initial_128": 39,
+      "initial_32": 40,
+      "initial_empty_32": 40,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 45,
+      "selected_32": 46,
+      "selected_empty_32": 46,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta",
+      "initial_128": 39,
+      "initial_32": 40,
+      "initial_empty_32": 40,
+      "retained_updates": 250,
+      "seed": 3203,
+      "selected_128": 44,
+      "selected_32": 44,
+      "selected_empty_32": 44,
+      "total": 48
+    },
+    {
+      "arm": "random_balanced",
+      "initial_128": 30,
+      "initial_32": 30,
+      "initial_empty_32": 30,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 35,
+      "selected_32": 32,
+      "selected_empty_32": 32,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_balanced",
+      "initial_128": 30,
+      "initial_32": 30,
+      "initial_empty_32": 30,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 38,
+      "selected_32": 40,
+      "selected_empty_32": 40,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_reference",
+      "initial_128": 30,
+      "initial_32": 30,
+      "initial_empty_32": 30,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 33,
+      "selected_32": 36,
+      "selected_empty_32": 36,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_targeted",
+      "initial_128": 30,
+      "initial_32": 30,
+      "initial_empty_32": 30,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 37,
+      "selected_32": 38,
+      "selected_empty_32": 38,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_fixed_mixture",
+      "initial_128": 30,
+      "initial_32": 30,
+      "initial_empty_32": 30,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 32,
+      "selected_32": 30,
+      "selected_empty_32": 30,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_random_mixture",
+      "initial_128": 30,
+      "initial_32": 30,
+      "initial_empty_32": 30,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 34,
+      "selected_32": 34,
+      "selected_empty_32": 34,
+      "total": 48
+    },
+    {
+      "arm": "adaptive_meta",
+      "initial_128": 30,
+      "initial_32": 30,
+      "initial_empty_32": 30,
+      "retained_updates": 250,
+      "seed": 3301,
+      "selected_128": 42,
+      "selected_32": 40,
+      "selected_empty_32": 40,
+      "total": 48
+    }
+  ],
+  "criteria": {
+    "all_quality_criteria_passed": false,
+    "meta_criterion_passed": false,
+    "preparation_criterion_passed": false,
+    "primary_criterion_passed": false
+  },
+  "delivery": {
+    "auto_merge": false,
+    "draft": true,
+    "local_evidence_prefix": "native-meta-learning-",
+    "merged": false,
+    "pull_request": "https://github.com/naome-core/naome/pull/332",
+    "release_or_physical_deployment": false
+  },
+  "fixed_lower_seeds": [
+    2411,
+    3203,
+    3301
+  ],
+  "frozen_source_hosted": {
+    "candidate_run": 40536150119,
+    "candidate_status": "success",
+    "ci_run": 40536150297,
+    "ci_status": "success",
+    "head": "7fbb6e85eac63312b5be4279011157c9515afadf",
+    "required_contexts": {
+      "Rust CI": "success",
+      "Rust platform (Linux x86_64)": "success",
+      "Rust platform (macOS ARM64)": "success",
+      "Rust quality": "success"
+    },
+    "scope": "Frozen scientific source, before final receipt; final receipt head requires separate recheck."
+  },
+  "independent_native_checker": {
+    "checked_exported_relation_definitions": 1371,
+    "checked_source_helper_compilations": 212,
+    "exact_native_ids": 975,
+    "exact_question_matches": 975,
+    "independent_per_record_contexts": 975,
+    "result": "pass",
+    "root_dependency_edges": 211,
+    "root_records_with_dependencies": 199,
+    "unique_source_target_records": 975
+  },
+  "independent_questions": 48,
+  "independent_whole_families": 24,
+  "input_exclusions": {
+    "operating": {
+      "default-direct": {
+        "confirmation_id_overlap": [],
+        "generated_resolution_ids": 13,
+        "observed_resolution_ids": 13,
+        "selected_resolution_ids": 0
+      },
+      "two-node-peer-recovery": {
+        "confirmation_id_overlap": [],
+        "generated_resolution_ids": 11,
+        "observed_resolution_ids": 11,
+        "selected_resolution_ids": 11
+      },
+      "unseeded-meta-loop": {
+        "confirmation_id_overlap": [],
+        "generated_resolution_ids": 103,
+        "observed_resolution_ids": 104,
+        "selected_resolution_ids": 104
+      }
+    },
+    "prior_appended_development_24_exact": true,
+    "prior_confirmation_overlap": [],
+    "prior_learning_96_exact": true,
+    "result": "pass",
+    "scope": "Read-only current operating log IDs; no operating model/proof enters the frozen scientific run."
+  },
+  "interpretation": "The 144 seed-question outcomes are paired repetitions of 48 questions, not 144 independent questions; the CI resamples whole families across three fixed seeds.",
+  "launch": {
+    "binary_sha256": "2a3d082b0fcf03915bb01ce8a33e73950af4670bf28f47e2f8eb7f4e2aac952d",
+    "git_head": "7fbb6e85eac63312b5be4279011157c9515afadf",
+    "git_status": "",
+    "protocol_sha256": "0738b370b418f6cae3c71cdbab17c6665b54ddbb6c051ccb6b5969db1243ba2a",
+    "source_files_sha256": "34d5b523682c226b548ca79339274da876ab6a4bf5dc038bbd501a6d69c628f0",
+    "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "limits": [
-    "No retained learning gain: both completed candidates rejected; incumbent models retain zero updates.",
-    "Peer conversion reconstructs a supported native trace for an already checked goal; no general translation of arbitrary peer proof steps.",
-    "Original TRAIN-only sealed curriculum: 1308 learning, 232 development, 241 internal evaluation excluded; original external heldouts excluded.",
-    "No general existential witness or ZFC proof search, automatic learned definitions or functions, failed-attempt lemma extraction, or model gossip.",
-    "Interest assessment remains the existing placeholder; no semantic quality qualification.",
-    "One-host loopback, macOS ARM64 CPU only; no hosted CI, full Cargo matrix, physical multi-host or production deployment qualification."
+    "The whole multi-run scientific harness peaks above the native 768 MiB per-job work reservation. No OS hard RSS limit was installed for that harness; only the separate isolated maximum-shape product-job screen demonstrates a peak below the reservation.",
+    "48 questions in 24 whole construction families are repeated for three fixed lower initializations. 144 outcomes are not 144 independent mathematical questions.",
+    "The family bootstrap averages over these three fixed seeds and resamples the 24 declared families. It is not a confidence interval over arbitrary initialization seeds.",
+    "The source grammar has four bounded operation recipes and shared declared helper prerequisites. Added construction steps do not guarantee greater mathematical difficulty in every recipe.",
+    "The upper model learns values for bounded compositions of implemented data, objective and step-size choices. It does not invent arbitrary algorithms, modify the calculus or authorize proofs.",
+    "The 48 outer trials have additional full-system cost. Reporting equal final arm ceilings as equal lifetime compute would be incorrect.",
+    "Direct meta comparisons test the complete trained controller against the specified fixed and random controls. They do not separately isolate upper training from an identically structured untrained upper controller.",
+    "The secondary 128-expansion condition also adds exploration, so it is not a monotonic budget-only comparison.",
+    "Ordinary autonomous questions use the maintained bounded grammar and checked graph proposals. This trial does not qualify semantic interest assessment or unrestricted mathematical discovery.",
+    "Development promotion, local restart/gossip integration, held-out quality, hosted CI and physical deployment are separate evidence layers.",
+    "Outer novel acquisition families are partitioned from final novel acquisition families; the meta outcomes use the shared development gate. The independent final families are never meta-training labels.",
+    "Technical operation, held-out learning quality, hosted CI, release-candidate packaging and physical deployment are separate evidence layers.",
+    "The final receipt commit requires its own exact-head hosted checks; this receipt records the immutable scientific source checks without a circular final commit hash.",
+    "Complete Full Cargo matrix and physical multiple-host or production deployment are not qualified."
   ],
-  "nodes": [
-    {
-      "accepted_mathematical_proofs": 4,
-      "learning": {
-        "accepted": 4,
-        "attempted": 4,
-        "local_examples": 4,
-        "model": {
-          "model": null,
-          "optimizer": null,
-          "seed": 336103165253,
-          "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
-          "updates": 0
-        },
-        "peer_cursor": 4,
-        "peer_examples": 0,
-        "promotions": 0,
-        "rejections": 1,
-        "trained": 1
-      },
-      "node": "node-0",
-      "peer_dispositions": [],
-      "training_jobs": [
-        {
-          "checkpoint": 0,
-          "created_ms": 1793030081676,
-          "expires_ms": 1793116481676,
-          "id": 305,
-          "reserved_units": 0,
-          "spent_ms": 935,
-          "state": "suspended"
-        },
-        {
-          "checkpoint": 38,
-          "created_ms": 1793029974518,
-          "expires_ms": 1793116374518,
-          "id": 42,
-          "reserved_units": 38,
-          "spent_ms": 107853,
-          "state": "complete"
-        }
-      ]
-    },
-    {
-      "accepted_mathematical_proofs": 4,
-      "learning": {
-        "accepted": 2,
-        "attempted": 2,
-        "local_examples": 0,
-        "model": {
-          "model": null,
-          "optimizer": null,
-          "seed": 336103165253,
-          "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
-          "updates": 0
-        },
-        "peer_cursor": 4,
-        "peer_examples": 2,
-        "promotions": 0,
-        "rejections": 1,
-        "trained": 1
-      },
-      "node": "node-1",
-      "peer_dispositions": [
-        {
-          "Learned": {
-            "conversion_job": 7,
-            "trace_proof": "0076e47a8b3715a4e01cbcf52c6bd22433cb5810df9c7c9a4b53e6e460d21186"
-          }
-        },
-        {
-          "Unsupported": {
-            "reason": "certificate_capacity"
-          }
-        },
-        {
-          "Learned": {
-            "conversion_job": 3,
-            "trace_proof": "8aca9aa626299d060bd6922f730770073e9fe6c7b66a7bd57d5f4f754a4d0896"
-          }
-        },
-        {
-          "Unsupported": {
-            "reason": "search_budget"
-          }
-        }
-      ],
-      "training_jobs": [
-        {
-          "checkpoint": 8,
-          "created_ms": 1793030052921,
-          "expires_ms": 1793116452921,
-          "id": 11,
-          "reserved_units": 9,
-          "spent_ms": 29535,
-          "state": "suspended"
-        },
-        {
-          "checkpoint": 38,
-          "created_ms": 1793029978484,
-          "expires_ms": 1793116378484,
-          "id": 4,
-          "reserved_units": 38,
-          "spent_ms": 74876,
-          "state": "complete"
-        }
-      ]
-    }
-  ],
-  "parameters": 1003361,
-  "qualification": {
-    "0": {
-      "anchor_regression": false,
-      "candidate_score": 2,
-      "diagnostic": "no_development_gain_rejected",
-      "incumbent_score": 2,
-      "io_bytes": 313351168,
-      "job": 42,
-      "model": {
-        "model": null,
-        "optimizer": null,
-        "seed": 336103165253,
-        "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
-        "updates": 0
-      }
-    },
-    "1": {
-      "anchor_regression": false,
-      "candidate_score": 2,
-      "diagnostic": "no_development_gain_rejected",
-      "incumbent_score": 2,
-      "io_bytes": 313344616,
-      "job": 4,
-      "model": {
-        "model": null,
-        "optimizer": null,
-        "seed": 336103165253,
-        "specification": "696a35748b9ab8fd50ca0e935c56bb4949d8d631df8610a6d0ef122d43511aec",
-        "updates": 0
-      }
-    }
-  },
-  "resource_screen": {
-    "batch": 16,
-    "maximum_candidates": 16,
-    "maximum_graph_nodes": 256,
-    "os_hard_rss_limit": false,
-    "peak_process_rss_bytes": 204718080,
-    "two_model_and_adam_lifetimes": true,
-    "work_reservation_bytes": 805306368
-  },
-  "runtime_evidence": ".local/proof-network/autonomous-native-19180-1793029964836838000",
-  "scope": "First opt-in native node proof-learning integration; local qualification only",
-  "source_commit": "db9513fd5d6a8dacdf00969c6a77bf69316c134a",
-  "validation": {
+  "local_validation": {
+    "bazel_ci_clippy_aspect_targets": 35,
     "bazel_mr_build": "pass",
     "bazel_mr_tests": {
-      "failed": 0,
-      "targets_passed": 14
+      "knowledge_ignored": 14,
+      "knowledge_passed": 515,
+      "targets_passed": 14,
+      "test_threads": 3
     },
-    "ci_contracts": {
-      "passed": 62
+    "cargo_release_workspace_all_targets_clippy_warnings_denied": "pass",
+    "ci_contracts_passed": 62,
+    "doctest_examples": 0,
+    "format_file_workflow_policy": "pass",
+    "max_shape_mixed_objective_peak_rss_bytes": 214630400,
+    "meta_and_owner_focused_tests_passed": 20,
+    "ordinary_product_and_test_build_barrier": "pass",
+    "outer_capacity_replay": {
+      "completed_states_checked": 17,
+      "existing_state_cap_bytes": 32768,
+      "historical_source": "0e3992605a7b4a0bb20ed10ea896f5e14ff3e3d2",
+      "meta_headroom_bytes": 4096,
+      "original_overflows_reproduced": 1,
+      "outer_total_metadata_headroom_bytes": 5100,
+      "prospective_profile_envelope": "pass"
     },
-    "clippy": "release all-targets -D warnings: pass",
-    "format_and_repository_file_policy": "pass",
-    "knowledge_release_library": {
-      "failed": 0,
-      "ignored": 6,
-      "passed": 423
+    "outer_source_preflight": {
+      "confirmation_inferences": 0,
+      "contexts": 6,
+      "global_state_cap_bytes": 32768,
+      "maximum_complete_upper_state_bytes": 2357,
+      "optimizer_updates": 0,
+      "outer_reserved_metadata_bytes": 3564,
+      "replay_examples_by_context": [
+        10,
+        9,
+        10,
+        11,
+        13,
+        10
+      ],
+      "upper_allowance_bytes": 2560
     },
-    "native_loopback_process": "pass; 118.59 seconds; checkpoints, peer origin, pause, restart, qualification and full cleanup",
-    "ordinary_default_process": "pass; 13.72 seconds",
-    "rustsec": {
-      "database_commit": "a78282a1414d6c28cc228c4eae3570451affb0dc",
-      "informational_warnings": {
-        "unmaintained": [
-          {
-            "advisory": {
-              "aliases": [],
-              "categories": [],
-              "collection": "crates",
-              "cvss": null,
-              "date": "2024-10-07",
-              "description": "The creator of the crate `paste` has stated in the [`README.md`](https://github.com/dtolnay/paste/blob/master/README.md) \nthat this project is not longer maintained as well as archived the repository\n\n## Possible Alternative(s)\n\n- [`pastey`]: a fork of paste and is aimed to be a drop-in replacement with additional features for paste crate\n- [`with_builtin_macros`]: crate providing a [superset of `paste`'s functionality including general `macro_rules!` eager expansions](https://docs.rs/with_builtin_macros/0.1.0/with_builtin_macros/macro.with_eager_expansions.html)  and `concat!`/`concat_idents!` macros\n\n[`pastey`]: https://crates.io/crates/pastey\n[`with_builtin_macros`]: https://crates.io/crates/with_builtin_macros",
-              "expect-deleted": false,
-              "id": "RUSTSEC-2024-0436",
-              "informational": "unmaintained",
-              "keywords": [],
-              "license": "CC0-1.0",
-              "package": "paste",
-              "references": [],
-              "related": [],
-              "source": null,
-              "title": "paste - no longer maintained",
-              "url": "https://github.com/dtolnay/paste",
-              "withdrawn": null
-            },
-            "affected": null,
-            "kind": "unmaintained",
-            "package": {
-              "checksum": "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a",
-              "name": "paste",
-              "replace": null,
-              "source": "registry+https://github.com/rust-lang/crates.io-index",
-              "version": "1.0.15"
-            },
-            "versions": {
-              "patched": [],
-              "unaffected": []
-            }
-          }
-        ]
+    "rustdoc_warnings_denied": "pass",
+    "synthetic_meta_neural_tests_passed": 6,
+    "workspace_doctest_targets": 9
+  },
+  "lower_parameters": 1004001,
+  "lower_specification": "fab8e86b3faeb4d46ed266bade40f57460aa222191b7faac529b1328dd4f9a66",
+  "meta_parameters": 759,
+  "meta_specification": "32b078e990f08b62bf731145f92bb275f161ea9d1fabd567e5afa293703c02b6",
+  "operating": {
+    "default-direct": {
+      "binary_sha256": "efdbf1a6bac487f7271e1fbf5b425c493b4bdb232c7fce332a1b751329afcf4b",
+      "claim": "local process, real checking and libp2p exchange with bounded question/proof providers and structural selection",
+      "cleanup": {
+        "all_owned_groups_empty": true,
+        "errors": []
       },
-      "known_vulnerabilities": 0
+      "path": ".local/proof-network/autonomous-direct-29322-1793116194306834000",
+      "result": "pass"
     },
-    "workspace_doctests": {
-      "failed": 0,
-      "passed": 7
+    "two-node-peer-recovery": {
+      "binary_sha256": "efdbf1a6bac487f7271e1fbf5b425c493b4bdb232c7fce332a1b751329afcf4b",
+      "claim": "Two ordinary loopback nodes, actual fresh 1,004,001-parameter CPU graph policy, own accepted and locally checked peer reconstruction, 250 candidate updates per retained job, native qualification/rollback, durable model+Adam recovery and automatic resource pause. No learned-performance or physical multi-host claim; selection follows the current research policy.",
+      "cleanup": {
+        "all_owned_groups_empty": true,
+        "errors": []
+      },
+      "path": ".local/proof-network/autonomous-native-25110-1793115952724662000",
+      "result": "pass"
     },
-    "workspace_documentation": "all-features --locked -D warnings: pass"
+    "unseeded-meta-loop": {
+      "binary_sha256": "efdbf1a6bac487f7271e1fbf5b425c493b4bdb232c7fce332a1b751329afcf4b",
+      "claim": "One ordinary initially empty local node, no formal_goal or injected proof/checkpoint: built-in question-only grammar and checked graph proposals produce own proofs, 250 real candidate updates and complete native qualification. The actual trial updates the neural meta model and paired Adam; restart recovers their exact state and the next executed training plan uses those learned weights and model-bound development feedback. This qualifies integration, not a learned solve-rate gain or unrestricted mathematical discovery.",
+      "cleanup": {
+        "all_owned_groups_empty": true,
+        "errors": []
+      },
+      "path": ".local/proof-network/autonomous-adaptive-22501-1793115734850175000",
+      "result": "pass"
+    }
+  },
+  "ordering": {
+    "all_recorded_learning_before_first_final": true,
+    "complete_outer_trials": 48,
+    "completed_round_events": 42,
+    "final_events": 126,
+    "first_final_line": 3193
+  },
+  "outer_learning": {
+    "distinct_composed_plans": 44,
+    "exploratory_selections": 11,
+    "meta_direct_cpu_seconds": 0.046613,
+    "meta_updates": 384,
+    "neural_selections": 37,
+    "physical_cpu_seconds": 2307.640092,
+    "physical_wall_seconds": 2315.416946,
+    "real_trials": 48,
+    "sum_trial_cpu_seconds": 2280.513113
+  },
+  "physical_costs": {
+    "all_learning_cpu_seconds": 4773.25557,
+    "all_learning_wall_seconds": 4850.843807,
+    "interpretation": "Shared acquisition is physically counted once in whole-process totals and charged to each adaptive ceiling. The learned system additionally pays all outer training; final lower ceilings are matched, lifetime compute is not.",
+    "outer_training_cpu_seconds": 2307.640092,
+    "outer_training_wall_seconds": 2315.416946,
+    "physically_common_prerequisite_cpu_seconds": 5.18911,
+    "physically_common_prerequisite_wall_seconds": 5.751398,
+    "physically_shared_acquisition_cpu_seconds": 31.002347,
+    "physically_shared_acquisition_wall_seconds": 37.866126,
+    "whole_experiment_cpu_seconds": 5114.481957,
+    "whole_experiment_wall_seconds": 5192.780483
+  },
+  "preserved_failures": [
+    {
+      "evidence": "logs/native-meta-bazel-tests-1.txt",
+      "finding": "Default-parallel Bazel first attempt failed the existing intake closure64 dependency test after host budget expiry. Same isolated assertion passed and all14 targets then passed with three test threads; no product limits or assertions changed."
+    },
+    {
+      "evidence": "logs/native-meta-unseeded-1.txt",
+      "finding": "Engineering worker emitted a network event into the private stdout response frame; events were moved to the durable owner."
+    },
+    {
+      "evidence": "logs/native-meta-unseeded-2.txt",
+      "finding": "The operating fixture compared JSON float spellings; it now compares declared FP32 bits, paired blobs, selection and RNG."
+    },
+    {
+      "evidence": "raw/preparation/meta-pilot-01",
+      "finding": "Engineering pilot exceeded the original 32 KiB State after injecting upper state. At that historical source canonical equal compaction reserved 4 KiB within the cap. The final compact encoding reserves 2,560 bytes, preserves every field and all four experiences, and starts main fresh."
+    },
+    {
+      "evidence": "raw/main/main-run-01/failure.json",
+      "finding": "First main attempt stopped after17 complete upper trials when actual development-profile growth exceeded the unchanged32KiB State. No final inference occurred. The harness now prospectively reserves the full serialized profile envelope before fixing each shared source pool, and validates reconstructed bases before any optimizer update. The corrected main starts fresh."
+    },
+    {
+      "evidence": "raw/main/main-run-02/failure.json",
+      "finding": "Prospective full metadata reservation evicted one of the second context's8 replay sources; the unchanged minimum remained8 and the harness stopped. The compact working encoding retains every field and the original owned full trial remains authoritative. The four-experience memory and neural method are unchanged."
+    }
+  ],
+  "primary_comparisons": {
+    "combined_vs_baseline_32": {
+      "delta_pp": 5.555555555555556,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        -5.555555555555555,
+        16.666666666666664
+      ],
+      "per_seed": [
+        {
+          "delta_pp": -8.333333333333332,
+          "seed": 2411
+        },
+        {
+          "delta_pp": 12.5,
+          "seed": 3203
+        },
+        {
+          "delta_pp": 12.5,
+          "seed": 3301
+        }
+      ]
+    },
+    "meta_vs_adaptive_fixed_mixture_32": {
+      "delta_pp": 11.11111111111111,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        2.7777777777777777,
+        19.444444444444443
+      ],
+      "per_seed": [
+        {
+          "delta_pp": 8.333333333333332,
+          "seed": 2411
+        },
+        {
+          "delta_pp": 4.166666666666666,
+          "seed": 3203
+        },
+        {
+          "delta_pp": 20.833333333333336,
+          "seed": 3301
+        }
+      ]
+    },
+    "meta_vs_adaptive_random_mixture_32": {
+      "delta_pp": 6.944444444444445,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        0.0,
+        15.277777777777777
+      ],
+      "per_seed": [
+        {
+          "delta_pp": 12.5,
+          "seed": 2411
+        },
+        {
+          "delta_pp": -4.166666666666666,
+          "seed": 3203
+        },
+        {
+          "delta_pp": 12.5,
+          "seed": 3301
+        }
+      ]
+    },
+    "meta_vs_adaptive_targeted_32": {
+      "delta_pp": 6.944444444444444,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        0.0,
+        13.88888888888889
+      ],
+      "per_seed": [
+        {
+          "delta_pp": 16.666666666666664,
+          "seed": 2411
+        },
+        {
+          "delta_pp": 0,
+          "seed": 3203
+        },
+        {
+          "delta_pp": 4.166666666666666,
+          "seed": 3301
+        }
+      ]
+    },
+    "preparation_vs_balanced_32": {
+      "delta_pp": -4.166666666666667,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        -13.88888888888889,
+        4.166666666666666
+      ],
+      "per_seed": [
+        {
+          "delta_pp": -12.5,
+          "seed": 2411
+        },
+        {
+          "delta_pp": 4.166666666666666,
+          "seed": 3203
+        },
+        {
+          "delta_pp": -4.166666666666666,
+          "seed": 3301
+        }
+      ]
+    },
+    "preparation_vs_reference_32": {
+      "delta_pp": 1.3888888888888886,
+      "group_count": 24,
+      "paired_family_bootstrap_95_pp": [
+        -6.944444444444445,
+        8.333333333333332
+      ],
+      "per_seed": [
+        {
+          "delta_pp": 0,
+          "seed": 2411
+        },
+        {
+          "delta_pp": 0,
+          "seed": 3203
+        },
+        {
+          "delta_pp": 4.166666666666666,
+          "seed": 3301
+        }
+      ]
+    }
+  },
+  "prior_receipt_sha256": "c2914844784693e4e7c46cbc7e3c423b5c81014c798119677d1a5aa43a8680db",
+  "process_resources": {
+    "isolated_max_shape_job_peak_rss_bytes": 214630400,
+    "native_job_work_reservation_bytes": 805306368,
+    "os_hard_rss_limit": false,
+    "scope": "The scientific harness runs all contexts and retains all 21 Run stores until evaluation. It calls the native learner directly. The unchanged per-job work reservation is not an OS limit on this whole multi-run harness; its aggregate RSS exceeds that reservation and is not qualified under 768 MiB. The independent isolated maximum-shape job screen is separate evidence.",
+    "whole_harness_peak_memory_footprint_bytes": 1248724552,
+    "whole_harness_peak_rss_bytes": 1062076416,
+    "whole_harness_within_job_work_reservation": false
+  },
+  "scientific_source": "7fbb6e85eac63312b5be4279011157c9515afadf",
+  "scope": "Native checked preparation, actual learned neural trial planning, and finite independent confirmation",
+  "system_learning_costs": {
+    "adaptive_balanced": {
+      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; adaptive acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "outer_learning_charged_once_cpu_seconds": 0,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 384.164447,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 399.063994
+    },
+    "adaptive_fixed_mixture": {
+      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; adaptive acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "outer_learning_charged_once_cpu_seconds": 0,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 379.424801,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 396.329666
+    },
+    "adaptive_meta": {
+      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; adaptive acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "outer_learning_charged_once_cpu_seconds": 2307.640092,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 2673.2629260000003,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 2696.1023059999998
+    },
+    "adaptive_random_mixture": {
+      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; adaptive acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "outer_learning_charged_once_cpu_seconds": 0,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 379.471873,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 394.672147
+    },
+    "adaptive_reference": {
+      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; adaptive acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "outer_learning_charged_once_cpu_seconds": 0,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 383.089002,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 398.554568
+    },
+    "adaptive_targeted": {
+      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; adaptive acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "outer_learning_charged_once_cpu_seconds": 0,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 384.376058,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 399.836367
+    },
+    "random_balanced": {
+      "interpretation": "All shared prerequisite cost charged once per system across its three final seeds; adaptive acquisition charged per arm, and the complete outer stage charged to the learned meta arm. Final inference and earlier engineering attempts are reported separately.",
+      "outer_learning_charged_once_cpu_seconds": 0,
+      "three_final_seeds_including_charged_sources_and_outer_cpu_seconds": 375.509384,
+      "three_final_seeds_including_charged_sources_and_outer_wall_seconds": 390.003741
+    }
   }
 }
