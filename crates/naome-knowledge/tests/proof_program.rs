@@ -47,20 +47,19 @@ fn autonomous_program_transfer_resumes_after_receiver_crash_and_rechecks_on_rest
 }
 
 #[test]
-fn ordinary_cli_rejects_removed_commands_without_creating_node_state() {
+fn ordinary_cli_rejects_invalid_arguments_without_creating_node_state() {
     let directory = std::env::temp_dir().join(name("autonomous-only-cli"));
     fs::create_dir(&directory).unwrap();
-    let work = directory.join("manual.sqlite3");
     for args in [
-        vec!["proof", "new", work.to_str().unwrap()],
-        vec!["proof", "run", work.to_str().unwrap()],
-        vec!["proof", "append", work.to_str().unwrap(), "commands.ndjson"],
-        vec!["proof", "publish", work.to_str().unwrap()],
-        vec!["proof", "follow", "00"],
-        vec!["proof", "unfollow", "00"],
-        vec!["resources"],
-        vec!["resources", "history"],
-        vec!["resources", "history", "1"],
+        vec!["unknown"],
+        vec!["unknown", "argument"],
+        vec!["start", "extra"],
+        vec!["stop", "extra"],
+        vec!["status", "extra"],
+        vec!["start", "stop"],
+        vec!["status", "--json"],
+        vec!["--unknown"],
+        vec!["--json", "--json", "status"],
     ] {
         for json in [false, true] {
             let mut command = Command::new(env!("CARGO_BIN_EXE_naome"));
@@ -74,17 +73,16 @@ fn ordinary_cli_rejects_removed_commands_without_creating_node_state() {
             let output = command.args(&args).output().unwrap();
             assert!(
                 !output.status.success(),
-                "unexpected removed operation: {args:?}"
+                "unexpected invalid operation: {args:?}"
             );
             assert!(output.stdout.is_empty());
             let error = String::from_utf8(output.stderr).unwrap();
             assert!(
-                error.contains("usage: naome [--json] start | stop | status | selection <text>"),
+                error.contains("usage: naome [--json] start | stop | status"),
                 "{error}"
             );
             assert!(!directory.join("node").exists());
         }
     }
-    assert!(!work.exists());
     fs::remove_dir_all(directory).unwrap();
 }
