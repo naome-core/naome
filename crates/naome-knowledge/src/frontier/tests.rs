@@ -1051,7 +1051,7 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
     );
     assert!(
         frontier
-            .loop_work(&goal, &graph)
+            .loop_work(&goal, &graph, |_| true)
             .unwrap()
             .planned
             .is_empty()
@@ -1059,7 +1059,7 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
     frontier
         .attempted(&goal, &graph, &failed, Outcome::NoCandidate)
         .unwrap();
-    let plan = frontier.loop_work(&goal, &graph).unwrap();
+    let plan = frontier.loop_work(&goal, &graph, |_| true).unwrap();
     for helper in &helpers {
         assert!(
             plan.pending
@@ -1077,7 +1077,7 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
     assert_eq!(
         before,
         frontier
-            .loop_work(&goal, &graph)
+            .loop_work(&goal, &graph, |_| true)
             .unwrap()
             .planned
             .iter()
@@ -1105,7 +1105,7 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
             .unwrap();
         assert!(
             frontier
-                .loop_work(&goal, &graph)
+                .loop_work(&goal, &graph, |_| true)
                 .unwrap()
                 .required
                 .is_empty()
@@ -1120,14 +1120,14 @@ fn failed_search_plan_is_atomic_recoverable_and_waits_for_checked_helper_roots()
         frontier.prepared(helper, job, root).unwrap();
         frontier.verified(helper, &graph, job, root).unwrap();
     }
-    let work = frontier.loop_work(&goal, &graph).unwrap();
+    let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
     assert!(work.pending.is_empty());
     assert_eq!(work.required.len(), 2);
     assert_eq!(frontier.evidence.model().supports, 0);
     frontier.exhaust_helpers(&goal).unwrap();
     drop(frontier);
     let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
-    let work = frontier.loop_work(&goal, &graph).unwrap();
+    let work = frontier.loop_work(&goal, &graph, |_| true).unwrap();
     assert!(work.planned.is_empty() && work.required.is_empty());
 }
 
@@ -1169,7 +1169,7 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
     }
     assert!(
         frontier
-            .loop_work(&goal, &graph)
+            .loop_work(&goal, &graph, |_| true)
             .unwrap()
             .pending
             .is_empty()
@@ -1180,7 +1180,7 @@ fn an_abandoned_candidate_does_not_hold_its_parent_or_create_a_failure_label() {
     let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
     assert!(
         frontier
-            .loop_work(&goal, &graph)
+            .loop_work(&goal, &graph, |_| true)
             .unwrap()
             .pending
             .is_empty()

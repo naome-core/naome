@@ -1056,19 +1056,18 @@ impl Autonomous {
         let mut required_goal = loop_goal.clone();
         let mut loop_candidates = None;
         if let (Some(goal), Some(frontier)) = (&loop_goal, &mut self.frontier) {
-            match frontier.loop_work(goal, graph) {
+            match frontier.loop_work(goal, graph, |q| {
+                let q = questions.owned_question(q).unwrap_or_else(|| q.clone());
+                questions.generation_decision(graph, &q).passed()
+                    || questions.assess(graph, &q).passed()
+            }) {
                 Ok(work) => {
                     required_goal = Some(work.target);
                     let planned = work.planned;
                     let pending = work
                         .pending
                         .into_iter()
-                        .filter_map(|q| {
-                            let q = questions.owned_question(&q).unwrap_or(q);
-                            (questions.generation_decision(graph, &q).passed()
-                                || questions.assess(graph, &q).passed())
-                            .then_some(q)
-                        })
+                        .map(|q| questions.owned_question(&q).unwrap_or(q))
                         .collect::<Vec<_>>();
                     if !planned.is_empty() {
                         loop_candidates = Some(if pending.is_empty() {

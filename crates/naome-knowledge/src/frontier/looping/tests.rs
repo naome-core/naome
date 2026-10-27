@@ -77,7 +77,7 @@ fn failed_helper_descends_and_checked_children_release_its_original_parent_once(
             .any(|p| p.resolution_id() == q.resolution_id())),
         "the frozen flat control does not descend"
     );
-    let work = frontier.loop_work(&root, &graph).unwrap();
+    let work = frontier.loop_work(&root, &graph, |_| true).unwrap();
     assert_eq!(work.target.resolution_id(), parent.resolution_id());
     assert_eq!(work.pending.len(), 2);
     for leaf in &leaves {
@@ -91,20 +91,39 @@ fn failed_helper_descends_and_checked_children_release_its_original_parent_once(
     drop(work);
     drop(frontier);
     let mut frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
-    assert_eq!(frontier.loop_work(&root, &graph).unwrap().pending.len(), 2);
+    assert_eq!(
+        frontier
+            .loop_work(&root, &graph, |_| true)
+            .unwrap()
+            .pending
+            .len(),
+        2
+    );
     let first = resolve(&mut frontier, &mut graph, &leaves[0], 3);
-    let work = frontier.loop_work(&root, &graph).unwrap();
+    let work = frontier.loop_work(&root, &graph, |_| true).unwrap();
     assert_eq!(work.pending.len(), 1);
     assert_eq!(work.required, vec![first.clone()]);
+    let released = frontier
+        .loop_work(&root, &graph, |q| {
+            q.resolution_id() != leaves[1].resolution_id()
+        })
+        .unwrap();
+    assert_eq!(released.pending.len(), 1);
+    assert_eq!(released.pending[0].resolution_id(), parent.resolution_id());
+    assert_eq!(released.required, vec![first.clone()]);
+    assert!(
+        frontier.evidence.get(&leaves[1]).unwrap().is_none(),
+        "declining intake cannot invent a failed proof attempt"
+    );
     let second = resolve(&mut frontier, &mut graph, &leaves[1], 4);
-    let work = frontier.loop_work(&root, &graph).unwrap();
+    let work = frontier.loop_work(&root, &graph, |_| true).unwrap();
     assert_eq!(work.pending.len(), 1);
     assert_eq!(work.pending[0].resolution_id(), parent.resolution_id());
     assert_eq!(work.required, vec![first, second]);
     failed(&mut frontier, &graph, &parent, 10);
     assert!(
         !frontier
-            .loop_work(&root, &graph)
+            .loop_work(&root, &graph, |_| true)
             .unwrap()
             .pending
             .iter()
@@ -150,11 +169,11 @@ fn admission_failure_does_not_spend_a_member_and_depth_two_leaves_do_not_expand(
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     failed(&mut frontier, &graph, &root, 1);
     crate::checkpoint::fail_next_commit();
-    assert!(frontier.loop_work(&root, &graph).is_err());
+    assert!(frontier.loop_work(&root, &graph, |_| true).is_err());
     assert!(frontier.evidence.plan_members(&root).unwrap().is_empty());
     failed(&mut frontier, &graph, &parent, 2);
     failed(&mut frontier, &graph, &leaf, 3);
-    let work = frontier.loop_work(&root, &graph).unwrap();
+    let work = frontier.loop_work(&root, &graph, |_| true).unwrap();
     assert_eq!(
         work.planned.len(),
         2,

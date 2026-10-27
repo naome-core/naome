@@ -14,6 +14,7 @@ struct Node {
     children: Vec<usize>,
     checked: Option<(String, u64)>,
     depth: usize,
+    available: bool,
 }
 impl Node {
     fn load(
@@ -50,6 +51,7 @@ impl Node {
             children: vec![],
             checked,
             depth,
+            available: true,
         })
     }
 }
@@ -66,6 +68,9 @@ fn next(nodes: &[Node], index: usize, depth: usize) -> Choice {
     };
     for &child in &nodes[index].children {
         let node = &nodes[child];
+        if !node.available {
+            continue;
+        }
         if let Some(proof) = &node.checked {
             work.required.push(proof.clone());
         } else if node
@@ -144,6 +149,7 @@ impl Frontier {
         &mut self,
         goal: &CompiledQuestion,
         graph: &Graph,
+        mut available: impl FnMut(&CompiledQuestion) -> bool,
     ) -> Result<Work, crate::Error> {
         let mut memory = Vec::new();
         let mut nodes = Vec::<Node>::new();
@@ -185,6 +191,11 @@ impl Frontier {
                 }
             }
             index += 1;
+        }
+        for node in nodes.iter_mut().skip(1) {
+            // A failed intake gate is a current scheduling constraint, never
+            // a negative theorem label or a permanent loss of eligibility.
+            node.available = node.checked.is_some() || available(&node.question);
         }
         let choice = next(&nodes, 0, 0);
         Ok(Work {

@@ -130,20 +130,28 @@ pub(super) fn arm(
         let mut questions =
             crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
         let mut job = 10;
+        let mut declined = BTreeSet::new();
         loop {
             if !meter.within(&io) || meter.remaining() == 0 {
                 break;
             }
+            let mut available = |helper: &CompiledQuestion| {
+                let gate = questions.assess(&graph, helper);
+                if !gate.passed() && declined.insert(*helper.resolution_id()) {
+                    events.push(json!({"role":"helper_intake_unavailable","question":helper.source(),"rule":gate.rule,"reason":format!("{:?}",gate.reason),"has_answer":gate.has_answer()}));
+                }
+                gate.passed()
+            };
             let work = if kind == "flat_loop" {
                 finder.flat_loop_work(q, &graph)
             } else {
-                finder.loop_work(q, &graph)
+                finder.loop_work(q, &graph, &mut available)
             }
             .unwrap();
             let pending = work
                 .pending
                 .iter()
-                .filter(|helper| questions.assess(&graph, helper).passed())
+                .filter(|helper| available(helper))
                 .collect::<Vec<_>>();
             if pending.is_empty() {
                 required = work.required;
