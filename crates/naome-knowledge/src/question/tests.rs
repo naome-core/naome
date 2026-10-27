@@ -47,16 +47,22 @@ async fn managed_local_and_peer_decisions_have_independent_bounded_capacity() {
     assert!(local.select(Some([2; 32])));
     assert!(local.pending.is_empty());
     for receiver in receivers {
-        assert_eq!(receiver.await.unwrap().interest, InterestAssessment::Stale);
+        assert_eq!(
+            receiver.await.unwrap().selection_result,
+            SelectionAssessment::Stale
+        );
     }
-    assert_eq!(peer.await.unwrap().interest, InterestAssessment::Stale);
+    assert_eq!(
+        peer.await.unwrap().selection_result,
+        SelectionAssessment::Stale
+    );
     assert_eq!(local.registry.len(), 0);
 }
 
 #[tokio::test]
 async fn provider_epoch_change_and_owner_failure_invalidate_positive_selection() {
     let graph = Graph::default();
-    let mut local = LocalQuestions::new(Some(crate::mocks::assess_interest));
+    let mut local = LocalQuestions::new(Some(crate::mocks::select_question));
     let selected = question(QUESTION);
     let (_, receiver) = local.begin_exchange(
         &graph,
@@ -83,8 +89,8 @@ async fn provider_epoch_change_and_owner_failure_invalidate_positive_selection()
     let admission = receiver.await.unwrap();
     assert!(admission.assessment.prefilter.passed() && admission.assessment.novelty().is_some());
     assert_eq!(
-        admission.assessment.interest,
-        InterestAssessment::ProviderFailed
+        admission.assessment.selection_result,
+        SelectionAssessment::ProviderFailed
     );
     assert_eq!(admission.outcome, AdmissionOutcome::NotInserted);
     assert!(admission.assessment.selection.is_none());
@@ -107,7 +113,7 @@ async fn durable_admission_restores_original_orientation_and_prepared_delivery_s
         let (reply, receiver) = oneshot::channel();
         local.process(Command::Admit(original.clone(), reply), &graph);
         let request = owner.requests().remove(0);
-        owner.complete(request.0, Ok(crate::jobs::Output::Interest(true)));
+        owner.complete(request.0, Ok(crate::jobs::Output::Selected(true)));
         let result = local.completed().await;
         local.finish(&graph, result);
         let admission = receiver.await.unwrap();
@@ -178,10 +184,13 @@ async fn changed_epoch_retires_a_result_already_received_before_finish() {
     let (reply, receiver) = oneshot::channel();
     local.process(Command::Assess(question(QUESTION), reply), &graph);
     let (id, _) = owner.requests().remove(0);
-    owner.complete(id, Ok(crate::jobs::Output::Interest(true)));
-    assert_eq!(local.completed().await, InterestAssessment::Assessed(true));
+    owner.complete(id, Ok(crate::jobs::Output::Selected(true)));
+    assert_eq!(local.completed().await, SelectionAssessment::Assessed(true));
     assert!(local.select(Some([7; 32])));
-    assert_eq!(receiver.await.unwrap().interest, InterestAssessment::Stale);
+    assert_eq!(
+        receiver.await.unwrap().selection_result,
+        SelectionAssessment::Stale
+    );
     assert_eq!(owner.acknowledgements(), vec![id]);
 }
 
@@ -243,7 +252,7 @@ async fn stop(handle: QuestionAdminHandle, task: tokio::task::JoinHandle<Result<
 }
 
 #[tokio::test]
-async fn running_node_rejects_checked_answers_and_registry_aliases_before_interest() {
+async fn running_node_rejects_checked_answers_and_registry_aliases_before_selection() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let envelope = graph.author(PROOF).unwrap();
@@ -268,7 +277,10 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
         proved.assessment.prefilter.reason,
         Some(RejectionReason::KnownProof)
     );
-    assert_eq!(proved.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        proved.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     let refuted = handle
         .admit_question(question("goal = not(all(a,eq(a,a)))"))
         .await
@@ -314,7 +326,10 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
         alias.assessment.prefilter.reason,
         Some(RejectionReason::ExactDuplicate)
     );
-    assert_eq!(alias.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        alias.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(
         context(&handle).await,
         before,
@@ -334,7 +349,10 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
         exhausted.assessment.prefilter.reason,
         Some(RejectionReason::ExecutionLimit)
     );
-    assert_eq!(exhausted.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        exhausted.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(exhausted.outcome, AdmissionOutcome::NotInserted);
     assert!(exhausted.assessment.novelty().is_none());
     assert_eq!(context(&handle).await, frozen);
@@ -345,7 +363,7 @@ async fn running_node_rejects_checked_answers_and_registry_aliases_before_intere
 }
 
 #[tokio::test]
-async fn running_node_prefilter_reaches_separate_interest_without_storing_question() {
+async fn running_node_prefilter_reaches_separate_selection_without_storing_question() {
     let directory = Directory::new();
     let (handle, admin, inbox) = channel();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -367,16 +385,16 @@ async fn running_node_prefilter_reaches_separate_interest_without_storing_questi
     ));
     let before = context(&handle).await;
     for expected in [
-        InterestAssessment::Assessed(false),
-        InterestAssessment::Assessed(false),
-        InterestAssessment::ProviderFailed,
+        SelectionAssessment::Assessed(false),
+        SelectionAssessment::Assessed(false),
+        SelectionAssessment::ProviderFailed,
     ] {
         let result = handle.assess(question(QUESTION)).await.unwrap();
         assert!(
             result.prefilter.passed(),
-            "interest is not a proof-validity or prefilter oracle"
+            "selection is not a proof-validity or prefilter oracle"
         );
-        assert_eq!(result.interest, expected);
+        assert_eq!(result.selection_result, expected);
         assert!(result.novelty().is_some());
         assert_eq!(context(&handle).await, before);
     }
@@ -425,7 +443,10 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
     release.notify_one();
     let prior_pass = readonly.await.unwrap();
     assert!(prior_pass.prefilter.passed());
-    assert_eq!(prior_pass.interest, InterestAssessment::Assessed(true));
+    assert_eq!(
+        prior_pass.selection_result,
+        SelectionAssessment::Assessed(true)
+    );
     let old_context = context(&handle).await;
     assert_eq!(
         old_context.registered_questions, 0,
@@ -462,8 +483,8 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
         Some(RejectionReason::KnownProof)
     );
     assert_eq!(
-        stale.assessment.interest,
-        InterestAssessment::Assessed(true)
+        stale.assessment.selection_result,
+        SelectionAssessment::Assessed(true)
     );
     assert!(stale.assessment.novelty().is_none());
     assert!(
@@ -479,7 +500,10 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
         fresh.assessment.prefilter.reason,
         Some(RejectionReason::KnownProof)
     );
-    assert_eq!(fresh.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        fresh.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(stale.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(fresh.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(context(&handle).await, changed_context);
@@ -493,7 +517,7 @@ async fn running_node_rechecks_pending_admission_when_its_answer_arrives() {
 }
 
 #[tokio::test]
-async fn running_node_registry_growth_rechecks_formally_and_policy_changes_invalidate_interest() {
+async fn running_node_registry_growth_rechecks_formally_and_policy_changes_invalidate_selection() {
     let directory = Directory::new();
     let (handle, admin, inbox) = channel();
     let started = Arc::new(Notify::new());
@@ -543,17 +567,20 @@ async fn running_node_registry_growth_rechecks_formally_and_policy_changes_inval
                 result.assessment.prefilter.reason,
                 Some(RejectionReason::StaleContext)
             );
-            assert_eq!(result.assessment.interest, InterestAssessment::Stale);
+            assert_eq!(
+                result.assessment.selection_result,
+                SelectionAssessment::Stale
+            );
             assert!(result.assessment.novelty().is_none());
             assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
             assert_eq!(context(&handle).await, changed);
         } else {
             assert_eq!(
-                result.assessment.interest,
-                InterestAssessment::Assessed(true)
+                result.assessment.selection_result,
+                SelectionAssessment::Assessed(true)
             );
             let AdmissionOutcome::Admitted(receipt) = result.outcome else {
-                panic!("unrelated registry growth must preserve interest");
+                panic!("unrelated registry growth must preserve selection");
             };
             assert_eq!(receipt.snapshot_before(), changed.snapshot);
             assert_eq!(
@@ -570,21 +597,24 @@ async fn running_node_registry_growth_rechecks_formally_and_policy_changes_inval
         result.assessment.prefilter.reason,
         Some(RejectionReason::InvalidPolicy)
     );
-    assert_eq!(result.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        result.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(context(&handle).await.registered_questions, 2);
     stop(admin, task).await;
 }
 
-struct OwnedInterest(Arc<AtomicUsize>);
-impl Drop for OwnedInterest {
+struct OwnedSelection(Arc<AtomicUsize>);
+impl Drop for OwnedSelection {
     fn drop(&mut self) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 
 #[tokio::test]
-async fn running_node_bounds_pending_interest_and_drops_it_on_cancel_and_stop() {
+async fn running_node_bounds_pending_selection_and_drops_it_on_cancel_and_stop() {
     let directory = Directory::new();
     let (handle, admin, inbox) = channel();
     let started = Arc::new(Notify::new());
@@ -596,7 +626,7 @@ async fn running_node_bounds_pending_interest_and_drops_it_on_cancel_and_stop() 
         false,
         inbox,
         move |_| {
-            let owned = OwnedInterest(observed.clone());
+            let owned = OwnedSelection(observed.clone());
             let notify = notify.clone();
             async move {
                 let _owned = owned;
@@ -616,7 +646,10 @@ async fn running_node_bounds_pending_interest_and_drops_it_on_cancel_and_stop() 
         crowded.assessment.prefilter.reason,
         Some(RejectionReason::ReceivingLimit)
     );
-    assert_eq!(crowded.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        crowded.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(crowded.outcome, AdmissionOutcome::NotInserted);
     assert!(crowded.assessment.novelty().is_none());
     first.abort();
@@ -641,7 +674,7 @@ async fn running_node_bounds_pending_interest_and_drops_it_on_cancel_and_stop() 
     assert_eq!(
         dropped.load(Ordering::SeqCst),
         2,
-        "no independently spawned interest task survives node lifetime"
+        "no independently spawned selection task survives node lifetime"
     );
 }
 
@@ -750,7 +783,7 @@ fn registry_pattern(index: u32) -> naome_foundation::Formula {
 
 #[cfg(feature = "system-tests")]
 #[tokio::test]
-async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
+async fn running_node_uses_entire_large_graph_and_registry_before_selection() {
     use naome_foundation::Formula;
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
@@ -826,7 +859,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
     );
     let solved = handle.assess(question(SOLVED)).await.unwrap();
     assert_eq!(solved.prefilter.reason, Some(RejectionReason::KnownProof));
-    assert_eq!(solved.interest, InterestAssessment::NotRun);
+    assert_eq!(solved.selection_result, SelectionAssessment::NotRun);
     for index in 0..257 {
         let source = format!("goal = {}", registry_pattern(index).to_source());
         admin
@@ -844,7 +877,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
         duplicate.prefilter.reason,
         Some(RejectionReason::ExactDuplicate)
     );
-    assert_eq!(duplicate.interest, InterestAssessment::NotRun);
+    assert_eq!(duplicate.selection_result, SelectionAssessment::NotRun);
     let mut policy = PrefilterPolicy::default();
     policy.limits.operations = 1;
     admin.set_policy(policy).await.unwrap();
@@ -853,7 +886,7 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
         exhausted.prefilter.reason,
         Some(RejectionReason::ExecutionLimit)
     );
-    assert_eq!(exhausted.interest, InterestAssessment::NotRun);
+    assert_eq!(exhausted.selection_result, SelectionAssessment::NotRun);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     admin.set_policy(PrefilterPolicy::default()).await.unwrap();
     let approved = handle.assess(target).await.unwrap();
@@ -861,7 +894,10 @@ async fn running_node_uses_entire_large_graph_and_registry_before_interest() {
         approved.prefilter.passed(),
         "irrelevant data beyond former caps must not reject the full scope"
     );
-    assert_eq!(approved.interest, InterestAssessment::Assessed(true));
+    assert_eq!(
+        approved.selection_result,
+        SelectionAssessment::Assessed(true)
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         context(&handle).await,
@@ -893,7 +929,10 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
     let input = question(QUESTION);
     let readonly = handle.assess(input.clone()).await.unwrap();
     assert!(readonly.prefilter.passed());
-    assert_eq!(readonly.interest, InterestAssessment::Assessed(true));
+    assert_eq!(
+        readonly.selection_result,
+        SelectionAssessment::Assessed(true)
+    );
     assert_eq!(context(&handle).await, before);
     let (first, second) = tokio::join!(
         handle.admit_question(input.clone()),
@@ -923,7 +962,10 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
         rejected.assessment.prefilter.reason,
         Some(RejectionReason::ExactDuplicate | RejectionReason::ReceivingLimit)
     ));
-    assert_eq!(rejected.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        rejected.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     let after = context(&handle).await;
     assert_eq!(after.registered_questions, 1);
     assert_eq!(after.checked_artifacts, 0);
@@ -942,7 +984,7 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
-        "assessment and winning admission each run separate interest"
+        "assessment and winning admission each run separate selection"
     );
     let alias = handle
         .admit_question(question("# another source\ngoal = all(a,mem(a,a))"))
@@ -960,10 +1002,10 @@ async fn running_node_admission_commits_receipt_and_serializes_duplicate_request
 }
 
 #[tokio::test]
-async fn running_node_admission_without_interest_reports_pass_without_insertion() {
+async fn running_node_admission_without_selection_reports_pass_without_insertion() {
     let directory = Directory::new();
     let (handle, admin, inbox) = channel();
-    let task = tokio::spawn(network::run_with_questions_without_interest(
+    let task = tokio::spawn(network::run_with_questions_without_selection(
         directory.config(Vec::new()),
         false,
         inbox,
@@ -972,7 +1014,10 @@ async fn running_node_admission_without_interest_reports_pass_without_insertion(
     let result = handle.admit_question(question(QUESTION)).await.unwrap();
     assert!(result.assessment.prefilter.passed());
     assert!(result.assessment.novelty().is_some());
-    assert_eq!(result.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        result.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(context(&handle).await, before);
     stop(admin, task).await;
@@ -992,12 +1037,12 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
         inbox,
         move |_| {
             let ordinal = observed_calls.fetch_add(1, Ordering::SeqCst);
-            let owned = OwnedInterest(observed_drops.clone());
+            let owned = OwnedSelection(observed_drops.clone());
             async move {
                 let _owned = owned;
                 match ordinal {
                     0 => Ok(false),
-                    1 => Err("fixture interest failure".into()),
+                    1 => Err("fixture selection failure".into()),
                     _ => std::future::pending().await,
                 }
             }
@@ -1005,12 +1050,12 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
     ));
     let before = context(&handle).await;
     for expected in [
-        InterestAssessment::Assessed(false),
-        InterestAssessment::ProviderFailed,
-        InterestAssessment::TimedOut,
+        SelectionAssessment::Assessed(false),
+        SelectionAssessment::ProviderFailed,
+        SelectionAssessment::TimedOut,
     ] {
         let result = tokio::time::timeout(
-            crate::resources::limits().interest_timeout + Duration::from_secs(5),
+            crate::resources::limits().selection_timeout + Duration::from_secs(5),
             handle.admit_question(question(QUESTION)),
         )
         .await
@@ -1018,9 +1063,9 @@ async fn running_node_admission_false_error_and_timeout_have_no_effect() {
         .unwrap();
         assert!(
             result.assessment.prefilter.passed(),
-            "interest cannot change the formal Pass claim"
+            "selection cannot change the formal Pass claim"
         );
-        assert_eq!(result.assessment.interest, expected);
+        assert_eq!(result.assessment.selection_result, expected);
         assert!(result.assessment.novelty().is_some());
         assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
         assert_eq!(context(&handle).await, before);
@@ -1080,7 +1125,10 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
         Some(RejectionReason::KnownProof)
     );
     assert_eq!(result.assessment.prefilter.rule, "Q04_CHECKED_MP_CLOSURE");
-    assert_eq!(result.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        result.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(result.outcome, AdmissionOutcome::NotInserted);
     assert_eq!(context(&handle).await, before);
     let witness = result.assessment.prefilter.deduction.as_ref().unwrap();
@@ -1112,7 +1160,10 @@ async fn running_node_multistep_admission_rechecks_original_proofs_and_certifica
         exhausted.assessment.prefilter.reason,
         Some(RejectionReason::ExecutionLimit)
     );
-    assert_eq!(exhausted.assessment.interest, InterestAssessment::NotRun);
+    assert_eq!(
+        exhausted.assessment.selection_result,
+        SelectionAssessment::NotRun
+    );
     assert_eq!(exhausted.outcome, AdmissionOutcome::NotInserted);
     assert!(exhausted.assessment.novelty().is_none());
     assert!(exhausted.assessment.prefilter.deduction.is_none());
@@ -1323,4 +1374,4 @@ fn a_question_write_failure_is_not_reported_as_a_completed_publication() {
 }
 
 mod equivalence;
-mod interest_binding;
+mod selection_binding;

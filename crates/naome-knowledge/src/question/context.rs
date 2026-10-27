@@ -30,7 +30,7 @@ pub(crate) struct Revision {
 /// Captured before provider work. Only a positive checked completion can seal
 /// it into an assessment, and unrelated graph growth does not renew this input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct InterestContext {
+pub(super) struct SelectionContext {
     pub(super) source: Identity,
     pub(super) policy: Identity,
     pub(super) owner: Identity,

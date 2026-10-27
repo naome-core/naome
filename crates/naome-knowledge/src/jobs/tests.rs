@@ -119,7 +119,7 @@ fn role_horizons_have_no_lifetime_ceiling_and_reject_zero_or_overflow() {
         assert!(settings.validate().is_err());
     }
     let mut settings = Settings::default();
-    settings.interest.limits.work_units = 0;
+    settings.selection.limits.work_units = 0;
     assert!(settings.validate().is_err());
 }
 

@@ -7,13 +7,13 @@ async fn complete(
 ) {
     let requests = owner.requests();
     assert_eq!(requests.len(), 1);
-    owner.complete(requests[0].0, Ok(crate::jobs::Output::Interest(true)));
+    owner.complete(requests[0].0, Ok(crate::jobs::Output::Selected(true)));
     let result = questions.completed().await;
     questions.finish(graph, result);
 }
 
 #[tokio::test]
-async fn managed_short_proof_is_fetched_and_checked_once_across_final_interest() {
+async fn managed_short_proof_is_fetched_and_checked_once_across_final_selection() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();
@@ -65,7 +65,7 @@ async fn managed_short_proof_is_fetched_and_checked_once_across_final_interest()
 }
 
 #[tokio::test]
-async fn expired_staging_releases_payload_but_keeps_the_final_interest_result() {
+async fn expired_staging_releases_payload_but_keeps_the_final_selection_result() {
     let directory = Directory::new();
     let mut graph = Graph::open(&directory.0).unwrap();
     let mut owner = crate::jobs::tests::Manual::new();

@@ -49,7 +49,7 @@ fn expired_primary_program_response_cannot_extend_durable_input() {
 }
 
 #[test]
-fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_interest() {
+fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_selection() {
     let graph = Graph::default();
     let checked = source(&graph);
     let metadata = metadata(&checked);
@@ -155,7 +155,7 @@ fn denied_traffic_preserves_the_prefix_and_fresh_metadata_does_not_renew_interes
 }
 
 #[tokio::test]
-async fn expired_queued_program_metadata_cannot_start_interest_or_input_staging() {
+async fn expired_queued_program_metadata_cannot_start_selection_or_input_staging() {
     let mut graph = Graph::default();
     let checked = source(&graph);
     let metadata = metadata(&checked);

@@ -24,15 +24,12 @@ use tokio::{
 pub use crate::autonomous::Intervals as RuntimeIntervals;
 pub use crate::jobs::{Limits as JobLimits, RecoveryPolicy, RoleSettings, Settings as RuntimeJobs};
 mod cli;
-mod owner;
 mod replay_guard;
 mod startup;
-pub(crate) use owner::Profile as OwnerProfile;
 pub(crate) use startup::Startup;
 
 fn control_limit() -> usize {
-    // Bound escaped owner text plus the JSON frame and control metadata.
-    6 * crate::resources::limits().owner_text_bytes + 1024
+    4096
 }
 const DAEMON_NONCE: &str = "NAOME_DAEMON_NONCE";
 static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
@@ -192,7 +189,6 @@ pub struct Status {
     pub computation_reason: Option<String>,
     pub accepted_artifacts: usize,
     pub artifact_verification: ArtifactVerification,
-    pub interest: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -228,7 +224,6 @@ fn identity_receipt(directory: &Path) -> Result<Option<IdentityReceipt>, String>
 enum Operation {
     Status,
     Stop,
-    Interest(String),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -259,8 +254,6 @@ pub(crate) struct Control {
     socket_identity: (u64, u64),
     stopping: tokio::sync::watch::Sender<bool>,
     pub(crate) computation: std::sync::Arc<crate::resources::Computation>,
-    owner: std::sync::Arc<Mutex<OwnerState>>,
-    selection_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ownership: Option<std::sync::Arc<crate::store::Store>>,
     startup: Option<Startup>,
 }
@@ -276,11 +269,6 @@ impl crate::publication::LocalAuthority for Control {
         }
         Ok(())
     }
-}
-
-struct OwnerState {
-    text: String,
-    recovery_error: Option<String>,
 }
 
 fn socket_path(directory: &Path) -> PathBuf {
@@ -383,7 +371,6 @@ impl Control {
             return Err("invalid internal launch nonce".into());
         }
         let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
-        let text = owner::load(&directory)?;
         let socket = socket_path(&directory);
         match fs::symlink_metadata(&socket) {
             Ok(metadata) if metadata.file_type().is_socket() => {
@@ -411,11 +398,6 @@ impl Control {
             socket_identity,
             stopping: tokio::sync::watch::channel(false).0,
             computation: std::sync::Arc::default(),
-            owner: std::sync::Arc::new(Mutex::new(OwnerState {
-                text,
-                recovery_error: None,
-            })),
-            selection_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             ownership: None,
             startup: None,
         })
@@ -440,40 +422,13 @@ impl Control {
             .map_err(|error| error.to_string())
     }
 
-    /// A profile snapshot for same-owner consumers, with validated format,
-    /// revision and digest. Recovery uncertainty never yields a usable profile.
-    pub(crate) fn owner_profile(&self) -> Result<OwnerProfile, String> {
-        let mut owner = self
-            .owner
-            .lock()
-            .map_err(|_| "owner configuration lock poisoned")?;
-        if let Some(error) = &owner.recovery_error {
-            return Err(error.clone());
-        }
-        let profile = owner::profile(&self.directory).inspect_err(|_error| {
-            self.selection_dirty
-                .store(true, std::sync::atomic::Ordering::Release);
-        })?;
-        owner.text = profile.interest.clone();
-        Ok(profile)
-    }
-
     pub(crate) fn selection(&self) -> Result<[u8; 32], String> {
-        let profile = self.owner_profile()?;
-        let bytes = serde_json::to_vec(&(
-            "naome-deterministic-mocks-v1",
-            profile.version,
-            profile.revision,
-            profile.digest,
-            crate::hex(&Sha256::digest(profile.interest.as_bytes())),
-        ))
-        .map_err(|e| e.to_string())?;
-        Ok(Sha256::digest(bytes).into())
-    }
-
-    pub(crate) fn selection_changed(&self) -> bool {
-        self.selection_dirty
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        // The active instance and fixed research policy own publication authority.
+        // Knowledge and attempt statistics only order work, never revoke grants.
+        let mut hash = Sha256::new();
+        hash.update(b"naome:research-selection");
+        hash.update(self.endpoint.token.as_bytes());
+        Ok(hash.finalize().into())
     }
 
     pub(crate) async fn respond(
@@ -501,58 +456,6 @@ impl Control {
         if stopping {
             self.stopping.send_replace(true);
         }
-        let directory = self.directory.clone();
-        let state = self.owner.clone();
-        let dirty = self.selection_dirty.clone();
-        let ownership = self.ownership.clone();
-        let interest = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            // Keep the canonical directory locked until any in-flight owner
-            // transition finishes, including after a disconnected control client.
-            let _ownership = ownership;
-            match request.operation {
-                Operation::Status => {
-                    let mut owner = state
-                        .lock()
-                        .map_err(|_| "owner configuration lock poisoned")?;
-                    if let Some(error) = &owner.recovery_error {
-                        return Err(error.clone());
-                    }
-                    let profile = owner::profile(&directory).inspect_err(|_| {
-                        dirty.store(true, std::sync::atomic::Ordering::Release);
-                    })?;
-                    owner.text = profile.interest.clone();
-                    Ok(profile.interest)
-                }
-                Operation::Stop => Ok(state
-                    .lock()
-                    .map_err(|_| "owner configuration lock poisoned")?
-                    .text
-                    .clone()),
-                Operation::Interest(text) => {
-                    dirty.store(true, std::sync::atomic::Ordering::Release);
-                    let mut owner = state
-                        .lock()
-                        .map_err(|_| "owner configuration lock poisoned")?;
-                    if let Some(error) = &owner.recovery_error {
-                        return Err(error.clone());
-                    }
-                    match owner::update(&directory, &text) {
-                        Ok(text) => {
-                            owner.text = text.clone();
-                            Ok(text)
-                        }
-                        Err(error) => {
-                            if error.recovery_required {
-                                owner.recovery_error = Some(error.message.clone());
-                            }
-                            Err(error.message)
-                        }
-                    }
-                }
-            }
-        })
-        .await
-        .map_err(|error| format!("owner control worker failed: {error}"))??;
         let running = ready && !self.stopping();
         let (computation, computation_reason) = if running {
             self.computation.status()
@@ -568,9 +471,18 @@ impl Control {
                     computation_reason,
                     accepted_artifacts: count,
                     artifact_verification: ArtifactVerification::Checked,
-                    interest,
                 },
             },
+        };
+        #[cfg(feature = "developer-tools")]
+        let response = if stopping
+            && std::env::var("NAOME_DEV_CONTROL_SENDBUF_BYTES").as_deref() == Ok("1024")
+        {
+            let mut value = serde_json::to_value(&response).map_err(|e| e.to_string())?;
+            value["padding"] = serde_json::Value::String("x".repeat(3000));
+            value
+        } else {
+            serde_json::to_value(&response).map_err(|e| e.to_string())?
         };
         // Leave time for a response timeout to settle before the node's stop
         // drain expires, while provider teardown has already been requested.
@@ -841,7 +753,7 @@ fn configuration(directory: &Path) -> Result<(network::Config, Intervals), Strin
     let config: network::Config =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
     if !config.producer_sources.is_empty() {
-        return Err("producer_sources is a developer-only operation; ordinary runtime uses the three mock functions".into());
+        return Err("producer_sources is a developer-only operation; ordinary runtime owns autonomous research".into());
     }
     Ok((config, intervals.validate()?))
 }
@@ -854,25 +766,6 @@ async fn stopped_status(directory: &Path) -> Result<Status, String> {
         computation_reason: None,
         accepted_artifacts: store.stored_count()?,
         artifact_verification: ArtifactVerification::NotRun,
-        interest: owner::load(directory)?,
-    })
-}
-
-async fn interest(directory: &Path, text: &str) -> Result<Status, String> {
-    owner::validate(text)?;
-    if let Some(status) = request(directory, Operation::Interest(text.into()), None).await? {
-        return Ok(status);
-    }
-    // Keep the store's kernel lock through persistence and status construction.
-    // A daemon or embedding racing this command cannot become another writer.
-    let store = crate::store::Store::open(directory)?;
-    Ok(Status {
-        running: false,
-        computation: crate::resources::ComputationState::Stopped,
-        computation_reason: None,
-        accepted_artifacts: store.stored_count()?,
-        artifact_verification: ArtifactVerification::NotRun,
-        interest: owner::update(directory, text).map_err(|error| error.message)?,
     })
 }
 
@@ -1250,7 +1143,7 @@ async fn wait_for_stop(
     }
 }
 
-/// Ordinary CLI exposes lifecycle, passive observation and local owner interest.
+/// Ordinary CLI exposes lifecycle and passive observation.
 pub async fn execute() -> Result<(), String> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if let Some(output) = cli::information(&arguments) {
@@ -1269,7 +1162,6 @@ pub async fn execute() -> Result<(), String> {
     }
     let cli::Arguments {
         command,
-        text,
         json,
         startup_handoff,
     } = cli::Arguments::parse(&arguments)?;
@@ -1298,7 +1190,6 @@ pub async fn execute() -> Result<(), String> {
                 computation_reason: None,
                 accepted_artifacts: 0,
                 artifact_verification: ArtifactVerification::NotRun,
-                interest: String::new(),
             },
         )?;
         return Ok(());
@@ -1313,7 +1204,6 @@ pub async fn execute() -> Result<(), String> {
         "start" => start(&directory).await?,
         "stop" => stop(&directory).await?,
         "status" => status(&directory).await?,
-        "interest" => interest(&directory, text.expect("parsed interest text")).await?,
         _ => unreachable!(),
     };
     cli::print(command, json, &status)

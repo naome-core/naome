@@ -1,6 +1,6 @@
 //! Finite, receiver-local question prefilter over checker-validated knowledge.
 //!
-//! This API has no storage, publication, interest or consensus effects. Its
+//! This API has no storage, publication, selection or consensus effects. Its
 //! PASS outcome establishes only that the supported deterministic checks
 //! passed against the supplied complete local snapshot.
 

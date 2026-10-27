@@ -40,8 +40,12 @@ async fn execute() -> Result<(), String> {
         },
         ["relay", config] => naome_knowledge::relay::run(Path::new(config)).await,
         ["run", config, options @ ..] => {
-            let (test_controls, selection) = interest_options(options)?;
-            network::run_with_interest(network::read_config(Path::new(config))?,test_controls,selection).await
+            let test_controls = match options {
+                [] => false,
+                [option] if *option == "--test-controls" => true,
+                _ => return Err("invalid run option; use --test-controls".into()),
+            };
+            network::run(network::read_config(Path::new(config))?, test_controls).await
         },
         ["contract"] => {
             println!("{}",json!({"foundation":naome_foundation::FOUNDATION_ID, "codec":CODEC_ID, "checker":CHECKER_ID,
@@ -58,76 +62,6 @@ async fn execute() -> Result<(), String> {
                     "request_timeout_seconds":naome_knowledge::resources::limits().request_timeout.as_secs(),"reconcile_seconds":naome_knowledge::resources::limits().reconcile_interval.as_secs()}}));
             Ok(())
         },
-        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] [--question-interest all | --question-interest-file <questions.json>] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status (optional after ArtifactId; ids, next_after, status_page_ids, accepted_artifacts), produce, ingest, object, describe, links, announce, offer, stop\npeer proof exchange requires an explicit positive question interest selector".into()),
+        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status (optional after ArtifactId; ids, next_after, status_page_ids, accepted_artifacts), produce, ingest, object, describe, links, announce, offer, stop".into()),
     }
-}
-
-fn interest_options(
-    mut options: &[&str],
-) -> Result<(bool, Option<network::InterestSelection>), String> {
-    let mut test_controls = false;
-    let mut selection = None;
-    while !options.is_empty() {
-        match options {
-            ["--test-controls", rest @ ..] if !test_controls => {
-                test_controls = true;
-                options = rest;
-            }
-            ["--question-interest", "all", rest @ ..] if selection.is_none() => {
-                selection = Some(network::InterestSelection::AllSupported);
-                options = rest;
-            }
-            ["--question-interest-file", file, rest @ ..] if selection.is_none() => {
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Selected {
-                    questions: Vec<String>,
-                }
-                let selected: Selected = serde_json::from_slice(&read_interest(Path::new(file))?)
-                    .map_err(|error| error.to_string())?;
-                if selected.questions.len()
-                    > naome_knowledge::resources::limits().developer_questions
-                {
-                    return Err("question interest count limit".into());
-                }
-                let questions = selected
-                    .questions
-                    .into_iter()
-                    .map(|source| {
-                        naome_authoring::CompiledQuestion::compile(&source)
-                            .map_err(|error| error.to_string())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                selection = Some(network::InterestSelection::Questions(questions));
-                options = rest;
-            }
-            _ => {
-                return Err(
-                    "invalid or duplicate run option; use one explicit question interest selector"
-                        .into(),
-                );
-            }
-        }
-    }
-    Ok((test_controls, selection))
-}
-
-fn read_interest(path: &Path) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    let file = fs::File::open(path).map_err(|error| error.to_string())?;
-    if !file
-        .metadata()
-        .map_err(|error| error.to_string())?
-        .is_file()
-    {
-        return Err("expected regular question interest file".into());
-    }
-    file.take(naome_knowledge::resources::limits().producer_bytes as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() > naome_knowledge::resources::limits().producer_bytes {
-        return Err("question interest file byte limit".into());
-    }
-    Ok(bytes)
 }

@@ -1,7 +1,7 @@
-//! Local formal prefilter, optional interest selection and atomic question intake.
+//! Local formal prefilter, optional selection selection and atomic question intake.
 //!
 //! Assessment is read-only. Admission rechecks the receiver's current graph,
-//! registry and policy after interest, then commits in the same serialized node
+//! registry and policy after selection, then commits in the same serialized node
 //! operation. Baseline import is a separate owner-held administrative capability.
 //! The ordinary registry preserves original inputs and admission provenance.
 //! Peer descriptions carry derived
@@ -30,11 +30,11 @@ const QUESTION_ENTRY_MAX_BYTES: usize = 6 * naome_authoring::QUESTION_SOURCE_MAX
 mod cache;
 mod context;
 mod persistence;
-use context::InterestContext;
+use context::SelectionContext;
 pub(crate) use context::{FormalContext, Revision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InterestAssessment {
+pub enum SelectionAssessment {
     NotRun,
     Assessed(bool),
     ProviderFailed,
@@ -47,15 +47,15 @@ mod tests;
 
 #[derive(Clone, Debug)]
 pub struct QuestionAssessment {
-    /// Supported finite formal checks, separate from interest selection.
+    /// Supported finite formal checks, separate from selection selection.
     pub prefilter: PrefilterDecision,
-    pub interest: InterestAssessment,
+    pub selection_result: SelectionAssessment,
     pub submitted_negation_parity: bool,
     /// Exact provider and owner-selection epoch; absent after owner recovery error.
     pub selection: Option<Identity>,
     // A positive provider result binds the exact question and selection inputs,
     // independently of the snapshot used by the mandatory formal checks.
-    selected: Option<InterestContext>,
+    selected: Option<SelectionContext>,
 }
 
 impl QuestionAssessment {
@@ -63,7 +63,7 @@ impl QuestionAssessment {
         FormalContext::of(&self.prefilter)
     }
     /// First discovery within the bound complete local world and finite rules.
-    /// Interest failure or nonselection does not change this formal result.
+    /// Selection failure or nonselection does not change this formal result.
     pub fn novelty(&self) -> Option<&NodeLocalNovelty> {
         self.prefilter.novelty()
     }
@@ -117,8 +117,8 @@ impl AdmissionReceipt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdmissionOutcome {
     Admitted(Box<AdmissionReceipt>),
-    /// Formal rejection, stale context or no positive interest selection.
-    /// Inspect prefilter and interest separately; selection is not correctness.
+    /// Formal rejection, stale context or no positive selection selection.
+    /// Inspect prefilter and selection separately; selection is not correctness.
     NotInserted,
 }
 
@@ -218,8 +218,8 @@ impl QuestionHandle {
         send(&self.sender, Command::Assess(question, sender), reply).await
     }
 
-    /// Fresh formal admission after positive optional interest selection.
-    /// Graph and registry changes require fresh formal checks. Interest binds
+    /// Fresh formal admission after positive optional selection selection.
+    /// Graph and registry changes require fresh formal checks. Selection binds
     /// the exact question, policy and owner/provider epoch independently.
     pub async fn admit_question(
         &self,
@@ -311,11 +311,11 @@ struct Pending {
     future: Pin<Box<dyn Future<Output = ProviderResult> + Send>>,
     job: Option<u64>,
     peer: bool,
-    interest_context: Option<InterestContext>,
+    selection_context: Option<SelectionContext>,
 }
 
 struct ProviderResult {
-    assessment: InterestAssessment,
+    assessment: SelectionAssessment,
     job: Option<u64>,
 }
 
@@ -356,9 +356,9 @@ pub(crate) struct LocalQuestions<F> {
     next_compaction: usize,
     old_indexes: Vec<std::sync::Weak<crate::index_storage::IndexStorage>>,
     storage_error: Option<String>,
-    interest_horizon: Duration,
+    selection_horizon: Duration,
     selection: Option<Identity>,
-    /// Bounded complete read-only decisions, never admission or interest receipts.
+    /// Bounded complete read-only decisions, never admission or selection receipts.
     cache: cache::DecisionCache,
     /// Only successful local admission with an actually delivered receipt.
     admitted: BTreeMap<Identity, AdmittedProvenance>,
@@ -387,7 +387,7 @@ where
             next_compaction: crate::resources::active_limits().registry_index_cache_bytes,
             old_indexes: Vec::new(),
             storage_error: None,
-            interest_horizon: crate::resources::limits().interest_timeout,
+            selection_horizon: crate::resources::limits().selection_timeout,
             selection: Some(
                 crate::object::id_bytes(&crate::jobs::Binding::new([0; 32], [0; 32]).selection)
                     .expect("canonical built-in provider identity"),
@@ -408,7 +408,7 @@ where
         let mut local = Self::new(None);
         local.attach_persistence(directory)?;
         local.managed = Some(client);
-        local.interest_horizon = horizon;
+        local.selection_horizon = horizon;
         Ok(local)
     }
 
@@ -626,8 +626,8 @@ where
     pub(crate) fn uses_jobs(&self) -> bool {
         self.managed.is_some()
     }
-    pub(crate) fn interest_deadline(&self, now: Instant) -> Instant {
-        now + self.interest_horizon
+    pub(crate) fn selection_deadline(&self, now: Instant) -> Instant {
+        now + self.selection_horizon
     }
 
     /// The serialized driver supplies a validated provider/owner epoch. Errors
@@ -647,9 +647,9 @@ where
             pending.reply.send(
                 QuestionAssessment {
                     prefilter: pending.prefilter,
-                    interest: InterestAssessment::Stale,
+                    selection_result: SelectionAssessment::Stale,
                     submitted_negation_parity: pending.question.negation_parity(),
-                    selection: pending.interest_context.map(|context| context.owner),
+                    selection: pending.selection_context.map(|context| context.owner),
                     selected: None,
                 },
                 AdmissionOutcome::NotInserted,
@@ -695,8 +695,8 @@ where
             selection: self.selection,
         }
     }
-    fn interest_context(&self, question: &CompiledQuestion) -> Option<InterestContext> {
-        Some(InterestContext {
+    fn selection_context(&self, question: &CompiledQuestion) -> Option<SelectionContext> {
+        Some(SelectionContext {
             source: *question.source_hash(),
             policy: self.policy.identity(),
             owner: self.selection?,
@@ -762,7 +762,11 @@ where
         decision
     }
 
-    fn assess(&mut self, graph: &Graph, question: &CompiledQuestion) -> PrefilterDecision {
+    pub(crate) fn assess(
+        &mut self,
+        graph: &Graph,
+        question: &CompiledQuestion,
+    ) -> PrefilterDecision {
         self.evaluate(graph, question, true)
     }
 
@@ -774,7 +778,7 @@ where
 
     pub(crate) fn available(&self) -> bool {
         if self.managed.is_some() {
-            self.pending.len() < 2 * crate::resources::active_limits().interest_decisions
+            self.pending.len() < 2 * crate::resources::active_limits().selection_decisions
         } else {
             self.pending.is_empty()
         }
@@ -783,7 +787,7 @@ where
     pub(crate) fn available_peer(&self) -> bool {
         if self.managed.is_some() {
             self.pending.values().filter(|p| p.peer).count()
-                < crate::resources::active_limits().interest_decisions
+                < crate::resources::active_limits().selection_decisions
         } else {
             self.available()
         }
@@ -791,7 +795,7 @@ where
     pub(crate) fn available_local(&self) -> bool {
         if self.managed.is_some() {
             self.pending.values().filter(|p| !p.peer).count()
-                < crate::resources::active_limits().interest_decisions
+                < crate::resources::active_limits().selection_decisions
         } else {
             self.available()
         }
@@ -877,12 +881,12 @@ where
             && assessment.prefilter.passed()
             && self.selection.is_some()
             && assessment.selection == self.selection
-            && assessment.interest == InterestAssessment::Assessed(true)
-            && assessment.selected == self.interest_context(question)
+            && assessment.selection_result == SelectionAssessment::Assessed(true)
+            && assessment.selected == self.selection_context(question)
             && (assessment.novelty().is_some() || self.exchange_record(question).is_some())
     }
 
-    /// Reuse only sealed positive interest for the exact unchanged selection
+    /// Reuse only sealed positive selection for the exact unchanged selection
     /// inputs. Every receiver-side formal fact is recomputed on the live world.
     pub(crate) fn refresh_exchange(
         &mut self,
@@ -891,7 +895,7 @@ where
         assessment: &QuestionAssessment,
     ) -> Result<QuestionAssessment, crate::Error> {
         if !self.exchange_eligible(question, assessment) {
-            return Err("stale or declined question interest".into());
+            return Err("stale or declined question selection".into());
         }
         let fresh = self.evaluate_record(graph, question, false, self.exchange_record(question));
         if fresh.inconclusive() {
@@ -1055,7 +1059,7 @@ where
         let peer = matches!(reply, Reply::Exchange { root: Some(_), .. });
         let available = if self.managed.is_some() {
             self.pending.values().filter(|p| p.peer == peer).count()
-                < crate::resources::active_limits().interest_decisions
+                < crate::resources::active_limits().selection_decisions
         } else {
             self.pending.is_empty()
         };
@@ -1068,8 +1072,8 @@ where
         let remaining = match &reply {
             Reply::Exchange { deadline, .. } => deadline
                 .saturating_duration_since(Instant::now())
-                .min(crate::resources::limits().interest_timeout),
-            _ => crate::resources::limits().interest_timeout,
+                .min(crate::resources::limits().selection_timeout),
+            _ => crate::resources::limits().selection_timeout,
         };
         if !prefilter.passed()
             || self.selection.is_none()
@@ -1079,10 +1083,10 @@ where
         {
             reply.send(
                 QuestionAssessment {
-                    interest: if self.selection.is_none() && prefilter.passed() {
-                        InterestAssessment::ProviderFailed
+                    selection_result: if self.selection.is_none() && prefilter.passed() {
+                        SelectionAssessment::ProviderFailed
                     } else {
-                        InterestAssessment::NotRun
+                        SelectionAssessment::NotRun
                     },
                     prefilter,
                     submitted_negation_parity: question.negation_parity(),
@@ -1106,7 +1110,7 @@ where
             let binding = FormalContext::of(&prefilter)
                 .binding()
                 .with_selection(self.selection.expect("available selection epoch"));
-            let request = crate::jobs::Input::Interest {
+            let request = crate::jobs::Input::Select {
                 question: question.source().to_owned(),
                 purpose,
                 root,
@@ -1115,46 +1119,50 @@ where
             Box::pin(async move {
                 let Ok(mut ticket) = ticket else {
                     return ProviderResult {
-                        assessment: InterestAssessment::ProviderFailed,
+                        assessment: SelectionAssessment::ProviderFailed,
                         job: None,
                     };
                 };
                 match ticket.completed().await {
                     Ok(completion) => {
-                        let interest = if completion.binding != binding {
-                            InterestAssessment::Stale
+                        let selection = if completion.binding != binding {
+                            SelectionAssessment::Stale
                         } else if completion.state == crate::jobs::State::Expired {
-                            InterestAssessment::TimedOut
+                            SelectionAssessment::TimedOut
                         } else {
                             match completion.result {
-                                Ok(crate::jobs::Output::Interest(value)) => {
-                                    InterestAssessment::Assessed(value)
+                                Ok(crate::jobs::Output::Selected(value)) => {
+                                    SelectionAssessment::Assessed(value)
                                 }
-                                _ => InterestAssessment::ProviderFailed,
+                                _ => SelectionAssessment::ProviderFailed,
                             }
                         };
                         ProviderResult {
-                            assessment: interest,
+                            assessment: selection,
                             job: (completion.id != 0).then_some(completion.id),
                         }
                     }
                     Err(_) => ProviderResult {
-                        assessment: InterestAssessment::ProviderFailed,
+                        assessment: SelectionAssessment::ProviderFailed,
                         job: None,
                     },
                 }
             })
         } else {
-            let provider = self.provider.as_ref().expect("configured interest").clone();
+            let provider = self
+                .provider
+                .as_ref()
+                .expect("configured selection")
+                .clone();
             let input = question.clone();
             // Cooperative embeddings retain their documented nonblocking
             // contract. Even construction happens only when this future runs.
             Box::pin(async move {
                 let bounded = tokio::time::timeout(remaining, async move { provider(input).await });
                 let assessment = match bounded.await {
-                    Ok(Ok(yes)) => InterestAssessment::Assessed(yes),
-                    Ok(Err(_)) => InterestAssessment::ProviderFailed,
-                    Err(_) => InterestAssessment::TimedOut,
+                    Ok(Ok(yes)) => SelectionAssessment::Assessed(yes),
+                    Ok(Err(_)) => SelectionAssessment::ProviderFailed,
+                    Err(_) => SelectionAssessment::TimedOut,
                 };
                 ProviderResult {
                     assessment,
@@ -1164,11 +1172,11 @@ where
         };
         let id = self.next_pending;
         let Some(next) = id.checked_add(1) else {
-            self.storage_error = Some("question interest identity exhausted".into());
+            self.storage_error = Some("question selection identity exhausted".into());
             return;
         };
         self.next_pending = next;
-        let interest_context = self.interest_context(&question);
+        let selection_context = self.selection_context(&question);
         self.pending.insert(
             id,
             Pending {
@@ -1178,7 +1186,7 @@ where
                 future,
                 job: None,
                 peer,
-                interest_context,
+                selection_context,
             },
         );
     }
@@ -1242,7 +1250,7 @@ where
         true
     }
 
-    pub(crate) async fn completed(&mut self) -> InterestAssessment {
+    pub(crate) async fn completed(&mut self) -> SelectionAssessment {
         if self.pending.is_empty() {
             return std::future::pending().await;
         }
@@ -1259,7 +1267,7 @@ where
         result.assessment
     }
 
-    pub(crate) fn finish(&mut self, graph: &Graph, interest: InterestAssessment) {
+    pub(crate) fn finish(&mut self, graph: &Graph, selection: SelectionAssessment) {
         let Some(id) = self
             .finished
             .take()
@@ -1290,18 +1298,18 @@ where
         } else {
             self.evaluate(graph, &pending.question, !pending.reply.admission())
         };
-        let interest = if pending.interest_context.is_none()
-            || pending.interest_context != self.interest_context(&pending.question)
+        let selection = if pending.selection_context.is_none()
+            || pending.selection_context != self.selection_context(&pending.question)
         {
             if pending.prefilter.policy != prefilter.policy {
                 prefilter = prefilter.reject(RejectionReason::StaleContext, "Q09_STALE_CONTEXT");
             }
-            InterestAssessment::Stale
+            SelectionAssessment::Stale
         } else {
-            interest
+            selection
         };
-        let selected = if prefilter.passed() && interest == InterestAssessment::Assessed(true) {
-            pending.interest_context
+        let selected = if prefilter.passed() && selection == SelectionAssessment::Assessed(true) {
+            pending.selection_context
         } else {
             None
         };
@@ -1311,7 +1319,7 @@ where
         let mut prepared = false;
         if pending.reply.admission()
             && prefilter.passed()
-            && interest == InterestAssessment::Assessed(true)
+            && selection == SelectionAssessment::Assessed(true)
             && let Some(novelty) = prefilter.novelty().cloned()
         {
             let previous = self.registry.clone();
@@ -1356,9 +1364,9 @@ where
         let delivered = pending.reply.send(
             QuestionAssessment {
                 prefilter,
-                interest,
+                selection_result: selection,
                 submitted_negation_parity: pending.question.negation_parity(),
-                selection: pending.interest_context.map(|context| context.owner),
+                selection: pending.selection_context.map(|context| context.owner),
                 selected,
             },
             outcome,

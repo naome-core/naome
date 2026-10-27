@@ -262,7 +262,7 @@ class PackageTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def payload(self, target):
-        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","artifact_verification":"not_run","accepted_artifacts":0,"interest":""}}\';;\n*) exit 1;;\nesac\n'.encode()
+        binary = f'#!/bin/sh\ncase "$*" in\n--version) echo "naome {VERSION}";;\n--help) echo "naome start";;\n"--json status") echo \'{{"running":false,"computation":"stopped","artifact_verification":"not_run","accepted_artifacts":0}}\';;\n*) exit 1;;\nesac\n'.encode()
         lockfile = (ROOT / "Cargo.lock").read_bytes()
         build = {"schema": 1, "repository": "naome-core/naome", "commit": SHA, "target": target, "profile": "release",
                  "features": [], "version": VERSION, "tag": f"v{VERSION}", "prerelease": "-" in VERSION,
@@ -425,28 +425,25 @@ class PackageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 package.verify_audit(broken)
 
-    def test_lifecycle_preserves_interest_and_automatic_computation_state_after_shutdown(self):
+    def test_lifecycle_preserves_automatic_computation_state_after_shutdown(self):
         for computation in ("running", "pausing", "paused"):
             with self.subTest(computation=computation):
                 operations = []
                 running = False
-                interest = ""
                 def run(_json, command, *arguments):
-                    nonlocal running, interest
+                    nonlocal running
                     operations.append(command)
                     if command == "start":
                         running = True
                     elif command == "stop":
                         running = False
-                    elif command == "interest":
-                        interest = arguments[0]
                     elif command != "status":
                         self.fail(f"unexpected lifecycle command: {command}")
                     return json.dumps({"running": running, "computation": computation if running else "stopped",
                                        "computation_reason": "operating system memory pressure" if running and computation != "running" else None,
-                                       "artifact_verification": "checked" if running else "not_run", "interest": interest})
+                                       "artifact_verification": "checked" if running else "not_run"})
                 package.lifecycle(run, self.directory / computation)
-                self.assertEqual(operations, ["start", "status", "interest", "stop", "status"])
+                self.assertEqual(operations, ["start", "status", "stop", "status"])
                 self.assertFalse(running)
 
     def test_lifecycle_rejects_unchecked_or_inconsistent_computation_and_still_stops(self):

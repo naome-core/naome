@@ -47,8 +47,9 @@ pub fn create_proof(question: &CompiledQuestion) -> Option<String> {
     })
 }
 
-/// Placeholder interest selection, called only after the real formal prefilter.
-pub fn assess_interest(_: CompiledQuestion) -> std::future::Ready<Result<bool, String>> {
+/// Accepts supported candidates after the independent formal prefilter.
+/// Structural research ranking belongs to the node, not this provider.
+pub fn select_question(_: CompiledQuestion) -> std::future::Ready<Result<bool, String>> {
     std::future::ready(Ok(true))
 }
 

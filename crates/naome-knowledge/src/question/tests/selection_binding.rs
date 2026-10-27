@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn pending_interest_cannot_be_sealed_after_its_policy_or_owner_changes() {
+async fn pending_selection_cannot_be_sealed_after_its_policy_or_owner_changes() {
     for owner_failure in [false, true] {
         let directory = Directory::new();
         let graph = Graph::default();
@@ -17,23 +17,26 @@ async fn pending_interest_cannot_be_sealed_after_its_policy_or_owner_changes() {
         let (id, _) = provider.requests().remove(0);
         if owner_failure {
             local.select(None);
-            provider.complete(id, Ok(crate::jobs::Output::Interest(true)));
+            provider.complete(id, Ok(crate::jobs::Output::Selected(true)));
         } else {
             local.policy.limits.operations -= 1;
-            provider.complete(id, Ok(crate::jobs::Output::Interest(true)));
-            let interest = local.completed().await;
-            local.finish(&graph, interest);
+            provider.complete(id, Ok(crate::jobs::Output::Selected(true)));
+            let selection = local.completed().await;
+            local.finish(&graph, selection);
         }
         let admission = receiver.await.unwrap();
         assert_eq!(admission.outcome, AdmissionOutcome::NotInserted);
-        assert_eq!(admission.assessment.interest, InterestAssessment::Stale);
+        assert_eq!(
+            admission.assessment.selection_result,
+            SelectionAssessment::Stale
+        );
         assert!(admission.assessment.selected.is_none());
         assert_eq!(local.registry.len(), 0);
     }
 }
 
 #[tokio::test]
-async fn independent_admissions_share_interest_epoch_but_receive_fresh_formal_receipts() {
+async fn independent_admissions_share_selection_epoch_but_receive_fresh_formal_receipts() {
     let directory = Directory::new();
     let graph = Graph::default();
     let mut owner = crate::jobs::tests::Manual::new();
@@ -53,7 +56,7 @@ async fn independent_admissions_share_interest_epoch_but_receive_fresh_formal_re
     assert_eq!(requests.len(), 2);
     let before = local.formal_context(&graph).snapshot;
     for (id, _) in requests {
-        owner.complete(id, Ok(crate::jobs::Output::Interest(true)));
+        owner.complete(id, Ok(crate::jobs::Output::Selected(true)));
         let outcome = local.completed().await;
         local.finish(&graph, outcome);
     }
@@ -79,9 +82,9 @@ async fn independent_admissions_share_interest_epoch_but_receive_fresh_formal_re
 }
 
 #[tokio::test]
-async fn reusable_interest_cannot_be_rebound_to_another_question_policy_or_owner() {
+async fn reusable_selection_cannot_be_rebound_to_another_question_policy_or_owner() {
     let graph = Graph::default();
-    let mut local = LocalQuestions::new(Some(crate::mocks::assess_interest));
+    let mut local = LocalQuestions::new(Some(crate::mocks::select_question));
     let original = question(QUESTION);
     let (_, reply) = local.begin_exchange(
         &graph,
@@ -115,9 +118,9 @@ async fn reusable_interest_cannot_be_rebound_to_another_question_policy_or_owner
 }
 
 #[tokio::test]
-async fn positive_interest_survives_unrelated_registry_growth_but_fresh_duplicates_fail() {
+async fn positive_selection_survives_unrelated_registry_growth_but_fresh_duplicates_fail() {
     let graph = Graph::default();
-    let mut local = LocalQuestions::new(Some(crate::mocks::assess_interest));
+    let mut local = LocalQuestions::new(Some(crate::mocks::select_question));
     let original = question(QUESTION);
     let (_, reply) = local.begin_exchange(
         &graph,

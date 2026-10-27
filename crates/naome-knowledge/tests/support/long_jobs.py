@@ -189,16 +189,16 @@ def observe_work(trial, node, name, predicate, maximum, slots):
 
 def roles(trial,probe):
     receiver,donor=Node(trial,0),Node(trial,1)
-    # Finding, the deliberately pending solver and an interest assessment each
+    # Finding, the deliberately pending solver and an selection assessment each
     # need a slot. Two admitted slots cannot guarantee this concurrent workload.
     role_slots=3
     # Keep twenty finding units pending through the measured slot ramp. The
-    # controlled wait leaves room for two finding/interest transitions before
+    # controlled wait leaves room for two finding/selection transitions before
     # the existing 15-second overlap oracle, including durable unit IPC.
     # Keep solving pending through question preparation and peer delivery too;
     # the original allowances, absolute horizons and observation bounds remain.
     receiver.config['runtime'].update(jobs=job_settings(
-        finding={'steps':20,'step_ms':150},interest={'step_ms':400},solving={'cpu_ms':40000,'descendant':True}))
+        finding={'steps':20,'step_ms':150},selection={'step_ms':400},solving={'cpu_ms':40000,'descendant':True}))
     # Establish ordinary identities with the same persisted job settings, then
     # configure both static peer policies before admitting any research work.
     for node in [receiver,donor]:node.write_config();node.start();node.stop()
@@ -218,7 +218,7 @@ def roles(trial,probe):
     trial.summary['pending_status_seconds']=probe.statuses(receiver,4)
     # Wait for stable admitted obligations before introducing peer graph changes.
     observe_work(trial,receiver,'local_obligations',lambda:sum(event.get('event')=='question_assessed' and event.get('formal_pass')
-        and event.get('interest')=='Assessed(true)' for event in receiver.logs())>=3,12,role_slots)
+        and event.get('selection')=='Assessed(true)' for event in receiver.logs())>=3,12,role_slots)
     pending_solve=any(record['state']=='running' and lane(record)==1
         for record in journal(receiver)['records'].values())
     trial.summary['pending_local_solve_on_peer_start']=pending_solve
@@ -404,11 +404,11 @@ def faults(trial,probe):
     node.stop();probe.ended()
 
     # A small server send buffer forces an actual response writer to wait for
-    # the deliberately unread maximum escaped owner text. Authenticated stop
+    # an intentionally padded developer-only control response. Authenticated stop
     # must initiate role teardown before the response write timeout.
     slow=Node(trial,1)
     slow.config['runtime'].update(question_interval_ms=100,jobs=job_settings(finding={'steps':0,'cpu_ms':20000,'descendant':True}))
-    slow.write_config();trial.call(slow,'interest',text='\x01'*1024)
+    slow.write_config()
     os.environ['NAOME_DEV_CONTROL_SENDBUF_BYTES']='1024'
     try:slow.start()
     finally:os.environ.pop('NAOME_DEV_CONTROL_SENDBUF_BYTES',None)
@@ -474,7 +474,7 @@ def main():
     if args.mode=='roles' and 'NAOME_RESOURCE_CONFIG' not in os.environ:
         # Pin the ordinary reference capacity. Three-slot admission is tested
         # independently with controlled scheduler budgets; this native scenario
-        # records the real capacity. One CPU-solving worker leaves room for peer-interest work;
+        # records the real capacity. One CPU-solving worker leaves room for peer-selection work;
         # live CPU pauses and admission reductions remain authoritative.
         resource_config=trial.output/'fixed-resource-config.json'
         write_receipt(resource_config,{'version':1,'memory_bytes':512*1024*1024,

@@ -13,7 +13,7 @@ use std::{
 
 type Questions = LocalQuestions<fn(CompiledQuestion) -> Ready<Result<bool, String>>>;
 fn questions() -> Questions {
-    LocalQuestions::new(Some(crate::mocks::assess_interest as fn(_) -> _))
+    LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _))
 }
 fn intervals(question_interval_ms: u64) -> Intervals {
     Intervals {
@@ -33,10 +33,10 @@ async fn admitted<F, Fut>(
     let (reply, receiver) = oneshot::channel();
     questions.process(question::Command::Admit(question.clone(), reply), graph);
     assert!(!questions.available());
-    let interest = tokio::time::timeout(Duration::from_secs(5), questions.completed())
+    let selection = tokio::time::timeout(Duration::from_secs(5), questions.completed())
         .await
         .unwrap();
-    questions.finish(graph, interest);
+    questions.finish(graph, selection);
     assert!(matches!(
         receiver.await.unwrap().outcome,
         AdmissionOutcome::Admitted(_)
@@ -86,7 +86,7 @@ async fn inconclusive_recovery_does_not_starve_later_records_or_archive_pages() 
     owner.queue_recovery(
         vec![recovered(
             4,
-            jobs::Input::Interest {
+            jobs::Input::Select {
                 question: "goal=all(x,mem(x,x))".into(),
                 purpose: jobs::Purpose::Admission,
                 root: None,
@@ -198,19 +198,19 @@ async fn rejected_unanswered_work_preserves_its_retry_and_independent_question_s
     );
     assert!(matches!(
         owner.requests().as_slice(),
-        [(_, jobs::Input::Find { cursor: 1 })]
+        [(_, jobs::Input::Find { cursor: 1, .. })]
     ));
     assert_eq!(autonomous.cursor, 2);
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
-        "formal rejection never invokes interest"
+        "formal rejection never invokes selection"
     );
     assert!(autonomous.next_proof > Instant::now());
 }
 
 #[tokio::test]
-async fn changed_graph_rebuilds_generated_closure_without_repeating_interest() {
+async fn changed_graph_rebuilds_generated_closure_without_repeating_selection() {
     let mut graph = Graph::default();
     let mut questions = questions();
     let selected = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
@@ -243,10 +243,10 @@ async fn changed_graph_rebuilds_generated_closure_without_repeating_interest() {
         .author(&mocks::create_proof(&unrelated).unwrap())
         .unwrap();
     graph.ingest(object, Instant::now()).unwrap();
-    let interest = tokio::time::timeout(Duration::from_secs(5), questions.completed())
+    let selection = tokio::time::timeout(Duration::from_secs(5), questions.completed())
         .await
         .unwrap();
-    questions.finish(&graph, interest);
+    questions.finish(&graph, selection);
     assert!(autonomous.advance(&mut graph, &mut questions).is_empty());
     assert_eq!(
         graph.ids().len(),
@@ -256,7 +256,7 @@ async fn changed_graph_rebuilds_generated_closure_without_repeating_interest() {
     assert_eq!(
         autonomous.publications.len(),
         1,
-        "bounded candidate and its positive interest survive for fresh checking"
+        "bounded candidate and its positive selection survive for fresh checking"
     );
     assert!(
         autonomous
@@ -360,10 +360,10 @@ async fn unchanged_successful_publication_retains_the_first_checked_batch() {
     );
     autonomous.advance(&mut graph, &mut questions);
     assert_eq!(graph.checker_calls(), (1, 0));
-    let interest = tokio::time::timeout(Duration::from_secs(5), questions.completed())
+    let selection = tokio::time::timeout(Duration::from_secs(5), questions.completed())
         .await
         .unwrap();
-    questions.finish(&graph, interest);
+    questions.finish(&graph, selection);
     assert_eq!(autonomous.advance(&mut graph, &mut questions).len(), 1);
     assert_eq!(
         graph.checker_calls(),
@@ -371,4 +371,48 @@ async fn unchanged_successful_publication_retains_the_first_checked_batch() {
         "unchanged root is compiled/checked once across selection and commit"
     );
     assert_eq!(graph.accepted_count(), 1);
+}
+
+#[tokio::test]
+async fn research_evidence_backpressure_retains_the_original_completion_until_durable() {
+    let directory = crate::checkpoint::tests::Directory::new();
+    let mut graph = Graph::default();
+    let mut questions = questions();
+    let target = CompiledQuestion::compile(&mocks::create_question(0)).unwrap();
+    admitted(&mut questions, &graph, &target).await;
+    let mut owner = jobs::tests::Manual::new();
+    let mut autonomous = Autonomous::new(
+        Intervals {
+            question_interval_ms: 3_600_000,
+            proof_interval_ms: 1,
+            ..Default::default()
+        },
+        owner.client.clone(),
+        owner.recovery(),
+        vec![target],
+    );
+    autonomous
+        .attach_frontier(&directory.0, &graph, 43)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    autonomous.advance(&mut graph, &mut questions);
+    let requests = owner.requests();
+    let [(id, jobs::Input::Solve { .. })] = requests.as_slice() else {
+        panic!("original solve request missing");
+    };
+    owner.complete(*id, Ok(jobs::Output::NoCandidate));
+    crate::checkpoint::fail_next_commit();
+    autonomous.advance(&mut graph, &mut questions);
+    assert!(autonomous.error().is_none());
+    assert!(owner.acknowledgements().is_empty());
+    assert_eq!(autonomous.solving.len(), 1);
+    assert!(
+        autonomous
+            .solving
+            .values()
+            .all(|job| job.completion.is_some())
+    );
+    autonomous.advance(&mut graph, &mut questions);
+    assert!(autonomous.error().is_none());
+    assert!(owner.acknowledgements().contains(id));
 }

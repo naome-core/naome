@@ -94,8 +94,8 @@ fn only_complete_attempts_train_service_cost_and_roles_remain_separate() {
         (1, 1, 1, 1)
     );
     assert_eq!(providers.solving, Provider::default());
-    assert_eq!(providers.local_interest, Provider::default());
-    assert_eq!(providers.peer_interest, Provider::default());
+    assert_eq!(providers.local_selection, Provider::default());
+    assert_eq!(providers.peer_selection, Provider::default());
 }
 
 #[test]

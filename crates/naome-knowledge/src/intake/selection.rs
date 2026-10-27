@@ -49,11 +49,6 @@ impl Selection {
             SelectionStage::Final => self.final_assessment.is_some(),
         }
     }
-    pub(super) fn boundary_ready(&self) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|pending| pending.received.is_some() || !pending.reply.is_empty())
-    }
     pub(super) fn begin<F, Fut>(
         &mut self,
         stage: SelectionStage,
@@ -113,7 +108,7 @@ impl Selection {
             match pending.reply.try_recv() {
                 Ok(assessment) => pending.received = Some(assessment),
                 Err(oneshot::error::TryRecvError::Empty) => return Ok(None),
-                Err(_) => return Err("interest assessment cancelled".into()),
+                Err(_) => return Err("selection assessment cancelled".into()),
             }
         }
         if pending.stage == SelectionStage::Final
@@ -122,7 +117,7 @@ impl Selection {
                 .as_ref()
                 .is_none_or(|initial| !questions.exchange_eligible(&self.question, initial))
         {
-            return Err("initial interest declined or stale".into());
+            return Err("initial selection declined or stale".into());
         }
         // Keep the received value until fresh formal work succeeds. Receiving a
         // oneshot is irreversible; retrying its receiver would lose the decision.
@@ -157,7 +152,7 @@ impl Selection {
             .as_ref()
             .is_none_or(|initial| !questions.exchange_eligible(&self.question, initial))
         {
-            return Err("initial interest declined or stale".into());
+            return Err("initial selection declined or stale".into());
         }
         let selected = self
             .selected()
@@ -181,7 +176,7 @@ impl Selection {
             return Err("publication root differs from selection".into());
         }
         if !self.ready(SelectionStage::Final) {
-            return Err("final interest selection missing".into());
+            return Err("final selection selection missing".into());
         }
         let delta = self.prepare(graph, questions)?;
         transfer.check(Instant::now())?;
@@ -223,7 +218,7 @@ impl Selection {
                 stage
             };
             let deadline = if questions.uses_jobs() {
-                questions.interest_deadline(Instant::now())
+                questions.selection_deadline(Instant::now())
             } else {
                 Instant::now() + crate::resources::limits().root_timeout
             };

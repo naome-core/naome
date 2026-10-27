@@ -2,33 +2,6 @@ use super::*;
 mod computation;
 mod publication;
 
-#[tokio::test]
-async fn maximum_escaped_owner_text_fits_bounded_control_frames() {
-    let interest = "\u{0001}".repeat(crate::resources::limits().owner_text_bytes);
-    let status = Status {
-        running: true,
-        computation: crate::resources::ComputationState::Running,
-        computation_reason: None,
-        accepted_artifacts: 3,
-        artifact_verification: ArtifactVerification::Checked,
-        interest: interest.clone(),
-    };
-    let response = Response {
-        token: "a".repeat(64),
-        report: Report::Status { status },
-    };
-    let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-    let (written, read) = tokio::join!(
-        write_frame(&mut sender, &response),
-        read_frame::<Response>(&mut receiver)
-    );
-    written.unwrap();
-    let Report::Status { status } = read.unwrap().report;
-    assert_eq!(status.interest, interest);
-    let oversized = serde_json::json!({"padding": "x".repeat(control_limit())});
-    let (mut sender, _receiver) = UnixStream::pair().unwrap();
-    assert!(write_frame(&mut sender, &oversized).await.is_err());
-}
 use crate::{Envelope, object::id_bytes};
 use naome_authoring::CompiledQuestion;
 use naome_proof::ArtifactId;
@@ -101,16 +74,16 @@ async fn current_authoring_matches_autonomous_mock_roots_and_replays_checked_sto
         let envelope = graph.author(&proof).unwrap();
         assert_eq!(envelope, before);
         let mut questions =
-            crate::question::LocalQuestions::new(Some(crate::mocks::assess_interest as fn(_) -> _));
+            crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
         let (_, response) = questions.begin_exchange(
             &graph,
             question.clone(),
             Instant::now() + Duration::from_secs(5),
         );
-        let interest = tokio::time::timeout(Duration::from_secs(5), questions.completed())
+        let selection = tokio::time::timeout(Duration::from_secs(5), questions.completed())
             .await
             .unwrap();
-        questions.finish(&graph, interest);
+        questions.finish(&graph, selection);
         let assessment = response.await.unwrap();
         assert!(assessment.prefilter.passed());
         assert!(assessment.novelty().is_some());
@@ -170,7 +143,6 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
             computation_reason: None,
             accepted_artifacts: 0,
             artifact_verification: ArtifactVerification::NotRun,
-            interest: String::new()
         }
     );
     let mut graph = Graph::open(&directory.0).unwrap();
@@ -224,7 +196,6 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
             computation_reason: None,
             accepted_artifacts: 2,
             artifact_verification: ArtifactVerification::Checked,
-            interest: String::new()
         }
     );
     drop(control);
@@ -237,7 +208,6 @@ async fn status_distinguishes_live_checked_counts_from_recorded_offline_admissio
             computation_reason: None,
             accepted_artifacts: 2,
             artifact_verification: ArtifactVerification::NotRun,
-            interest: String::new()
         }
     );
     let recovered = Graph::open(&directory.0).unwrap();
@@ -295,7 +265,6 @@ async fn stop_waits_through_denied_and_live_group_observations_until_confirmed_e
             computation_reason: None,
             accepted_artifacts: 1,
             artifact_verification: ArtifactVerification::NotRun,
-            interest: String::new()
         }
     );
 }
@@ -393,54 +362,6 @@ fn diagnostic_symlinks_cannot_modify_a_foreign_file() {
     std::os::unix::fs::symlink(&destination, directory.0.join("node.log.previous")).unwrap();
     assert!(Log::open(&directory.0).is_err());
     assert_eq!(fs::read(&destination).unwrap(), original);
-}
-
-#[tokio::test]
-async fn interest_respects_graph_ownership_and_instance_bound_control() {
-    let directory = Directory::new();
-    let graph = Graph::open(&directory.0).unwrap();
-    assert!(interest(&directory.0, "cannot write").await.is_err());
-    assert!(!directory.0.join("owner.json").exists());
-    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
-    let text = "\u{0001}".repeat(1024);
-    let (served, response) = tokio::join!(
-        async {
-            let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.accepted_count(), true).await
-        },
-        interest(&directory.0, &text)
-    );
-    assert!(!served.unwrap());
-    assert_eq!(response.unwrap().interest, "\u{0001}".repeat(1024));
-    let snapshot = control.owner_profile().unwrap();
-    assert_eq!(snapshot.version, 1);
-    assert_eq!(snapshot.revision, 1);
-    assert_eq!(snapshot.interest, "\u{0001}".repeat(1024));
-    assert_eq!(snapshot.digest.len(), 64);
-    let (served, _) = tokio::join!(
-        async {
-            let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.accepted_count(), true).await
-        },
-        async {
-            let mut stream = UnixStream::connect(&control.endpoint.socket).await.unwrap();
-            write_frame(
-                &mut stream,
-                &Request {
-                    version: 1,
-                    token: "cd".repeat(32),
-                    operation: Operation::Interest("unauthorized".into()),
-                },
-            )
-            .await
-            .unwrap();
-        }
-    );
-    assert!(served.unwrap_err().contains("instance mismatch"));
-    assert_eq!(owner::load(&directory.0).unwrap(), "\u{0001}".repeat(1024));
-    drop(control);
-    drop(graph);
-    assert_eq!(interest(&directory.0, "").await.unwrap().interest, "");
 }
 
 #[tokio::test]
@@ -547,57 +468,6 @@ fn interrupted_identity_receipt_publication_reuses_the_existing_peer_key() {
     );
     initialize(&directory.0).unwrap();
     assert_eq!(fs::read(directory.0.join("identity.key")).unwrap(), encoded);
-}
-
-#[tokio::test]
-async fn uncertain_owner_cannot_supply_a_profile_but_stop_still_works() {
-    let directory = Directory::new();
-    let graph = Graph::open(&directory.0).unwrap();
-    owner::update(&directory.0, "previous").unwrap();
-    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
-    control.owner.lock().unwrap().recovery_error = Some("recovery required".into());
-    assert!(
-        control
-            .owner_profile()
-            .unwrap_err()
-            .contains("recovery required")
-    );
-    let (served, response) = tokio::join!(
-        async {
-            let (stream, _) = control.listener.accept().await.unwrap();
-            control.respond(stream, graph.accepted_count(), true).await
-        },
-        request(&directory.0, Operation::Stop, None)
-    );
-    assert!(served.unwrap());
-    let stopped = response.unwrap().unwrap();
-    assert!(!stopped.running);
-    assert_eq!(stopped.interest, "previous");
-}
-
-#[tokio::test]
-async fn selection_epoch_binds_owner_revision_text_and_recovery_errors() {
-    let directory = Directory::new();
-    let _graph = Graph::open(&directory.0).unwrap();
-    let control = Control::bind_token(&directory.0, "ab".repeat(32)).unwrap();
-    let first = control.selection().unwrap();
-    owner::update(&directory.0, "current mathematical interests").unwrap();
-    let second = control.selection().unwrap();
-    assert_ne!(first, second);
-    owner::update(&directory.0, "").unwrap();
-    assert_ne!(first, control.selection().unwrap());
-    control.owner.lock().unwrap().recovery_error = Some("recovery uncertain".into());
-    assert!(control.selection().is_err());
-    assert_eq!(
-        crate::publication::LocalAuthority::check_selection(&control, None),
-        Err(crate::Error::StaleAuthority),
-        "an unknown expected selection cannot authorize an uncertain owner"
-    );
-    let mut watch = Some(control.stop_watch());
-    control.stopping.send_replace(true);
-    tokio::time::timeout(Duration::from_secs(1), requested_stop(&mut watch))
-        .await
-        .unwrap();
 }
 
 // Real process boundaries for the maintained abort owner. These source tests

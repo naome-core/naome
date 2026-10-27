@@ -21,6 +21,22 @@ from types import SimpleNamespace
 from proof_network import digest, stored_objects, replace_catalog_payload
 
 
+def assert_node_status(value, *, running, accepted_artifacts=None):
+    assert set(value) == {"running", "accepted_artifacts", "artifact_verification", "computation", "computation_reason"}, value
+    assert value["running"] is running, value
+    assert type(value["accepted_artifacts"]) is int and value["accepted_artifacts"] >= 0, value
+    if accepted_artifacts is not None:
+        assert value["accepted_artifacts"] == accepted_artifacts, value
+    assert value["artifact_verification"] == ("checked" if running else "not_run"), value
+    if not running:
+        assert value["computation"] == "stopped" and value["computation_reason"] is None, value
+    elif value["computation"] == "running":
+        assert value["computation_reason"] is None, value
+    else:
+        assert value["computation"] in {"pausing", "paused"}, value
+        assert isinstance(value["computation_reason"], str) and value["computation_reason"], value
+
+
 class StartupWrapperExit(RuntimeError):
     """An incomplete sample after the exact direct CLI Child was reaped."""
 
@@ -40,7 +56,7 @@ class Trial:
             "driver_sha256": digest(__file__), "timeout_seconds": timeout,
             "mode": mode, "node_count": 3 if mode == "dht" else 2,
             "commands": [], "scenarios": {}, "processes": [],
-            "claim": "local process, real checking and libp2p exchange with mocked question/proof/interest functions",
+            "claim": "local process, real checking and libp2p exchange with bounded question/proof providers and structural selection",
         }
         read_end, self.lifeline = os.pipe()
         self.guardian_log = (self.output / "guardian.log").open("w")
@@ -76,10 +92,10 @@ class Trial:
         assert result.returncode == 0, f"{verb}: {result.stderr}"
         assert result.stderr == "", f"{verb}: {result.stderr}"
         value = json.loads(result.stdout)
-        assert set(value) == {"running", "accepted_artifacts", "interest", "artifact_verification", "computation", "computation_reason"}, value
+        assert set(value) == {"running", "accepted_artifacts", "artifact_verification", "computation", "computation_reason"}, value
         assert isinstance(value["running"], bool), value
         assert type(value["accepted_artifacts"]) is int and value["accepted_artifacts"] >= 0, value
-        assert isinstance(value["interest"], str), value
+
         return value
 
     def begin_functional_start(self, node, mode):
@@ -122,10 +138,10 @@ class Trial:
                     "exit_code": process.returncode, "stdout": stdout.decode(), "stderr": stderr.decode()})
                 assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
                 status = json.loads(stdout)
-                assert set(status) == {"running", "accepted_artifacts", "interest", "artifact_verification", "computation", "computation_reason"}, status
+                assert set(status) == {"running", "accepted_artifacts", "artifact_verification", "computation", "computation_reason"}, status
                 assert isinstance(status["running"], bool) and status["running"] is True, status
                 assert type(status["accepted_artifacts"]) is int and status["accepted_artifacts"] >= 0, status
-                assert isinstance(status["interest"], str), status
+
                 node.capture_process()
                 record.update(daemon=node.process, capture_pending=True,
                     post_ready_native_daemon_captured=True)
@@ -352,7 +368,7 @@ class Trial:
                 return None
             assert process.returncode == 0 and not stderr, f"start: {stderr.decode()}"
             status = json.loads(stdout)
-            assert set(status) == {"running", "accepted_artifacts", "interest", "artifact_verification", "computation", "computation_reason"} and status["running"] is True, status
+            assert set(status) == {"running", "accepted_artifacts", "artifact_verification", "computation", "computation_reason"} and status["running"] is True, status
             if record["pre_ready_capture"] and record["complete_pre_ready_resource_frames"]:
                 record["coverage"] = "COMPLETE_SAMPLED_PRE_READY_NATIVE_CUSTODY_ONLY"
             elif record["pre_ready_capture"]:
@@ -1117,22 +1133,22 @@ def main():
         sender, receiver = Node(trial, 0), Node(trial, 1)
         seed = Node(trial, 2) if args.mode == "dht" else None
         for node in trial.nodes:
-            assert trial.call(node, "status") == {"running": False, "accepted_artifacts": 0, "interest": "", "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
-            assert node.start() == {"running": True, "accepted_artifacts": 0, "interest": "", "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(node, "status") == {"running": False, "accepted_artifacts": 0, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert node.start() == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
             key = node.directory / "identity.key"
             assert key.exists(), "first start failed to initialize identity"
             node.identity_sha256 = digest(key)
             original = dict(node.process)
-            assert trial.call(node, "start") == {"running": True, "accepted_artifacts": 0, "interest": "", "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(node, "start") == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
             assert process_identity(original["pid"]) == original, "duplicate start replaced the node owner"
             assert json.loads((node.directory / "control.json").read_text())["pid"] == original["pid"]
             alias = trial.output / f"alias-{node.index}"
             alias.symlink_to(node.directory, target_is_directory=True)
             alias_node = SimpleNamespace(directory=alias, index=node.index)
-            assert trial.call(alias_node, "status") == {"running": True, "accepted_artifacts": 0, "interest": "", "artifact_verification": "checked", "computation": "running", "computation_reason": None}
-            assert trial.call(alias_node, "start") == {"running": True, "accepted_artifacts": 0, "interest": "", "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(alias_node, "status") == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+            assert trial.call(alias_node, "start") == {"running": True, "accepted_artifacts": 0, "artifact_verification": "checked", "computation": "running", "computation_reason": None}
             assert process_identity(original["pid"]) == original, "path alias created a second node owner"
-            assert trial.call(alias_node, "stop") == {"running": False, "accepted_artifacts": 0, "interest": "", "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert trial.call(alias_node, "stop") == {"running": False, "accepted_artifacts": 0, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
             node.stop()
         trial.summary["scenarios"]["automatic_initialization_detached_start_and_single_owner"] = {"result": "pass"}
         for verb in ["run", "init", "relay", "contract", "proof", "question"]:
@@ -1176,7 +1192,7 @@ def main():
         trial.summary["scenarios"]["concurrent_start_keeps_one_node_owner"] = {"result": "pass", "pid": sender.process["pid"]}
         def expected_status(node):
             return {"running": True, "accepted_artifacts": 3,
-                "interest": "", "artifact_verification": "checked", "computation": "running", "computation_reason": None}
+                "artifact_verification": "checked", "computation": "running", "computation_reason": None}
 
         def converged():
             own, remote = sender.ids(), receiver.ids()
@@ -1221,13 +1237,13 @@ def main():
         trial.summary["accepted_ids"] = sorted(accepted)
         trial.summary["scenarios"][f"scheduled_mock_generation_real_validation_and_{args.mode}_exchange"] = {
             "result": "pass", "root_proofs": 3, "receiver_generated_questions": 0,
-            "receiver_accepted_source": "fetch", "mocked": ["question generation", "proof generation", "interest assessment"]}
+            "receiver_accepted_source": "fetch", "mocked": ["question generation", "proof generation"]}
         trial.wait(lambda: sum(event.get("event") == "question_generated" for event in sender.logs()) >= 6, maximum=5)
         assert sender.ids() == accepted and receiver.ids() == accepted
         assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
         trial.summary["scenarios"]["repeated_catalog_outputs_do_not_inflate_accepted_count"] = {"result": "pass", "unique_proofs": 3}
         for node in trial.nodes:
-            assert node.stop() == {"running": False, "accepted_artifacts": 3, "interest": "", "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+            assert node.stop() == {"running": False, "accepted_artifacts": 3, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
             assert digest(node.directory / "identity.key") == node.identity_sha256
             node.config["runtime"]["question_interval_ms"] = 3600000
             node.write_config()
@@ -1243,7 +1259,7 @@ def main():
         original = replace_catalog_payload(receiver, member, bytes([saved[0] ^ 1]) + saved[1:])
         try:
             assert trial.call(receiver, "status") == {"running": False, "accepted_artifacts": 3,
-                "interest": "", "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+                "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
             offset = len(receiver.logs())
             receiver.release_port()
             trial.call(receiver, "start", success=False)
@@ -1253,7 +1269,7 @@ def main():
         finally:
             replace_catalog_payload(receiver, member, original)
             receiver.reserve_port()
-        assert trial.call(receiver, "status") == {"running": False, "accepted_artifacts": 3, "interest": "", "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
+        assert trial.call(receiver, "status") == {"running": False, "accepted_artifacts": 3, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
         trial.summary["scenarios"]["offline_status_reports_unverified_admissions_but_start_rejects_corrupt_payloads"] = {"result": "pass"}
         trial.summary["scenarios"]["graceful_idempotent_stop_releases_owned_process_groups"] = {"result": "pass"}
         trial.summary["result"] = "pass"

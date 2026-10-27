@@ -8,15 +8,15 @@ use std::time::Instant;
 pub enum Role {
     Finding,
     Solving,
-    LocalInterest,
-    PeerInterest,
+    LocalSelection,
+    PeerSelection,
 }
 impl Role {
     pub(crate) const ALL: [Self; 4] = [
         Self::Finding,
         Self::Solving,
-        Self::LocalInterest,
-        Self::PeerInterest,
+        Self::LocalSelection,
+        Self::PeerSelection,
     ];
     pub(crate) const fn index(self) -> usize {
         self as usize
@@ -219,8 +219,8 @@ fn average(before: u64, after: u64) -> u64 {
 pub struct Providers {
     pub finding: Provider,
     pub solving: Provider,
-    pub local_interest: Provider,
-    pub peer_interest: Provider,
+    pub local_selection: Provider,
+    pub peer_selection: Provider,
 }
 impl Providers {
     /// Measured CPU duty permits I/O overlap only after every demanding role
@@ -291,24 +291,24 @@ impl Providers {
         Self {
             finding: ROLE,
             solving: ROLE,
-            local_interest: ROLE,
-            peer_interest: ROLE,
+            local_selection: ROLE,
+            peer_selection: ROLE,
         }
     }
     pub(crate) fn get(&self, role: Role) -> &Provider {
         match role {
             Role::Finding => &self.finding,
             Role::Solving => &self.solving,
-            Role::LocalInterest => &self.local_interest,
-            Role::PeerInterest => &self.peer_interest,
+            Role::LocalSelection => &self.local_selection,
+            Role::PeerSelection => &self.peer_selection,
         }
     }
     pub(super) fn get_mut(&mut self, role: Role) -> &mut Provider {
         match role {
             Role::Finding => &mut self.finding,
             Role::Solving => &mut self.solving,
-            Role::LocalInterest => &mut self.local_interest,
-            Role::PeerInterest => &mut self.peer_interest,
+            Role::LocalSelection => &mut self.local_selection,
+            Role::PeerSelection => &mut self.peer_selection,
         }
     }
 }
