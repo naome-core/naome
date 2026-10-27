@@ -213,7 +213,15 @@ impl State {
     }
     pub fn remember_theorem(&mut self, entry: knowledge::Entry) -> Result<bool, String> {
         let verified = entry.verified()?;
-        let q = CompiledQuestion::from_formula(verified.target).map_err(|e| e.to_string())?;
+        let q = match CompiledQuestion::from_formula(verified.target) {
+            Ok(question) => question,
+            // Stored mathematics can exceed the bounded neural question view.
+            // Declining a derived hint must not halt the accepted-store owner.
+            Err(
+                naome_authoring::QuestionError::Limit(_) | naome_authoring::QuestionError::Overflow,
+            ) => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
         if !Self::eligible(q.source()) || self.knowledge.contains(&entry) {
             return Ok(false);
         }

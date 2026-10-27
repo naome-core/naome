@@ -588,3 +588,29 @@ fn a_peer_certificate_cannot_be_reclassified_as_a_local_discovery_trace() {
     completed(&mut job, solution);
     assert!(job.validate_generated_trace().is_err());
 }
+
+#[test]
+fn valid_stored_theorems_beyond_question_capacity_do_not_halt_learning() {
+    let mut term = calculus::axiom(naome_proof::ProofStep::EqualityReflexivity {
+        variable: naome_foundation::FreeVariable::new(0),
+    })
+    .unwrap();
+    for variable in 0..40 {
+        term = proof::Term::Generalize(
+            naome_foundation::FreeVariable::new(variable),
+            Box::new(term),
+        );
+    }
+    let verified = proof::verify(&term, &term.formula()).unwrap();
+    assert!(matches!(
+        CompiledQuestion::from_formula(verified.target.clone()),
+        Err(naome_authoring::QuestionError::Limit(_))
+    ));
+    let entry = knowledge::Entry {
+        packet: evidence::pack(&verified).unwrap(),
+    };
+    let mut state = State::fresh();
+    let before = digest(&state);
+    assert!(!state.remember_theorem(entry).unwrap());
+    assert_eq!(digest(&state), before);
+}
