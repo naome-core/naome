@@ -202,7 +202,7 @@ impl Autonomous {
             directory,
             graph,
             seed,
-            self.intervals.jobs.solving,
+            self.intervals.jobs,
         )?);
         Ok(())
     }

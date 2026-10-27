@@ -16,6 +16,11 @@ mod search;
 mod state;
 pub(crate) use artifact::{ArtifactIo, Blob};
 use model::Checkpoint;
+
+/// Bind scheduling observations to the installed native input/optimizer contract.
+pub(crate) fn input_specification() -> String {
+    Checkpoint::fresh().specification
+}
 pub(crate) use model::{Engine, REQUIREMENTS as MODEL_REQUIREMENTS, TRAINING_UNITS};
 use naome_authoring::CompiledQuestion;
 use serde::{Deserialize, Serialize};

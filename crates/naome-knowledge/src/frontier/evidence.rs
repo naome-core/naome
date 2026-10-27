@@ -81,7 +81,7 @@ impl Evidence {
     pub(super) fn open(
         directory: &Path,
         seed: u64,
-        settings: jobs::RoleSettings,
+        settings: jobs::Settings,
     ) -> Result<Self, String> {
         let directory = crate::storage::research_directory(directory)?;
         let path = directory.join("evidence.sqlite3");

@@ -143,7 +143,7 @@ impl Frontier {
         directory: &Path,
         graph: &Graph,
         seed: u64,
-        settings: jobs::RoleSettings,
+        settings: jobs::Settings,
     ) -> Result<Self, String> {
         let evidence = Evidence::open(directory, seed, settings)?;
         let random = Random::new(evidence.random());

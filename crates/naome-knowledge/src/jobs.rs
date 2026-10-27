@@ -713,8 +713,20 @@ pub(crate) fn declared_solver_support(
     settings.mock.outcome == MockOutcome::Success && crate::mocks::supports_question(question)
 }
 
-pub(crate) fn solver_identity(settings: RoleSettings) -> String {
-    identity(&(provider::DEFAULT_PROVIDER, settings.mock, settings.recovery))
+pub(crate) fn solver_identity(settings: Settings) -> String {
+    if settings.native_proof_learning {
+        identity(&(
+            crate::learning::PROVIDER,
+            crate::learning::input_specification(),
+            settings.solving.recovery,
+        ))
+    } else {
+        identity(&(
+            provider::DEFAULT_PROVIDER,
+            settings.solving.mock,
+            settings.solving.recovery,
+        ))
+    }
 }
 
 fn identity(value: &impl Serialize) -> String {
