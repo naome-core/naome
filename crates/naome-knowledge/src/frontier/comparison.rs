@@ -156,7 +156,11 @@ fn arm(seed: u64, random_only: bool, budget: u64) -> Metrics {
     let wall = Instant::now();
     let start = cpu_nanos();
     while cpu_nanos().saturating_sub(start) < budget {
-        frontier.refresh(&graph).unwrap();
+        frontier
+            .refresh(&graph, |question| {
+                questions.assess(&graph, question).passed()
+            })
+            .unwrap();
         let candidates = pool
             .iter()
             .filter(|question| questions.assess(&graph, question).passed())

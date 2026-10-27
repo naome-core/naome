@@ -52,7 +52,7 @@ fn received_knowledge_changes_coverage_without_claiming_local_ability() {
     let mut frontier =
         Frontier::open(&directory.0, &graph, 7, jobs::RoleSettings::default()).unwrap();
     let _ = checked(&mut graph, &question(0));
-    frontier.refresh(&graph).unwrap();
+    frontier.refresh(&graph, |_| true).unwrap();
     assert!(frontier.coverage.iter().any(|n| *n > 0));
     assert_eq!(frontier.successes, [0; SIGNALS]);
     let common = frontier
@@ -195,7 +195,7 @@ fn local_definitions_generate_questions_and_relationships_without_a_user_profile
         .unwrap();
     let mut frontier =
         Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
-    frontier.refresh(&graph).unwrap();
+    frontier.refresh(&graph, |_| true).unwrap();
     let goal = CompiledQuestion::compile("goal = all(x,mem(x,x))").unwrap();
     assert!(
         frontier
@@ -322,4 +322,177 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
     changed.limits.work_units += 1;
     let frontier = Frontier::open(&directory.0, &graph, 11, changed).unwrap();
     assert_eq!(frontier.attempts, [0; SIGNALS]);
+}
+
+#[test]
+fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are_known() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    for index in 0..3 {
+        let _ = checked(&mut graph, &question(index));
+    }
+    let mut frontier =
+        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    frontier.refresh(&graph, |_| true).unwrap();
+    let mut formal =
+        crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
+    let candidates = frontier.candidates();
+    let eligible = candidates
+        .iter()
+        .filter(|q| formal.assess(&graph, q).passed())
+        .collect::<Vec<_>>();
+    assert!(
+        eligible.len() >= 3,
+        "closed theorem wrappers must not exhaust discovery"
+    );
+    let mut unique = std::collections::BTreeSet::new();
+    for candidate in eligible {
+        assert!((0..3).all(|i| question(i).resolution_id() != candidate.resolution_id()));
+        assert!(unique.insert(*candidate.resolution_id()));
+    }
+    assert_eq!(graph.accepted_count(), 3);
+    assert_eq!(frontier.successes, [0; SIGNALS]);
+}
+
+#[test]
+fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjectures() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let mut frontier =
+        Frontier::open(&directory.0, &graph, 11, jobs::RoleSettings::default()).unwrap();
+    let x = FreeVariable::new(0);
+    let y = FreeVariable::new(1);
+    frontier.explore(
+        Formula::for_all(
+            y,
+            Formula::implies(Formula::member(x, y), Formula::equal(y, x)),
+        ),
+        &mut |_| true,
+    );
+    let expected = CompiledQuestion::compile("goal=all(y,all(x,imp(eq(y,x),mem(x,y))))").unwrap();
+    assert!(
+        frontier
+            .candidates()
+            .iter()
+            .any(|q| q.resolution_id() == expected.resolution_id())
+    );
+    assert_eq!(graph.accepted_count(), 0);
+    assert_eq!(frontier.successes, [0; SIGNALS]);
+}
+
+#[test]
+fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments() {
+    const TEST: &str = "frontier::tests::small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments";
+    if std::env::var_os("NAOME_FRONTIER_CACHE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_FRONTIER_CACHE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let mut budget = crate::resources::tests::snapshot(false);
+    // Under the default installed capacity, this projects to the roughly
+    // 9.6 KiB question cache observed in the ordinary node.
+    budget.budget.cache_bytes = 18 << 20;
+    crate::resources::adaptive::publish(budget);
+    assert!((8192..=12_000).contains(&crate::resources::active_limits().question_cache_bytes));
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    for index in 0..3 {
+        let _ = checked(&mut graph, &question(index));
+    }
+    let mut frontier =
+        Frontier::open(&directory.0, &graph, 17, jobs::RoleSettings::default()).unwrap();
+    let mut formal =
+        crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
+    let mut pending = std::collections::BTreeSet::new();
+    for _ in 0..3 {
+        let mut diagnostics = Vec::new();
+        let mut eligible = |question: &CompiledQuestion| {
+            let decision = formal.assess(&graph, question);
+            if diagnostics.len() < 12 {
+                diagnostics.push((question.source().to_owned(), decision.rule, decision.reason));
+            }
+            !pending.contains(question.resolution_id()) && decision.passed()
+        };
+        frontier.refresh(&graph, &mut eligible).unwrap();
+        let candidates = frontier
+            .candidates()
+            .into_iter()
+            .filter(&mut eligible)
+            .collect::<Vec<_>>();
+        assert!(
+            !candidates.is_empty(),
+            "the small cache discarded all useful research: cache={} pending={:?} assessments={:?}",
+            crate::resources::active_limits().question_cache_bytes,
+            pending,
+            diagnostics
+        );
+        assert!(pending.insert(*candidates[0].resolution_id()));
+        let bytes = frontier
+            .proposals
+            .iter()
+            .map(|q| q.source().len() * 8 + 256)
+            .sum::<usize>();
+        assert!(bytes <= crate::resources::active_limits().question_cache_bytes / 4);
+    }
+    assert_eq!(pending.len(), 3);
+    assert_eq!(graph.accepted_count(), 3);
+    assert_eq!(frontier.successes, [0; SIGNALS]);
+}
+
+#[tokio::test]
+async fn backlog_ranking_checks_only_the_selected_target_before_provider_work() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let x = FreeVariable::new(0);
+    let mut predicate = Formula::member(x, x);
+    let mut backlog = Vec::new();
+    for _ in 0..12 {
+        let formula = Separation {
+            predicate: predicate.clone(),
+            element: x,
+            source: FreeVariable::new(1),
+            result: FreeVariable::new(2),
+            parameters: vec![],
+        }
+        .formula()
+        .unwrap();
+        backlog.push(CompiledQuestion::from_formula(formula).unwrap());
+        predicate = Formula::implies(predicate, Formula::equal(x, x));
+    }
+    let mut questions =
+        crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
+    let mut owner = jobs::tests::Manual::new();
+    let mut autonomous = crate::autonomous::Autonomous::new(
+        crate::autonomous::Intervals {
+            question_interval_ms: 3_600_000,
+            proof_interval_ms: 1,
+            ..Default::default()
+        },
+        owner.client.clone(),
+        owner.recovery(),
+        backlog,
+    );
+    autonomous
+        .attach_frontier(&directory.0, &graph, 19)
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    autonomous.advance(&mut graph, &mut questions);
+    assert_eq!(
+        questions.computation_count(),
+        1,
+        "ranking must not repeatedly check the entire backlog"
+    );
+    let requests = owner.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(requests[0].1, jobs::Input::Solve { .. }));
+    assert!(autonomous.error().is_none());
 }

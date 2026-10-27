@@ -43,6 +43,7 @@ pub(crate) struct Frontier {
     proposals: VecDeque<CompiledQuestion>,
     predicates: VecDeque<Formula>,
     after: Option<ArtifactId>,
+    observed_root: Option<[u8; 32]>,
     _memory: Arc<crate::resources::MemoryLease>,
 }
 impl Frontier {
@@ -68,6 +69,7 @@ impl Frontier {
             proposals: VecDeque::new(),
             predicates: VecDeque::new(),
             after: None,
+            observed_root: None,
             _memory: crate::resources::MemoryLease::acquire(
                 crate::resources::active_limits().question_cache_bytes,
             )
@@ -135,15 +137,28 @@ impl Frontier {
             self.success_millis[index] = self.success_millis[index].saturating_add(millis);
         }
     }
-    fn retain(&mut self, question: CompiledQuestion) {
-        if self
-            .proposals
-            .iter()
-            .any(|q| q.resolution_id() == question.resolution_id())
+    fn retain(
+        &mut self,
+        question: CompiledQuestion,
+        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    ) {
+        let limits = crate::resources::active_limits();
+        let limit = limits.question_page.min(32);
+        let budget = limits.question_cache_bytes / 4;
+        let cost = question.source().len() * 8 + 256;
+        // An item that cannot fit must not evict the useful resident pool.
+        if limit == 0
+            || cost > budget
+            || self
+                .proposals
+                .iter()
+                .any(|q| q.resolution_id() == question.resolution_id())
         {
             return;
         }
-        let limit = crate::resources::active_limits().question_page.min(32);
+        if !eligible(&question) {
+            return;
+        }
         let bytes = |questions: &VecDeque<CompiledQuestion>| {
             questions
                 .iter()
@@ -152,42 +167,53 @@ impl Frontier {
         };
         while !self.proposals.is_empty()
             && (self.proposals.len() >= limit
-                || bytes(&self.proposals).saturating_add(question.source().len() * 8 + 256)
-                    > crate::resources::active_limits().question_cache_bytes / 4)
+                || bytes(&self.proposals).saturating_add(cost) > budget)
         {
             self.proposals.pop_front();
         }
-        if limit > 0
-            && question.source().len() * 8 + 256
-                <= crate::resources::active_limits().question_cache_bytes / 4
-        {
-            self.proposals.push_back(question);
-        }
+        self.proposals.push_back(question);
     }
-    fn conjecture(&mut self, mut formula: Formula) {
+    fn conjecture(
+        &mut self,
+        mut formula: Formula,
+        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    ) {
         for variable in formula.free_variables() {
             formula = Formula::for_all(variable, formula);
         }
         if let Ok(question) = CompiledQuestion::compile(&format!("goal = {}", formula.to_source()))
         {
-            self.retain(question);
+            self.retain(question, eligible);
         }
     }
-    fn explore(&mut self, formula: Formula) {
+    fn open_outer(formula: &Formula) -> Option<Formula> {
+        let fresh = formula
+            .free_variables()
+            .iter()
+            .map(|v| v.identifier())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)?;
+        formula.open_outer_universal(FreeVariable::new(fresh))
+    }
+    fn explore(&mut self, formula: Formula, eligible: &mut dyn FnMut(&CompiledQuestion) -> bool) {
         let mut open = formula.clone();
-        for index in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
-            let Some(body) = open.open_outer_universal(FreeVariable::new(index as u32)) else {
+        for _ in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+            let Some(body) = Self::open_outer(&open) else {
                 break;
             };
             open = body;
         }
         if let Some((left, right)) = open.implication_parts() {
-            self.conjecture(Formula::implies(right, left));
+            self.conjecture(Formula::implies(right, left), eligible);
         }
         if !formula.free_variables().is_empty() {
             if let Some(previous) = self.predicates.back().cloned() {
-                self.conjecture(Formula::implies(previous.clone(), formula.clone()));
-                self.conjecture(Formula::implies(formula.clone(), previous));
+                self.conjecture(
+                    Formula::implies(previous.clone(), formula.clone()),
+                    eligible,
+                );
+                self.conjecture(Formula::implies(formula.clone(), previous), eligible);
             }
             let cost = formula.view().node_count_and_depth().0 * 64;
             while !self.predicates.is_empty()
@@ -206,8 +232,26 @@ impl Frontier {
                 self.predicates.push_back(formula.clone());
             }
         }
-        self.conjecture(formula.clone());
+        self.conjecture(formula.clone(), eligible);
         let free = formula.free_variables();
+        // Binary relations expose small existence/quantifier-order questions
+        // even when a whole theorem's schema wrappers do not fit the cache.
+        // These are conjectures about the observed relation, not truth labels.
+        if free.len() == 2 {
+            let mut variables = free.iter().copied();
+            let a = variables.next().expect("binary relation argument");
+            let b = variables.next().expect("binary relation argument");
+            self.conjecture(Formula::exists(b, formula.clone()), eligible);
+            self.conjecture(Formula::exists(a, formula.clone()), eligible);
+            self.conjecture(
+                Formula::exists(a, Formula::for_all(b, formula.clone())),
+                eligible,
+            );
+            self.conjecture(
+                Formula::exists(b, Formula::for_all(a, formula.clone())),
+                eligible,
+            );
+        }
         let next = free
             .iter()
             .map(|v| v.identifier())
@@ -225,17 +269,58 @@ impl Frontier {
             })
             .formula()
             {
-                self.conjecture(schema);
+                self.conjecture(schema, eligible);
             }
         }
     }
-    /// One bounded page per scheduling opportunity. Completed sweeps replace
-    /// coverage, so new entries before the cursor appear on the next sweep.
-    pub(crate) fn refresh(&mut self, graph: &Graph) -> Result<(), crate::Error> {
+    /// Mine bounded, capture-free subproblems from checked structure. Dropping
+    /// a connective or opening a binder proposes a conjecture, never a theorem.
+    fn explore_parts(
+        &mut self,
+        formula: Formula,
+        eligible: &mut dyn FnMut(&CompiledQuestion) -> bool,
+    ) -> Result<(), crate::Error> {
+        const PARTS: usize = 16;
+        let nodes = formula.view().node_count_and_depth().0;
+        let _memory = crate::resources::MemoryLease::acquire(
+            nodes.saturating_mul(64).saturating_mul(PARTS + 1),
+        )?;
+        let mut pending = vec![formula];
+        for _ in 0..PARTS {
+            let Some(part) = pending.pop() else {
+                break;
+            };
+            if let Some(body) = Self::open_outer(&part) {
+                pending.push(body);
+            } else if let Some(body) = part.view().negated() {
+                pending.push(body.to_owned());
+            } else if let Some((left, right)) = part.implication_parts() {
+                pending.push(right);
+                pending.push(left);
+            }
+            self.explore(part, eligible);
+        }
+        Ok(())
+    }
+    /// Reuse eligible resident work before scanning one checked entry. Completed
+    /// sweeps replace coverage; insertions before the cursor appear next sweep.
+    pub(crate) fn refresh(
+        &mut self,
+        graph: &Graph,
+        mut eligible: impl FnMut(&CompiledQuestion) -> bool,
+    ) -> Result<(), crate::Error> {
         crate::resources::require_work_admission()?;
-        let limit = crate::resources::active_limits().id_page.min(16);
-        let ids = graph.ids_page(self.after, limit)?;
-        for id in &ids {
+        self.proposals.retain(|question| eligible(question));
+        let root = graph.content_root();
+        if self.observed_root == Some(root) && !self.proposals.is_empty() {
+            return Ok(());
+        }
+        // One checked entry per opportunity; a second ID is only lookahead.
+        // Keep the state owner available for serving and accepting peer proofs.
+        let limit = crate::resources::active_limits().id_page.min(2);
+        let page = graph.ids_page(self.after, limit)?;
+        let ids = &page[..page.len().min(1)];
+        for id in ids {
             // Research uses only question-sized projections. Very large valid
             // theorems remain stored and served without materializing them here.
             let header = graph.checked_context().artifact_proof_header(*id)?;
@@ -283,7 +368,7 @@ impl Frontier {
                 while self.knowledge.len() > 32 {
                     self.knowledge.pop_front();
                 }
-                self.explore(question.core().clone());
+                self.explore_parts(question.core().clone(), &mut eligible)?;
             } else if let Some(definition) = definition
                 && let Some(certificate) =
                     graph.checked_context().definition_certificate(definition)?
@@ -292,11 +377,12 @@ impl Frontier {
                     naome_authoring::QUESTION_TARGET_MAX_NODES,
                 )
             {
-                self.explore(body);
+                self.explore_parts(body, &mut eligible)?;
             }
         }
+        self.observed_root = Some(root);
         self.after = ids.last().copied();
-        if ids.len() < limit {
+        if page.is_empty() || (limit > 1 && page.len() == 1) {
             self.coverage = self.building;
             self.building = [0; SIGNALS];
             self.after = None;
@@ -487,16 +573,15 @@ impl Frontier {
             }
             if outcome == Outcome::NoCandidate {
                 let mut open = question.core().clone();
-                for index in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
-                    let Some(body) = open.open_outer_universal(FreeVariable::new(index as u32))
-                    else {
+                for _ in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+                    let Some(body) = Self::open_outer(&open) else {
                         break;
                     };
                     open = body;
                 }
                 if let Some((left, right)) = open.implication_parts() {
-                    self.conjecture(left);
-                    self.conjecture(right);
+                    self.conjecture(left, &mut |_| true);
+                    self.conjecture(right, &mut |_| true);
                 }
             }
         }

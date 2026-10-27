@@ -1241,7 +1241,19 @@ def main():
         trial.wait(lambda: sum(event.get("event") == "question_generated" for event in sender.logs()) >= 6, maximum=5)
         assert sender.ids() == accepted and receiver.ids() == accepted
         assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
-        trial.summary["scenarios"]["repeated_catalog_outputs_do_not_inflate_accepted_count"] = {"result": "pass", "unique_proofs": 3}
+        generated, resolved = set(), set()
+        for event in sender.logs():
+            if event.get("event") == "proof_generated":
+                resolved.add(event["resolution_id"])
+            elif event.get("event") == "question_generated":
+                resolution = event["resolution_id"]
+                assert resolution not in resolved, "a checked answer was generated again"
+                assert resolution not in generated, "pending admission duplicated finding work"
+                generated.add(resolution)
+        assert len(generated) >= 6 and len(generated - resolved) >= 3
+        trial.summary["scenarios"]["new_obligations_continue_without_duplicate_admission_or_answers"] = {
+            "result": "pass", "unique_proofs": 3, "distinct_questions": len(generated),
+            "unanswered_research_questions": len(generated - resolved)}
         for node in trial.nodes:
             assert node.stop() == {"running": False, "accepted_artifacts": 3, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
             assert digest(node.directory / "identity.key") == node.identity_sha256
