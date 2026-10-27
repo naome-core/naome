@@ -561,6 +561,10 @@ enum PeerStatus {
     },
 }
 enum Command {
+    TheoremVerified {
+        ordinal: u64,
+        theorem: crate::learning::knowledge::Entry,
+    },
     DefinitionVerified {
         ordinal: u64,
         definition: crate::learning::definitions::Entry,
@@ -600,6 +604,15 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    pub(crate) fn theorem_verified(
+        &self,
+        ordinal: u64,
+        theorem: crate::learning::knowledge::Entry,
+    ) -> Result<(), String> {
+        self.sender
+            .try_send(Command::TheoremVerified { ordinal, theorem })
+            .map_err(|_| "theorem observation capacity or stopped service".into())
+    }
     pub(crate) fn definition_verified(
         &self,
         ordinal: u64,

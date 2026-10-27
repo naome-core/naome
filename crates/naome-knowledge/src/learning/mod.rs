@@ -4,11 +4,14 @@ mod calculus;
 mod construction;
 mod curriculum;
 pub(crate) mod definitions;
+pub(crate) mod evidence;
 mod graph;
+pub(crate) mod knowledge;
 mod model;
 pub(crate) mod peer;
 mod pool;
-mod proof;
+pub(crate) mod program;
+pub(crate) mod proof;
 mod search;
 mod state;
 pub(crate) use artifact::{ArtifactIo, Blob};
@@ -51,19 +54,32 @@ pub(crate) struct Example {
 pub(crate) struct Evidence {
     pub job: u64,
     pub proof_id: String,
-    pub certificate: Vec<u8>,
+    pub trace: search::Tree,
 }
 impl Example {
-    pub fn peer_job(&self) -> Option<u64> {
-        matches!(self.tree, search::Tree::Peer { .. }).then_some(self.job)
+    pub fn evidence_job(&self) -> Option<u64> {
+        matches!(self.tree, search::Tree::Stored { .. }).then_some(self.job)
     }
     pub fn matches_solution(&self, solution: &Solution) -> bool {
-        match (&self.tree, &solution.tree) {
-            (search::Tree::Peer { steps }, search::Tree::Certificate(bytes)) => {
-                matches!(self.origin, Origin::Peer { .. }) && *steps == peer::step_count(bytes)
-            }
-            _ => digest(&self.tree) == digest(&solution.tree),
+        if let search::Tree::Stored {
+            steps,
+            bytes,
+            binding,
+        } = &self.tree
+        {
+            let Ok(q) = CompiledQuestion::compile(&self.question) else {
+                return false;
+            };
+            let target = if self.refuted {
+                q.refuted_target()
+            } else {
+                q.proved_target()
+            };
+            return *binding == digest(&solution.tree)
+                && serde_json::to_vec(&solution.tree).is_ok_and(|b| b.len() == *bytes)
+                && state::proof_steps(target, &solution.tree).is_ok_and(|n| n == *steps);
         }
+        digest(&self.tree) == digest(&solution.tree)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +87,8 @@ impl Example {
 pub(crate) struct State {
     model: Checkpoint,
     definitions: Vec<definitions::Entry>,
+    definition_uses: BTreeMap<String, u64>,
+    knowledge: Vec<knowledge::Entry>,
     replay: Vec<Example>,
     anchors: Vec<Example>,
     accepted: u64,
@@ -89,6 +107,7 @@ pub(crate) struct State {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Progress {
     pub cost: Option<GenerationCost>,
+    pub training_cost: model::TrainingCost,
     pub unit: u32,
     model: Checkpoint,
     trained: u64,
@@ -122,6 +141,11 @@ pub(crate) struct Job {
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerationCost {
     pub search_expansions: usize,
+    pub checker_calls: u64,
+    pub submitted_checker_steps: u64,
+    pub retrieved_lemmas: usize,
+    pub retrieval_micros: u64,
+    pub dependency_check_steps: usize,
     pub original_steps: usize,
     pub useful_steps: usize,
     pub unique_states: usize,
@@ -149,11 +173,7 @@ impl Solution {
         if self.helpers != definitions::helpers(&self.tree)? {
             return Err("definition helper source binding differs".into());
         }
-        let context = if let search::Tree::Constructed(bytes) = &self.tree {
-            construction::evidence::context(bytes)?
-        } else {
-            definitions::context(&definitions::selected(&self.tree)?)?
-        };
+        let context = definitions::proof_context(&self.tree)?;
         let proof = naome_authoring::compile_against_proof_context(&self.source, &context)
             .map_err(|e| e.to_string())?;
         if crate::hex(proof.proof_id().as_bytes()) != self.proof_id {
@@ -189,6 +209,31 @@ impl Job {
             1
         }
     }
+    pub fn validate_generated_trace(&self) -> Result<(), String> {
+        fn generated(tree: &search::Tree) -> bool {
+            match tree {
+                search::Tree::Certificate(_)
+                | search::Tree::Stored { .. }
+                | search::Tree::Constructed {
+                    selection: None, ..
+                } => false,
+                search::Tree::Knowledge { proof, .. } | search::Tree::Definitions { proof, .. } => {
+                    generated(proof)
+                }
+                search::Tree::Step { children, .. } => children.iter().all(generated),
+                _ => true,
+            }
+        }
+        if self
+            .progress
+            .as_ref()
+            .and_then(|p| p.result.as_ref())
+            .is_some_and(|s| !generated(&s.tree))
+        {
+            return Err("local discovery lacks its generated decision trace".into());
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         if digest(&self.base) != self.base_hash {
             return Err("learning parent snapshot differs".into());
@@ -198,7 +243,7 @@ impl Job {
             self.base
                 .replay
                 .iter()
-                .filter_map(Example::peer_job)
+                .filter_map(Example::evidence_job)
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -207,11 +252,19 @@ impl Job {
         expected.dedup();
         let actual = self.evidence.iter().map(|e| e.job).collect::<Vec<_>>();
         if expected != actual
+            || serde_json::to_vec(&self.evidence)
+                .map_err(|e| e.to_string())?
+                .len()
+                > REPLAY * 8 * 1024 + 4096
             || self.evidence.iter().any(|e| {
-                e.certificate.len() > 8 * 1024
-                    || !self.base.replay.iter().any(|r| {
-                        r.job == e.job && r.proof_id == e.proof_id && r.peer_job().is_some()
-                    })
+                !self.base.replay.iter().any(|r| {
+                    r.job == e.job
+                        && r.proof_id == e.proof_id
+                        && matches!(&r.tree,
+                        search::Tree::Stored { bytes, binding, .. } if
+                        serde_json::to_vec(&e.trace).is_ok_and(|b| b.len() == *bytes)
+                        && digest(&e.trace) == *binding)
+                })
             })
         {
             return Err("peer replay snapshot binding differs".into());
@@ -243,6 +296,15 @@ impl Job {
             }
 
             p.model.validate()?;
+            if let Some(solution) = &p.result {
+                let checked = solution.checked()?.into_checked_proof();
+                knowledge::validate_availability(
+                    checked.conclusion(),
+                    &solution.tree,
+                    &self.base.knowledge,
+                    &self.base.definitions,
+                )?;
+            }
             if p.unit < self.units()
                 && (p.model != self.base.model
                     || p.promotions != self.base.promotions
@@ -293,6 +355,7 @@ impl Job {
         }
         let mut p = self.progress.clone().unwrap_or(Progress {
             cost: None,
+            training_cost: model::TrainingCost::default(),
             unit: 0,
             model: self.base.model.clone(),
             trained: self.base.trained,
@@ -315,6 +378,23 @@ impl Job {
             if let Some((candidate, first, last)) =
                 engine.train_replay(parent, &self.base, &self.evidence, &mut p.rng, io)?
             {
+                p.training_cost.replay_micros = p
+                    .training_cost
+                    .replay_micros
+                    .saturating_add(engine.cost.replay_micros);
+                p.training_cost.load_micros = p
+                    .training_cost
+                    .load_micros
+                    .saturating_add(engine.cost.load_micros);
+                p.training_cost.update_micros = p
+                    .training_cost
+                    .update_micros
+                    .saturating_add(engine.cost.update_micros);
+                p.training_cost.checkpoint_micros = p
+                    .training_cost
+                    .checkpoint_micros
+                    .saturating_add(engine.cost.checkpoint_micros);
+                p.training_cost.states = engine.cost.states;
                 p.first_loss.get_or_insert(first);
                 p.last_loss = Some(last);
                 p.candidate = Some(candidate);
@@ -346,12 +426,28 @@ impl Job {
                 if let Some(source) = source {
                     let before = engine
                         .with(&self.base.model, io, |runtime| {
-                            solve(&source, runtime, 32, job)
+                            solve_with_definitions(
+                                &source,
+                                runtime,
+                                32,
+                                job,
+                                &self.base.definitions,
+                                &self.base.knowledge,
+                            )
                         })?
                         .0
                         .is_some();
                     let after = engine
-                        .with(candidate, io, |runtime| solve(&source, runtime, 32, job))?
+                        .with(candidate, io, |runtime| {
+                            solve_with_definitions(
+                                &source,
+                                runtime,
+                                32,
+                                job,
+                                &self.base.definitions,
+                                &self.base.knowledge,
+                            )
+                        })?
                         .0
                         .is_some();
                     if index < curriculum::DEVELOPMENT {
@@ -401,6 +497,7 @@ impl Job {
                             budget,
                             job,
                             &self.base.definitions,
+                            &self.base.knowledge,
                         )
                     })?;
                     p.cost = Some(cost);
@@ -432,39 +529,25 @@ impl model::Ranker for Exploring<'_> {
         Ok(scores)
     }
 }
-fn solve(
-    source: &str,
-    model: &mut model::Runtime,
-    budget: usize,
-    job: u64,
-) -> Result<(Option<Solution>, String), String> {
-    let (solution, diagnostic, _) = solve_measured(source, model, budget, job)?;
-    Ok((solution, diagnostic))
-}
-fn solve_measured(
-    source: &str,
-    model: &mut model::Runtime,
-    budget: usize,
-    job: u64,
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
-    let mut ranker = Exploring {
-        model,
-        seed: job.max(1),
-        explore: budget >= 128,
-    };
-    search_question_measured(source, &mut ranker, budget)
-}
 fn solve_with_definitions(
     source: &str,
     model: &mut model::Runtime,
     budget: usize,
     job: u64,
     known: &[definitions::Entry],
+    theorems: &[knowledge::Entry],
 ) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    let checking = proof::checking_work();
     let started = std::time::Instant::now();
-    let (mut solution, diagnostic, mut cost) = solve_measured(source, model, budget, job)?;
+    let mut ranker = Exploring {
+        model,
+        seed: job.max(1),
+        explore: budget >= 128,
+    };
+    let (mut solution, diagnostic, mut cost) =
+        search_question_with_knowledge(source, &mut ranker, budget, theorems, known)?;
     if let Some(solution) = &mut solution {
-        if matches!(solution.tree, search::Tree::Constructed(_)) {
+        if matches!(solution.tree, search::Tree::Constructed { .. }) {
             return Ok((Some(solution.clone()), diagnostic, cost));
         }
         let definition_started = std::time::Instant::now();
@@ -476,10 +559,14 @@ fn solve_with_definitions(
         };
         if let Some((entries, selected)) = definitions::choose(target, known, model)? {
             cost.definition_candidates = entries.len();
+            let available = entries
+                .iter()
+                .take_while(|entry| known.contains(entry))
+                .count();
             let tree = search::Tree::Definitions {
                 entries,
                 selected,
-                available: known.len().min(definitions::CAPACITY - 1),
+                available,
                 proof: Box::new(solution.tree.clone()),
             };
             match search::core::checked(target, &tree) {
@@ -518,6 +605,9 @@ fn solve_with_definitions(
             .as_micros()
             .min(u128::from(u64::MAX)) as u64;
         cost.generation_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        let work = proof::checking_work();
+        cost.checker_calls = work.calls.saturating_sub(checking.calls);
+        cost.submitted_checker_steps = work.steps.saturating_sub(checking.steps);
         *solution.cost = cost.clone();
     }
     Ok((solution, diagnostic, cost))
@@ -531,13 +621,27 @@ fn search_question(
     let (solution, diagnostic, _) = search_question_measured(source, ranker, budget)?;
     Ok((solution, diagnostic))
 }
+#[cfg(test)]
 fn search_question_measured(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
 ) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    search_question_with_knowledge(source, ranker, budget, &[], &[])
+}
+fn search_question_with_knowledge(
+    source: &str,
+    ranker: &mut dyn model::Ranker,
+    budget: usize,
+    theorems: &[knowledge::Entry],
+    definitions: &[definitions::Entry],
+) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    let checking = proof::checking_work();
     let started = std::time::Instant::now();
     let q = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+    let mut retrieval_micros = 0;
+    let mut retrieved = 0;
+    let mut dependency_steps = 0;
     let mut failure = "calculus_or_strategy_unresolved".to_owned();
     let mut remaining = budget;
     let mut certificate_failures = 0;
@@ -551,21 +655,40 @@ fn search_question_measured(
             q.proved_target().clone()
         };
         let orientation_started = std::time::Instant::now();
-        let (constructed, work) =
-            match construction::construct(&target, remaining, orientation_started) {
-                Ok(result) => result,
-                Err(error) => {
-                    certificate_failures += 1;
-                    remaining = 0;
-                    failure = format!("construction_unresolved: {error}");
-                    break;
-                }
-            };
+        let retrieval_started = std::time::Instant::now();
+        let selected = knowledge::retrieve(&target, theorems)?;
+        retrieved += selected.len();
+        dependency_steps += selected
+            .iter()
+            .map(|e| evidence::steps(&e.packet))
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .sum::<usize>();
+        retrieval_micros += retrieval_started
+            .elapsed()
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
+        let (constructed, work, selection) = match construction::construct_with(
+            &target,
+            remaining,
+            orientation_started,
+            ranker,
+            &selected,
+            definitions,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                certificate_failures += 1;
+                remaining = 0;
+                failure = format!("construction_unresolved: {error}");
+                break;
+            }
+        };
         remaining = remaining.saturating_sub(work);
         let found = if let Some(verified) = constructed {
             search::ResultTree {
-                tree: Some(search::Tree::Constructed(
-                    match construction::evidence::pack(&verified) {
+                tree: Some(search::Tree::Constructed {
+                    packet: match evidence::pack(&verified) {
                         Ok(bytes) => bytes,
                         Err(error) => {
                             certificate_failures += 1;
@@ -573,12 +696,19 @@ fn search_question_measured(
                             continue;
                         }
                     },
-                )),
+                    selection,
+                }),
                 expansions: 0,
                 failure: None,
             }
         } else {
-            search::solve_started(&target, ranker, remaining, orientation_started)?
+            search::solve_with_knowledge(
+                &target,
+                ranker,
+                remaining,
+                orientation_started,
+                &selected,
+            )?
         };
         remaining = remaining.saturating_sub(found.expansions);
         if let Some(tree) = found.tree {
@@ -629,7 +759,19 @@ fn search_question_measured(
                         failure = "certificate_closure_capacity".into();
                         continue;
                     }
+                    let unique_states = search::compile(&target, &tree)?
+                        .1
+                        .iter()
+                        .map(graph::Graph::key)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len();
+                    let work = proof::checking_work();
                     let measured = GenerationCost {
+                        checker_calls: work.calls.saturating_sub(checking.calls),
+                        submitted_checker_steps: work.steps.saturating_sub(checking.steps),
+                        retrieved_lemmas: retrieved,
+                        retrieval_micros,
+                        dependency_check_steps: dependency_steps,
                         definition_candidates: definitions::selected(&tree)?.len(),
                         definition_references: references,
                         definition_check_steps: if references > 0 { check_steps } else { 0 },
@@ -638,12 +780,7 @@ fn search_question_measured(
                         original_steps: cost.original_steps,
                         useful_steps: cost.useful_steps,
                         core_work: cost.replay_work,
-                        unique_states: search::compile(&target, &tree)?
-                            .1
-                            .iter()
-                            .map(graph::Graph::key)
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .len(),
+                        unique_states,
                         generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX))
                             as u64,
                         ..GenerationCost::default()
@@ -672,6 +809,11 @@ fn search_question_measured(
         None,
         failure,
         GenerationCost {
+            checker_calls: proof::checking_work().calls.saturating_sub(checking.calls),
+            submitted_checker_steps: proof::checking_work().steps.saturating_sub(checking.steps),
+            retrieved_lemmas: retrieved,
+            retrieval_micros,
+            dependency_check_steps: dependency_steps,
             certificate_failures,
             search_expansions: budget - remaining,
             generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,

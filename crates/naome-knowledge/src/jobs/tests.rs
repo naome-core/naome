@@ -38,7 +38,8 @@ impl Manual {
                 }
                 Command::PeerVerified(_)
                 | Command::PeerCursor(_)
-                | Command::DefinitionVerified { .. } => {}
+                | Command::DefinitionVerified { .. }
+                | Command::TheoremVerified { .. } => {}
                 Command::Program { reply, .. } => {
                     let _ = reply.send(Err("manual provider has no retained program".into()));
                 }

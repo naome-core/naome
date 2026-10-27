@@ -1,9 +1,11 @@
 //! Sealed question-only subset of the original TRAIN corpus.
 //! Dependency SHA-256 buckets 0/1 are development/reserved; 2..4 learn.
 use serde::{Deserialize, Serialize};
+pub mod composition;
 pub mod frontier;
+pub mod owned;
 use std::sync::LazyLock;
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Case {
     pub id: String,
     pub source: String,
@@ -40,9 +42,10 @@ pub fn learning_cases() -> impl Iterator<Item = &'static Case> {
         .iter()
         .filter(|q| !q.development)
         .chain(frontier::BANK.learning.iter())
+        .chain(composition::BANK.learning.iter())
 }
 pub fn statistics_key(case: &Case) -> &str {
-    if case.family.starts_with("frontier-") {
+    if case.family.starts_with("frontier-") || case.family.starts_with("composition-") {
         &case.family
     } else {
         &case.dependency
@@ -55,11 +58,12 @@ pub fn reserved(id: &str) -> bool {
         .is_ok()
         || CORPUS.cases.iter().any(|q| q.id == id && q.development)
         || frontier::BANK.reserved.contains(id)
+        || composition::BANK.reserved.contains(id)
 }
 /// Extend the original eight sentinels across every development dependency.
 /// Selection uses only sealed identities, never solver outcomes or labels.
 pub const CORPUS_DEVELOPMENT: usize = 32;
-pub const DEVELOPMENT: usize = CORPUS_DEVELOPMENT + 32;
+pub const DEVELOPMENT: usize = CORPUS_DEVELOPMENT + 32 + 32;
 pub fn development() -> Vec<&'static Case> {
     use std::collections::{BTreeMap, BTreeSet};
     let mut families = BTreeSet::new();
@@ -87,5 +91,6 @@ pub fn development() -> Vec<&'static Case> {
         }
     }
     selected.extend(&frontier::BANK.development);
+    selected.extend(&composition::BANK.development);
     selected
 }

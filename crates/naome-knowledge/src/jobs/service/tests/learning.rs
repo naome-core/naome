@@ -180,7 +180,7 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
     assert!(owner.disk.pending_peer().unwrap().is_none());
     assert_eq!(learning(&owner), state);
     assert!(
-        state["replay"][0]["tree"]["Peer"]["steps"]
+        state["replay"][0]["tree"]["Stored"]["steps"]
             .as_u64()
             .unwrap()
             > 0
@@ -211,47 +211,61 @@ fn peer_reconstruction_keeps_peer_origin_and_does_not_claim_local_discovery() {
 }
 #[test]
 fn reserved_or_unclassified_peer_admissions_have_one_durable_unsupported_disposition() {
-    let (directory, mut owner) = native();
-    let admission = PeerAdmission {
-        certificate: Some(
-            crate::learning::peer::pack(
-                naome_authoring::compile(&checked_solution().source)
-                    .unwrap()
-                    .canonical_proof_bytes(),
-                &[],
-            )
-            .unwrap(),
-        ),
-        ordinal: 1,
-        artifact: "a1".repeat(32),
-        peer: libp2p::PeerId::random().to_string(),
-        question: Some("goal=all(x,mem(x,x))".into()),
-        binding: Binding::new([1; 32], [2; 32]),
-    };
-    owner
-        .disk
-        .enqueue_peer(&mut owner.journal, admission.clone())
-        .unwrap();
-    owner.fill_internal().unwrap();
-    assert!(owner.disk.pending_peer().unwrap().is_none());
-    assert!(
-        !owner
-            .journal
-            .records
-            .values()
-            .any(|r| matches!(r.input, Input::Peer { .. }))
-    );
-    assert_eq!(learning(&owner)["accepted"], 0);
-    let settings = owner.settings;
-    drop(owner);
-    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
-    let mut owner = Owner::new(disk, journal, settings, Arc::default());
-    owner
-        .disk
-        .enqueue_peer(&mut owner.journal, admission)
-        .unwrap();
-    assert!(owner.disk.pending_peer().unwrap().is_none());
-    assert_eq!(learning(&owner)["accepted"], 0);
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../learning/curriculum.json")).unwrap();
+    let reserved = corpus["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["development"] == true)
+        .unwrap()["source"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!crate::learning::State::eligible(&reserved));
+    for question in [None, Some(reserved)] {
+        let (directory, mut owner) = native();
+        let admission = PeerAdmission {
+            certificate: Some(
+                crate::learning::peer::pack(
+                    naome_authoring::compile(&checked_solution().source)
+                        .unwrap()
+                        .canonical_proof_bytes(),
+                    &[],
+                )
+                .unwrap(),
+            ),
+            ordinal: 1,
+            artifact: "a1".repeat(32),
+            peer: libp2p::PeerId::random().to_string(),
+            question,
+            binding: Binding::new([1; 32], [2; 32]),
+        };
+        owner
+            .disk
+            .enqueue_peer(&mut owner.journal, admission.clone())
+            .unwrap();
+        owner.fill_internal().unwrap();
+        assert!(owner.disk.pending_peer().unwrap().is_none());
+        assert!(
+            !owner
+                .journal
+                .records
+                .values()
+                .any(|r| matches!(r.input, Input::Peer { .. }))
+        );
+        assert_eq!(learning(&owner)["accepted"], 0);
+        let settings = owner.settings;
+        drop(owner);
+        let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+        let mut owner = Owner::new(disk, journal, settings, Arc::default());
+        owner
+            .disk
+            .enqueue_peer(&mut owner.journal, admission)
+            .unwrap();
+        assert!(owner.disk.pending_peer().unwrap().is_none());
+        assert_eq!(learning(&owner)["accepted"], 0);
+    }
 }
 #[test]
 fn canonical_question_is_sampled_once_across_local_and_peer_history() {
@@ -535,4 +549,132 @@ fn model_chunk_disk_pressure_defers_the_same_original_unit_without_a_fresh_allow
     assert_eq!(after.reserved_units, before.reserved_units);
     assert_eq!(after.expires_ms, before.expires_ms);
     assert_eq!(after.native.as_ref().unwrap().io_bytes, 5);
+}
+
+#[test]
+fn a_projected_program_retains_its_peer_receipt_and_distinct_native_identity_on_reopen() {
+    let (directory, mut owner) = native();
+    let original = checked_solution();
+    let question = crate::learning::tests::own_question();
+    let q = naome_authoring::CompiledQuestion::compile(&question).unwrap();
+    let known = crate::learning::proof::verify(
+        &crate::learning::evidence::compile(
+            q.proved_target(),
+            &crate::learning::peer::pack(
+                naome_authoring::compile(&original.source)
+                    .unwrap()
+                    .canonical_proof_bytes(),
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        q.proved_target(),
+    )
+    .unwrap();
+    let mut context = naome_checker::ArtifactState::new();
+    context
+        .register_proof(original.checked().unwrap().into_checked_proof())
+        .unwrap();
+    let commands = vec![
+        naome_proof::program::Command::ProofReference {
+            proof_id: *known.native_id.as_bytes(),
+        },
+        naome_proof::program::Command::Seal { proof: 0 },
+    ];
+    let mut work =
+        crate::proof_work::Work::open(&directory.0.join("peer-program.sqlite3")).unwrap();
+    work.append_group(&commands).unwrap();
+    let budget = crate::resources::adaptive::Budget {
+        memory_bytes: 256 * 1024 * 1024,
+        concurrency: 1,
+        cache_bytes: 32768,
+        batch_steps: 128,
+        network_requests: 1,
+        yield_ms: 0,
+        paused: None,
+    };
+    while work.advance(&budget, &context).unwrap() {}
+    while !work.prepare_export(&budget).unwrap() {}
+    let checked = work.into_checked().unwrap();
+    let manifest = checked.proof().unwrap().manifest().clone();
+    let projected = crate::learning::program::project(
+        manifest.clone(),
+        |i| {
+            commands
+                .get(i as usize)
+                .cloned()
+                .ok_or_else(|| "command missing".into())
+        },
+        |id| {
+            assert_eq!(id, known.native_id);
+            crate::learning::proof::verify(
+                &crate::learning::proof::Term::Native {
+                    certificate: known.certificate.clone(),
+                    lemmas: known.lemmas.clone(),
+                    definitions: known.definitions.clone(),
+                    target: known.target.clone(),
+                },
+                &known.target,
+            )
+        },
+        vec![],
+    )
+    .unwrap();
+    let verified = crate::learning::proof::verify(
+        &crate::learning::proof::Term::Native {
+            certificate: projected.certificate,
+            lemmas: projected.lemmas,
+            definitions: projected.definitions,
+            target: q.proved_target().clone(),
+        },
+        q.proved_target(),
+    )
+    .unwrap();
+    let packet =
+        crate::learning::evidence::pack_with_program(&verified, Some(projected.origin)).unwrap();
+    let source_artifact = crate::hex(manifest.artifact_id().as_bytes());
+    let translated = crate::hex(verified.native_id.as_bytes());
+    assert_ne!(translated, crate::hex(manifest.proof_id().as_bytes()));
+    let admission = PeerAdmission {
+        certificate: Some(packet),
+        ordinal: 1,
+        artifact: source_artifact.clone(),
+        peer: libp2p::PeerId::random().to_string(),
+        question: Some(question),
+        binding: Binding::new([1; 32], [2; 32]),
+    };
+    owner
+        .disk
+        .enqueue_peer(&mut owner.journal, admission)
+        .unwrap();
+    owner.fill_internal().unwrap();
+    let id = owner
+        .journal
+        .records
+        .values()
+        .find(|r| matches!(r.input, Input::Peer { .. }))
+        .unwrap()
+        .id;
+    finish(&mut owner, id, original);
+    let state = learning(&owner);
+    assert_eq!(state["peer_examples"], 1);
+    assert_eq!(state["local_examples"], 0);
+    assert_eq!(state["replay"][0]["proof_id"], translated);
+    assert_eq!(
+        state["replay"][0]["origin"]["Peer"]["artifact"],
+        source_artifact
+    );
+    let settings = owner.settings;
+    drop(owner);
+    let (disk, journal) = Disk::open(&directory.0, settings, 0).unwrap();
+    assert_eq!(
+        serde_json::to_value(journal.learning.as_ref().unwrap()).unwrap(),
+        state
+    );
+    let evidence = disk
+        .replay_evidence(journal.learning.as_ref().unwrap())
+        .unwrap();
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].proof_id, translated);
 }

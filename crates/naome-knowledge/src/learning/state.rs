@@ -12,7 +12,7 @@ fn validate_example(e: &Example) -> Result<(), String> {
         return Err("learning example lacks an owned job".into());
     }
     let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
-    if curriculum::learning(&crate::hex(q.resolution_id())).is_none() {
+    if curriculum::owned::case(&e.question).is_none() {
         return Err("learning example outside eligible dependency split".into());
     }
     crate::object::id_bytes(&e.proof_id)?;
@@ -23,9 +23,14 @@ fn validate_example(e: &Example) -> Result<(), String> {
             return Err("peer replay origin encoding".into());
         }
     }
-    if let search::Tree::Peer { steps } = e.tree {
-        return if matches!(e.origin, Origin::Peer { .. })
-            && !e.refuted
+    if let search::Tree::Stored {
+        steps,
+        bytes,
+        ref binding,
+    } = e.tree
+    {
+        return if bytes <= REPLAY * 8 * 1024
+            && crate::object::id_bytes(binding).is_ok()
             && steps > 0
             && steps <= crate::resources::limits().closure_steps.min(16_384)
         {
@@ -57,21 +62,23 @@ pub(super) fn proof_steps(
     target: &naome_foundation::Formula,
     tree: &search::Tree,
 ) -> Result<usize, String> {
-    if let search::Tree::Peer { steps } = tree {
+    if let search::Tree::Stored { steps, .. } = tree {
         return Ok(*steps);
     }
-    Ok(search::core::checked(target, tree)?
-        .2
-        .certificate
-        .steps()
-        .len())
+    let checked = search::core::checked(target, tree)?.2;
+    Ok(checked.certificate.steps().len()
+        + checked
+            .lemmas
+            .iter()
+            .map(|c| c.steps().len())
+            .sum::<usize>())
 }
 impl State {
     pub fn sample_counts(&self) -> (u64, u64) {
         (self.local_examples, self.peer_examples)
     }
     pub fn replay_sources(&self) -> impl Iterator<Item = &Example> {
-        self.replay.iter().filter(|e| e.peer_job().is_some())
+        self.replay.iter().filter(|e| e.evidence_job().is_some())
     }
     pub fn examples(&self) -> impl Iterator<Item = &Example> {
         self.replay.iter().chain(&self.anchors)
@@ -83,6 +90,8 @@ impl State {
         Self {
             model: Checkpoint::fresh(),
             definitions: Vec::new(),
+            definition_uses: BTreeMap::new(),
+            knowledge: Vec::new(),
             replay: Vec::new(),
             anchors: Vec::new(),
             accepted: 0,
@@ -100,13 +109,34 @@ impl State {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.model.validate()?;
+        knowledge::validate(&self.knowledge)?;
         let _ = definitions::context(&self.definitions)?;
+        if self.definition_uses.keys().any(|id| {
+            !self
+                .definitions
+                .iter()
+                .any(|e| e.address().is_ok_and(|a| crate::hex(a.as_bytes()) == *id))
+        }) {
+            return Err("definition utility lacks a checked meaning".into());
+        }
         if self.anchors.len() > 4
             || self.replay.len() > REPLAY
             || self.accepted > self.epoch
             || self.trained > self.epoch
             || self.attempted > self.epoch
             || self.local_examples.checked_add(self.peer_examples) != Some(self.accepted)
+            || self
+                .replay
+                .iter()
+                .filter_map(|e| {
+                    if let search::Tree::Stored { bytes, .. } = e.tree {
+                        Some(bytes)
+                    } else {
+                        None
+                    }
+                })
+                .sum::<usize>()
+                > REPLAY * 8 * 1024
             || self.statistics.len() > 64
             || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
                 > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
@@ -152,8 +182,22 @@ impl State {
             if next.definitions.is_empty() {
                 return Ok(false);
             }
-            next.definitions.remove(0);
+            let index = next
+                .definitions
+                .iter()
+                .enumerate()
+                .min_by_key(|(i, e)| {
+                    let id = crate::hex(e.address().expect("checked definition").as_bytes());
+                    (next.definition_uses.get(&id).copied().unwrap_or(0), *i)
+                })
+                .map(|(i, _)| i)
+                .expect("retained definition");
+            let removed = next.definitions.remove(index);
+            next.definition_uses
+                .remove(&crate::hex(removed.address()?.as_bytes()));
         }
+        next.definition_uses
+            .insert(crate::hex(entry.address()?.as_bytes()), 0);
         next.definitions.push(entry);
         while serde_json::to_vec(&next).map_err(|e| e.to_string())?.len()
             > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
@@ -162,6 +206,33 @@ impl State {
                 return Ok(false);
             }
             next.remove_replay();
+        }
+        next.validate()?;
+        *self = next;
+        Ok(true)
+    }
+    pub fn remember_theorem(&mut self, entry: knowledge::Entry) -> Result<bool, String> {
+        let verified = entry.verified()?;
+        let q = CompiledQuestion::from_formula(verified.target).map_err(|e| e.to_string())?;
+        if !Self::eligible(q.source()) || self.knowledge.contains(&entry) {
+            return Ok(false);
+        }
+        let mut next = self.clone();
+        while next.knowledge.len() >= knowledge::CAPACITY
+            || next.knowledge.iter().map(|e| e.packet.len()).sum::<usize>() + entry.packet.len()
+                > knowledge::BYTES
+        {
+            if next.knowledge.is_empty() {
+                return Ok(false);
+            }
+            next.knowledge.remove(0);
+        }
+        next.knowledge.push(entry);
+        // Derived hints do not evict replay or expand the existing journal cap.
+        if crate::checkpoint::encode(&next)?.len()
+            > crate::resources::limits().closure_bytes.min(128 * 1024) / 4
+        {
+            return Ok(false);
         }
         next.validate()?;
         *self = next;
@@ -239,9 +310,7 @@ impl State {
             .clone()
     }
     pub fn eligible(question: &str) -> bool {
-        CompiledQuestion::compile(question)
-            .ok()
-            .is_some_and(|q| curriculum::learning(&crate::hex(q.resolution_id())).is_some())
+        curriculum::owned::case(question).is_some()
     }
     pub fn needs_training(&self) -> bool {
         if self.replay.len() < 8 || self.epoch.saturating_sub(self.attempted) < 4 {
@@ -250,10 +319,8 @@ impl State {
         let groups = self
             .replay
             .iter()
-            .filter_map(|e| CompiledQuestion::compile(&e.question).ok())
-            .filter_map(|q| {
-                curriculum::learning(&crate::hex(q.resolution_id())).map(|c| c.dependency.as_str())
-            })
+            .filter_map(|e| curriculum::owned::case(&e.question))
+            .map(|case| case.dependency)
             .collect::<std::collections::BTreeSet<_>>();
         groups.len() >= 3
     }
@@ -332,9 +399,7 @@ impl State {
     fn remove_replay(&mut self) {
         let mut counts = BTreeMap::new();
         for e in &self.replay {
-            let id = CompiledQuestion::compile(&e.question).expect("verified replay question");
-            let case =
-                curriculum::learning(&crate::hex(id.resolution_id())).expect("eligible replay");
+            let case = curriculum::owned::case(&e.question).expect("eligible replay");
             let key = (
                 matches!(e.origin, Origin::Peer { .. }),
                 case.dependency.clone(),
@@ -346,9 +411,7 @@ impl State {
             .iter()
             .enumerate()
             .max_by_key(|(index, e)| {
-                let q = CompiledQuestion::compile(&e.question).expect("verified replay");
-                let c =
-                    curriculum::learning(&crate::hex(q.resolution_id())).expect("eligible replay");
+                let c = curriculum::owned::case(&e.question).expect("eligible replay");
                 let peer = matches!(e.origin, Origin::Peer { .. });
                 let origin_count = self
                     .replay
@@ -368,19 +431,18 @@ impl State {
         let mut pool = pool::Pool::default();
         for e in &self.replay {
             let q = CompiledQuestion::compile(&e.question).map_err(|e| e.to_string())?;
-            let case = curriculum::learning(&crate::hex(q.resolution_id()))
-                .ok_or("training split differs")?;
+            let case = curriculum::owned::case(&e.question).ok_or("training split differs")?;
             let target = if e.refuted {
                 q.refuted_target()
             } else {
                 q.proved_target()
             };
-            let tree = if matches!(e.tree, search::Tree::Peer { .. }) {
+            let tree = if matches!(e.tree, search::Tree::Stored { .. }) {
                 let source = evidence
                     .iter()
                     .find(|source| source.job == e.job && source.proof_id == e.proof_id)
                     .ok_or("peer replay snapshot missing")?;
-                search::Tree::Certificate(source.certificate.clone())
+                source.trace.clone()
             } else {
                 e.tree.clone()
             };
@@ -420,7 +482,7 @@ impl State {
             return Ok(false);
         }
         let q = CompiledQuestion::compile(&example.question).map_err(|e| e.to_string())?;
-        if curriculum::learning(&crate::hex(q.resolution_id())).is_none() {
+        if curriculum::owned::case(&example.question).is_none() {
             return Ok(false);
         }
         validate_example(&example)?;
@@ -430,7 +492,12 @@ impl State {
             q.proved_target()
         };
         let (_, _, checked) = search::core::checked(target, &example.tree)?;
-        let native_steps = checked.certificate.steps().len();
+        let native_steps = checked.certificate.steps().len()
+            + checked
+                .lemmas
+                .iter()
+                .map(|c| c.steps().len())
+                .sum::<usize>();
         let (_, graphs) = search::compile(target, &example.tree)?;
         if graphs.is_empty() {
             return Ok(false);
@@ -450,7 +517,7 @@ impl State {
             let mut costs = Vec::new();
             for (i, e) in &previous {
                 costs.push((*i, proof_steps(target, &e.tree)?));
-                if matches!(e.tree, search::Tree::Peer { .. }) {
+                if matches!(e.tree, search::Tree::Stored { .. }) {
                     continue;
                 }
                 for g in search::compile(target, &e.tree)?.1 {
@@ -480,6 +547,36 @@ impl State {
             next.replay.remove(index);
         }
         if unique {
+            // Count new, checker-admitted goal uses of an already available
+            // meaning. Its initial creation and repeated references do not win
+            // future utility merely by inflating a certificate.
+            let mut used = checked
+                .lemmas
+                .iter()
+                .chain(std::iter::once(&checked.certificate))
+                .flat_map(|certificate| certificate.steps().iter())
+                .flat_map(naome_proof::ProofStep::definition_references)
+                .collect::<std::collections::BTreeSet<_>>();
+            loop {
+                let before = used.len();
+                for entry in &checked.definitions {
+                    let certificate = entry.certificate()?;
+                    if used.contains(&certificate.definition_id()) {
+                        used.extend(certificate.body().definition_references());
+                    }
+                }
+                if used.len() == before {
+                    break;
+                }
+            }
+            for entry in definitions::selected(&example.tree)? {
+                if used.contains(&entry.certificate()?.definition_id()) {
+                    let id = crate::hex(entry.address()?.as_bytes());
+                    if let Some(uses) = next.definition_uses.get_mut(&id) {
+                        *uses = uses.saturating_add(1);
+                    }
+                }
+            }
             match &example.origin {
                 Origin::Local => {
                     next.local_examples = next
@@ -503,16 +600,23 @@ impl State {
             .epoch
             .checked_add(1)
             .ok_or("learning revision overflow")?;
-        if matches!(example.origin, Origin::Peer { .. }) {
-            example.tree = search::Tree::Peer {
+        let trace_bytes = serde_json::to_vec(&example.tree)
+            .map_err(|e| e.to_string())?
+            .len();
+        if trace_bytes > REPLAY * 8 * 1024 {
+            return Ok(false);
+        }
+        if matches!(example.origin, Origin::Peer { .. }) || trace_bytes > 2048 {
+            example.tree = search::Tree::Stored {
                 steps: native_steps,
+                bytes: trace_bytes,
+                binding: digest(&example.tree),
             };
         }
         if next.anchors.len() < 4
             && !next.anchors.iter().any(|old| {
-                let old = CompiledQuestion::compile(&old.question).expect("verified anchor");
-                curriculum::learning(&crate::hex(old.resolution_id())).is_some_and(|old| {
-                    curriculum::learning(&crate::hex(q.resolution_id()))
+                curriculum::owned::case(&old.question).is_some_and(|old| {
+                    curriculum::owned::case(&example.question)
                         .is_some_and(|new| old.dependency == new.dependency)
                 })
             })
@@ -523,7 +627,20 @@ impl State {
             next.anchors.push(example.clone());
         }
         next.replay.push(example);
-        while next.replay.len() > REPLAY {
+        while next.replay.len() > REPLAY
+            || next
+                .replay
+                .iter()
+                .filter_map(|e| {
+                    if let search::Tree::Stored { bytes, .. } = e.tree {
+                        Some(bytes)
+                    } else {
+                        None
+                    }
+                })
+                .sum::<usize>()
+                > REPLAY * 8 * 1024
+        {
             next.remove_replay();
         }
         while crate::checkpoint::encode(&next)?.len()

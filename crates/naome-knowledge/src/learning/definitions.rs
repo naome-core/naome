@@ -15,7 +15,7 @@ pub const CAPACITY: usize = 8;
 pub const BYTES: usize = 8 * 1024;
 
 /// Exact untrusted inputs. Every use reconstructs ordinary selected checker state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     pub certificate: Vec<u8>,
@@ -63,19 +63,60 @@ pub fn context(entries: &[Entry]) -> Result<ArtifactState, String> {
     }
     let mut context = ArtifactState::new();
     for entry in entries {
-        if let Some(bytes) = &entry.obligation {
-            let proof = ProofCertificate::from_canonical_bytes(bytes).map_err(|e| e.to_string())?;
-            let checked = naome_checker::normalize_and_check_with_state(proof, &context)
+        register(&mut context, entry)?;
+    }
+    Ok(context)
+}
+
+pub fn register(context: &mut ArtifactState, entry: &Entry) -> Result<(), String> {
+    if entry.bytes() > BYTES {
+        return Err("definition reference snapshot capacity".into());
+    }
+    if let Some(bytes) = &entry.obligation {
+        let certificate =
+            ProofCertificate::from_canonical_bytes(bytes).map_err(|e| e.to_string())?;
+        let checked = super::proof::check(certificate, context).map_err(|e| e.to_string())?;
+        if !context.contains_proof(checked.proof_id()) {
+            context
+                .register_proof_for_verification(checked)
                 .map_err(|e| e.to_string())?;
-            context.register_proof(checked).map_err(|e| e.to_string())?;
         }
-        let checked = naome_checker::check_definition_with_state(entry.certificate()?, &context)
-            .map_err(|e| e.to_string())?;
+    }
+    let checked = naome_checker::check_definition_with_state(entry.certificate()?, context)
+        .map_err(|e| e.to_string())?;
+    if !context.contains_definition(entry.certificate()?.definition_id()) {
         context
             .register_definition(checked)
             .map_err(|e| e.to_string())?;
     }
-    Ok(context)
+    Ok(())
+}
+pub fn proof_context(tree: &super::search::Tree) -> Result<ArtifactState, String> {
+    use super::search::Tree;
+    match tree {
+        Tree::Knowledge { .. } => {
+            let verified = super::knowledge::verified(tree)?;
+            super::proof::lemma_context(&verified.definitions, &verified.lemmas)
+        }
+        Tree::Constructed { packet, .. } | Tree::Certificate(packet) => {
+            super::evidence::context(packet)
+        }
+        Tree::Definitions {
+            entries,
+            selected,
+            proof,
+            ..
+        } => {
+            let mut context = proof_context(proof)?;
+            register(
+                &mut context,
+                entries.get(*selected).ok_or("definition selection index")?,
+            )?;
+            Ok(context)
+        }
+        Tree::Stored { .. } => Err("source context requires its owned trace snapshot".into()),
+        _ => Ok(ArtifactState::new()),
+    }
 }
 
 pub fn aliases(entries: &[Entry]) -> Result<String, String> {
@@ -387,12 +428,40 @@ fn features(target: &Formula, entries: &[Entry], selected: usize) -> Result<Deci
     })
 }
 pub fn choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, String> {
-    let mut entries = known.iter().take(CAPACITY - 1).cloned().collect::<Vec<_>>();
+    let fragments = super::knowledge::fragments(target);
+    let mut ranked = Vec::new();
+    for (i, entry) in known.iter().enumerate() {
+        let score = super::knowledge::fragments(&entry.body()?)
+            .intersection(&fragments)
+            .map(Vec::len)
+            .sum::<usize>();
+        if score > 0 {
+            ranked.push((score, i, entry));
+        }
+    }
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut entries = ranked
+        .into_iter()
+        .take(CAPACITY - 1)
+        .map(|(_, _, entry)| entry.clone())
+        .collect::<Vec<_>>();
     if let Some(proposed) = discover(target)?
         && !entries.contains(&proposed)
         && entries.iter().map(Entry::bytes).sum::<usize>() + proposed.bytes() <= BYTES
     {
         entries.push(proposed);
+    }
+    Ok(entries)
+}
+pub fn construction_choices(target: &Formula, known: &[Entry]) -> Result<Vec<Entry>, String> {
+    let mut entries = choices(target, known)?;
+    for entry in discover_many(target, CAPACITY)? {
+        if !entries.contains(&entry)
+            && entries.len() < CAPACITY
+            && entries.iter().map(Entry::bytes).sum::<usize>() + entry.bytes() <= BYTES
+        {
+            entries.push(entry);
+        }
     }
     Ok(entries)
 }
@@ -421,14 +490,19 @@ pub fn choose(
 }
 
 pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
-    if let super::search::Tree::Constructed(bytes) = tree {
-        return super::construction::evidence::helpers(bytes);
+    if matches!(tree, super::search::Tree::Knowledge { .. }) {
+        return super::knowledge::helpers(&super::knowledge::verified(tree)?);
+    }
+    if let super::search::Tree::Constructed { packet: bytes, .. }
+    | super::search::Tree::Certificate(bytes) = tree
+    {
+        return super::evidence::helpers(bytes);
     }
     let super::search::Tree::Definitions {
         entries,
         selected,
         available,
-        ..
+        proof,
     } = tree
     else {
         return Ok(Vec::new());
@@ -441,13 +515,13 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
         .filter(|e| *e != entry)
         .cloned()
         .collect::<Vec<_>>();
-    let mut sources = Vec::new();
+    let mut sources = helpers(proof)?;
     if let Some(bytes) = &entry.obligation {
         let context = context(std::slice::from_ref(entry))?;
         let certificate =
             ProofCertificate::from_canonical_bytes(bytes).map_err(|e| e.to_string())?;
-        let checked = naome_checker::normalize_and_check_with_state(certificate, &context)
-            .map_err(|e| e.to_string())?;
+        let checked =
+            crate::learning::proof::check(certificate, &context).map_err(|e| e.to_string())?;
         let verified = super::proof::Verified {
             lemmas: Vec::new(),
             certificate: checked.normal_form().certificate().clone(),
@@ -464,15 +538,21 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
 
 pub fn selected(tree: &super::search::Tree) -> Result<Vec<Entry>, String> {
     match tree {
-        super::search::Tree::Constructed(bytes) => super::construction::evidence::selected(bytes),
+        super::search::Tree::Knowledge { .. } => Ok(super::knowledge::verified(tree)?.definitions),
+        super::search::Tree::Constructed { packet, .. } => super::evidence::selected(packet),
         super::search::Tree::Definitions {
-            entries, selected, ..
-        } => Ok(vec![
-            entries
-                .get(*selected)
-                .ok_or("definition selection index")?
-                .clone(),
-        ]),
+            entries,
+            selected: index,
+            proof,
+            ..
+        } => {
+            let mut selected_entries = selected(proof)?;
+            let entry = entries.get(*index).ok_or("definition selection index")?;
+            if !selected_entries.contains(entry) {
+                selected_entries.push(entry.clone());
+            }
+            Ok(selected_entries)
+        }
         super::search::Tree::Certificate(bytes) => super::peer::definitions(bytes),
         _ => Ok(Vec::new()),
     }

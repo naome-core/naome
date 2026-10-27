@@ -1,6 +1,6 @@
 //! The research 1M graph policy behind a narrow checkpoint/training boundary.
-//! Policy topology, graph tensors, Adam, cross entropy, batch 16 and LR .001
-//! are preserved from the native research implementation. No weights are imported.
+//! Formula graphs, goal-conditioned context attention and typed proof choices
+//! use Adam, checked-action cross entropy, batch 16 and LR .001. No weights are imported.
 mod policy;
 #[cfg(test)]
 use super::graph::Graph;
@@ -34,7 +34,7 @@ pub(crate) const REQUIREMENTS: Requirements = Requirements {
     io_bytes: 2 * 1024 * 1024 * 1024,
     work_bytes: 768 * 1024 * 1024,
 };
-pub const PARAMETERS: usize = 1_003_681;
+pub const PARAMETERS: usize = 1_004_001;
 pub const TRAINING_UNITS: u32 = 25;
 pub const UPDATES_PER_UNIT: u64 = 10;
 
@@ -51,12 +51,16 @@ pub enum Rule {
     EqualitySubstitution,
     ExistentialWitness,
     DefinitionReference,
+    LemmaReference,
+    ConstructionPlan,
 }
 impl Rule {
     pub fn kind(self) -> i32 {
         match self {
             Self::ExistentialWitness => 15,
             Self::DefinitionReference => 16,
+            Self::LemmaReference => 17,
+            Self::ConstructionPlan => 18,
             _ => 8 + self as i32,
         }
     }
@@ -88,6 +92,8 @@ fn specification() -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(include_str!("model/policy.rs"));
+    hash.update(include_str!("mod.rs"));
+    hash.update(include_str!("state.rs"));
     hash.update(include_str!("graph.rs"));
     hash.update(include_str!("model.rs"));
     hash.update(include_str!("search.rs"));
@@ -95,9 +101,23 @@ fn specification() -> String {
     hash.update(include_str!("pool.rs"));
     hash.update(include_str!("peer.rs"));
     hash.update(include_str!("definitions.rs"));
+    hash.update(include_str!("knowledge.rs"));
+    hash.update(include_str!("evidence.rs"));
+    hash.update(include_str!("program.rs"));
+    hash.update(include_str!("construction.rs"));
+    hash.update(include_str!("construction/selection.rs"));
+    hash.update(include_str!("construction/logic.rs"));
+    hash.update(include_str!("construction/representation.rs"));
+    hash.update(include_str!("proof.rs"));
+    hash.update(include_str!("proof/kernel.rs"));
+    hash.update(include_str!("proof/lemmas.rs"));
+    hash.update(include_str!("curriculum/owned.rs"));
+    hash.update(include_str!("curriculum/owned-exclusions.json"));
     hash.update(include_str!("curriculum.rs"));
     hash.update(include_str!("curriculum/frontier.rs"));
+    hash.update(include_str!("curriculum/composition.rs"));
     hash.update(include_str!("progress-protocol.json"));
+    hash.update(include_str!("knowledge-protocol.json"));
     hash.update(
         b"Adam;successful-action-marginal;hierarchical-cyclic-pool;packed-disjoint-graphs;sparse-parent-mean;batch=16;lr=0.001;float32",
     );
@@ -308,8 +328,21 @@ pub(super) fn test_update<I: ArtifactIo + ?Sized>(
 }
 /// Only two concrete model lifetimes coexist: incumbent and current candidate.
 /// Their binary identities stay outside controller state and accepted mathematics.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TrainingCost {
+    pub replay_micros: u64,
+    pub load_micros: u64,
+    pub update_micros: u64,
+    pub checkpoint_micros: u64,
+    pub states: usize,
+}
+fn micros(started: std::time::Instant) -> u64 {
+    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
 #[derive(Default)]
 pub(crate) struct Engine {
+    pub cost: TrainingCost,
     cache: Vec<(Checkpoint, Runtime)>,
     pool: Option<(String, Pool)>,
 }
@@ -360,11 +393,15 @@ impl Engine {
         cursor: &mut u64,
         io: &mut I,
     ) -> Result<Option<(Checkpoint, f32, f32)>, String> {
+        self.cost = TrainingCost::default();
+        let started = std::time::Instant::now();
         let key = super::digest(&(&state.replay, evidence));
         let pool = match self.pool.take() {
             Some((previous, pool)) if previous == key => pool,
             _ => state.training_pool(evidence)?,
         };
+        self.cost.replay_micros = micros(started);
+        self.cost.states = pool.graphs().len();
         let result = if pool.is_empty() {
             Ok(None)
         } else {
@@ -380,9 +417,15 @@ impl Engine {
         rng: &mut u64,
         io: &mut I,
     ) -> Result<(Checkpoint, f32, f32), String> {
+        let started = std::time::Instant::now();
         let mut runtime = self.take(c, io)?;
+        self.cost.load_micros = micros(started);
+        let started = std::time::Instant::now();
         let (first, last) = runtime.train(graphs, rng, UPDATES_PER_UNIT)?;
+        self.cost.update_micros = micros(started);
+        let started = std::time::Instant::now();
         let checkpoint = runtime.checkpoint(c, UPDATES_PER_UNIT, io)?;
+        self.cost.checkpoint_micros = micros(started);
         self.retain(checkpoint.clone(), runtime);
         Ok((checkpoint, first, last))
     }
@@ -456,7 +499,9 @@ mod tests {
             });
             larger.context.push(larger.nodes.len() - 1);
         }
-        let pool = Pool::from_graphs(&[graph.clone(), larger]);
+        let mut empty_context = graph.clone();
+        empty_context.context.clear();
+        let pool = Pool::from_graphs(&[graph.clone(), larger, empty_context]);
         let sample = pool.batch(&mut 0);
         let fresh = Checkpoint::fresh();
         let mut io = MemoryStore::default();

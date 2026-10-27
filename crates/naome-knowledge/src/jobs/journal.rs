@@ -951,6 +951,25 @@ fn validate_record(
             return Err("native learning epoch differs".into());
         }
         native.validate()?;
+        match &r.input {
+            Input::Solve { .. } => native.validate_generated_trace()?,
+            Input::Peer {
+                question,
+                artifact,
+                certificate,
+                ..
+            } => {
+                if let Some(solution) = native.progress.as_ref().and_then(|p| p.result.as_ref()) {
+                    crate::learning::peer::validate_solution(
+                        question,
+                        artifact,
+                        certificate,
+                        solution,
+                    )?;
+                }
+            }
+            _ => {}
+        }
         if r.provider != crate::learning::PROVIDER
             || !matches!(
                 r.input,

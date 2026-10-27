@@ -257,6 +257,15 @@ impl Owner {
             tokio::select! {
                 _=&mut halt=>break,
                 command=commands.recv()=>match command {
+                    Some(Command::TheoremVerified{ordinal,theorem})=>{
+                        if ordinal==0 {return Err("theorem learning ordinal is zero".into());}
+                        if let Some(learning)=self.journal.learning.as_mut(){
+                            let remembered=learning.remember_theorem(theorem)?;
+                            learning.peer_cursor=learning.peer_cursor.max(ordinal);
+                            self.save()?;
+                            crate::network::emit(serde_json::json!({"event":"native_theorem_observed","remembered":remembered}));
+                        }
+                    },
                     Some(Command::DefinitionVerified{ordinal,definition})=>{
                         if ordinal==0 {return Err("definition learning ordinal is zero".into());}
                         if let Some(learning)=self.journal.learning.as_mut(){

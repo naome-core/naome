@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 
 pub struct Bank {
     pub learning: Vec<Case>,
+    pub families: BTreeSet<String>,
     pub development: Vec<Case>,
     #[cfg(test)]
     pub confirmation: Vec<Case>,
@@ -298,7 +299,20 @@ fn build() -> Bank {
         64,
         "prospective confirmation construction coverage"
     );
+    let families = learning
+        .iter()
+        .chain(&development)
+        .chain(&confirmation)
+        .map(|case| {
+            super::owned::family(
+                CompiledQuestion::compile(&case.source)
+                    .expect("sealed frontier")
+                    .proved_target(),
+            )
+        })
+        .collect();
     Bank {
+        families,
         learning,
         development,
         #[cfg(test)]

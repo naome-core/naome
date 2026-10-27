@@ -17,24 +17,60 @@ impl Disk {
                     crate::checkpoint::MAX_ROW,
                 )?
                 .ok_or("peer replay source job absent")?;
-            let Input::Peer {
-                artifact,
-                certificate,
+            let Some(Output::Native {
+                solution: Some(solution),
                 ..
-            } = &source.input
+            }) = &source.result
             else {
-                return Err("peer replay source role differs".into());
+                return Err("replay source solution missing".into());
             };
-            if crate::hex(crate::object::proof_address(&example.proof_id)?.as_bytes()) != *artifact
-            {
-                return Err("peer snapshot artifact differs".into());
+            if source.state != State::Complete || !example.matches_solution(solution) {
+                return Err("replay source snapshot differs".into());
             }
+            let trace = match &source.input {
+                Input::Peer {
+                    question,
+                    artifact,
+                    certificate,
+                    ..
+                } => {
+                    if !crate::learning::peer::matches_artifact(
+                        &example.proof_id,
+                        artifact,
+                        certificate,
+                    )? {
+                        return Err("peer snapshot artifact differs".into());
+                    }
+                    crate::learning::peer::validate_solution(
+                        question,
+                        artifact,
+                        certificate,
+                        solution,
+                    )?;
+                    solution.tree.clone()
+                }
+                Input::Solve { .. } => {
+                    if self
+                        .checkpoint
+                        .get::<String>("learned", &source.id.to_string(), 256)?
+                        .as_deref()
+                        != Some(
+                            crate::hex(crate::object::proof_address(&example.proof_id)?.as_bytes())
+                                .as_str(),
+                        )
+                    {
+                        return Err("local replay snapshot lacks admission receipt".into());
+                    }
+                    solution.tree.clone()
+                }
+                _ => return Err("replay source role differs".into()),
+            };
             result.insert(
                 example.job,
                 crate::learning::Evidence {
                     job: example.job,
                     proof_id: example.proof_id.clone(),
-                    certificate: certificate.clone(),
+                    trace,
                 },
             );
         }
@@ -71,6 +107,25 @@ impl Disk {
             .learning
             .as_mut()
             .ok_or("peer learning owner is disabled")?;
+        if let Some(packet) = admission.certificate.as_ref().filter(|_| {
+            admission
+                .question
+                .as_deref()
+                .is_some_and(crate::learning::State::eligible)
+        }) {
+            let entry = crate::learning::knowledge::Entry {
+                packet: packet.clone(),
+            };
+            let verified = entry.verified()?;
+            if !crate::learning::peer::matches_artifact(
+                &crate::hex(verified.native_id.as_bytes()),
+                &admission.artifact,
+                packet,
+            )? {
+                return Err("theorem observation artifact differs".into());
+            }
+            learning.remember_theorem(entry)?;
+        }
         let mut updates = Vec::new();
         if self
             .checkpoint
@@ -194,8 +249,11 @@ impl Disk {
             {
                 let checked = solution.checked()?;
                 if crate::hex(checked.proof_id().as_bytes()) != solution.proof_id
-                    || crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes())
-                        != *artifact
+                    || !crate::learning::peer::matches_artifact(
+                        &solution.proof_id,
+                        artifact,
+                        certificate,
+                    )?
                 {
                     return Err("peer reconstructed proof checker identity differs".into());
                 }

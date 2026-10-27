@@ -1,17 +1,18 @@
 //! Bounded local search evidence. It is not an accepted mathematical artifact.
-use super::super::{
+use super::{
     definitions,
     proof::{self, Term},
 };
 use naome_foundation::Formula;
 use naome_proof::ProofCertificate;
 
-struct Evidence {
-    certificate: Vec<u8>,
-    lemmas: Vec<Vec<u8>>,
-    definitions: Vec<definitions::Entry>,
+pub(crate) struct Evidence {
+    pub certificate: Vec<u8>,
+    pub program: Option<super::program::Origin>,
+    pub lemmas: Vec<Vec<u8>>,
+    pub definitions: Vec<definitions::Entry>,
 }
-fn decode(bytes: &[u8]) -> Result<Evidence, String> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<Evidence, String> {
     let limits = crate::resources::limits();
     if bytes.len() < 4 || bytes.len() > limits.proof_bytes {
         return Err("construction evidence capacity".into());
@@ -68,10 +69,13 @@ fn decode(bytes: &[u8]) -> Result<Evidence, String> {
         return Err("construction definition framing capacity".into());
     }
     let definitions = serde_json::from_slice(&definition_bytes).map_err(|e| e.to_string())?;
+    let program =
+        serde_json::from_slice(&field(&decoded, &mut cursor)?).map_err(|e| e.to_string())?;
     if cursor != decoded.len() {
         return Err("construction evidence trailing bytes".into());
     }
     let evidence = Evidence {
+        program,
         certificate,
         lemmas,
         definitions,
@@ -87,12 +91,33 @@ fn decode(bytes: &[u8]) -> Result<Evidence, String> {
     Ok(evidence)
 }
 pub fn pack(proof: &proof::Verified) -> Result<Vec<u8>, String> {
+    pack_with_program(proof, None)
+}
+pub fn pack_with_program(
+    proof: &proof::Verified,
+    program: Option<super::program::Origin>,
+) -> Result<Vec<u8>, String> {
+    if let Some(origin) = &program {
+        super::program::validate(origin, proof)?;
+    }
     let evidence = Evidence {
-        certificate: proof.certificate.to_canonical_bytes(),
+        program,
+        certificate: proof
+            .certificate
+            .clone()
+            .into_unchecked_normal_form()
+            .canonical_bytes()
+            .to_vec(),
         lemmas: proof
             .lemmas
             .iter()
-            .map(ProofCertificate::to_canonical_bytes)
+            .map(|certificate| {
+                certificate
+                    .clone()
+                    .into_unchecked_normal_form()
+                    .canonical_bytes()
+                    .to_vec()
+            })
             .collect(),
         definitions: proof.definitions.clone(),
     };
@@ -111,6 +136,10 @@ pub fn pack(proof: &proof::Verified) -> Result<Vec<u8>, String> {
     field(
         &mut decoded,
         &serde_json::to_vec(&evidence.definitions).map_err(|e| e.to_string())?,
+    )?;
+    field(
+        &mut decoded,
+        &serde_json::to_vec(&evidence.program).map_err(|e| e.to_string())?,
     )?;
     if decoded.len() > crate::resources::limits().closure_bytes {
         return Err("construction decoded capacity".into());
@@ -137,7 +166,7 @@ pub fn compile(target: &Formula, bytes: &[u8]) -> Result<Term, String> {
         return Err("construction checker work capacity".into());
     }
     let checked = proof::verify(&term, target)?;
-    if pack(&checked)? != bytes {
+    if pack_with_program(&checked, evidence.program)? != bytes {
         return Err("construction evidence canonical binding".into());
     }
     Ok(term)
@@ -179,8 +208,8 @@ pub fn helpers(bytes: &[u8]) -> Result<Vec<String>, String> {
     let context = context(bytes)?;
     let certificate =
         ProofCertificate::from_canonical_bytes(&evidence.certificate).map_err(|e| e.to_string())?;
-    let checked = naome_checker::normalize_and_check_with_state(certificate, &context)
-        .map_err(|e| e.to_string())?;
+    let checked =
+        crate::learning::proof::check(certificate, &context).map_err(|e| e.to_string())?;
     let target = checked.conclusion();
     let verified = proof::verify(&compile(target, bytes)?, target)?;
     let mut sources = verified
@@ -193,4 +222,36 @@ pub fn helpers(bytes: &[u8]) -> Result<Vec<String>, String> {
         &verified.lemmas,
     )?);
     Ok(sources)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn packing_a_checked_non_normal_source_produces_the_unique_replay_packet() {
+        let certificate = ProofCertificate::new(vec![
+            naome_proof::ProofStep::ZfcAxiom(naome_foundation::ZfcAxiom::Foundation),
+            naome_proof::ProofStep::ZfcAxiom(naome_foundation::ZfcAxiom::Pairing),
+        ])
+        .unwrap();
+        let checked =
+            proof::check(certificate.clone(), &naome_checker::ArtifactState::new()).unwrap();
+        let verified = proof::Verified {
+            certificate,
+            lemmas: vec![],
+            definitions: vec![],
+            target: checked.conclusion().clone(),
+            native_id: checked.proof_id(),
+            payload_bytes: checked.normal_form().canonical_bytes().len(),
+        };
+        let packet = pack(&verified).unwrap();
+        let restored = proof::verify(
+            &compile(&verified.target, &packet).unwrap(),
+            &verified.target,
+        )
+        .unwrap();
+        assert_eq!(restored.native_id, verified.native_id);
+        assert_eq!(restored.certificate.steps().len(), 1);
+        assert_eq!(pack(&restored).unwrap(), packet);
+    }
 }

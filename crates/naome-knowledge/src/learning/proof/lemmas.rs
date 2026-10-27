@@ -28,7 +28,7 @@ pub fn context(
     }
     let mut context = super::super::definitions::context(definitions)?;
     for certificate in lemmas {
-        let checked = naome_checker::normalize_and_check_with_state(certificate.clone(), &context)
+        let checked = crate::learning::proof::check(certificate.clone(), &context)
             .map_err(|e| e.to_string())?;
         context.register_proof(checked).map_err(|e| e.to_string())?;
     }
@@ -43,8 +43,8 @@ pub fn retain(
     let mut edges = BTreeMap::new();
     let mut ids = Vec::new();
     for c in lemmas {
-        let checked = naome_checker::normalize_and_check_with_state(c.clone(), &context)
-            .map_err(|e| e.to_string())?;
+        let checked =
+            crate::learning::proof::check(c.clone(), &context).map_err(|e| e.to_string())?;
         let id = ArtifactId::from_proof_id(checked.proof_id());
         edges.insert(id, checked.direct_artifact_dependencies());
         ids.push(id);
@@ -73,7 +73,7 @@ pub fn sources(
     let mut context = super::super::definitions::context(definitions)?;
     let mut output = Vec::new();
     for certificate in lemmas {
-        let checked = naome_checker::normalize_and_check_with_state(certificate.clone(), &context)
+        let checked = crate::learning::proof::check(certificate.clone(), &context)
             .map_err(|e| e.to_string())?;
         let verified = Verified {
             certificate: checked.normal_form().certificate().clone(),

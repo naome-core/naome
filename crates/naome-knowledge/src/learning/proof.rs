@@ -10,7 +10,34 @@ use std::sync::Arc;
 mod kernel;
 mod lemmas;
 pub use kernel::Kernel;
-pub(super) use lemmas::{context as lemma_context, sources as lemma_sources};
+pub(crate) use lemmas::{context as lemma_context, sources as lemma_sources};
+
+/// Operational counters measure submitted native checker work, including
+/// repeated closure checks. They never grant validity or change reservations.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CheckingWork {
+    pub calls: u64,
+    pub steps: u64,
+}
+std::thread_local! {
+    static CHECKING: std::cell::Cell<CheckingWork> = const { std::cell::Cell::new(CheckingWork { calls: 0, steps: 0 }) };
+}
+pub fn checking_work() -> CheckingWork {
+    CHECKING.with(std::cell::Cell::get)
+}
+pub fn check(
+    certificate: ProofCertificate,
+    context: &dyn naome_checker::ContextView,
+) -> Result<naome_checker::CheckedProof, naome_checker::CheckError> {
+    CHECKING.with(|counter| {
+        let old = counter.get();
+        counter.set(CheckingWork {
+            calls: old.calls.saturating_add(1),
+            steps: old.steps.saturating_add(certificate.steps().len() as u64),
+        });
+    });
+    naome_checker::normalize_and_check_with_state(certificate, context)
+}
 
 pub const NATIVE_RESOURCE_LIMIT: &str =
     "native certificate or reconstructed formula resource limit";
@@ -94,7 +121,13 @@ impl Term {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Combinator {
-    Lemma(Vec<Vec<u8>>, Vec<u8>, Formula, ProofId),
+    Lemma(
+        Vec<Vec<u8>>,
+        Vec<u8>,
+        Formula,
+        ProofId,
+        Vec<super::definitions::Entry>,
+    ),
     Variable(usize, Formula),
     Kernel(Kernel),
     Generalize(FreeVariable, Arc<Self>),
@@ -106,7 +139,7 @@ enum Combinator {
 impl Combinator {
     fn formula(&self) -> Formula {
         match self {
-            Self::Lemma(_, _, formula, _) => formula.clone(),
+            Self::Lemma(_, _, formula, _, _) => formula.clone(),
             Self::Variable(_, formula) | Self::Apply(_, _, formula) => formula.clone(),
             Self::Kernel(k) => k.formula(),
             Self::Generalize(v, b) => Formula::for_all(*v, b.formula()),
@@ -216,9 +249,8 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
             target,
         } => {
             let context = lemma_context(&[], dependencies)?;
-            let checked =
-                naome_checker::normalize_and_check_with_state(certificate.clone(), &context)
-                    .map_err(|e| e.to_string())?;
+            let checked = crate::learning::proof::check(certificate.clone(), &context)
+                .map_err(|e| e.to_string())?;
             if checked.conclusion() != target {
                 return Err("construction lemma target differs".into());
             }
@@ -230,9 +262,23 @@ fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
                 checked.normal_form().canonical_bytes().to_vec(),
                 target.clone(),
                 checked.proof_id(),
+                Vec::new(),
             )))
         }
-        Term::Native { .. } => Err("native DAG is a closed replay root".into()),
+        Term::Native { target, .. } => {
+            let verified = verify(term, target)?;
+            Ok(Arc::new(Combinator::Lemma(
+                verified
+                    .lemmas
+                    .iter()
+                    .map(ProofCertificate::to_canonical_bytes)
+                    .collect(),
+                verified.certificate.to_canonical_bytes(),
+                target.clone(),
+                verified.native_id,
+                verified.definitions,
+            )))
+        }
         Term::Variable(id, formula) => Ok(Arc::new(Combinator::Variable(*id, formula.clone()))),
         Term::Kernel(k) => Ok(Arc::new(Combinator::Kernel(k.clone()))),
         Term::Generalize(v, body) => Ok(Arc::new(Combinator::Generalize(*v, lower(body)?))),
@@ -270,7 +316,7 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     } = term
     {
         let context = lemma_context(definitions, lemmas)?;
-        let checked = naome_checker::normalize_and_check_with_state(certificate.clone(), &context)
+        let checked = crate::learning::proof::check(certificate.clone(), &context)
             .map_err(|e| e.to_string())?;
         if checked.conclusion() != expected {
             return Err("native DAG conclusion differs".into());
@@ -290,18 +336,25 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     let mut cache = HashMap::new();
     let mut formula_nodes = 0usize;
     let mut lemmas = Vec::new();
+    let mut definitions = Vec::new();
     fn emit(
         term: &Arc<Combinator>,
         steps: &mut Vec<ProofStep>,
         cache: &mut HashMap<Arc<Combinator>, u32>,
         formula_nodes: &mut usize,
         lemmas: &mut Vec<ProofCertificate>,
+        definitions: &mut Vec<super::definitions::Entry>,
     ) -> Result<u32, String> {
         if let Some(index) = cache.get(term) {
             return Ok(*index);
         }
         let step = match term.as_ref() {
-            Combinator::Lemma(dependencies, bytes, _, id) => {
+            Combinator::Lemma(dependencies, bytes, _, id, selected) => {
+                for entry in selected {
+                    if !definitions.contains(entry) {
+                        definitions.push(entry.clone());
+                    }
+                }
                 for bytes in dependencies.iter().chain(std::iter::once(bytes)) {
                     if !lemmas.iter().any(|c| c.to_canonical_bytes() == *bytes) {
                         lemmas.push(
@@ -315,7 +368,7 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
             Combinator::Variable(_, _) => return Err("certificate still has an assumption".into()),
             Combinator::Kernel(k) => k.step(),
             Combinator::Generalize(variable, body) => ProofStep::Generalization {
-                premise: emit(body, steps, cache, formula_nodes, lemmas)?,
+                premise: emit(body, steps, cache, formula_nodes, lemmas, definitions)?,
                 variable: *variable,
             },
             Combinator::K(a, b) => ProofStep::Simplification {
@@ -328,8 +381,8 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
                 third: c.clone().into(),
             },
             Combinator::Apply(function, argument, _) => {
-                let implication = emit(function, steps, cache, formula_nodes, lemmas)?;
-                let premise = emit(argument, steps, cache, formula_nodes, lemmas)?;
+                let implication = emit(function, steps, cache, formula_nodes, lemmas, definitions)?;
+                let premise = emit(argument, steps, cache, formula_nodes, lemmas, definitions)?;
                 ProofStep::ModusPonens {
                     premise,
                     implication,
@@ -402,6 +455,7 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         &mut cache,
         &mut formula_nodes,
         &mut lemmas,
+        &mut definitions,
     )?;
     for variable in expected.free_variables().into_iter().rev() {
         steps.push(ProofStep::Generalization {
@@ -422,22 +476,20 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         ) => NATIVE_RESOURCE_LIMIT.into(),
         error => error.to_string(),
     })?;
-    let checked = naome_checker::normalize_and_check_with_state(
-        certificate.clone(),
-        &lemma_context(&[], &lemmas)?,
-    )
-    .map_err(|error| match error.kind() {
-        naome_checker::CheckErrorKind::DerivedFormula {
-            source:
-                naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
-                | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
-            ..
-        }
-        | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
-            NATIVE_RESOURCE_LIMIT.to_owned()
-        }
-        _ => error.to_string(),
-    })?;
+    let checked =
+        crate::learning::proof::check(certificate.clone(), &lemma_context(&definitions, &lemmas)?)
+            .map_err(|error| match error.kind() {
+                naome_checker::CheckErrorKind::DerivedFormula {
+                    source:
+                        naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
+                        | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
+                    ..
+                }
+                | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
+                    NATIVE_RESOURCE_LIMIT.to_owned()
+                }
+                _ => error.to_string(),
+            })?;
     let target = close(expected.clone());
     if checked.conclusion() != &target {
         return Err("checked certificate proves a different target".into());
@@ -445,11 +497,11 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     // Internal closed lemmas are Foundation theorems, not new user questions.
     // Exact conclusion equality above and the independent checker establish
     // their claim; question-intake depth limits belong to the final question.
-    let lemmas = lemmas::retain(&checked, &[], &lemmas)?;
+    let lemmas = lemmas::retain(&checked, &definitions, &lemmas)?;
     Ok(Verified {
         lemmas,
-        definitions: Vec::new(),
-        certificate,
+        definitions,
+        certificate: checked.normal_form().certificate().clone(),
         target,
         native_id: checked.proof_id(),
         payload_bytes: checked.normal_form().canonical_bytes().len(),
@@ -457,17 +509,27 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
 }
 
 pub fn source(proof: &Verified) -> Result<String, String> {
-    source_with_definitions(proof, &proof.definitions)
+    render(proof, &proof.definitions, false)
 }
 pub fn source_with_definitions(
     proof: &Verified,
     definitions: &[super::definitions::Entry],
 ) -> Result<String, String> {
-    if !proof.definitions.is_empty() && proof.definitions != definitions {
+    render(proof, definitions, true)
+}
+fn render(
+    proof: &Verified,
+    definitions: &[super::definitions::Entry],
+    rewrite: bool,
+) -> Result<String, String> {
+    if proof
+        .definitions
+        .iter()
+        .any(|existing| !definitions.contains(existing))
+    {
         return Err("exact native references cannot be replaced during source export".into());
     }
     let context = lemma_context(definitions, &proof.lemmas)?;
-    let rewrite = proof.definitions.is_empty();
     let mut output = String::new();
     write!(output, "\ngoal = {}\n\nproof:\n", proof.target.to_source())
         .map_err(|e| e.to_string())?;
@@ -518,7 +580,7 @@ pub fn source_with_definitions(
     }
     let mut formula = |value: &naome_proof::ProofFormula| -> Result<String, String> {
         if let Some(defined) = value.as_defined() {
-            return super::definitions::exact_expression(defined, &proof.definitions);
+            return super::definitions::exact_expression(defined, definitions);
         }
         bind(
             value

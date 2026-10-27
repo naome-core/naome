@@ -11,11 +11,11 @@ pub struct Cost {
 }
 pub fn steps(tree: &Tree) -> usize {
     match tree {
-        Tree::Definitions { proof, .. } => 1 + steps(proof),
+        Tree::Knowledge { proof, .. } | Tree::Definitions { proof, .. } => 1 + steps(proof),
         Tree::Step { children, .. } => 1 + children.iter().map(steps).sum::<usize>(),
         Tree::Certificate(bytes) => super::super::peer::step_count(bytes),
-        Tree::Constructed(bytes) => super::super::construction::evidence::steps(bytes).unwrap_or(0),
-        Tree::Peer { steps } => *steps,
+        Tree::Constructed { packet, .. } => super::super::evidence::steps(packet).unwrap_or(0),
+        Tree::Stored { steps, .. } => *steps,
         _ => 0,
     }
 }
@@ -28,6 +28,7 @@ fn position(index: usize, from: &State, to: &State) -> Result<usize, String> {
 }
 fn action(action: &Action, from: &State, to: &State) -> Result<Action, String> {
     Ok(match *action {
+        Action::Cite(i) => Action::Cite(i),
         Action::Double(i) => Action::Double(position(i, from, to)?),
         Action::NotImp(i) => Action::NotImp(position(i, from, to)?),
         Action::Mp(i, j) => Action::Mp(position(i, from, to)?, position(j, from, to)?),
@@ -67,8 +68,9 @@ fn rebase(
         )),
         Tree::Axiom(_)
         | Tree::Certificate(_)
-        | Tree::Constructed(_)
-        | Tree::Peer { .. }
+        | Tree::Constructed { .. }
+        | Tree::Stored { .. }
+        | Tree::Knowledge { .. }
         | Tree::Definitions { .. } => Err("nested core axiom".into()),
         Tree::Step {
             action: old,
@@ -158,7 +160,7 @@ pub fn checked(
         }
     } else if matches!(
         tree,
-        Tree::Axiom(_) | Tree::Certificate(_) | Tree::Constructed(_)
+        Tree::Axiom(_) | Tree::Certificate(_) | Tree::Constructed { .. } | Tree::Knowledge { .. }
     ) {
         tree.clone()
     } else {

@@ -19,6 +19,7 @@ mod batch;
 mod pending;
 mod preparation;
 use preparation::{Preparation, Stamp};
+mod learning;
 pub(crate) mod program;
 mod storage;
 pub(crate) use batch::CheckedBatch;
@@ -115,128 +116,6 @@ impl Graph {
             },
         )?;
         Ok(self.compaction.is_some())
-    }
-    pub(crate) fn peer_learning_page(
-        &self,
-        after: u64,
-    ) -> Result<Vec<(u64, ArtifactId, Option<libp2p::PeerId>)>, crate::Error> {
-        self.ensure_live()?;
-        if after > self.count as u64 {
-            return Err("peer learning cursor exceeds checked graph".into());
-        }
-        self.cold(self.store.peer_learning_page(
-            after,
-            crate::resources::active_limits().id_page.min(4),
-            self.fixed_summary(),
-        ))
-    }
-    pub(crate) fn learning_question(
-        &self,
-        id: ArtifactId,
-    ) -> Result<Option<naome_authoring::CompiledQuestion>, crate::Error> {
-        use naome_checker::ContextView;
-        self.ensure_live()?;
-        let Some(proof) = self.cold(self.context.artifact_proof_id(id))? else {
-            return Ok(None);
-        };
-        let Some(header) =
-            self.cold(self.context.proof_header(proof).map_err(crate::Error::from))?
-        else {
-            return Ok(None);
-        };
-        if header.canonical_length() > crate::resources::limits().closure_bytes {
-            return Ok(None);
-        }
-        let _memory = crate::resources::MemoryLease::acquire(
-            header
-                .canonical_length()
-                .checked_mul(16)
-                .and_then(|n| n.checked_add(4096))
-                .ok_or("learning formula memory overflow")?,
-        )?;
-        let formula = self
-            .cold(
-                self.context
-                    .proof_formula(header, header.canonical_length())
-                    .map_err(crate::Error::from),
-            )?
-            .ok_or("checked learning formula missing")?
-            .into_owned();
-        Ok(naome_authoring::CompiledQuestion::from_formula(formula).ok())
-    }
-    pub(crate) fn learning_definition(
-        &self,
-        id: ArtifactId,
-    ) -> Result<Option<crate::learning::definitions::Entry>, crate::Error> {
-        self.ensure_live()?;
-        if self
-            .cold(self.context.artifact_definition_id(id))?
-            .is_none()
-        {
-            return Ok(None);
-        }
-        let object = self
-            .binary_object(id)?
-            .ok_or("checked definition payload missing")?;
-        let Some((&naome_proof::ArtifactPayload::DEFINITION_TAG, certificate)) =
-            object.bytes.split_first()
-        else {
-            return Err("checked definition payload type differs".into());
-        };
-        if certificate.len() > crate::learning::definitions::BYTES {
-            return Ok(None);
-        }
-        let obligation = if let Some(proof) = object.obligation {
-            let Some(proof) = self.binary_object(proof.into())? else {
-                return Err("checked definition obligation missing".into());
-            };
-            if !proof.dependencies.is_empty()
-                || proof.bytes.len() + certificate.len() > crate::learning::definitions::BYTES
-            {
-                return Ok(None);
-            }
-            let Some((&naome_proof::ArtifactPayload::PROOF_TAG, bytes)) = proof.bytes.split_first()
-            else {
-                return Ok(None);
-            };
-            Some(bytes.to_vec())
-        } else {
-            None
-        };
-        let entry = crate::learning::definitions::Entry {
-            certificate: certificate.to_vec(),
-            obligation,
-        };
-        let _ = crate::learning::definitions::context(std::slice::from_ref(&entry))?;
-        Ok(Some(entry))
-    }
-    pub(crate) fn learning_certificate(
-        &self,
-        id: ArtifactId,
-    ) -> Result<Option<Vec<u8>>, crate::Error> {
-        let Some(object) = self.binary_object(id)? else {
-            return Ok(None);
-        };
-        if object.bytes.len() > crate::resources::limits().closure_bytes
-            || crate::object::program_manifest(&object.bytes)?.is_some()
-        {
-            return Ok(None);
-        }
-        let Some((&naome_proof::ArtifactPayload::PROOF_TAG, payload)) = object.bytes.split_first()
-        else {
-            return Ok(None);
-        };
-        let mut definitions = Vec::new();
-        for id in &object.dependencies {
-            let Some(definition) = self.learning_definition(*id)? else {
-                return Ok(None);
-            };
-            definitions.push(definition);
-            if definitions.len() > crate::learning::definitions::CAPACITY {
-                return Ok(None);
-            }
-        }
-        Ok(crate::learning::peer::pack(payload, &definitions).ok())
     }
     pub fn accepted_count(&self) -> usize {
         self.count

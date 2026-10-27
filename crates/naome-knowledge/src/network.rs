@@ -1029,7 +1029,19 @@ impl Node {
                 Err(error) => return Err(error.to_string()),
             }
             let Some(peer) = peer else {
-                if learning.client.peer_cursor(ordinal).is_err() {
+                let packet = match self.graph.learning_certificate(id) {
+                    Ok(packet) => packet,
+                    Err(error) if error.retryable() => break,
+                    Err(error) => return Err(error.to_string()),
+                };
+                let observed = if let Some(packet) = packet {
+                    learning
+                        .client
+                        .theorem_verified(ordinal, crate::learning::knowledge::Entry { packet })
+                } else {
+                    learning.client.peer_cursor(ordinal)
+                };
+                if observed.is_err() {
                     break;
                 }
                 learning.cursor = ordinal;

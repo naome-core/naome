@@ -123,7 +123,45 @@ pub(in crate::jobs::journal) fn validate_rows(
         if let Some(native) = &source.native {
             for evidence in &native.evidence {
                 let origin = record(c, evidence.job)?;
-                if !matches!(&origin.input, Input::Peer { artifact, certificate, .. } if crate::object::proof_address(&evidence.proof_id).is_ok_and(|id| crate::hex(id.as_bytes()) == *artifact) && certificate == &evidence.certificate) { return Err("native replay snapshot source differs".into()); }
+                let Some(Output::Native {
+                    solution: Some(solution),
+                    ..
+                }) = &origin.result
+                else {
+                    return Err("native replay snapshot result missing".into());
+                };
+                if origin.state != State::Complete
+                    || solution.proof_id != evidence.proof_id
+                    || crate::learning::digest(&solution.tree)
+                        != crate::learning::digest(&evidence.trace)
+                {
+                    return Err("native replay snapshot source differs".into());
+                }
+                match &origin.input {
+                    Input::Peer {
+                        question,
+                        artifact,
+                        certificate,
+                        ..
+                    } => crate::learning::peer::validate_solution(
+                        question,
+                        artifact,
+                        certificate,
+                        solution,
+                    )?,
+                    Input::Solve { .. } => {
+                        let expected = crate::hex(
+                            crate::object::proof_address(&evidence.proof_id)?.as_bytes(),
+                        );
+                        if c.get::<String>("learned", &origin.id.to_string(), 256)?
+                            .as_deref()
+                            != Some(expected.as_str())
+                        {
+                            return Err("native snapshot lacks admitted local receipt".into());
+                        }
+                    }
+                    _ => return Err("native replay snapshot origin role differs".into()),
+                }
             }
         }
         let expected = Disk::record_model_refs(&source);

@@ -1,8 +1,10 @@
 //! Goal-derived ZFC schema proposals and independently checked subgoal search.
 //! No theorem name, question identity, or natural-number recipe is recognized.
-pub(super) mod evidence;
+#[cfg(test)]
+use super::evidence;
 mod logic;
 mod representation;
+pub(super) mod selection;
 use super::{calculus as c, proof};
 use naome_foundation::{
     Formula, FreeVariable, Separation,
@@ -98,67 +100,38 @@ fn fragments(
 pub fn solve(target: &Formula, maximum: usize) -> Result<(Option<proof::Verified>, usize), String> {
     construct(target, maximum, std::time::Instant::now())
 }
+#[cfg(test)]
 pub fn construct(
     target: &Formula,
     maximum: usize,
     started: std::time::Instant,
 ) -> Result<(Option<proof::Verified>, usize), String> {
-    if maximum == 0 {
-        return Ok((None, 0));
-    }
-    let mut proposals = Vec::new();
-    predicates(target, &mut proposals, &mut 0);
-    if proposals.is_empty() {
-        return Ok((None, 0));
-    }
-    let definitions = super::definitions::discover_many(target, super::definitions::CAPACITY)?;
-    let mut schemas = Vec::new();
-    for (predicate, element) in proposals {
-        let source = fresh(&predicate, &[element]);
-        let result = fresh(&predicate, &[element, source]);
-        let parameters: Vec<_> = predicate
-            .free_variables()
-            .into_iter()
-            .filter(|v| *v != element)
-            .collect();
-        let term = c::axiom(ProofStep::Separation(
-            Separation {
-                predicate,
-                element,
-                source,
-                result,
-                parameters,
-            }
-            .into(),
-        ))?;
-        if term.formula() == *target {
-            return Ok((
-                Some(representation::apply(
-                    proof::verify(&term, target)?,
-                    &definitions,
-                )?),
-                1,
-            ));
+    struct Ordered;
+    impl super::model::Ranker for Ordered {
+        fn scores(&mut self, d: &super::model::Decision) -> Result<Vec<f32>, String> {
+            Ok(vec![0.; d.candidates.len()])
         }
-        schemas.push(term);
     }
-    let mut target_fragments = std::collections::BTreeMap::new();
-    fragments(target, &mut target_fragments, &mut 0);
-    let mut axioms: Vec<_> = super::search::AXIOMS
-        .into_iter()
-        .map(|axiom| {
-            let mut parts = std::collections::BTreeMap::new();
-            fragments(&axiom.formula(), &mut parts, &mut 0);
-            let score = parts
-                .iter()
-                .filter(|(key, _)| target_fragments.contains_key(*key))
-                .map(|(_, n)| *n)
-                .max()
-                .unwrap_or(0);
-            (score, axiom)
-        })
-        .collect();
-    axioms.sort_by_key(|b| std::cmp::Reverse(b.0));
+    let (proof, work, _) = construct_with(target, maximum, started, &mut Ordered, &[], &[])?;
+    Ok((proof, work))
+}
+pub fn construct_with(
+    target: &Formula,
+    maximum: usize,
+    started: std::time::Instant,
+    ranker: &mut dyn super::model::Ranker,
+    known: &[super::knowledge::Entry],
+    definitions: &[super::definitions::Entry],
+) -> Result<(Option<proof::Verified>, usize, Option<selection::Selection>), String> {
+    if maximum == 0 {
+        return Ok((None, 0, None));
+    }
+    let offers = selection::offers(target, known)?;
+    if offers.is_empty() {
+        return Ok((None, 0, None));
+    }
+    let choices = super::definitions::construction_choices(target, definitions)?;
+    let protected = super::knowledge::proof_ids(known)?;
     let mut assumptions = target.clone();
     while let Some(body) = assumptions.open_outer_universal(fresh(&assumptions, &[])) {
         assumptions = body;
@@ -171,30 +144,44 @@ pub fn construct(
             logic::existential(&a, fresh(&a, &[])).is_some()
         });
     let mut work = 0;
-    for term in schemas {
-        let mut contexts = vec![vec![term.clone()]];
-        for (_, axiom) in &axioms {
-            contexts.push(vec![term.clone(), c::axiom(ProofStep::ZfcAxiom(*axiom))?]);
+    for selected in selection::order(target, &offers, ranker)? {
+        let offer = &offers[selected];
+        let selection = selection::Selection {
+            known: known.to_vec(),
+            definitions: definitions.to_vec(),
+            selected,
+        };
+        if let Some(term) = offer.context.iter().find(|t| t.formula() == *target) {
+            let proof = representation::apply(proof::verify(term, target)?, &choices, &protected)?;
+            return Ok((Some(proof), work + 1, Some(selection)));
         }
-        for (position, context) in contexts.into_iter().enumerate() {
-            let allowance = if position == 0 && !has_bound {
-                16.min(maximum.saturating_sub(work))
+        let allowance = if offer.schema_only && !has_bound {
+            16.min(maximum.saturating_sub(work))
+        } else {
+            maximum.saturating_sub(work)
+        };
+        let mut search = logic::Search::new(allowance, started);
+        let found = search.prove(target, &offer.context)?;
+        work += search.work;
+        if let Some(term) = found {
+            let verified = proof::verify(&term, target)?;
+            if !selection::used(offer, &verified)? {
+                continue;
+            }
+            // A theorem's existing meanings stay identity-bound. New goal-only
+            // meanings may rewrite a wholly primitive generated derivation.
+            let proof = if verified.definitions.is_empty() {
+                representation::apply(verified, &choices, &protected)?
             } else {
-                maximum.saturating_sub(work)
+                verified
             };
-            let mut search = logic::Search::new(allowance, started);
-            let found = search.prove(target, &context)?;
-            work += search.work;
-            if let Some(term) = found {
-                let proof = representation::apply(proof::verify(&term, target)?, &definitions)?;
-                return Ok((Some(proof), work));
-            }
-            if work >= maximum {
-                return Ok((None, work));
-            }
+            return Ok((Some(proof), work, Some(selection)));
+        }
+        if work >= maximum {
+            break;
         }
     }
-    Ok((None, work))
+    Ok((None, work, None))
 }
 
 #[cfg(test)]
@@ -244,6 +231,22 @@ mod tests {
         );
         assert!(proof.payload_bytes <= crate::resources::limits().proof_bytes);
         let packet = evidence::pack(&proof).unwrap();
+        let tree = super::super::search::Tree::Constructed {
+            packet: packet.clone(),
+            selection: None,
+        };
+        let (_, graphs) = super::super::search::compile(&target, &tree).unwrap();
+        let question = naome_authoring::CompiledQuestion::from_formula(target.clone()).unwrap();
+        eprintln!(
+            "Nat native DAG decisions={} eligible_new_lineage={} packet_bytes={}",
+            graphs.len(),
+            super::super::State::eligible(question.source()),
+            packet.len()
+        );
+        assert!(
+            !graphs.is_empty(),
+            "checked construction decisions must reach the learner"
+        );
         let mut corrupt = packet.clone();
         let last = corrupt.len() - 1;
         corrupt[last] ^= 1;
@@ -291,6 +294,39 @@ mod tests {
             .unwrap();
         assert!(graph.contains(root).unwrap());
         assert!(!proof.definitions.is_empty());
+        let mut state = super::super::State::fresh();
+        let example = super::super::Example {
+            origin: super::super::Origin::Local,
+            job: 1,
+            question: question.source().to_owned(),
+            proof_id: crate::hex(proof.native_id.as_bytes()),
+            refuted: false,
+            tree: tree.clone(),
+        };
+        assert!(
+            state.accept(example).unwrap(),
+            "an admitted novel construction is eligible to teach its actual decisions"
+        );
+        let restored: super::super::State =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        restored.validate().unwrap();
+        let evidence = super::super::Evidence {
+            job: 1,
+            proof_id: crate::hex(proof.native_id.as_bytes()),
+            trace: tree,
+        };
+        assert!(
+            !restored
+                .training_pool(std::slice::from_ref(&evidence))
+                .unwrap()
+                .is_empty()
+        );
+        let mut job = restored.job();
+        job.training = true;
+        job.evidence.push(evidence);
+        job.validate().unwrap();
+        job.evidence[0].proof_id = "ff".repeat(32);
+        assert!(job.validate().is_err());
         let wrong = naome_authoring::CompiledQuestion::compile("goal=all(x,not(eq(x,x)))").unwrap();
         assert!(evidence::compile(wrong.proved_target(), &packet).is_err());
         assert_eq!(solve(&target, 0).unwrap().1, 0);

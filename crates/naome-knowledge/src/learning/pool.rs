@@ -75,7 +75,6 @@ impl Pool {
             .unwrap();
         pool
     }
-    #[cfg(test)]
     pub fn graphs(&self) -> &[Graph] {
         &self.graphs
     }

@@ -23,7 +23,7 @@ pub struct Policy {
 impl Policy {
     pub fn new(device: &Device) -> Self {
         Self {
-            kinds: EmbeddingConfig::new(17, WIDTH).init(device),
+            kinds: EmbeddingConfig::new(19, WIDTH).init(device),
             roles: EmbeddingConfig::new(4, WIDTH).init(device),
             messages: (0..LAYERS)
                 .map(|_| LinearConfig::new(4 * WIDTH, WIDTH).init(device))
@@ -96,7 +96,19 @@ impl Policy {
             .reshape([b, 1, WIDTH])
             .expand([b, c, WIDTH]);
         let candidate = flat.gather(0, candidate_indices).reshape([b, c, WIDTH]);
-        let context = batch.context.clone().matmul(h).expand([b, c, WIDTH]);
+        let context_mask = batch.context.clone().squeeze_dim::<2>(1).equal_elem(0.);
+        let query = goal
+            .clone()
+            .slice([0..b, 0..1, 0..WIDTH])
+            .squeeze_dim::<2>(1);
+        let keys = h.clone().squeeze_dim::<2>(0).transpose();
+        let weights = burn::tensor::activation::softmax(
+            (query.matmul(keys) / (WIDTH as f32).sqrt()).mask_fill(context_mask.clone(), -10000.),
+            1,
+        )
+        .mask_fill(context_mask, 0.)
+        .unsqueeze_dim::<3>(1);
+        let context = weights.matmul(h).expand([b, c, WIDTH]);
         let joined = Tensor::cat(
             vec![
                 goal.clone(),

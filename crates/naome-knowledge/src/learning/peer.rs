@@ -23,7 +23,7 @@ pub fn validate_solution(
     }
     let expected = extract(question, artifact, bytes)?;
     if solution.refuted
-        || crate::hex(crate::object::proof_address(&solution.proof_id)?.as_bytes()) != artifact
+        || !matches_artifact(&solution.proof_id, artifact, bytes)?
         || super::digest(&solution.tree) != super::digest(&expected.tree)
         || crate::hex(solution.checked()?.proof_id().as_bytes()) != solution.proof_id
     {
@@ -38,93 +38,112 @@ pub fn validate_solution(
     });
     Ok(())
 }
+#[cfg(test)]
 pub fn pack(bytes: &[u8], definitions: &[super::definitions::Entry]) -> Result<Vec<u8>, String> {
-    let _ = super::definitions::context(definitions)?;
-    let mut payload = (bytes.len() as u32).to_le_bytes().to_vec();
-    payload.extend_from_slice(bytes);
-    payload.extend(serde_json::to_vec(definitions).map_err(|e| e.to_string())?);
-    if payload.len()
-        > crate::resources::limits()
-            .proof_bytes
-            .min(crate::resources::limits().closure_bytes)
-    {
-        return Err("peer certificate decoded capacity".into());
-    }
-    let mut packed = (payload.len() as u32).to_le_bytes().to_vec();
-    packed.extend(lz4_flex::block::compress(&payload));
+    pack_closure(bytes, &[], definitions)
+}
+#[cfg(test)]
+pub fn pack_closure(
+    bytes: &[u8],
+    lemmas: &[ProofCertificate],
+    definitions: &[super::definitions::Entry],
+) -> Result<Vec<u8>, String> {
+    let certificate = ProofCertificate::from_canonical_bytes(bytes).map_err(|e| e.to_string())?;
+    let context = proof::lemma_context(definitions, lemmas)?;
+    let checked =
+        crate::learning::proof::check(certificate, &context).map_err(|e| e.to_string())?;
+    let verified = proof::verify(
+        &Term::Native {
+            certificate: checked.normal_form().certificate().clone(),
+            lemmas: lemmas.to_vec(),
+            definitions: definitions.to_vec(),
+            target: checked.conclusion().clone(),
+        },
+        checked.conclusion(),
+    )?;
+    let packed = super::evidence::pack(&verified)?;
     if packed.len() > 8 * 1024 {
         return Err("peer compressed replay capacity".into());
     }
     Ok(packed)
 }
-fn unpack(bytes: &[u8]) -> Result<(Vec<u8>, Vec<super::definitions::Entry>), String> {
-    if bytes.len() > 8 * 1024 || bytes.len() < 4 {
-        return Err("peer compressed replay capacity".into());
-    }
-    let size =
-        u32::from_le_bytes(bytes[..4].try_into().map_err(|_| "peer decoded length")?) as usize;
-    if size
-        > crate::resources::limits()
-            .proof_bytes
-            .min(crate::resources::limits().closure_bytes)
-    {
-        return Err("peer decoded capacity".into());
-    }
-    let mut result = vec![0; size];
-    let actual =
-        lz4_flex::block::decompress_into(&bytes[4..], &mut result).map_err(|e| e.to_string())?;
-    if actual != size || result.len() < 4 {
-        return Err("peer compressed encoding differs".into());
-    }
-    let length = u32::from_le_bytes(
-        result[..4]
-            .try_into()
-            .map_err(|_| "peer certificate length")?,
-    ) as usize;
-    let end = 4usize
-        .checked_add(length)
-        .filter(|end| *end <= result.len())
-        .ok_or("peer certificate extent")?;
-    let certificate = result[4..end].to_vec();
-    let definitions = serde_json::from_slice::<Vec<super::definitions::Entry>>(&result[end..])
-        .map_err(|e| e.to_string())?;
-    if pack(&certificate, &definitions)? != bytes {
-        return Err("peer compressed encoding differs".into());
-    }
-    Ok((certificate, definitions))
-}
 pub fn definitions(bytes: &[u8]) -> Result<Vec<super::definitions::Entry>, String> {
-    Ok(unpack(bytes)?.1)
+    super::evidence::selected(bytes)
 }
 pub fn step_count(bytes: &[u8]) -> usize {
-    unpack(bytes)
-        .ok()
-        .and_then(|(b, _)| ProofCertificate::from_canonical_bytes(&b).ok())
-        .map_or(0, |c| c.steps().len())
+    super::evidence::steps(bytes).unwrap_or(0)
 }
 pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), String> {
     if bytes.len() > 8 * 1024 {
         return Err("peer certificate replay capacity".into());
     }
-    let (certificate, definitions) = unpack(bytes)?;
-    let context = super::definitions::context(&definitions)?;
+    compile_dag(target, bytes)
+}
+pub(super) fn compile_dag(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), String> {
+    let evidence = super::evidence::decode(bytes)?;
+    if super::evidence::steps(bytes)? + evidence.definitions.len()
+        > crate::resources::limits().closure_steps
+    {
+        return Err("native DAG replay closure capacity".into());
+    }
+    let definitions = evidence.definitions;
+    let lemmas = evidence
+        .lemmas
+        .iter()
+        .map(|b| ProofCertificate::from_canonical_bytes(b).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let context = proof::lemma_context(&definitions, &lemmas)?;
+    let certificate = evidence.certificate;
     let certificate =
         ProofCertificate::from_canonical_bytes(&certificate).map_err(|e| e.to_string())?;
-    let checked = naome_checker::normalize_and_check_with_state(certificate, &context)
+    let checked = crate::learning::proof::check(certificate, &context)
         .map_err(|e| format!("peer certificate unsupported: {e}"))?;
-    let mut supplied = definitions
-        .iter()
-        .map(super::definitions::Entry::address)
-        .collect::<Result<Vec<_>, _>>()?;
-    supplied.sort_unstable();
-    supplied.dedup();
-    if checked.direct_artifact_dependencies().as_ref() != supplied.as_slice() {
-        return Err("peer definition closure differs".into());
-    }
     if checked.conclusion() != target {
         return Err("peer certificate conclusion differs".into());
     }
-    let steps = checked.normal_form().certificate().steps();
+    let mut graphs = Vec::new();
+    let mut earlier = Vec::new();
+    for lemma in &lemmas {
+        let context = proof::lemma_context(&definitions, &earlier)?;
+        let checked =
+            crate::learning::proof::check(lemma.clone(), &context).map_err(|e| e.to_string())?;
+        graphs.extend(replay_steps(
+            checked.normal_form().certificate().steps(),
+            checked.conclusion(),
+            &context,
+            &earlier,
+        )?);
+        earlier.push(lemma.clone());
+    }
+    graphs.extend(replay_steps(
+        checked.normal_form().certificate().steps(),
+        target,
+        &context,
+        &lemmas,
+    )?);
+    if graphs.iter().map(Graph::work_bytes).sum::<usize>()
+        > super::MODEL_REQUIREMENTS.work_bytes / 16
+    {
+        return Err("native DAG replay work capacity".into());
+    }
+    let term = Term::Native {
+        lemmas,
+        definitions,
+        certificate: checked.normal_form().certificate().clone(),
+        target: target.clone(),
+    };
+    let verified = proof::verify(&term, target)?;
+    if verified.native_id != checked.proof_id() {
+        return Err("peer DAG reconstruction identity differs".into());
+    }
+    Ok((term, graphs))
+}
+fn replay_steps(
+    steps: &[ProofStep],
+    target: &Formula,
+    context: &naome_checker::ArtifactState,
+    lemmas: &[ProofCertificate],
+) -> Result<Vec<Graph>, String> {
     if steps.len() > crate::resources::limits().closure_steps.min(16_384) {
         return Err("peer DAG replay step capacity".into());
     }
@@ -157,24 +176,52 @@ pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), Str
                     .iter()
                     .map(|f| Binding { formula: f.clone() })
                     .collect();
-                let mut candidates = Vec::new();
-                let mut witness = None;
+                let mut offered = Vec::new();
+                let goal_parts = super::knowledge::fragments(target);
+                let mut relevance = std::collections::HashMap::new();
                 for (i, f) in context.iter().enumerate() {
                     if let Some((antecedent, consequent)) = f.formula.view().implication_parts() {
                         for (j, p) in context.iter().enumerate() {
-                            if antecedent == p.formula.view() && candidates.len() < 16 {
-                                if first + i == b && first + j == a {
-                                    witness = Some(candidates.len());
-                                }
-                                candidates.push(Candidate {
-                                    rule: Rule::ModusPonens,
-                                    premises: vec![i, j],
-                                    consequences: vec![consequent.to_owned()],
-                                });
+                            if antecedent == p.formula.view() {
+                                let consequence = consequent.to_owned();
+                                let score =
+                                    *relevance.entry(consequence.clone()).or_insert_with(|| {
+                                        super::knowledge::fragments(&consequence)
+                                            .intersection(&goal_parts)
+                                            .map(Vec::len)
+                                            .sum::<usize>()
+                                    });
+                                let rule = match &steps[first + i] {
+                                    ProofStep::UniversalInstantiation { .. } => {
+                                        Rule::UniversalInstance
+                                    }
+                                    ProofStep::EqualitySubstitution { .. } => {
+                                        Rule::EqualitySubstitution
+                                    }
+                                    ProofStep::ProofReference { .. } => Rule::LemmaReference,
+                                    _ => Rule::ModusPonens,
+                                };
+                                offered.push((
+                                    score,
+                                    first + i,
+                                    first + j,
+                                    Candidate {
+                                        rule,
+                                        premises: vec![i, j],
+                                        consequences: vec![consequence],
+                                    },
+                                ));
                             }
                         }
                     }
                 }
+                offered.sort_by(|a, b| b.0.cmp(&a.0).then((a.1, a.2).cmp(&(b.1, b.2))));
+                offered.truncate(16);
+                let witness = offered.iter().position(|(_, i, j, _)| *i == b && *j == a);
+                let candidates = offered
+                    .into_iter()
+                    .map(|(_, _, _, c)| c)
+                    .collect::<Vec<_>>();
                 if let Some(expert) = witness.filter(|_| candidates.len() > 1) {
                     let decision = Decision {
                         goal: target.clone(),
@@ -202,24 +249,65 @@ pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), Str
                     .ok_or("peer generalization index")?
                     .clone(),
             ),
-            _ => Kernel::with_context(step.clone(), &context)?.formula(),
+            ProofStep::ProofReference { proof_id } => {
+                let mut available = Vec::new();
+                let mut selected = None;
+                for lemma in lemmas {
+                    let known = crate::learning::proof::check(lemma.clone(), context)
+                        .map_err(|e| e.to_string())?;
+                    if known.conclusion() == target {
+                        continue;
+                    }
+                    if available.len() >= 16 {
+                        break;
+                    }
+                    if known.proof_id() == *proof_id {
+                        selected = Some(available.len());
+                    }
+                    available.push(known.conclusion().clone());
+                }
+                if let Some(expert) = selected.filter(|_| available.len() > 1) {
+                    let decision = Decision {
+                        context: available
+                            .iter()
+                            .map(|f| Binding { formula: f.clone() })
+                            .collect(),
+                        goal: target.clone(),
+                        expert,
+                        candidates: available
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| Candidate {
+                                rule: Rule::LemmaReference,
+                                premises: vec![i],
+                                consequences: vec![f.clone()],
+                            })
+                            .collect(),
+                    };
+                    if let Ok(mut graph) = Graph::encode(&decision) {
+                        graph.binding = crate::hex(&prefix.clone().finalize());
+                        graphs.push(graph);
+                    }
+                }
+                use naome_checker::ContextView;
+                let header = context
+                    .proof_header(*proof_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("peer cited proof missing")?;
+                context
+                    .proof_formula(header, crate::resources::limits().closure_bytes)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("peer cited statement missing")?
+                    .into_owned()
+            }
+            _ => Kernel::with_context(step.clone(), context)?.formula(),
         };
         let encoded = formula.encode_canonical().map_err(|e| e.to_string())?;
         prefix.update((encoded.len() as u64).to_le_bytes());
         prefix.update(encoded);
         formulas.push(formula);
     }
-    let term = Term::Native {
-        lemmas: Vec::new(),
-        definitions,
-        certificate: checked.normal_form().certificate().clone(),
-        target: target.clone(),
-    };
-    let verified = proof::verify(&term, target)?;
-    if verified.native_id != checked.proof_id() {
-        return Err("peer DAG reconstruction identity differs".into());
-    }
-    Ok((term, graphs))
+    Ok(graphs)
 }
 pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution, String> {
     let started = std::time::Instant::now();
@@ -229,12 +317,11 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
         return Err("peer DAG has no supported ambiguous inference".into());
     }
     let verified = proof::verify(&term, q.proved_target())?;
-    if crate::hex(naome_proof::ArtifactId::from_proof_id(verified.native_id).as_bytes()) != artifact
-    {
+    if !matches_artifact(&crate::hex(verified.native_id.as_bytes()), artifact, bytes)? {
         return Err("peer artifact identity differs".into());
     }
     Ok(Solution {
-        helpers: Vec::new(),
+        helpers: super::evidence::helpers(bytes)?,
         cost: Box::new(super::GenerationCost {
             search_expansions: 0,
             original_steps: verified.certificate.steps().len(),
@@ -251,11 +338,32 @@ pub fn extract(question: &str, artifact: &str, bytes: &[u8]) -> Result<Solution,
         source: proof::source(&verified)?,
         proof_id: crate::hex(verified.native_id.as_bytes()),
         refuted: false,
-        tree: Tree::Certificate(pack(
-            &verified.certificate.to_canonical_bytes(),
-            &verified.definitions,
-        )?),
+        tree: Tree::Certificate(bytes.to_vec()),
     })
+}
+
+/// Native certificates keep identity; projected programs retain their source
+/// identity and a separately checked translated certificate identity.
+pub fn matches_artifact(proof_id: &str, artifact: &str, bytes: &[u8]) -> Result<bool, String> {
+    let evidence = super::evidence::decode(bytes)?;
+    let certificate =
+        ProofCertificate::from_canonical_bytes(&evidence.certificate).map_err(|e| e.to_string())?;
+    let context = super::evidence::context(bytes)?;
+    let checked = proof::check(certificate, &context).map_err(|e| e.to_string())?;
+    if crate::hex(checked.proof_id().as_bytes()) != proof_id {
+        return Ok(false);
+    }
+    let term = super::evidence::compile(checked.conclusion(), bytes)?;
+    let verified = proof::verify(&term, checked.conclusion())?;
+    if let Some(origin) = evidence.program {
+        super::program::validate(&origin, &verified)?;
+        Ok(crate::hex(origin.manifest.artifact_id().as_bytes()) == artifact)
+    } else {
+        Ok(
+            crate::hex(naome_proof::ArtifactId::from_proof_id(verified.native_id).as_bytes())
+                == artifact,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -285,12 +393,19 @@ mod tests {
         let (_, graphs) = compile(target.proved_target(), &compressed).unwrap();
         assert!(!graphs.is_empty());
         assert!(graphs.iter().all(|g| {
-            g.candidates
+            g.candidates.iter().all(|c| {
+                [
+                    Rule::ModusPonens,
+                    Rule::UniversalInstance,
+                    Rule::EqualitySubstitution,
+                    Rule::LemmaReference,
+                ]
                 .iter()
-                .all(|c| g.nodes[*c].kind == Rule::ModusPonens.kind())
+                .any(|rule| g.nodes[*c].kind == rule.kind())
+            })
         }));
         assert!(extract(&question, &"ff".repeat(32), &compressed).is_err());
-        assert!(unpack(&u32::MAX.to_le_bytes()).is_err());
+        assert!(super::super::evidence::decode(&u32::MAX.to_le_bytes()).is_err());
         let mut corrupted = compressed.clone();
         *corrupted.last_mut().unwrap() ^= 1;
         assert!(
@@ -353,10 +468,10 @@ mod tests {
         assert_eq!(extracted.checked().unwrap().proof_id(), checked.native_id);
         validate_solution(&question, &crate::hex(root.as_bytes()), &packet, &extracted).unwrap();
         let bytes = checked.certificate.to_canonical_bytes();
-        assert!(compile(q.proved_target(), &pack(&bytes, &[]).unwrap()).is_err());
+        assert!(pack(&bytes, &[]).is_err());
         let wrong = super::super::definitions::discover(q.proved_target()).unwrap();
         if let Some(wrong) = wrong {
-            assert!(compile(q.proved_target(), &pack(&bytes, &[wrong]).unwrap()).is_err());
+            assert!(pack(&bytes, &[wrong]).is_err());
         }
     }
 }

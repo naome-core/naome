@@ -23,10 +23,19 @@ pub enum Action {
     Instantiate(usize, u32),
     Witness(usize, u32),
     Substitute(usize, usize),
+    Cite(usize),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Tree {
-    Constructed(Vec<u8>),
+    Knowledge {
+        entries: Vec<super::knowledge::Entry>,
+        target: Vec<u8>,
+        proof: Box<Self>,
+    },
+    Constructed {
+        packet: Vec<u8>,
+        selection: Option<super::construction::selection::Selection>,
+    },
     Definitions {
         entries: Vec<super::definitions::Entry>,
         selected: usize,
@@ -35,8 +44,10 @@ pub enum Tree {
     },
     Axiom(u8),
     Certificate(Vec<u8>),
-    Peer {
+    Stored {
         steps: usize,
+        bytes: usize,
+        binding: String,
     },
     Close(usize, usize),
     Step {
@@ -47,6 +58,8 @@ pub enum Tree {
 #[derive(Clone)]
 struct State {
     facts: Vec<Formula>,
+    goal: Formula,
+    knowledge: Vec<Formula>,
     used: BTreeSet<Action>,
     domain: Vec<FreeVariable>,
 }
@@ -113,10 +126,12 @@ fn prepare(target: &Formula) -> Result<Prepared, String> {
         }
     }
     Ok(Prepared {
-        body,
+        body: body.clone(),
         wrap,
         state: State {
             facts,
+            goal: body.clone(),
+            knowledge: Vec::new(),
             used: BTreeSet::new(),
             domain: domain.into_iter().collect(),
         },
@@ -188,13 +203,76 @@ fn actions(state: &State) -> Vec<Action> {
             }
         }
     }
+    for (i, formula) in state.knowledge.iter().enumerate() {
+        if !state.facts.contains(formula) {
+            result.push(Action::Cite(i));
+        }
+    }
     result.retain(|a| {
         !state.used.contains(a)
             && next(state, a)
                 .is_ok_and(|children| children.iter().any(|child| child.facts != state.facts))
     });
-    result.truncate(16);
-    result
+    // Rank the entire bounded frontier before the neural 16-action envelope.
+    // Reserve the strongest action of each rule, then fill by goal relevance.
+    let target_fragments = super::knowledge::fragments(&state.goal);
+    let mut relevance_cache = std::collections::HashMap::new();
+    let mut score = |action: &Action| -> usize {
+        let Ok(children) = next(state, action) else {
+            return 0;
+        };
+        let closes = children.iter().all(|child| close(child).is_some());
+        let relevance = children
+            .iter()
+            .flat_map(|child| child.facts.iter().skip(state.facts.len()))
+            .map(|f| {
+                *relevance_cache.entry(f.clone()).or_insert_with(|| {
+                    super::knowledge::fragments(f)
+                        .intersection(&target_fragments)
+                        .map(Vec::len)
+                        .sum::<usize>()
+                })
+            })
+            .max()
+            .unwrap_or(0);
+        usize::from(closes) * 1_000_000
+            + relevance * 4
+            + usize::from(!matches!(action, Action::Beta(_)))
+    };
+    let mut ranked: Vec<_> = result.into_iter().map(|a| (score(&a), a)).collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let kind = |a: &Action| match a {
+        Action::Double(_) => 0,
+        Action::NotImp(_) => 1,
+        Action::Mp(..) => 2,
+        Action::Beta(_) => 3,
+        Action::Instantiate(..) => 4,
+        Action::Witness(..) => 5,
+        Action::Substitute(..) => 6,
+        Action::Cite(_) => 7,
+    };
+    let mut kinds = BTreeSet::new();
+    let mut selected = Vec::new();
+    for (_, a) in &ranked {
+        if kinds.insert(kind(a)) {
+            selected.push(a.clone());
+        }
+    }
+    for (_, a) in &ranked {
+        if selected.len() >= 16 {
+            break;
+        }
+        if !selected.contains(a) {
+            selected.push(a.clone());
+        }
+    }
+    selected.sort_by_key(|a| {
+        ranked
+            .iter()
+            .position(|(_, b)| b == a)
+            .expect("ranked action")
+    });
+    selected
 }
 
 fn decision(
@@ -203,7 +281,7 @@ fn decision(
     actions: &[Action],
     expert: usize,
 ) -> Result<Decision, String> {
-    let context: Vec<_> = state
+    let mut context: Vec<_> = state
         .facts
         .iter()
         .map(|formula| Binding {
@@ -220,6 +298,19 @@ fn decision(
             Action::Instantiate(i, _) => (Rule::UniversalInstance, vec![i]),
             Action::Witness(i, _) => (Rule::ExistentialWitness, vec![i]),
             Action::Substitute(i, j) => (Rule::EqualitySubstitution, vec![i, j]),
+            Action::Cite(i) => {
+                let formula = state.knowledge.get(i).ok_or("theorem candidate index")?;
+                let index = context
+                    .iter()
+                    .position(|b| b.formula == *formula)
+                    .unwrap_or_else(|| {
+                        context.push(Binding {
+                            formula: formula.clone(),
+                        });
+                        context.len() - 1
+                    });
+                (Rule::LemmaReference, vec![index])
+            }
         };
         let mut consequences = Vec::new();
         // Features are derived from the same bounded transition used by live
@@ -249,6 +340,14 @@ fn next(state: &State, action: &Action) -> Result<Vec<State>, String> {
     let mut state = state.clone();
     state.used.insert(action.clone());
     match *action {
+        Action::Cite(i) => {
+            let formula = state
+                .knowledge
+                .get(i)
+                .ok_or("theorem candidate index")?
+                .clone();
+            insert(&mut state, formula);
+        }
         Action::Double(i) => {
             let f = state.facts[i]
                 .view()
@@ -346,6 +445,7 @@ struct Search<'a> {
     expansions: usize,
     maximum: usize,
     failure: Option<String>,
+    exhausted: BTreeSet<String>,
 }
 impl Search<'_> {
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
@@ -361,6 +461,25 @@ impl Search<'_> {
         }
         if state.facts.len() > 32 {
             self.failure = Some("fact_resource".into());
+            return Ok(None);
+        }
+        let identities = state
+            .facts
+            .iter()
+            .map(Formula::encode_canonical)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let key = super::digest(&(
+            identities,
+            &state.used,
+            32usize.saturating_sub(depth),
+            state
+                .domain
+                .iter()
+                .map(|v| v.identifier())
+                .collect::<Vec<_>>(),
+        ));
+        if self.exhausted.contains(&key) {
             return Ok(None);
         }
         let actions = actions(state);
@@ -405,6 +524,12 @@ impl Search<'_> {
                 }));
             }
         }
+        if self.expansions < self.maximum
+            && self.started.elapsed() <= Duration::from_millis(2500)
+            && self.exhausted.len() < 256
+        {
+            self.exhausted.insert(key);
+        }
         Ok(None)
     }
 }
@@ -417,11 +542,21 @@ pub fn solve(
 ) -> Result<ResultTree, String> {
     solve_started(target, ranker, maximum, Instant::now())
 }
+#[cfg(test)]
 pub fn solve_started(
     target: &Formula,
     ranker: &mut dyn Ranker,
     maximum: usize,
     started: Instant,
+) -> Result<ResultTree, String> {
+    solve_with_knowledge(target, ranker, maximum, started, &[])
+}
+pub fn solve_with_knowledge(
+    target: &Formula,
+    ranker: &mut dyn Ranker,
+    maximum: usize,
+    started: Instant,
+    knowledge: &[super::knowledge::Entry],
 ) -> Result<ResultTree, String> {
     if maximum == 0 {
         return Ok(ResultTree {
@@ -441,7 +576,12 @@ pub fn solve_started(
             failure: None,
         });
     }
-    let p = prepare(target)?;
+    super::knowledge::validate(knowledge)?;
+    let mut p = prepare(target)?;
+    p.state.knowledge = knowledge
+        .iter()
+        .map(|e| Ok(e.verified()?.target))
+        .collect::<Result<_, String>>()?;
     let mut s = Search {
         ranker,
         goal: p.body,
@@ -449,8 +589,16 @@ pub fn solve_started(
         expansions: 0,
         maximum,
         failure: None,
+        exhausted: BTreeSet::new(),
     };
-    let tree = s.prove(&p.state, 0)?;
+    let mut tree = s.prove(&p.state, 0)?;
+    if !knowledge.is_empty() {
+        tree = tree.map(|proof| Tree::Knowledge {
+            entries: knowledge.to_vec(),
+            target: target.encode_canonical().expect("checked input formula"),
+            proof: Box::new(proof),
+        });
+    }
     Ok(ResultTree {
         tree,
         expansions: s.expansions,
@@ -468,11 +616,12 @@ fn replay(
     tree: &Tree,
     state: &State,
     facts: &[Term],
-    goal: &Formula,
     names: &mut Names,
     graphs: &mut Vec<Graph>,
+    knowledge: &[Term],
     depth: usize,
 ) -> Result<(Term, Term), String> {
+    let goal = &state.goal;
     if depth > 40 {
         return Err("native replay depth".into());
     }
@@ -520,6 +669,10 @@ fn replay(
     }
     let mut updated = facts.to_vec();
     match *action {
+        Action::Cite(i) => add_term(
+            &mut updated,
+            knowledge.get(i).ok_or("replay theorem index")?.clone(),
+        ),
         Action::Double(i) => add_term(&mut updated, c::double_elim(facts[i].clone(), names)?),
         Action::NotImp(i) => {
             let (a, b) = c::not_implies(facts[i].clone(), names)?;
@@ -552,9 +705,9 @@ fn replay(
                 &children[0],
                 &states[0],
                 &updated,
-                goal,
                 names,
                 graphs,
+                knowledge,
                 depth + 1,
             )?;
             let body = c::raa(opened, id, positive, negative, names)?;
@@ -584,9 +737,9 @@ fn replay(
                 &children[0],
                 &states[0],
                 &left,
-                goal,
                 names,
                 graphs,
+                knowledge,
                 depth + 1,
             )?;
             let a = c::raa(a, id, p, n, names)?;
@@ -597,9 +750,9 @@ fn replay(
                 &children[1],
                 &states[1],
                 &right,
-                goal,
                 names,
                 graphs,
+                knowledge,
                 depth + 1,
             )?;
             let nb = c::neg_intro(j, b, p, n, names)?;
@@ -610,14 +763,30 @@ fn replay(
         &children[0],
         &states[0],
         &updated,
-        goal,
         names,
         graphs,
+        knowledge,
         depth + 1,
     )
 }
 
 pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), String> {
+    if let Tree::Knowledge {
+        entries,
+        target: encoded,
+        proof,
+    } = tree
+    {
+        if target.encode_canonical().map_err(|e| e.to_string())? != *encoded {
+            return Err("theorem trace target binding differs".into());
+        }
+        super::knowledge::validate(entries)?;
+        let terms = entries
+            .iter()
+            .map(super::knowledge::Entry::term)
+            .collect::<Result<Vec<_>, _>>()?;
+        return compile_tableau(target, proof, &terms);
+    }
     if let Tree::Definitions {
         entries,
         selected,
@@ -632,8 +801,12 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         let _ = super::definitions::context(entries)?;
         let (term, mut graphs) = compile(target, proof)?;
         let verified = super::proof::verify(&term, target)?;
-        let source = super::proof::source_with_definitions(&verified, std::slice::from_ref(entry))?;
-        let context = super::definitions::context(std::slice::from_ref(entry))?;
+        let mut definitions = verified.definitions.clone();
+        if !definitions.contains(entry) {
+            definitions.push(entry.clone());
+        }
+        let source = super::proof::source_with_definitions(&verified, &definitions)?;
+        let context = super::proof::lemma_context(&definitions, &verified.lemmas)?;
         let checked = naome_authoring::compile_against_proof_context(&source, &context)
             .map_err(|e| e.to_string())?
             .into_checked_proof();
@@ -648,22 +821,28 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         }
         return Ok((
             Term::Native {
-                lemmas: Vec::new(),
+                lemmas: verified.lemmas,
                 certificate: checked.normal_form().certificate().clone(),
                 target: target.clone(),
-                definitions: vec![entry.clone()],
+                definitions,
             },
             graphs,
         ));
     }
-    if matches!(tree, Tree::Peer { .. }) {
+    if matches!(tree, Tree::Stored { .. }) {
         return Err("peer replay requires its owned journal snapshot".into());
     }
-    if let Tree::Constructed(bytes) = tree {
-        return Ok((
-            super::construction::evidence::compile(target, bytes)?,
-            Vec::new(),
-        ));
+    if let Tree::Constructed { packet, selection } = tree {
+        let (term, mut graphs) = super::peer::compile_dag(target, packet)?;
+        if let Some(selection) = selection {
+            let verified = super::proof::verify(&term, target)?;
+            if let Some(graph) =
+                super::construction::selection::graph(target, selection, &verified)?
+            {
+                graphs.push(graph);
+            }
+        }
+        return Ok((term, graphs));
     }
     if let Tree::Certificate(bytes) = tree {
         return super::peer::compile(target, bytes);
@@ -675,7 +854,15 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         }
         return Ok((c::axiom(ProofStep::ZfcAxiom(axiom))?, Vec::new()));
     }
-    let p = prepare(target)?;
+    compile_tableau(target, tree, &[])
+}
+fn compile_tableau(
+    target: &Formula,
+    tree: &Tree,
+    knowledge: &[Term],
+) -> Result<(Term, Vec<Graph>), String> {
+    let mut p = prepare(target)?;
+    p.state.knowledge = knowledge.iter().map(Term::formula).collect();
     let mut names = Names::default();
     let mut facts = Vec::new();
     let mut wrappers = Vec::new();
@@ -698,7 +885,15 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         }
     }
     let mut graphs = Vec::new();
-    let (a, b) = replay(tree, &p.state, &facts, &p.body, &mut names, &mut graphs, 0)?;
+    let (a, b) = replay(
+        tree,
+        &p.state,
+        &facts,
+        &mut names,
+        &mut graphs,
+        knowledge,
+        0,
+    )?;
     let mut term = if a.formula() == p.body && !a.free_assumptions().contains_key(&root) {
         a
     } else {
@@ -783,7 +978,9 @@ mod witness_tests {
         let body = Formula::member(y, x);
         let universal = Formula::for_all(y, body.clone());
         let state = State {
+            goal: universal.clone(),
             facts: vec![universal.clone(), body, c::not(universal)],
+            knowledge: Vec::new(),
             used: BTreeSet::new(),
             domain: vec![y],
         };
@@ -798,6 +995,77 @@ mod witness_tests {
             !actions(&after)
                 .iter()
                 .any(|a| matches!(a, Action::Witness(2, _)))
+        );
+    }
+}
+
+#[cfg(test)]
+mod frontier_tests {
+    use super::*;
+    #[test]
+    fn a_late_closing_action_survives_the_bounded_candidate_envelope() {
+        let v = FreeVariable::new;
+        let goal = Formula::member(v(0), v(1));
+        let mut facts = (2..24)
+            .map(|i| Formula::implies(Formula::member(v(i), v(0)), Formula::member(v(i), v(1))))
+            .collect::<Vec<_>>();
+        facts.push(Formula::negate(goal.clone()));
+        facts.push(Formula::member(v(1), v(0)));
+        facts.push(Formula::implies(Formula::member(v(1), v(0)), goal.clone()));
+        let state = State {
+            facts,
+            goal,
+            knowledge: vec![],
+            used: BTreeSet::new(),
+            domain: vec![v(0), v(1)],
+        };
+        let offered = actions(&state);
+        assert!(offered.len() <= 16);
+        assert!(offered.contains(&Action::Mp(24, 23)));
+        assert!(
+            next(&state, &Action::Mp(24, 23))
+                .unwrap()
+                .iter()
+                .all(|s| close(s).is_some())
+        );
+    }
+}
+
+#[cfg(test)]
+mod transposition_tests {
+    use super::*;
+    #[test]
+    fn depth_limited_failure_does_not_poison_a_later_shallower_subgoal() {
+        struct Ordered;
+        impl Ranker for Ordered {
+            fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
+                Ok(vec![0.; d.candidates.len()])
+            }
+        }
+        let x = FreeVariable::new(0);
+        let y = FreeVariable::new(1);
+        let p = Formula::member(x, y);
+        let q = Formula::member(y, x);
+        let state = State {
+            facts: vec![Formula::implies(p.clone(), q.clone()), p, c::not(q.clone())],
+            goal: q.clone(),
+            knowledge: vec![],
+            used: BTreeSet::new(),
+            domain: vec![x, y],
+        };
+        let mut search = Search {
+            ranker: &mut Ordered,
+            goal: q,
+            started: Instant::now(),
+            expansions: 0,
+            maximum: 16,
+            failure: None,
+            exhausted: BTreeSet::new(),
+        };
+        assert!(search.prove(&state, 32).unwrap().is_none());
+        assert!(
+            search.prove(&state, 0).unwrap().is_some(),
+            "the same subgoal with remaining depth must still be explored"
         );
     }
 }

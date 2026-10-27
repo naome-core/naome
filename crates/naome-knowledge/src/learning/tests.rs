@@ -239,6 +239,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     finished.trained = finished.accepted;
     job.progress = Some(Progress {
         cost: None,
+        training_cost: model::TrainingCost::default(),
         unit: job.units() - 1,
         model: finished.model,
         trained: finished.trained,
@@ -293,6 +294,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
 fn finished_progress(state: &State) -> Progress {
     Progress {
         cost: None,
+        training_cost: model::TrainingCost::default(),
         unit: 0,
         model: state.model.clone(),
         trained: state.epoch,
@@ -357,6 +359,7 @@ pub(crate) fn own_solution() -> Solution {
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
         cost: None,
+        training_cost: model::TrainingCost::default(),
         unit: 1,
         model: job.base.model.clone(),
         trained: job.base.trained,
@@ -384,6 +387,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
     candidate.updates += model::UPDATES_PER_UNIT;
     job.progress = Some(Progress {
         cost: None,
+        training_cost: model::TrainingCost::default(),
         unit: 1,
         model: state.model,
         trained: state.trained,
@@ -507,7 +511,11 @@ fn proof_strategy_cost_uses_the_same_native_unit_for_local_traces_and_peer_dags(
         native, cost.useful_steps,
         "the fixture must distinguish macro actions from native steps"
     );
-    let peer = search::Tree::Peer { steps: native };
+    let peer = search::Tree::Stored {
+        steps: native,
+        bytes: serde_json::to_vec(&own.tree).unwrap().len(),
+        binding: digest(&own.tree),
+    };
     assert_eq!(
         state::proof_steps(q.proved_target(), &own.tree).unwrap(),
         native
@@ -516,4 +524,100 @@ fn proof_strategy_cost_uses_the_same_native_unit_for_local_traces_and_peer_dags(
         state::proof_steps(q.proved_target(), &peer).unwrap(),
         native
     );
+}
+
+#[test]
+fn definition_retention_uses_distinct_checked_goal_uses_instead_of_birth_or_reference_count() {
+    fn meaning(source: &str) -> definitions::Entry {
+        let naome_authoring::CompiledArtifact::Definition(d) =
+            naome_authoring::compile_artifact(source).unwrap()
+        else {
+            panic!("definition")
+        };
+        definitions::Entry {
+            certificate: d.canonical_definition_bytes().to_vec(),
+            obligation: None,
+        }
+    }
+    fn using(entry: &definitions::Entry) -> Example {
+        let mut e = own_example();
+        e.tree = search::Tree::Definitions {
+            entries: vec![entry.clone()],
+            selected: 0,
+            available: 1,
+            proof: Box::new(e.tree),
+        };
+        let q = CompiledQuestion::compile(&e.question).unwrap();
+        e.proof_id = crate::hex(
+            search::core::checked(q.proved_target(), &e.tree)
+                .unwrap()
+                .2
+                .native_id
+                .as_bytes(),
+        );
+        e
+    }
+    let equality = meaning("def equality=relation(x,y): eq(x,y)");
+    let mut state = State::fresh();
+    assert!(state.remember_definition(equality.clone()).unwrap());
+    let id = crate::hex(equality.address().unwrap().as_bytes());
+    assert_eq!(state.definition_uses[&id], 0);
+    let example = using(&equality);
+    assert!(state.accept(example.clone()).unwrap());
+    assert_eq!(state.definition_uses[&id], 1);
+    assert!(!state.accept(example).unwrap());
+    assert_eq!(state.definition_uses[&id], 1);
+    for n in 0..10 {
+        let mut body = "mem(x,y)".to_owned();
+        for _ in 0..n {
+            body = format!("not({body})");
+        }
+        state
+            .remember_definition(meaning(&format!("def cold=relation(x,y): {body}")))
+            .unwrap();
+    }
+    assert!(
+        state.definitions.contains(&equality),
+        "a useful older meaning survives unused newer meanings"
+    );
+    assert_eq!(state.definition_uses[&id], 1);
+    let restored: State =
+        crate::checkpoint::decode(&crate::checkpoint::encode(&state).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(restored.definition_uses[&id], 1);
+    let unused = meaning("def unused=relation(x,y): mem(x,y)");
+    let mut state = State::fresh();
+    state.remember_definition(unused.clone()).unwrap();
+    let mut unsupported = own_example();
+    unsupported.tree = search::Tree::Definitions {
+        entries: vec![unused.clone()],
+        selected: 0,
+        available: 1,
+        proof: Box::new(unsupported.tree),
+    };
+    let q = CompiledQuestion::compile(&unsupported.question).unwrap();
+    assert!(
+        search::core::checked(q.proved_target(), &unsupported.tree).is_err(),
+        "a selected but unused name is not a winning decision"
+    );
+    assert_eq!(
+        state.definition_uses[&crate::hex(unused.address().unwrap().as_bytes())],
+        0,
+        "an unused selected name earns no proof utility"
+    );
+}
+
+#[test]
+fn a_peer_certificate_cannot_be_reclassified_as_a_local_discovery_trace() {
+    let mut solution = own_solution();
+    let q = CompiledQuestion::compile(&own_question()).unwrap();
+    let verified = search::core::checked(q.proved_target(), &solution.tree)
+        .unwrap()
+        .2;
+    let mut job = State::fresh().job();
+    completed(&mut job, solution.clone());
+    job.validate_generated_trace().unwrap();
+    solution.tree = search::Tree::Certificate(evidence::pack(&verified).unwrap());
+    completed(&mut job, solution);
+    assert!(job.validate_generated_trace().is_err());
 }

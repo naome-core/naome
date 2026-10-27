@@ -2,6 +2,7 @@
 //! Only fresh model self-search and checker-admitted native solutions train it.
 use super::tests::MemoryStore;
 use super::*;
+mod knowledge;
 mod lookup;
 use sha2::{Digest, Sha256};
 use std::{
@@ -44,7 +45,7 @@ fn evaluate(
 ) -> Vec<serde_json::Value> {
     cases.iter().enumerate().map(|(i,q)| {
         let started=Instant::now();
-        let (solution,diagnostic,cost)=engine.with(model,io,|runtime|solve_with_definitions(&q.source,runtime,budget,900_000+i as u64,known)).unwrap();
+        let (solution,diagnostic,cost)=engine.with(model,io,|runtime|solve_with_definitions(&q.source,runtime,budget,900_000+i as u64,known,&[])).unwrap();
         serde_json::json!({"id":q.id,"dependency":q.dependency,"family":q.family,"solved":solution.is_some(),"solution":solution,"diagnostic":diagnostic,"elapsed_ms":started.elapsed().as_millis(),"cost":cost})
     }).collect()
 }
@@ -116,7 +117,14 @@ fn train_seed(
             let job = 1 + round as u64 * 128 + index as u64;
             let (solution, diagnostic, cost) = engine
                 .with(&state.model, &mut io, |runtime| {
-                    solve_with_definitions(&q.source, runtime, 128, job, &state.definitions)
+                    solve_with_definitions(
+                        &q.source,
+                        runtime,
+                        128,
+                        job,
+                        &state.definitions,
+                        &state.knowledge,
+                    )
                 })
                 .unwrap();
             let mut accepted = false;
