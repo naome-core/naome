@@ -14,6 +14,118 @@ fn completion(id: u64, result: jobs::Output, state: jobs::State) -> jobs::Comple
         result: Ok(result),
     }
 }
+
+#[test]
+fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_success() {
+    let directory = Directory::new();
+    let mut graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let initial = frontier.evidence.model().clone();
+    let unresolved = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    crate::checkpoint::fail_next_commit();
+    assert!(
+        frontier
+            .attempted(&question, &graph, &unresolved, Outcome::NoCandidate)
+            .is_err()
+    );
+    assert_eq!(frontier.evidence.model(), &initial);
+    frontier
+        .attempted(&question, &graph, &unresolved, Outcome::NoCandidate)
+        .unwrap();
+    frontier
+        .attempted(&question, &graph, &unresolved, Outcome::NoCandidate)
+        .unwrap();
+    assert_eq!(frontier.evidence.model().updates, 1);
+    assert_eq!(frontier.evidence.model().unresolved, 1);
+    for (job, state, outcome) in [
+        (2, jobs::State::Expired, Outcome::Expired),
+        (3, jobs::State::Failed, Outcome::Failed),
+        (4, jobs::State::InDoubt, Outcome::InDoubt),
+    ] {
+        let result = completion(job, jobs::Output::NoCandidate, state);
+        frontier
+            .attempted(&question, &graph, &result, outcome)
+            .unwrap();
+    }
+    assert_eq!(frontier.evidence.model().updates, 1);
+    let solution = crate::learning::tests::own_solution();
+    let result = completion(
+        5,
+        jobs::Output::Proof {
+            source: solution.source.clone(),
+            helpers: vec![],
+        },
+        jobs::State::Complete,
+    );
+    frontier
+        .attempted(&question, &graph, &result, Outcome::Candidate)
+        .unwrap();
+    assert_eq!(frontier.evidence.model().resolved, 0);
+    assert!(
+        frontier
+            .verified(&question, &graph, 5, ArtifactId::from_bytes([0; 32]))
+            .is_err()
+    );
+    let root = graph.produce(&solution.source).unwrap().1.id;
+    frontier.prepared(&question, 5, root).unwrap();
+    assert_eq!(frontier.evidence.model().resolved, 0);
+    frontier.verified(&question, &graph, 5, root).unwrap();
+    frontier.verified(&question, &graph, 5, root).unwrap();
+    assert_eq!(
+        (
+            frontier.evidence.model().updates,
+            frontier.evidence.model().resolved
+        ),
+        (2, 1)
+    );
+    let model = frontier.evidence.model().clone();
+    let generated = finder::questions(17, &frontier.predicates, &model, 12, 64 * 1024);
+    let identities = |questions: Vec<CompiledQuestion>| {
+        questions
+            .into_iter()
+            .take(generated.len())
+            .map(|q| *q.resolution_id())
+            .collect::<Vec<_>>()
+    };
+    let page = identities(frontier.candidates(17));
+    drop(frontier);
+    let frontier = Frontier::open(&directory.0, &graph, 99, settings).unwrap();
+    assert_eq!(frontier.evidence.model(), &model);
+    assert_eq!(identities(frontier.candidates(17)), page);
+}
+
+#[test]
+fn finder_reopens_a_durable_observation_once_after_uncertain_acknowledgement() {
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    let result = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
+    crate::checkpoint::fail_after_commit();
+    assert!(
+        frontier
+            .attempted(&question, &graph, &result, Outcome::NoCandidate)
+            .is_err()
+    );
+    assert_eq!(frontier.evidence.model().updates, 0);
+    drop(frontier);
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    assert_eq!(frontier.evidence.model().updates, 1);
+    frontier
+        .attempted(&question, &graph, &result, Outcome::NoCandidate)
+        .unwrap();
+    assert_eq!(frontier.evidence.model().updates, 1);
+    assert_eq!(frontier.evidence.model().resolved, 0);
+}
 fn checked(graph: &mut Graph, question: &CompiledQuestion) -> ArtifactId {
     graph
         .produce(&mocks::create_proof(question).unwrap())
@@ -237,7 +349,7 @@ fn local_definitions_generate_questions_and_relationships_without_a_user_profile
     let goal = CompiledQuestion::compile("goal = all(x,mem(x,x))").unwrap();
     assert!(
         frontier
-            .candidates()
+            .candidates(0)
             .iter()
             .any(|q| q.resolution_id() == goal.resolution_id())
     );
@@ -348,7 +460,7 @@ fn failed_implication_search_proposes_simpler_open_subgoals_and_restores_budget_
     let helper = CompiledQuestion::compile("goal=all(x,eq(x,x))").unwrap();
     assert!(
         frontier
-            .candidates()
+            .candidates(0)
             .iter()
             .any(|q| q.resolution_id() == helper.resolution_id())
     );
@@ -378,7 +490,7 @@ fn checked_catalog_yields_distinct_open_research_after_all_installed_answers_are
     frontier.refresh(&graph, |_| true).unwrap();
     let mut formal =
         crate::question::LocalQuestions::new(Some(mocks::select_question as fn(_) -> _));
-    let candidates = frontier.candidates();
+    let candidates = frontier.candidates(0);
     let eligible = candidates
         .iter()
         .filter(|q| formal.assess(&graph, q).passed())
@@ -413,7 +525,7 @@ fn open_definition_binders_do_not_collapse_distinct_variable_roles_in_conjecture
     let expected = CompiledQuestion::compile("goal=all(y,all(x,imp(eq(y,x),mem(x,y))))").unwrap();
     assert!(
         frontier
-            .candidates()
+            .candidates(0)
             .iter()
             .any(|q| q.resolution_id() == expected.resolution_id())
     );
@@ -464,7 +576,7 @@ fn small_live_cache_keeps_new_eligible_obligations_instead_of_rejected_fragments
         };
         frontier.refresh(&graph, &mut eligible).unwrap();
         let candidates = frontier
-            .candidates()
+            .candidates(0)
             .into_iter()
             .filter(&mut eligible)
             .collect::<Vec<_>>();

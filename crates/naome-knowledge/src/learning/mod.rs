@@ -27,18 +27,6 @@ use naome_authoring::CompiledQuestion;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// One bounded page from the canonical question-only construction corpus.
-/// The caller still applies formal admission, family exploration and its
-/// checkpoint-bound ability feedback before reserving actual solver work.
-pub(crate) fn research_questions(draw: u64) -> Vec<CompiledQuestion> {
-    let cases = &curriculum::adaptive::BANK.learning;
-    (0..12)
-        .filter_map(|offset| {
-            let index = (draw as usize * 11 + offset) % cases.len();
-            CompiledQuestion::compile(&cases[index].source).ok()
-        })
-        .collect()
-}
 pub(crate) const PROVIDER: &str = "naome-native-proof-learning";
 const REPLAY: usize = 32;
 const EVALUATIONS: u32 = curriculum::DEVELOPMENT as u32 + 4;

@@ -1076,7 +1076,7 @@ impl Autonomous {
                     let candidates = if let Some(question) = &self.formal_goal {
                         vec![question.clone()]
                     } else {
-                        frontier.candidates()
+                        frontier.candidates(cursor)
                     };
                     let candidates = candidates
                         .into_iter()

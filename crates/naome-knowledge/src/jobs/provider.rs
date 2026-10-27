@@ -111,6 +111,10 @@ pub(super) struct Contract {
 }
 pub(super) fn contract(record: &Record) -> Option<Contract> {
     match record.provider.as_str() {
+        crate::frontier::PROVIDER if matches!(record.input, Input::Find { .. }) => Some(Contract {
+            units: 1,
+            resumable: true,
+        }),
         crate::learning::PROVIDER => record.native.as_ref().map(|job| Contract {
             units: job.units(),
             resumable: true,
@@ -141,6 +145,12 @@ pub(super) fn resumable(record: &Record) -> bool {
 }
 pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, String> {
     match record.provider.as_str() {
+        crate::frontier::PROVIDER => match &record.input {
+            Input::Find { question, .. } => Ok(Box::new(Finding {
+                question: question.clone(),
+            })),
+            _ => Err("structural finder role differs".into()),
+        },
         crate::learning::PROVIDER => Ok(Box::new(Native {
             record: record.clone(),
             engine: crate::learning::Engine::default(),
@@ -150,6 +160,23 @@ pub(super) fn select(record: &Record) -> Result<Box<dyn Provider>, String> {
             work: record.settings.mock,
         })),
         _ => Err("unknown research provider".into()),
+    }
+}
+/// Generation and its learned state belong to Frontier. This worker finalizes
+/// the immutable selected source under the ordinary job reservation/custody.
+struct Finding {
+    question: String,
+}
+impl Provider for Finding {
+    fn next(&self, checkpoint: u32) -> Result<Option<u32>, Failure> {
+        Ok((checkpoint == 0).then_some(1))
+    }
+    fn execute(&mut self, _unit: u32, _owner: &mut dyn Supervisor) -> Result<(), Failure> {
+        naome_authoring::CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    fn result(&mut self, _owner: &mut dyn Supervisor) -> Result<Output, Failure> {
+        Ok(Output::Question(self.question.clone()))
     }
 }
 struct Native {

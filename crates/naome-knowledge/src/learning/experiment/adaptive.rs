@@ -483,7 +483,7 @@ fn train(
             };
             frontier.refresh(&graph, &mut eligible).unwrap();
             let candidates = frontier
-                .candidates()
+                .candidates(round as u64 * 48 + index as u64)
                 .into_iter()
                 .filter(&mut eligible)
                 .collect::<Vec<_>>();
@@ -658,7 +658,7 @@ fn train(
             }
         }
         frontier.feedback(Some(state.feedback()));
-        let next_page=frontier.candidates().into_iter().filter(|q|!seen.contains(&crate::hex(q.resolution_id()))&&State::eligible(q.source())&&formal.assess(&graph,q).passed()).map(|q|serde_json::json!({"id":crate::hex(q.resolution_id()),"priority":state.feedback.priority(&q,128)})).collect::<Vec<_>>();
+        let next_page=frontier.candidates((round as u64 + 1) * 48).into_iter().filter(|q|!seen.contains(&crate::hex(q.resolution_id()))&&State::eligible(q.source())&&formal.assess(&graph,q).passed()).map(|q|serde_json::json!({"id":crate::hex(q.resolution_id()),"priority":state.feedback.priority(&q,128)})).collect::<Vec<_>>();
         let event = serde_json::json!({"round":round,"attempts":rows.len(),"accepted":state.accepted,"replay":state.replay.len(),"pool_graphs":pool.graphs().len(),
             "decision_before":before,"decision_candidate":metrics,"qualification":gate,"retained_updates":state.model.updates,"feedback_after":state.feedback,
             "next_page":next_page,"elapsed":clock.elapsed()});

@@ -15,11 +15,13 @@ pub(crate) enum Outcome {
     Expired,
     InDoubt,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
     random: u64,
     draws: u64,
+    model_contract: String,
+    model: finder::Model,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,13 +107,21 @@ impl Evidence {
                 &Header {
                     random: seed.max(1),
                     draws: 0,
+                    model_contract: solver.clone(),
+                    model: finder::Model::fresh(),
                 },
                 vec![],
             )?
         };
-        let header: Header = checkpoint.header()?;
+        let mut header: Header = checkpoint.header()?;
         if header.random == 0 {
             return Err("invalid research random state".into());
+        }
+        crate::object::id_bytes(&header.model_contract)?;
+        header.model.validate()?;
+        if header.model_contract != solver {
+            header.model_contract = solver.clone();
+            header.model = finder::Model::fresh();
         }
         checkpoint.require_kinds(&["question"])?;
         if !crate::storage::marker_valid(&marker, MARKER)? {
@@ -124,7 +134,13 @@ impl Evidence {
         })
     }
     pub(super) fn bind_solver(&mut self, solver: String) {
+        // The small predictor is an online historical prior for the configured
+        // solver, including in-flight earlier lower-model snapshots. Precise
+        // current-checkpoint ability stays with the existing feedback owner.
         self.solver = solver;
+    }
+    pub(super) fn model(&self) -> &finder::Model {
+        &self.header.model
     }
     pub(super) fn random(&self) -> u64 {
         self.header.random
@@ -157,7 +173,8 @@ impl Evidence {
                     record.verified = record.prepared.clone();
                     let question =
                         CompiledQuestion::compile(&record.question).map_err(|e| e.to_string())?;
-                    self.put(&question, &record).map_err(|e| e.to_string())?;
+                    self.put_observation(&question, &record, Some((true, record.verified_ms)))
+                        .map_err(|e| e.to_string())?;
                 }
                 after = Some(key);
             }
@@ -176,6 +193,7 @@ impl Evidence {
                 .draws
                 .checked_add(1)
                 .ok_or("research draw overflow")?,
+            ..self.header.clone()
         };
         self.commit(&next, vec![])?;
         self.header = next;
@@ -189,6 +207,7 @@ impl Evidence {
                 _ => 0,
             })
             .sum::<u64>()
+            .saturating_add(crate::checkpoint::encode(header)?.len() as u64)
             .saturating_add(8192);
         let _disk = crate::resources::DiskLease::acquire(self.checkpoint.directory(), needed)?;
         self.checkpoint
@@ -196,10 +215,20 @@ impl Evidence {
             .map_err(crate::Error::from)
     }
     fn put(&mut self, question: &CompiledQuestion, record: &Record) -> Result<(), crate::Error> {
-        let header = Header {
-            random: self.header.random,
-            draws: self.header.draws,
-        };
+        self.put_observation(question, record, None)
+    }
+    fn put_observation(
+        &mut self,
+        question: &CompiledQuestion,
+        record: &Record,
+        observation: Option<(bool, u64)>,
+    ) -> Result<(), crate::Error> {
+        let mut header = self.header.clone();
+        if let Some((resolved, millis)) = observation
+            && crate::learning::State::eligible(question.source())
+        {
+            header.model.observe(question, resolved, millis)?;
+        }
         self.commit(
             &header,
             vec![Update::put(
@@ -207,7 +236,9 @@ impl Evidence {
                 record_key(&self.solver, question),
                 record,
             )?],
-        )
+        )?;
+        self.header = header;
+        Ok(())
     }
     pub(super) fn attempted(
         &mut self,
@@ -259,7 +290,10 @@ impl Evidence {
             record.verified_units = record.last_units;
             record.verified_ms = completion.spent_ms;
         }
-        self.put(question, &record)
+        let observation = (completion.state == jobs::State::Complete
+            && outcome == Outcome::NoCandidate)
+            .then_some((false, completion.spent_ms));
+        self.put_observation(question, &record, observation)
     }
     pub(super) fn prepared(
         &mut self,
@@ -319,7 +353,7 @@ impl Evidence {
         }
         record.verified = Some(crate::hex(root.as_bytes()));
         record.verified_units = record.last_units;
-        self.put(question, &record)?;
+        self.put_observation(question, &record, Some((true, record.verified_ms)))?;
         Ok(Some((record.verified_units, record.verified_ms)))
     }
 }

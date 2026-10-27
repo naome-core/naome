@@ -1088,6 +1088,9 @@ impl Owner {
                 binding: binding.clone(),
                 provider: if native.is_some() {
                     crate::learning::PROVIDER
+                } else if self.settings.native_proof_learning && matches!(input, Input::Find { .. })
+                {
+                    crate::frontier::PROVIDER
                 } else {
                     super::provider::DEFAULT_PROVIDER
                 }

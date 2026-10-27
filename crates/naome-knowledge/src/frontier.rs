@@ -9,7 +9,9 @@ use sha2::Digest;
 use std::{collections::VecDeque, path::Path, sync::Arc};
 
 pub(crate) mod evidence;
+mod finder;
 use evidence::{Evidence, Outcome};
+pub(crate) const PROVIDER: &str = "naome-structural-finder";
 #[cfg(test)]
 mod comparison;
 #[cfg(test)]
@@ -422,15 +424,23 @@ impl Frontier {
         }
         Ok(())
     }
-    pub(crate) fn candidates(&self) -> Vec<CompiledQuestion> {
-        let mut candidates = (0..3)
-            .filter_map(|cursor| {
-                CompiledQuestion::compile(&crate::mocks::create_question(cursor)).ok()
-            })
-            .collect::<Vec<_>>();
-        if self.native {
-            candidates.extend(crate::learning::research_questions(self.evidence.draws()));
-        }
+    pub(crate) fn candidates(&self, cursor: u64) -> Vec<CompiledQuestion> {
+        let mut candidates = if self.native {
+            let limits = crate::resources::active_limits();
+            finder::questions(
+                cursor,
+                &self.predicates,
+                self.evidence.model(),
+                limits.question_page,
+                limits.question_cache_bytes / 4,
+            )
+        } else {
+            (0..3)
+                .filter_map(|index| {
+                    CompiledQuestion::compile(&crate::mocks::create_question(index)).ok()
+                })
+                .collect::<Vec<_>>()
+        };
         for question in &self.proposals {
             if !candidates
                 .iter()
@@ -546,6 +556,9 @@ impl Frontier {
         if jobs::declared_solver_support(question, settings) {
             weight = weight.saturating_mul(8);
         }
+        if self.native {
+            weight = weight.saturating_mul(self.evidence.model().weight(question)) / 1024;
+        }
         Ok(weight.max(1))
     }
     /// Draw a family first, avoiding a flood of nearly identical candidates.
@@ -585,6 +598,13 @@ impl Frontier {
                 "priority":weighted[index].1,"candidates":candidates.len(),"structural_group":crate::training::group(candidates[index])}),
             );
         }
+        if self.native {
+            crate::network::emit(serde_json::json!({
+                "event":"finder_selected", "resolution_id":crate::hex(candidates[index].resolution_id()),
+                "question":candidates[index].source(), "model_updates":self.evidence.model().updates,
+                "model_weight":self.evidence.model().weight(candidates[index]), "candidates":candidates.len()
+            }));
+        }
         Ok(Some(index))
     }
     pub(crate) fn prepared(
@@ -616,8 +636,10 @@ impl Frontier {
                 .evidence
                 .get(question)?
                 .is_none_or(|record| completion.id > record.last_job);
+        let before = self.evidence.model().updates;
         self.evidence
             .attempted(question, graph.content_root(), completion, outcome)?;
+        self.learning_event(question, before, false);
         if new
             && matches!(
                 outcome,
@@ -656,10 +678,23 @@ impl Frontier {
         if !Self::checked_target(graph, root, question)? {
             return Err("research evidence lacks a checked exact solution".into());
         }
+        let before = self.evidence.model().updates;
         if let Some((units, millis)) = self.evidence.verified(question, job, root)? {
             self.demonstrated(&Features::of(question), units, millis);
+            self.learning_event(question, before, true);
         }
         self.forget_hint(question);
         Ok(())
+    }
+    fn learning_event(&self, question: &CompiledQuestion, before: u64, resolved: bool) {
+        let model = self.evidence.model();
+        if self.native && model.updates > before {
+            crate::network::emit(serde_json::json!({
+                "event":"finder_learned", "resolution_id":crate::hex(question.resolution_id()),
+                "outcome":if resolved { "checked_resolution" } else { "unresolved_search" },
+                "updates":model.updates, "resolved":model.resolved, "unresolved":model.unresolved,
+                "model_weight":model.weight(question)
+            }));
+        }
     }
 }
