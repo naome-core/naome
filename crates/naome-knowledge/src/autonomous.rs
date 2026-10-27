@@ -402,16 +402,17 @@ impl Autonomous {
                 .expect("bounded admission queue");
             match pending.reply.try_recv() {
                 Ok(result) => {
+                    let admitted =
+                        matches!(result.outcome, question::AdmissionOutcome::Admitted(_));
                     emit(
                         json!({"event":"question_assessed","resolution_id":crate::hex(pending.question.resolution_id()),
+                        "admitted":admitted,
                         "formal_pass":result.assessment.prefilter.passed(),
                         "formal_outcome":result.assessment.prefilter.outcome.code(),
                         "formal_reason":result.assessment.prefilter.reason.map(|reason| reason.code()),
                         "formal_rule":result.assessment.prefilter.rule,
                         "selection":format!("{:?}",result.assessment.selection_result)}),
                     );
-                    let admitted =
-                        matches!(result.outcome, question::AdmissionOutcome::Admitted(_));
                     crate::resources::feedback::finding_result(admitted);
                     if admitted {
                         self.retain(pending.question);

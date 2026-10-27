@@ -340,7 +340,7 @@ impl Transport {
                     let _ = driver.behaviour_mut().exchange.send_response(
                         channel,
                         Frame::new(Body::Error {
-                            reason: "node state owner busy".into(),
+                            reason: OWNER_BUSY.into(),
                         }),
                     );
                     continue;
@@ -404,7 +404,7 @@ impl Transport {
                                 let _ = driver.behaviour_mut().exchange.send_response(
                                     channel,
                                     Frame::new(Body::Error {
-                                        reason: "node state owner busy".into(),
+                                        reason: OWNER_BUSY.into(),
                                     }),
                                 );
                             }
