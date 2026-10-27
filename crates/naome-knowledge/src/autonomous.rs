@@ -402,16 +402,17 @@ impl Autonomous {
                 .expect("bounded admission queue");
             match pending.reply.try_recv() {
                 Ok(result) => {
+                    let admitted =
+                        matches!(result.outcome, question::AdmissionOutcome::Admitted(_));
                     emit(
                         json!({"event":"question_assessed","resolution_id":crate::hex(pending.question.resolution_id()),
+                        "admitted":admitted,
                         "formal_pass":result.assessment.prefilter.passed(),
                         "formal_outcome":result.assessment.prefilter.outcome.code(),
                         "formal_reason":result.assessment.prefilter.reason.map(|reason| reason.code()),
                         "formal_rule":result.assessment.prefilter.rule,
                         "selection":format!("{:?}",result.assessment.selection_result)}),
                     );
-                    let admitted =
-                        matches!(result.outcome, question::AdmissionOutcome::Admitted(_));
                     crate::resources::feedback::finding_result(admitted);
                     if admitted {
                         self.retain(pending.question);
@@ -859,26 +860,11 @@ impl Autonomous {
         {
             self.next_proof = now + Duration::from_millis(self.intervals.solving_ms());
             let selected = if let Some(frontier) = &mut self.frontier {
-                self.unanswered.retain(|question| {
-                    if questions.generation_decision(graph, question).has_answer() {
-                        questions.settle_backlog(question.resolution_id());
-                        false
-                    } else {
-                        true
-                    }
-                });
-                let eligible = self
-                    .unanswered
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, question)| questions.generation_decision(graph, question).passed())
-                    .collect::<Vec<_>>();
-                let candidates = eligible
-                    .iter()
-                    .map(|(_, question)| *question)
-                    .collect::<Vec<_>>();
+                // Ranking is a scheduling hint. The selected target crosses the
+                // fresh formal gate below before any provider work is admitted.
+                let candidates = self.unanswered.iter().collect::<Vec<_>>();
                 match frontier.choose(&candidates, graph, self.intervals.jobs.solving, false) {
-                    Ok(index) => index.map(|index| eligible[index].0),
+                    Ok(index) => index,
                     Err(error) => {
                         if error.fatal() {
                             self.error = Some(error.to_string());
@@ -936,7 +922,12 @@ impl Autonomous {
                 };
                 self.cursor = next;
                 let source = if let Some(frontier) = &mut self.frontier {
-                    match frontier.refresh(graph) {
+                    let mut eligible = |question: &CompiledQuestion| {
+                        !self.admissions.iter().any(|pending| {
+                            pending.question.resolution_id() == question.resolution_id()
+                        }) && questions.assess(graph, question).passed()
+                    };
+                    match frontier.refresh(graph, &mut eligible) {
                         Ok(()) => {}
                         Err(error) if !error.fatal() => return accepted,
                         Err(error) => {
@@ -947,7 +938,7 @@ impl Autonomous {
                     let candidates = frontier
                         .candidates()
                         .into_iter()
-                        .filter(|question| questions.assess(graph, question).passed())
+                        .filter(&mut eligible)
                         .collect::<Vec<_>>();
                     let references = candidates.iter().collect::<Vec<_>>();
                     match frontier.choose(&references, graph, self.intervals.jobs.solving, false) {

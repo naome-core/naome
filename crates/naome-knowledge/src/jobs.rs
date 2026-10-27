@@ -534,7 +534,7 @@ pub(crate) fn declared_solver_support(
 }
 
 pub(crate) fn solver_identity(settings: RoleSettings) -> String {
-    identity(&(provider::DEFAULT_PROVIDER, settings.mock, settings.recovery))
+    identity(&(provider::DEFAULT_PROVIDER, settings))
 }
 
 fn identity(value: &impl Serialize) -> String {

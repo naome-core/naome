@@ -1238,10 +1238,31 @@ def main():
         trial.summary["scenarios"][f"scheduled_mock_generation_real_validation_and_{args.mode}_exchange"] = {
             "result": "pass", "root_proofs": 3, "receiver_generated_questions": 0,
             "receiver_accepted_source": "fetch", "mocked": ["question generation", "proof generation"]}
-        trial.wait(lambda: sum(event.get("event") == "question_generated" for event in sender.logs()) >= 6, maximum=5)
+        trial.wait(lambda: len({event["resolution_id"] for event in sender.logs()
+            if event.get("event") == "question_generated"}) >= 6, maximum=5)
         assert sender.ids() == accepted and receiver.ids() == accepted
         assert all(trial.call(node, "status") == expected_status(node) for node in trial.nodes)
-        trial.summary["scenarios"]["repeated_catalog_outputs_do_not_inflate_accepted_count"] = {"result": "pass", "unique_proofs": 3}
+        # Resource-deferred admission may retry after its first request settles.
+        generated, resolved, pending, admitted = set(), set(), set(), set()
+        for event in sender.logs():
+            if event.get("event") == "proof_generated":
+                resolved.add(event["resolution_id"])
+            elif event.get("event") == "question_assessed":
+                resolution = event["resolution_id"]
+                pending.discard(resolution)
+                if event["admitted"]:
+                    admitted.add(resolution)
+            elif event.get("event") == "question_generated":
+                resolution = event["resolution_id"]
+                assert resolution not in resolved, "a checked answer was generated again"
+                assert resolution not in admitted, "an admitted question was generated again"
+                assert resolution not in pending, "pending admission duplicated finding work"
+                pending.add(resolution)
+                generated.add(resolution)
+        assert len(generated) >= 6 and len(generated - resolved) >= 3
+        trial.summary["scenarios"]["new_obligations_continue_without_duplicate_admission_or_answers"] = {
+            "result": "pass", "unique_proofs": 3, "distinct_questions": len(generated),
+            "unanswered_research_questions": len(generated - resolved)}
         for node in trial.nodes:
             assert node.stop() == {"running": False, "accepted_artifacts": 3, "artifact_verification": "not_run", "computation": "stopped", "computation_reason": None}
             assert digest(node.directory / "identity.key") == node.identity_sha256

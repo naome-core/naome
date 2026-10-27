@@ -14,6 +14,7 @@ pub mod adaptive;
 mod calibration;
 mod computation;
 pub(crate) mod feedback;
+pub(crate) mod json;
 mod operating;
 pub use computation::ComputationState;
 pub(crate) use computation::{Computation, ComputationPermit};

@@ -47,6 +47,8 @@ async fn execute() -> Result<(), String> {
             };
             network::run(network::read_config(Path::new(config))?, test_controls).await
         },
+        ["training", "--help"] => { println!("{}", naome_knowledge::training::HELP); Ok(()) },
+        ["training", directory, request] => naome_knowledge::training::run(Path::new(directory), Path::new(request)),
         ["contract"] => {
             println!("{}",json!({"foundation":naome_foundation::FOUNDATION_ID, "codec":CODEC_ID, "checker":CHECKER_ID,
                 "policy":GRAPH_POLICY_ID,"compatibility":hex(&compatibility()),"routing":network::routing_contract(),"limits":{
@@ -62,6 +64,6 @@ async fn execute() -> Result<(), String> {
                     "request_timeout_seconds":naome_knowledge::resources::limits().request_timeout.as_secs(),"reconcile_seconds":naome_knowledge::resources::limits().reconcile_interval.as_secs()}}));
             Ok(())
         },
-        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract\nrun consumes bounded newline-delimited JSON commands: status (optional after ArtifactId; ids, next_after, status_page_ids, accepted_artifacts), produce, ingest, object, describe, links, announce, offer, stop".into()),
+        _ => Err("usage: naome-knowledge init <directory> | run <config.json> [--test-controls] | relay <config.json> | contract | training <node-directory> <request.json> | training --help\nrun consumes bounded newline-delimited JSON commands: status (optional after ArtifactId; ids, next_after, status_page_ids, accepted_artifacts), produce, ingest, object, describe, links, announce, offer, stop".into()),
     }
 }
