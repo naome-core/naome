@@ -904,3 +904,94 @@ fn completion_observations_not_job_allocation_order_establish_helper_timing() {
     record_checked(&mut frontier, &graph, &goal, 3, root);
     assert_eq!(frontier.evidence.model().supports, 0);
 }
+
+#[test]
+fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
+    const TEST: &str =
+        "frontier::tests::small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers";
+    if std::env::var_os("NAOME_NATIVE_GOAL_CACHE_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("NAOME_NATIVE_GOAL_CACHE_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let mut profile = crate::resources::ResourceProfile::default();
+    profile.tuning.question_cache_bytes = Some(4096);
+    profile.tuning.question_page = Some(1);
+    crate::resources::configure(profile).unwrap();
+    let helpers = [
+        naome_foundation::ZfcAxiom::Pairing.formula(),
+        naome_foundation::ZfcAxiom::Union.formula(),
+    ];
+    let goal = CompiledQuestion::from_formula(Formula::conjunction(
+        helpers[0].clone(),
+        helpers[1].clone(),
+    ))
+    .unwrap();
+    assert!(crate::learning::State::eligible(goal.source()));
+    let cost = goal.source().len() * 8 + 256;
+    assert!(
+        cost > 1024 && cost <= 4096,
+        "exercise the real cache partition boundary"
+    );
+    let directory = Directory::new();
+    let graph = Graph::default();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier.focus(goal.clone());
+    assert_eq!(frontier.goals.len(), 1);
+    let candidates = (0..32)
+        .flat_map(|cursor| frontier.candidates(cursor))
+        .collect::<Vec<_>>();
+    assert!(candidates.iter().any(|q| q.core() == goal.core()));
+    for helper in &helpers {
+        assert!(
+            candidates.iter().any(|q| q.core() == helper),
+            "a prerequisite must fit a rotating one-item page"
+        );
+    }
+    assert!(
+        frontier
+            .goals
+            .iter()
+            .map(|q| q.source().len() * 8 + 256)
+            .sum::<usize>()
+            <= 4096
+    );
+}
+#[test]
+fn native_checked_theorems_supply_proper_relations_without_posthoc_weakenings() {
+    let (graph, lemma, _, _, _) = helper_use_fixture();
+    let directory = Directory::new();
+    let settings = jobs::Settings {
+        native_proof_learning: true,
+        ..Default::default()
+    };
+    let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+    frontier.refresh(&graph, |_| true).unwrap();
+    assert!(
+        frontier.proposals.is_empty(),
+        "closed proofs must not create unconditional weakenings"
+    );
+    assert!(!frontier.predicates.is_empty());
+    for relation in &frontier.predicates {
+        assert_eq!(relation.free_variables().len(), 2);
+        let mut closed = relation.clone();
+        for variable in closed.free_variables().into_iter().rev() {
+            closed = Formula::for_all(variable, closed);
+        }
+        let question = CompiledQuestion::from_formula(closed).unwrap();
+        assert_ne!(finder::key(&question), finder::key(&lemma));
+    }
+}

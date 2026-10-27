@@ -1094,7 +1094,16 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let candidates = frontier.candidates(cursor);
+                    let mut candidates = frontier.candidates(cursor);
+                    // The explicit owner goal remains admissible even when a
+                    // bounded research-context cache cannot retain its copy.
+                    if let Some(goal) = &self.formal_goal
+                        && !candidates
+                            .iter()
+                            .any(|q| q.resolution_id() == goal.resolution_id())
+                    {
+                        candidates.push(goal.clone());
+                    }
                     let candidates = candidates
                         .into_iter()
                         .filter(&mut eligible)

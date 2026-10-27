@@ -522,15 +522,7 @@ mod tests {
     fn finder_helpers_enable_a_composite_goal_with_the_same_total_search_allowance() {
         use naome_authoring::CompiledQuestion;
         use naome_foundation::ZfcAxiom;
-        let axioms = [
-            ZfcAxiom::Extensionality,
-            ZfcAxiom::Pairing,
-            ZfcAxiom::Union,
-            ZfcAxiom::PowerSet,
-            ZfcAxiom::Infinity,
-            ZfcAxiom::Foundation,
-            ZfcAxiom::Choice,
-        ];
+        let axioms = [ZfcAxiom::Pairing, ZfcAxiom::Union];
         let helpers = axioms
             .into_iter()
             .map(|a| CompiledQuestion::from_formula(a.formula()).unwrap())

@@ -30,6 +30,9 @@ fn sigmoid(value: f32) -> f32 {
     1. / (1. + (-value.clamp(-20., 20.)).exp())
 }
 impl Model {
+    pub fn memory_bytes() -> usize {
+        PARAMETERS * std::mem::size_of::<f32>()
+    }
     pub fn fresh() -> Self {
         let mut random = crate::sampling::Random::new(0x66696e646572);
         Self {

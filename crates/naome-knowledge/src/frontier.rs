@@ -81,7 +81,14 @@ impl Frontier {
             after: None,
             observed_root: None,
             _memory: crate::resources::MemoryLease::acquire(
-                crate::resources::active_limits().question_cache_bytes,
+                // Resident goals, proposals and returned candidate copies have
+                // separate lifetimes. Reserve their bounded working sets.
+                crate::resources::active_limits()
+                    .question_cache_bytes
+                    .saturating_mul(4)
+                    .saturating_add(std::mem::size_of::<Self>())
+                    .saturating_add(32 * std::mem::size_of::<Features>())
+                    .saturating_add(finder::Model::memory_bytes()),
             )
             .map_err(|e| e.to_string())?,
         };
@@ -162,7 +169,8 @@ impl Frontier {
         let limits = crate::resources::active_limits();
         let bytes = |q: &CompiledQuestion| q.source().len() * 8 + 256;
         let cost = bytes(&question);
-        if cost > limits.question_cache_bytes / 4
+        if limits.question_page == 0
+            || cost > limits.question_cache_bytes
             || !crate::learning::State::eligible(question.source())
             || goals
                 .iter()
@@ -172,7 +180,7 @@ impl Frontier {
         }
         while !goals.is_empty()
             && (goals.len() >= limits.question_page.min(8)
-                || goals.iter().map(bytes).sum::<usize>() + cost > limits.question_cache_bytes / 4)
+                || goals.iter().map(bytes).sum::<usize>() + cost > limits.question_cache_bytes)
         {
             goals.pop_front();
         }
@@ -310,22 +318,7 @@ impl Frontier {
                 );
                 self.conjecture(Formula::implies(formula.clone(), previous), eligible);
             }
-            let cost = formula.view().node_count_and_depth().0 * 64;
-            while !self.predicates.is_empty()
-                && (self.predicates.len() >= 8
-                    || self
-                        .predicates
-                        .iter()
-                        .map(|p| p.view().node_count_and_depth().0 * 64)
-                        .sum::<usize>()
-                        + cost
-                        > crate::resources::active_limits().question_cache_bytes / 8)
-            {
-                self.predicates.pop_front();
-            }
-            if cost <= crate::resources::active_limits().question_cache_bytes / 8 {
-                self.predicates.push_back(formula.clone());
-            }
+            self.retain_predicate(formula.clone());
         }
         self.conjecture(formula.clone(), eligible);
         let free = formula.free_variables();
@@ -370,6 +363,25 @@ impl Frontier {
             }
         }
     }
+    fn retain_predicate(&mut self, formula: Formula) {
+        let cost = formula.view().node_count_and_depth().0 * 64;
+        let budget = crate::resources::active_limits().question_cache_bytes / 8;
+        if cost > budget || self.predicates.contains(&formula) {
+            return;
+        }
+        while self.predicates.len() >= 8
+            || self
+                .predicates
+                .iter()
+                .map(|p| p.view().node_count_and_depth().0 * 64)
+                .sum::<usize>()
+                + cost
+                > budget
+        {
+            self.predicates.pop_front();
+        }
+        self.predicates.push_back(formula);
+    }
     /// Mine bounded, capture-free subproblems from checked structure. Dropping
     /// a connective or opening a binder proposes a conjecture, never a theorem.
     fn explore_parts(
@@ -382,6 +394,9 @@ impl Frontier {
         let _memory = crate::resources::MemoryLease::acquire(
             nodes.saturating_mul(64).saturating_mul(PARTS + 1),
         )?;
+        let original = CompiledQuestion::from_formula(formula.clone())
+            .ok()
+            .filter(|q| q.formula().is_closed());
         let mut pending = vec![formula];
         for _ in 0..PARTS {
             let Some(part) = pending.pop() else {
@@ -395,7 +410,27 @@ impl Frontier {
                 pending.push(right);
                 pending.push(left);
             }
-            self.explore(part, eligible);
+            if self.native {
+                // A proved relation is universally true; wrapping it in new
+                // quantifiers or relation laws creates cheap posthoc variants.
+                // Keep proper relation fragments for goal-directed generation.
+                if part.free_variables().len() == 2 && part.view().node_count_and_depth().0 <= 24 {
+                    let mut closed = part.clone();
+                    for variable in closed.free_variables().into_iter().rev() {
+                        closed = Formula::for_all(variable, closed);
+                    }
+                    if let Ok(question) = CompiledQuestion::from_formula(closed)
+                        && finder::meaningful(&question)
+                        && original
+                            .as_ref()
+                            .is_none_or(|source| finder::key(source) != finder::key(&question))
+                    {
+                        self.retain_predicate(part);
+                    }
+                }
+            } else {
+                self.explore(part, eligible);
+            }
         }
         Ok(())
     }
@@ -494,12 +529,29 @@ impl Frontier {
     pub(crate) fn candidates(&self, cursor: u64) -> Vec<CompiledQuestion> {
         let mut candidates = if self.native {
             let limits = crate::resources::active_limits();
+            let nodes = self
+                .goals
+                .iter()
+                .map(|q| q.formula().view().node_count_and_depth().0)
+                .sum::<usize>()
+                .saturating_add(
+                    self.predicates
+                        .iter()
+                        .map(|p| p.view().node_count_and_depth().0)
+                        .sum::<usize>(),
+                )
+                .saturating_add(32);
+            let Ok(_scratch) =
+                crate::resources::MemoryLease::acquire(nodes.saturating_mul(64).saturating_mul(32))
+            else {
+                return self.goals.iter().cloned().collect();
+            };
             finder::questions(
                 cursor,
                 &self.predicates,
                 &self.goals,
                 limits.question_page,
-                limits.question_cache_bytes / 4,
+                limits.question_cache_bytes / 2,
             )
         } else {
             (0..3)
