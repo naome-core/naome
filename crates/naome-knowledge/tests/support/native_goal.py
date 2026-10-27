@@ -80,9 +80,12 @@ def run(trial):
     assert not solution["refuted"]
     assert solution["cost"]["search_expansions"] <= 128
     assert source_record["reserved_units"] == source_record["checkpoint"] == 1
+    # Publication precedes the journal owner's independent full-DAG replay.
+    # That checked receipt takes about ten seconds for this 1,220-step closure;
+    # retain the original overall 120-second trial bound while observing it.
     own_learning = trial.wait(lambda: next((current["learning"] for current in [snapshot(a)]
         if current and any(example["job"] == produced["job"]
-            for example in current["learning"]["replay"])), None), maximum=10)
+            for example in current["learning"]["replay"])), None), maximum=30)
     learned = next(example for example in own_learning["replay"] if example["job"] == produced["job"])
     assert learned["origin"] == "Local" and learned["proof_id"] == solution["proof_id"]
     assert own_learning["accepted"] == own_learning["local_examples"] == 1
