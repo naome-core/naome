@@ -251,46 +251,59 @@ mod tests {
     }
     #[test]
     fn a_checked_library_does_not_starve_diverse_replay_at_the_existing_state_byte_bound() {
-        use super::super::{Example, Origin, State, curriculum};
+        use super::super::{Example, Origin, State};
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fixture {
+            provenance: serde_json::Value,
+            examples: Vec<Record>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Record {
+            question: String,
+            proof_id: String,
+            refuted: bool,
+            tree: Tree,
+            source: String,
+            helpers: Vec<String>,
+        }
+        // Resource-boundary coverage must not depend on platform-sensitive
+        // floating-point rankings finding the fixture proofs. These original
+        // own-search artifacts are independently admitted again below.
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../tests/fixtures/checked-learning-library.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.provenance["seed"], 2089);
+        assert_eq!(fixture.examples.len(), 7);
+        let mut examples = fixture.examples;
+        let own = super::super::tests::own_solution();
+        examples.push(Record {
+            question: super::super::tests::own_question() + &" ".repeat(4096),
+            proof_id: own.proof_id,
+            refuted: own.refuted,
+            tree: own.tree,
+            source: own.source,
+            helpers: own.helpers,
+        });
         let mut state = State::fresh();
-        state.model.seed = 2089;
-        let mut engine = super::super::Engine::default();
-        let mut io = super::super::tests::MemoryStore::default();
         let mut graph = crate::Graph::default();
-        state.model = engine.snapshot(&state.model, &mut io).unwrap();
-        state.feedback =
-            crate::training::ability::Feedback::fresh(super::super::digest(&state.model));
-        let mut questions = curriculum::composition::BANK
-            .helpers
-            .iter()
-            .map(|q| q.source.clone())
-            .collect::<Vec<_>>();
         // A parser-valid longer owner input must not lose the unchanged quorum
         // simply because its already checked knowledge uses verbose JSON.
-        questions.push(super::super::tests::own_question() + &" ".repeat(4096));
         let mut frozen_library = Vec::new();
-        for (i, source) in questions.iter().enumerate() {
+        for (i, record) in examples.into_iter().enumerate() {
             if i == 7 {
                 frozen_library = state.knowledge.clone();
             }
-            let (solution, diagnostic, _) = engine
-                .with(&state.model, &mut io, |runtime| {
-                    super::super::solve_with_definitions(
-                        source,
-                        runtime,
-                        128,
-                        1 + i as u64,
-                        &state.definitions,
-                        &state.knowledge,
-                    )
-                })
-                .unwrap();
-            let solution =
-                solution.unwrap_or_else(|| panic!("checked library fixture: {diagnostic}"));
-            let q = naome_authoring::CompiledQuestion::compile(source).unwrap();
+            let q = naome_authoring::CompiledQuestion::compile(&record.question).unwrap();
             let (root, batch) = graph
-                .prepare_generated(&solution.source, &solution.helpers, &q)
+                .prepare_generated(&record.source, &record.helpers, &q)
                 .unwrap();
+            assert_eq!(
+                root,
+                crate::object::proof_address(&record.proof_id).unwrap()
+            );
             graph
                 .commit_batch(
                     root,
@@ -298,16 +311,16 @@ mod tests {
                     std::time::Instant::now() + std::time::Duration::from_secs(10),
                 )
                 .unwrap();
-            let selected = super::super::definitions::selected(&solution.tree).unwrap();
+            let selected = super::super::definitions::selected(&record.tree).unwrap();
             assert!(
                 state
                     .accept(Example {
                         origin: Origin::Local,
                         job: 1 + i as u64,
-                        question: source.clone(),
-                        proof_id: solution.proof_id,
-                        refuted: solution.refuted,
-                        tree: solution.tree
+                        question: record.question,
+                        proof_id: record.proof_id,
+                        refuted: record.refuted,
+                        tree: record.tree
                     })
                     .unwrap()
             );
