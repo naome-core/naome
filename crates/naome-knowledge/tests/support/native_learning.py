@@ -212,7 +212,27 @@ def run(trial):
     # immediately after its own pause/recovery check so ordinary discovery and
     # publication can continue supplying the receiver's unchanged quorum.
     for node in (a, b):
-        record = trial.wait(lambda: next((r for r in training(node) if r["state"] == "running" and 0 < r["checkpoint"] < 25), None), maximum=180)
+        def active_candidate():
+            return next((r for r in training(node)
+                         if r["state"] == "running" and 0 < r["checkpoint"] < 25), None)
+
+        if node is b:
+            # A checked local trajectory need not be reconstructible as a peer
+            # trajectory. Supply only the remaining original learning questions
+            # until the receiver actually starts its unchanged eligible batch.
+            # Source and receiver job budgets, quorum and trial deadline remain
+            # authoritative; no proof, model or training label is injected.
+            for case in owner_question_bootstrap()[len(bootstrap):]:
+                if active_candidate():
+                    break
+                a.stop()
+                a.config["formal_goal"] = case["source"]
+                a.write_config()
+                a.start()
+                outcome = trial.wait(lambda: finished_owner_goal(a, case["source"]), maximum=20)
+                bootstrap.append({"question_id": case["id"], "dependency": case["dependency"], **outcome})
+                trial.summary["owner_question_bootstrap"] = bootstrap
+        record = trial.wait(active_candidate, maximum=180)
         pressure(node, True)
         trial.wait(lambda: state(trial, node, "paused"), maximum=8)
         # The current reserved quantum may finish before the next permit. Once
