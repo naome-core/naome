@@ -93,7 +93,7 @@
       "cpu_seconds_outer_stage": 7200,
       "wall_seconds_outer_stage": 10800
     },
-    "pilot": "Seed3607 one context, two controllers times two source stages times two forks: eight real trials. Development only, no final inference. Pilot weights, proofs and experiences never initialize main.",
+    "pilot": "Seed 3607, one context, two controllers times two source stages times two forks: eight real trials. Keep its original 32 own questions in the original order, acquired as 8 then 24 (cumulative 8/32). The earlier 16/16 cold-source attempt produced only three new accepted epochs in its later stage and stopped before any optimizer or final inference. Only the engineering pilot staging changes so the unchanged four-new-source guard can be exercised. Main remains 16 then 16 in all six already qualified contexts. Development only; pilot weights, proofs and experiences never initialize main.",
     "source_capacity": "Before any optimizer, both per-context source snapshots independently pass original replay>=8, three-dependency minimum, original32KiB State and actual training-pool reconstruction. Snapshot the16-query source by cloning and compacting; leave the source producer untouched through32. Reserve the original2.5KiB full upper metadata plus maximum syntax-only development envelope. Stage1 must contain at least four newly accepted source epochs since stage0. Every actual reconstructed parent is validated before training.",
     "controllers": [
       "fresh",
@@ -102,7 +102,15 @@
     "trials_per_controller": 24,
     "parent_selection": "Fresh controller forks always use the context initial lower weights/Adam. Continuation stage1 uses the earliest fully qualified stage0 output whose original gate actually promoted; if neither promotes, retain the first real rejected selected state with its exact incumbent weights/Adam and recorded counters. No unqualified candidate becomes a parent. Stage1 rebinds the later checked source epoch while preserving the actual parent lower checkpoint/Adam, trained/attempted counters, promotions/rejections and model-bound feedback. It must pass both unchanged needs_training and epoch>trained guards; no counter reset or forced promotion. Fresh stage1 additionally receives the actual initial-checkpoint development_before observed in stage0, frozen identically for its two forks. This avoids withholding available incumbent evidence; its lower weights/Adam and initial counters remain the declared fresh control.",
     "continuation_coverage": "Complete mechanism coverage requires genuinely promoted250-update parents in all six main contexts, each used by both stage1forks (12warm trials); pilot requires its one context/two warm forks. Missing warm parents makes this hypothesis coverage incomplete without forcing promotion or increasing trials. A retained500-update lower model or two valid promotions is mechanism evidence only and never replaces final quality criteria.",
-    "stability_isolation": "The existing checked-anchor rehearsal and pairwise search preference stay unchanged. No additional ranking constraint, stability objective, altered gate or replay policy is introduced in this trial."
+    "stability_isolation": "The existing checked-anchor rehearsal and pairwise search preference stay unchanged. No additional ranking constraint, stability objective, altered gate or replay policy is introduced in this trial.",
+    "main_cumulative_queries": [
+      16,
+      32
+    ],
+    "pilot_cumulative_queries": [
+      8,
+      32
+    ]
   },
   "neural_meta_model": {
     "parameters": 759,

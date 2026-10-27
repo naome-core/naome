@@ -33,7 +33,7 @@ fn checkpoint_copy(from: &MemoryStore, to: &mut Store, checkpoint: &Checkpoint) 
         assert_eq!(*blob, artifact::save(to, &bytes).unwrap());
     }
 }
-fn prepare_meta_source(seed: u64, context: usize, dir: &Path) -> Source {
+fn prepare_meta_source(seed: u64, context: usize, cuts: [usize; 2], dir: &Path) -> Source {
     let mut common = common(seed, &dir.join("common"));
     let initial = common.state.clone();
     let mut rounds = Vec::new();
@@ -76,7 +76,7 @@ fn prepare_meta_source(seed: u64, context: usize, dir: &Path) -> Source {
             128,
         );
         common.rows.push(row);
-        if (i + 1) % 16 == 0 {
+        if cuts.contains(&(i + 1)) {
             let stage = rounds.len();
             let mut state = common.state.clone();
             state
@@ -104,7 +104,7 @@ fn prepare_meta_source(seed: u64, context: usize, dir: &Path) -> Source {
             write(
                 &dir.join(format!("stage-{stage}-manifest.json")),
                 &serde_json::json!({"source_sha256":source_hash(&input),"epoch":input.state.epoch,
-                    "queries":(stage+1)*16,"replay":input.state.replay.len(),
+                    "queries":i+1,"replay":input.state.replay.len(),
                     "replay_dependencies":input.state.replay.iter().map(|e|
                         curriculum::owned::case(&e.question).unwrap().dependency).collect::<BTreeSet<_>>()}),
             );
@@ -151,7 +151,7 @@ fn outer_source_layout_preflight() {
     let clock = Clock::start();
     for (context, seed) in [4507, 4603, 4703, 4801, 4903, 5003].into_iter().enumerate() {
         let directory = output.join(format!("context-{context}"));
-        let source = prepare_meta_source(seed, context, &directory);
+        let source = prepare_meta_source(seed, context, [16, 32], &directory);
         for input in &source.rounds {
             assert!(input.state.needs_training());
             input.state.validate().unwrap();
@@ -161,9 +161,16 @@ fn outer_source_layout_preflight() {
                 .unwrap();
         }
     }
+    let pilot = prepare_meta_source(3607, 0, [8, 32], &output.join("pilot-context"));
+    for input in &pilot.rounds {
+        let _ = input
+            .state
+            .training_pool(&evidence_for(&input.state, &input.evidence))
+            .unwrap();
+    }
     write(
         &output.join("completed.json"),
-        &serde_json::json!({"contexts":6,"stages":2,"queries_per_context":32,
+        &serde_json::json!({"contexts":6,"stages":2,"queries_per_context":32,"pilot_cumulative_queries":[8,32],
             "elapsed":clock.elapsed(),"optimizer_updates":0,"final_inferences":0}),
     );
 }
@@ -308,7 +315,8 @@ pub(super) fn train(path: &Path, pilot: bool) -> Controllers {
         .enumerate()
         .map(|(context, seed)| {
             let dir = path.join(format!("context-{context}"));
-            let source = prepare_meta_source(seed, context, &dir);
+            let source =
+                prepare_meta_source(seed, context, if pilot { [8, 32] } else { [16, 32] }, &dir);
             (context, seed, dir, source)
         })
         .collect::<Vec<_>>();
