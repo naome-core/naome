@@ -250,6 +250,7 @@ impl Provider for Native {
                 Output::Native {
                     solution: p.result.clone(),
                     diagnostic: p.diagnostic.clone(),
+                    frontier: p.frontier.clone(),
                 }
             }
             _ => return Err("native provider role differs".into()),

@@ -1,5 +1,6 @@
 //! Bounded classical tableau with checked, replayable proof reconstruction.
 pub mod core;
+pub(crate) mod frontier;
 use super::calculus::{self as c, Names};
 use super::{
     graph::Graph,
@@ -437,6 +438,7 @@ pub struct ResultTree {
     pub tree: Option<Tree>,
     pub expansions: usize,
     pub failure: Option<String>,
+    pub frontier: Option<frontier::Frontier>,
 }
 struct Search<'a> {
     ranker: &'a mut dyn Ranker,
@@ -446,6 +448,7 @@ struct Search<'a> {
     maximum: usize,
     failure: Option<String>,
     exhausted: BTreeSet<String>,
+    frontier: Option<frontier::Frontier>,
 }
 impl Search<'_> {
     fn prove(&mut self, state: &State, depth: usize) -> Result<Option<Tree>, String> {
@@ -453,6 +456,9 @@ impl Search<'_> {
             || self.started.elapsed() > Duration::from_millis(2500)
             || depth > 32
         {
+            if let Some(report) = &mut self.frontier {
+                report.observe(state, depth);
+            }
             self.failure = Some("search_budget".into());
             return Ok(None);
         }
@@ -484,10 +490,16 @@ impl Search<'_> {
         }
         let actions = actions(state);
         if actions.is_empty() {
+            if let Some(report) = &mut self.frontier {
+                report.observe(state, depth);
+            }
             return Ok(None);
         }
         let d = decision(&self.goal, state, &actions, 0)?;
         if let Err(e) = Graph::encode(&d) {
+            if let Some(report) = &mut self.frontier {
+                report.observe(state, depth);
+            }
             self.failure = Some(e);
             return Ok(None);
         }
@@ -530,6 +542,9 @@ impl Search<'_> {
         {
             self.exhausted.insert(key);
         }
+        if let Some(report) = &mut self.frontier {
+            report.observe(state, depth);
+        }
         Ok(None)
     }
 }
@@ -563,6 +578,7 @@ pub fn solve_with_knowledge(
             tree: None,
             expansions: 0,
             failure: Some("search_budget".into()),
+            frontier: None,
         });
     }
     if let Some((index, _)) = AXIOMS
@@ -574,6 +590,7 @@ pub fn solve_with_knowledge(
             tree: Some(Tree::Axiom(index as u8)),
             expansions: 1,
             failure: None,
+            frontier: None,
         });
     }
     super::knowledge::validate(knowledge)?;
@@ -590,6 +607,7 @@ pub fn solve_with_knowledge(
         maximum,
         failure: None,
         exhausted: BTreeSet::new(),
+        frontier: frontier::Frontier::new(target),
     };
     let mut tree = s.prove(&p.state, 0)?;
     if !knowledge.is_empty() {
@@ -600,6 +618,11 @@ pub fn solve_with_knowledge(
         });
     }
     Ok(ResultTree {
+        frontier: if tree.is_none() {
+            s.frontier.filter(|f| !f.empty())
+        } else {
+            None
+        },
         tree,
         expansions: s.expansions,
         failure: s.failure,
@@ -1061,6 +1084,7 @@ mod transposition_tests {
             maximum: 16,
             failure: None,
             exhausted: BTreeSet::new(),
+            frontier: None,
         };
         assert!(search.prove(&state, 32).unwrap().is_none());
         assert!(

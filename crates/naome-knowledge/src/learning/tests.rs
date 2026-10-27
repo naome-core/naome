@@ -456,6 +456,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
     let mut finished = job.base.clone();
     finished.trained = finished.accepted;
     job.progress = Some(Progress {
+        frontier: None,
         cost: None,
         training_cost: model::TrainingCost::default(),
         unit: job.units() - 1,
@@ -513,6 +514,7 @@ fn rejected_candidate_retains_a_trained_incumbent_and_its_exact_adam_continuatio
 }
 fn finished_progress(state: &State) -> Progress {
     Progress {
+        frontier: None,
         plan: None,
         meta_update: None,
         cpu_micros: 0,
@@ -694,6 +696,7 @@ fn evicted_stored_anchor_uses_its_original_owned_evidence_and_existing_source_ca
 }
 pub(crate) fn completed(job: &mut Job, solution: Solution) {
     job.progress = Some(Progress {
+        frontier: None,
         cost: None,
         training_cost: model::TrainingCost::default(),
         unit: 1,
@@ -727,6 +730,7 @@ pub(crate) fn candidate_refs(job: &mut Job, model: Blob, optimizer: Blob) {
         .select(&job.base, &mut MemoryStore::default())
         .unwrap();
     job.progress = Some(Progress {
+        frontier: None,
         cost: None,
         training_cost: model::TrainingCost::default(),
         unit: 1,
@@ -1045,4 +1049,16 @@ fn a_later_worker_unit_cannot_rewrite_an_observed_transfer_outcome() {
     assert!(job.retain_progress(71, forged).is_err());
     assert_eq!(digest(&job), before);
     job.retain_progress(71, p).unwrap();
+}
+
+pub(crate) fn stalled_frontier(question: &CompiledQuestion) -> SearchFrontier {
+    let failed = search::solve(question.proved_target(), &mut Symbolic, 16).unwrap();
+    assert!(failed.tree.is_none());
+    failed.frontier.unwrap()
+}
+pub(crate) fn symbolic_solution(question: &CompiledQuestion) -> Solution {
+    search_question(question.source(), &mut Symbolic, 128)
+        .unwrap()
+        .0
+        .unwrap()
 }

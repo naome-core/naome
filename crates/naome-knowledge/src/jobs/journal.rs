@@ -954,6 +954,17 @@ fn validate_record(
             return Err("native learning epoch differs".into());
         }
         native.validate()?;
+        if let Some(report) = native.progress.as_ref().and_then(|p| p.frontier.as_ref()) {
+            let Input::Solve { question } = &r.input else {
+                return Err("open branch checkpoint role differs".into());
+            };
+            if native.progress.as_ref().is_some_and(|p| p.result.is_some()) {
+                return Err("resolved checkpoint has open branches".into());
+            }
+            report.validate(
+                &naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?,
+            )?;
+        }
         if native
             .progress
             .as_ref()

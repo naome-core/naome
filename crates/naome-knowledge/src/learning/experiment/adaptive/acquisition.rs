@@ -112,6 +112,7 @@ pub(super) fn freeze(seed: u64, common: &Common, rounds: usize, path: &Path) -> 
                     crate::jobs::Output::Native {
                         solution: Some(s.clone()),
                         diagnostic: "certified_candidate".into(),
+                        frontier: None,
                     }
                 });
             let completion = crate::jobs::Completion {

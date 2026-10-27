@@ -10,6 +10,7 @@ use std::{collections::VecDeque, path::Path, sync::Arc};
 
 pub(crate) mod evidence;
 mod finder;
+mod looping;
 use evidence::{Evidence, Outcome};
 pub(crate) const PROVIDER: &str = "naome-structural-finder";
 #[cfg(test)]
@@ -541,6 +542,16 @@ impl Frontier {
             return vec![goal.clone()];
         }
         let limits = crate::resources::active_limits();
+        if let Ok(Some(record)) = self.evidence.get(goal)
+            && record.frontier.is_some()
+        {
+            return record
+                .helpers
+                .iter()
+                .filter_map(|s| CompiledQuestion::compile(s).ok())
+                .chain(std::iter::once(goal.clone()))
+                .collect();
+        }
         let nodes = goal.formula().view().node_count_and_depth().0;
         let mut candidates = if let Ok(_scratch) =
             crate::resources::MemoryLease::acquire(nodes.saturating_mul(64).saturating_mul(32))

@@ -14,6 +14,7 @@ mod pool;
 pub(crate) mod program;
 pub(crate) mod proof;
 mod search;
+pub(crate) use search::frontier::Frontier as SearchFrontier;
 mod state;
 mod transfer;
 pub(crate) use artifact::{ArtifactIo, Blob};
@@ -168,6 +169,7 @@ pub(crate) struct Progress {
     pub meta_wall_micros: u64,
     pub result: Option<Solution>,
     pub diagnostic: String,
+    pub frontier: Option<SearchFrontier>,
 }
 impl Progress {
     fn observe_qualification(
@@ -205,6 +207,7 @@ impl Progress {
 pub(crate) struct Job {
     pub evidence: Vec<Evidence>,
     pub training: bool,
+    pub required: Vec<String>,
     pub base_hash: String,
     pub base: State,
     pub progress: Option<Progress>,
@@ -244,6 +247,21 @@ pub(crate) struct Solution {
     pub tree: search::Tree,
 }
 impl Solution {
+    /// The local acceptance receipt publishes this bounded hint atomically
+    /// with replay; the canonical graph remains the mathematical owner.
+    pub fn theorem(&self, question: &CompiledQuestion) -> Result<Option<knowledge::Entry>, String> {
+        let target = if self.refuted {
+            question.refuted_target()
+        } else {
+            question.proved_target()
+        };
+        let (_, _, verified) = search::core::checked(target, &self.tree)?;
+        if crate::hex(verified.native_id.as_bytes()) != self.proof_id {
+            return Err("accepted theorem identity differs".into());
+        }
+        let packet = evidence::pack(&verified)?;
+        Ok((packet.len() <= knowledge::BYTES).then_some(knowledge::Entry { packet }))
+    }
     pub fn checked(&self) -> Result<naome_authoring::CompiledProof, String> {
         if self.helpers != definitions::helpers(&self.tree)? {
             return Err("definition helper source binding differs".into());
@@ -369,6 +387,17 @@ impl Job {
             return Err("learning parent snapshot differs".into());
         }
         self.base.validate()?;
+        if self.required.len() > knowledge::CAPACITY
+            || self
+                .required
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.required.len()
+        {
+            return Err("required theorem set capacity or duplicate".into());
+        }
+        self.base.require_theorems(&self.required)?;
         let mut expected = if self.training {
             self.base
                 .training_sources()
@@ -496,11 +525,12 @@ impl Job {
             }
             if let Some(solution) = &p.result {
                 let checked = solution.checked()?.into_checked_proof();
-                knowledge::validate_availability(
+                knowledge::validate_offered(
                     checked.conclusion(),
                     &solution.tree,
                     &self.base.knowledge,
                     &self.base.definitions,
+                    &self.required,
                 )?;
             }
             if p.unit < self.units()
@@ -555,6 +585,7 @@ impl Job {
         let cpu_started = meta::cpu_micros()?;
         let mut p = self.progress.clone().unwrap_or(Progress {
             cost: None,
+            frontier: None,
             training_cost: model::TrainingCost::default(),
             unit: 0,
             model: self.base.model.clone(),
@@ -744,21 +775,23 @@ impl Job {
                     p.diagnostic = "reserved_question_excluded".into();
                 } else {
                     let budget = if p.rejections % 3 == 2 { 256 } else { 128 };
-                    let (solution, failure, cost) = engine.with(&p.model, io, |runtime| {
-                        solve_with_definitions(
+                    let generated = engine.with(&p.model, io, |runtime| {
+                        solve_with_report(
                             question,
                             runtime,
                             budget,
                             job,
                             &self.base.definitions,
                             &self.base.knowledge,
+                            &self.required,
                         )
                     })?;
-                    p.cost = Some(cost);
-                    if solution.is_none() {
-                        p.diagnostic = failure;
+                    p.cost = Some(generated.cost);
+                    p.frontier = generated.frontier;
+                    if generated.solution.is_none() {
+                        p.diagnostic = generated.diagnostic;
                     }
-                    p.result = solution;
+                    p.result = generated.solution;
                 }
             }
         }
@@ -772,6 +805,12 @@ impl Job {
         self.progress = Some(p);
         Ok(())
     }
+}
+struct Generation {
+    solution: Option<Solution>,
+    diagnostic: String,
+    cost: GenerationCost,
+    frontier: Option<SearchFrontier>,
 }
 struct Exploring<'a> {
     model: &'a mut model::Runtime,
@@ -789,14 +828,15 @@ impl model::Ranker for Exploring<'_> {
         Ok(scores)
     }
 }
-fn solve_with_definitions(
+fn solve_with_report(
     source: &str,
     model: &mut model::Runtime,
     budget: usize,
     job: u64,
     known: &[definitions::Entry],
     theorems: &[knowledge::Entry],
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    required: &[String],
+) -> Result<Generation, String> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
     let mut ranker = Exploring {
@@ -804,11 +844,20 @@ fn solve_with_definitions(
         seed: job.max(1),
         explore: budget >= 128,
     };
-    let (mut solution, diagnostic, mut cost) =
-        search_question_with_knowledge(source, &mut ranker, budget, theorems, known)?;
+    let Generation {
+        mut solution,
+        diagnostic,
+        mut cost,
+        frontier,
+    } = search_question_report(source, &mut ranker, budget, theorems, known, required)?;
     if let Some(solution) = &mut solution {
         if matches!(solution.tree, search::Tree::Constructed { .. }) {
-            return Ok((Some(solution.clone()), diagnostic, cost));
+            return Ok(Generation {
+                solution: Some(solution.clone()),
+                diagnostic,
+                cost,
+                frontier,
+            });
         }
         let definition_started = std::time::Instant::now();
         let question = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
@@ -870,7 +919,34 @@ fn solve_with_definitions(
         cost.submitted_checker_steps = work.steps.saturating_sub(checking.steps);
         *solution.cost = cost.clone();
     }
-    Ok((solution, diagnostic, cost))
+    Ok(Generation {
+        solution,
+        diagnostic,
+        cost,
+        frontier,
+    })
+}
+fn solve_with_definitions(
+    source: &str,
+    model: &mut model::Runtime,
+    budget: usize,
+    job: u64,
+    known: &[definitions::Entry],
+    theorems: &[knowledge::Entry],
+) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    solve_with_report(source, model, budget, job, known, theorems, &[])
+        .map(|g| (g.solution, g.diagnostic, g.cost))
+}
+#[cfg(test)]
+fn search_question_with_knowledge(
+    source: &str,
+    ranker: &mut dyn model::Ranker,
+    budget: usize,
+    theorems: &[knowledge::Entry],
+    definitions: &[definitions::Entry],
+) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    search_question_report(source, ranker, budget, theorems, definitions, &[])
+        .map(|g| (g.solution, g.diagnostic, g.cost))
 }
 #[cfg(test)]
 fn search_question(
@@ -889,13 +965,14 @@ fn search_question_measured(
 ) -> Result<(Option<Solution>, String, GenerationCost), String> {
     search_question_with_knowledge(source, ranker, budget, &[], &[])
 }
-fn search_question_with_knowledge(
+fn search_question_report(
     source: &str,
     ranker: &mut dyn model::Ranker,
     budget: usize,
     theorems: &[knowledge::Entry],
     definitions: &[definitions::Entry],
-) -> Result<(Option<Solution>, String, GenerationCost), String> {
+    required: &[String],
+) -> Result<Generation, String> {
     let checking = proof::checking_work();
     let started = std::time::Instant::now();
     let q = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
@@ -904,6 +981,7 @@ fn search_question_with_knowledge(
     let mut dependency_steps = 0;
     let mut failure = "calculus_or_strategy_unresolved".to_owned();
     let mut remaining = budget;
+    let mut frontier = None;
     let mut certificate_failures = 0;
     for refuted in [false, true] {
         if remaining == 0 {
@@ -916,7 +994,7 @@ fn search_question_with_knowledge(
         };
         let orientation_started = std::time::Instant::now();
         let retrieval_started = std::time::Instant::now();
-        let selected = knowledge::retrieve(&target, theorems)?;
+        let selected = knowledge::offer(&target, theorems, required)?;
         retrieved += selected.len();
         dependency_steps += selected
             .iter()
@@ -960,6 +1038,7 @@ fn search_question_with_knowledge(
                 }),
                 expansions: 0,
                 failure: None,
+                frontier: None,
             }
         } else {
             search::solve_with_knowledge(
@@ -971,6 +1050,9 @@ fn search_question_with_knowledge(
             )?
         };
         remaining = remaining.saturating_sub(found.expansions);
+        if frontier.is_none() {
+            frontier = found.frontier;
+        }
         if let Some(tree) = found.tree {
             let (tree, cost, verified) = match search::core::checked(&target, &tree) {
                 Ok(checked) => checked,
@@ -1045,8 +1127,8 @@ fn search_question_with_knowledge(
                             as u64,
                         ..GenerationCost::default()
                     };
-                    return Ok((
-                        Some(Solution {
+                    return Ok(Generation {
+                        solution: Some(Solution {
                             helpers,
                             cost: Box::new(measured.clone()),
                             source,
@@ -1054,9 +1136,10 @@ fn search_question_with_knowledge(
                             refuted,
                             tree,
                         }),
-                        "certified_candidate".into(),
-                        measured,
-                    ));
+                        diagnostic: "certified_candidate".into(),
+                        cost: measured,
+                        frontier: None,
+                    });
                 }
                 Ok(_) => failure = "certificate_capacity".into(),
                 Err(error) => failure = format!("certificate_unresolved: {error}"),
@@ -1065,10 +1148,10 @@ fn search_question_with_knowledge(
             failure = reason;
         }
     }
-    Ok((
-        None,
-        failure,
-        GenerationCost {
+    Ok(Generation {
+        solution: None,
+        diagnostic: failure,
+        cost: GenerationCost {
             checker_calls: proof::checking_work().calls.saturating_sub(checking.calls),
             submitted_checker_steps: proof::checking_work().steps.saturating_sub(checking.steps),
             retrieved_lemmas: retrieved,
@@ -1079,7 +1162,8 @@ fn search_question_with_knowledge(
             generation_micros: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
             ..GenerationCost::default()
         },
-    ))
+        frontier,
+    })
 }
 
 #[cfg(test)]

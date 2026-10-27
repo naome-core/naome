@@ -770,6 +770,16 @@ where
         self.evaluate(graph, question, true)
     }
 
+    /// Reuse the admitted source and its original owner binding when a derived
+    /// helper names the same canonical obligation with different parameter names.
+    pub(crate) fn owned_question(&self, question: &CompiledQuestion) -> Option<CompiledQuestion> {
+        self.provenance(question.resolution_id())
+            .filter(|entry| {
+                entry.question.core() == question.core()
+                    && entry.question.canonical_core() == question.canonical_core()
+            })
+            .map(|entry| entry.question)
+    }
     fn exchange_record(&self, question: &CompiledQuestion) -> Option<Identity> {
         self.provenance(question.resolution_id())
             .filter(|entry| entry.question == *question)

@@ -298,7 +298,7 @@ impl Owner {
                         if let Some(previous)=self.learning_receipts.insert(id,root.clone()) && previous!=root {return Err("pending owned learning receipt differs".into());}
                     },
                     Some(Command::Program{id,unit,reply})=>{let _=reply.send(self.disk.program_group(id,unit));},
-                    Some(Command::Submit(input,binding,reply))=>self.submit(input,binding,reply)?,
+                    Some(Command::Submit(input,binding,required,reply))=>self.submit_after(input,binding,required,reply)?,
                     Some(Command::Recover{after,before,reply})=>{
                         let page=self.disk.recovery_page(after,before,&self.recovery_skip)?;
                         let _=reply.send(Ok(page));
@@ -797,6 +797,7 @@ impl Owner {
                 Some(Output::Native {
                     solution,
                     diagnostic,
+                    ..
                 }),
             ) = (&record.input, &record.result)
                 && let Some(native) = &record.native
@@ -907,8 +908,48 @@ impl Owner {
         binding: Binding,
         reply: oneshot::Sender<Completion>,
     ) -> Result<(), String> {
+        self.submit_after(input, binding, Vec::new(), reply)
+    }
+    fn submit_after(
+        &mut self,
+        input: Input,
+        binding: Binding,
+        required: Vec<String>,
+        reply: oneshot::Sender<Completion>,
+    ) -> Result<(), String> {
         if reply.is_closed() {
             return Ok(());
+        }
+        if !required.is_empty() {
+            if !matches!(input, Input::Solve { .. })
+                || self
+                    .journal
+                    .learning
+                    .as_ref()
+                    .is_none_or(|state| state.require_theorems(&required).is_err())
+            {
+                reject(
+                    reply,
+                    binding,
+                    "required checked prerequisites not retained",
+                );
+                return Ok(());
+            }
+            if self.journal.records.values().any(|r| {
+                r.input == input
+                    && !r.acknowledged
+                    && r.native.as_ref().is_none_or(|n| {
+                        n.base.require_theorems(&required).is_err()
+                            || required.iter().any(|id| !n.required.contains(id))
+                    })
+            }) {
+                reject(
+                    reply,
+                    binding,
+                    "in-flight snapshot predates required prerequisites",
+                );
+                return Ok(());
+            }
         }
         let account_key = input.account_key();
         let original_account = if matches!(input, Input::Find { .. }) {
@@ -962,6 +1003,19 @@ impl Owner {
             return Ok(());
         }
         if let Some(record) = self.disk.request(&input, &binding, settings)? {
+            if !required.is_empty()
+                && record.native.as_ref().is_none_or(|n| {
+                    n.base.require_theorems(&required).is_err()
+                        || required.iter().any(|id| !n.required.contains(id))
+                })
+            {
+                reject(
+                    reply,
+                    binding,
+                    "archived snapshot predates required prerequisites",
+                );
+                return Ok(());
+            }
             if record.state.terminal() || record.state == State::InDoubt {
                 let completion = completion(&record);
                 let _ = reply.send(completion);
@@ -988,6 +1042,7 @@ impl Owner {
                 .expect("configured native learning state")
                 .job();
             job.training = matches!(input, Input::Train { .. });
+            job.required = required;
             if job.training {
                 job.evidence = self.disk.replay_evidence(&job.base)?;
             }

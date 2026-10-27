@@ -240,6 +240,13 @@ impl State {
         if !Self::eligible(q.source()) || self.knowledge.contains(&entry) {
             return Ok(false);
         }
+        // Different checked topological closures can carry the same root.
+        // Replayed local/graph receipts must not create a duplicate theorem.
+        for prior in &self.knowledge {
+            if prior.verified()?.native_id == verified.native_id {
+                return Ok(false);
+            }
+        }
         let mut next = self.clone();
         while next.knowledge.len() >= knowledge::CAPACITY
             || next.knowledge.iter().map(|e| e.packet.len()).sum::<usize>() + entry.packet.len()
@@ -261,10 +268,32 @@ impl State {
         *self = next;
         Ok(true)
     }
+    pub fn require_theorems(&self, required: &[String]) -> Result<(), String> {
+        if required.len() > knowledge::CAPACITY
+            || required
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != required.len()
+        {
+            return Err("required theorem capacity".into());
+        }
+        for id in required {
+            crate::object::id_bytes(id)?;
+            if !self.knowledge.iter().any(|e| {
+                e.verified()
+                    .is_ok_and(|p| crate::hex(p.native_id.as_bytes()) == *id)
+            }) {
+                return Err("required checked theorem not retained".into());
+            }
+        }
+        Ok(())
+    }
     pub fn job(&self) -> Job {
         Job {
             evidence: Vec::new(),
             training: false,
+            required: Vec::new(),
             base_hash: digest(self),
             base: self.clone(),
             progress: None,

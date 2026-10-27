@@ -347,6 +347,7 @@ pub(crate) enum Output {
     Native {
         solution: Option<crate::learning::Solution>,
         diagnostic: String,
+        frontier: Option<crate::learning::SearchFrontier>,
     },
     Question(String),
     Proof {
@@ -401,6 +402,7 @@ impl Output {
                 Self::Native {
                     solution,
                     diagnostic,
+                    frontier,
                 },
                 Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. },
             ) if diagnostic.len() <= 4096
@@ -411,6 +413,18 @@ impl Output {
                 })
                 && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() <= bytes =>
             {
+                if let Some(report) = frontier {
+                    let Input::Solve { question } = input else {
+                        return Err("open branches outside solve".into());
+                    };
+                    if solution.is_some() {
+                        return Err("resolved output contains open branches".into());
+                    }
+                    report.validate(
+                        &naome_authoring::CompiledQuestion::compile(question)
+                            .map_err(|e| e.to_string())?,
+                    )?;
+                }
                 Ok(())
             }
             (Self::Question(source), Input::Find { question, .. })
@@ -584,7 +598,7 @@ enum Command {
         unit: u32,
         reply: oneshot::Sender<Result<Vec<naome_proof::program::Command>, String>>,
     },
-    Submit(Input, Binding, oneshot::Sender<Completion>),
+    Submit(Input, Binding, Vec<String>, oneshot::Sender<Completion>),
     Acknowledge(u64),
     Discard(Input, Binding),
     Recover {
@@ -676,11 +690,37 @@ impl Client {
         Ok(receive)
     }
     pub(crate) fn submit(&self, input: Input, binding: Binding) -> Result<Ticket, String> {
+        self.submit_after(input, binding, Vec::new())
+    }
+    pub(crate) fn submit_after(
+        &self,
+        input: Input,
+        binding: Binding,
+        required: Vec<String>,
+    ) -> Result<Ticket, String> {
         input.validate()?;
         binding.validate()?;
+        if required.len() > crate::learning::knowledge::CAPACITY
+            || required
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != required.len()
+            || !required.is_empty() && !matches!(input, Input::Solve { .. })
+        {
+            return Err("required theorem role or capacity".into());
+        }
+        for id in &required {
+            crate::object::id_bytes(id)?;
+        }
         let (sender, receiver) = oneshot::channel();
         self.sender
-            .try_send(Command::Submit(input.clone(), binding.clone(), sender))
+            .try_send(Command::Submit(
+                input.clone(),
+                binding.clone(),
+                required,
+                sender,
+            ))
             .map_err(|_| "research command capacity or stopped service")?;
         Ok(Ticket {
             receiver,

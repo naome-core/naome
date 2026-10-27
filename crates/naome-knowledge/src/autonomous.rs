@@ -611,6 +611,23 @@ impl Autonomous {
                     return accepted;
                 }
             }
+            if let Ok(completion) = &completion
+                && completion.id == 0
+                && completion
+                    .result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|e| e.contains("required") && e.contains("prerequisites"))
+                && let Some(frontier) = &mut self.frontier
+            {
+                if let Err(error) = frontier.exhaust_helpers(&solving.question) {
+                    self.error = Some(error.to_string());
+                    return accepted;
+                }
+                emit(
+                    json!({"event":"lemma_loop_unavailable","resolution_id":crate::hex(&id),"reason":"checked prerequisite not retained by owner"}),
+                );
+            }
             match completion {
                 Ok(completion)
                     if matches!(
@@ -807,6 +824,16 @@ impl Autonomous {
                 emit(
                     json!({"event":"publication_expired","resolution_id":crate::hex(pending.question.resolution_id())}),
                 );
+                if let Some(frontier) = &mut self.frontier
+                    && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
+                {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    } else {
+                        self.publications.push_back(pending);
+                    }
+                    return accepted;
+                }
                 if !self.acknowledge(pending.job) {
                     return accepted;
                 }
@@ -959,6 +986,16 @@ impl Autonomous {
                 emit(
                     json!({"event":"publication_retry_limit","resolution_id":crate::hex(pending.question.resolution_id())}),
                 );
+                if let Some(frontier) = &mut self.frontier
+                    && let Err(error) = frontier.abandon_publication(&pending.question, pending.job)
+                {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    } else {
+                        self.publications.push_back(pending);
+                    }
+                    return accepted;
+                }
                 if !self.acknowledge(pending.job) {
                     return accepted;
                 }
@@ -1000,6 +1037,71 @@ impl Autonomous {
             self.retain(question);
         }
 
+        let loop_goal = if let Some(goal) = &self.formal_goal {
+            Some(goal.clone())
+        } else if let Some(frontier) = &self.frontier {
+            match frontier.loop_focus() {
+                Ok(goal) => goal,
+                Err(error) => {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    }
+                    return accepted;
+                }
+            }
+        } else {
+            None
+        };
+        let mut goal_requirements = Vec::new();
+        if let (Some(goal), Some(frontier)) = (&loop_goal, &self.frontier) {
+            match frontier.loop_work(goal, graph) {
+                Ok(work) => {
+                    let planned = work.planned;
+                    let pending = work
+                        .pending
+                        .into_iter()
+                        .filter_map(|q| {
+                            let q = questions.owned_question(&q).unwrap_or(q);
+                            (questions.generation_decision(graph, &q).passed()
+                                || questions.assess(graph, &q).passed())
+                            .then_some(q)
+                        })
+                        .collect::<Vec<_>>();
+                    self.unanswered.retain(|q| {
+                        if q.resolution_id() == goal.resolution_id() {
+                            return pending.is_empty();
+                        }
+                        !planned
+                            .iter()
+                            .any(|p| p.resolution_id() == q.resolution_id())
+                            || pending
+                                .iter()
+                                .any(|p| p.resolution_id() == q.resolution_id())
+                    });
+                    let waiting = !pending.is_empty();
+                    for helper in pending {
+                        if questions.generation_decision(graph, &helper).passed() {
+                            self.retain(helper);
+                        }
+                    }
+                    if !waiting {
+                        let original = questions
+                            .owned_question(goal)
+                            .unwrap_or_else(|| goal.clone());
+                        if questions.generation_decision(graph, &original).passed() {
+                            self.retain(original);
+                        }
+                    }
+                    goal_requirements = work.required;
+                }
+                Err(error) => {
+                    if error.fatal() {
+                        self.error = Some(error.to_string());
+                    }
+                    return accepted;
+                }
+            }
+        }
         if now >= self.next_proof
             && self.solving.len() < crate::resources::active_limits().solving_jobs
             && self.publications.len() + self.solving.len() + self.evidence_publications.len()
@@ -1026,11 +1128,20 @@ impl Autonomous {
                 let decision = questions.generation_decision(graph, &question);
                 if decision.passed() {
                     let context = questions.formal_context(graph);
-                    match self.client.submit(
+                    let required = if loop_goal
+                        .as_ref()
+                        .is_some_and(|g| g.resolution_id() == question.resolution_id())
+                    {
+                        goal_requirements.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    match self.client.submit_after(
                         jobs::Input::Solve {
                             question: question.source().to_owned(),
                         },
                         context.binding(),
+                        required,
                     ) {
                         Ok(ticket) => {
                             self.solving.insert(
@@ -1094,7 +1205,7 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let mut candidates = if let Some(goal) = &self.formal_goal {
+                    let mut candidates = if let Some(goal) = &loop_goal {
                         match frontier.helpers_needed(goal) {
                             Ok(false) => vec![goal.clone()],
                             Ok(true) => frontier.goal_candidates(cursor, goal),

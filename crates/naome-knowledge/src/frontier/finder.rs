@@ -195,3 +195,79 @@ fn bounded(all: Vec<CompiledQuestion>, maximum: usize, bytes: usize) -> Vec<Comp
     }
     result
 }
+
+/// Closed conditional cut questions extracted from actual stalled branches.
+/// Branch facts are only premises of a proposed theorem and confer no authority.
+pub(crate) fn from_frontier(
+    goal: &CompiledQuestion,
+    report: &crate::learning::SearchFrontier,
+    maximum: usize,
+    bytes: usize,
+) -> Vec<CompiledQuestion> {
+    if !crate::learning::State::eligible(goal.source()) || report.validate(goal).is_err() {
+        return Vec::new();
+    }
+    let Ok(contexts) = report.contexts() else {
+        return Vec::new();
+    };
+    let mut body = goal.formula().clone();
+    while let Some(opened) = open(&body) {
+        body = opened;
+    }
+    if body
+        .view()
+        .negated()
+        .and_then(|f| f.implication_parts())
+        .is_some_and(|(_, b)| b.negated().is_some())
+    {
+        return bounded(helpers(goal, 0), maximum.min(4), bytes);
+    }
+    let mut all = Vec::new();
+    for context in contexts {
+        for negative in &context.facts {
+            let Some(conclusion) = negative.view().negated().map(|f| f.to_owned()) else {
+                continue;
+            };
+            // A useful cut names a proper remaining conclusion, not the entire
+            // original problem under precisely the same assumptions.
+            let mut premises = context.assumptions.clone();
+            for fact in &context.facts {
+                if fact == negative
+                    || fact == &Formula::negate(context.goal.clone())
+                    || fact
+                        .view()
+                        .equality_variables()
+                        .is_some_and(|(a, b)| a == b)
+                {
+                    continue;
+                }
+                if matches!(
+                    fact.view().graph_node(),
+                    naome_foundation::graph::Node::Equal(..)
+                        | naome_foundation::graph::Node::Member(..)
+                ) && !premises.contains(fact)
+                    && premises.len() < 6
+                {
+                    premises.push(fact.clone());
+                }
+            }
+            if premises.is_empty() || premises.contains(&conclusion) {
+                continue;
+            }
+            let mut conditional = conclusion;
+            for premise in premises.into_iter().rev() {
+                conditional = Formula::implies(premise, conditional);
+            }
+            if let Ok(q) = CompiledQuestion::from_formula(close(conditional))
+                && q.resolution_id() != goal.resolution_id()
+                && key(&q) != key(goal)
+                && q.formula().view().node_count_and_depth().0
+                    < goal.formula().view().node_count_and_depth().0
+                && independent_goal(&q, goal)
+            {
+                all.push(q);
+            }
+        }
+    }
+    bounded(all, maximum.min(4), bytes)
+}

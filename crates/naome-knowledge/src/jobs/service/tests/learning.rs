@@ -47,6 +47,7 @@ fn finish(owner: &mut Owner, id: u64, solution: crate::learning::Solution) {
                 result: Ok(Output::Native {
                     solution: Some(solution),
                     diagnostic: "certified_candidate".into(),
+                    frontier: None,
                 }),
             },
         )
@@ -125,6 +126,13 @@ fn accepted(owner: &mut Owner) -> u64 {
         .accept_learning(&mut owner.journal, id, &crate::hex(root.as_bytes()))
         .unwrap();
     assert_eq!(learning(owner)["local_examples"], 1);
+    owner
+        .journal
+        .learning
+        .as_ref()
+        .unwrap()
+        .require_theorems(std::slice::from_ref(&solution.proof_id))
+        .unwrap();
     id
 }
 #[test]
@@ -756,4 +764,102 @@ fn a_projected_program_retains_its_peer_receipt_and_distinct_native_identity_on_
         .unwrap();
     assert_eq!(evidence.len(), 1);
     assert_eq!(evidence[0].proof_id, translated);
+}
+
+#[test]
+fn prerequisite_submission_checks_the_snapshot_without_replacing_the_goal_account() {
+    let (_directory, mut owner) = native();
+    let solution = checked_solution();
+    let mut graph = crate::Graph::default();
+    let root = graph.produce(&solution.source).unwrap().1.id;
+    let entry = crate::learning::knowledge::Entry {
+        packet: graph.learning_certificate(root).unwrap().unwrap(),
+    };
+    let input = Input::Solve {
+        question: crate::learning::tests::own_question(),
+    };
+    let required = vec![solution.proof_id.clone()];
+    let binding = Binding::new([0; 32], [0; 32]);
+    let (reply, mut receive) = oneshot::channel();
+    let next = owner.journal.next_id;
+    owner
+        .submit_after(input.clone(), binding.clone(), required.clone(), reply)
+        .unwrap();
+    assert!(
+        receive
+            .try_recv()
+            .unwrap()
+            .result
+            .unwrap_err()
+            .contains("prerequisites")
+    );
+    assert_eq!(owner.journal.next_id, next);
+    assert!(!owner.journal.accounts.contains_key(&input.account_key()));
+    owner
+        .journal
+        .learning
+        .as_mut()
+        .unwrap()
+        .remember_theorem(entry)
+        .unwrap();
+    let (reply, _receive) = oneshot::channel();
+    owner
+        .submit_after(input.clone(), binding, required.clone(), reply)
+        .unwrap();
+    let record = owner.journal.records.get(&next).unwrap();
+    let native = record.native.as_ref().unwrap();
+    assert_eq!(native.required, required);
+    native.base.require_theorems(&required).unwrap();
+    native.validate().unwrap();
+    assert_eq!(record.input.account_key(), input.account_key());
+}
+
+#[test]
+fn a_required_lemma_cannot_join_a_running_snapshot_that_does_not_offer_it() {
+    let (_directory, mut owner) = native();
+    let input = Input::Solve {
+        question: crate::learning::tests::own_question(),
+    };
+    let (id, _receive) = submit_native(&mut owner, input.clone());
+    let record_before = serde_json::to_vec(owner.journal.records.get(&id).unwrap()).unwrap();
+    let accounts_before = serde_json::to_vec(&owner.journal.accounts).unwrap();
+    let solution = checked_solution();
+    let mut graph = crate::Graph::default();
+    let root = graph.produce(&solution.source).unwrap().1.id;
+    owner
+        .journal
+        .learning
+        .as_mut()
+        .unwrap()
+        .remember_theorem(crate::learning::knowledge::Entry {
+            packet: graph.learning_certificate(root).unwrap().unwrap(),
+        })
+        .unwrap();
+    let next = owner.journal.next_id;
+    let (reply, mut receive) = oneshot::channel();
+    owner
+        .submit_after(
+            input,
+            Binding::new([0; 32], [0; 32]),
+            vec![solution.proof_id],
+            reply,
+        )
+        .unwrap();
+    assert!(
+        receive
+            .try_recv()
+            .unwrap()
+            .result
+            .unwrap_err()
+            .contains("snapshot predates")
+    );
+    assert_eq!(owner.journal.next_id, next);
+    assert_eq!(
+        serde_json::to_vec(owner.journal.records.get(&id).unwrap()).unwrap(),
+        record_before
+    );
+    assert_eq!(
+        serde_json::to_vec(&owner.journal.accounts).unwrap(),
+        accounts_before
+    );
 }

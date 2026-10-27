@@ -59,6 +59,10 @@ pub(super) struct Record {
     first_unresolved_at: u64,
     verified_at: u64,
     pub supports: u64,
+    pub frontier: Option<crate::learning::SearchFrontier>,
+    pub helpers: Vec<String>,
+    pub loop_disabled: bool,
+    pub publication_abandoned: bool,
 }
 impl Record {
     /// A returned candidate remains unverified until its exact checked solution
@@ -78,6 +82,24 @@ impl Record {
         let question = CompiledQuestion::compile(&self.question).map_err(|e| e.to_string())?;
         if key != record_key(&self.solver, &question) || self.last_job == 0 {
             return Err("research evidence identity differs".into());
+        }
+        if self.helpers.len() > 4
+            || self.helpers.iter().map(String::len).sum::<usize>()
+                > 4 * naome_authoring::QUESTION_SOURCE_MAX_BYTES
+        {
+            return Err("research helper plan capacity".into());
+        }
+        if let Some(frontier) = &self.frontier {
+            frontier.validate(&question)?;
+        }
+        for source in &self.helpers {
+            let helper = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
+            if helper.resolution_id() == question.resolution_id()
+                || !crate::learning::State::eligible(source)
+                || !crate::learning::State::eligible(question.source())
+            {
+                return Err("research helper plan source differs".into());
+            }
         }
         crate::object::id_bytes(&self.knowledge)?;
         crate::object::id_bytes(&self.solver)?;
@@ -333,10 +355,15 @@ impl Evidence {
             first_unresolved_at: 0,
             verified_at: 0,
             supports: 0,
+            frontier: None,
+            helpers: Vec::new(),
+            loop_disabled: false,
+            publication_abandoned: false,
         });
         if completion.id <= record.last_job {
             return Ok(());
         }
+        let knowledge_changed = record.knowledge != crate::hex(&knowledge);
         record.knowledge = crate::hex(&knowledge);
         record.last_draw = self.header.draws;
         record.last_job = completion.id;
@@ -354,6 +381,7 @@ impl Evidence {
             .ok_or("research time overflow")?;
         record.last_units = completion.reserved_units;
         record.prepared = None;
+        record.publication_abandoned = false;
         if record.verified.is_none() {
             record.verified_units = record.last_units;
             record.verified_ms = completion.spent_ms;
@@ -361,10 +389,61 @@ impl Evidence {
         let observation = (completion.state == jobs::State::Complete
             && outcome == Outcome::NoCandidate)
             .then_some((false, completion.spent_ms));
+        if observation.is_some()
+            && (record.frontier.is_none() || knowledge_changed)
+            && let Ok(jobs::Output::Native {
+                frontier: Some(frontier),
+                ..
+            }) = &completion.result
+            && crate::learning::State::eligible(question.source())
+        {
+            frontier.validate(question)?;
+            for helper in finder::from_frontier(
+                question,
+                frontier,
+                4,
+                crate::resources::active_limits().question_cache_bytes / 2,
+            ) {
+                if record.helpers.len() >= 4 {
+                    break;
+                }
+                if !record.helpers.iter().any(|source| {
+                    CompiledQuestion::compile(source)
+                        .is_ok_and(|q| q.resolution_id() == helper.resolution_id())
+                }) {
+                    record.helpers.push(helper.source().to_owned());
+                }
+            }
+            record.frontier = Some(frontier.clone());
+        }
         if observation.is_some() && record.first_unresolved_job == 0 {
             record.first_unresolved_job = completion.id;
         }
         self.put_observation(question, &record, observation)
+    }
+    pub(super) fn abandon_publication(
+        &mut self,
+        question: &CompiledQuestion,
+        job: u64,
+    ) -> Result<(), crate::Error> {
+        if let Some(mut record) = self.get(question)?
+            && record.last_job == job
+            && record.verified.is_none()
+        {
+            record.publication_abandoned = true;
+            self.put(question, &record)?;
+        }
+        Ok(())
+    }
+    pub(super) fn exhaust_helpers(
+        &mut self,
+        question: &CompiledQuestion,
+    ) -> Result<(), crate::Error> {
+        if let Some(mut record) = self.get(question)? {
+            record.loop_disabled = true;
+            self.put(question, &record)?;
+        }
+        Ok(())
     }
     pub(super) fn prepared(
         &mut self,

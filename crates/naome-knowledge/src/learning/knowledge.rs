@@ -160,6 +160,33 @@ pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, Strin
     }
     Ok(output)
 }
+/// Explicit prerequisites remain checked entries from the exact owner snapshot.
+pub fn offer(
+    target: &Formula,
+    entries: &[Entry],
+    required: &[String],
+) -> Result<Vec<Entry>, String> {
+    if required.len() > CAPACITY {
+        return Err("required theorem capacity".into());
+    }
+    let mut result = retrieve(target, entries)?;
+    for id in required {
+        crate::object::id_bytes(id)?;
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .verified()
+                    .is_ok_and(|p| crate::hex(p.native_id.as_bytes()) == *id)
+            })
+            .ok_or("required checked theorem not retained")?;
+        if !result.contains(entry) {
+            result.push(entry.clone());
+        }
+    }
+    validate(&result)?;
+    Ok(result)
+}
 pub fn validate(entries: &[Entry]) -> Result<(), String> {
     if entries.len() > CAPACITY || entries.iter().map(|e| e.packet.len()).sum::<usize>() > BYTES {
         return Err("theorem snapshot capacity".into());
@@ -192,24 +219,27 @@ pub fn helpers(verified: &proof::Verified) -> Result<Vec<String>, String> {
     Ok(output)
 }
 
-pub fn validate_availability(
+pub fn validate_offered(
     target: &Formula,
     tree: &Tree,
     known: &[Entry],
     definitions: &[super::definitions::Entry],
+    required: &[String],
 ) -> Result<(), String> {
     match tree {
         Tree::Knowledge { entries, proof, .. } => {
-            if *entries != retrieve(target, known)? {
+            if *entries != offer(target, known, required)? {
                 return Err("theorem availability differs from owner snapshot".into());
             }
-            validate_availability(target, proof, known, definitions)?;
+            validate_offered(target, proof, known, definitions, required)?;
         }
         Tree::Constructed {
             selection: Some(selection),
             ..
         } => {
-            if selection.known != retrieve(target, known)? || selection.definitions != definitions {
+            if selection.known != offer(target, known, required)?
+                || selection.definitions != definitions
+            {
                 return Err("construction availability differs from owner snapshot".into());
             }
         }
@@ -228,11 +258,21 @@ pub fn validate_availability(
             {
                 return Err("definition availability differs from owner snapshot".into());
             }
-            validate_availability(target, proof, known, definitions)?;
+            validate_offered(target, proof, known, definitions, required)?;
         }
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub fn validate_availability(
+    target: &Formula,
+    tree: &Tree,
+    known: &[Entry],
+    definitions: &[super::definitions::Entry],
+) -> Result<(), String> {
+    validate_offered(target, tree, known, definitions, &[])
 }
 
 #[cfg(test)]
@@ -613,5 +653,47 @@ mod tests {
             assert_eq!(page.len(), 1);
             assert_eq!(page[0].core(), question.core());
         }
+    }
+    #[test]
+    fn local_and_graph_receipts_with_different_valid_closure_orders_are_idempotent() {
+        let (goal, helpers) = super::super::tests::helper_goal();
+        let mut entries = Vec::new();
+        for q in &helpers {
+            let found = search::solve(q.proved_target(), &mut Ordered, 128).unwrap();
+            let (_, _, checked) =
+                search::core::checked(q.proved_target(), &found.tree.unwrap()).unwrap();
+            entries.push(Entry {
+                packet: evidence::pack(&checked).unwrap(),
+            });
+        }
+        let found = search::solve_with_knowledge(
+            goal.proved_target(),
+            &mut Ordered,
+            128,
+            std::time::Instant::now(),
+            &entries,
+        )
+        .unwrap();
+        let (_, _, mut checked) =
+            search::core::checked(goal.proved_target(), &found.tree.unwrap()).unwrap();
+        assert_eq!(checked.lemmas.len(), 2);
+        let first = Entry {
+            packet: evidence::pack(&checked).unwrap(),
+        };
+        checked.lemmas.reverse();
+        let second = Entry {
+            packet: evidence::pack(&checked).unwrap(),
+        };
+        assert_ne!(first.packet, second.packet);
+        assert_eq!(
+            first.verified().unwrap().native_id,
+            second.verified().unwrap().native_id
+        );
+        let mut state = super::super::State::fresh();
+        assert!(state.remember_theorem(first).unwrap());
+        let before = super::super::digest(&state);
+        assert!(!state.remember_theorem(second).unwrap());
+        assert_eq!(super::super::digest(&state), before);
+        state.validate().unwrap();
     }
 }

@@ -46,7 +46,7 @@ impl Manual {
                 Command::Program { reply, .. } => {
                     let _ = reply.send(Err("manual provider has no retained program".into()));
                 }
-                Command::Submit(input, binding, reply) => {
+                Command::Submit(input, binding, _required, reply) => {
                     let id = self.next;
                     self.next += 1;
                     requests.push((id, input.clone()));

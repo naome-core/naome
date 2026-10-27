@@ -242,6 +242,7 @@ impl Disk {
         if let Some(Output::Native {
             solution,
             diagnostic,
+            ..
         }) = &record.result
         {
             status = PeerStatus::Unsupported {
@@ -666,6 +667,11 @@ impl Disk {
             .get::<u64>("replay_seen", &solution.proof_id, 64)?
             .is_none();
         let sampled = unseen && learning.consider(example, unique)?;
+        let question =
+            naome_authoring::CompiledQuestion::compile(question).map_err(|e| e.to_string())?;
+        if let Some(theorem) = solution.theorem(&question)? {
+            learning.remember_theorem(theorem)?;
+        }
         learning.compact()?;
         record.acknowledged = true;
         let request = super::request_key(&record.input, &record.binding, record.settings);

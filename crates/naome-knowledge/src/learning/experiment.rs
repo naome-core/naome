@@ -4,6 +4,7 @@ use super::tests::MemoryStore;
 use super::*;
 mod adaptive;
 mod knowledge;
+mod lemma_loop;
 mod lookup;
 use sha2::{Digest, Sha256};
 use std::{
