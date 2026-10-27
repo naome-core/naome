@@ -560,10 +560,20 @@ async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result
     if bytes.len() > limit {
         return Err("local control response limit".into());
     }
-    tokio::time::timeout(
-        crate::resources::limits().control_timeout,
-        stream.write_all(&bytes),
-    )
+    tokio::time::timeout(crate::resources::limits().control_timeout, async {
+        // Unix sockets may round a requested small send buffer up beyond
+        // the entire control frame (Linux does). Separate small writes
+        // consume buffer space per packet and keep the unread-client
+        // developer fixture exercising backpressure on both platforms.
+        #[cfg(feature = "developer-tools")]
+        if std::env::var("NAOME_DEV_CONTROL_SENDBUF_BYTES").as_deref() == Ok("1024") {
+            for chunk in bytes.chunks(512) {
+                stream.write_all(chunk).await?;
+            }
+            return Ok(());
+        }
+        stream.write_all(&bytes).await
+    })
     .await
     .map_err(|_| "local control write timeout")?
     .map_err(|error| error.to_string())
