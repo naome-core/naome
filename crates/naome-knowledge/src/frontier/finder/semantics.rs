@@ -100,6 +100,77 @@ pub(in crate::frontier) fn key(question: &CompiledQuestion) -> [u8; 32] {
 }
 pub(in crate::frontier) fn meaningful(question: &CompiledQuestion) -> bool {
     shape(question.formula().view(), None).truth.is_none()
+        && boolean_constant(question.formula().view()).is_none()
+}
+/// A bounded truth table screens propositional padding. Quantified subformulas
+/// are opaque atoms; only the outer universal closure is opened for this test.
+/// Exceeding either bound leaves the question eligible for ordinary research.
+fn boolean_constant(mut formula: FormulaView<'_>) -> Option<bool> {
+    while let Node::ForAll(body) = formula.graph_node() {
+        formula = body;
+    }
+    enum Term {
+        Constant(bool),
+        Atom(usize),
+        Not(usize),
+        Implies(usize, usize),
+    }
+    fn build(
+        f: FormulaView<'_>,
+        terms: &mut Vec<Term>,
+        atoms: &mut Vec<[u8; 34]>,
+    ) -> Option<usize> {
+        if terms.len() >= 128 {
+            return None;
+        }
+        let term = match f.graph_node() {
+            Node::Not(a) => Term::Not(build(a, terms, atoms)?),
+            Node::Implies(a, b) => Term::Implies(build(a, terms, atoms)?, build(b, terms, atoms)?),
+            _ => {
+                let reduced = shape(f, None);
+                if let Some(value) = reduced.truth {
+                    Term::Constant(value)
+                } else {
+                    let key = reduced.bytes();
+                    let index = match atoms.iter().position(|a| a == &key) {
+                        Some(index) => index,
+                        None if atoms.len() < 8 => {
+                            atoms.push(key);
+                            atoms.len() - 1
+                        }
+                        None => return None,
+                    };
+                    Term::Atom(index)
+                }
+            }
+        };
+        if terms.len() >= 128 {
+            return None;
+        }
+        terms.push(term);
+        Some(terms.len() - 1)
+    }
+    let mut terms = Vec::new();
+    let mut atoms = Vec::new();
+    let root = build(formula, &mut terms, &mut atoms)?;
+    let mut values = vec![false; terms.len()];
+    let mut constant = None;
+    for assignment in 0usize..(1 << atoms.len()) {
+        for (index, term) in terms.iter().enumerate() {
+            values[index] = match *term {
+                Term::Constant(value) => value,
+                Term::Atom(bit) => assignment & (1 << bit) != 0,
+                Term::Not(a) => !values[a],
+                Term::Implies(a, b) => !values[a] || values[b],
+            };
+        }
+        match constant {
+            Some(value) if value != values[root] => return None,
+            None => constant = Some(values[root]),
+            _ => {}
+        }
+    }
+    constant
 }
 /// A pure Boolean wrapper around the cited lemma is not a new supported goal.
 pub(in crate::frontier) fn independent_goal(

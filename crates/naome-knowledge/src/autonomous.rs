@@ -1094,7 +1094,18 @@ impl Autonomous {
                             return accepted;
                         }
                     }
-                    let mut candidates = frontier.candidates(cursor);
+                    let mut candidates = if let Some(goal) = &self.formal_goal {
+                        match frontier.helpers_needed(goal) {
+                            Ok(false) => vec![goal.clone()],
+                            Ok(true) => frontier.candidates(cursor),
+                            Err(error) => {
+                                self.error = Some(error.to_string());
+                                return accepted;
+                            }
+                        }
+                    } else {
+                        frontier.candidates(cursor)
+                    };
                     // The explicit owner goal remains admissible even when a
                     // bounded research-context cache cannot retain its copy.
                     if let Some(goal) = &self.formal_goal

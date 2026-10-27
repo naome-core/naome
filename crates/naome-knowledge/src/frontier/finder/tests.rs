@@ -10,6 +10,7 @@ fn research_screen_rejects_boolean_padding_without_rejecting_relation_properties
         "goal=all(x,imp(mem(x,x),mem(x,x)))",
         "goal=all(x,imp(and(mem(x,x),not(mem(x,x))),eq(x,x)))",
         "goal=all(x,iff(mem(x,x),mem(x,x)))",
+        "goal=all(x,all(y,imp(and(eq(x,y),eq(y,x)),eq(x,y))))",
     ] {
         assert!(!meaningful(&q(source)), "{source}");
     }

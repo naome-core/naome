@@ -520,25 +520,12 @@ mod tests {
     }
     #[test]
     fn finder_helpers_enable_a_composite_goal_with_the_same_total_search_allowance() {
-        use naome_authoring::CompiledQuestion;
-        use naome_foundation::ZfcAxiom;
-        let axioms = [ZfcAxiom::Pairing, ZfcAxiom::Union];
-        let helpers = axioms
-            .into_iter()
-            .map(|a| CompiledQuestion::from_formula(a.formula()).unwrap())
-            .filter(|q| super::super::State::eligible(q.source()))
-            .take(2)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            helpers.len(),
-            2,
-            "two current theory goals must be eligible"
+        let (goal, helpers) = super::super::tests::helper_goal();
+        assert!(
+            helpers
+                .iter()
+                .all(|q| super::super::State::eligible(q.source()))
         );
-        let goal = CompiledQuestion::from_formula(Formula::conjunction(
-            helpers[0].formula().clone(),
-            helpers[1].formula().clone(),
-        ))
-        .unwrap();
         assert!(super::super::State::eligible(goal.source()));
         let directory = crate::checkpoint::tests::Directory::new();
         let graph = crate::Graph::default();
@@ -548,6 +535,17 @@ mod tests {
         };
         let mut finder =
             crate::frontier::Frontier::open(&directory.0, &graph, 41, settings).unwrap();
+        let mut admission =
+            crate::question::LocalQuestions::new(Some(crate::mocks::select_question as fn(_) -> _));
+        for question in helpers.iter().chain(std::iter::once(&goal)) {
+            let decision = admission.assess(&graph, question);
+            assert!(
+                decision.passed(),
+                "actual admission must pass: {} {:?}",
+                decision.rule,
+                decision.reason
+            );
+        }
         finder.focus(goal.clone());
         let emitted = (0..16)
             .flat_map(|cursor| finder.candidates(cursor))
@@ -555,7 +553,7 @@ mod tests {
         let before = search::solve(goal.proved_target(), &mut Ordered, 128).unwrap();
         assert!(
             before.tree.is_none(),
-            "the composite target must need unavailable set-theory facts"
+            "the composite target must benefit from its actual admitted helpers"
         );
         let mut spent = 0;
         let mut entries = Vec::new();
@@ -583,6 +581,10 @@ mod tests {
         )
         .unwrap();
         assert!(spent + after.expansions <= 128);
+        println!(
+            "finder_helper_allowance: direct={}, helpers={}, assisted={}",
+            before.expansions, spent, after.expansions
+        );
         let (_, _, checked) =
             search::core::checked(goal.proved_target(), &after.tree.unwrap()).unwrap();
         assert_eq!(checked.target, *goal.proved_target());

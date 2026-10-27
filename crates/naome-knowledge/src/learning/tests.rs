@@ -17,6 +17,20 @@ pub(crate) fn own_question() -> String {
         .source
         .clone()
 }
+/// Two admissible helper goals beyond the elementary prefilter.
+pub(crate) fn helper_goal() -> (CompiledQuestion, [CompiledQuestion; 2]) {
+    let helpers = [
+        "goal=all(a,all(b,imp(eq(a,b),eq(b,a))))",
+        "goal=all(a,all(b,imp(all(z,imp(eq(a,z),eq(b,z))),all(z,imp(eq(b,z),eq(a,z))))))",
+    ]
+    .map(|s| CompiledQuestion::compile(s).unwrap());
+    let goal = CompiledQuestion::from_formula(Formula::conjunction(
+        helpers[0].formula().clone(),
+        helpers[1].formula().clone(),
+    ))
+    .unwrap();
+    (goal, helpers)
+}
 pub(crate) fn own_example() -> Example {
     let question = own_question();
     let (solution, diagnostic) = search_question(&question, &mut Symbolic, 128).unwrap();

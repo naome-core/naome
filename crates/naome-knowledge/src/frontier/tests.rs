@@ -26,6 +26,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
     let question = CompiledQuestion::compile(&crate::learning::tests::own_question()).unwrap();
     let mut frontier = Frontier::open(&directory.0, &graph, 41, settings).unwrap();
     let initial = frontier.evidence.model().clone();
+    assert!(!frontier.helpers_needed(&question).unwrap());
     let unresolved = completion(1, jobs::Output::NoCandidate, jobs::State::Complete);
     crate::checkpoint::fail_next_commit();
     assert!(
@@ -34,6 +35,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
             .is_err()
     );
     assert_eq!(frontier.evidence.model(), &initial);
+    assert!(!frontier.helpers_needed(&question).unwrap());
     frontier
         .attempted(&question, &graph, &unresolved, Outcome::NoCandidate)
         .unwrap();
@@ -42,6 +44,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
         .unwrap();
     assert_eq!(frontier.evidence.model().updates, 1);
     assert_eq!(frontier.evidence.model().unresolved, 1);
+    assert!(frontier.helpers_needed(&question).unwrap());
     for (job, state, outcome) in [
         (2, jobs::State::Expired, Outcome::Expired),
         (3, jobs::State::Failed, Outcome::Failed),
@@ -83,6 +86,7 @@ fn finder_learning_is_atomic_idempotent_and_requires_a_checked_resolution_for_su
         ),
         (2, 1)
     );
+    assert!(!frontier.helpers_needed(&question).unwrap());
     let model = frontier.evidence.model().clone();
     let generated = finder::questions(17, &frontier.predicates, &frontier.goals, 12, 64 * 1024);
     let identities = |questions: Vec<CompiledQuestion>| {
@@ -927,15 +931,7 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
     profile.tuning.question_cache_bytes = Some(4096);
     profile.tuning.question_page = Some(1);
     crate::resources::configure(profile).unwrap();
-    let helpers = [
-        naome_foundation::ZfcAxiom::Pairing.formula(),
-        naome_foundation::ZfcAxiom::Union.formula(),
-    ];
-    let goal = CompiledQuestion::from_formula(Formula::conjunction(
-        helpers[0].clone(),
-        helpers[1].clone(),
-    ))
-    .unwrap();
+    let (goal, helpers) = crate::learning::tests::helper_goal();
     assert!(crate::learning::State::eligible(goal.source()));
     let cost = goal.source().len() * 8 + 256;
     assert!(
@@ -957,7 +953,7 @@ fn small_native_cache_keeps_the_owner_goal_and_rotates_its_actual_helpers() {
     assert!(candidates.iter().any(|q| q.core() == goal.core()));
     for helper in &helpers {
         assert!(
-            candidates.iter().any(|q| q.core() == helper),
+            candidates.iter().any(|q| q.core() == helper.core()),
             "a prerequisite must fit a rotating one-item page"
         );
     }

@@ -86,6 +86,7 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
                 if let Ok(question) = CompiledQuestion::from_formula(close(child))
                     && meaningful(&question)
                     && key(&question) != key(goal)
+                    && question.resolution_id() != goal.resolution_id()
                 {
                     found.push(question);
                 }
@@ -93,6 +94,15 @@ fn helpers(goal: &CompiledQuestion, cursor: u64) -> Vec<CompiledQuestion> {
             pending.push(a);
             pending.push(b);
         } else if let Some(body) = part.view().negated() {
+            // Conjunction and existence are encoded through negation. Retain
+            // the positive proper subgoal as well as its surrounding syntax.
+            if let Ok(question) = CompiledQuestion::from_formula(close(body.to_owned()))
+                && meaningful(&question)
+                && question.resolution_id() != goal.resolution_id()
+                && key(&question) != key(goal)
+            {
+                found.push(question);
+            }
             pending.push(body.to_owned());
         }
     }
@@ -134,16 +144,6 @@ pub(super) fn questions(
         {
             all.push(question);
         }
-    }
-    // Reserve a rotating opportunity even when the candidate page is small.
-    // These are question-only access to the canonical theory, never proofs.
-    if let Some(question) = crate::learning::basis_question(cursor) {
-        let index = if cursor.is_multiple_of(4) {
-            0
-        } else {
-            all.len()
-        };
-        all.insert(index, question);
     }
     let mut seen = BTreeSet::new();
     let mut retained = 0;

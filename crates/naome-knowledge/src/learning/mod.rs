@@ -14,12 +14,6 @@ mod pool;
 pub(crate) mod program;
 pub(crate) mod proof;
 mod search;
-/// Question-only access to the solver's canonical theory basis. No proof,
-/// curriculum label or model checkpoint is supplied to the finder.
-pub(crate) fn basis_question(cursor: u64) -> Option<CompiledQuestion> {
-    let axioms = search::AXIOMS;
-    CompiledQuestion::from_formula(axioms[cursor as usize % axioms.len()].formula()).ok()
-}
 mod state;
 mod transfer;
 pub(crate) use artifact::{ArtifactIo, Blob};

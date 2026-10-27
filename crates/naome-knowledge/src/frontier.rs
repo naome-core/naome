@@ -189,6 +189,12 @@ impl Frontier {
     pub(crate) fn focus(&mut self, question: CompiledQuestion) {
         Self::retain_goal(&mut self.goals, question);
     }
+    pub(crate) fn helpers_needed(&self, question: &CompiledQuestion) -> Result<bool, crate::Error> {
+        Ok(self
+            .evidence
+            .get(question)?
+            .is_some_and(|record| record.first_unresolved_job > 0 && record.verified.is_none()))
+    }
     pub(crate) fn retain_goals(&mut self, mut open: impl FnMut(&CompiledQuestion) -> bool) {
         self.goals.retain(|q| open(q));
     }
