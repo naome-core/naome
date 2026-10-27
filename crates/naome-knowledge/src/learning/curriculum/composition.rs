@@ -58,8 +58,8 @@ fn build() -> Bank {
             .unwrap()
             .proved_target()
             .clone();
-        for tail in 1..=4 {
-            for dead in 1..=4 {
+        for tail in 3..=7 {
+            for dead in 4..=7 {
                 for layout in 0..4 {
                     let mut variants = Vec::new();
                     for variant in 0..2 {

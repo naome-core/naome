@@ -59,6 +59,7 @@ pub fn reserved(id: &str) -> bool {
         || CORPUS.cases.iter().any(|q| q.id == id && q.development)
         || frontier::BANK.reserved.contains(id)
         || composition::BANK.reserved.contains(id)
+        || owned::retired(id)
 }
 /// Extend the original eight sentinels across every development dependency.
 /// Selection uses only sealed identities, never solver outcomes or labels.

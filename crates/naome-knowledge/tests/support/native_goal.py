@@ -7,6 +7,7 @@ import sqlite3
 
 from autonomous_lifecycle import Node, Trial, retain_evidence, write_receipt
 from proof_network import stored_objects
+from native_learning import snapshot
 from types import SimpleNamespace
 
 
@@ -79,6 +80,18 @@ def run(trial):
     assert not solution["refuted"]
     assert solution["cost"]["search_expansions"] <= 128
     assert source_record["reserved_units"] == source_record["checkpoint"] == 1
+    own_learning = trial.wait(lambda: next((current["learning"] for current in [snapshot(a)]
+        if current and any(example["job"] == produced["job"]
+            for example in current["learning"]["replay"])), None), maximum=10)
+    learned = next(example for example in own_learning["replay"] if example["job"] == produced["job"])
+    assert learned["origin"] == "Local" and learned["proof_id"] == solution["proof_id"]
+    assert own_learning["accepted"] == own_learning["local_examples"] == 1
+    assert own_learning["model"]["updates"] == 0, "one construction must not bypass diverse-batch readiness"
+    trial.summary["scenarios"]["own_construction_learning"] = {
+        "accepted": own_learning["accepted"], "local_examples": own_learning["local_examples"],
+        "job": learned["job"], "proof_id": learned["proof_id"], "trace": learned["tree"],
+        "retained_updates": own_learning["model"]["updates"],
+    }
     public = trial.output / "generated"
     public.mkdir()
     (public / "proof.nao").write_text(solution["source"])

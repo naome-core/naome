@@ -96,8 +96,44 @@ pub fn proof_ids(entries: &[Entry]) -> Result<BTreeSet<naome_proof::ProofId>, St
 pub fn retrieve(target: &Formula, entries: &[Entry]) -> Result<Vec<Entry>, String> {
     let mut ranked = Vec::new();
     let mut bytes = 0;
+    let requested = fragments(target);
     for entry in entries {
         let verified = entry.verified()?;
+        // Shared atoms alone do not establish a useful proof prerequisite.
+        // Require the actual closed statement, or a complete non-atomic
+        // universal body, among the question's structural subgoals.
+        let mut statement = verified.target.clone();
+        let mut relevant =
+            requested.contains(&statement.encode_canonical().map_err(|e| e.to_string())?);
+        for index in 0..naome_authoring::QUESTION_TARGET_MAX_DEPTH {
+            if relevant {
+                break;
+            }
+            let Some(body) =
+                statement.open_outer_universal(naome_foundation::FreeVariable::new(index as u32))
+            else {
+                break;
+            };
+            statement = body;
+            if matches!(
+                statement.view().graph_node(),
+                Node::Member(..) | Node::Equal(..)
+            ) {
+                break;
+            }
+            let canonical = statement.clone().map_free_variables({
+                let mut names = std::collections::BTreeMap::new();
+                move |variable| {
+                    let next = naome_foundation::FreeVariable::new(names.len() as u32);
+                    *names.entry(variable).or_insert(next)
+                }
+            });
+            relevant =
+                requested.contains(&canonical.encode_canonical().map_err(|e| e.to_string())?);
+        }
+        if !relevant {
+            continue;
+        }
         let score = relevance(&verified.target, target);
         if score > 0 {
             ranked.push((score, verified.native_id, entry));
@@ -201,6 +237,40 @@ mod tests {
         fn scores(&mut self, d: &Decision) -> Result<Vec<f32>, String> {
             Ok(vec![0.; d.candidates.len()])
         }
+    }
+    #[test]
+    fn atom_overlap_does_not_offer_an_unrelated_closed_theorem() {
+        let axiom = naome_foundation::ZfcAxiom::Infinity;
+        let term = super::super::calculus::axiom(naome_proof::ProofStep::ZfcAxiom(axiom)).unwrap();
+        let proof = proof::verify(&term, &axiom.formula()).unwrap();
+        let entry = Entry {
+            packet: evidence::pack(&proof).unwrap(),
+        };
+        let question = naome_authoring::CompiledQuestion::compile(
+            "goal=all(x,all(y,imp(imp(mem(x,y),mem(y,x)),imp(mem(x,y),mem(y,x)))))",
+        )
+        .unwrap();
+        assert!(relevance(&axiom.formula(), question.proved_target()) > 0);
+        assert!(
+            retrieve(question.proved_target(), std::slice::from_ref(&entry))
+                .unwrap()
+                .is_empty()
+        );
+        let offered = retrieve(question.proved_target(), &[entry]).unwrap();
+        let before = search::solve(question.proved_target(), &mut Ordered, 32).unwrap();
+        let after = search::solve_with_knowledge(
+            question.proved_target(),
+            &mut Ordered,
+            32,
+            std::time::Instant::now(),
+            &offered,
+        )
+        .unwrap();
+        assert!(before.tree.is_some());
+        assert_eq!(
+            serde_json::to_value(before.tree).unwrap(),
+            serde_json::to_value(after.tree).unwrap()
+        );
     }
     #[test]
     fn checked_closed_lemmas_compose_through_native_citations_and_exact_replay() {

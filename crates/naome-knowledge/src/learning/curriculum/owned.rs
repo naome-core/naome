@@ -9,6 +9,18 @@ use std::{collections::BTreeSet, sync::LazyLock};
 static ORIGINAL: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("owned-exclusions.json")).expect("sealed corpus shapes")
 });
+#[derive(serde::Deserialize)]
+struct Retired {
+    ids: BTreeSet<String>,
+    families: BTreeSet<String>,
+}
+static RETIRED: LazyLock<Retired> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("composition-retired.json"))
+        .expect("retired composition families")
+});
+pub(super) fn retired(id: &str) -> bool {
+    RETIRED.ids.contains(id)
+}
 /// Atom kind and connective/quantifier structure survive; names do not.
 /// Ignoring atomic arguments intentionally groups more questions together.
 pub fn family(formula: &Formula) -> String {
@@ -36,7 +48,9 @@ pub fn family(formula: &Formula) -> String {
     crate::hex(&Sha256::digest(bytes))
 }
 pub(super) fn sealed_family(family: &str) -> bool {
-    ORIGINAL.contains(family) || frontier::BANK.families.contains(family)
+    ORIGINAL.contains(family)
+        || frontier::BANK.families.contains(family)
+        || RETIRED.families.contains(family)
 }
 pub fn case(question: &str) -> Option<Case> {
     let q = CompiledQuestion::compile(question).ok()?;

@@ -1,17 +1,17 @@
 {
-  "decision": "Measure certified composition search from checked owned lemmas, then the incremental effect of retained neural selection, on prospectively sealed full-composition families.",
+  "decision": "Correct atom-overlap retrieval that starved primitive search, then measure certified checked-lemma reuse and retained neural selection without reusing the inspected full-composition families.",
   "seeds": [
-    1423,
-    1543,
-    1663
+    1783,
+    1871,
+    1993
   ],
-  "pilot_seed": 1327,
-  "source": "Freeze Git source, binary, protocol, all native question identities and structural-family assignments before final inference. All seeds finish all learning and selection before first confirmation inference. Pilot may use development only; never import its weights or proofs.",
+  "pilot_seed": 1723,
+  "source": "Freeze Git source, binary, protocol, all native question identities and structural-family assignments before final inference. All seeds finish all learning and selection before first confirmation inference. Pilot may use development only; never import its weights or proofs. Earlier inspected composition families and every possible sibling in their original generator are retired before building the new bank. The corrective run uses only new full structural families; no prior weights or proofs are imported.",
   "common": "Fresh random native policy and actual zero-update Adam snapshot. Seven question-only helper selections from original learning logical families, ID ordered with distinct conservative shape and bounded formula size; 64 balanced additional own searches. Only actual checker-admitted helper discoveries populate the fixed knowledge/definition dictionary shared by B/C. All unsuccessful or unavailable helper cases remain in the denominator. The later ID-shuffled bootstrap/learning schedule excludes those seven already-queried helper IDs before any outcome, so they are not scheduled twice. Repeated exact native derivations, if found for another eligible orientation, reuse this run's already checked Graph root and are explicitly not counted as new mathematical admission.",
   "learning": "Two rounds of 80 new composition learning questions plus 48 original/frontier learning questions, own search at 128 expansions with existing 20 percent exploration. Each admitted source/closure passes ordinary native Graph admission before replay. At most 32 retained proofs and 32768 serialized state bytes; exact larger traces are bounded references to the canonical owned source record. No teacher proof or previous checkpoint import.",
   "optimization": "Existing 250 Adam updates per ready candidate, batch 16, LR .001, CPU Flex float32, 1004001 parameters. Same original work, IO and artifact limits; 10-update durable quanta remain. Save all candidate and retained model/Adam pairs, own traces, costs and rejections.",
   "selection": "Preserve the original 64 selection questions and four earlier anchors; append 32 new composition-development questions in 16 full structural groups. Incumbent and candidate see the identical immutable checked knowledge/definition snapshot. Strict total success gain, no lost original sentinel success and no earlier-anchor regression. Rejection restores weights and Adam together; 126 work units.",
-  "confirmation": "64 new full-composition cases in 32 conservative structural families; names/atomic arguments do not separate siblings. Known intermediate statements and repeated logical recipes are deliberately shared, while whole target native identities are never anywhere in the dictionary dependency closure. This is known-subproblem/new-composition evidence, not unseen mathematics or production prevalence.",
+  "confirmation": "64 prospectively sealed new full-composition cases in 32 conservative structural families, generated with tails 3..7 and cyclic dead ends 4..7; every possible family from the previous 1..4/1..4 generator is retired first. 64 new full-composition cases in 32 conservative structural families; names/atomic arguments do not separate siblings. Known intermediate statements and repeated logical recipes are deliberately shared, while whole target native identities are never anywhere in the dictionary dependency closure. This is known-subproblem/new-composition evidence, not unseen mathematics or production prevalence.",
   "arms": {
     "A_primitive": "Actual common fresh checkpoint with empty theorem and definition dictionary.",
     "B_frozen_with_knowledge": "Exactly A weights and Adam, plus common checked dictionaries.",

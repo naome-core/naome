@@ -113,6 +113,7 @@ fn specification() -> String {
     hash.update(include_str!("proof/lemmas.rs"));
     hash.update(include_str!("curriculum/owned.rs"));
     hash.update(include_str!("curriculum/owned-exclusions.json"));
+    hash.update(include_str!("curriculum/composition-retired.json"));
     hash.update(include_str!("curriculum.rs"));
     hash.update(include_str!("curriculum/frontier.rs"));
     hash.update(include_str!("curriculum/composition.rs"));

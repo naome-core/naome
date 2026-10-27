@@ -539,9 +539,9 @@ fn matched_knowledge_learning_experiment() {
     std::fs::create_dir_all(output).unwrap();
     let pilot = std::env::var_os("NAOME_KNOWLEDGE_PILOT").is_some();
     let seeds = if pilot {
-        vec![1327]
+        vec![1723]
     } else {
-        vec![1423, 1543, 1663]
+        vec![1783, 1871, 1993]
     };
     let rounds = if pilot { 1 } else { 2 };
     let bank = &*curriculum::composition::BANK;

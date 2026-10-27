@@ -68,6 +68,62 @@ def verify_blobs(node, record):
     return result
 
 
+def owner_question_bootstrap():
+    # Behavioral input fixture: only original learning questions, never proofs,
+    # model checkpoints, labels or held-out questions. Production question
+    # selection stays with the ordinary frontier and stopped-node formal_goal.
+    selected = [
+        'bb0a38ed5a32be6924e0f40e13adcace4a5707380f5182079833bb79d56167e3',
+        '93595ecf761e390236e9b80108cfd6ecc89063976f661681ce6e24e213048b29',
+        'dfcee7f50acce5cbb6aa4f1d2e1ea2f3081e3fd8bd4b9d77a776ad000208e7df',
+        '107052ea6c992e207ca6404504e4a44e5c25e57d176b3d0bd1bce7d15ef24177',
+        'f12a94b9445e2fb85d7d74f4d79ba58fc8cca44286a0a6d351cf519201f7bc15',
+        '72c9c8f5c102913bf453af11e24c297c1d21985a79bd5155430dd8c4f41e1e4b',
+        '3c5f642a27a46cfd3276bb5f4d8f1af9615c6adea735d79a07b006366ec9fbe3',
+        '0e1ae626b621ee8d82b8292a13d85c67a5b38a4be7257927b696c354e645f096',
+        '6c24f3377213a87032d7699a0e9a45425b38c0fff6506121cb81f444a2f447b2',
+        '4e34192bdfecc9bf55d31e6317abe33b0bf38e8cef52e3c3ae6a45728302a5b6',
+        'c8a22023d7774563c9ffd5935c8bb08e272914b7ec258769cea6c31bdbafccf4',
+        '55863d678b1514ca850945ce5eb0e425708838d075550dd747a6c86d4d934081',
+        '88565fab041675cc6c37b77c1ed0fdece6f8e031aad77378dec561af945bc74d',
+        'b00ac0a687d2283f21c3ebbef14e0e7d5e131a3ad2337ebbe83a571e9a635fb7',
+        '691a2278ba2eed48c0a18e846483dd8a9d599c5a25d677686b29a6fd61003032',
+        '2ae1be2e4a0d8fd78731e0fcf0550590bd1d9aa0a2f7d8d565054112680ad63e',
+        'fbda6c392c3e439fa03c2707742d08c15ad49945a67bbddd0dcb1d28bba6d9af',
+        '401cc9a2a7af5fef8e69e1cfbf9b0d31cee3a3fd3b4b4399a3c7573cd1a24625',
+        'fa8c8dc4abe49bdb46471b70725d1f9a344d7cdd208b5e14e102a154d21ddd4b',
+        'dc3264af465bb547e19b537eef5b0ff1bb9bd78271f34800116b9e9fcf71c849',
+        'e4fb6549846a9632cf2e79195117145ca324399060e53582e0e77d18fed42bb9',
+        '5dcd55bed5c5bed3b8d24e091f36c9c453f8ec5981c37329ee40d00b967cc650',
+        '58041a7a1015ba8997b02ff6198632565a5c26989c7349089926e3433c00add9',
+        '5bae5d154490977e9dd84bbc099bb774ab9c034904dbf79d6630c81d5552eb75',
+    ]
+    corpus = json.loads((Path(__file__).resolve().parents[2] / "src/learning/curriculum.json").read_text())
+    cases = {case["id"]: case for case in corpus["cases"]}
+    assert all(not cases[identity]["development"] for identity in selected)
+    assert len({cases[identity]["dependency"] for identity in selected}) >= 3
+    return [cases[identity] for identity in selected]
+
+
+def finished_owner_goal(node, question):
+    current = snapshot(node)
+    if not current:
+        return None
+    for record in current["records"].values():
+        if record["input"] != {"role": "solve", "question": question} or record["state"] != "complete":
+            continue
+        solution = record["native"]["progress"]["result"]
+        if solution is not None:
+            assert not solution["refuted"]
+            if not any(event.get("event") == "proof_generated" and event["job"] == record["id"]
+                       and event["id"] in node.ids() for event in node.logs()):
+                return None
+        return {"job": record["id"], "solved": solution is not None,
+                "diagnostic": record["native"]["progress"]["diagnostic"],
+                "local_examples": current["learning"]["local_examples"]}
+    return None
+
+
 def run(trial):
     a, b = Node(trial, 0), Node(trial, 1)
     for node in trial.nodes:
@@ -86,7 +142,20 @@ def run(trial):
     for node in trial.nodes:
         node.write_config()
     b.start()
-    a.start()
+    bootstrap = []
+    for case in owner_question_bootstrap():
+        a.config["formal_goal"] = case["source"]
+        a.write_config()
+        a.start()
+        outcome = trial.wait(lambda: finished_owner_goal(a, case["source"]), maximum=20)
+        bootstrap.append({"question_id": case["id"], "dependency": case["dependency"], **outcome})
+        if observe(a)["learning"]["local_examples"] >= 8:
+            break
+        a.stop()
+    else:
+        raise AssertionError("ordinary question-only bootstrap did not produce a diverse learning batch")
+    trial.summary["owner_question_bootstrap"] = bootstrap
+    trial.summary["bootstrap_scope"] = "Question-only ordinary formal goals; automatic learning, publication and peer conversion. This does not qualify unseeded frontier learning."
 
     def own_and_peer():
         own, peer = snapshot(a), snapshot(b)
