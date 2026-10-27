@@ -48,6 +48,31 @@ fn evidence_for(state: &State, source: &[Evidence]) -> Vec<Evidence> {
     needed.sort_by_key(|e| e.job);
     needed
 }
+fn admit_discovery(
+    graph: &mut crate::Graph,
+    q: &CompiledQuestion,
+    solution: &Solution,
+) -> Result<bool, crate::Error> {
+    let checked = solution.checked()?.into_checked_proof();
+    let outcome = q
+        .classify_checked_proof(&checked)
+        .map_err(crate::Error::from)?;
+    if solution.refuted != (outcome == naome_authoring::QuestionOutcome::Refuted) {
+        return Err("own discovery orientation differs".into());
+    }
+    let root = crate::object::proof_address(&solution.proof_id)?;
+    if graph.contains(root)? {
+        // This run's Graph already admitted this exact checked derivation.
+        // A repeated own discovery is not a new mathematical publication.
+        return Ok(false);
+    }
+    let (prepared, batch) = graph.prepare_generated(&solution.source, &solution.helpers, q)?;
+    if root != prepared {
+        return Err("own discovery native identity differs".into());
+    }
+    graph.commit_batch(root, batch, Instant::now() + Duration::from_secs(10))?;
+    Ok(true)
+}
 fn acquire(
     state: &mut State,
     source: &str,
@@ -77,18 +102,14 @@ fn acquire(
         .unwrap();
     let mut retained = false;
     let mut lemma = false;
+    let mut newly_admitted = false;
     if let Some(solution) = &solution {
         let q = CompiledQuestion::compile(source).unwrap();
-        let (root, batch) = graph
-            .prepare_generated(&solution.source, &solution.helpers, &q)
-            .unwrap();
-        graph
-            .commit_batch(root, batch, Instant::now() + Duration::from_secs(10))
-            .unwrap();
-        assert_eq!(
-            root,
-            crate::object::proof_address(&solution.proof_id).unwrap()
-        );
+        newly_admitted = admit_discovery(graph, &q, solution).unwrap_or_else(|error| {
+            eprintln!("{}", serde_json::json!({"event":"own_admission_failed","job":job,"solution":solution,"error":error.to_string()}));
+            panic!("own search failed ordinary graph admission: {error}")
+        });
+        let root = crate::object::proof_address(&solution.proof_id).unwrap();
         all.push(Evidence {
             job,
             proof_id: solution.proof_id.clone(),
@@ -115,7 +136,7 @@ fn acquire(
             }
         }
     }
-    let event = serde_json::json!({"job":job,"question":source,"solution":solution,"diagnostic":diagnostic,"cost":cost,"accepted_replay":retained,"accepted_lemma":lemma,"elapsed_micros":started.elapsed().as_micros()});
+    let event = serde_json::json!({"job":job,"question":source,"solution":solution,"diagnostic":diagnostic,"cost":cost,"newly_admitted":newly_admitted,"accepted_replay":retained,"accepted_lemma":lemma,"elapsed_micros":started.elapsed().as_micros()});
     eprintln!(
         "{}",
         serde_json::json!({"event":"own_search_completed","acquisition":event})
@@ -150,8 +171,23 @@ fn train(seed: u64, rounds: usize, path: &Path) -> Run {
     let schedule = shuffled_learning(seed)
         .into_iter()
         .filter(|q| !q.family.starts_with("composition-"))
+        .filter(|q| {
+            !curriculum::composition::BANK
+                .helpers
+                .iter()
+                .any(|helper| helper.id == q.id)
+        })
         .take(64 + rounds * 48)
         .collect::<Vec<_>>();
+    assert_eq!(schedule.len(), 64 + rounds * 48);
+    assert_eq!(
+        schedule
+            .iter()
+            .map(|q| &q.id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        schedule.len()
+    );
     for (i, q) in schedule.iter().take(64).enumerate() {
         common.push(acquire(
             &mut state,
@@ -296,6 +332,21 @@ fn train(seed: u64, rounds: usize, path: &Path) -> Run {
         rounds: events,
         evidence: all,
     }
+}
+
+#[test]
+fn repeated_own_discovery_reuses_its_already_checked_graph_root() {
+    let source = super::super::tests::own_question();
+    let question = CompiledQuestion::compile(&source).unwrap();
+    let solution = super::super::tests::own_solution();
+    let mut graph = crate::Graph::default();
+    assert!(admit_discovery(&mut graph, &question, &solution).unwrap());
+    let accepted = graph.accepted_count();
+    assert!(!admit_discovery(&mut graph, &question, &solution).unwrap());
+    assert_eq!(graph.accepted_count(), accepted);
+    let other = CompiledQuestion::compile("goal=all(x,mem(x,x))").unwrap();
+    assert!(admit_discovery(&mut graph, &other, &solution).is_err());
+    assert_eq!(graph.accepted_count(), accepted);
 }
 fn contains_question(entry: &super::super::knowledge::Entry, q: &CompiledQuestion) -> bool {
     let v = entry.verified().unwrap();
