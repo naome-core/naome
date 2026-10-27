@@ -77,7 +77,17 @@ pub(super) fn validate(text: &str) -> Result<(), String> {
             crate::resources::limits().owner_text_bytes
         ));
     }
+    formal_goal(text)?;
     Ok(())
+}
+
+pub(crate) fn formal_goal(text: &str) -> Result<Option<String>, String> {
+    let Some(source) = text.strip_prefix("formal:") else {
+        return Ok(None);
+    };
+    let question = naome_authoring::CompiledQuestion::compile(source.trim())
+        .map_err(|e| format!("invalid formal interest: {e}"))?;
+    Ok(Some(question.source().to_owned()))
 }
 
 fn read<T: serde::de::DeserializeOwned>(directory: &Path, name: &str) -> Result<Option<T>, String> {

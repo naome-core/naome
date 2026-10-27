@@ -268,6 +268,11 @@ pub fn exact_expression(formula: &DefinedFormula, entries: &[Entry]) -> Result<S
 
 /// Propose an eliminable relation for repeated structure, without asserting a theorem.
 pub fn discover(target: &Formula) -> Result<Option<Entry>, String> {
+    Ok(discover_many(target, 1)?.into_iter().next())
+}
+/// Conservative proposals are available before construction search starts.
+/// The bound and byte budget are shared with the checked definition snapshot.
+pub fn discover_many(target: &Formula, maximum: usize) -> Result<Vec<Entry>, String> {
     fn visit(
         f: &Formula,
         counts: &mut BTreeMap<Vec<u8>, (Formula, usize)>,
@@ -310,33 +315,48 @@ pub fn discover(target: &Formula) -> Result<Option<Entry>, String> {
     }
     let mut counts = BTreeMap::new();
     visit(target, &mut counts, &mut 0)?;
-    let best = counts
-        .into_values()
-        .filter(|(_, n)| *n >= 2)
-        .max_by_key(|(body, n)| {
-            let nodes = body.view().node_count_and_depth().0;
-            n.saturating_mul(nodes.saturating_sub(body.free_variables().len() + 1))
-                .saturating_sub(nodes)
-        });
-    let Some((body, count)) = best else {
-        return Ok(None);
+    let mut candidates: Vec<_> = counts.into_values().filter(|(_, n)| *n >= 2).collect();
+    let gain = |(body, count): &(Formula, usize)| {
+        let nodes = body.view().node_count_and_depth().0;
+        count
+            .saturating_mul(nodes.saturating_sub(body.free_variables().len() + 1))
+            .saturating_sub(nodes)
     };
-    let nodes = body.view().node_count_and_depth().0;
-    let arity = body.free_variables().len();
-    if count.saturating_mul(nodes.saturating_sub(arity + 1)) <= nodes {
-        return Ok(None);
+    candidates.sort_by(|a, b| {
+        gain(b).cmp(&gain(a)).then_with(|| {
+            b.0.encode_canonical()
+                .unwrap()
+                .cmp(&a.0.encode_canonical().unwrap())
+        })
+    });
+    let mut entries = Vec::new();
+    let mut bytes = 0;
+    for (body, count) in candidates {
+        if entries.len() >= maximum.min(CAPACITY) {
+            break;
+        }
+        let nodes = body.view().node_count_and_depth().0;
+        let arity = body.free_variables().len();
+        if count.saturating_mul(nodes.saturating_sub(arity + 1)) <= nodes {
+            continue;
+        }
+        let certificate = DefinitionCertificate::relation(
+            arity as u32,
+            DefinedFormula::from_primitive(&body).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let entry = Entry {
+            certificate: certificate.to_canonical_bytes(),
+            obligation: None,
+        };
+        if bytes + entry.bytes() > BYTES {
+            continue;
+        }
+        let _ = context(std::slice::from_ref(&entry))?;
+        bytes += entry.bytes();
+        entries.push(entry);
     }
-    let certificate = DefinitionCertificate::relation(
-        arity as u32,
-        DefinedFormula::from_primitive(&body).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let entry = Entry {
-        certificate: certificate.to_canonical_bytes(),
-        obligation: None,
-    };
-    let _ = context(std::slice::from_ref(&entry))?;
-    Ok(Some(entry))
+    Ok(entries)
 }
 
 pub fn decision(target: &Formula, entries: &[Entry], selected: usize) -> Result<Graph, String> {
@@ -401,6 +421,9 @@ pub fn choose(
 }
 
 pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
+    if let super::search::Tree::Constructed(bytes) = tree {
+        return super::construction::evidence::helpers(bytes);
+    }
     let super::search::Tree::Definitions {
         entries,
         selected,
@@ -426,6 +449,7 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
         let checked = naome_checker::normalize_and_check_with_state(certificate, &context)
             .map_err(|e| e.to_string())?;
         let verified = super::proof::Verified {
+            lemmas: Vec::new(),
             certificate: checked.normal_form().certificate().clone(),
             target: checked.conclusion().clone(),
             native_id: checked.proof_id(),
@@ -440,6 +464,7 @@ pub fn helpers(tree: &super::search::Tree) -> Result<Vec<String>, String> {
 
 pub fn selected(tree: &super::search::Tree) -> Result<Vec<Entry>, String> {
     match tree {
+        super::search::Tree::Constructed(bytes) => super::construction::evidence::selected(bytes),
         super::search::Tree::Definitions {
             entries, selected, ..
         } => Ok(vec![

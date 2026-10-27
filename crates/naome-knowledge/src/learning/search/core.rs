@@ -14,6 +14,7 @@ pub fn steps(tree: &Tree) -> usize {
         Tree::Definitions { proof, .. } => 1 + steps(proof),
         Tree::Step { children, .. } => 1 + children.iter().map(steps).sum::<usize>(),
         Tree::Certificate(bytes) => super::super::peer::step_count(bytes),
+        Tree::Constructed(bytes) => super::super::construction::evidence::steps(bytes).unwrap_or(0),
         Tree::Peer { steps } => *steps,
         _ => 0,
     }
@@ -64,9 +65,11 @@ fn rebase(
             position(*a, from, to)?,
             position(*b, from, to)?,
         )),
-        Tree::Axiom(_) | Tree::Certificate(_) | Tree::Peer { .. } | Tree::Definitions { .. } => {
-            Err("nested core axiom".into())
-        }
+        Tree::Axiom(_)
+        | Tree::Certificate(_)
+        | Tree::Constructed(_)
+        | Tree::Peer { .. }
+        | Tree::Definitions { .. } => Err("nested core axiom".into()),
         Tree::Step {
             action: old,
             children,
@@ -153,7 +156,10 @@ pub fn checked(
             available: *available,
             proof: Box::new(checked(target, proof)?.0),
         }
-    } else if matches!(tree, Tree::Axiom(_) | Tree::Certificate(_)) {
+    } else if matches!(
+        tree,
+        Tree::Axiom(_) | Tree::Certificate(_) | Tree::Constructed(_)
+    ) {
         tree.clone()
     } else {
         slice(tree, &prepare(target)?.state, &mut work, 0).unwrap_or_else(|_| tree.clone())

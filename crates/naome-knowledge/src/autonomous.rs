@@ -117,6 +117,7 @@ pub(crate) struct Autonomous {
     intervals: Intervals,
     client: jobs::Client,
     cursor: u64,
+    formal_goal: Option<String>,
     next_question: Instant,
     next_proof: Instant,
     unanswered: VecDeque<CompiledQuestion>,
@@ -156,6 +157,7 @@ impl Autonomous {
             intervals,
             client,
             cursor: recovery.next_cursor,
+            formal_goal: None,
             next_question: now + Duration::from_millis(intervals.finding_ms()),
             next_proof: now + Duration::from_millis(intervals.solving_ms()),
             unanswered: unanswered
@@ -189,6 +191,13 @@ impl Autonomous {
     }
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+    /// The ordinary interest owner may select a formal question. Its eventual
+    /// admission and proof publication retain the same checked owner paths.
+    pub(crate) fn formal_goal(&mut self, source: Option<String>) {
+        if self.intervals.jobs.native_proof_learning {
+            self.formal_goal = source;
+        }
     }
     pub(crate) fn selection_boundary_ready(&self) -> bool {
         self.publications
@@ -887,7 +896,13 @@ impl Autonomous {
                 };
                 self.cursor = next;
                 let context = questions.formal_context(graph);
-                (jobs::Input::Find { cursor }, context.binding())
+                (
+                    jobs::Input::Find {
+                        cursor,
+                        goal: self.formal_goal.clone(),
+                    },
+                    context.binding(),
+                )
             };
             if let Ok(ticket) = self.client.submit(input, binding) {
                 self.finding = Some(Finding { ticket });

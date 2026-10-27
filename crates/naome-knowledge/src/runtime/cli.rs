@@ -29,6 +29,9 @@ pub(super) fn information(arguments: &[OsString]) -> Option<String> {
              No unchecked artifact is admitted. Network allocations retain memory limits.\n\
              \nNative proof learning (opt-in):\n\
              Set runtime.jobs.native_proof_learning=true in config.json while stopped.\n\
+             Use naome interest \"formal: goal = ...\" to select a native formal goal.\n\
+             Goal-derived Separation proposals and checked intermediate lemmas\n\
+             support bounded ZFC set constructions without supplied proof scripts.\n\
              A fresh 1,003,681-parameter CPU graph model learns from accepted local proofs.\n\
              Locally checked peer proofs can supply supported reconstructed traces.\n\
              Training uses fixed question-only curricula and excludes reserved groups.\n\

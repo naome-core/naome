@@ -978,7 +978,7 @@ impl Owner {
             .ok_or("research horizon overflow")?;
         let mut spent_ms = 0;
         let mut reserved_units = 0;
-        if let Input::Find { cursor } = input {
+        if let Input::Find { cursor, .. } = input {
             if cursor < self.journal.next_cursor {
                 reject(reply, binding, "research finding cursor already consumed");
                 return Ok(());

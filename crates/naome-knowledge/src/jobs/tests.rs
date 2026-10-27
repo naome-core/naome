@@ -168,3 +168,18 @@ fn ordinary_product_rejects_developer_workloads_before_spawning() {
     );
     assert!(Settings::default().validate().is_ok());
 }
+
+#[test]
+fn explicit_finding_goal_binds_the_returned_question() {
+    let supplied = "goal=all(x,eq(x,x))".to_owned();
+    let input = Input::Find {
+        cursor: 1,
+        goal: Some(supplied.clone()),
+    };
+    assert!(Output::Question(supplied).validate(&input).is_ok());
+    assert!(
+        Output::Question("goal=all(x,eq(x,x)) ".into())
+            .validate(&input)
+            .is_err()
+    );
+}

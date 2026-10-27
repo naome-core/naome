@@ -199,7 +199,13 @@ async fn rejected_unanswered_work_preserves_its_retry_and_independent_question_s
     );
     assert!(matches!(
         owner.requests().as_slice(),
-        [(_, jobs::Input::Find { cursor: 1 })]
+        [(
+            _,
+            jobs::Input::Find {
+                cursor: 1,
+                goal: None
+            }
+        )]
     ));
     assert_eq!(autonomous.cursor, 2);
     assert_eq!(

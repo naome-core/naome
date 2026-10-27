@@ -22,6 +22,7 @@ pub fn app(function: Term, argument: Term) -> Result<Term, String> {
 pub fn axiom(step: ProofStep) -> Result<Term, String> {
     Ok(Term::Kernel(Kernel::new(step)?))
 }
+#[cfg(test)]
 pub fn identity(formula: Formula, names: &mut Names) -> Term {
     let (id, value) = names.assumption(formula.clone());
     Term::Lambda(id, formula, Box::new(value))
@@ -49,8 +50,8 @@ pub fn explosion(
     app(app(classical(p, goal)?, bridge)?, positive)
 }
 
-/// Discharge not(T) after an actual contradiction; I=(T->T) is independently
-/// derivable, and C turns (not(T)->not(I)) into (I->T).
+/// Discharge not(T) after an actual contradiction. A closed reflexivity
+/// theorem supplies I, and C turns (not(T)->not(I)) into (I->T).
 pub fn raa(
     goal: Formula,
     assumption: usize,
@@ -58,13 +59,17 @@ pub fn raa(
     negative: Term,
     names: &mut Names,
 ) -> Result<Term, String> {
-    let i = Formula::implies(goal.clone(), goal.clone());
+    // A fixed closed logical theorem keeps the intermediate formulas small;
+    // choosing T -> T here duplicates an arbitrarily large goal at each RAA.
+    let variable = FreeVariable::new(0);
+    let witness = Term::Generalize(
+        variable,
+        Box::new(axiom(ProofStep::EqualityReflexivity { variable })?),
+    );
+    let i = witness.formula();
     let not_i = explosion(positive, negative, not(i.clone()), names)?;
     let bridge = Term::Lambda(assumption, not(goal.clone()), Box::new(not_i));
-    app(
-        app(classical(i, goal.clone())?, bridge)?,
-        identity(goal, names),
-    )
+    app(app(classical(i, goal.clone())?, bridge)?, witness)
 }
 
 pub fn double_elim(value: Term, names: &mut Names) -> Result<Term, String> {

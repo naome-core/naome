@@ -381,7 +381,7 @@ fn abandoned_oldest_completion_survives_newer_terminal_history() {
             let (reply, mut receipt) = oneshot::channel();
             owner
                 .submit(
-                    Input::Find { cursor },
+                    Input::Find { cursor, goal: None },
                     Binding::new([0; 32], [0; 32]),
                     reply,
                 )
@@ -647,7 +647,10 @@ fn result_reservations_apply_backpressure_before_work_and_leave_other_roles_avai
     let (reply, _receipt) = oneshot::channel();
     owner
         .submit(
-            Input::Find { cursor: 0 },
+            Input::Find {
+                cursor: 0,
+                goal: None,
+            },
             Binding::new([0; 32], [0; 32]),
             reply,
         )
@@ -888,7 +891,7 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
         // Retain the request receiver until submission has durably accepted it.
         owner
             .submit(
-                Input::Find { cursor },
+                Input::Find { cursor, goal: None },
                 Binding::new([0; 32], [0; 32]),
                 reply,
             )
@@ -939,7 +942,10 @@ fn archived_unacknowledged_results_recover_in_fifo_pages_without_blocking_new_wo
     assert_eq!(recovered, expected);
     assert_eq!(
         disk.request(
-            &Input::Find { cursor: 0 },
+            &Input::Find {
+                cursor: 0,
+                goal: None
+            },
             &Binding::new([0; 32], [0; 32]),
             settings.finding
         )

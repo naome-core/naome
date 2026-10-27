@@ -1006,7 +1006,7 @@ fn validate_record(
             return Err("research original obligation budget differs".into());
         }
     }
-    if let Input::Find { cursor } = r.input
+    if let Input::Find { cursor, .. } = r.input
         && cursor >= next_cursor
     {
         return Err("research finding cursor binding differs".into());

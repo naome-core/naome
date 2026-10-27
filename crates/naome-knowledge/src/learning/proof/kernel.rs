@@ -70,6 +70,26 @@ impl Kernel {
                 Logic::equality_substitution(*from, *to, primitive(body)?)
             }
             ProofStep::ZfcAxiom(axiom) => axiom.formula(),
+            ProofStep::Separation(instance) => naome_foundation::Separation {
+                predicate: primitive(&instance.predicate)?,
+                element: instance.element,
+                source: instance.source,
+                result: instance.result,
+                parameters: instance.parameters.clone(),
+            }
+            .formula()
+            .map_err(|e| e.to_string())?,
+            ProofStep::Replacement(instance) => naome_foundation::Replacement {
+                predicate: primitive(&instance.predicate)?,
+                input: instance.input,
+                output: instance.output,
+                uniqueness_witness: instance.uniqueness_witness,
+                source: instance.source,
+                result: instance.result,
+                parameters: instance.parameters.clone(),
+            }
+            .formula()
+            .map_err(|e| e.to_string())?,
             _ => return Err("unsupported kernel constant".into()),
         };
         let key = ProofCertificate::new(vec![step.clone()])

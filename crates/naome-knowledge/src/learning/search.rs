@@ -26,6 +26,7 @@ pub enum Action {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Tree {
+    Constructed(Vec<u8>),
     Definitions {
         entries: Vec<super::definitions::Entry>,
         selected: usize,
@@ -408,11 +409,27 @@ impl Search<'_> {
     }
 }
 
+#[cfg(test)]
 pub fn solve(
     target: &Formula,
     ranker: &mut dyn Ranker,
     maximum: usize,
 ) -> Result<ResultTree, String> {
+    solve_started(target, ranker, maximum, Instant::now())
+}
+pub fn solve_started(
+    target: &Formula,
+    ranker: &mut dyn Ranker,
+    maximum: usize,
+    started: Instant,
+) -> Result<ResultTree, String> {
+    if maximum == 0 {
+        return Ok(ResultTree {
+            tree: None,
+            expansions: 0,
+            failure: Some("search_budget".into()),
+        });
+    }
     if let Some((index, _)) = AXIOMS
         .iter()
         .enumerate()
@@ -428,7 +445,7 @@ pub fn solve(
     let mut s = Search {
         ranker,
         goal: p.body,
-        started: Instant::now(),
+        started,
         expansions: 0,
         maximum,
         failure: None,
@@ -631,6 +648,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
         }
         return Ok((
             Term::Native {
+                lemmas: Vec::new(),
                 certificate: checked.normal_form().certificate().clone(),
                 target: target.clone(),
                 definitions: vec![entry.clone()],
@@ -640,6 +658,12 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
     }
     if matches!(tree, Tree::Peer { .. }) {
         return Err("peer replay requires its owned journal snapshot".into());
+    }
+    if let Tree::Constructed(bytes) = tree {
+        return Ok((
+            super::construction::evidence::compile(target, bytes)?,
+            Vec::new(),
+        ));
     }
     if let Tree::Certificate(bytes) = tree {
         return super::peer::compile(target, bytes);
@@ -696,7 +720,7 @@ pub fn compile(target: &Formula, tree: &Tree) -> Result<(Term, Vec<Graph>), Stri
     Ok((term, graphs))
 }
 
-const AXIOMS: [naome_foundation::ZfcAxiom; 7] = [
+pub(super) const AXIOMS: [naome_foundation::ZfcAxiom; 7] = [
     naome_foundation::ZfcAxiom::Extensionality,
     naome_foundation::ZfcAxiom::Pairing,
     naome_foundation::ZfcAxiom::Union,

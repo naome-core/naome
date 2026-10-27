@@ -675,8 +675,13 @@ where
         if let Some(control)=&control
             && (control.selection_changed() || Instant::now()>=next_profile_check) {
                 next_profile_check=Instant::now()+crate::resources::limits().profile_poll_interval;
-                if questions.select(control.selection().ok()) {
+                let selection=control.selection();
+                let valid_owner=selection.is_ok();
+                if questions.select(selection.ok()) {
                 node.intake.invalidate_interest(); node.inventory_summaries.clear();
+                }
+                if let Some(autonomous) = &mut autonomous {
+                    autonomous.formal_goal(if valid_owner {control.formal_goal().ok().flatten()} else {None});
                 }
             }
         node.graph.set_commit_guard(crate::publication::CommitGuard::new(

@@ -1,6 +1,7 @@
 //! Local operational learning state; never a mathematical artifact or gossip item.
 mod artifact;
 mod calculus;
+mod construction;
 mod curriculum;
 pub(crate) mod definitions;
 mod graph;
@@ -148,7 +149,11 @@ impl Solution {
         if self.helpers != definitions::helpers(&self.tree)? {
             return Err("definition helper source binding differs".into());
         }
-        let context = definitions::context(&definitions::selected(&self.tree)?)?;
+        let context = if let search::Tree::Constructed(bytes) = &self.tree {
+            construction::evidence::context(bytes)?
+        } else {
+            definitions::context(&definitions::selected(&self.tree)?)?
+        };
         let proof = naome_authoring::compile_against_proof_context(&self.source, &context)
             .map_err(|e| e.to_string())?;
         if crate::hex(proof.proof_id().as_bytes()) != self.proof_id {
@@ -459,6 +464,9 @@ fn solve_with_definitions(
     let started = std::time::Instant::now();
     let (mut solution, diagnostic, mut cost) = solve_measured(source, model, budget, job)?;
     if let Some(solution) = &mut solution {
+        if matches!(solution.tree, search::Tree::Constructed(_)) {
+            return Ok((Some(solution.clone()), diagnostic, cost));
+        }
         let definition_started = std::time::Instant::now();
         let question = CompiledQuestion::compile(source).map_err(|e| e.to_string())?;
         let target = if solution.refuted {
@@ -542,7 +550,36 @@ fn search_question_measured(
         } else {
             q.proved_target().clone()
         };
-        let found = search::solve(&target, ranker, remaining)?;
+        let orientation_started = std::time::Instant::now();
+        let (constructed, work) =
+            match construction::construct(&target, remaining, orientation_started) {
+                Ok(result) => result,
+                Err(error) => {
+                    certificate_failures += 1;
+                    remaining = 0;
+                    failure = format!("construction_unresolved: {error}");
+                    break;
+                }
+            };
+        remaining = remaining.saturating_sub(work);
+        let found = if let Some(verified) = constructed {
+            search::ResultTree {
+                tree: Some(search::Tree::Constructed(
+                    match construction::evidence::pack(&verified) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            certificate_failures += 1;
+                            failure = format!("construction_capacity: {error}");
+                            continue;
+                        }
+                    },
+                )),
+                expansions: 0,
+                failure: None,
+            }
+        } else {
+            search::solve_started(&target, ranker, remaining, orientation_started)?
+        };
         remaining = remaining.saturating_sub(found.expansions);
         if let Some(tree) = found.tree {
             let (tree, cost, verified) = match search::core::checked(&target, &tree) {
@@ -558,16 +595,44 @@ fn search_question_measured(
                     proof::source(&verified)?,
                     crate::hex(verified.native_id.as_bytes()),
                     verified.payload_bytes,
+                    verified
+                        .certificate
+                        .steps()
+                        .iter()
+                        .chain(verified.lemmas.iter().flat_map(|c| c.steps().iter()))
+                        .map(|step| step.definition_references().len())
+                        .sum::<usize>(),
+                    verified.certificate.steps().len()
+                        + verified
+                            .lemmas
+                            .iter()
+                            .map(|c| c.steps().len())
+                            .sum::<usize>()
+                        + verified.definitions.len(),
                 ))
             }) {
-                Ok((source, proof_id, payload_bytes))
+                Ok((source, proof_id, payload_bytes, references, check_steps))
                     if source.len() <= crate::resources::limits().proof_bytes
                         && payload_bytes
                             <= crate::resources::limits()
                                 .proof_bytes
                                 .min(crate::resources::limits().closure_bytes) =>
                 {
+                    let helpers = definitions::helpers(&tree)?;
+                    if helpers.len() >= crate::resources::limits().closure_objects
+                        || helpers
+                            .iter()
+                            .any(|s| s.len() > crate::resources::limits().proof_bytes)
+                        || source.len() + helpers.iter().map(String::len).sum::<usize>()
+                            > crate::resources::limits().closure_bytes
+                    {
+                        failure = "certificate_closure_capacity".into();
+                        continue;
+                    }
                     let measured = GenerationCost {
+                        definition_candidates: definitions::selected(&tree)?.len(),
+                        definition_references: references,
+                        definition_check_steps: if references > 0 { check_steps } else { 0 },
                         certificate_failures,
                         search_expansions: budget - remaining,
                         original_steps: cost.original_steps,
@@ -585,7 +650,7 @@ fn search_question_measured(
                     };
                     return Ok((
                         Some(Solution {
-                            helpers: Vec::new(),
+                            helpers,
                             cost: Box::new(measured.clone()),
                             source,
                             proof_id,

@@ -476,6 +476,17 @@ impl Control {
             .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
+    pub(crate) fn formal_goal(&self) -> Result<Option<String>, String> {
+        let owner = self
+            .owner
+            .lock()
+            .map_err(|_| "owner configuration lock poisoned")?;
+        if let Some(error) = &owner.recovery_error {
+            return Err(error.clone());
+        }
+        owner::formal_goal(&owner.text)
+    }
+
     pub(crate) async fn respond(
         &self,
         mut stream: UnixStream,

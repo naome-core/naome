@@ -254,6 +254,8 @@ pub(crate) enum Input {
     },
     Find {
         cursor: u64,
+        /// An explicit owner-supplied formal question, never a proof or teacher.
+        goal: Option<String>,
     },
     Solve {
         question: String,
@@ -280,7 +282,12 @@ impl Input {
     }
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Find { .. } => {}
+            Self::Find { goal, .. } => {
+                if let Some(source) = goal {
+                    naome_authoring::CompiledQuestion::compile(source)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             Self::Train { epoch } => {
                 if *epoch == 0 {
                     return Err("empty native learning epoch".into());
@@ -402,8 +409,9 @@ impl Output {
             {
                 Ok(())
             }
-            (Self::Question(source), Input::Find { .. })
-                if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES =>
+            (Self::Question(source), Input::Find { goal, .. })
+                if source.len() <= naome_authoring::QUESTION_SOURCE_MAX_BYTES
+                    && goal.as_ref().is_none_or(|goal| source == goal) =>
             {
                 Ok(())
             }

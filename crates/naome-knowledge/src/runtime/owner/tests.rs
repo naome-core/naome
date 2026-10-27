@@ -2,6 +2,21 @@ use super::super::tests::Directory;
 use super::*;
 
 #[test]
+fn formal_interest_is_a_question_and_survives_the_existing_owner_transaction() {
+    let directory = Directory::new();
+    let text = "formal: goal=all(value,eq(value,value))";
+    update(&directory.0, text).unwrap();
+    let loaded = load(&directory.0).unwrap();
+    assert_eq!(
+        formal_goal(&loaded).unwrap().as_deref(),
+        Some("goal=all(value,eq(value,value))")
+    );
+    assert!(update(&directory.0, "formal: goal=ex(x,").is_err());
+    assert_eq!(load(&directory.0).unwrap(), text);
+    assert!(formal_goal("study set theory").unwrap().is_none());
+}
+
+#[test]
 fn boundaries_exact_text_clear_and_isolation() {
     let a = Directory::new();
     let b = Directory::new();

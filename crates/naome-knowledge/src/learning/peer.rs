@@ -210,6 +210,7 @@ pub fn compile(target: &Formula, bytes: &[u8]) -> Result<(Term, Vec<Graph>), Str
         formulas.push(formula);
     }
     let term = Term::Native {
+        lemmas: Vec::new(),
         definitions,
         certificate: checked.normal_form().certificate().clone(),
         target: target.clone(),

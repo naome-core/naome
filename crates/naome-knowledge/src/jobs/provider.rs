@@ -222,7 +222,9 @@ impl Provider for Native {
             .as_ref()
             .ok_or("native model snapshot missing")?;
         Ok(match &self.record.input {
-            Input::Find { cursor } => Output::Question(job.base.question(*cursor)),
+            Input::Find { cursor, goal } => {
+                Output::Question(goal.clone().unwrap_or_else(|| job.base.question(*cursor)))
+            }
             Input::Solve { .. } | Input::Peer { .. } | Input::Train { .. } => {
                 let p = job.progress.as_ref().ok_or("native final state missing")?;
                 Output::Native {
@@ -310,7 +312,7 @@ impl Provider for Mock {
             });
         }
         let output = match &self.input {
-            Input::Find { cursor } => {
+            Input::Find { cursor, .. } => {
                 Output::Question(if self.work.outcome == MockOutcome::Malformed {
                     "invalid question".into()
                 } else {

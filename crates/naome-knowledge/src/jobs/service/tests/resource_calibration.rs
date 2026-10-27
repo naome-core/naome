@@ -56,7 +56,7 @@ fn smaller_restart_keeps_original_results_and_rejects_corruption_before_retireme
         let (reply, _receipt) = oneshot::channel();
         owner
             .submit(
-                Input::Find { cursor },
+                Input::Find { cursor, goal: None },
                 Binding::new([0; 32], [0; 32]),
                 reply,
             )

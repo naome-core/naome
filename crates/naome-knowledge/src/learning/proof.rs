@@ -8,7 +8,9 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 mod kernel;
+mod lemmas;
 pub use kernel::Kernel;
+pub(super) use lemmas::{context as lemma_context, sources as lemma_sources};
 
 pub const NATIVE_RESOURCE_LIMIT: &str =
     "native certificate or reconstructed formula resource limit";
@@ -17,7 +19,13 @@ pub const STEP_WORK_LIMIT: &str = "solver certificate work limit";
 
 #[derive(Clone, Debug)]
 pub enum Term {
+    Lemma {
+        certificate: ProofCertificate,
+        dependencies: Vec<ProofCertificate>,
+        target: Formula,
+    },
     Native {
+        lemmas: Vec<ProofCertificate>,
         certificate: ProofCertificate,
         target: Formula,
         definitions: Vec<super::definitions::Entry>,
@@ -62,7 +70,7 @@ impl Term {
         match self {
             Self::Variable(_, formula) | Self::Apply(_, _, formula) => formula.clone(),
             Self::Kernel(k) => k.formula(),
-            Self::Native { target, .. } => target.clone(),
+            Self::Native { target, .. } | Self::Lemma { target, .. } => target.clone(),
             Self::Generalize(variable, body) => Formula::for_all(*variable, body.formula()),
             Self::Lambda(_, argument, body) => Formula::implies(argument.clone(), body.formula()),
         }
@@ -86,6 +94,7 @@ impl Term {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Combinator {
+    Lemma(Vec<Vec<u8>>, Vec<u8>, Formula, ProofId),
     Variable(usize, Formula),
     Kernel(Kernel),
     Generalize(FreeVariable, Arc<Self>),
@@ -97,6 +106,7 @@ enum Combinator {
 impl Combinator {
     fn formula(&self) -> Formula {
         match self {
+            Self::Lemma(_, _, formula, _) => formula.clone(),
             Self::Variable(_, formula) | Self::Apply(_, _, formula) => formula.clone(),
             Self::Kernel(k) => k.formula(),
             Self::Generalize(v, b) => Formula::for_all(*v, b.formula()),
@@ -200,6 +210,28 @@ fn abstract_variable(
 
 fn lower(term: &Term) -> Result<Arc<Combinator>, String> {
     match term {
+        Term::Lemma {
+            certificate,
+            dependencies,
+            target,
+        } => {
+            let context = lemma_context(&[], dependencies)?;
+            let checked =
+                naome_checker::normalize_and_check_with_state(certificate.clone(), &context)
+                    .map_err(|e| e.to_string())?;
+            if checked.conclusion() != target {
+                return Err("construction lemma target differs".into());
+            }
+            Ok(Arc::new(Combinator::Lemma(
+                dependencies
+                    .iter()
+                    .map(ProofCertificate::to_canonical_bytes)
+                    .collect(),
+                checked.normal_form().canonical_bytes().to_vec(),
+                target.clone(),
+                checked.proof_id(),
+            )))
+        }
         Term::Native { .. } => Err("native DAG is a closed replay root".into()),
         Term::Variable(id, formula) => Ok(Arc::new(Combinator::Variable(*id, formula.clone()))),
         Term::Kernel(k) => Ok(Arc::new(Combinator::Kernel(k.clone()))),
@@ -217,6 +249,7 @@ pub fn close(mut formula: Formula) -> Formula {
 }
 
 pub struct Verified {
+    pub lemmas: Vec<ProofCertificate>,
     pub definitions: Vec<super::definitions::Entry>,
     pub certificate: ProofCertificate,
     pub target: Formula,
@@ -232,16 +265,19 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     if let Term::Native {
         certificate,
         definitions,
+        lemmas,
         ..
     } = term
     {
-        let context = super::definitions::context(definitions)?;
+        let context = lemma_context(definitions, lemmas)?;
         let checked = naome_checker::normalize_and_check_with_state(certificate.clone(), &context)
             .map_err(|e| e.to_string())?;
         if checked.conclusion() != expected {
             return Err("native DAG conclusion differs".into());
         }
+        let lemmas = lemmas::retain(&checked, definitions, lemmas)?;
         return Ok(Verified {
+            lemmas,
             definitions: definitions.clone(),
             certificate: checked.normal_form().certificate().clone(),
             target: expected.clone(),
@@ -253,20 +289,33 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
     let mut steps = Vec::new();
     let mut cache = HashMap::new();
     let mut formula_nodes = 0usize;
+    let mut lemmas = Vec::new();
     fn emit(
         term: &Arc<Combinator>,
         steps: &mut Vec<ProofStep>,
         cache: &mut HashMap<Arc<Combinator>, u32>,
         formula_nodes: &mut usize,
+        lemmas: &mut Vec<ProofCertificate>,
     ) -> Result<u32, String> {
         if let Some(index) = cache.get(term) {
             return Ok(*index);
         }
         let step = match term.as_ref() {
+            Combinator::Lemma(dependencies, bytes, _, id) => {
+                for bytes in dependencies.iter().chain(std::iter::once(bytes)) {
+                    if !lemmas.iter().any(|c| c.to_canonical_bytes() == *bytes) {
+                        lemmas.push(
+                            ProofCertificate::from_canonical_bytes(bytes)
+                                .map_err(|e| e.to_string())?,
+                        );
+                    }
+                }
+                ProofStep::ProofReference { proof_id: *id }
+            }
             Combinator::Variable(_, _) => return Err("certificate still has an assumption".into()),
             Combinator::Kernel(k) => k.step(),
             Combinator::Generalize(variable, body) => ProofStep::Generalization {
-                premise: emit(body, steps, cache, formula_nodes)?,
+                premise: emit(body, steps, cache, formula_nodes, lemmas)?,
                 variable: *variable,
             },
             Combinator::K(a, b) => ProofStep::Simplification {
@@ -279,8 +328,8 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
                 third: c.clone().into(),
             },
             Combinator::Apply(function, argument, _) => {
-                let implication = emit(function, steps, cache, formula_nodes)?;
-                let premise = emit(argument, steps, cache, formula_nodes)?;
+                let implication = emit(function, steps, cache, formula_nodes, lemmas)?;
+                let premise = emit(argument, steps, cache, formula_nodes, lemmas)?;
                 ProofStep::ModusPonens {
                     premise,
                     implication,
@@ -347,7 +396,13 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         cache.insert(term.clone(), index);
         Ok(index)
     }
-    let mut index = emit(&root, &mut steps, &mut cache, &mut formula_nodes)?;
+    let mut index = emit(
+        &root,
+        &mut steps,
+        &mut cache,
+        &mut formula_nodes,
+        &mut lemmas,
+    )?;
     for variable in expected.free_variables().into_iter().rev() {
         steps.push(ProofStep::Generalization {
             premise: index,
@@ -367,34 +422,32 @@ pub fn verify(term: &Term, expected: &Formula) -> Result<Verified, String> {
         ) => NATIVE_RESOURCE_LIMIT.into(),
         error => error.to_string(),
     })?;
-    let checked =
-        naome_checker::normalize_and_check_with_state(certificate.clone(), &ArtifactState::new())
-            .map_err(|error| match error.kind() {
-            naome_checker::CheckErrorKind::DerivedFormula {
-                source:
-                    naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
-                    | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
-                ..
-            }
-            | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
-                NATIVE_RESOURCE_LIMIT.to_owned()
-            }
-            _ => error.to_string(),
-        })?;
+    let checked = naome_checker::normalize_and_check_with_state(
+        certificate.clone(),
+        &lemma_context(&[], &lemmas)?,
+    )
+    .map_err(|error| match error.kind() {
+        naome_checker::CheckErrorKind::DerivedFormula {
+            source:
+                naome_foundation::FormulaCodecError::DepthLimitExceeded { .. }
+                | naome_foundation::FormulaCodecError::NodeLimitExceeded { .. },
+            ..
+        }
+        | naome_checker::CheckErrorKind::FormulaWorkLimitExceeded { .. } => {
+            NATIVE_RESOURCE_LIMIT.to_owned()
+        }
+        _ => error.to_string(),
+    })?;
     let target = close(expected.clone());
     if checked.conclusion() != &target {
         return Err("checked certificate proves a different target".into());
     }
-    let question = naome_authoring::CompiledQuestion::from_formula(target.clone())
-        .map_err(|e| e.to_string())?;
-    if question
-        .classify_checked_proof(&checked)
-        .map_err(|e| format!("{e:?}"))?
-        != naome_authoring::QuestionOutcome::Proved
-    {
-        return Err("checked certificate does not positively resolve the question".into());
-    }
+    // Internal closed lemmas are Foundation theorems, not new user questions.
+    // Exact conclusion equality above and the independent checker establish
+    // their claim; question-intake depth limits belong to the final question.
+    let lemmas = lemmas::retain(&checked, &[], &lemmas)?;
     Ok(Verified {
+        lemmas,
         definitions: Vec::new(),
         certificate,
         target,
@@ -413,7 +466,7 @@ pub fn source_with_definitions(
     if !proof.definitions.is_empty() && proof.definitions != definitions {
         return Err("exact native references cannot be replaced during source export".into());
     }
-    let context = super::definitions::context(&proof.definitions)?;
+    let context = lemma_context(definitions, &proof.lemmas)?;
     let rewrite = proof.definitions.is_empty();
     let mut output = String::new();
     write!(output, "\ngoal = {}\n\nproof:\n", proof.target.to_source())
@@ -540,7 +593,34 @@ pub fn source_with_definitions(
             ProofStep::ZfcAxiom(axiom) => {
                 format!("axiom(\"{}\")", super::search::axiom_name(*axiom))
             }
-            _ => return Err("unexpected solver proof step".into()),
+            ProofStep::Separation(instance) => format!(
+                "sep({}, f{}, f{}, f{}, parameters=[{}])",
+                formula(&instance.predicate)?,
+                instance.element.identifier(),
+                instance.source.identifier(),
+                instance.result.identifier(),
+                instance
+                    .parameters
+                    .iter()
+                    .map(|v| format!("f{}", v.identifier()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            ProofStep::Replacement(instance) => format!(
+                "replace({}, f{}, f{}, f{}, f{}, f{}, parameters=[{}])",
+                formula(&instance.predicate)?,
+                instance.input.identifier(),
+                instance.output.identifier(),
+                instance.uniqueness_witness.identifier(),
+                instance.source.identifier(),
+                instance.result.identifier(),
+                instance
+                    .parameters
+                    .iter()
+                    .map(|v| format!("f{}", v.identifier()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         };
         writeln!(output, "    p{index} = {rule}").map_err(|e| e.to_string())?;
     }
