@@ -1,5 +1,5 @@
 {
-  "purpose": "Qualify transfer-oriented promotion and actual neural trial values on complete two-round matched own-data journals and independent final families, without changing budgets or success thresholds.",
+  "purpose": "Isolate meta-training on genuinely qualified continuation parents against matched fresh-parent outer training, with identical lower learning inputs and independent final families.",
   "seeds": [
     2411,
     3203,
@@ -17,7 +17,8 @@
     "adaptive_targeted",
     "adaptive_fixed_mixture",
     "adaptive_random_mixture",
-    "adaptive_meta"
+    "adaptive_meta",
+    "adaptive_meta_fresh"
   ],
   "common": "One maintained uniform question-selection producer per final seed starts from the exact fresh materialized initial lower model/Adam and the same seven own checked prerequisites. Before any optimizer update it acquires both rounds of48 own queries. Every arm receives exact per-round query/source/evidence/replay/anchor snapshots; later method-dependent model, Adam, RNG and feedback remain its own. Corpus availability is identical; declared rehearsal/focus/objective choices may select and weight that corpus differently. Full acquisition cost is charged to EVERY arm ceiling and physically incurred once. No arm acquires a different second-round dataset. Random-balanced and adaptive-balanced now receive the same full source data and identical balanced method; their retained weight/Adam checkpoints must be byte-identical as an engineering positive control. They are not additional independent evidence.",
   "task_owner": "The actual source producer uses maintained Frontier::refresh/candidates/choose, ordinary formal prefilter and independent native search/admission. Uniform selection makes timing feedback unable to alter the fixed source journal. Branches replay the immutable original owned records; actual resource costs remain measured and charged. This component comparison does not measure the production adaptive question selector.",
@@ -33,11 +34,16 @@
     "learning_rate": "Controlled methods use .001 or .0005 within the same250 steps; fixed balanced/reference controls retain .001.",
     "acquisition_expansions": 128,
     "qualification_expansions": 32,
-    "orientation_deadline_ms": 2500
+    "orientation_deadline_ms": 2500,
+    "aggregate_final_cpu_seconds": 3780,
+    "aggregate_final_wall_seconds": 5040,
+    "aggregate_pilot_cpu_seconds": 1260,
+    "aggregate_pilot_wall_seconds": 1680,
+    "aggregate_policy": "Derived from the original seven arms times three seeds (pilot one seed); the eighth causal control cannot increase that total. Full common prerequisite and acquisition CPU/wall is charged to each arm. Remaining total can only tighten each original180CPU/240wall cap. Incomplete coverage cannot establish quality."
   },
   "resource_policy": "Existing 768 MiB work lease, 48 MiB replay graph pool, 32 KiB persistent State, native graph/context/fact/depth/action caps and per-job IO limits remain. Equal ceilings do not imply equal actual compute. Common search and bank construction costs are reported separately; arm CPU includes selection, checking, preparation, training, qualification, serialization and IO bookkeeping. The common implementation uses canonical hex for bounded theorem snapshots, small references to the original owned trace journal, and detached inference inputs. The inference routing preserves model/Adam bytes but may change near-tied float32 rankings; every arm and initial/selected control uses the same frozen routing. Before branching, outer contexts and all adaptive final arms use the same canonical replay eviction to reserve2.5KiB for bounded upper-state metadata inside the original32KiB State cap. This makes their first lower replay inputs identical even though only the learned arm consumes the upper model. Both balanced controls now receive the same full source corpus and metadata reserve; their byte-identical retained lower checkpoint is an engineering control, not independent evidence. All arms expose the same complete owned source union; phase rehearsal controls use, not ownership availability. Exact retained artifact chunks spill to local evidence storage between arms and are restored one arm at a time after all training; checkpoints/Adam bytes are unchanged. Whole-harness peak RSS is sampled and must remain inside the existing768MiB work reservation; no OS hard RSS limit is claimed.",
   "qualification": "All120 original development questions, the32 original individual sentinels and earlier anchors remain mandatory. Promotion additionally requires complete outcomes for24 new transfer questions in12 whole held-out families, positive equally family-weighted transfer gain, and no negative whole-family transfer delta. Exact incumbent weights AND Adam remain on rejection. Extra bounded transfer searches execute inside the same150-unit/CPU/wall/IO/memory allowance and all measured costs are charged.",
-  "confirmation": "Both complete own-data rounds for every final seed are fixed before the first optimizer call. All48 outer trials and all21 final two-round learning arms finish before any final inference. New48 final questions in24 whole construction families exclude all earlier learning/development/confirmation and new transfer roots/families before variants. Native cores retain the same three extra composition steps and10/16/14/8 operation distribution. Previous finals are retired diagnostics.",
+  "confirmation": "Both complete own-data rounds for every final seed and both16-query source stages of every outer context are fixed before the first optimizer call. All48 outer trials (24per controller) and all24 final two-round learning arms finish before any final inference. New48 final questions in24 whole construction families exclude all earlier learning/development/confirmation/transfer roots and renamed variants before selection. Same three extra composition steps and10/16/14/8 operation distribution. All144 earlier final cases remain retired diagnostics and never training inputs.",
   "primary": {
     "expansions": 32,
     "exploration": false,
@@ -56,7 +62,7 @@
     "family/operation regressions and actual CPU/wall/IO costs",
     "retained and candidate updates plus checked replay/source coverage"
   ],
-  "interpretation": "Source-grammar coverage is limited and syntax capability estimates are hypotheses, not universal mathematical difficulty. A positive finite matched result would not establish unbounded autonomous improvement, new calculus completeness, durable multi-round capacity growth, or physical deployment. Negative and incomplete results remain part of the evidence. Development and exact-ID operating checks are distinct from the fresh family confirmation. The common helper recipes condition this study; the new task grammar is not an external mathematics benchmark. All three lower initialization seeds repeat the prior meta study; seed 2411 explicitly retests its earlier regression. Fresh confirmation families, rather than new initialization seeds, provide the new held-out comparison. These are three fixed initializations, not a seed-population confidence interval. Prior held-out diagnostics and exact-replay engineering controls do not qualify new independent performance. Upper-model context transfer is measured on three fixed new lower contexts, not a distribution-free meta-learning theorem. Actual next-plan execution and recovery are separate operating evidence. A negative or inconclusive result is retained without tuning the revealed final questions.",
+  "interpretation": "Source-grammar coverage is limited and syntax capability estimates are hypotheses, not universal mathematical difficulty. A positive finite matched result would not establish unbounded autonomous improvement, new calculus completeness, durable multi-round capacity growth, or physical deployment. Negative and incomplete results remain part of the evidence. Development and exact-ID operating checks are distinct from the fresh family confirmation. The common helper recipes condition this study; the new task grammar is not an external mathematics benchmark. All three lower initialization seeds repeat the prior meta study; seed 2411 explicitly retests its earlier regression. Fresh confirmation families, rather than new initialization seeds, provide the new held-out comparison. These are three fixed initializations, not a seed-population confidence interval. Prior held-out diagnostics and exact-replay engineering controls do not qualify new independent performance. Upper-model context transfer is measured on three fixed new lower contexts, not a distribution-free meta-learning theorem. Actual next-plan execution and recovery are separate operating evidence. A negative or inconclusive result is retained without tuning the revealed final questions. The added fresh-parent controller has the same24real trials and192upper updates as the continuation controller; neither receives the previous study48-trial allocation. A missing genuine warm parent means incomplete intervention coverage. The fixed transfer reward panel remains shared. Previous48final outcomes are diagnostic only and no new final result tunes this finite trial.",
   "preparation_control": {
     "reference": "Test-only reference sampler exactly reconstructed from scientific source 9c10e29a; frozen incumbent priorities, family/rule/state weighting, replay only. Never compiled into an ordinary provider.",
     "targeted": "Current candidate scores refreshed every existing ten-update unit, success-probability priorities bounded to 1..8 inside fixed origin/family/proof/rule strata; three complete cyclic decision cycles then one focused cycle. Existing checked own/peer anchors rehearsed from their original owned source, deduplicated by job and within the same State/pool/source-byte limits.",
@@ -79,7 +85,7 @@
     ],
     "trials_per_context": 8,
     "total_real_trials": 48,
-    "lower_trial": "Actual fresh lower weights/Adam and identical original own source pool within each context; every trial executes the original250 candidate updates and all original150 units plus bounded transfer calls within those units. Only actual upper weights/Adam and observed past profiles/memory carry forward.",
+    "lower_trial": "Six source contexts, two controllers, two real source epochs, two plan forks per epoch. Each context independently acquires the same original32 own queries as16then16, without optimizer calls. Every fork executes250actual lower updates and all150original units. Forks at a controller/epoch share exact lower weights/Adam, lower feedback, checked sources, replay, anchors and evidence; actual upper weights/Adam, RNG and four complete owned experiences carry across its own sequential trials. Controllers have identical fresh initialization and never share learned experiences. Context mode order alternates.",
     "context_partition": "Novel acquisition dependency SHA-256 byte0 modulo3 roles0/1 outer training, role2 final; the seven shared declared prerequisites are excluded from novel acquisition counts. All final lower initializations are held out from outer training.",
     "caps": {
       "cpu_seconds_per_trial": 90,
@@ -87,8 +93,24 @@
       "cpu_seconds_outer_stage": 7200,
       "wall_seconds_outer_stage": 10800
     },
-    "pilot": "Seed3607 one context, two real trials; development only. Pilot weights/experiences never initialize main.",
-    "source_capacity": "Before fixing each common lower pool, reserve the bounded2.5KiB lossless upper-state metadata plus a prospective full development-profile encoding envelope inside the original32KiB State. All six own-source contexts qualify the unchanged minimum8-example/3-family pool before the first actual trial. The envelope derives only syntax cells, maximum serialized counters/cost and coverage; no hypothetical outcome is observed ability. Each trial uses identical fixed lower sources. Validate the actual reconstructed base before any optimizer update. The previous meta study's first two incomplete main attempts remain preserved in its earlier delivery: omitted profile growth and then insufficient8-source capacity. No final inference occurred; no question, quality threshold, method, memory count or native resource cap changes."
+    "pilot": "Seed 3607, one context, two controllers times two source stages times two forks: eight real trials. Keep its original 32 own questions in the original order, acquired as 8 then 24 (cumulative 8/32). The earlier 16/16 cold-source attempt produced only three new accepted epochs in its later stage and stopped before any optimizer or final inference. Only the engineering pilot staging changes so the unchanged four-new-source guard can be exercised. Main remains 16 then 16 in all six already qualified contexts. Development only; pilot weights, proofs and experiences never initialize main.",
+    "source_capacity": "Before any optimizer, both per-context source snapshots independently pass original replay>=8, three-dependency minimum, original32KiB State and actual training-pool reconstruction. Snapshot the16-query source by cloning and compacting; leave the source producer untouched through32. Reserve the original2.5KiB full upper metadata plus maximum syntax-only development envelope. Stage1 must contain at least four newly accepted source epochs since stage0. Every actual reconstructed parent is validated before training.",
+    "controllers": [
+      "fresh",
+      "continuation"
+    ],
+    "trials_per_controller": 24,
+    "parent_selection": "Fresh controller forks always use the context initial lower weights/Adam. Continuation stage1 uses the earliest fully qualified stage0 output whose original gate actually promoted; if neither promotes, retain the first real rejected selected state with its exact incumbent weights/Adam and recorded counters. No unqualified candidate becomes a parent. Stage1 rebinds the later checked source epoch while preserving the actual parent lower checkpoint/Adam, trained/attempted counters, promotions/rejections and model-bound feedback. It must pass both unchanged needs_training and epoch>trained guards; no counter reset or forced promotion. Fresh stage1 additionally receives the actual initial-checkpoint development_before observed in stage0, frozen identically for its two forks. This avoids withholding available incumbent evidence; its lower weights/Adam and initial counters remain the declared fresh control.",
+    "continuation_coverage": "Complete mechanism coverage requires genuinely promoted250-update parents in all six main contexts, each used by both stage1forks (12warm trials); pilot requires its one context/two warm forks. Missing warm parents makes this hypothesis coverage incomplete without forcing promotion or increasing trials. A retained500-update lower model or two valid promotions is mechanism evidence only and never replaces final quality criteria.",
+    "stability_isolation": "The existing checked-anchor rehearsal and pairwise search preference stay unchanged. No additional ranking constraint, stability objective, altered gate or replay policy is introduced in this trial.",
+    "main_cumulative_queries": [
+      16,
+      32
+    ],
+    "pilot_cumulative_queries": [
+      8,
+      32
+    ]
   },
   "neural_meta_model": {
     "parameters": 759,
@@ -100,11 +122,12 @@
   },
   "meta_success": {
     "comparisons": [
+      "adaptive_meta minus adaptive_meta_fresh",
       "adaptive_meta minus adaptive_targeted",
       "adaptive_meta minus adaptive_fixed_mixture",
       "adaptive_meta minus adaptive_random_mixture"
     ],
-    "success": "For every direct comparison, the same original requirement: mean gain at least5pp, no negative seed, paired24-family bootstrap95percent lower bound strictly positive. Full system success additionally requires the unchanged original primary criterion; added controls do not replace it."
+    "success": "Every direct comparison retains mean gain at least5pp, no negative seed, paired24-family bootstrap95percent lower bound strictly positive. The fresh-controller contrast isolates continuation training at equal24real outer trials and192upper updates each. Full system success additionally requires complete continuation coverage and both unchanged original primary and preparation conditions. No threshold relaxation."
   },
   "transfer": {
     "cases": 24,
